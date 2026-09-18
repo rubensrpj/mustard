@@ -22,7 +22,7 @@ flowchart LR
 ```
 
 1. The **census** mines the repository into a durable model (`grain.model.json`) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
-2. Pipeline commands consume that model through a **digest** (`mustard-rt run feature`, `scan spec`) and read only the ~12 anchors the digest points at.
+2. The flow's commands consume that model through a **digest** and read only the ~12 anchors the digest points at.
 3. Result: **context economy** — the digest finds *where to look*; it does not replace reading.
 
 > The harness's real weight is not the commands but the **re-injection of ceremony into the context on every turn**. Routing therefore always picks the **cheapest path that serves** — the full pipeline is the exception that must justify itself (≥2 layers/subprojects **or** a new entity), never the default.
@@ -35,7 +35,7 @@ Single prerequisite on every OS: **[Claude Code](https://docs.claude.com/claude-
 
 ### Step 1 — your OS installer
 
-On Windows and macOS, download **one** file from the [**Releases**](https://github.com/rubensrpj/mustard/releases) page (*Assets* section); on **Linux**, a single terminal line does it. Each installer carries the full CLI (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **and** the **Mustard Dashboard**:
+On Windows and macOS, download **one** file from the [**Releases**](https://github.com/rubensrpj/mustard/releases) page (*Assets* section); on **Linux**, a single terminal line does it. Each installer carries the full CLI (`mustard`, `mustard-rt`, `scan`, `rtk`):
 
 | OS | What to download | What to do |
 |---|---|---|
@@ -54,7 +54,7 @@ The complete walkthrough for each OS (including common issues and uninstall) shi
 
 ### Step 2 — the Claude Code plugin
 
-The harness (the `/mustard:*` commands, hooks, gates, agents, and the memory MCP server) is distributed as a **Claude Code plugin**:
+The harness (the `/mustard:*` commands, hooks, gates and agents) is distributed as a **Claude Code plugin**:
 
 ```
 /plugin marketplace add rubensrpj/mustard
@@ -86,142 +86,34 @@ This creates `mustard.json` (the single configuration) and the `.claude/` folder
 
 ---
 
-## Canonical pipeline
+## The flow
 
 ```mermaid
 flowchart LR
-    A["ANALYZE"] --> P["PLAN"]
-    P -->|/approve| E["EXECUTE"]
-    E --> R["REVIEW"]
-    R --> Q["QA"]
-    Q -->|gate: pass| C["CLOSE"]
+    A["open"] --> G["grill"]
+    G --> P["plan"]
+    P -->|approval click| R["round"]
+    R --> C["close"]
+    C --> PR["pr-open"]
 ```
 
-| Scope | Detection | Flow |
-|---|---|---|
-| **Light** | 1-2 layers, ≤5 files, known pattern | Skips PLAN: `ANALYZE → EXECUTE → REVIEW → QA → CLOSE` |
-| **Full** | 3+ layers or a new entity | Complete, with **human approval** between PLAN and EXECUTE |
+Every step is a single call, and every command ends by naming the next one. `open` starts the spec; `grill` surveys what is missing, one question at a time; `plan` builds the waves and puts them up for approval; the approval is the user's click, recorded by the conversation hook; `round` dispatches the waves that can go out together, each in its own copy, and records what they delivered and each review's verdict; `close` runs the project lint and every criterion once and, on a spec of two waves or more, asks for the final review of the whole; `pr-open` opens the pull request. The merge is the only step that happens only when the user asks.
 
-Every phase emits events; gates block progress. The **close-gate** refuses to close without a `qa.result` with `overall=pass`; editing the spec after an approved QA marks the pass *stale* and re-blocks until QA runs again.
+The close refuses while any criterion lacks an approved run in `spec.ndjson`, while the project lint fails, or while the final review of the whole has not been approved.
 
 ---
 
 ## Commands
 
-Installed as a plugin, every command lives under the `/mustard:` namespace.
-
-### The single door is not a command
-
-**Start by describing the work in natural language** — there is no entry command. The router is injected on every prompt: it classifies the request (feature / change / bugfix / investigation + scope), narrates how it read it, and dispatches the right flow. It asks only on genuine ambiguity.
-
-### The four doors
-
-There are **four**, and only four — what you type. Everything else is an internal flow the router dispatches.
+Installed as a plugin, every command lives in the `/mustard:` namespace. There is no entry command: a request that changes a file, said in the conversation, opens the spec, and every step of the flow answers what comes next.
 
 | Command | Role |
 |---|---|
-| `/mustard:spec` | Resumes a unit that already has a spec — approves the planned one, continues the one in flight. |
-| `/mustard:git` | The local work: sync, commit, push, the exit ritual and cancelling. Moves bits, decides nothing. |
-| `/mustard:pr` | The pull request door: open, list, review, merge. Where work can be refused. |
-| `/mustard:upsert` | Installs/updates Mustard in the project. `--off` / `--on` turn the harness off and back on; `--doctor` diagnoses the installation. |
+| `/mustard:continue` | Picks the spec back up where it stopped. It is the reserve button: resuming already happens at the start of a session. |
+| `/mustard:pr` | Opens the pull request, reviews a colleague's, or merges one, only when asked. |
+| `/mustard:upsert` | Installs or updates Mustard in the project and diagnoses the installation. To turn Mustard off in a project, set `"enabled": false` in `mustard.json`. |
 
-#### `/mustard:spec` — the unit's door
-
-One thing only: take a unit that already has a spec and move it forward. It never **creates** a unit — the router does that, from your request in plain language.
-
-| You type | What happens |
-|---|---|
-| `/mustard:spec` | lists the active specs in a table and waits for a letter |
-| `/mustard:spec a` | acts on row `a`: approves it in PLAN, continues it in EXEC |
-| `/mustard:spec ar` | **typed in full**, approves *and* implements in the same gesture — no second question |
-| `/mustard:spec my-slug` | jumps straight to that spec, no table |
-
-#### `/mustard:git` — the local work
-
-**Iron law: everything goes up (`add -A`), never a silent partial scope.** Reversible operations only — the one exception is `delete`, which is why it is never inferred from a failure, only typed.
-
-**This door moves bits and decides nothing.** No action here can refuse work — that is the line against `/mustard:pr`, which owns the pull request on the provider *and* the gates that can say "this does not go in".
-
-| Action | What it does |
-|---|---|
-| `sync` | rebases the current branch onto the base its kind implies; aborts on conflict, never forces |
-| `commit` | creates the commit, no push |
-| `push` | runs `sync`, commits and pushes **only the current branch** |
-| `finish` | the exit ritual, run from the work branch **after its PR merged**: back to the base, pull, remove the worktree, delete the local and remote branch |
-| `delete <branch>` | cancels an **abandoned** unit: closes its PR, removes the worktree, deletes the local and remote branch — all at once |
-
-The difference between the last two is the unit's state: `finish` retires a **delivered** unit; `delete` cancels an **abandoned** one. And you rarely type `finish` — `/mustard:pr merge` already runs that prune; it exists for a PR that merged **elsewhere**, by someone else on the provider.
-
-**Publishing the PR is not here** — it is `/mustard:pr open`. That split is what took the word `pr` out of `git`: while both doors created pull requests, they read as duplicates of each other. PRs are still the only integration path: a work branch never reaches its base through a direct push, and there is no `merge` action here.
-
-#### `/mustard:pr` — the pull request door
-
-**Iron law: a merge is never silent.** Merging a unit whose review did not come back `approved` is allowed — you decide, case by case — but it is always **asked** about first, never done quietly and never refused outright.
-
-| Action | What it does |
-|---|---|
-| `open [<target>]` | opens or updates the PR — idempotent, always the same PR. One per repository, submodules before the parent (while a submodule PR is open the parent opens as a draft, and the provider refuses to merge a draft). The one action here that crosses **no** gate: publishing is not integrating |
-| `list` | the open PRs of the base you are standing on: number, title, whether it is a draft, and the branch its unit lives on. Runs only from a base — "which PRs are open" is a question about the base, not about one unit |
-| `review [<pr>]` | reviews it **against the unit's own spec** and that subproject's molds, and records the verdict. That record is what the merge reads |
-| `merge [<pr>] [--confirm]` | crosses the verification gate, merges and prunes: back to the base, pull, remove the worktree, delete the branches |
-
-The gate `merge` crosses, in order: **build + tests** → **QA** (only a recorded `pass` opens the close) → **review spans** → **docs audit** → **close gates**. On a full pass the spec finalizes itself — you never decide to call the close by hand.
-
-**Review, QA and close are not commands.** None of them is what you set out to do: they are what has to happen on the way to a merge.
-
-### Internal flows (the router picks)
-
-| Flow | Role |
-|---|---|
-| census | Mines the repository into `grain.model.json` (deterministic, no AI) and enriches per-subproject maps (Guards + pattern molds). Triggered by the base gate. |
-| `feature` | Full feature pipeline: understand, research via digest, plan, implement. |
-| `bugfix` | Autonomous diagnosis + fix. Fast path (1-2 files) or full path (lean spec). |
-| `tactical-fix` | Creates a sub-spec linked to a parent, preserving SDD purity. |
-| `task` | Spec-less work delegation (analyze, audit, refactor, docs…). |
-
----
-
-## Dashboard
-
-The **Mustard Dashboard** is the harness telemetry: an HTTP **server** (`mustard-dashboard`, Rust + `tiny_http`) serving a React screen to your browser. It reads the NDJSON events the hooks write under each project's `.claude/`, **straight from disk and live** — no database, no open session required; the screen redraws over Server-Sent Events, which reconnect on their own.
-
-### Opening it
-
-```bash
-cd ~/code            # the folder where your projects live
-mustard-dashboard    # serves http://127.0.0.1:7777/ and opens the browser
-```
-
-On Windows and Linux the **"Mustard Dashboard"** menu shortcut does the same, from your home folder.
-
-| Option | What for |
-|---|---|
-| `--root DIR` | scan another folder instead of the current directory |
-| `--port N` | another port (or `MUSTARD_DASHBOARD_PORT`); a taken port is not fatal — the next free one is used and printed |
-| `--host ADDR` | **exposes it on the network** (e.g. `0.0.0.0`); without it the dashboard only answers on `127.0.0.1` |
-| `--no-open` | never launch a browser |
-
-> Why `--host` is required to expose it: the dashboard reads the `.claude/` of **every** project on the machine. Opening it to the network has to be an act, not a forgotten flag — the same contract as the OTLP collector.
-
-### First use
-
-1. The scan starts at the directory the server was started from — the projects shown are the ones on the machine running the backend.
-2. The dashboard **auto-discovers** every Mustard-initialized project (`mustard.json` + `.claude/`) inside it.
-
-### What each area shows
-
-| Area | Content |
-|---|---|
-| **Workspace** | Aggregated overview of all discovered projects: active pipelines, latest events, health. |
-| **Activity** | The **live** execution: running pipeline, waves, dispatched agents, and the trace grouped by agent/wave. |
-| **Specs** | Every specification with its lifecycle state (active, suspicious, closed), acceptance criteria, and waves. |
-| **Economy** | Token metrics: per-session/per-spec consumption and the savings obtained (rtk, digest, routing). |
-| **Knowledge** | The project's knowledge base (patterns, conventions, recorded decisions). |
-| **Commands** | History of executed pipeline commands. |
-| **Sessions** | Claude Code session history for the project, with per-session drill-down. |
-| **Project detail** | Per project: specs, execution trace, and the live pipeline card. |
-
-> Tip: keep the dashboard open on a second monitor while Claude Code works — **Activity** shows each wave and agent in real time, and **Specs** reflects the gates (QA passed, CLOSE blocked, etc.) the moment they happen.
+The full reference — the flow, the hooks and every `mustard-rt run` command — is in [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
 
 ---
 
@@ -244,31 +136,19 @@ Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `cha
 | `apps/rt` | `mustard-rt` | Rust | **Deterministic core** — scan-digest, events, gates, hooks, pipeline commands. The engine. |
 | `apps/scan` | `scan` | Rust | Repository miner → `grain.model.json`. |
 | `apps/cli` | `mustard` | Rust | Install & scaffold — `init`, grammars, git-flow, fonts. |
-| `apps/mcp` | `mustard-mcp` | Rust | MCP server (harness memory/queries). |
 | `packages/core` | `core` | Rust | Shared types and logic (e.g. `ProjectConfig`). |
-| `apps/dashboard` | `mustard-dashboard` | Rust (`tiny_http`) + React | Telemetry UI (specs, runs, trace, metrics). The server (`apps/dashboard/server`) is a normal Cargo workspace member; the screen is served as static assets. |
-| `plugin/` | — | — | The Claude Code plugin: commands, hooks, agents, MCP, and the `mustard-boot` bootstrap (downloads the binaries from the Release on the first session). |
+| `plugin/` | — | — | The Claude Code plugin: commands, hooks, agents and the `mustard-boot` bootstrap (downloads the binaries from the Release on the first session). |
 
-`cargo build --workspace` covers the Rust crates — the dashboard server included; the screen builds via `pnpm`.
+`cargo build --workspace` covers every Rust crate.
 
 ---
 
 ## Build & tests
 
 ```bash
-# Rust (workspace)
-cargo build --workspace            # or: pnpm build:rust
-cargo test  --workspace            # or: pnpm test:rust
+cargo build --workspace
+cargo test  --workspace
 cargo clippy --workspace           # lint
-
-# Dashboard (Rust server + React)
-pnpm --filter mustard-dashboard dev   # screen with HMR (Vite)
-pnpm dashboard:build                  # production build (React + server)
-pnpm dashboard:serve -- --root ~/code # run the server from the checkout
-
-# Everything
-pnpm build                         # Rust workspace + dashboard
-pnpm test                          # same
 ```
 
 **Official release:** a `vX.Y.Z` tag triggers the workflow that builds one complete installer per OS + the `mustard-bins-*` packages (consumed by the plugin bootstrap) and publishes everything as a GitHub Release. The tag version **must** match `plugin/.claude-plugin/plugin.json` — the workflow refuses a desynchronized tag. Manual dispatch (Actions → Release → Run workflow) is a **rehearsal**: builds everything without publishing.
@@ -282,7 +162,7 @@ pnpm test                          # same
 ```jsonc
 {
   // "flow" is OPTIONAL and restricts nothing: it only PRE-SELECTS a base in the
-  // picker. Where a unit may be cut from comes from git (`run base-candidates`);
+  // picker. Where a unit may be cut from comes from git;
   // where a direct commit is refused comes from the remote's default branch plus
   // whatever "protected" adds. A fresh install writes no "flow".
   "git":  { "provider": "github" },
@@ -290,12 +170,14 @@ pnpm test                          # same
   "testCommand":  "cargo test",
   "lintCommand":  "cargo clippy",
   "typeCheckCommand": "cargo check",
-  "specLang": "en-US",      // language of generated artifacts
-  "tone":     "didactic"    // tone of generated prose
+  "language": {             // the two languages, each on its own key
+    "text": "en-US",        // conversation, specs, pages, comments and commits
+    "code": "en"            // names in the code: always English
+  }
 }
 ```
 
-Mustard is language- and architecture-**agnostic**: generated output follows `specLang` + `tone`; build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
+Mustard is language- and architecture-**agnostic**: generated text follows `language.text`; names in the code (variables, functions, files, commands) are always English, so the install does not ask for a code language. The install asks only for the text language and writes only what you choose. Build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
 
 ---
 
@@ -306,8 +188,6 @@ apps/
   rt/         mustard-rt — deterministic core (Rust)
   scan/       repository miner (Rust)
   cli/        mustard — installer/scaffold (Rust)
-  mcp/        MCP server (Rust)
-  dashboard/  Rust server (server/) + React screen — telemetry
 packages/
   core/       shared types/logic (Rust)
 plugin/       Claude Code plugin (commands, hooks, agents, bootstrap)

@@ -10,25 +10,23 @@
 //!
 //! What is locked, and why each one matters:
 //!
-//! - **The surface is exactly four doors** — `git`, `pr`, `spec`, `upsert`. A
-//!   door is a command file the USER types; everything else in the directory is
-//!   an internal flow the router dispatches, which says so with
-//!   `user-invocable: false`. The reduction from fifteen doors to four was the
-//!   point of a whole work unit, and it is one careless frontmatter block away
-//!   from being undone: a new command file that simply forgets the key
-//!   re-exposes itself, and nobody notices. This test is that notice.
+//! - **The surface is exactly three doors** — `continue`, `pr` and `upsert`.
+//!   Os comandos `spec`, `feature`, `bugfix`, `task`, `tactical-fix`, `git` e
+//!   `scan` saíram: o fluxo é um só, e cada comando do binário diz o próximo
+//!   passo. A door is a command file the USER types; a command file that is
+//!   not one of the three must say so with `user-invocable: false`, and a new
+//!   one that simply forgets the key re-exposes itself. This test is that
+//!   notice.
 //! - `upsert` is deliberately NOT `disable-model-invocation`, and the absence is
 //!   asserted so a later "let's finish the list" change has to argue with it.
 //!   Its own description defines an automatic trigger — it is the bootstrap
 //!   door, reached when another `/mustard:*` command is blocked because Mustard
 //!   is not installed. Disabling model invocation would close exactly the door
 //!   that has to open without the user knowing the command's name.
-//! - `pr` carries NO fork key at all. It runs the QA gate, whose whole contract
-//!   is an OBSERVED exit code; a summary relayed from a forked subagent is
-//!   second-hand evidence of the one gate the pipeline treats as final. The
-//!   assertion moved here with the gate — QA stopped being a door of its own and
-//!   became step 3a of this one — and it is the assertion most likely to be
-//!   "helpfully" broken later, which is why it is still here.
+//! - `pr` carries NO fork key at all. Its first step closes the spec, which
+//!   runs every criterion once, and that result is an OBSERVED exit code; a
+//!   summary relayed from a forked subagent is second-hand evidence of the one
+//!   check the flow treats as final.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,7 +36,7 @@ fn repo_root() -> PathBuf {
 }
 
 /// The whole exposed surface: the commands a user may type. Kept sorted.
-const DOORS: &[&str] = &["git", "pr", "spec", "upsert"];
+const DOORS: &[&str] = &["continue", "pr", "upsert"];
 
 /// The marker an internal flow carries to stay OUT of the door surface.
 const NOT_A_DOOR: &str = "user-invocable: false";
@@ -79,7 +77,7 @@ fn shipped_commands() -> Vec<String> {
 }
 
 #[test]
-fn exposed_doors_are_exactly_the_four() {
+fn as_portas_expostas_sao_exatamente_estas() {
     let mut exposed: Vec<String> = Vec::new();
     for name in shipped_commands() {
         if !frontmatter(&name).contains(NOT_A_DOOR) {
@@ -91,9 +89,8 @@ fn exposed_doors_are_exactly_the_four() {
         exposed, expected,
         "the user-invocable surface must stay exactly {expected:?}. A command file with no \
          `{NOT_A_DOOR}` in its frontmatter IS a door — the user sees it and types it. Everything \
-         that is not one of the four is a flow the router dispatches: add the key, or fold the \
-         command into the door that already owns its subject (review/QA/close -> pr; off/on/doctor \
-         -> upsert; the census refresh -> the base gate; cancelling a unit -> git delete)."
+         that is not one of the three must say so: add the key, or fold the command into the door \
+         that already owns its subject (review/close -> pr; doctor -> upsert; resuming -> continue)."
     );
 }
 
@@ -106,7 +103,7 @@ fn command_frontmatter_internal_flows_are_not_model_invocable_doors() {
         let fm = frontmatter(&name);
         assert!(
             fm.contains(NOT_A_DOOR),
-            "plugin/commands/{name}.md is not one of the four doors, so it must declare \
+            "plugin/commands/{name}.md is not one of the three doors, so it must declare \
              `{NOT_A_DOOR}` — it is dispatched by the router, never typed. Frontmatter:\n{fm}"
         );
     }
@@ -130,9 +127,9 @@ fn command_frontmatter_pr_is_never_forked() {
     for key in ["context: fork", "context:fork", "agent:", "background:"] {
         assert!(
             !fm.contains(key),
-            "plugin/commands/pr.md must NOT declare `{key}`. Its merge step runs the QA gate, \
-             whose contract is an OBSERVED exit code; a forked run reports it second-hand, and \
-             this gate is the one the pipeline treats as final. Frontmatter:\n{fm}"
+            "plugin/commands/pr.md must NOT declare `{key}`. Its first step closes the spec and \
+             runs every criterion, whose contract is an OBSERVED exit code; a forked run reports it \
+             second-hand. Frontmatter:\n{fm}"
         );
     }
 }

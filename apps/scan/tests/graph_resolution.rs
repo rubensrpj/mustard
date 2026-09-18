@@ -144,7 +144,7 @@ fn graph_resolution_no_regression_preexisting() {
 }
 
 /// Cascade smoke: with PHP FQCNs resolving, the graph stops collapsing into a
-/// single L0 layer and hubs/touchpoints/fan-in stop being empty.
+/// single `L0` layer and hubs/touchpoints/fan-in stop being empty.
 /// Fixture shape: 3 Models <- 2 Services <- 2 Controllers, every import an
 /// internal FQCN (`App\Models\User`, `App\Services\UserService`, ...):
 ///   UserService -> User; PostService -> Post, Comment;
@@ -156,7 +156,8 @@ fn graph_resolution_php_cascade_layers_hubs_touchpoints() {
 
     assert_eq!(g["edges"].as_u64(), Some(7), "all 7 internal FQCN imports resolve: {g}");
 
-    // Layers: Models at L0, Services at L1, Controllers at L2 — not one flat L0.
+    // Layers: Models at `L0`, Services at `L1`, Controllers at `L2` — not one
+    // flat `L0`.
     let layers = g["layers"].as_array().unwrap();
     assert_eq!(layers.len(), 3, "emergent layering must have 3 depths: {g}");
     let l0 = layers.iter().find(|l| l["name"] == "L0").expect("L0 present");

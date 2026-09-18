@@ -4,8 +4,8 @@
   "plansDirectory": ".claude/plans",
   "cleanupPeriodDays": 30,
   "attribution": {
-    "commit": "assistant",
-    "pr": "assistant"
+    "commit": "",
+    "pr": ""
   },
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
@@ -15,12 +15,6 @@
     "MUSTARD_BOUNDARY_MODE": "warn",
     "MUSTARD_MAIN_BUDGET_MODE": "warn",
     "MUSTARD_DELEGATION_WARN_MODE": "warn",
-    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-    "OTEL_METRICS_EXPORTER": "otlp",
-    "OTEL_LOGS_EXPORTER": "otlp",
-    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
-    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
-    "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
     "MUSTARD_HARNESS_DUAL_EMIT": "1"
   },
   "permissions": {
@@ -37,8 +31,8 @@
       "WebFetch",
       "WebSearch",
       "Bash",
-      "Bash(mustard-rt run event-projections:*)",
-      "Bash(mustard-rt run qa-run:*)",
+      "Bash(mustard-rt run read:*)",
+      "Bash(mustard-rt run close:*)",
       "Bash(mustard-rt run pr-merge:*)"
     ],
     "deny": [
@@ -59,12 +53,9 @@
       "Bash(git checkout -- .:*)",
       "Bash(git restore .:*)",
       "Bash(git clean:*)",
-      "Bash(git branch -D main:*)",
-      "Bash(git branch -D master:*)",
-      "Bash(git branch -d main:*)",
-      "Bash(git branch -d master:*)",
       "Bash(chmod 777:*)",
       "Bash(mkfs*)",
+      "Bash(format:*)",
       "Bash(dd if=*)",
       "Bash(shutdown:*)",
       "Bash(reboot:*)",

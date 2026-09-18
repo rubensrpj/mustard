@@ -1,3 +1,0 @@
-{
-  "core-hit": "No teachable local shape: the `*Hit` structs across the three exemplars are independent one-off wire mirrors (TermHit, SliceHit, ContractHit vs. internal KeyedHit/ScanHit) sharing no fields, constructor, or convention beyond plain `#[derive(Deserialize)]`."
-}

@@ -20,12 +20,9 @@
 //! installer that came back into the library, both show up here as a changed
 //! log rather than as a green run.
 //!
-//! LIMIT, declared rather than hidden: the two behavioural tests are
-//! `ignore`d off unix, because the shims are shell scripts. Windows is where
-//! `install_rtk` takes its most expensive branch (`scoop install rtk`, then
-//! `cargo install --git`), so the gate has no coverage on the runner where it
-//! would cost the most. Closing that means shims the Windows shell can run —
-//! its own unit, not a line here.
+//! LIMIT, declared rather than hidden: the behavioural tests are `ignore`d off
+//! unix, because the shims are shell scripts. Closing that means shims the
+//! Windows shell can run — its own unit, not a line here.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -78,13 +75,6 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
     dir
 }
 
-/// The dashboard registry inside a home directory —
-/// `<home>/.claude/dashboard-projects.json`, the file a successful `init`
-/// appends the installed project to.
-fn registry(home: &Path) -> PathBuf {
-    home.join(".claude").join("dashboard-projects.json")
-}
-
 /// Run `mustard init --yes` in `project`, with `bin` as the whole PATH and
 /// `home` as `$HOME`.
 ///
@@ -94,9 +84,9 @@ fn registry(home: &Path) -> PathBuf {
 /// `~/.claude/`. A test that can damage the machine it runs on is worse than the
 /// regression it was watching for.
 ///
-/// `USERPROFILE` rides along because the dashboard registry — the OTHER file a
-/// successful install writes under the home — reads that variable on Windows
-/// and `HOME` everywhere else. Isolating one spelling isolates one platform.
+/// `USERPROFILE` rides along because home resolution reads that variable on
+/// Windows and `HOME` everywhere else. Isolating one spelling isolates one
+/// platform.
 fn run_init(project: &Path, bin: &Path, home: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_mustard"))
         .args(["init", "--yes"])
@@ -147,8 +137,9 @@ fn a_missing_rtk_refuses_the_install_and_writes_nothing() {
 }
 
 /// With `rtk` present the install completes AND still reaches the best-effort
-/// tool installers. They moved to the dispatch arm together with the gate; this
-/// asserts the terminal user did not quietly lose them.
+/// ripgrep installer, which moved to the dispatch arm together with the gate —
+/// and nothing of rtk's own configuration is written: its hook lives in the
+/// project's local settings, never under `~/.claude/`.
 #[test]
 #[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
 fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
@@ -167,30 +158,24 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
         "the install must have written the project"
     );
     let spawned = fs::read_to_string(&log).unwrap_or_default();
-    // `rtk init -g --no-patch`, NOT `rtk `. The prefix was the first spelling and
-    // it pinned nothing: the gate itself runs `rtk --version` through
-    // `rtk_on_path` before `init` even starts, so the assertion passed with both
-    // installer calls deleted from dispatch (measured in review). Only
-    // `ensure_rtk` issues this line.
+    // `rg --version`, the probe only `ensure_ripgrep` issues: deleting the call
+    // from dispatch makes this line disappear.
     assert!(
-        spawned.lines().any(|l| l.starts_with("rtk init")),
-        "the binary must still reach the RTK tooling; log was:\n{spawned}"
+        spawned.lines().any(|l| l.starts_with("rg --version")),
+        "the binary must still reach the ripgrep installer; log was:\n{spawned}"
     );
+    assert!(
+        !spawned.lines().any(|l| l.starts_with("rtk init")),
+        "the install ran `rtk init`, which writes rtk's configuration under ~/.claude; log was:\n{spawned}"
+    );
+    assert_eq!(home_entries(&home), Vec::<String>::new(), "the install wrote into $HOME");
+}
 
-    // The POSITIVE half of the home isolation. A successful install registers
-    // the project with the dashboard, and the registry is resolved from the
-    // home — so the row proves two things at once: the act still happens, and
-    // it happened HERE rather than in the operator's own `~/.claude/`. Asserting
-    // only that the real file was left alone would also pass for an install
-    // that wrote nothing anywhere.
-    let canonical = project.canonicalize().unwrap_or_else(|_| project.clone());
-    let rows = mustard_core::dashboard_registry::read_at(&registry(&home));
-    assert!(
-        rows.iter().any(|e| Path::new(&e.path) == canonical),
-        "the install must have registered {} in the TEST's registry; rows were {:?}",
-        canonical.display(),
-        rows.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
-    );
+/// What is in `home`, by name. The install may leave nothing there.
+fn home_entries(home: &Path) -> Vec<String> {
+    fs::read_dir(home)
+        .map(|entries| entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default()
 }
 
 /// `--dry-run` prints a plan and changes nothing — including the machine.
@@ -218,9 +203,6 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
         .env("PATH", &bin)
         .env("HOME", &home)
         .env("USERPROFILE", &home)
-        // Armed on purpose: with the opt-in off this would pass even if the
-        // dry run wrote global settings.
-        .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
         .output()
         .expect("the mustard binary runs");
 
@@ -229,14 +211,7 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
         !project.join(".claude").exists() && !project.join("mustard.json").exists(),
         "a dry run wrote into the project"
     );
-    assert!(
-        !home.join(".claude").join("settings.json").exists(),
-        "a dry run wrote the operator's global settings"
-    );
-    assert!(
-        mustard_core::dashboard_registry::read_at(&registry(&home)).is_empty(),
-        "a dry run registered the project with the dashboard"
-    );
+    assert_eq!(home_entries(&home), Vec::<String>::new(), "a dry run wrote into $HOME");
     let spawned = fs::read_to_string(&log).unwrap_or_default();
     assert!(
         !spawned.lines().any(|l| l.starts_with("rtk init") || l.starts_with("scoop ")),
@@ -252,50 +227,48 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
 /// fast, readable signpost: `library_is_pure.rs` is the one that actually holds,
 /// because it measures the acts instead of matching their spelling.
 ///
-/// Why a ratchet at all: review measured that restoring `ensure_rtk()` /
-/// `ensure_ripgrep()` into `init_with_templates` left the entire suite green,
+/// Why a ratchet at all: review measured that restoring the installer calls
+/// into `init_with_templates` left the entire suite green,
 /// including this file's other two tests. A revert of the fix was invisible.
 #[test]
 fn the_library_half_of_init_calls_no_environment_installer() {
-    let source = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init.rs"),
-    )
-    .expect("init.rs is readable");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init");
+    // The library half is every part of `init` except the tools it defines.
+    let mut source = String::new();
+    for part in ["mod.rs", "questions.rs", "seeding.rs", "project_config.rs"] {
+        source.push_str(&fs::read_to_string(dir.join(part)).expect("the init part is readable"));
+    }
 
-    for call in ["    ensure_rtk();", "    ensure_ripgrep();"] {
+    for call in ["ensure_ripgrep();", "probe_rtk();"] {
         assert!(
             !source.contains(call),
-            "`{}` is back inside init.rs. These installers belong to `cli::dispatch`: \
-             from the library they run `sh -c \"curl … | sh\"` for any caller, which is \
-             how the dashboard's integration test came to spawn it twice on CI.",
-            call.trim()
+            "`{call}` is back inside the library half of init. These belong to \
+             `cli::dispatch`: from the library they act on the machine for any caller, \
+             which is how an integration test in another crate came to spawn an installer \
+             twice on CI."
         );
     }
 
     // And the call site that IS allowed must still exist, so this test cannot
-    // pass by the installers having disappeared altogether.
+    // pass by the installer having disappeared altogether.
     let dispatch = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
     )
     .expect("cli.rs is readable");
-    for call in [
-        "init::ensure_rtk();",
-        "init::ensure_ripgrep();",
-        "init::ensure_global_permissions_if_opted_in();",
-    ] {
+    for call in ["init::ensure_ripgrep();", "init::probe_rtk();"] {
         assert!(
             dispatch.contains(call),
             "`{call}` vanished from cli::dispatch — the terminal user lost the tooling"
         );
     }
 
-    // And they must be gated on what the run actually DID, never on "no error".
-    // `Ok` covers the operator answering Cancel to an existing `.claude/`, and on
-    // that path this arm once ran `rtk init -g --no-patch` — a global write after
+    // And the installer must be gated on what the run actually DID, never on
+    // "no error". `Ok` covers the operator answering Cancel to an existing
+    // `.claude/`, and on that path this arm once took a machine-wide act after
     // an explicit refusal. Measured through a pty in review.
     assert!(
         dispatch.contains("outcome == init::InitOutcome::Installed"),
-        "the installers must be gated on InitOutcome::Installed; `is_ok()` also \
+        "the installer must be gated on InitOutcome::Installed; `is_ok()` also \
          means the operator cancelled, and acting on a refusal is the defect this \
          whole exercise is about"
     );
@@ -329,7 +302,7 @@ fn answering_cancel_leaves_the_machine_untouched() {
     // Second run, interactive: one arrow-down moves from the Merge default to
     // Cancel, then Enter.
     let script = format!(
-        "cd {} && env -i PATH={} HOME={} USERPROFILE={} MUSTARD_GLOBAL_PERMISSIONS=1 {} init",
+        "cd {} && env -i PATH={} HOME={} USERPROFILE={} {} init",
         project.display(),
         bin.display(),
         home.display(),
@@ -355,10 +328,7 @@ fn answering_cancel_leaves_the_machine_untouched() {
         "the run did not reach the Cancel choice; screen was:\n{screen}"
     );
 
-    assert!(
-        !home.join(".claude").join("settings.json").exists(),
-        "a cancelled run wrote the operator's global settings"
-    );
+    assert_eq!(home_entries(&home), Vec::<String>::new(), "a cancelled run wrote into $HOME");
     let spawned = fs::read_to_string(&log).unwrap_or_default();
     assert!(
         !spawned.lines().any(|l| l.starts_with("rtk init") || l.starts_with("scoop ")),
@@ -366,17 +336,15 @@ fn answering_cancel_leaves_the_machine_untouched() {
     );
 }
 
-/// The POSITIVE control for the global-settings act.
+/// The install never writes under `~/.claude/`, not even for an operator who
+/// still carries the variable that used to ask for the global permissions.
 ///
-/// Every other assertion in this file and in `library_is_pure.rs` says the act
-/// must NOT happen somewhere. Review measured what that leaves open: deleting
-/// `init::ensure_global_permissions_if_opted_in();` from dispatch kills the
-/// feature outright and every one of those tests stays green, because "never
-/// written" satisfies them all. A one-sided pin cannot tell a correctly placed
-/// act from a deleted one.
+/// The permissions live only in the project's `.claude/settings.local.json`;
+/// the global write and its opt-in left the product. The project half is
+/// asserted too, so a run that wrote nothing at all cannot pass.
 #[test]
 #[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
-fn the_binary_still_writes_global_settings_when_the_operator_opted_in() {
+fn the_binary_never_writes_under_the_home_claude_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let log = tmp.path().join("spawn.log");
     let home = tmp.path().join("home");
@@ -396,9 +364,12 @@ fn the_binary_still_writes_global_settings_when_the_operator_opted_in() {
         .expect("the mustard binary runs");
 
     assert!(out.status.success(), "the install must succeed");
+    let local = fs::read_to_string(project.join(".claude").join("settings.local.json"))
+        .expect("the permissions land in the project's local settings");
+    assert!(local.contains("\"permissions\""), "{local}");
     assert!(
-        home.join(".claude").join("settings.json").exists(),
-        "the opted-in operator lost the global-settings write; stdout was:\n{}",
+        !home.join(".claude").exists(),
+        "the install wrote under ~/.claude; stdout was:\n{}",
         String::from_utf8_lossy(&out.stdout)
     );
 }

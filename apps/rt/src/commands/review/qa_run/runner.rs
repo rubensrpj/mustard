@@ -1,15 +1,10 @@
 //! qa-run acceptance-criteria execution engine: locate the spec file, run each
-//! AC command (with per-AC timeouts and self-invocation guards), and emit the
-//! `qa.result` event and metric. Split out of `qa_run` (F3 PERF-D).
+//! AC command (with per-AC timeouts and self-invocation guards). Split out of
+//! `qa_run`.
 
-use crate::shared::context::session_id;
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
-use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use mustard_core::time::now_iso8601;
-use mustard_core::platform::metrics::{emit_metric, MetricLine};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use super::{AcResult, QaRunOptions};
@@ -21,7 +16,7 @@ const AC_TIMEOUT_SECS: u64 = 120;
 /// The POSIX shell's "command not found" exit code.
 ///
 /// `pub(crate)` because the judgement it enables belongs to a CALLER, not to
-/// this module: [`crate::commands::review::ac_negative_check`] must not read an
+/// this module: nenhum leitor pode tomar por reprovado um critério que não
 /// unrunnable command as its red proof, while `qa-run` must still fail on one.
 /// Both read the same record and reach opposite, correct verdicts — which only
 /// works while the code is a shared constant instead of a literal each side
@@ -79,6 +74,122 @@ fn comparable(path: &Path) -> String {
 /// `true` when both paths name the same file on this machine.
 fn same_file(a: &Path, b: &Path) -> bool {
     comparable(a) == comparable(b)
+}
+
+/// Onde cada executor de teste diz quantos testes rodaram. A linha, em
+/// minúsculas, tem de trazer `needs`; o número vem depois de `before` (vazio,
+/// no começo da linha) e a palavra seguinte a ele começa com `after` (vazia,
+/// qualquer palavra serve). O primeiro executor que casa na linha responde por
+/// ela.
+const TEST_COUNTS: &[(&str, &str, &str)] = &[
+    // cargo: `running 3 tests`, uma linha por alvo, somadas.
+    ("running ", "running ", "test"),
+    // jest: `Tests:       2 failed, 3 passed, 5 total`.
+    ("tests:", "tests:", "total"),
+    // vitest: `Tests  3 passed (3)`.
+    ("tests ", "tests ", "passed"),
+    // pytest: `collected 3 items`.
+    ("collected ", "collected ", "item"),
+    // unittest: `Ran 3 tests in 0.001s`.
+    ("ran ", "ran ", "test"),
+    // dotnet: `Failed: 0, Passed: 3, Skipped: 0, Total: 3`.
+    ("passed:", "total: ", ""),
+    // mocha: `3 passing (12ms)`.
+    ("passing", "", "passing"),
+];
+
+/// Dois executores da tabela dizem zero sem escrever número, e cada um tem a
+/// linha dele. A frase solta continua de fora, e o motivo é medido: `no tests
+/// to skip` na saída verde de um lint e `no tests found here` numa prova que
+/// não é teste diziam zero e recusavam um verde legítimo. Quem não escreve
+/// contagem nem a linha de resumo do próprio executor não respondeu à
+/// pergunta.
+///
+/// A linha de resumo do vitest quando o filtro por nome não casou teste
+/// nenhum: `Tests  no tests`. É contagem de executor — o rótulo dele abre a
+/// linha —, e não prosa. Sem ela o vitest escapava por inteiro: ele sai com
+/// código 0 nesse caso, e a linha não traz número para a tabela ler.
+///
+/// A linha já chega aqui aparada e em minúsculas.
+fn vitest_said_no_test(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("tests") else { return false };
+    let rest = rest.strip_prefix(':').unwrap_or(rest);
+    rest.starts_with(char::is_whitespace) && rest.trim_start().starts_with("no tests")
+}
+
+/// A marca do go no pacote cujo filtro por nome não casou teste nenhum:
+/// `ok  x/pkg  0.002s [no tests to run]`, com os colchetes que são dele.
+const GO_NO_TESTS_TO_RUN: &str = "[no tests to run]";
+
+/// O que a linha de resultado de um pacote do go diz sobre ter rodado teste:
+/// `Some(true)` quando aquele pacote rodou, `Some(false)` quando ele mesmo diz
+/// que não rodou nenhum, `None` quando a linha não é resultado de pacote.
+///
+/// A leitura é por pacote porque a saída é por pacote, e o go não escreve
+/// contagem em linha nenhuma: num `go test -run X ./...` a marca sai ao lado
+/// de pacotes que rodaram teste de verdade, e tomá-la por resposta da corrida
+/// inteira recusava uma prova legítima. Só quando nenhum pacote rodou é que a
+/// corrida rodou zero.
+fn go_package_ran_tests(line: &str) -> Option<bool> {
+    let rest = line.strip_prefix("ok")?;
+    rest.starts_with(char::is_whitespace)
+        .then(|| !(rest.contains(GO_NO_TESTS_TO_RUN) || rest.contains("[no test files]")))
+}
+
+/// O número que uma linha de saída, já em minúsculas, diz ter rodado, pelo
+/// executor que casar com ela.
+fn counted_in_line(line: &str) -> Option<u64> {
+    for (needs, before, after) in TEST_COUNTS {
+        if !line.contains(needs) {
+            continue;
+        }
+        let rest = match line.find(before) {
+            _ if before.is_empty() => line,
+            Some(at) => &line[at + before.len()..],
+            None => continue,
+        };
+        let words: Vec<&str> = rest.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).collect();
+        for (i, word) in words.iter().enumerate() {
+            let Ok(count) = word.parse::<u64>() else { continue };
+            let next = words.get(i + 1).copied().unwrap_or_default();
+            if after.is_empty() || next.starts_with(after) {
+                return Some(count);
+            }
+        }
+    }
+    None
+}
+
+/// Quantos testes a saída de um comando diz ter rodado, quando um executor
+/// que o projeto usa se reconhece nela: o cargo escreve uma linha por alvo e
+/// as contas se somam, os outros dizem o total numa linha de resumo, e os dois
+/// que dizem zero sem número — o vitest na linha de resumo dele e o go na
+/// marca do pacote — contam zero. `None` quando nenhuma linha responde à
+/// pergunta: verde sem contagem não é verde sem teste.
+///
+/// Isto é leitura, e não veredito: quem decide o que fazer com o número é
+/// quem pediu o comando — só a prova de um critério recusa o zero.
+fn tests_run(output: &str) -> Option<u64> {
+    let mut counts: Vec<u64> = Vec::new();
+    let mut said_none = false;
+    let (mut go_said_none, mut go_ran) = (false, false);
+    for line in output.split(['\n', '\r']) {
+        let line = line.trim().to_ascii_lowercase();
+        if vitest_said_no_test(&line) {
+            said_none = true;
+        }
+        match go_package_ran_tests(&line) {
+            Some(true) => go_ran = true,
+            Some(false) => go_said_none |= line.contains(GO_NO_TESTS_TO_RUN),
+            None => {}
+        }
+        counts.extend(counted_in_line(&line));
+    }
+    let total: u64 = counts.iter().sum();
+    if total > 0 {
+        return Some(total);
+    }
+    (!counts.is_empty() || said_none || (go_said_none && !go_ran)).then_some(0)
 }
 
 /// `true` for the two cargo subcommands that relink a crate's binary.
@@ -199,7 +310,7 @@ fn ac_timeout_secs(command: &str) -> u64 {
     // ceiling is not a list of tool names this file happens to know. Both are
     // already declared in `mustard.json`; fail-open to none.
     let declared = mustard_core::ProjectConfig::load(Path::new(
-        &crate::shared::context::project_dir(),
+        &crate::shared::context::env::project_dir(),
     ))
     .commands();
     let compiling: Vec<String> = [declared.build, declared.type_check]
@@ -267,8 +378,7 @@ fn is_compile_bound(command: &str, compiling: &[String]) -> bool {
 ///   3. `.claude/spec/{spec}/wave-plan.md` (flat layout — wave-plan mode where
 ///      the global ACs live in `wave-plan.md` and `spec.md` is absent)
 ///
-/// Flat layout is the post-wave-2 contract of
-/// `2026-05-21-flatten-spec-layout-and-multi-collab`: there are no
+/// Flat layout is the current contract: there are no
 /// `active/` / `completed/` buckets anymore. The spec dir lives at the same
 /// path for its entire lifecycle and the canonical status is in the SQLite
 /// event store + the `### Status:` header.
@@ -287,7 +397,7 @@ pub(super) fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
 /// leaves out the one crate whose output IS the running binary.
 ///
 /// **The catch-22 this solves:** `complete-spec` calls
-/// [`run_for_spec_with_options`] which forks shell commands for each AC. When
+/// o qa-run, que forks shell commands for each AC. When
 /// this process is itself running from `target/debug`, an AC like
 /// `cargo build --workspace` tries to relink the very executable in the
 /// foreground — `Acesso negado. (os error 5)` on Windows.
@@ -320,25 +430,6 @@ fn rewrite_workspace_exclusion(command: &str, target_root: &Path, running: &Path
     format!("{command} --exclude {package}")
 }
 
-/// `true` when `command` would overwrite the file THIS process is executing
-/// from, resolving both sides itself: the running executable from
-/// [`std::env::current_exe`], the build target from the cargo layout under
-/// `cwd`.
-///
-/// `false` when either side cannot be resolved — an unanswerable path question
-/// is not evidence of a conflict, and refusing on it would be the crate-name
-/// guess this spec removed, wearing a different hat.
-///
-/// `pub(super)` so the CONFIRMATION pass can ask the SAME question BEFORE it
-/// spawns anything: a confirmation taken from inside this binary must answer
-/// "not taken here" for such a command, never "inexecutable" — see
-/// [`crate::commands::review::ac_negative_check::confirm_in_process`].
-pub(super) fn targets_running_binary(command: &str, cwd: &Path) -> bool {
-    let (Ok(running), Some(target_root)) = (std::env::current_exe(), cargo_target_root(cwd)) else {
-        return false;
-    };
-    overwrites_running_binary(command, &target_root, &running)
-}
 
 /// The verdict of evaluating an AC's optional `Expect:` evidence regex against
 /// a passing command's captured output. Pure and panic-free (SRP: no process,
@@ -511,6 +602,7 @@ fn run_ac_command_inner(
                 "self-invocation: this command overwrites `{label}`, the file this process is \
                  executing from; run this AC externally"
             ),
+            tests_run: None,
         };
     }
     // POSIX-style AC commands assume a POSIX shell, and now GET one: the shared
@@ -542,6 +634,7 @@ fn run_ac_command_inner(
                 exit: None,
                 duration_ms: t0.elapsed().as_millis(),
                 stderr_excerpt: format!("timeout after {}ms", after.as_millis()),
+                tests_run: None,
             };
         }
         // Never ran ⇒ the criterion could not be attempted at all ⇒ `skip`.
@@ -556,6 +649,7 @@ fn run_ac_command_inner(
                 exit: None,
                 duration_ms: t0.elapsed().as_millis(),
                 stderr_excerpt: format!("could not run the command: {error}"),
+                tests_run: None,
             };
         }
     };
@@ -569,6 +663,11 @@ fn run_ac_command_inner(
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
+    // O que o executor disse sobre quantos testes rodaram viaja no resultado,
+    // como número. O julgamento não mora aqui: este executor responde ao lint
+    // do projeto e à prova de um critério, e só a segunda promete rodar teste
+    // (ver `super::run_proof`).
+    let counted = tests_run(&combined_full);
     if status.success() {
         // Optional `Expect:` evidence gate. Absent ⇒ the legacy exit-0 pass
         // (byte-for-byte). Present ⇒ the regex must match the command's own
@@ -581,7 +680,16 @@ fn run_ac_command_inner(
                 status: "pass".to_string(),
                 exit: Some(0),
                 duration_ms,
-                stderr_excerpt: String::new(),
+                // O verde que diz ter rodado zero teste leva o começo do que
+                // escreveu: é a única evidência do que aconteceu, e quem
+                // recusa por zero teste grava esse trecho em vez de uma frase
+                // montada. O verde comum segue com o excerto vazio, como
+                // sempre.
+                stderr_excerpt: match counted {
+                    Some(0) => excerpt(&combined_full),
+                    _ => String::new(),
+                },
+                tests_run: counted,
             },
             ExpectVerdict::Missed => AcResult {
                 id: String::new(),
@@ -592,6 +700,7 @@ fn run_ac_command_inner(
                     "Expect `{pattern}` not found in command output: {}",
                     excerpt(&combined_full)
                 ),
+                tests_run: counted,
             },
             ExpectVerdict::InvalidPattern => AcResult {
                 id: String::new(),
@@ -601,6 +710,7 @@ fn run_ac_command_inner(
                 stderr_excerpt: format!(
                     "Expect `{pattern}` is not a valid regex; skipped (fail-open)"
                 ),
+                tests_run: counted,
             },
         };
     }
@@ -617,7 +727,7 @@ fn run_ac_command_inner(
     // out.
     //
     // The consumer that DOES need 127 apart is
-    // [`crate::commands::review::ac_negative_check`], whose red rule is exit≠0
+    // a regra do vermelho é exit≠0
     // and which would otherwise stamp an unrunnable command `proven: red`. It
     // reads `exit` off this record and decides for itself — the discrimination
     // lives in the ONE caller that needs it, never in the shared status that
@@ -628,8 +738,8 @@ fn run_ac_command_inner(
     // Measured four times in one session: a second `cargo` compiling in
     // parallel makes the first lose the build lock, the shell answers 127, and
     // all fourteen criteria fail at once — every one of them passing again less
-    // than a minute later. The Stop gate then names a healthy criterion and
-    // asks for a fix to something that is not broken.
+    // than a minute later. The spec's close then names a healthy criterion
+    // and asks for a fix to something that is not broken.
     //
     // The verdict stays `fail` if the retry also fails. Grading 127 `skip` is
     // the tempting fix and it is the wrong one: it shipped once and let a spec
@@ -652,6 +762,7 @@ fn run_ac_command_inner(
                 "the shell could not find the command (exit {EXIT_COMMAND_NOT_FOUND}): {}",
                 excerpt(&combined_full)
             ),
+            tests_run: counted,
         };
     }
     AcResult {
@@ -660,45 +771,13 @@ fn run_ac_command_inner(
         exit: Some(status.code().map_or(1, i64::from)),
         duration_ms,
         stderr_excerpt: excerpt(&combined_full),
+        tests_run: counted,
     }
 }
 
-/// Emit the `qa.result` harness event.
-///
-/// The payload carries a `codeState` fingerprint of the tree the criteria were
-/// actually run against ([`crate::shared::code_state`]). Without it the record
-/// says *these criteria passed* but not *against what*, and the close gate then
-/// had nothing to compare: it watched the mtime of `spec.md` and let a green
-/// observed BEFORE the change under review carry a unit through. The field is
-/// absent — not empty — where no fingerprint can be taken (no repository, no
-/// `git`), and every reader treats an absent one as stale.
-pub(super) fn emit_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: &[Value]) {
-    let mut payload = json!({ "spec": spec, "overall": overall, "criteria": criteria });
-    if let (Some(map), Some(state)) =
-        (payload.as_object_mut(), crate::shared::code_state::fingerprint(cwd))
-    {
-        map.insert(
-            crate::shared::code_state::CODE_STATE_KEY.to_string(),
-            Value::String(state),
-        );
-    }
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Cli,
-            id: Some("qa-run".to_string()),
-            actor_type: None,
-        },
-        event: "qa.result".to_string(),
-        payload,
-        spec: Some(spec.to_string()),
-    };
-    // `qa.result` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::shared::events::route::emit(cwd.to_string_lossy().as_ref(), &ev);
-}
+/// O gravador velho de eventos saiu, e com ele o destino do resultado dos
+/// critérios: quem guarda a execução hoje é o arquivo de eventos da spec.
+pub(super) fn emit_qa_event(_cwd: &Path, _spec: &str, _overall: &str, _criteria: &[Value]) {}
 
 /// Emit the `qa` metric (fail-silent).
 pub(super) fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) {
@@ -712,22 +791,13 @@ pub(super) fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[
             _ => {}
         }
     }
-    let line = MetricLine::new(now_iso8601(), "qa").note(overall).extras(json!({
-        "spec": spec,
-        "overall": overall,
-        "passCount": pass,
-        "failCount": fail,
-        "skipCount": skip,
-        "timeoutCount": timeout,
-        "category": "verification",
-    }));
-    let _ = emit_metric(cwd, &line);
+    let _ = (spec, overall, pass, fail, skip, timeout, cwd);
 }
 
 thread_local! {
     /// Active [`QaRunOptions`] for the current thread's qa-run.
     ///
-    /// Set by [`run_for_spec_with_options`] and read by
+    /// Set by the qa-run entry point and read by
     /// [`run_ac_command_with_timeout`]. A `thread_local!` Cell — not an env
     /// var — because `unsafe_code` is forbidden in this crate and Rust 2024
     /// requires `unsafe` for env mutation, but a Cell-backed `thread_local`
@@ -737,53 +807,6 @@ thread_local! {
     };
 }
 
-/// Gather the executable ACs of every capability the spec links in its
-/// `## Capabilities` section.
-///
-/// Reuses the SINGLE `## Capabilities` scanner
-/// ([`crate::commands::capability::linked_capability_ids`]) — the same one
-/// `complete-spec` uses on close — so qa-run and merge-on-close can never drift
-/// on which capabilities a spec links. For each linked `cap.{slug}` whose
-/// `.claude/capabilities/{slug}.md` exists, the doc is parsed
-/// ([`crate::commands::capability::parse`]) and its command-bearing scenarios are
-/// compiled into [`AcceptanceCriterion`]s via the EXISTING
-/// [`mustard_core::domain::capability::Capability::acceptance_criteria`] (no
-/// parallel AC type). The compiled ids are already stable + namespaced
-/// (`cap.{slug}-{scenario}`), so they merge cleanly beside the spec's own AC ids.
-///
-/// Returns `(id, command)` pairs — exactly the two fields [`run_ac_command`]
-/// needs — so the capability ACs run through the SAME execution path as the
-/// spec's own. FAIL-OPEN: a linked-but-missing or unreadable / garbage
-/// capability doc is skipped (never aborts QA), and a documentary scenario with
-/// no command is naturally not compiled.
-pub(super) fn gather_capability_acs(cwd: &Path, spec: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let linked = crate::commands::capability::linked_capability_ids(cwd, spec);
-    if linked.is_empty() {
-        return out; // no `## Capabilities` section (or no `cap.*` links) ⇒ none.
-    }
-    let Ok(caps_dir) = ClaudePaths::for_project(cwd).map(|p| p.capabilities_dir()) else {
-        return out;
-    };
-    for id in linked {
-        // `cap.{slug}` → `{slug}` (the doc file stem). A malformed id with no
-        // slug after the prefix is skipped.
-        let Some(slug) = id.strip_prefix("cap.").map(str::trim).filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        let doc_path = caps_dir.join(format!("{slug}.md"));
-        // Missing doc ⇒ skip (do NOT invent ACs); fail-open like complete-spec.
-        let Ok(md) = fs::read_to_string(&doc_path) else {
-            continue;
-        };
-        let cap = crate::commands::capability::parse(&md);
-        for ac in cap.acceptance_criteria() {
-            out.push((ac.id, ac.command));
-        }
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -855,6 +878,77 @@ mod tests {
         std::fs::write(&wp, "# Plan A\n## Acceptance Criteria\n- [ ] AC-G1: ok — Command: `true`\n").unwrap();
         let found = find_spec_file(dir.path(), "plan-a").unwrap();
         assert_eq!(found, wp);
+    }
+
+    /// Quantos testes a saída diz ter rodado, em cada executor que o projeto
+    /// usa: o cargo soma os alvos e basta um alvo com teste para o verde
+    /// valer; o jest, o vitest, o pytest, o unittest, o dotnet e o mocha dizem
+    /// o total numa linha de resumo.
+    ///
+    /// Os dois que dizem zero sem escrever número têm cada um a linha dele. O
+    /// vitest, que sai verde quando o filtro por nome não casa nada, diz `Tests
+    /// no tests` na linha de resumo — é contagem, e sem ela o executor inteiro
+    /// escapava. O go diz a marca dele entre colchetes, mas por pacote: num
+    /// `go test -run X ./...` ela sai ao lado de pacotes que rodaram teste de
+    /// verdade, e aí a corrida não rodou zero — só quando nenhum pacote rodou.
+    ///
+    /// A saída que não responde à pergunta não vira contagem nenhuma: a frase
+    /// solta que cita "no tests" num lint verde ou numa prova que não é teste
+    /// não é contagem, e quem a lia recusava um verde legítimo.
+    ///
+    /// O número lido viaja no resultado, e o executor não julga: o comando
+    /// que sai verde sem rodar teste sai daqui como `pass`, com o zero que a
+    /// saída disse e com o começo do que ele escreveu, e quem recusa é a prova
+    /// de um critério.
+    #[test]
+    fn every_runner_the_project_uses_says_how_many_tests_it_ran() {
+        let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n\n     Running tests/a.rs\n\nrunning 0 tests\n";
+        assert_eq!(tests_run(none), Some(0));
+        assert_eq!(tests_run("running 0 tests\n\nrunning 1 test\ntest tests::soma ... ok\n"), Some(1));
+        assert_eq!(tests_run("running 12 tests\n"), Some(12));
+        assert_eq!(tests_run("Tests:       2 failed, 3 passed, 5 total\n"), Some(5));
+        assert_eq!(tests_run("Tests:       0 total\n"), Some(0));
+        assert_eq!(tests_run(" Tests  3 passed (3)\n"), Some(3));
+        assert_eq!(tests_run("collected 3 items\n"), Some(3));
+        assert_eq!(tests_run("collected 0 items\n\nno tests ran in 0.01s\n"), Some(0));
+        assert_eq!(tests_run("Ran 3 tests in 0.001s\n\nOK\n"), Some(3));
+        assert_eq!(tests_run("Failed: 0, Passed: 3, Skipped: 0, Total: 3\n"), Some(3));
+        assert_eq!(tests_run("Failed: 0, Passed: 0, Skipped: 0, Total: 0\n"), Some(0));
+        assert_eq!(tests_run("  3 passing (12ms)\n"), Some(3));
+        assert_eq!(tests_run("testing: warning: no tests to run\nok\tx/pkg\t0.002s [no tests to run]\n"), Some(0));
+        assert_eq!(tests_run("?   x/pkg\t[no test files]\nok  \tx/outro\t0.02s\n"), None, "go por pacote não conclui");
+        assert_eq!(
+            tests_run("ok  \tx/pkg\t0.002s [no tests to run]\nok  \tx/outro\t0.02s\n"),
+            None,
+            "um pacote sem teste ao lado de um que rodou não é corrida sem teste"
+        );
+        assert_eq!(
+            tests_run("ok  \tx/pkg\t0.002s [no tests to run]\n?   \tx/vazio\t[no test files]\n"),
+            Some(0),
+            "nenhum pacote rodou"
+        );
+        assert_eq!(tests_run("cargo test: 6 passed (1 suite)"), None, "sem contagem, sem veredito");
+        assert_eq!(tests_run("lint ok: no tests to skip\n"), None, "frase num lint verde não é contagem");
+        assert_eq!(tests_run("src/msg.rs: no tests found here\n"), None, "nem numa prova que não é teste");
+        assert_eq!(
+            tests_run(" Test Files  1 passed (1)\n      Tests  no tests\n"),
+            Some(0),
+            "a linha de resumo do vitest é contagem, mesmo sem número"
+        );
+        assert_eq!(tests_run("testing: no tests here\n"), None, "prosa que começa parecido não é resumo");
+
+        // O número lido chega no resultado, e o verde sem teste sai daqui
+        // verde: o veredito é de quem pediu a prova. O verde que diz zero leva
+        // o começo do que escreveu; o verde comum não leva nada.
+        let dir = tempdir().unwrap();
+        let three = run_ac_command("echo running 3 tests", None, dir.path());
+        assert_eq!((three.status.as_str(), three.tests_run), ("pass", Some(3)), "{}", three.stderr_excerpt);
+        assert!(three.stderr_excerpt.is_empty(), "o verde comum não leva excerto");
+        let zero = run_ac_command("echo running 0 tests", None, dir.path());
+        assert_eq!((zero.status.as_str(), zero.tests_run), ("pass", Some(0)), "{}", zero.stderr_excerpt);
+        assert!(zero.stderr_excerpt.contains("running 0 tests"), "o zero leva a saída real: {}", zero.stderr_excerpt);
+        let quiet = run_ac_command("echo lint ok: no tests to skip", None, dir.path());
+        assert_eq!((quiet.status.as_str(), quiet.tests_run), ("pass", None), "{}", quiet.stderr_excerpt);
     }
 
     /// When both `spec.md` and `wave-plan.md` exist in the same dir, the
@@ -932,7 +1026,7 @@ mod tests {
 
     /// A command the shell cannot find is graded `fail`, and NAMED.
     ///
-    /// It briefly shipped as `skip`, to keep `ac_negative_check` from reading it
+    /// Chegou a sair como `skip`, para que ninguém o lesse
     /// as red proof. That fixed one consumer and broke the other: `qa-run`
     /// tolerates a `skip` beside a `pass` on the external path, so a criterion
     /// whose program did not exist stopped blocking CLOSE and rode along as a
@@ -1017,7 +1111,7 @@ mod tests {
             .join(format!("{package}{}", std::env::consts::EXE_SUFFIX))
     }
 
-    /// AC-1 — the guard's question is about PATHS, not spelling. A command that
+    /// The guard's question is about PATHS, not spelling. A command that
     /// rebuilds this crate while writing to a file OTHER than the one this
     /// process executes from is RUN, not refused: that is the shipped shape
     /// (installed binary, workspace `target/`), and refusing it by crate name
@@ -1060,7 +1154,7 @@ mod tests {
         assert!(!overwrites_running_binary("cargo test --workspace", &target_root, &debug_exe));
     }
 
-    /// AC-2 — and the refusal STANDS when the two paths coincide: a harness
+    /// The refusal STANDS when the two paths coincide: a harness
     /// started from its own build directory really would be overwritten. The
     /// reason names that file, relative to the project, so the committed QA
     /// report says `target/debug/mustard-rt` and not a path off one machine.

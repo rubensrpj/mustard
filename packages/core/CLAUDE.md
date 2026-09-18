@@ -7,7 +7,7 @@
 ## Guards
 
 <!-- mustard:guards -->
-<!-- facts: kind=cargo; frameworks=serde, serde_json, thiserror, sha2, rayon, tiktoken-rs, aho-corasick, toml, tree-sitter, tree-sitter-loader, tree-sitter-rust, tree-sitter-typescript -->
+<!-- facts: kind=cargo; frameworks=serde, serde_json, thiserror, rayon, tiktoken-rs, aho-corasick, toml, tree-sitter, tree-sitter-loader, tree-sitter-rust, tree-sitter-typescript -->
 - Tipos `serde` em `domain/model/` são contrato público: outras crates (rt, dashboard) renderizam em cima deles — mude campo/forma só com migração, não quebre o shape.
 - Mantenha `domain/model/` puro: zero IO, log ou disco. Efeito colateral só nas camadas `io`/`platform` — não importe `fs` aqui.
 - Escreva arquivos sempre via `io::fs::write_atomic` (tempfile + rename); nunca `std::fs` direto.

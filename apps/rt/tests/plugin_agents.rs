@@ -1,403 +1,410 @@
-//! Drift guards pinning the SHIPPED `plugin/agents/*.md` surface to the code.
-//!
-//! These files carry keys Claude Code reads, not Mustard: nothing in this
-//! workspace fails to compile when one is dropped or renamed, the behaviour just
-//! changes silently at runtime for every installation. That is the same failure
-//! mode `command_frontmatter.rs` guards for the instruction surface, and these
-//! tests are the same kind of ratchet for the agent surface.
-//!
-//! What is locked, and why it matters:
-//!
-//! - The placeholder table of `plugin/refs/agent-prompt/agent-prompt.md` must
-//!   document every key in `TEMPLATE_PLACEHOLDERS`. A placeholder the renderer
-//!   fills and the ref never mentions is material an author cannot know how to
-//!   supply — which is how a channel ships and stays unused.
-//! - Every `plugin/agents/*.md` must declare `model` and `effort`, with a value
-//!   the runtime actually resolves. A dropped key re-inherits the session's
-//!   model and reasoning budget, so the cheap roles quietly pay what the
-//!   expensive one pays; a misspelled value is worse, because the file still
-//!   reads as a deliberate decision while Claude Code ignores it.
-//!
-//! Reads outside the crate fail open (skip) per this codebase's test convention:
-//! a workspace root this test cannot resolve is a fact about the checkout, not
-//! about the shipped surface.
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::fs;
+//! Os textos de agente do Mustard, pelo binário de verdade.
+//!
+//! O projeto recebe exatamente três agentes — `mustard-wave`,
+//! `mustard-review` e `mustard-skill` —, no idioma do `language.text` e com
+//! até 3.072 bytes cada; os dois idiomas existem como molde do produto; nenhum
+//! texto manda criar cópia do projeto por conta própria, e os de onda e de
+//! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
+//! indica; e cada comando do fluxo responde o próximo passo, que o modelo não
+//! escolhe sozinho.
+
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-use mustard_rt::commands::agent::render::TEMPLATE_PLACEHOLDERS;
+use mustard_core::io::spec_events as store;
+use mustard_core::platform::i18n::{translate, Locale};
+use serde_json::{json, Value};
 
-/// The workspace root, from `apps/rt` up two levels. `None` when the layout
-/// cannot be walked — callers skip rather than fail on it.
-fn workspace_root() -> Option<PathBuf> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
+/// O teto de um texto de agente, em bytes.
+const AGENT_CAP: usize = 3_072;
+
+/// O jeito de o agente criar uma cópia do projeto por conta própria: a cópia
+/// em si, a pasta de compilação escolhida por ele, a pasta compartilhada que
+/// só servia às cópias soltas, e a porta que apagava a cópia depois. Só o
+/// pedido que o binário monta diz em que cópia e em que pasta trabalhar.
+const COPY_ON_ITS_OWN: &[&str] = &[
+    "CARGO_TARGET_DIR",
+    "scratch-target",
+    "cp -r",
+    "cp -R",
+    "cp -a",
+    "rsync",
+    "git clone",
+    "git worktree",
+    "worktree",
+    "EnterWorktree",
+    "clean --path",
+];
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The placeholder keys the ref's table documents, located by SHAPE — any table
-/// row whose FIRST cell is a single backticked `{token}` — so the surrounding
-/// prose can be reworded, reordered or retitled without touching this guard.
-///
-/// The first cell only: a `{placeholder}` named inside a Notes column is a
-/// cross-reference, not a documented row, and counting it would let a mention in
-/// passing stand in for an entry.
-fn documented_placeholders(text: &str) -> Vec<String> {
-    text.lines()
-        .filter(|line| line.trim_start().starts_with('|'))
-        .filter_map(|line| {
-            let cell = line.trim().trim_start_matches('|').split('|').next()?.trim();
-            let token = cell.strip_prefix('`')?.strip_suffix('`')?;
-            (token.starts_with('{') && token.ends_with('}')).then(|| token.to_string())
-        })
-        .collect()
+fn git(root: &Path, args: &[&str]) {
+    let ok = Command::new("git").args(args).current_dir(root).output().map(|o| o.status.success()).unwrap_or(false);
+    assert!(ok, "git {args:?} failed");
 }
 
-/// The ref's placeholder table and the renderer's substitution list must be the
-/// SAME SET.
-///
-/// A set, deliberately, and never the count the prose states: a reworded
-/// sentence would then break this test for a cosmetic reason, which is exactly
-/// the false red the spec this guard ships with exists to prevent. The size is a
-/// consequence of the set — it is never the claim being checked.
-///
-/// Both directions matter. An UNDOCUMENTED key is material the author of a spec
-/// cannot know how to supply, so the channel ships and nobody uses it (that was
-/// the live drift when this guard was written: `{conversation_material}` was
-/// being substituted and the table did not mention it). A STALE row is worse in
-/// the other direction — it sends a reader to configure something the renderer
-/// no longer fills.
-#[test]
-fn agent_prompt_ref_documents_every_placeholder() {
-    let Some(root) = workspace_root() else {
-        eprintln!("[skip] cannot resolve workspace root from CARGO_MANIFEST_DIR");
-        return;
-    };
-    let path = root.join("plugin/refs/agent-prompt/agent-prompt.md");
-    let text = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("placeholder contract {} is unreadable: {e}", path.display()));
-
-    let documented = documented_placeholders(&text);
-    assert!(
-        !documented.is_empty(),
-        "{} must keep a table whose first column is the `{{placeholder}}` keys — the contract \
-         whoever plans a wave reads to know what a prompt carries",
-        path.display()
-    );
-
-    let missing: Vec<&&str> = TEMPLATE_PLACEHOLDERS
-        .iter()
-        .filter(|key| !documented.iter().any(|d| d == *key))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "{} does not document {missing:?}. The renderer substitutes these, so a spec author \
-         reading the ref cannot tell what reaches a wave — add one table row per key (source + \
-         when it is empty). Documented: {documented:?}",
-        path.display()
-    );
-
-    let stale: Vec<&String> = documented
-        .iter()
-        .filter(|d| !TEMPLATE_PLACEHOLDERS.contains(&d.as_str()))
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "{} documents {stale:?}, which the renderer no longer substitutes — a reader would \
-         supply material nothing reads. Renderer keys: {TEMPLATE_PLACEHOLDERS:?}",
-        path.display()
-    );
-}
-
-/// The four model aliases Claude Code resolves in agent frontmatter.
-const MODEL_ALIASES: &[&str] = &["opus", "sonnet", "haiku", "fable"];
-
-/// The five reasoning-effort levels Claude Code accepts in agent frontmatter.
-const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-
-/// `true` for a value Claude Code resolves to a model: one of the four aliases,
-/// the literal `inherit` (take the session's — the default when the key is
-/// absent, declared explicitly here so a MISSING key never reads as a choice),
-/// or a full model id, which is always `claude-`-prefixed.
-///
-/// The whole id is read, not just its prefix. A test that stopped at
-/// `starts_with("claude-")` certified `claude-opus-5"  # papel` — leftovers and
-/// all — as a value the runtime resolves, which is the certification this
-/// ratchet exists to withhold. An id is lowercase letters, digits, `-`, `.` and
-/// the `[…]` context suffix (`claude-opus-5[1m]`); a space, a quote or a `#` in
-/// there is not a model, it is something that never made it out of the line.
-fn model_is_accepted(value: &str) -> bool {
-    if MODEL_ALIASES.contains(&value) || value == "inherit" {
-        return true;
+/// Roda o binário no projeto, com uma pasta pessoal falsa e sem `claude` à mão.
+fn rt(root: &Path, home: &Path, args: &[&str], stdin: Option<&str>) -> Value {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(args)
+        .current_dir(root)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDE_PLUGIN_ROOT")
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .env("MUSTARD_CLAUDE_BIN", home.join("no-claude-here"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    if let Some(mut pipe) = child.stdin.take() {
+        let _ = pipe.write_all(stdin.unwrap_or_default().as_bytes());
     }
-    let Some(id) = value.strip_prefix("claude-") else {
-        return false;
-    };
-    !id.is_empty()
-        && id.chars().all(|c| {
-            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '[' | ']')
-        })
+    let out = child.wait_with_output().expect("the binary finishes");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
 }
 
-/// `true` for one of the five reasoning-effort levels.
-fn effort_is_accepted(value: &str) -> bool {
-    EFFORT_LEVELS.contains(&value)
+/// Um repositório com `main` e `dev`, parado em `dev`, com o `mustard.json`
+/// dado e a instalação feita. Devolve a pasta do projeto e a pessoal falsa.
+fn installed(dir: &Path, config: &str) -> (PathBuf, PathBuf) {
+    let root = dir.join("project");
+    let home = dir.join("home");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    git(&root, &["init", "-q"]);
+    git(&root, &["config", "user.email", "t@example.com"]);
+    git(&root, &["config", "user.name", "t"]);
+    git(&root, &["checkout", "-q", "-b", "main"]);
+    std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    git(&root, &["add", "src/main.rs"]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    git(&root, &["checkout", "-q", "-b", "dev"]);
+    std::fs::write(root.join("mustard.json"), config).unwrap();
+    let report = rt(&root, &home, &["run", "upsert"], None);
+    assert!(report.get("error").is_none(), "{report}");
+    (root, home)
 }
 
-/// Read the frontmatter block (between the first two `---` fences) of a shipped
-/// agent file. Panics with the path when the file or the block is missing — in a
-/// ratchet, an unreadable input is a failure, never a silent pass.
-fn agent_frontmatter(path: &Path) -> String {
-    let text = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("shipped agent {} is unreadable: {e}", path.display()));
-    let body = text
-        .strip_prefix("---")
-        .unwrap_or_else(|| panic!("{} must open with a frontmatter fence", path.display()));
-    let end = body
-        .find("\n---")
-        .unwrap_or_else(|| panic!("{} has no closing frontmatter fence", path.display()));
-    body[..end].to_string()
-}
-
-/// The value of a TOP-LEVEL frontmatter key (column 0 only, so a `key:` quoted
-/// inside a description is never mistaken for a declaration). `None` when the
-/// key is absent.
-fn declared(frontmatter: &str, key: &str) -> Option<String> {
-    frontmatter
-        .lines()
-        .filter(|line| !line.starts_with(char::is_whitespace))
-        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
-        .map(scalar_value)
-}
-
-/// The YAML scalar a `key:` line declares — what the runtime reads, and nothing
-/// else on the line.
-///
-/// Handing back the whole tail is what made `model: sonnet   # deliberate`
-/// — valid YAML, resolved by Claude Code as `sonnet` — fail with "which Claude
-/// Code does not resolve", teaching the next author to delete the note rather
-/// than to keep it. A quoted scalar ends at its closing quote; an unquoted one
-/// ends where an inline comment starts, which in YAML is a `#` preceded by
-/// whitespace (a `#` inside `a#b` is part of the value).
-///
-/// Reading a value is never a way to LAUNDER a broken line. After the closing
-/// quote YAML allows nothing but a comment, so `model: "sonnet" garbage` is not
-/// a document Claude Code can load at all — a louder failure than the misspelling
-/// this ratchet exists to catch. Returning `sonnet` for it would certify the
-/// file as compliant; the whole line comes back instead, so the vocabulary check
-/// rejects it and the message shows the reader exactly what is on the line.
-fn scalar_value(raw: &str) -> String {
-    let raw = raw.trim();
-    for quote in ['"', '\''] {
-        if let Some(rest) = raw.strip_prefix(quote) {
-            // An unterminated quote closes nothing: hand the line back whole.
-            let Some((inner, after)) = rest.split_once(quote) else {
-                return raw.to_string();
-            };
-            let after = after.trim_start();
-            return if after.is_empty() || after.starts_with('#') {
-                inner.to_string()
+/// Todo arquivo debaixo de `dir`, com o caminho a partir dele.
+fn files_under(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
             } else {
-                raw.to_string()
-            };
+                out.push(path.strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/"));
+            }
         }
     }
-    if raw.starts_with('#') {
-        return String::new();
-    }
-    let end = raw
-        .char_indices()
-        .find(|&(at, c)| c == '#' && raw[..at].ends_with(char::is_whitespace))
-        .map_or(raw.len(), |(at, _)| at);
-    raw[..end].trim_end().to_string()
+    out.sort();
+    out
 }
 
-/// Every `plugin/agents/*.md` path, sorted — the shipped agent files.
-fn shipped_agents(root: &Path) -> Vec<PathBuf> {
-    let dir = root.join("plugin/agents");
-    let entries = fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("shipped agent dir {} is unreadable: {e}", dir.display()));
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+fn template(lang: &str, name: &str) -> String {
+    std::fs::read_to_string(repo_root().join(format!("packages/core/templates/agents/{lang}/{name}.md")))
+        .unwrap_or_else(|e| panic!("the {lang} `{name}` template is missing: {e}"))
+}
+
+/// O projeto recebe exatamente os três agentes, no idioma do `language.text`
+/// e com até 3.072 bytes cada; os dois idiomas existem como molde; e o
+/// plugin não entrega agente nenhum, porque entregaria os dois idiomas. Os
+/// textos que o instalador escreve trazem as duas guardas desta obra: provar
+/// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
+/// do caso em que o "antes" falha quando o critério diz "só depois de".
+#[test]
+fn the_project_receives_exactly_three_agents_in_its_text_language() {
+    for (lang, other) in [("pt-BR", "en-US"), ("en-US", "pt-BR")] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+
+        let agents = files_under(&root.join(".claude/agents"));
+        assert_eq!(
+            agents,
+            ["mustard/review.md", "mustard/skill.md", "mustard/wave.md"],
+            "the {lang} project got another set of agent texts",
+        );
+        for name in ["wave", "review", "skill"] {
+            let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            assert!(installed.len() <= AGENT_CAP, "the {lang} `{name}` agent is {} bytes", installed.len());
+            assert_eq!(installed, template(lang, name), "the {lang} project got another text for `{name}`");
+            assert_ne!(installed, template(other, name), "the {lang} and {other} `{name}` texts are the same");
+            assert!(
+                installed.starts_with(&format!("---\nname: mustard-{name}\n")),
+                "the `{name}` file does not declare the agent `mustard-{name}`",
+            );
+        }
+
+        // As duas guardas que esta obra aprendeu viajam com o produto: quem
+        // apaga ou move alguma coisa no git prova antes que nada se perde, e
+        // o critério que diz "só depois de" ganha o teste do caso em que o
+        // "antes" falha. O agente de onda as cumpre; o revisor as confere.
+        let guards: [(&str, [&str; 2]); 2] = if lang == "pt-BR" {
+            [
+                ("wave", [
+                    "apagar ou mover algo no git, prove que nada se perde",
+                    "\"só depois de\" ganha também o teste do caso em que o \"antes\" falha",
+                ]),
+                ("review", [
+                    "apagou ou moveu algo no git? Confira a prova de que nada se perdeu",
+                    "\"só depois de\" tem teste do caso em que o \"antes\" falha",
+                ]),
+            ]
+        } else {
+            [
+                ("wave", [
+                    "deleting or moving anything in git, prove nothing is lost",
+                    "\"only after\" also gets a test of the case where the \"before\" fails",
+                ]),
+                ("review", [
+                    "delete or move anything in git? Check the proof that nothing was lost",
+                    "\"only after\" has a test of the case where the \"before\" fails",
+                ]),
+            ]
+        };
+        for (name, lines) in guards {
+            let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            for line in lines {
+                assert!(installed.contains(line), "the {lang} `{name}` agent does not say `{line}`");
+            }
+        }
+    }
+    assert!(!repo_root().join("plugin/agents").exists(), "the plugin ships agent texts of its own");
+}
+
+/// O nome de cada agente do Mustard leva o prefixo do Mustard, e um projeto
+/// que já tem um agente chamado `review` fica com os dois: o dele, intocado,
+/// e o `mustard-review`. Uma instalação antiga, com os nomes sem prefixo, é
+/// migrada pela instalação seguinte, e a rodada manda cada pedido ao agente
+/// pelo nome com prefixo.
+#[test]
+fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_same_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#);
+    let own = "---\nname: review\ndescription: O revisor do próprio projeto.\n---\n\nRevise.\n";
+    std::fs::write(root.join(".claude/agents/review.md"), own).unwrap();
+    // A instalação antiga: os três agentes do Mustard sem o prefixo.
+    for name in ["wave", "review", "skill"] {
+        let path = root.join(format!(".claude/agents/mustard/{name}.md"));
+        let old = std::fs::read_to_string(&path).unwrap().replacen(&format!("name: mustard-{name}"), &format!("name: {name}"), 1);
+        std::fs::write(&path, old).unwrap();
+    }
+
+    let report = rt(&root, &home, &["run", "upsert"], None);
+    assert!(report.get("error").is_none(), "{report}");
+
+    assert_eq!(std::fs::read_to_string(root.join(".claude/agents/review.md")).unwrap(), own, "the project's agent changed");
+    let mut names: Vec<String> = files_under(&root.join(".claude/agents"))
+        .iter()
+        .filter_map(|file| {
+            let body = std::fs::read_to_string(root.join(".claude/agents").join(file)).ok()?;
+            body.lines().find_map(|line| line.strip_prefix("name: ")).map(str::to_string)
+        })
         .collect();
-    paths.sort();
-    paths
+    names.sort();
+    assert_eq!(names, ["mustard-review", "mustard-skill", "mustard-wave", "review"], "two agents share a name");
+
+    for lang in [Locale::PtBr, Locale::EnUs] {
+        let next = translate("round.next", lang);
+        assert!(next.contains("`mustard-wave`") && next.contains("`mustard-review`"), "{next}");
+    }
 }
 
-/// Every shipped agent must declare BOTH `model` and `effort`, with a value the
-/// runtime actually resolves.
-///
-/// Both halves matter, and the second is the one that looks redundant. A DROPPED
-/// key silently re-inherits the session's model and its effort — which is the
-/// expensive default the declarations exist to escape, and it fails by costing
-/// more, never by breaking. A MISSPELLED value is worse: the file still reads as
-/// a deliberate declaration to whoever opens it, while Claude Code ignores it.
-/// Presence alone would certify exactly that file as compliant.
-///
-/// What is deliberately NOT locked is WHICH model each agent picks. Whether
-/// `guards` runs on sonnet or haiku is an operating decision to retune as costs
-/// and models move; pinning it here would turn every retune into a red test and
-/// teach the next author to edit the guard instead of thinking.
+/// Nenhum texto de agente manda criar cópia do projeto por conta própria —
+/// nem os três que o projeto recebe, em cada idioma, nem as instruções fixas
+/// que o binário monta no pedido da onda e da revisão —; os de onda e de
+/// revisão mandam trabalhar na cópia separada e na pasta de compilação que o
+/// pedido indica. O pedido que a rodada monta, pelo binário, traz a cópia que
+/// ela criou e a pasta de compilação. O aviso das sobras no disco continua no
+/// catálogo do início da sessão, com o comando que as limpa.
 #[test]
-fn shipped_agents_declare_model_and_effort() {
-    let Some(root) = workspace_root() else {
-        eprintln!("[skip] cannot resolve workspace root from CARGO_MANIFEST_DIR");
-        return;
-    };
-    let agents = shipped_agents(&root);
-    assert!(
-        !agents.is_empty(),
-        "plugin/agents/ ships no *.md file — the agent surface this guard locks is gone"
+fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_the_build_folder() {
+    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let mut texts: Vec<(String, String)> =
+            ["wave", "review", "skill"].iter().map(|name| (format!("{lang} {name}"), template(lang, name))).collect();
+        for key in FIXED_PARTS {
+            texts.push((format!("{lang} {key}"), translate(key, text).to_string()));
+        }
+        for (what, body) in &texts {
+            for forbidden in COPY_ON_ITS_OWN {
+                assert!(!body.contains(forbidden), "{what} still says `{forbidden}`");
+            }
+        }
+        let said: [&str; 3] = if text == Locale::PtBr {
+            ["cópia separada que o pedido indica", "pasta de compilação que ele indica", "Nunca crie cópia por conta própria"]
+        } else {
+            ["separate copy the request names", "build folder it names", "Never create a copy on your own"]
+        };
+        for name in ["wave", "review"] {
+            for line in said {
+                assert!(template(lang, name).contains(line), "the {lang} `{name}` agent does not say `{line}`");
+            }
+        }
+        // O revisor prova de ponta a ponta, numa pasta temporária com o
+        // Mustard instalado, além dos testes.
+        let end_to_end = if text == Locale::PtBr { "prove de ponta a ponta" } else { "prove it end to end" };
+        for line in [end_to_end, "mktemp -d", "`mustard init`"] {
+            assert!(template(lang, "review").contains(line), "the {lang} reviewer does not say `{line}`");
+        }
+
+        let notice = translate("scratch.residue.notice", text);
+        assert!(notice.contains("mustard-rt run clean"), "the {lang} disk notice lost its cleanup command");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"pt-BR"},"maxCompilingWaves":2}"#);
+    let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "copia", "--base", "dev"], None);
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    let file = root.join(".claude/spec/copia/spec.ndjson");
+    let put = |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
+    let said = put("message", json!({"author": "user", "text": "o objetivo"}));
+    let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+    for n in [1, 2] {
+        put("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "passa", "origin": said}));
+        put("task", json!({"wave": n, "text": "Mexer no mesmo arquivo.", "files": [{"path": "src/main.rs"}], "origin": said}));
+    }
+    put("state", json!({"phase": "running", "branch": "feature/copia"}));
+
+    let round = rt(&root, &home, &["run", "round", "--spec", "copia"], None);
+    assert_eq!(round["ok"], json!(true), "{round}");
+    let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
+    assert_eq!(dispatched.len(), 2, "the two waves on the same file go out together: {round}");
+    let log = store::read(&file).unwrap().unwrap();
+    let mut dirs = Vec::new();
+    for sent in dispatched {
+        let wave = sent["wave"].as_u64().unwrap();
+        let prompt = sent["prompt"].as_str().unwrap_or_default();
+        let send = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(wave)).unwrap();
+        let copy = send.str_field("copy").unwrap_or_else(|| panic!("wave {wave} recorded no copy: {round}"));
+        let build = send.str_field("build_dir").unwrap_or_else(|| panic!("wave {wave} recorded no build folder"));
+        assert!(copy.ends_with(&format!("/.claude/worktrees/mustard-copia-{wave}")), "{copy}");
+        assert!(Path::new(copy).join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
+        assert!(build.contains("/target/copias/"), "{build}");
+        assert!(prompt.contains(&format!("`{copy}`")), "the request names the copy: {prompt}");
+        assert!(prompt.contains(&format!("`CARGO_TARGET_DIR={build}`")), "the request names the build folder: {prompt}");
+        assert!(prompt.contains(translate("prompt.fixed", Locale::PtBr)), "{prompt}");
+        assert!(!prompt.contains("nasce vermelho"), "the red proof lives in the agent text: {prompt}");
+        dirs.push(build.to_string());
+    }
+    assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
+}
+
+/// A parte fixa de cada pedido que o binário monta: o da onda, o da revisão
+/// dela e o da revisão final do conjunto.
+const FIXED_PARTS: [&str; 3] = ["prompt.fixed", "prompt.review.fixed", "prompt.final.fixed"];
+
+/// Quantas palavras seguidas fazem uma frase repetida.
+const REPEATED_RUN: usize = 6;
+
+/// As palavras de um trecho, em minúsculas, sem pontuação nem marcação.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
+}
+
+/// Uma instrução mora num lugar só: nenhuma frase dos textos do agente de
+/// onda e do revisor, em cada idioma, se repete na parte fixa de um pedido —
+/// nem seis palavras seguidas de uma frase delas. A parte fixa fica com o que
+/// o pedido é e o que devolver, e cada texto de agente segue no teto.
+#[test]
+fn the_fixed_part_of_a_request_repeats_no_sentence_of_the_agent_texts() {
+    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let fixed: Vec<(&str, String)> =
+            FIXED_PARTS.iter().map(|key| (*key, format!(" {} ", words(translate(key, text)).join(" ")))).collect();
+        for name in ["wave", "review"] {
+            let agent = template(lang, name);
+            assert!(agent.len() <= AGENT_CAP, "the {lang} `{name}` agent is {} bytes", agent.len());
+            for sentence in agent.split(['.', ':', ';', '?', '!', '\n']) {
+                for run in words(sentence).windows(REPEATED_RUN) {
+                    let needle = format!(" {} ", run.join(" "));
+                    for (key, body) in &fixed {
+                        assert!(!body.contains(&needle), "{lang} {key} repeats `{}` from the `{name}` agent", needle.trim());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Roda, pelo binário de verdade, a linha inteira que a resposta `report`
+/// devolveu em `command`. Uma linha que o parser recusa sai com código 2 e sem
+/// resposta JSON, e o [`rt`] cai dizendo o erro do parser.
+fn run_returned(root: &Path, home: &Path, report: &Value) -> Value {
+    let line = report["command"].as_str().unwrap_or_else(|| panic!("the answer returns no command: {report}"));
+    let argv: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(argv.first(), Some(&"mustard-rt"), "{line}");
+    rt(root, home, &argv[1..], None)
+}
+
+/// Cada comando do fluxo responde o próximo passo, e o comando que ele
+/// devolve roda inteiro, sem o parser recusar opção nenhuma: a retomada no
+/// levantamento devolve o levantamento; a rodada sem nada a despachar, sem
+/// revisão pendente e com tudo entregue e aprovado devolve o fechamento; o
+/// fechamento devolve o pull request com a base e a branch da spec; e a
+/// retomada da spec fechada devolve a mesma linha. O que o modelo roda a
+/// seguir vem dessa resposta, nunca de um texto do Mustard.
+#[test]
+fn every_flow_command_answers_its_next_step() {
+    let dir = tempfile::tempdir().unwrap();
+    // Um provedor que ninguém atende: o pull request roda até o provedor e
+    // responde, sem sair da máquina.
+    let (root, home) = installed(
+        dir.path(),
+        r#"{"version":"1.0.0","language":{"text":"pt-BR"},"git":{"flow":{"*":"dev","dev":"main"},"provider":"nenhum"}}"#,
     );
+    let said = |report: &Value, field: &str| report[field].as_str().is_some_and(|t| !t.trim().is_empty());
 
-    for path in agents {
-        let shown = path.display().to_string();
-        let fm = agent_frontmatter(&path);
+    let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "passo", "--base", "dev"], None);
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    assert!(said(&opened, "hint") && said(&opened, "question"), "the opening says no next step: {opened}");
 
-        let model = declared(&fm, "model").unwrap_or_else(|| {
-            panic!(
-                "{shown} declares no `model:`. Without it the agent inherits the session's model, \
-                 which is the expensive default these declarations exist to escape — and it fails \
-                 by costing more, never by breaking. Declare one of {MODEL_ALIASES:?}, a full \
-                 `claude-*` id, or `inherit` to say the session's model is the deliberate choice. \
-                 Frontmatter:\n{fm}"
-            )
-        });
-        assert!(
-            model_is_accepted(&model),
-            "{shown} declares `model: {model}`, which Claude Code does not resolve — the file \
-             reads as a decision and the runtime ignores it. Accepted: {MODEL_ALIASES:?}, \
-             `inherit`, or a full `claude-*` id."
-        );
+    let surveyed = rt(&root, &home, &["run", "grill", "--spec", "passo", "--kinds", "feature"], None);
+    assert!(said(&surveyed, "hint"), "the survey says no next step: {surveyed}");
 
-        let effort = declared(&fm, "effort").unwrap_or_else(|| {
-            panic!(
-                "{shown} declares no `effort:`. Reasoning budget then follows the session for \
-                 every role alike, so distilling facts the binary already computed costs what \
-                 adversarial verification costs. Declare one of {EFFORT_LEVELS:?}. \
-                 Frontmatter:\n{fm}"
-            )
-        });
-        assert!(
-            effort_is_accepted(&effort),
-            "{shown} declares `effort: {effort}`, which Claude Code does not resolve — the file \
-             reads as a decision and the runtime ignores it. Accepted: {EFFORT_LEVELS:?}."
-        );
-    }
-}
+    let resumed = rt(&root, &home, &["run", "resume", "--spec", "passo"], None);
+    assert!(said(&resumed, "next"), "the resume says no next step: {resumed}");
+    assert_eq!(resumed["command"], json!("mustard-rt run grill --spec passo"), "{resumed}");
+    // A linha chega ao levantamento, que responde por si: aqui, que falta o
+    // objetivo.
+    let again = run_returned(&root, &home, &resumed);
+    assert_eq!(again["reason"], json!("goal-missing"), "{again}");
 
-/// The vocabulary check above is only worth having if it actually rejects the
-/// near-misses — a plausible-looking value is exactly how a declaration goes
-/// inert without anyone noticing.
-#[test]
-fn rejects_values_outside_the_accepted_vocabulary() {
-    for good in ["opus", "sonnet", "haiku", "fable", "inherit", "claude-opus-5"] {
-        assert!(model_is_accepted(good), "`model: {good}` must be accepted");
-    }
-    for bad in ["gpt", "sonnet-4", "cheapest", "", "Sonnet", "opus5"] {
-        assert!(
-            !model_is_accepted(bad),
-            "`model: {bad}` must be rejected — Claude Code would ignore it"
-        );
-    }
+    // A spec em execução, gravada direto no arquivo de eventos, sem onda
+    // nenhuma: nada a despachar, nada a revisar, e nada que falte.
+    let file = root.join(".claude/spec/passo/spec.ndjson");
+    let running = json!({"phase": "running", "branch": "feature/passo"});
+    store::write(&file, "state", running.as_object().cloned().unwrap(), &[]).unwrap();
+    let round = rt(&root, &home, &["run", "round", "--spec", "passo"], None);
+    assert_eq!(round["command"], json!("mustard-rt run close --spec passo"), "{round}");
+    let close = translate("round.close", Locale::PtBr).replace("{command}", "mustard-rt run close --spec passo");
+    assert!(round["next"].as_str().is_some_and(|next| next.ends_with(&close)), "{round}");
 
-    for good in EFFORT_LEVELS {
-        assert!(effort_is_accepted(good), "`effort: {good}` must be accepted");
-    }
-    for bad in ["fast", "cheap", "none", "", "LOW", "highest"] {
-        assert!(
-            !effort_is_accepted(bad),
-            "`effort: {bad}` must be rejected — Claude Code would ignore it"
-        );
-    }
-}
+    let closed = run_returned(&root, &home, &round);
+    assert_eq!(closed["ok"], json!(true), "{closed}");
+    let pr_open = "mustard-rt run pr-open --base dev --head feature/passo --spec passo";
+    assert_eq!(closed["command"], json!(pr_open), "{closed}");
+    let then = translate("close.next", Locale::PtBr).replace("{command}", pr_open);
+    assert!(closed["next"].as_str().is_some_and(|next| next.ends_with(&then)), "{closed}");
+    let asked = run_returned(&root, &home, &closed);
+    assert_eq!(asked["provider"], json!("nenhum"), "the pull request line ran up to the provider: {asked}");
 
-/// An annotation is not a defect: a declaration that says WHY it picked what it
-/// picked must survive the ratchet, quoted or commented.
-///
-/// This is the case that was measured against the shipped surface — a real agent
-/// file was edited to carry `model: sonnet   # deliberate` and the ratchet
-/// rejected it, reporting a value Claude Code resolves as one it does not. A
-/// guard that rejects valid input teaches the author to delete the annotation,
-/// which is the opposite of what a ratchet is for.
-#[test]
-fn scalar_value_reads_the_declaration_through_quotes_and_comments() {
-    let fm = "name: mustard-review\n\
-              model: sonnet   # cheap enough for this role\n\
-              effort: \"high\"\n\
-              tools: Read, Grep\n";
-    assert_eq!(declared(fm, "model").as_deref(), Some("sonnet"));
-    assert_eq!(declared(fm, "effort").as_deref(), Some("high"));
-    assert_eq!(declared(fm, "absent"), None);
-
-    // …and the value read this way is the one the vocabulary accepts, which is
-    // the half that matters: reading it right and then rejecting it would be
-    // the same red with a different cause.
-    for (line, want) in [
-        ("model: 'inherit'  # the session's, on purpose", "inherit"),
-        ("model: \"claude-opus-5\"  # the full id", "claude-opus-5"),
-        ("model: claude-opus-5[1m]", "claude-opus-5[1m]"),
-    ] {
-        let fm = format!("{line}\n");
-        let read = declared(&fm, "model").expect("the line declares a model");
-        assert_eq!(read, want, "`{line}` declares `{want}`");
-        assert!(model_is_accepted(&read), "`{line}` declares a model the runtime resolves");
-    }
-}
-
-/// Reading the value must not become a way of laundering a broken one.
-///
-/// The prefix check this replaced accepted anything starting with `claude-`, so
-/// `model: "claude-opus-5"  # papel` — whose value, before the reader was fixed,
-/// was the string `claude-opus-5"  # papel` — passed, certifying as deliberate a
-/// value no runtime resolves. Leftovers after the id are still a failure; only
-/// the ones that are genuinely a YAML comment or quoting are not.
-#[test]
-fn scalar_value_still_rejects_leftovers_after_the_id() {
-    for bad in [
-        "claude-opus-5\"  # papel", // what the old reader handed the old check
-        "claude-opus-5 papel",      // a note with no `#` is part of the scalar
-        "claude-opus-5\tpapel",
-        "claude-",     // the prefix alone names no model
-        "claude-Opus-5", // ids are lowercase
-        "sonnet  # inline",
-    ] {
-        assert!(
-            !model_is_accepted(bad),
-            "`model: {bad}` must be rejected — Claude Code resolves no such value"
-        );
-    }
-
-    // The same leftovers behind a closing quote. YAML allows a comment there and
-    // nothing else, so none of these three lines is a document Claude Code can
-    // load — reading the quoted part alone would hand back `sonnet`, `opus` and
-    // `claude-opus-5` and certify all three files as compliant.
-    for line in [
-        "model: \"sonnet\" garbage",
-        "model: 'opus' junk here",
-        "model: \"claude-opus-5\" papel",
-    ] {
-        let fm = format!("{line}\n");
-        let read = declared(&fm, "model").expect("the line does declare a `model:` key");
-        assert!(
-            !model_is_accepted(&read),
-            "`{line}` is not loadable YAML, and reading past the closing quote laundered it into \
-             `{read}` — a value the ratchet then certifies as deliberate"
-        );
-    }
-
-    // A `#` that is not preceded by whitespace is part of the value in YAML, so
-    // the reader must not cut there and quietly produce something acceptable.
-    assert_eq!(declared("model: claude-opus#5\n", "model").as_deref(), Some("claude-opus#5"));
-    assert!(!model_is_accepted("claude-opus#5"));
-
-    // An effort with an annotation reads as the level, and a misspelled one
-    // stays rejected with the annotation stripped.
-    assert_eq!(declared("effort: max # top of the scale\n", "effort").as_deref(), Some("max"));
-    assert!(effort_is_accepted("max"));
-    assert_eq!(declared("effort: highest # nearly\n", "effort").as_deref(), Some("highest"));
-    assert!(!effort_is_accepted("highest"));
+    let resumed = rt(&root, &home, &["run", "resume", "--spec", "passo"], None);
+    assert!(said(&resumed, "next"), "the resume says no next step: {resumed}");
+    assert_eq!(resumed["command"], json!(pr_open), "{resumed}");
+    let asked = run_returned(&root, &home, &resumed);
+    assert_eq!(asked["provider"], json!("nenhum"), "{asked}");
 }

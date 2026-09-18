@@ -9,7 +9,7 @@
 //!   a `feature` does to research the repo without reading files.
 //! - `grain spec <model> --entity … [--like …] [--ops …] [--invariant …]` — the
 //!   deterministic implementation-spec DRAFT (English; localized to the
-//!   project's `mustard.json` language/tone only at the lapidation step).
+//!   project's `mustard.json` text language only at the lapidation step).
 //!
 //! The boundary is a TOOL (process + JSON/MD), not a library link: no shared
 //! build, no tree-sitter version coupling, grain stays standalone. This module
@@ -42,21 +42,6 @@ impl Default for Scan {
     fn default() -> Self {
         Self { binary: DEFAULT_BINARY.to_string() }
     }
-}
-
-/// What to compile a spec for — the deterministic inputs grain pins. The AI
-/// (decomposition/feature) chooses these; persisting them makes the spec
-/// reproducible (same request → byte-identical draft).
-#[derive(Debug, Clone, Default)]
-pub struct SpecRequest {
-    /// Entity/unit to create (substitutes `<Name>` in the recipe).
-    pub entity: String,
-    /// Existing sibling to mirror; empty = none (grain auto-picks the pattern).
-    pub like: String,
-    /// Operations beyond the base vertical (e.g. `["approve"]`).
-    pub ops: Vec<String>,
-    /// Cross-cutting invariants the unit must obey (e.g. an injected contract).
-    pub invariants: Vec<String>,
 }
 
 /// The FULL capability digest — grain's `digest <model>` output with NO
@@ -398,31 +383,10 @@ pub fn mark_own_git_roots(repo_root: &Path, projects: &mut [Project]) {
     }
 }
 
-/// One ranked row of `scan rank` (`files[]`): the path plus the ADDITIVE
-/// per-file `terms` evidence (the matched dictionary terms / direct query
-/// tokens that seeded it — empty on an older scan binary or a purely
-/// propagation-carried file). The fixed-point score stays in the tool's own
-/// output (the fusion downstream is rank-based, never score-based).
-#[derive(Debug, Clone, Deserialize)]
-pub struct RankFile {
-    pub file: String,
-    #[serde(default)]
-    pub terms: Vec<String>,
-}
-
-/// The `scan rank` output envelope (`{query, matched_terms, files}`) — only
-/// `files` is projected; the rest stays with the tool.
-#[derive(Debug, Clone, Default, Deserialize)]
-struct RankOut {
-    #[serde(default)]
-    files: Vec<RankFile>,
-}
-
-/// The one-shot `feature-bundle` payload — the digest, the full domain-term
-/// index (the non-strong vocabulary menu) and the personalized-PageRank pool,
-/// all from ONE `scan` spawn / ONE model parse. Replaces the digest_query +
-/// digest + rank + rank_detail spawn fan-out `feature` used to do (each of which
-/// re-parsed the whole model).
+/// The one-shot `feature-bundle` payload — the digest and the full domain-term
+/// index (the non-strong vocabulary menu), both from ONE `scan` spawn / ONE
+/// model parse. Replaces the digest_query + digest spawn fan-out `feature` used
+/// to do (each of which re-parsed the whole model).
 #[derive(Debug, Clone)]
 pub struct FeatureBundle {
     /// The per-query digest (the shape [`Scan::digest_query`] returns).
@@ -430,53 +394,14 @@ pub struct FeatureBundle {
     /// The FULL domain-term index (same as [`Scan::digest`]'s `terms`) — the
     /// non-strong `vocabulary` menu.
     pub terms: Vec<DigestTerm>,
-    /// The personalized-PageRank pool at the requested depth WITH per-file term
-    /// evidence (the rows [`Scan::rank_detail`] returns); its top-10 file prefix
-    /// is the insumos list [`Scan::rank`] returned. Empty when the dictionary is
-    /// absent (the fail-open gate).
-    pub rank: Vec<RankFile>,
 }
 
-/// Wire shape of the `feature-bundle` stdout (`{digest, terms, rank}`). Mustard
-/// owns its own view and normalises the rank file separators on the way in — the
-/// same fold [`parse_rank_detail`] applies.
+/// Wire shape of the `feature-bundle` stdout (`{digest, terms}`).
 #[derive(Deserialize)]
 struct FeatureBundleWire {
     digest: DigestQuery,
     #[serde(default)]
     terms: Vec<DigestTerm>,
-    #[serde(default)]
-    rank: Vec<RankFile>,
-}
-
-/// Project a `scan rank` stdout into the ordered file list, tolerating any
-/// non-JSON preamble (parse from the first `{`, the same rule the benchmark
-/// harness used) and normalising separators to `/` for stable fusion keys.
-///
-/// # Errors
-/// [`Error::Parse`] when no JSON object is present or it is not the rank shape.
-fn parse_rank_files(out: &str) -> Result<Vec<String>> {
-    Ok(parse_rank_detail(out)?.into_iter().map(|f| f.file).collect())
-}
-
-/// Project a `scan rank` stdout into the ordered rows WITH the per-file
-/// `terms` evidence (additive in the tool output; missing → empty, so an
-/// older scan binary degrades to term-less rows). Same preamble tolerance and
-/// separator normalisation as [`parse_rank_files`].
-///
-/// # Errors
-/// [`Error::Parse`] when no JSON object is present or it is not the rank shape.
-fn parse_rank_detail(out: &str) -> Result<Vec<RankFile>> {
-    let json = out.find('{').map_or(out, |i| &out[i..]);
-    let parsed: RankOut = serde_json::from_str(json)?;
-    Ok(parsed
-        .files
-        .into_iter()
-        .map(|mut f| {
-            f.file = f.file.replace('\\', "/");
-            f
-        })
-        .collect())
 }
 
 impl Scan {
@@ -499,13 +424,15 @@ impl Scan {
         Self { binary: sibling.unwrap_or_else(|| DEFAULT_BINARY.to_string()) }
     }
 
-    /// Mine `root` into the model file at `out` (`grain scan`).
+    /// Mine `root` into the model file at `out` (`grain scan`). With a model
+    /// of the same project already at `out`, the tool reads only what changed
+    /// since; the report says which files it read.
     ///
     /// # Errors
     /// [`Error::Io`] if the tool cannot be spawned, [`Error::CheckFailed`] on a
-    /// non-zero exit.
-    pub fn scan(&self, root: &Path, out: &Path) -> Result<()> {
-        self.run(&scan_args(root, out)).map(|_| ())
+    /// non-zero exit or a report that does not parse.
+    pub fn scan(&self, root: &Path, out: &Path) -> Result<ScanReport> {
+        parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
     /// Read the model's FULL capability digest (`grain digest <model>`, no
@@ -543,61 +470,18 @@ impl Scan {
         Ok(serde_json::from_str(&out)?)
     }
 
-    /// Rank the model's files for a raw (e.g. PT) request via the tool's
-    /// personalized PageRank (`scan rank`), seeded by the
-    /// `grain.dictionary.json` sidecar. Returns the ordered file list
-    /// (separators normalised to `/`); every tuning knob stays on the tool's
-    /// defaults except the explicit `top` / `direct_base` contract.
+    /// Fetch the one-shot [`FeatureBundle`] (`scan feature-bundle`): the digest
+    /// and the full term index from ONE spawn / ONE model parse — the collapse
+    /// of the digest_query + digest fan-out. `query_terms` are the digest terms.
     ///
     /// # Errors
     /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
     /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn rank(&self, model: &Path, dict: &Path, query: &str, top: usize, direct_base: u64) -> Result<Vec<String>> {
-        let out = self.run(&rank_args(model, dict, query, top, direct_base))?;
-        parse_rank_files(&out)
-    }
-
-    /// Like [`Self::rank`], but returning each ranked row WITH its per-file
-    /// matched-term evidence (`files[].terms`, additive in the tool output) —
-    /// the audit line the retrieval hop shows per candidate. An older scan
-    /// binary (no `terms` field) yields empty term lists (fail-open).
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn rank_detail(&self, model: &Path, dict: &Path, query: &str, top: usize, direct_base: u64) -> Result<Vec<RankFile>> {
-        let out = self.run(&rank_args(model, dict, query, top, direct_base))?;
-        parse_rank_detail(&out)
-    }
-
-    /// Fetch the one-shot [`FeatureBundle`] (`scan feature-bundle`): the digest,
-    /// the full term index and the rank pool from ONE spawn / ONE model parse —
-    /// the collapse of the digest_query + digest + rank + rank_detail fan-out.
-    /// `query_terms` are the digest terms, `rank_query` the expanded rank query,
-    /// `dict` the dictionary sidecar (the rank pool is empty when it is absent).
-    /// `top` is the pool depth (the insumos list is its top-10 prefix). Rank file
-    /// separators are normalised to `/` on the way in.
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn feature_bundle(&self, model: &Path, dict: &Path, query_terms: &[String], rank_query: &str, top: usize, direct_base: u64) -> Result<FeatureBundle> {
-        let out = self.run(&feature_bundle_args(model, dict, query_terms, rank_query, top, direct_base))?;
+    pub fn feature_bundle(&self, model: &Path, query_terms: &[String]) -> Result<FeatureBundle> {
+        let out = self.run(&feature_bundle_args(model, query_terms))?;
         let json = out.find('{').map_or(out.as_str(), |i| &out[i..]);
-        let mut wire: FeatureBundleWire = serde_json::from_str(json)?;
-        for r in &mut wire.rank {
-            r.file = r.file.replace('\\', "/");
-        }
-        Ok(FeatureBundle { digest: wire.digest, terms: wire.terms, rank: wire.rank })
-    }
-
-    /// Compile the deterministic spec draft for `req` (`grain spec`). Returns the
-    /// Markdown verbatim (English — the lapidation step localizes per mustard.json).
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure.
-    pub fn spec(&self, model: &Path, req: &SpecRequest) -> Result<String> {
-        self.run(&spec_args(model, req))
+        let wire: FeatureBundleWire = serde_json::from_str(json)?;
+        Ok(FeatureBundle { digest: wire.digest, terms: wire.terms })
     }
 
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
@@ -620,7 +504,27 @@ fn scan_args(root: &Path, out: &Path) -> Vec<String> {
         root.to_string_lossy().into_owned(),
         "--out".to_string(),
         out.to_string_lossy().into_owned(),
+        "--json".to_string(),
     ]
+}
+
+/// What one scan pass reports on its last stdout line: whether it read every
+/// file, the files it read, how many code files the map has, the commit it
+/// read from, and whether it rewrote the dictionary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ScanReport {
+    pub full: bool,
+    pub read: Vec<String>,
+    pub files: usize,
+    pub head: String,
+    pub dictionary: bool,
+}
+
+/// The report a `scan --json` run printed: its last non-empty line.
+fn parse_scan_report(stdout: &str) -> Result<ScanReport> {
+    let line = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}");
+    serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan report: {e}")))
 }
 
 fn digest_args(model: &Path) -> Vec<String> {
@@ -640,57 +544,13 @@ fn facts_args(model: &Path) -> Vec<String> {
     vec!["facts".to_string(), model.to_string_lossy().into_owned()]
 }
 
-fn rank_args(model: &Path, dict: &Path, query: &str, top: usize, direct_base: u64) -> Vec<String> {
-    vec![
-        "rank".to_string(),
-        model.to_string_lossy().into_owned(),
-        "--dict".to_string(),
-        dict.to_string_lossy().into_owned(),
-        "--query".to_string(),
-        query.to_string(),
-        "--top".to_string(),
-        top.to_string(),
-        "--direct-base".to_string(),
-        direct_base.to_string(),
-    ]
-}
-
-fn feature_bundle_args(model: &Path, dict: &Path, query_terms: &[String], rank_query: &str, top: usize, direct_base: u64) -> Vec<String> {
+fn feature_bundle_args(model: &Path, query_terms: &[String]) -> Vec<String> {
     vec![
         "feature-bundle".to_string(),
         model.to_string_lossy().into_owned(),
-        "--dict".to_string(),
-        dict.to_string_lossy().into_owned(),
         "--query".to_string(),
         query_terms.join(","),
-        "--rank-query".to_string(),
-        rank_query.to_string(),
-        "--top".to_string(),
-        top.to_string(),
-        "--direct-base".to_string(),
-        direct_base.to_string(),
     ]
-}
-
-fn spec_args(model: &Path, req: &SpecRequest) -> Vec<String> {
-    let ops = if req.ops.is_empty() { "create".to_string() } else { req.ops.join(",") };
-    let mut args = vec![
-        "spec".to_string(),
-        model.to_string_lossy().into_owned(),
-        "--entity".to_string(),
-        req.entity.clone(),
-        "--ops".to_string(),
-        ops,
-    ];
-    if !req.like.is_empty() {
-        args.push("--like".to_string());
-        args.push(req.like.clone());
-    }
-    if !req.invariants.is_empty() {
-        args.push("--invariant".to_string());
-        args.push(req.invariants.join(","));
-    }
-    args
 }
 
 #[cfg(test)]
@@ -701,7 +561,17 @@ mod tests {
     #[test]
     fn scan_args_shape() {
         let a = scan_args(&PathBuf::from("repo"), &PathBuf::from("m.json"));
-        assert_eq!(a, vec!["scan", "repo", "--out", "m.json"]);
+        assert_eq!(a, vec!["scan", "repo", "--out", "m.json", "--json"]);
+    }
+
+    #[test]
+    fn the_scan_report_is_the_last_line() {
+        let report = parse_scan_report("noise\n{\"ok\":true,\"full\":false,\"read\":[\"src/b.rs\"],\"files\":3}\n\n")
+            .expect("report");
+        assert!(!report.full);
+        assert_eq!(report.read, vec!["src/b.rs".to_string()]);
+        assert_eq!(report.files, 3);
+        assert!(parse_scan_report("not json").is_err());
     }
 
     #[test]
@@ -714,96 +584,6 @@ mod tests {
     fn facts_args_shape() {
         let a = facts_args(&PathBuf::from("m.json"));
         assert_eq!(a, vec!["facts", "m.json"]);
-    }
-
-    #[test]
-    fn rank_args_shape() {
-        let a = rank_args(
-            &PathBuf::from("m.json"),
-            &PathBuf::from("d.json"),
-            "onde é feita a conciliação reconciliation",
-            10,
-            100_000,
-        );
-        assert_eq!(
-            a,
-            vec![
-                "rank", "m.json", "--dict", "d.json", "--query",
-                "onde é feita a conciliação reconciliation", "--top", "10",
-                "--direct-base", "100000",
-            ]
-        );
-    }
-
-    #[test]
-    fn feature_bundle_args_shape() {
-        let a = feature_bundle_args(
-            &PathBuf::from("m.json"),
-            &PathBuf::from("d.json"),
-            &["spec".into(), "pipeline".into()],
-            "spec pipeline reconciliation",
-            25,
-            100_000,
-        );
-        assert_eq!(
-            a,
-            vec![
-                "feature-bundle", "m.json", "--dict", "d.json", "--query", "spec,pipeline",
-                "--rank-query", "spec pipeline reconciliation", "--top", "25",
-                "--direct-base", "100000",
-            ]
-        );
-    }
-
-    #[test]
-    fn feature_bundle_wire_deserializes_all_three_parts() {
-        // The bundle collapses digest_query + digest + rank_detail into one
-        // `{digest, terms, rank}` payload. The wire view deserializes each part
-        // into Mustard's own mirror; the rank rows keep {file, terms} and ignore
-        // the tool score field. Separator normalisation happens in the method.
-        let json = r#"{
-            "digest":{"query":["spec"],"files":["src/a.rs"],"miss":false,
-                "report":{"matched":1,"total":1,"reason":"strong","terms":[]}},
-            "terms":[{"term":"spec","count":9,"specificity_x1024":100,"samples":["src/a.rs"]}],
-            "rank":[{"file":"src/a.rs","score_x1024":42,"terms":["spec"]},
-                    {"file":"src/b.rs","score_x1024":7}]
-        }"#;
-        let wire: FeatureBundleWire = serde_json::from_str(json).expect("bundle json");
-        assert_eq!(wire.digest.report.reason, "strong");
-        assert_eq!(wire.digest.files, vec!["src/a.rs"]);
-        assert_eq!(wire.terms.len(), 1);
-        assert_eq!(wire.terms[0].term, "spec");
-        assert_eq!(wire.terms[0].count, 9);
-        assert_eq!(wire.rank.len(), 2);
-        assert_eq!(wire.rank[0].file, "src/a.rs");
-        assert_eq!(wire.rank[0].terms, vec!["spec"]);
-        assert!(wire.rank[1].terms.is_empty(), "older/absent terms default empty");
-    }
-    #[test]
-    fn parse_rank_files_tolerates_preamble_and_normalises_separators() {
-        // The benchmark-harness rule: parse from the first `{` (a tool warning
-        // line before the JSON must not break the client) and fold `\` → `/`.
-        let out = "note: something\n{\"query\":[\"x\"],\"matched_terms\":[],\"files\":[{\"file\":\"src\\\\a.cs\",\"score_x1024\":42},{\"file\":\"src/b.cs\",\"score_x1024\":7}]}";
-        let files = parse_rank_files(out).expect("rank output parses");
-        assert_eq!(files, vec!["src/a.cs", "src/b.cs"], "order preserved, separators normalised");
-
-        // The detailed projection reads the ADDITIVE per-file `terms` when the
-        // tool emits them, and degrades to empty lists when it does not (an
-        // older scan binary) — same rows, same order, same normalisation.
-        let detail = parse_rank_detail(out).expect("term-less rank output parses");
-        assert_eq!(detail.len(), 2);
-        assert_eq!(detail[0].file, "src/a.cs");
-        assert!(detail[0].terms.is_empty(), "older binary → empty terms");
-        let with_terms = "{\"files\":[{\"file\":\"src\\\\a.cs\",\"score_x1024\":42,\"terms\":[\"aging\",\"payable\"]}]}";
-        let detail = parse_rank_detail(with_terms).expect("terms parse");
-        assert_eq!(detail[0].terms, vec!["aging", "payable"]);
-
-        // An empty ranked list is a valid answer (nothing bridged), not an error.
-        let none = parse_rank_files(r#"{"query":[],"files":[]}"#).expect("empty rank parses");
-        assert!(none.is_empty());
-
-        // No JSON at all → a parse error the caller degrades on (fail-open there).
-        assert!(parse_rank_files("garbage with no json").is_err());
     }
 
     #[test]
@@ -878,30 +658,6 @@ mod tests {
         assert!(!projects[2].own_git_root, "the superproject root `.` is never flagged");
     }
 
-    #[test]
-    fn spec_args_omit_empty_like_and_invariants() {
-        let req = SpecRequest { entity: "Order".into(), ..Default::default() };
-        let a = spec_args(&PathBuf::from("m.json"), &req);
-        assert_eq!(a, vec!["spec", "m.json", "--entity", "Order", "--ops", "create"]);
-    }
-
-    #[test]
-    fn spec_args_include_like_invariant_and_ops() {
-        let req = SpecRequest {
-            entity: "RefundCharge".into(),
-            like: "CancelCharge".into(),
-            ops: vec!["create".into(), "approve".into()],
-            invariants: vec!["ICurrentTenant".into()],
-        };
-        let a = spec_args(&PathBuf::from("m.json"), &req);
-        assert_eq!(
-            a,
-            vec![
-                "spec", "m.json", "--entity", "RefundCharge", "--ops", "create,approve",
-                "--like", "CancelCharge", "--invariant", "ICurrentTenant",
-            ]
-        );
-    }
 
     #[test]
     fn digest_query_detected_stacks_serde_compat() {

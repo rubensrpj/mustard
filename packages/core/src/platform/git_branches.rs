@@ -17,7 +17,7 @@
 //! |---|---|---|
 //! | where may a unit be cut from? | [`branch_catalog`] — git, after a fetch | OPEN |
 //! | does this branch still exist? | [`remote_branch_names`] — git, local refs | OPEN |
-//! | where is a direct commit forbidden? | [`protected_branches`] | CLOSED |
+//! | where is a direct commit forbidden? | [`protected_branches`] — `git.flow` | CLOSED |
 //!
 //! The middle row is the same source as the first, narrowed and made free: a
 //! base a unit was really cut from is checked for EXISTENCE, and the check is
@@ -39,32 +39,26 @@
 //! | `origin/HEAD` absent | `ls-remote --symref` | `ref: refs/heads/main HEAD`, exit 0 |
 //!
 //! A CI clone commonly has no `origin/HEAD` at all, so a single local probe
-//! would answer "unknown" exactly where protection matters most. The ladder is
-//! therefore local first (free), remote second (one round trip, and the caller
-//! is fetching anyway), and only then the literal fallback.
+//! would answer "unknown" where the answer is still wanted. The ladder is
+//! therefore local first (free) and remote second (one round trip, and the
+//! caller is fetching anyway). There is no third rung: a name this repository
+//! never stated is not an answer.
 //!
 //! ## Contracts honoured
 //!
 //! - **Nothing here errors and nothing here blocks.** No git, no repository, a
-//!   failed invocation: each degrades to "not measured". [`protected_branches`]
-//!   turns that into the STRICTER reading (`{main, master}` stay protected),
-//!   because failing open on protection is the one direction that costs the
-//!   user something irreversible.
+//!   failed invocation: each degrades to "not measured".
+//! - **No branch name is written down here.** [`protected_branches`] answers
+//!   from the project's own declaration alone; the other two ask git. A literal
+//!   in this module is a sentence about somebody else's repository.
 //! - No `unwrap`/`expect` outside tests; no `println!` — this is a library seam
 //!   and callers render.
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Command;
 
 use crate::domain::config::GitConfig;
-
-/// The last-resort protected names, used only when git could not be asked.
-///
-/// The single place a branch name is hardcoded in this module, and deliberately
-/// on the protection side: an unmeasured repository keeps `main` and `master`
-/// closed rather than opening them.
-const FALLBACK_PROTECTED: [&str; 2] = ["main", "master"];
+use crate::platform::git;
 
 /// One branch a unit could be cut from, as git reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,14 +76,10 @@ pub struct BranchEntry {
     pub preselected: bool,
 }
 
-/// Run `git` in `root` and return trimmed stdout, or `None` for every failure —
-/// no git, not a repository, a non-zero exit, unreadable output.
+/// Trimmed stdout of a git command in `root`, or `None` for every failure —
+/// no git, not a repository, a non-zero exit.
 fn git_out(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).current_dir(root).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    git::run(root, args).out()
 }
 
 /// The branch the checkout is ON, or `None` when git could not answer (absent
@@ -117,13 +107,11 @@ pub fn current_branch(root: &Path) -> Option<String> {
 /// answered correctly by both probes and would be answered wrongly by any list.
 #[must_use]
 pub fn default_branch(root: &Path) -> Option<String> {
-    if let Some(local) = git_out(root, &["symbolic-ref", "refs/remotes/origin/HEAD"]) {
-        if let Some(name) = local.strip_prefix("refs/remotes/origin/") {
-            if !name.is_empty() {
+    if let Some(local) = git_out(root, &["symbolic-ref", "refs/remotes/origin/HEAD"])
+        && let Some(name) = local.strip_prefix("refs/remotes/origin/")
+            && !name.is_empty() {
                 return Some(name.to_string());
             }
-        }
-    }
     let remote = git_out(root, &["ls-remote", "--symref", "origin", "HEAD"])?;
     remote.lines().find_map(|line| {
         let rest = line.strip_prefix("ref:")?;
@@ -135,29 +123,30 @@ pub fn default_branch(root: &Path) -> Option<String> {
 
 /// The branches that refuse a direct commit or merge.
 ///
-/// The remote's default branch, plus whatever `git.protected` declares. Closed
-/// on purpose, and normally a set of ONE: with the cut point now open to every
-/// branch git has, protecting every branch that could be a base would protect
-/// the whole repository and mean nothing.
+/// **Everything here was DECLARED**: the bases of `git.flow`, plus whatever
+/// `git.protected` adds. Nothing is probed and nothing is assumed — the answer
+/// is the project's own statement about itself, and a project that states
+/// nothing protects nothing.
 ///
-/// Unmeasured degrades to [`FALLBACK_PROTECTED`] — the strict direction. This
-/// is the one place in the module where "we could not tell" must not become
-/// "go ahead": a wrong open answer here lets a commit land on production.
+/// That last sentence used to read the other way. Unmeasured degraded to a
+/// hardcoded `{main, master}`, which is why a repository whose branches are
+/// `develop` and `master` was protected on a name it does not promote through
+/// while `develop` stayed open, and why a fresh install — which writes no flow
+/// — protected two literals and nothing it actually has. The harness now says
+/// what it knows: where the project has declared its bases, those refuse a
+/// direct commit; where it has not, the door that needs the answer says so
+/// instead of inventing one.
 #[must_use]
-pub fn protected_branches(root: &Path, config: &GitConfig) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = config
-        .protected
-        .iter()
-        .map(|b| b.trim())
-        .filter(|b| !b.is_empty())
-        .map(str::to_string)
-        .collect();
-    match default_branch(root) {
-        Some(head) => {
-            out.insert(head);
-        }
-        None => out.extend(FALLBACK_PROTECTED.iter().map(|b| (*b).to_string())),
-    }
+pub fn protected_branches(config: &GitConfig) -> BTreeSet<String> {
+    let mut out = config.declared_bases();
+    out.extend(
+        config
+            .protected
+            .iter()
+            .map(|b| b.trim())
+            .filter(|b| !b.is_empty())
+            .map(str::to_string),
+    );
     out
 }
 
@@ -238,8 +227,8 @@ pub fn branch_catalog(root: &Path, config: &GitConfig, fetch: bool) -> Vec<Branc
     let Some(refs) = origin_refs(root) else {
         return Vec::new();
     };
-    let protected = protected_branches(root, config);
-    let preselected = config.preselected_bases();
+    let protected = protected_branches(config);
+    let preselected = config.declared_bases();
     refs.into_iter()
         .map(|(name, committed_at)| BranchEntry {
             protected: protected.contains(&name),
@@ -256,12 +245,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn git(root: &Path, args: &[&str]) -> bool {
-        Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        git::run(root, args).ok
     }
 
     /// An upstream with one commit on `trunk` — deliberately NOT `main`, so a
@@ -318,34 +302,34 @@ mod tests {
         );
     }
 
-    /// Protection fails CLOSED: a directory git cannot answer for keeps
-    /// main/master protected rather than opening them.
+    /// Um projeto que não declara nada não protege nada: a proteção é a
+    /// declaração do próprio projeto, nunca uma lista escrita no código.
     #[test]
-    fn an_unmeasurable_repository_keeps_the_strict_reading() {
-        let tmp = tempfile::tempdir().unwrap(); // never a repository
-        let protected = protected_branches(tmp.path(), &GitConfig::default());
-        assert!(protected.contains("main") && protected.contains("master"));
+    fn um_projeto_que_nao_declara_nada_nao_protege_nome_nenhum() {
+        let protected = protected_branches(&GitConfig::default());
+        assert!(
+            protected.is_empty(),
+            "sem `git.flow` e sem `git.protected` não há base declarada: {protected:?}",
+        );
     }
 
-    /// The declared list ADDS to the remote's default branch, never replaces it.
+    /// As bases do fluxo são protegidas, e a lista `git.protected` se soma a
+    /// elas — nada além do que o projeto escreveu entra.
     #[test]
-    fn the_declared_list_adds_to_the_remote_default() {
-        let tmp = tempfile::tempdir().unwrap();
-        let up = tmp.path().join("up");
-        std::fs::create_dir_all(&up).unwrap();
-        if !upstream(&up) {
-            return;
-        }
-        let clone = tmp.path().join("clone");
-        if !git(tmp.path(), &["clone", "-q", &up.to_string_lossy(), "clone"]) {
-            return;
-        }
-        let config =
-            GitConfig { protected: vec!["develop".to_string()], ..GitConfig::default() };
-        let protected = protected_branches(&clone, &config);
-        assert!(protected.contains("trunk"), "the remote default is always in");
-        assert!(protected.contains("develop"), "and the declared one joins it");
-        assert_eq!(protected.len(), 2, "and nothing else is: {protected:?}");
+    fn a_protecao_sai_do_fluxo_e_da_lista_declarada() {
+        let mut flow = BTreeMap::new();
+        flow.insert("*".to_string(), "develop".to_string());
+        flow.insert("develop".to_string(), "master".to_string());
+        let config = GitConfig {
+            flow,
+            protected: vec!["release/2026-Q3".to_string()],
+            ..GitConfig::default()
+        };
+        let protected = protected_branches(&config);
+        assert!(protected.contains("develop"), "a base do fluxo é protegida: {protected:?}");
+        assert!(protected.contains("master"), "e a de cima também: {protected:?}");
+        assert!(protected.contains("release/2026-Q3"), "a lista declarada se soma");
+        assert_eq!(protected.len(), 3, "e mais nada entra: {protected:?}");
     }
 
     /// The catalog reports branches that no `git.flow` ever declared — the

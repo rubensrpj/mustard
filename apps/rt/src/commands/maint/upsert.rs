@@ -1,21 +1,29 @@
 //! `mustard-rt run upsert` — install or update Mustard in the current project.
 //!
 //! The plugin's bootstrap door: everything the harness needs in a project —
-//! `.claude/settings.local.json`, the injectable instruction files under
-//! `.claude/mustard/`, `.claude/.gitignore`, and the project-root
-//! `mustard.json` — is seeded by `mustard_core::upsert_project`, idempotently.
+//! `.claude/settings.local.json`, Mustard's own texts (the session map under
+//! `.claude/mustard/` and the three agents under `.claude/agents/mustard/`),
+//! `.claude/.gitignore`, and the project-root `mustard.json` — is seeded by
+//! `mustard_core::upsert_project`, idempotently.
 //! The settings file is the LOCAL one because the install is always
 //! private-mode (see [`run`]); the shared `.claude/settings.json` is never
 //! written here. What the OPERATOR owns is merge-only: an existing
 //! `.claude/settings.local.json`, `.claude/.gitignore` or `mustard.json` is
-//! preserved, and only what is missing is created or backfilled. The three
-//! injectable instruction files — `.claude/mustard/orchestrator.md`,
-//! `.claude/mustard/dispatch.md` and `.claude/mustard/material.md` — are
-//! ALWAYS rewritten: they are the harness's own rules, not project
-//! configuration, so a copy that diverged is replaced and reported as
+//! preserved, and only what is missing is created or backfilled. Mustard's
+//! own texts — `.claude/mustard/mapa-inicio-sessao.md` and
+//! `.claude/agents/mustard/{wave,review,skill}.md` — are ALWAYS rewritten, in
+//! the language of `language.text`: they are the harness's own text, not
+//! project configuration, so a copy that diverged is replaced and reported as
 //! `Updated`, while a copy already byte-identical to the shipped text is
-//! reported as `Preserved` because there was nothing left to write. The
-//! legacy planted-orchestrator footprint is migrated away in the same pass.
+//! reported as `Preserved` because there was nothing left to write.
+//!
+//! What an older Mustard left in files that are not its own (the marks in the
+//! `CLAUDE.md` files, the seed's lines in the team's `.claude/settings.json`,
+//! a planted `.claude/CLAUDE.md`) is its own leftover, and leaves in this same
+//! call, with no question: the Guards become project-rule lessons first, then
+//! the lines leave. `cleanup` lists what left and the files without a mark,
+//! which are never touched; `cleaned` says what was done. Nothing is staged or
+//! committed.
 //!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
 //! `UpsertReport` flattened, with `pluginRefresh` appended — deterministic
@@ -166,7 +174,7 @@ pub fn run() {
     // Workspace-root walk first (an already-installed project resolves to its
     // anchor even from a subdirectory), then `CLAUDE_PROJECT_DIR`, then the
     // process cwd — the fresh-install path, where no anchor exists yet.
-    let root = PathBuf::from(crate::shared::context::project_dir());
+    let root = PathBuf::from(crate::shared::context::env::project_dir());
 
     // Unconditional. The mode is not read from anywhere and not asked for
     // anywhere: a harness that installs itself into someone else's repository
@@ -180,8 +188,7 @@ pub fn run() {
             // The refresh is the LAST step, and only on the path where the
             // project was really seeded: a run that wrote nothing has no
             // installation to finish.
-            let outcome =
-                Report { project: report, plugin_refresh: refresh_plugin(&root) };
+            let outcome = Report { project: report, plugin_refresh: refresh_plugin(&root) };
             let json = serde_json::to_string_pretty(&outcome)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));
             println!("{json}");
@@ -224,7 +231,8 @@ pub fn run() {
 /// tests drive the whole decision without a `claude` on `PATH`.
 ///
 /// The binary name defaults to `claude` and can be pointed elsewhere with
-/// `MUSTARD_CLAUDE_BIN`, mirroring `MUSTARD_RTK_BIN` in the rewrite gate.
+/// `MUSTARD_CLAUDE_BIN`, the way the rtk economy reader
+/// (`packages/core/src/domain/economy/sources/rtk.rs`) takes `MUSTARD_RTK_BIN`.
 fn refresh_plugin(root: &Path) -> PluginRefresh {
     let binary = std::env::var("MUSTARD_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
     let target = claude_config_dir()
@@ -558,7 +566,7 @@ mod tests {
         );
     }
 
-    /// AC-1 — a refresh that ran carries BOTH halves of the answer: the version
+    /// A refresh that ran carries BOTH halves of the answer: the version
     /// the registry now records, and the sentence saying this session is still
     /// on the one it loaded. Naming the version without the restart would read
     /// as a promise the host does not keep.
@@ -613,7 +621,7 @@ mod tests {
         assert_eq!(refused.version, None, "…and cannot name a resulting version");
     }
 
-    /// AC-2 — an absent or refusing `claude` leaves the upsert successful and
+    /// An absent or refusing `claude` leaves the upsert successful and
     /// the report explaining itself. Two shapes of unavailable are covered: the
     /// binary that could not be spawned, and a registry that names no install.
     #[test]

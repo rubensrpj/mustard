@@ -1,7 +1,7 @@
 //! `vocabulary` — four-layer term matcher backing the regression gate.
 //!
-//! Spec A / Wave 1 introduces the canonical vocabulary used by the regression
-//! gate (W4) to detect intent drift inside agent plans and diffs. The
+//! The canonical vocabulary the regression gate used to detect intent drift
+//! inside agent plans and diffs. The
 //! vocabulary is partitioned into four severity layers — [`Layer::Semantic`],
 //! [`Layer::Pattern`], [`Layer::Keyword`], [`Layer::Noise`] — and lives in
 //! `.claude/vocab/regression.toml`, editable at runtime without recompiling.
@@ -170,7 +170,7 @@ pub struct VocabularyDoc {
     /// Every `[[layer]]` table entry, in document order.
     #[serde(default, rename = "layer")]
     pub layers: Vec<VocabLayer>,
-    /// Optional `[thresholds]` table (W7#2). Tunes the gate's numeric knobs
+    /// Optional `[thresholds]` table. Tunes the gate's numeric knobs
     /// — currently just `line_change_threshold` — without recompiling the
     /// binary. Absent in the seed catalogue; the gate falls back to its
     /// hard-coded defaults when fields are missing.
@@ -186,8 +186,8 @@ pub struct VocabularyDoc {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct GateThresholds {
     /// Moment-3 line-change threshold. Snapshot deltas whose `line_changes`
-    /// strictly exceed this value fire a signal (W7#3 keeps the `body_emptied`
-    /// short-circuit on top). Defaults to the gate's hard-coded `5`.
+    /// strictly exceed this value fire a signal (the `body_emptied`
+    /// short-circuit stays on top). Defaults to the gate's hard-coded `5`.
     #[serde(default, rename = "line_change")]
     pub line_change_threshold: Option<usize>,
 }
@@ -232,7 +232,7 @@ impl VocabularyDoc {
     /// distinguish "absent" from "empty" should use [`Self::layer`] instead.
     ///
     /// Added to deduplicate the inline `[semantic]` / `[pattern]` walks that
-    /// `subagent_inject` and `agent_prompt_render` used to ship (W5#2). The
+    /// `subagent_inject` and `agent_prompt_render` used to ship. The
     /// returned slices borrow from `self`; callers that need owned strings
     /// can `.iter().map(|s| s.to_string()).collect()`.
     #[must_use]
@@ -289,7 +289,7 @@ pub enum VocabError {
     /// The matcher constructor was handed an empty term list across every
     /// layer. Surfacing this as a typed error (rather than silently
     /// building an empty automaton) catches misconfigured vocab files
-    /// during W1's smoke tests.
+    /// early.
     #[error("vocabulary has no terms across any layer")]
     NoTerms,
 }
@@ -307,8 +307,8 @@ impl From<VocabError> for CoreError {
 
 /// The verdict returned by [`check_layer_promotion`].
 ///
-/// The Wave 1 contract is that *every* cross-layer promotion needs
-/// confirmation — the gate (W4) wires this verdict to an
+/// The contract is that *every* cross-layer promotion needs
+/// confirmation — the gate wires this verdict to an
 /// `AskUserQuestion` prompt. `Allowed` exists as a variant only to leave
 /// room for future automation: today no caller ever returns it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,7 +324,7 @@ pub enum PromotionVerdict {
     /// transition.
     NeedsConfirmation,
     /// Promotion violates an invariant and must be rejected outright. No
-    /// rule produces this verdict in Wave 1; it exists so the W4 gate can
+    /// rule produces this verdict yet; it exists so the gate can
     /// later forbid e.g. `Noise → Semantic` jumps that are almost always
     /// vocab-file vandalism.
     Forbidden,
@@ -333,7 +333,7 @@ pub enum PromotionVerdict {
 /// Check whether promoting `term` from layer `from` to layer `to`
 /// requires user confirmation.
 ///
-/// Wave 1 contract (AC-A-14): every cross-layer promotion returns
+/// Every cross-layer promotion returns
 /// [`PromotionVerdict::NeedsConfirmation`]; same-layer self-promotion is
 /// a no-op and returns [`PromotionVerdict::Allowed`]. The orchestrator
 /// (which has access to the `AskUserQuestion` tool) consumes the verdict
@@ -411,7 +411,7 @@ impl VocabularyMatcher {
     /// overlap unless the automaton is configured otherwise).
     ///
     /// O(n + m) where n is `haystack.len()` and m is the total length of
-    /// all vocabulary terms. The Wave 1 bench
+    /// all vocabulary terms. The bench
     /// (`vocabulary::bench::scan_10k_chars_100_terms`) asserts <5ms
     /// for the canonical 10 000 × 100 fixture.
     #[must_use]
@@ -609,7 +609,7 @@ terms = ["a"]
     }
 
     // -----------------------------------------------------------------------
-    // Layer promotion guard (T1.7)
+    // Layer promotion guard
     // -----------------------------------------------------------------------
 
     #[test]
@@ -624,7 +624,7 @@ terms = ["a"]
 
     #[test]
     fn cross_layer_promotion_needs_confirmation() {
-        // Spec contract AC-A-14: every cross-layer change asks the user.
+        // Every cross-layer change asks the user.
         assert_eq!(
             check_layer_promotion("stub", Layer::Noise, Layer::Keyword),
             PromotionVerdict::NeedsConfirmation
@@ -657,10 +657,10 @@ terms = ["a"]
 }
 
 // ---------------------------------------------------------------------------
-// Bench (T1.6 — AC-A-11)
+// Bench
 //
-// Lives next to the unit tests rather than under `benches/` so the cargo-test
-// path matches the AC literal:
+// Lives next to the unit tests rather than under `benches/`, so one cargo-test
+// path runs it:
 //
 //     cargo test -p mustard-core --release vocabulary::bench::scan_10k_chars_100_terms
 //
@@ -677,7 +677,7 @@ mod bench {
     /// Build a synthetic vocabulary of 100 terms — 25 per layer — and confirm
     /// that one `.scan()` over a 10 000-char haystack finishes inside 5ms.
     ///
-    /// AC-A-11 contract: regression-gate scans must stay sub-frame so the
+    /// Regression-gate scans must stay sub-frame so the
     /// gate never feels like it is "hanging" between agent edits.
     #[test]
     fn scan_10k_chars_100_terms() {

@@ -456,7 +456,7 @@ mod tests {
         let acs = cap.acceptance_criteria();
         // Only the two command-bearing scenarios compile.
         assert_eq!(acs.len(), 2);
-        // Declaration order preserved (R1 scenario before R2 scenario).
+        // Declaration order preserved (the first scenario before the second).
         assert_eq!(acs[0].id, "cap.demo-has-cmd");
         assert_eq!(acs[0].statement, "when x happens, then y holds");
         assert_eq!(acs[0].command, "rtk cargo test");

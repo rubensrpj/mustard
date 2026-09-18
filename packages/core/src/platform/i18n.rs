@@ -1,4 +1,4 @@
-//! `i18n` — central language + tone module for Mustard banners.
+//! `i18n` — central language module for Mustard banners.
 //!
 //! ## Why
 //!
@@ -9,39 +9,33 @@
 //!
 //! - declare the canonical locale codes (BCP-47, never short forms);
 //! - translate a banner key into the user's language;
-//! - apply a tone (didactic / technical / concise) on top of a translation;
 //! - slugify free-form text in a way that respects PT-vs-EN accent rules.
 //!
-//! Wave 4 of the `mustard-unification` mega-spec consolidates that into a
-//! single boundary-typed module exported from `mustard_core`.
+//! This module is now that single place, a boundary-typed module exported
+//! from `mustard_core`.
 //!
-//! ## Locale + tone vocabulary
+//! ## Locale vocabulary
 //!
 //! - [`Locale`] — BCP-47 typed locale. Only `pt-BR` and `en-US` are accepted;
 //!   the legacy short forms `pt` / `en` are rejected with
 //!   [`LocaleError::ShortForm`] (see memory `project_locale_codes`).
-//! - [`Tone`] — `didactic` (expand abbreviations, prefer plain words),
-//!   `technical` (keep abbreviations + jargon), `concise` (strip filler).
-//! - [`I18n`] — the pair `{ lang, tone }` callers thread through banner
-//!   rendering.
+//! - [`I18n`] — the locale callers thread through banner rendering.
+//!
+//! The catalogue is written in one voice only, plain and didactic: there is
+//! no tone to choose, so nothing here rewrites a translation after lookup.
 //!
 //! ## Canonical banner keys
 //!
-//! Banners are keyed by dotted-namespace identifiers. Every key is documented
-//! in [`translate`] and surfaced verbatim when the key is unknown (fail-open).
-//! Known keys at Wave 4:
-//!
-//! - `banner.close.success` — "Pipeline closed successfully." (CLOSE phase)
-//! - `banner.amend.drift` — drift-warning message body (see W4 spec).
-//! - `wave.label` — short label for a wave index (`W{n}` / `Onda {n}`).
-//! - `ac.label` — short label for an AC index (`AC-{id}`).
-//! - `prompt.continue` — "Continue?" / "Continuar?" confirmation prompt.
+//! Banners are keyed by dotted-namespace identifiers. The texts live in the
+//! parts of the catalogue under `i18n/`, one file per subject, and every
+//! reader goes through [`translate`], the catalogue's single door.
 //!
 //! ## Forward compatibility
 //!
-//! New keys land here, not in consumer crates. A missing key returns the key
-//! string itself so the caller still emits *something*; this is the fail-open
-//! contract that keeps a typo in a hook from blocking user work.
+//! New keys land in the catalogue part of their subject, not in consumer
+//! crates. A missing key returns the key string itself so the caller still
+//! emits *something*; this is the fail-open contract that keeps a typo in a
+//! hook from blocking user work.
 
 use std::fmt;
 use std::str::FromStr;
@@ -134,53 +128,7 @@ impl FromStr for Locale {
     }
 }
 
-/// Banner tone selector.
-///
-/// `Didactic` expands abbreviations on first use and prefers common words —
-/// the default for user-facing chat output. `Technical` keeps jargon and
-/// abbreviations as written. `Concise` strips parenthetical clarifications.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Tone {
-    /// Expand abbreviations, prefer plain words. The Mustard default.
-    #[default]
-    Didactic,
-    /// Keep jargon + abbreviations as written.
-    Technical,
-    /// Strip filler / parentheticals.
-    Concise,
-}
-
-impl Tone {
-    /// Canonical lowercase string for `mustard.json#tone`.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Didactic => "didactic",
-            Self::Technical => "technical",
-            Self::Concise => "concise",
-        }
-    }
-
-    /// Parse a free-form tone string. Returns `None` for unknown values so
-    /// callers fail open to [`Tone::Didactic`].
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "didactic" | "didatico" | "didático" => Some(Self::Didactic),
-            "technical" | "tecnico" | "técnico" => Some(Self::Technical),
-            "concise" | "conciso" => Some(Self::Concise),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for Tone {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Banner-rendering context: locale + tone.
+/// Banner-rendering context: the locale.
 ///
 /// Threaded through hook / CLI banner code so a single struct call replaces
 /// the bilingual lookup tables that used to sit in each module.
@@ -188,993 +136,86 @@ impl fmt::Display for Tone {
 pub struct I18n {
     /// User locale (drives [`translate`]).
     pub lang: Locale,
-    /// User tone (drives [`apply_tone`]).
-    pub tone: Tone,
 }
 
 impl I18n {
-    /// Build an `I18n` from typed values.
+    /// Build an `I18n` for `lang`.
     #[must_use]
-    pub fn new(lang: Locale, tone: Tone) -> Self {
-        Self { lang, tone }
+    pub fn new(lang: Locale) -> Self {
+        Self { lang }
     }
 
-    /// Translate `key` and immediately apply the configured tone.
+    /// Translate `key` into this locale.
     #[must_use]
     pub fn render(&self, key: &str) -> String {
-        apply_tone(translate(key, self.lang), self.tone)
+        translate(key, self.lang).to_string()
     }
 }
+
+mod flow;
+mod survey;
+mod prompt;
+mod gates;
+mod pending;
+mod session;
+mod map;
+mod events;
+mod page;
+mod install;
+mod spec_text;
+
+/// Uma parte do catálogo: os começos de chave que ela responde e a leitura dela.
+type Part = (&'static [&'static str], fn(&str, Locale) -> Option<&'static str>);
+
+/// As partes do catálogo de textos, uma por arquivo em `i18n/`. Cada parte
+/// cuida de um assunto, e a chave nova entra na parte do assunto dela:
+///
+/// - `flow` — os passos do fluxo de uma spec;
+/// - `survey` — o levantamento;
+/// - `prompt` — o pedido da onda;
+/// - `gates` — os portões dos ganchos;
+/// - `pending` — as pendências;
+/// - `session` — a sessão e a barra de status;
+/// - `map` — o mapa do projeto;
+/// - `events` — o arquivo de eventos da spec;
+/// - `page` — as páginas;
+/// - `install` — o diagnóstico da instalação;
+/// - `spec_text` — o texto da spec em markdown.
+const PARTS: [Part; 11] = [
+    (flow::PREFIXES, flow::text),
+    (survey::PREFIXES, survey::text),
+    (prompt::PREFIXES, prompt::text),
+    (gates::PREFIXES, gates::text),
+    (pending::PREFIXES, pending::text),
+    (session::PREFIXES, session::text),
+    (map::PREFIXES, map::text),
+    (events::PREFIXES, events::text),
+    (page::PREFIXES, page::text),
+    (install::PREFIXES, install::text),
+    (spec_text::PREFIXES, spec_text::text),
+];
 
 /// Translate `key` into a literal banner string for `lang`.
 ///
 /// A missing key returns the key itself (fail-open: the caller still emits
-/// *something*). Known keys are documented at the module header. Adding a new
-/// banner = adding one arm to the `match` and one arm per locale.
+/// *something*). The key is read only in the catalogue part that declares its
+/// prefix (the text before the first dot); `PARTS` lists the parts and the
+/// subject of each. Adding a new banner = adding one arm per locale to the
+/// `match` of the part of its subject.
 ///
 /// Lifetime: returns `&'static str` because every entry is a string literal —
 /// no allocation in the hot banner path.
 #[must_use]
 pub fn translate(key: &str, lang: Locale) -> &'static str {
-    match (key, lang) {
-        // CLOSE-phase success banner.
-        ("banner.close.success", Locale::PtBr) => "Pipeline fechado com sucesso.",
-        ("banner.close.success", Locale::EnUs) => "Pipeline closed successfully.",
-
-        // Drift warning emitted by `apps/rt/src/hooks/amend_capture.rs`.
-        ("banner.amend.drift", Locale::PtBr) => {
-            "Você está editando um arquivo fora do escopo da spec ativa (pós-CLOSE). \
-             Considere abrir `/mustard:feature` ou `/mustard:task` separado — a sessão \
-             continua, mas o drift não é absorvido pela spec original."
-        }
-        ("banner.amend.drift", Locale::EnUs) => {
-            "You're editing a file outside the active spec scope (post-CLOSE). \
-             Consider opening a separate `/mustard:feature` or `/mustard:task` — the \
-             session continues, but drift is not absorbed by the original spec."
-        }
-
-        // Short wave label (e.g. "W3" vs "Onda 3"). The numeric suffix is
-        // interpolated by the caller via `format!("{} {n}", translate(...))`.
-        ("wave.label", Locale::PtBr) => "Onda",
-        ("wave.label", Locale::EnUs) => "W",
-
-        // Acceptance-criterion label (used as a prefix before the AC id).
-        ("ac.label", Locale::PtBr) => "CA",
-        ("ac.label", Locale::EnUs) => "AC",
-
-        // Generic continue / confirm prompt.
-        ("prompt.continue", Locale::PtBr) => "Continuar?",
-        ("prompt.continue", Locale::EnUs) => "Continue?",
-
-        // Spec narrative headings — canonical translation table mirrors
-        // `refs/feature/spec-language.md § Header Translation Table` and the
-        // section-key map in `apps/rt/src/run/spec_sections.rs::variants`.
-        ("heading.spec.context", Locale::PtBr) => "Contexto",
-        ("heading.spec.context", Locale::EnUs) => "Context",
-        ("heading.spec.users", Locale::PtBr) => "Usuários/Stakeholders",
-        ("heading.spec.users", Locale::EnUs) => "Users/Stakeholders",
-        ("heading.spec.metric", Locale::PtBr) => "Métrica de sucesso",
-        ("heading.spec.metric", Locale::EnUs) => "Success Metric",
-        ("heading.spec.non_goals", Locale::PtBr) => "Não-Objetivos",
-        ("heading.spec.non_goals", Locale::EnUs) => "Non-Goals",
-        // Single AC heading key. The legacy `heading.spec.ac_list` twin (byte-
-        // identical strings) was collapsed into this one (TF 2026-06-10-ac-
-        // heading-unico): two keys for the same heading let the scaffold emit
-        // the AC section twice, shadowing the real list for every
-        // `section_block` reader.
-        ("heading.spec.ac", Locale::PtBr) => "Critérios de Aceitação",
-        ("heading.spec.ac", Locale::EnUs) => "Acceptance Criteria",
-        ("heading.spec.tasks", Locale::PtBr) => "Tarefas",
-        ("heading.spec.tasks", Locale::EnUs) => "Tasks",
-        ("heading.spec.files", Locale::PtBr) => "Arquivos",
-        ("heading.spec.files", Locale::EnUs) => "Files",
-        ("heading.spec.limits", Locale::PtBr) => "Limites",
-        ("heading.spec.limits", Locale::EnUs) => "Boundaries",
-        ("heading.spec.summary", Locale::PtBr) => "Resumo",
-        ("heading.spec.summary", Locale::EnUs) => "Summary",
-
-        // Memory-note section headings (rendered by `spec_memory::render_template`).
-        ("heading.memory.origin", Locale::PtBr) => "Origem",
-        ("heading.memory.origin", Locale::EnUs) => "Origin",
-        ("heading.memory.applies_to", Locale::PtBr) => "Aplica-se a",
-        ("heading.memory.applies_to", Locale::EnUs) => "Applies to",
-        ("heading.memory.status", Locale::PtBr) => "Status",
-        ("heading.memory.status", Locale::EnUs) => "Status",
-        ("heading.memory.related", Locale::PtBr) => "Relacionado",
-        ("heading.memory.related", Locale::EnUs) => "Related",
-        ("heading.memory.principles", Locale::PtBr) => "Princípios",
-        ("heading.memory.principles", Locale::EnUs) => "Principles",
-
-        // Memory-note intro lines + index columns. The `{spec}` slot is
-        // already wikilink-wrapped here because the rendered note lives
-        // next to its parent spec; the `{wave}` slot is wrapped by the
-        // caller (it has to resolve "unknown wave" first).
-        ("memory.intro.born_during", Locale::PtBr) => "Nasceu durante [[{spec}]] na onda {wave}.",
-        ("memory.intro.born_during", Locale::EnUs) => "Born during [[{spec}]] in wave {wave}.",
-        ("memory.origin.wave_unknown", Locale::PtBr) => "wave desconhecida",
-        ("memory.origin.wave_unknown", Locale::EnUs) => "wave unknown",
-        ("memory.status.active", Locale::PtBr) => "Ativa.",
-        ("memory.status.active", Locale::EnUs) => "Active.",
-        ("memory.index.title", Locale::PtBr) => "Memória da spec {title}",
-        ("memory.index.title", Locale::EnUs) => "Spec memory — {title}",
-        ("memory.index.intro", Locale::PtBr) => "Conhecimento capturado durante esta spec.",
-        ("memory.index.intro", Locale::EnUs) => "Knowledge captured during this spec.",
-        ("memory.index.empty", Locale::PtBr) => "Nenhum conhecimento capturado ainda.",
-        ("memory.index.empty", Locale::EnUs) => "No knowledge captured yet.",
-        ("memory.index.column.file", Locale::PtBr) => "Arquivo",
-        ("memory.index.column.file", Locale::EnUs) => "File",
-        ("memory.index.column.wave", Locale::PtBr) => "Onda",
-        ("memory.index.column.wave", Locale::EnUs) => "Wave",
-
-        // Orientation artifacts — the once-per-session terrain banner
-        // (`commands/orient.rs`) and the machine-owned `.claude/scan-map.md`
-        // (`commands/scan_claude.rs::render_map`). Both are DISPLAYED to the
-        // developer and injected into the session, so they follow
-        // `mustard.json#lang` (finding #1 of the 2026-07 SOLID audit) — unlike
-        // the internal census/index/search, which stays English by policy. The
-        // `{kind}` / `{count}` slots are interpolated by the caller.
-        ("orient.terrain.header", Locale::PtBr) => {
-            "[Terreno] subprojetos mapeados pelo /scan — leia daqui, não grepe para se orientar:"
-        }
-        ("orient.terrain.header", Locale::EnUs) => {
-            "[Terrain] subprojects mapped by /scan — read from here, don't grep to orient yourself:"
-        }
-        ("orient.census.files_suffix", Locale::PtBr) => " · {count} arquivos",
-        ("orient.census.files_suffix", Locale::EnUs) => " · {count} files",
-        ("orient.census.truncated", Locale::PtBr) => {
-            "\n- (+{count} subprojetos não listados — o censo completo está em `.claude/grain.model.json`)"
-        }
-        ("orient.census.truncated", Locale::EnUs) => {
-            "\n- (+{count} subprojects not listed — the full census is in `.claude/grain.model.json`)"
-        }
-        ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
-        ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
-        ("scan.map.pointer", Locale::PtBr) => {
-            "O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler."
-        }
-        ("scan.map.pointer", Locale::EnUs) => {
-            "The terrain is already in your window (the orientation census injected at session start). To locate: `grep` for a known exact term; `mustard-rt run feature` (digest) for a concept; then read the files it points to — the digest finds where to look, it does not replace reading."
-        }
-
-        // Spec-draft + section-body placeholders. EN strings use the
-        // canonical "fill in <X>." shape so a single `body.contains("fill
-        // in")` assertion can distinguish EN bodies from the PT catalogue
-        // ("Preencher …"). PT mirrors the imperative form.
-        ("placeholder.fill", Locale::PtBr) => "Preencher.",
-        ("placeholder.fill", Locale::EnUs) => "fill in.",
-        ("placeholder.fill_first_line", Locale::PtBr) => "Resuma o princípio em uma linha.",
-        ("placeholder.fill_first_line", Locale::EnUs) => "fill in the principle in one line.",
-        ("placeholder.fill_who_files", Locale::PtBr) => "Quem / quais arquivos.",
-        ("placeholder.fill_who_files", Locale::EnUs) => "fill in who / which files.",
-        ("placeholder.fill_wirelinks", Locale::PtBr) => "Wikilinks relacionados.",
-        ("placeholder.fill_wirelinks", Locale::EnUs) => "fill in related wikilinks.",
-        ("placeholder.fill_why_now", Locale::PtBr) => "Por que agora.",
-        ("placeholder.fill_why_now", Locale::EnUs) => "fill in why now.",
-        ("placeholder.fill_beneficiary", Locale::PtBr) => "Quem se beneficia.",
-        ("placeholder.fill_beneficiary", Locale::EnUs) => "fill in who benefits.",
-        ("placeholder.fill_metric", Locale::PtBr) => "Métrica de sucesso.",
-        ("placeholder.fill_metric", Locale::EnUs) => "fill in the success metric.",
-        ("placeholder.fill_excluded", Locale::PtBr) => "O que fica de fora.",
-        ("placeholder.fill_excluded", Locale::EnUs) => "fill in what stays out.",
-        // `placeholder.see_below` was retired with the single-AC-heading fix
-        // (TF 2026-06-10-ac-heading-unico): the AC PRD entry is no longer
-        // rendered (the list block is the only emitter), so its body needs no
-        // user-facing copy.
-        ("placeholder.fill_files", Locale::PtBr) => "Listar arquivos afetados.",
-        ("placeholder.fill_files", Locale::EnUs) => "fill in affected files.",
-
-        // Trackable `## Checklist` item label (`spec_draft::build_checklist`).
-        // `first_task` is the single hand-trackable task the draft seeds; the
-        // draft no longer materialises per-anchor `touch_file` items (a digest
-        // anchor is a READ candidate, never an implementation target — seeding
-        // write-tracking from it baked lexical noise into the artifact).
-        ("checklist.first_task", Locale::PtBr) => "T1 — primeira tarefa rastreável.",
-        ("checklist.first_task", Locale::EnUs) => "T1 — first trackable task.",
-
-        // EARS acceptance-criteria SKELETONS seeded by `spec_draft::build_input`.
-        // The `<…>` angle-bracket markers are deliberate placeholders the
-        // orchestrator MUST replace with the concrete behaviour — a draft is born
-        // demanding specificity, never a lone `cargo build` rubber stamp. The
-        // `when`/`then` glue is added by `capability::scenario_statement`.
-        ("ac.skeleton.when_primary", Locale::PtBr) => "<o novo comportamento é acionado>",
-        ("ac.skeleton.when_primary", Locale::EnUs) => "<the new behaviour is invoked>",
-        ("ac.skeleton.then_primary", Locale::PtBr) => "<o resultado observável esperado se mantém>",
-        ("ac.skeleton.then_primary", Locale::EnUs) => "<the expected observable outcome holds>",
-        ("ac.skeleton.when_secondary", Locale::PtBr) => "<um caminho de erro ou de borda ocorre>",
-        ("ac.skeleton.when_secondary", Locale::EnUs) => "<an error or edge path occurs>",
-        ("ac.skeleton.then_secondary", Locale::PtBr) => "<o sistema responde conforme especificado>",
-        ("ac.skeleton.then_secondary", Locale::EnUs) => "<the system responds as specified>",
-        ("ac.skeleton.command", Locale::PtBr) => "<comando executável que verifica este critério>",
-        ("ac.skeleton.command", Locale::EnUs) => "<runnable command that verifies this criterion>",
-        // Trailing build-green SAFETY criterion — the ONE tautology the linter
-        // tolerates (last AC), the compile-floor beneath the behaviour ACs above.
-        //
-        // It says BUILD and nothing more, because the command it is minted with is
-        // the project's build command (`ProjectConfig::build_command_or_fallback`)
-        // and nothing more. The older wording promised "and the tests" over a
-        // command that never compiled a test — a safety net reporting on a pass it
-        // never took, which is the exact defect an acceptance criterion exists to
-        // catch. A spec that wants the suite says so in a criterion of its own.
-        ("ac.safety.build_green", Locale::PtBr) => "o build do projeto passa verde",
-        ("ac.safety.build_green", Locale::EnUs) => "the project build passes green",
-
-        // Scan-digest enrichment block injected into the Context section by
-        // `spec_draft::context_enrichment` — the anchors/precedent the digest
-        // already found, so the drafted Context is not an empty placeholder.
-        // The `_weak` variant labels the anchor list when the digest's honest
-        // match report came back `weak`/`none`: the anchors are shown for
-        // transparency but flagged so nobody plans on top of noise.
-        ("context.scan_anchors", Locale::PtBr) => "Âncoras (do scan)",
-        ("context.scan_anchors", Locale::EnUs) => "Anchors (from scan)",
-        ("context.scan_anchors_weak", Locale::PtBr) => {
-            "Âncoras (do scan — BAIXA CONFIANÇA: casamento fraco, confirme lendo antes de usar)"
-        }
-        ("context.scan_anchors_weak", Locale::EnUs) => {
-            "Anchors (from scan — LOW CONFIDENCE: weak match, confirm by reading before relying)"
-        }
-        ("context.scan_slices", Locale::PtBr) => "Fatias recorrentes (precedente a espelhar)",
-        ("context.scan_slices", Locale::EnUs) => "Recurring slices (precedent to mirror)",
-
-        // File-operation markers accepted in a spec's `## Files` bullet lines
-        // (e.g. "- `src/Payable.cs` (create)"). Synonyms for one locale are
-        // `|`-separated DATA, merged across locales by
-        // [`file_marker_synonyms`] — the single origin both the emitting
-        // drafter prose and every validator share, so a pt-BR draft saying
-        // `(novo)` is recognised exactly like the EN canonical `(create)`.
-        ("marker.create", Locale::PtBr) => "(novo)|(criar)",
-        ("marker.create", Locale::EnUs) => "(create)|(new)",
-        ("marker.edit", Locale::PtBr) => "(editar)",
-        ("marker.edit", Locale::EnUs) => "(edit)",
-
-        // Spec A v4 / W3 — wave _summary.md section headings.
-        ("heading.summary.objective", Locale::PtBr) => "Objetivo",
-        ("heading.summary.objective", Locale::EnUs) => "Objective",
-        ("heading.summary.inheritance", Locale::PtBr) => "Herança",
-        ("heading.summary.inheritance", Locale::EnUs) => "Inheritance",
-        ("heading.summary.decisions", Locale::PtBr) => "Decisões",
-        ("heading.summary.decisions", Locale::EnUs) => "Decisions",
-        ("heading.summary.code", Locale::PtBr) => "Código",
-        ("heading.summary.code", Locale::EnUs) => "Code",
-        ("heading.summary.ac", Locale::PtBr) => "Critérios de Aceitação",
-        ("heading.summary.ac", Locale::EnUs) => "Acceptance Criteria",
-        ("heading.summary.verdict", Locale::PtBr) => "Verdict",
-        ("heading.summary.verdict", Locale::EnUs) => "Verdict",
-        ("heading.summary.next_steps", Locale::PtBr) => "Próximos passos",
-        ("heading.summary.next_steps", Locale::EnUs) => "Next steps",
-
-        // Spec A v4 / W3 — wave _context.md section headings.
-        ("heading.context.objective", Locale::PtBr) => "Objetivo",
-        ("heading.context.objective", Locale::EnUs) => "Objective",
-        ("heading.context.inheritance", Locale::PtBr) => "Herança",
-        ("heading.context.inheritance", Locale::EnUs) => "Inheritance",
-        ("heading.context.memory", Locale::PtBr) => "Memória",
-        ("heading.context.memory", Locale::EnUs) => "Memory",
-        ("heading.context.position", Locale::PtBr) => "Posição no mapa",
-        ("heading.context.position", Locale::EnUs) => "Position in map",
-        ("heading.context.next_steps_suggestion", Locale::PtBr) => "Sugestão de próximos passos",
-        ("heading.context.next_steps_suggestion", Locale::EnUs) => "Next-steps suggestion",
-
-        // Spec A v4 / W4 — regression gate verdict labels + messages. These are
-        // MACHINE / log strings (gate verdicts consumed by the orchestrator and
-        // written to telemetry), so they are ENGLISH regardless of the user's
-        // configured locale — only `gate.askuser.*` below stays config-lang.
-        ("gate.verdict.green.label", _) => "Green",
-        ("gate.verdict.amber.label", _) => "Amber",
-        ("gate.verdict.red.label", _) => "Red",
-        ("gate.verdict.green.message", _) => "No regression signals.",
-        ("gate.verdict.amber.message", _) => "Ambiguous signals detected. Confirmation required.",
-        ("gate.verdict.red.message", _) => "Regression detected. Consolidation blocked.",
-
-        // Spec A v4 / W4 — gate signal layer labels (MACHINE / log, English
-        // regardless of locale). Use the `{slot}` placeholders to let callers
-        // interpolate the matched term, function name, etc.
-        ("gate.signal.vocabulary", _) => "Vocabulary matched: {term} (layer {layer})",
-        ("gate.signal.stub", _) => "Stub pattern: {pattern} in {function}",
-        ("gate.signal.snapshot", _) => "Function {function} emptied ({before_lines} → {after_lines} lines)",
-
-        // Spec A v4 / W4 — Amber AskUserQuestion (printed as JSON, consumed by orchestrator).
-        ("gate.askuser.amber.question", Locale::PtBr) => "O gate detectou sinais ambíguos. Autorizar a consolidação?",
-        ("gate.askuser.amber.question", Locale::EnUs) => "The gate detected ambiguous signals. Authorize consolidation?",
-        ("gate.askuser.amber.option_authorize", Locale::PtBr) => "Autorizar",
-        ("gate.askuser.amber.option_authorize", Locale::EnUs) => "Authorize",
-        ("gate.askuser.amber.option_block", Locale::PtBr) => "Bloquear",
-        ("gate.askuser.amber.option_block", Locale::EnUs) => "Block",
-        ("gate.askuser.amber.option_block_desc", Locale::PtBr) => "Bloqueia a consolidação até resolução.",
-        ("gate.askuser.amber.option_block_desc", Locale::EnUs) => "Block consolidation until resolved.",
-
-        // W5 — span-level review (subagent_inject + agent_prompt_render).
-        // Vocabulary inject block surfaced in the child agent's prompt so the
-        // child knows which terms the gate's Moment 1 scan flags.
-        ("gate.vocabulary.inject.heading", Locale::PtBr) => "Vocabulário de regressão",
-        ("gate.vocabulary.inject.heading", Locale::EnUs) => "Regression vocabulary",
-        ("gate.vocabulary.inject.lead", Locale::PtBr) => {
-            "Termos que o gate vai checar no seu plano e diff. Evite usar como justificativa."
-        }
-        ("gate.vocabulary.inject.lead", Locale::EnUs) => {
-            "Terms the gate checks in your plan and diff. Avoid using them as justification."
-        }
-        ("gate.vocabulary.inject.semantic", Locale::PtBr) => "Semântico (alto)",
-        ("gate.vocabulary.inject.semantic", Locale::EnUs) => "Semantic (high)",
-        ("gate.vocabulary.inject.pattern", Locale::PtBr) => "Padrão (médio)",
-        ("gate.vocabulary.inject.pattern", Locale::EnUs) => "Pattern (medium)",
-        // Consolidation block message surfaced when a red verdict closes the wave.
-        ("gate.consolidation.blocked", Locale::PtBr) => {
-            "Consolidação bloqueada: filho {child} retornou verdict vermelho — {message}"
-        }
-        ("gate.consolidation.blocked", Locale::EnUs) => {
-            "Consolidation blocked: child {child} returned a red verdict — {message}"
-        }
-
-        // W8.5 — install-grammars CLI helper.
-        // User-facing strings for `mustard install-grammars`. The helper suggests
-        // tree-sitter grammar repos for detected languages — Mustard never
-        // downloads or compiles. Format is shell-ready markdown so the user can
-        // copy + paste straight into a terminal.
-        ("cli.install_grammars.title", Locale::PtBr) => {
-            "Mustard — sugestões de grammars tree-sitter"
-        }
-        ("cli.install_grammars.title", Locale::EnUs) => {
-            "Mustard — tree-sitter grammar suggestions"
-        }
-        ("cli.install_grammars.lead", Locale::PtBr) => {
-            "Linguagens detectadas neste projeto. Mustard não baixa nem compila — \
-             apenas sugere o repositório canônico e o comando shell."
-        }
-        ("cli.install_grammars.lead", Locale::EnUs) => {
-            "Languages detected in this project. Mustard does not download or build — \
-             it only suggests the canonical repo and the shell command."
-        }
-        ("cli.install_grammars.no_stack", Locale::PtBr) => {
-            "Nenhuma linguagem detectada via sinais de manifesto. Nada a sugerir."
-        }
-        ("cli.install_grammars.no_stack", Locale::EnUs) => {
-            "No language detected via manifest signals. Nothing to suggest."
-        }
-        ("cli.install_grammars.repo_label", Locale::PtBr) => "repositório",
-        ("cli.install_grammars.repo_label", Locale::EnUs) => "repo",
-        ("cli.install_grammars.install_cmd_label", Locale::PtBr) => "instalar",
-        ("cli.install_grammars.install_cmd_label", Locale::EnUs) => "install",
-        ("cli.install_grammars.already_installed", Locale::PtBr) => "já instalada",
-        ("cli.install_grammars.already_installed", Locale::EnUs) => "already installed",
-        ("cli.install_grammars.unknown_lang_fallback", Locale::PtBr) => {
-            "{lang}: grammar não catalogado — buscar em https://tree-sitter.github.io/tree-sitter/#parsers"
-        }
-        ("cli.install_grammars.unknown_lang_fallback", Locale::EnUs) => {
-            "{lang}: grammar not catalogued — search https://tree-sitter.github.io/tree-sitter/#parsers"
-        }
-        ("cli.install_grammars.footer", Locale::PtBr) => {
-            "Copie o bloco `instalar` no seu shell. Mustard volta a usar a grammar \
-             automaticamente assim que `tree-sitter generate` finalizar."
-        }
-        ("cli.install_grammars.footer", Locale::EnUs) => {
-            "Copy the `install` block into your shell. Mustard will pick up the grammar \
-             automatically once `tree-sitter generate` finishes."
-        }
-
-        // Stop gate (close-the-qa-verification-loop) — the text of the block
-        // returned to Claude when the active+approved spec's QA criteria do not
-        // pass. Config-language (it is user-facing feedback, not a machine log),
-        // so it lives here rather than embedded in the gate code. `{ac}` is the
-        // id of the first failing criterion, interpolated by the caller.
-        ("stopgate.block.reason", Locale::PtBr) => {
-            "Verificação de QA não passou: o critério {ac} ainda falha."
-        }
-        ("stopgate.block.reason", Locale::EnUs) => {
-            "QA verification did not pass: criterion {ac} still fails."
-        }
-        ("stopgate.block.guidance", Locale::PtBr) => {
-            "Corrija-o e finalize o turno — eu re-executo os critérios e só libero a parada quando todos passarem."
-        }
-        ("stopgate.block.guidance", Locale::EnUs) => {
-            "Fix it and end the turn — I re-run the criteria and only release the stop once all pass."
-        }
-
-        // Work-branch gate — the dirty-tree note appended to a checkout-failure
-        // verdict, and the reconciliation warning when the run continues on the
-        // branch actually active. Config-language: both are user-facing hook
-        // feedback (found in review, 2026-07-30: they shipped hardcoded in one
-        // locale). `{paths}`/`{more}`, `{target}`/`{error}`/`{actual}`/`{note}`
-        // are interpolated by the gate.
-        ("workbranch.dirty.note", Locale::PtBr) => " Árvore suja: {paths}{more}.",
-        ("workbranch.dirty.note", Locale::EnUs) => " Dirty tree: {paths}{more}.",
-        ("workbranch.reconcile.warn", Locale::PtBr) => {
-            "não consegui criar a branch '{target}': {error} — seguindo na branch atual \
-             '{actual}'; registro do work branch reconciliado de '{target}' para '{actual}'.{note}"
-        }
-        ("workbranch.reconcile.warn", Locale::EnUs) => {
-            "could not create branch '{target}': {error} — continuing on the current branch \
-             '{actual}'; the work branch record was reconciled from '{target}' to '{actual}'.{note}"
-        }
-
-        // Work-branch REFUSAL — the checkout holds another unit's branch with
-        // uncommitted files, so cutting the second unit here would carry them
-        // off. Said by BOTH doors (the write gate and the `spec-draft`
-        // cut), so it lives in the catalogue rather than at either surface.
-        // `{current}`/`{target}`/`{paths}`/`{more}` are interpolated by
-        // `work_branch::BusyCheckout::reason`.
-        //
-        // `{paths}` names the operator's own work — what WOULD ride along. The
-        // census the tool itself wrote has sentences of its own below
-        // (`workbranch.busy.census_*`): the remedy differs, so the sentence
-        // does.
-        ("workbranch.busy.refusal", Locale::PtBr) => {
-            "O checkout está na branch '{current}', de OUTRA unidade de trabalho, com trabalho \
-             NÃO commitado em: {paths}{more}. Criar '{target}' aqui levaria essas edições junto, \
-             para dentro de outra unidade. Commite ou guarde (`git stash`) esse trabalho antes de \
-             abrir a segunda unidade."
-        }
-        ("workbranch.busy.refusal", Locale::EnUs) => {
-            "The checkout is on branch '{current}', which belongs to ANOTHER work unit, with \
-             UNCOMMITTED work in: {paths}{more}. Cutting '{target}' here would carry those edits \
-             along into a different unit. Commit or stash (`git stash`) that work before opening \
-             the second unit."
-        }
-
-        // The SAME refusal when the probe could not answer at all (`git status`
-        // failed, or answered in a shape the parser does not understand). It is
-        // a distinct sentence because there are no paths to name, and rendering
-        // the one above with an empty list would print "work in: ." — which
-        // teaches the operator that the refusal is noise. `{current}`/`{target}`
-        // are interpolated by `work_branch::BusyCheckout::reason`.
-        ("workbranch.busy.unmeasured", Locale::PtBr) => {
-            "O checkout está na branch '{current}', de OUTRA unidade de trabalho, e NÃO consegui \
-             medir o que há de não commitado ali (o `git status` não respondeu). Criar '{target}' \
-             aqui levaria junto qualquer trabalho pendente, para dentro de outra unidade. Commite \
-             ou guarde (`git stash`) o que houver — ou conserte o estado do git — antes de abrir a \
-             segunda unidade."
-        }
-        ("workbranch.busy.unmeasured", Locale::EnUs) => {
-            "The checkout is on branch '{current}', which belongs to ANOTHER work unit, and the \
-             uncommitted work there could NOT be measured (`git status` did not answer). Cutting \
-             '{target}' here would carry whatever is pending along into a different unit. Commit \
-             or stash (`git stash`) whatever is there — or repair the git state — before opening \
-             the second unit."
-        }
-
-        // The SAME refusal when the only dirty thing is the CENSUS — the tool's
-        // own output — and the checkout is not the base it is recorded on
-        // (another unit's branch, a protected branch that is not the base, a
-        // detached HEAD). The census must never travel into a unit's branch,
-        // and it has nowhere to land here, so the sentence names the base it
-        // belongs to instead of blaming the operator for a write that is the
-        // tool's. `{current}`/`{target}`/`{base}`/`{paths}`/`{more}` are
-        // interpolated by `work_branch::BusyCheckout::reason`.
-        ("workbranch.busy.census_off_base", Locale::PtBr) => {
-            "O checkout está na branch '{current}' e a única coisa não commitada na árvore são \
-             artefatos do censo que o próprio Mustard escreveu: {paths}{more}. O censo só é \
-             gravado na base '{base}', e criar '{target}' aqui o levaria para dentro da unidade \
-             nova. Volte para '{base}' e abra a unidade de lá, ou commite/guarde (`git stash`) \
-             esses arquivos antes."
-        }
-        ("workbranch.busy.census_off_base", Locale::EnUs) => {
-            "The checkout is on branch '{current}' and the only uncommitted thing in the tree is \
-             census output Mustard itself wrote: {paths}{more}. The census is recorded on the \
-             base '{base}' only, and cutting '{target}' here would carry it into the new unit. \
-             Go back to '{base}' and open the unit from there, or commit/stash (`git stash`) \
-             those files first."
-        }
-
-        // …and when the checkout IS the base, dirty only with the census, but
-        // the base is PROTECTED and the door asking is a cut or a hook — which
-        // may not write a commit on a protected branch behind the operator's
-        // back. The explicit open is the one door that records there, so it is
-        // named as the way through.
-        ("workbranch.busy.census_protected", Locale::PtBr) => {
-            "A base protegida '{current}' está suja só com artefatos do censo que o próprio \
-             Mustard escreveu: {paths}{more}. Esta porta não cria commit numa base protegida, e \
-             criar '{target}' aqui levaria o censo para dentro da unidade nova. Reabra a unidade \
-             pela porta explícita (`emit-pipeline --kind pipeline.kind`), que grava o censo na \
-             base, ou commite esses arquivos você mesmo."
-        }
-        ("workbranch.busy.census_protected", Locale::EnUs) => {
-            "The protected base '{current}' is dirty only with census output Mustard itself \
-             wrote: {paths}{more}. This door does not write a commit on a protected base, and \
-             cutting '{target}' here would carry the census into the new unit. Re-open the unit \
-             through the explicit door (`emit-pipeline --kind pipeline.kind`), which records the \
-             census on the base, or commit those files yourself."
-        }
-
-        // The base this move is about TRAILS its remote and could not be
-        // fast-forwarded — a diverged base, one checked out elsewhere, a dirty
-        // file in the way that is the operator's. Nothing is cut and nothing is
-        // recorded: a unit cut from a stale base re-does merged work, and a
-        // census commit written on it would make it diverge for good. Git's own
-        // words travel in `{error}`; `{base}` is interpolated by
-        // `work_branch::BusyCheckout::reason`.
-        ("workbranch.busy.base_stale", Locale::PtBr) => {
-            "A base '{base}' está atrás de origin/{base} e não pôde ser avançada — git disse: \
-             {error}. Nada foi cortado nem gravado: uma unidade cortada de uma base velha refaz \
-             trabalho já integrado. Coloque '{base}' em dia (`git pull --ff-only origin {base}` \
-             parado nela; se ela divergiu, resolva a divergência primeiro) e tente de novo."
-        }
-        ("workbranch.busy.base_stale", Locale::EnUs) => {
-            "The base '{base}' is behind origin/{base} and could not be advanced — git said: \
-             {error}. Nothing was cut and nothing recorded: a unit cut from a stale base re-does \
-             work that is already merged. Bring '{base}' up to date (`git pull --ff-only origin \
-             {base}` while on it; if it has diverged, resolve that first) and try again."
-        }
-
-        // The base trails its remote, the advance IS a fast-forward, and the
-        // only thing in its way is the OPERATOR's uncommitted work in files
-        // origin also changed. The census beside it is the tool's and is set
-        // aside on its own; their files are named, and the remedy is the stash
-        // that unblocks the advance — a `git pull` would fail on the very same
-        // files. `{base}`/`{paths}`/`{more}` are interpolated by
-        // `work_branch::BusyCheckout::reason`.
-        ("workbranch.busy.base_blocked", Locale::PtBr) => {
-            "A base '{base}' está atrás de origin/{base}, e avançá-la sobrescreveria trabalho \
-             NÃO commitado seu em: {paths}{more}. Nada foi cortado nem gravado, e nada foi \
-             tocado. Guarde esse trabalho (`git stash push -- <caminhos>`), coloque '{base}' em \
-             dia (`git pull --ff-only origin {base}`), traga-o de volta (`git stash pop`) e \
-             tente de novo."
-        }
-        ("workbranch.busy.base_blocked", Locale::EnUs) => {
-            "The base '{base}' is behind origin/{base}, and advancing it would overwrite \
-             UNCOMMITTED work of yours in: {paths}{more}. Nothing was cut, nothing recorded, \
-             and nothing touched. Stash that work (`git stash push -- <paths>`), bring '{base}' \
-             up to date (`git pull --ff-only origin {base}`), take it back (`git stash pop`) \
-             and try again."
-        }
-
-        // Work-branch BASE UNKNOWN — an emergency unit whose base nothing ever
-        // recorded, in a project declaring several it could have been cut from.
-        // Nothing is cut, and the operator is told: the harness used to take the
-        // outermost candidate and mention it on stderr, which a PreToolUse hook
-        // says to nobody (it exits 0). `{target}`/`{candidates}` are
-        // interpolated by the gate.
-        ("workbranch.base.unknown", Locale::PtBr) => {
-            "Não dá para saber de qual base '{target}' deve sair: este projeto declara várias \
-             candidatas ({candidates}) e nada registrou a escolha, então a branch NÃO foi criada. \
-             Reabra a unidade com a base explícita (--base) — chutar aqui aponta o trabalho para \
-             uma base que ninguém escolheu."
-        }
-        ("workbranch.base.unknown", Locale::EnUs) => {
-            "There is no telling which base '{target}' should be cut from: this project declares \
-             several candidates ({candidates}) and nothing recorded the choice, so the branch was \
-             NOT created. Re-open the unit with an explicit base (--base) — guessing here aims the \
-             work at a base nobody chose."
-        }
-
-        // BASE GATE — o censo que sobrou sujo na árvore e o portão acabou de
-        // gravar por conta própria, em vez de deixá-lo para o corte da próxima
-        // unidade recusar como se fosse trabalho do operador. Frase de usuário
-        // (sai no stderr da abertura do pipeline), então mora no catálogo como
-        // manda a nota do topo deste arquivo, e não embutida no portão em um
-        // idioma só. `{paths}` é interpolado por
-        // `base_gate::commit_census`, chamado só de
-        // `census_settlement::settle`.
-        ("basegate.census.recorded", Locale::PtBr) => {
-            "base-gate: os artefatos do censo ({paths}) eram a única coisa não commitada na \
-             árvore — foram gravados aqui mesmo, na base, para que o corte da próxima unidade \
-             não cobre de você uma escrita que é da ferramenta."
-        }
-        ("basegate.census.recorded", Locale::EnUs) => {
-            "base-gate: the census artifacts ({paths}) were the only uncommitted thing in the \
-             tree — they were recorded right here, on the base, so the next unit's branch cut \
-             does not charge you for a write that is the tool's."
-        }
-        // …and the three ways the recording can NOT happen, one line each. A
-        // recording that fails in silence leaves the census dirty, and the next
-        // cut then refuses naming it as the operator's uncommitted work with no
-        // prior notice the tool left it there. `Proceed` after a failed
-        // recording is a different fact from `Proceed` with nothing owed, and
-        // these lines are what says which.
-        ("basegate.census.nothing", Locale::PtBr) => {
-            "base-gate: os artefatos do censo ({paths}) não deixaram nada para o git gravar — \
-             já estão iguais ao que a base tem, ou o git não os enxerga."
-        }
-        ("basegate.census.nothing", Locale::EnUs) => {
-            "base-gate: the census artifacts ({paths}) left nothing for git to record — they \
-             already match what the base has, or git does not see them."
-        }
-        ("basegate.census.not_clean", Locale::PtBr) => {
-            "base-gate: os artefatos do censo ({paths}) NÃO foram gravados — a árvore carrega \
-             outras mudanças, e um commit aqui as varreria junto. Eles ficam para você commitar \
-             ao lado do seu trabalho."
-        }
-        ("basegate.census.not_clean", Locale::EnUs) => {
-            "base-gate: the census artifacts ({paths}) were NOT recorded — the tree carries other \
-             changes, and a commit here would sweep them up. They are left for you to commit \
-             beside your work."
-        }
-        ("basegate.census.unavailable", Locale::PtBr) => {
-            "base-gate: os artefatos do censo ({paths}) NÃO foram gravados — o git não aceitou o \
-             commit (sem `user.email`, um hook que recusou, um erro ao indexar). Eles ficam sujos \
-             na árvore, e o próximo corte vai nomeá-los; commite-os você mesmo ou conserte o git."
-        }
-        ("basegate.census.unavailable", Locale::EnUs) => {
-            "base-gate: the census artifacts ({paths}) were NOT recorded — git would not take the \
-             commit (no `user.email`, a hook that declined, a staging error). They stay dirty in \
-             the tree and the next cut will name them; commit them yourself or repair git."
-        }
-
-        // Work-unit SURFACING — the three places the harness says out loud that
-        // a work unit is somewhere other than the checkout, or that the exit
-        // ritual is still owed. All three are user-facing (a listing legend, a
-        // status-bar label, a session-start advisory), so they are
-        // config-language and live here rather than inline at the surface.
-        //
-        // `specs.location.remote_only` explains the third value of the listing's
-        // location column: a unit alive only on a remote, which the ref sweep
-        // now reaches. `{count}` / `{branches}` in the advisory are
-        // interpolated by the caller.
-        ("specs.location.remote_only", Locale::PtBr) => {
-            "Onde: {remoto}/{branch}=spec só no remoto, nenhuma branch local carrega o \
-             diretório (busque a branch antes de agir)"
-        }
-        ("specs.location.remote_only", Locale::EnUs) => {
-            "Where: {remote}/{branch}=spec only on the remote, no local branch carries the \
-             directory (fetch the branch before acting)"
-        }
-        ("statusline.prune.label", Locale::PtBr) => "a podar",
-        ("statusline.prune.label", Locale::EnUs) => "to prune",
-        ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
-        ("statusline.harness.inert", Locale::EnUs) => "harness inert",
-        // Dormant is NOT inert: inert means someone switched the plugin off,
-        // dormant means its binary never downloaded. Same consequence (no hook
-        // runs), opposite remedy — so they must never share a label.
-        ("statusline.harness.dormant", Locale::PtBr) => "harness dormente",
-        ("statusline.harness.dormant", Locale::EnUs) => "harness dormant",
-        ("crystallise.nudge", Locale::PtBr) => {
-            "[Mustard] A unidade `{spec}` está aberta e o material da conversa não muda há \
-             várias rodadas. O que foi assentado aqui — termos definidos, decisões com a \
-             razão, achados com arquivo:linha — vive só nesta janela até ser gravado, e uma \
-             compactação o dilui. Grave agora em `.claude/.cache/spec-material.json` e siga. \
-             Se nada foi assentado desde a última gravação, diga isso ao operador em uma \
-             frase e prossiga — este aviso não se repete para o mesmo estado."
-        }
-        ("crystallise.nudge", Locale::EnUs) => {
-            "[Mustard] Unit `{spec}` is open and the conversation material has not changed \
-             for several turns. What was settled here — terms defined, decisions with their \
-             reason, findings with file:line — lives only in this window until it is written \
-             down, and a compaction dilutes it. Write it to \
-             `.claude/.cache/spec-material.json` now and carry on. If nothing has been \
-             settled since the last write, say so to the operator in one sentence and \
-             proceed — this notice does not repeat for the same state."
-        }
-        ("prune.pending.notice", Locale::PtBr) => {
-            "[Mustard] {count} unidade(s) de trabalho já mergeada(s) ainda têm branch viva: \
-             {branches}. Diga ao usuário que o ritual de saída ficou pendente e ofereça \
-             `mustard-rt run git-settle --report` para conferir o estado de cada uma e \
-             `mustard-rt run git-settle --unit <branch>` para podar. Aviso, nunca bloqueio."
-        }
-        ("prune.pending.notice", Locale::EnUs) => {
-            "[Mustard] {count} merged work unit(s) still have a live branch: {branches}. \
-             Tell the user the exit ritual is outstanding and offer \
-             `mustard-rt run git-settle --report` to check each one's state and \
-             `mustard-rt run git-settle --unit <branch>` to prune. Advisory, never blocking."
-        }
-
-        // Scope-classify `## Files` diagnostics — the three ZERO-PATH shapes,
-        // each named for what was actually measured (a diagnostic must never
-        // assert "empty" about a section that has content). Config-language:
-        // the warning is user-facing feedback in the spec's own language.
-        ("scope.files.absent", Locale::PtBr) => {
-            "## Arquivos ausente — fileCount=0; scope=abstain até autorar o censo \
-             (adicione ## Arquivos e re-rode)"
-        }
-        ("scope.files.absent", Locale::EnUs) => {
-            "## Files section absent — fileCount=0; scope=abstain until the census is \
-             authored (add ## Files and re-run)"
-        }
-        ("scope.files.empty", Locale::PtBr) => {
-            "## Arquivos vazio/placeholder — fileCount=0; scope=abstain até autorar o \
-             censo (preencha ## Arquivos e re-rode)"
-        }
-        ("scope.files.empty", Locale::EnUs) => {
-            "## Files section empty/placeholder — fileCount=0; scope=abstain until the \
-             census is authored (fill ## Files and re-run)"
-        }
-        ("scope.files.unrecognised", Locale::PtBr) => {
-            "## Arquivos tem conteúdo, mas nenhum caminho foi reconhecido — fileCount=0; \
-             scope=abstain; declare cada arquivo como bullet `- caminho` ou linha de \
-             tabela com coluna de caminho, e re-rode"
-        }
-        ("scope.files.unrecognised", Locale::EnUs) => {
-            "## Files has content, but no path was recognised — fileCount=0; \
-             scope=abstain; declare each file as a `- path` bullet or a table row with \
-             a path column, then re-run"
-        }
-
-        // Resumo da spec em HTML (`apps/rt/src/commands/spec/spec_doc.rs`) — o
-        // documento que o usuário lê ANTES de aprovar. Texto de usuário, então
-        // segue o `specLang` e mora aqui, não embutido no comando. `{wave}` e
-        // `{term}` são preenchidos pelo chamador.
-        ("doc.kind.approval", Locale::PtBr) => "spec para aprovar",
-        ("doc.kind.approval", Locale::EnUs) => "spec awaiting approval",
-        ("doc.kind.summary", Locale::PtBr) => "resumo da spec",
-        ("doc.kind.summary", Locale::EnUs) => "spec summary",
-        ("doc.meta.spec", _) => "spec",
-        ("doc.meta.branch", _) => "branch",
-        ("doc.meta.base", Locale::PtBr) => "sai de",
-        ("doc.meta.base", Locale::EnUs) => "cut from",
-        ("doc.stage.analyze", Locale::PtBr) => "em análise",
-        ("doc.stage.analyze", Locale::EnUs) => "under analysis",
-        ("doc.stage.awaiting", Locale::PtBr) => "aguardando aprovação",
-        ("doc.stage.awaiting", Locale::EnUs) => "awaiting approval",
-        ("doc.stage.approved", Locale::PtBr) => "aprovada, execução por começar",
-        ("doc.stage.approved", Locale::EnUs) => "approved, execution not started",
-        ("doc.stage.execute", Locale::PtBr) => "em execução",
-        ("doc.stage.execute", Locale::EnUs) => "executing",
-        ("doc.stage.review", Locale::PtBr) => "em revisão",
-        ("doc.stage.review", Locale::EnUs) => "under review",
-        ("doc.stage.verify", Locale::PtBr) => "em verificação",
-        ("doc.stage.verify", Locale::EnUs) => "under verification",
-        ("doc.stage.close", Locale::PtBr) => "fechando",
-        ("doc.stage.close", Locale::EnUs) => "closing",
-        ("doc.stage.completed", Locale::PtBr) => "fechada",
-        ("doc.stage.completed", Locale::EnUs) => "closed",
-        ("doc.summary.lead", Locale::PtBr) => "Resumo.",
-        ("doc.summary.lead", Locale::EnUs) => "Summary.",
-        ("doc.section.where", Locale::PtBr) => "Onde estamos",
-        ("doc.section.where", Locale::EnUs) => "Where we are",
-        ("doc.section.clarified", Locale::PtBr) => "O que foi esclarecido",
-        ("doc.section.clarified", Locale::EnUs) => "What was clarified",
-        ("doc.section.decisions", Locale::PtBr) => "Decisões",
-        ("doc.section.decisions", Locale::EnUs) => "Decisions",
-        ("doc.section.risks", Locale::PtBr) => "Riscos",
-        ("doc.section.risks", Locale::EnUs) => "Risks",
-        ("doc.section.flow", Locale::PtBr) => "Antes e depois",
-        ("doc.section.flow", Locale::EnUs) => "Before and after",
-        ("doc.section.spec", Locale::PtBr) => "A spec",
-        ("doc.section.spec", Locale::EnUs) => "The spec",
-        ("doc.section.criteria", Locale::PtBr) => "Critérios de aceite",
-        ("doc.section.criteria", Locale::EnUs) => "Acceptance criteria",
-        ("doc.section.waves", Locale::PtBr) => "Ondas e skills",
-        ("doc.section.waves", Locale::EnUs) => "Waves and skills",
-        ("doc.section.evidence", Locale::PtBr) => "Evidências",
-        ("doc.section.evidence", Locale::EnUs) => "Evidence",
-        ("doc.section.pending", Locale::PtBr) => "Pendências abertas",
-        ("doc.section.pending", Locale::EnUs) => "Open pending items",
-        ("doc.section.next", Locale::PtBr) => "Próximo passo",
-        ("doc.section.next", Locale::EnUs) => "Next step",
-        // Os sete passos do processo, na ordem em que acontecem.
-        ("doc.step.analyze.name", Locale::PtBr) => "Análise",
-        ("doc.step.analyze.name", Locale::EnUs) => "Analysis",
-        ("doc.step.analyze.desc", Locale::PtBr) => "ler o código e a conversa.",
-        ("doc.step.analyze.desc", Locale::EnUs) => "read the code and the conversation.",
-        ("doc.step.plan.name", Locale::PtBr) => "Plano",
-        ("doc.step.plan.name", Locale::EnUs) => "Plan",
-        ("doc.step.plan.desc", Locale::PtBr) => {
-            "spec e ondas escritas, e cada critério rodado para provar que hoje ele falha."
-        }
-        ("doc.step.plan.desc", Locale::EnUs) => {
-            "spec and waves written, and each criterion run to prove it fails today."
-        }
-        ("doc.step.approval.name", Locale::PtBr) => "Aprovação",
-        ("doc.step.approval.name", Locale::EnUs) => "Approval",
-        ("doc.step.approval.desc", Locale::PtBr) => "você aprova com `/mustard:spec`.",
-        ("doc.step.approval.desc", Locale::EnUs) => "you approve with `/mustard:spec`.",
-        ("doc.step.execute.name", Locale::PtBr) => "Execução",
-        ("doc.step.execute.name", Locale::EnUs) => "Execution",
-        ("doc.step.execute.desc", Locale::PtBr) => {
-            "um agente por onda escreve o código, uma onda depois da outra."
-        }
-        ("doc.step.execute.desc", Locale::EnUs) => {
-            "one agent per wave writes the code, one wave after another."
-        }
-        ("doc.step.review.name", Locale::PtBr) => "Revisão",
-        ("doc.step.review.name", Locale::EnUs) => "Review",
-        ("doc.step.review.desc", Locale::PtBr) => "um agente revisor tenta achar falhas.",
-        ("doc.step.review.desc", Locale::EnUs) => "a reviewer agent tries to find flaws.",
-        ("doc.step.verify.name", Locale::PtBr) => "Verificação",
-        ("doc.step.verify.name", Locale::EnUs) => "Verification",
-        ("doc.step.verify.desc", Locale::PtBr) => "os critérios rodam de novo e agora precisam passar.",
-        ("doc.step.verify.desc", Locale::EnUs) => "the criteria run again and must now pass.",
-        ("doc.step.close.name", Locale::PtBr) => "Fechamento",
-        ("doc.step.close.name", Locale::EnUs) => "Closing",
-        ("doc.step.close.desc", Locale::PtBr) => "pull request e merge na base.",
-        ("doc.step.close.desc", Locale::EnUs) => "pull request and merge into the base.",
-        ("doc.step.here", Locale::PtBr) => "Estamos aqui.",
-        ("doc.step.here", Locale::EnUs) => "We are here.",
-        ("doc.col.question", Locale::PtBr) => "Pergunta",
-        ("doc.col.question", Locale::EnUs) => "Question",
-        ("doc.col.answer", Locale::PtBr) => "Resposta",
-        ("doc.col.answer", Locale::EnUs) => "Answer",
-        ("doc.clarified.definition", Locale::PtBr) => "O que quer dizer {term} aqui?",
-        ("doc.clarified.definition", Locale::EnUs) => "What does {term} mean here?",
-        ("doc.clarified.terms", Locale::PtBr) => "Termos definidos na rodada de termos",
-        ("doc.clarified.terms", Locale::EnUs) => "Terms settled in the term round",
-        ("doc.clarified.reason", Locale::PtBr) => "Por que não houve rodada de termos?",
-        ("doc.clarified.reason", Locale::EnUs) => "Why was there no term round?",
-        ("doc.clarified.notes", Locale::PtBr) => "Nota:",
-        ("doc.clarified.notes", Locale::EnUs) => "Note:",
-        ("doc.col.severity", Locale::PtBr) => "Gravidade",
-        ("doc.col.severity", Locale::EnUs) => "Severity",
-        ("doc.col.risk", Locale::PtBr) => "Risco",
-        ("doc.col.risk", Locale::EnUs) => "Risk",
-        ("doc.col.mitigation", Locale::PtBr) => "O que atenua",
-        ("doc.col.mitigation", Locale::EnUs) => "What mitigates it",
-        ("doc.severity.alta", Locale::PtBr) => "Alta",
-        ("doc.severity.alta", Locale::EnUs) => "High",
-        ("doc.severity.media", Locale::PtBr) => "Média",
-        ("doc.severity.media", Locale::EnUs) => "Medium",
-        ("doc.severity.baixa", Locale::PtBr) => "Baixa",
-        ("doc.severity.baixa", Locale::EnUs) => "Low",
-        ("doc.criteria.lead", Locale::PtBr) => {
-            "Cada critério é um comando. Antes de o código existir ele precisa falhar, e é \
-             essa falha que prova que ele mede algo novo; depois da entrega, precisa passar."
-        }
-        ("doc.criteria.lead", Locale::EnUs) => {
-            "Each criterion is a command. Before the code exists it must fail, and that \
-             failure is what proves it measures something new; after delivery it must pass."
-        }
-        ("doc.col.id", _) => "Id",
-        ("doc.col.criterion", Locale::PtBr) => "Quando… então…",
-        ("doc.col.criterion", Locale::EnUs) => "When… then…",
-        ("doc.col.wave", Locale::PtBr) => "Onda",
-        ("doc.col.wave", Locale::EnUs) => "Wave",
-        ("doc.col.proof", Locale::PtBr) => "Hoje",
-        ("doc.col.proof", Locale::EnUs) => "Today",
-        ("doc.proof.red", Locale::PtBr) => "falha provada",
-        ("doc.proof.red", Locale::EnUs) => "failure proven",
-        ("doc.proof.confirmed", Locale::PtBr) => "confirmado",
-        ("doc.proof.confirmed", Locale::EnUs) => "confirmed",
-        ("doc.proof.exempt", Locale::PtBr) => "isento",
-        ("doc.proof.exempt", Locale::EnUs) => "exempt",
-        ("doc.proof.none", Locale::PtBr) => "sem prova",
-        ("doc.proof.none", Locale::EnUs) => "not proven",
-        ("doc.waves.lead", Locale::PtBr) => {
-            "As skills são os moldes que o agente de cada onda carrega antes de escrever os \
-             arquivos que elas governam. A lista sai do cruzamento dos arquivos da onda com \
-             as pastas de cada molde."
-        }
-        ("doc.waves.lead", Locale::EnUs) => {
-            "Skills are the molds each wave's agent loads before writing the files they \
-             govern. The list comes from crossing the wave's files with each mold's folders."
-        }
-        ("doc.wave.done", Locale::PtBr) => "concluída",
-        ("doc.wave.done", Locale::EnUs) => "done",
-        ("doc.wave.skills", _) => "Skills",
-        ("doc.wave.covers", Locale::PtBr) => "cobre",
-        ("doc.wave.covers", Locale::EnUs) => "covers",
-        ("doc.wave.criteria", Locale::PtBr) => "Critérios",
-        ("doc.wave.criteria", Locale::EnUs) => "Criteria",
-        ("doc.wave.obligations", Locale::PtBr) => "Obrigação externa",
-        ("doc.wave.obligations", Locale::EnUs) => "External obligation",
-        ("doc.col.seen", Locale::PtBr) => "O que foi visto no código",
-        ("doc.col.seen", Locale::EnUs) => "What was seen in the code",
-        ("doc.col.where", Locale::PtBr) => "Onde",
-        ("doc.col.where", Locale::EnUs) => "Where",
-        ("doc.col.pending", Locale::PtBr) => "Pendência",
-        ("doc.col.pending", Locale::EnUs) => "Pending item",
-        ("doc.next.analyze", Locale::PtBr) => "A análise segue; a spec é escrita no passo seguinte.",
-        ("doc.next.analyze", Locale::EnUs) => "Analysis continues; the spec is written in the next step.",
-        ("doc.next.approve", Locale::PtBr) => {
-            "Para aprovar, digite `/mustard:spec` neste branch. A onda 1 começa."
-        }
-        ("doc.next.approve", Locale::EnUs) => {
-            "To approve, type `/mustard:spec` on this branch. Wave 1 starts."
-        }
-        ("doc.next.adjust", Locale::PtBr) => "Para ajustar, diga o que mudar.",
-        ("doc.next.adjust", Locale::EnUs) => "To adjust, say what to change.",
-        ("doc.next.approved", Locale::PtBr) => "A spec está aprovada. `/mustard:spec` começa a onda 1.",
-        ("doc.next.approved", Locale::EnUs) => "The spec is approved. `/mustard:spec` starts wave 1.",
-        ("doc.next.execute", Locale::PtBr) => "A execução segue na onda {wave}, com `/mustard:spec`.",
-        ("doc.next.execute", Locale::EnUs) => "Execution continues with wave {wave}, via `/mustard:spec`.",
-        ("doc.next.execute_done", Locale::PtBr) => "Todas as ondas terminaram; a revisão vem a seguir.",
-        ("doc.next.execute_done", Locale::EnUs) => "Every wave is done; review comes next.",
-        ("doc.next.review", Locale::PtBr) => {
-            "A revisão e a verificação estão rodando; o resultado aparece nesta página."
-        }
-        ("doc.next.review", Locale::EnUs) => {
-            "Review and verification are running; the result shows up on this page."
-        }
-        ("doc.next.close", Locale::PtBr) => "Falta fechar: pull request e merge na base.",
-        ("doc.next.close", Locale::EnUs) => "What is left is closing: pull request and merge into the base.",
-        ("doc.next.completed", Locale::PtBr) => "A unidade está fechada. Não há mais nada a fazer aqui.",
-        ("doc.next.completed", Locale::EnUs) => "The unit is closed. Nothing else to do here.",
-        ("doc.footer", Locale::PtBr) => {
-            "Montado pelo Mustard a partir da spec, das ondas, do material da conversa, da \
-             prova dos critérios e da lista de pendências."
-        }
-        ("doc.footer", Locale::EnUs) => {
-            "Built by Mustard from the spec, the waves, the conversation material, the \
-             criteria proof and the pending list."
-        }
-
-        // Entrega do resumo no fim da resposta
-        // (`apps/rt/src/hooks/task/spec_doc_present.rs`) — mensagem ao usuário,
-        // então segue o `specLang` e o tom. Sem parênteses no texto: o tom
-        // técnico os apaga. `{file}`, `{url}` e `{command}` vêm do chamador; o
-        // comando em si não se traduz.
-        ("deliver.head.awaiting", Locale::PtBr) => {
-            "Mustard · spec para aprovar: o {file} mudou. Formas de abrir:"
-        }
-        ("deliver.head.awaiting", Locale::EnUs) => {
-            "Mustard · spec awaiting approval: {file} changed. Ways to open it:"
-        }
-        ("deliver.head.summary", Locale::PtBr) => {
-            "Mustard · resumo da spec: o {file} mudou. Formas de abrir:"
-        }
-        ("deliver.head.summary", Locale::EnUs) => {
-            "Mustard · spec summary: {file} changed. Ways to open it:"
-        }
-        ("deliver.click", Locale::PtBr) => "- Clique: {url}",
-        ("deliver.click", Locale::EnUs) => "- Click: {url}",
-        ("deliver.windows", Locale::PtBr) => "- Windows, no PowerShell: {command}",
-        ("deliver.windows", Locale::EnUs) => "- Windows, in PowerShell: {command}",
-        ("deliver.macos", _) => "- macOS: {command}",
-        ("deliver.linux", _) => "- Linux: {command}",
-        ("deliver.publish", Locale::PtBr) => {
-            "- Peça ao assistente para publicar a página no claude.ai."
-        }
-        ("deliver.publish", Locale::EnUs) => "- Ask the assistant to publish it as a claude.ai page.",
-
-        // Pendências abertas (`apps/rt/src/hooks/session/session_start_inject.rs`
-        // e `apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}` vêm
-        // do chamador; a lista usa a grafia de `format_pending_items`.
-        ("pending.notice", Locale::PtBr) => {
-            "[Mustard] Trabalho combinado ainda aberto ({count}): {items}. Esses itens vivem \
-             fora de toda unidade e sobrevivem à que os entrega: quando uma unidade fecha \
-             (pull request mergeado ou spec concluída), a mensagem final cita cada item aberto \
-             pelo id ou pelo título. Grave trabalho combinado novo com \
-             `mustard-rt run pending --add`; um item só sai da lista com um motivo \
-             (`--close <id>` ou `--drop <id>`, mais `--reason`)."
-        }
-        ("pending.notice", Locale::EnUs) => {
-            "[Mustard] Agreed work still open ({count}): {items}. These items live outside \
-             every unit and outlive the one that delivers them: when a unit closes (pull \
-             request merged or spec completed), the final message names each open item by id \
-             or title. Record new agreed work with `mustard-rt run pending --add`; an item \
-             leaves the list only with a reason (`--close <id>` or `--drop <id>`, plus \
-             `--reason`)."
-        }
-        ("pending.gate.block", Locale::PtBr) => {
-            "[Mustard] Uma unidade fechou neste turno, e a mensagem final não cita {count} \
-             pendência(s) aberta(s): {items}. O trabalho combinado sobrevive à unidade que \
-             fechou — reescreva a mensagem de fechamento citando cada uma pelo id ou pelo \
-             título. Uma pendência que não vale mais só sai da lista com um motivo: \
-             `mustard-rt run pending --close <id> --reason \"…\"` (entregue) ou \
-             `mustard-rt run pending --drop <id> --reason \"…\"` (desistência)."
-        }
-        ("pending.gate.block", Locale::EnUs) => {
-            "[Mustard] A unit closed in this turn, and the final message does not name {count} \
-             open pending item(s): {items}. Agreed work outlives the unit that closed — rewrite \
-             the closing message naming each one by id or title. An item that no longer stands \
-             leaves the list only with a reason: `mustard-rt run pending --close <id> --reason \
-             \"…\"` (delivered) or `mustard-rt run pending --drop <id> --reason \"…\"` (given up)."
-        }
-
-        // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
-        // uma linha curta que o usuário lê e o assistente recebe para corrigir.
-        // Sem parênteses: o tom técnico os apagaria. `{words}`, `{opening}`,
-        // `{acronym}`, `{term}`, `{lines}` e `{limit}` vêm do chamador.
-        ("clarity.long_sentence", Locale::PtBr) => "frase com {words} palavras: \"{opening}…\"",
-        ("clarity.long_sentence", Locale::EnUs) => "sentence with {words} words: \"{opening}…\"",
-        ("clarity.unexpanded_acronym", Locale::PtBr) => "{acronym} sem as palavras por extenso",
-        ("clarity.unexpanded_acronym", Locale::EnUs) => "{acronym} without its full words",
-        ("clarity.unexplained_term", Locale::PtBr) => "{term} usado sem tradução",
-        ("clarity.unexplained_term", Locale::EnUs) => "{term} used without a translation",
-        ("clarity.too_long", Locale::PtBr) => {
-            "resposta com {lines} linhas de texto; o limite é {limit}"
-        }
-        ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines of prose; the limit is {limit}",
-        // A nota ao usuário quando a resposta reprova, e o aviso que a próxima
-        // mensagem leva ao assistente. Os defeitos vêm abaixo, um por linha.
-        ("clarity.note.head", Locale::PtBr) => {
-            "Mustard · clareza: a resposta acima fugiu do tom didático. A próxima corrige:"
-        }
-        ("clarity.note.head", Locale::EnUs) => {
-            "Mustard · clarity: the reply above missed the didactic tone. The next one fixes:"
-        }
-        ("clarity.next.head", Locale::PtBr) => {
-            "[Mustard] A sua resposta anterior reprovou na medição do tom didático. Corrija \
-             estes pontos nesta resposta:"
-        }
-        ("clarity.next.head", Locale::EnUs) => {
-            "[Mustard] Your previous reply failed the didactic-tone measurement. Fix these \
-             points in this reply:"
-        }
-        // A última linha da lista quando há mais defeitos do que ela mostra.
-        ("clarity.more", Locale::PtBr) => "e mais {count}",
-        ("clarity.more", Locale::EnUs) => "and {count} more",
-
+    let prefix = key.split_once('.').map_or(key, |(head, _)| head);
+    PARTS
+        .iter()
+        .find(|(prefixes, _)| prefixes.contains(&prefix))
+        .and_then(|(_, text)| text(key, lang))
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
         // "safe default" — never panic on a typo in a hook.
-        _ => key_as_static(key),
-    }
+        .unwrap_or_else(|| key_as_static(key))
 }
 
 /// Promote a `&str` to `&'static str` *only* for the fail-open path of
@@ -1185,57 +226,11 @@ fn key_as_static(_key: &str) -> &'static str {
     "<missing-key>"
 }
 
-/// Apply `tone` to `text`. `Didactic` is the identity (the catalog is already
-/// authored in didactic tone); `Technical` strips parenthetical clarifications
-/// of the shape `(meaning ...)`; `Concise` additionally collapses double
-/// spaces and trims.
-#[must_use]
-pub fn apply_tone(text: &str, tone: Tone) -> String {
-    match tone {
-        Tone::Didactic => text.to_string(),
-        Tone::Technical => strip_parentheticals(text),
-        Tone::Concise => {
-            let stripped = strip_parentheticals(text);
-            // Collapse runs of whitespace into a single space and trim.
-            let mut out = String::with_capacity(stripped.len());
-            let mut prev_ws = false;
-            for ch in stripped.chars() {
-                if ch.is_whitespace() {
-                    if !prev_ws {
-                        out.push(' ');
-                        prev_ws = true;
-                    }
-                } else {
-                    out.push(ch);
-                    prev_ws = false;
-                }
-            }
-            out.trim().to_string()
-        }
-    }
-}
-
-/// Drop `( ... )` segments. Naïve but bounded — no nested parens; we treat the
-/// first `)` after a `(` as the close. Keeps the cost predictable.
-fn strip_parentheticals(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut in_paren = false;
-    for ch in text.chars() {
-        match ch {
-            '(' => in_paren = true,
-            ')' => in_paren = false,
-            _ if !in_paren => out.push(ch),
-            _ => {}
-        }
-    }
-    out
-}
-
 /// Slugify `text` to a kebab-case identifier, lang-aware.
 ///
 /// PT locale strips Latin diacritics (`ç → c`, `ã → a`, …) before kebab-casing
 /// so spec slugs round-trip cleanly. EN locale keeps the input as-is (no
-/// Unicode normalisation) — the W4 spec calls out "acentos removidos só do PT".
+/// Unicode normalisation): accents are removed only in PT.
 /// Stopword lists differ per locale (basic articles/prepositions are dropped).
 ///
 /// The output never contains leading/trailing dashes and never collapses to an
@@ -1244,18 +239,12 @@ fn strip_parentheticals(text: &str) -> String {
 #[must_use]
 pub fn slugify(text: &str, lang: Locale) -> String {
     let normalised = match lang {
-        Locale::PtBr => strip_pt_accents(text),
+        Locale::PtBr => crate::domain::text::fold_accents(text),
         Locale::EnUs => text.to_string(),
     };
     let stopwords: &[&str] = match lang {
-        Locale::PtBr => &[
-            "a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em",
-            // Contractions of `em`/`a` + article — otherwise a trailing `no`
-            // ("em o") eats a token slot and pushes the meaningful next word
-            // (`nome`) out of the capped slug, leaving a `...-erro-no` tail.
-            "no", "na", "nos", "nas", "ao", "aos",
-        ],
-        Locale::EnUs => &["a", "an", "the", "of", "and", "or", "in"],
+        Locale::PtBr => crate::domain::text::SLUG_STOPWORDS_PT,
+        Locale::EnUs => crate::domain::text::SLUG_STOPWORDS_EN,
     };
     // 1. lowercase + split on non-alphanumeric.
     let mut tokens: Vec<String> = Vec::new();
@@ -1295,46 +284,17 @@ pub fn slugify(text: &str, lang: Locale) -> String {
     }
 }
 
-/// Map common Portuguese diacritics to ASCII. Surgical — not a full Unicode
-/// NFD normaliser (that would pull `unicode-normalization` into core just for
-/// slugs). Covers `ç ã á â à é ê í õ ó ô ú ñ` and their uppercase peers.
-fn strip_pt_accents(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        let replacement = match ch {
-            'ç' => 'c',
-            'Ç' => 'C',
-            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
-            'Á' | 'À' | 'Â' | 'Ã' | 'Ä' => 'A',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'É' | 'È' | 'Ê' | 'Ë' => 'E',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'Í' | 'Ì' | 'Î' | 'Ï' => 'I',
-            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
-            'Ó' | 'Ò' | 'Ô' | 'Õ' | 'Ö' => 'O',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'Ú' | 'Ù' | 'Û' | 'Ü' => 'U',
-            'ñ' => 'n',
-            'Ñ' => 'N',
-            other => other,
-        };
-        out.push(replacement);
-    }
-    out
-}
-
 // ---------------------------------------------------------------------------
-// W7 type aliases — `SupportedLocale` (catalogue) + `UserLocale` (open BCP-47)
+// Type aliases — `SupportedLocale` (catalogue) + `UserLocale` (open BCP-47)
 // ---------------------------------------------------------------------------
 
 /// Catalogue-backed locale — the closed set Mustard ships translations for.
 ///
-/// `SupportedLocale` is a type alias for the original [`Locale`] enum.  Wave 7
-/// of the deep-refactor renames the type at every callsite; this alias lets the
-/// migration land in a single wave without breaking every consumer at once.
+/// `SupportedLocale` is a type alias for the original [`Locale`] enum, so each
+/// callsite could move to the new name without breaking every consumer at once.
 pub type SupportedLocale = Locale;
 
-/// User-declared BCP-47 locale from `mustard.json#specLang` or `### Lang:`.
+/// User-declared BCP-47 locale, as a spec records it.
 ///
 /// Unlike [`SupportedLocale`] (closed, two variants), `UserLocale` accepts any
 /// syntactically valid BCP-47 code so users can write specs in `fr-FR`, `de-DE`,
@@ -1486,8 +446,66 @@ pub fn line_has_file_marker(line: &str, marker: FileMarker) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
-    // AC-W4-3: short forms rejected with a typed error.
+    /// Confere uma parte do catálogo pelo texto do arquivo dela. Cada chave
+    /// começa por um dos começos que a parte declara, a porta responde cada
+    /// uma nos dois idiomas, e o número de chaves e a impressão dos textos
+    /// são os que a parte gravou. Uma chave que sai, que vai para a parte
+    /// errada ou que muda de texto derruba a conferência.
+    pub(super) fn assert_part_unchanged(source: &str, prefixes: &[&str], keys: usize, fingerprint: u64) {
+        let arms = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let mut found = BTreeSet::new();
+        for line in arms.lines().map(str::trim_start).filter(|line| line.starts_with("(\"")) {
+            let (key, pattern) = line[2..].split_once('"').expect("the key closes its quotes");
+            assert!(
+                [", Locale::PtBr) =>", ", Locale::EnUs) =>", ", _) =>"].iter().any(|shape| pattern.starts_with(shape)),
+                "each arm is written (\"key\", Locale::PtBr) =>, (\"key\", Locale::EnUs) => or (\"key\", _) =>: {line}"
+            );
+            found.insert(key);
+        }
+        // A impressão é o FNV-1a de 64 bits sobre chave, idioma e texto, na
+        // ordem das chaves: estável entre versões do Rust, ao contrário do
+        // hasher da biblioteca padrão.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for key in &found {
+            let prefix = key.split_once('.').map_or(*key, |(head, _)| head);
+            assert!(prefixes.contains(&prefix), "{key} starts with {prefix}, which this part does not declare");
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                let text = translate(key, lang);
+                assert_ne!(text, "<missing-key>", "{key} has no text in {lang}");
+                for byte in key.bytes().chain([0]).chain(lang.as_str().bytes()).chain([0]).chain(text.bytes()).chain([0xff]) {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+        }
+        let shown = format!(
+            "0x{:04x}_{:04x}_{:04x}_{:04x}",
+            hash >> 48,
+            (hash >> 32) & 0xffff,
+            (hash >> 16) & 0xffff,
+            hash & 0xffff
+        );
+        assert!(
+            (found.len(), hash) == (keys, fingerprint),
+            "the part changed: it now holds {} keys with fingerprint {shown}; if the change is on purpose, \
+             write these two numbers in the part's test",
+            found.len()
+        );
+    }
+
+    /// Cada começo de chave é respondido por uma parte só do catálogo.
+    #[test]
+    fn each_key_prefix_belongs_to_one_part() {
+        let mut seen = BTreeSet::new();
+        for (prefixes, _) in PARTS {
+            for prefix in prefixes {
+                assert!(seen.insert(*prefix), "{prefix} is declared by two parts");
+            }
+        }
+    }
+
+    // Short forms are rejected with a typed error.
     #[test]
     fn i18n_rejects_short_form() {
         assert_eq!(
@@ -1519,7 +537,7 @@ mod tests {
         ));
     }
 
-    // AC-W4-6: known keys translate to the canonical literals.
+    // Known keys translate to the canonical literals.
     #[test]
     fn i18n_translates_known_keys() {
         assert_eq!(
@@ -1536,148 +554,11 @@ mod tests {
         assert_eq!(translate("ac.label", Locale::EnUs), "AC");
     }
 
-    /// The Stop gate's block text is catalogue-driven (config-language), never
-    /// embedded in the gate code — both locales carry the `{ac}` slot the gate
-    /// interpolates with the failing criterion id.
-    #[test]
-    fn i18n_translates_stopgate_keys() {
-        assert!(translate("stopgate.block.reason", Locale::PtBr).contains("{ac}"));
-        assert!(translate("stopgate.block.reason", Locale::EnUs).contains("{ac}"));
-        assert_ne!(
-            translate("stopgate.block.reason", Locale::PtBr),
-            translate("stopgate.block.reason", Locale::EnUs),
-            "the block reason must differ per locale (proof it is catalogue-driven)"
-        );
-        assert_ne!(translate("stopgate.block.guidance", Locale::PtBr), "<missing-key>");
-        assert_ne!(translate("stopgate.block.guidance", Locale::EnUs), "<missing-key>");
-    }
-
-    /// Work-unit surfacing copy is catalogue-driven in BOTH locales: the
-    /// listing legend, the status-bar label and the session-start advisory
-    /// carry no language literal at their surface.
-    #[test]
-    fn i18n_translates_work_unit_surfacing_keys() {
-        for key in ["specs.location.remote_only", "statusline.prune.label", "prune.pending.notice"] {
-            for lang in [Locale::PtBr, Locale::EnUs] {
-                assert_ne!(translate(key, lang), "<missing-key>", "{key} missing for {lang}");
-            }
-            assert_ne!(
-                translate(key, Locale::PtBr),
-                translate(key, Locale::EnUs),
-                "{key} must differ per locale (proof it is catalogue-driven)"
-            );
-        }
-        // The advisory's slots are the caller's contract.
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let notice = translate("prune.pending.notice", lang);
-            assert!(notice.contains("{count}"), "the advisory interpolates the count: {notice}");
-            assert!(notice.contains("{branches}"), "and names the units: {notice}");
-        }
-    }
-
-    /// A entrega do resumo e os avisos de pendência saem do catálogo nos dois
-    /// idiomas, e cada um carrega as vagas que o chamador preenche.
-    #[test]
-    fn i18n_translates_delivery_and_pending_keys() {
-        for (key, slots) in [
-            ("doc.section.flow", &[][..]),
-            ("deliver.head.awaiting", &["{file}"][..]),
-            ("deliver.head.summary", &["{file}"][..]),
-            ("deliver.click", &["{url}"][..]),
-            ("deliver.windows", &["{command}"][..]),
-            ("deliver.publish", &[][..]),
-            ("pending.notice", &["{count}", "{items}"][..]),
-            ("pending.gate.block", &["{count}", "{items}"][..]),
-        ] {
-            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
-            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
-            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
-            assert_ne!(pt, en, "{key} must differ per locale");
-            for slot in slots {
-                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
-            }
-        }
-        for key in ["deliver.macos", "deliver.linux"] {
-            assert!(translate(key, Locale::PtBr).contains("{command}"), "{key}");
-        }
-    }
-
-    /// Os defeitos de clareza saem do catálogo nos dois idiomas, cada um com as
-    /// vagas que o medidor preenche.
-    #[test]
-    fn i18n_translates_clarity_defect_keys() {
-        for (key, slots) in [
-            ("clarity.long_sentence", &["{words}", "{opening}"][..]),
-            ("clarity.unexpanded_acronym", &["{acronym}"][..]),
-            ("clarity.unexplained_term", &["{term}"][..]),
-            ("clarity.too_long", &["{lines}", "{limit}"][..]),
-            ("clarity.note.head", &[][..]),
-            ("clarity.next.head", &[][..]),
-            ("clarity.more", &["{count}"][..]),
-        ] {
-            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
-            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
-            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
-            assert_ne!(pt, en, "{key} must differ per locale");
-            for slot in slots {
-                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
-            }
-        }
-    }
-
-    /// O resumo da spec em HTML tira todo o texto do catálogo, nos dois idiomas,
-    /// e o próximo passo da execução carrega o número da onda.
-    #[test]
-    fn i18n_translates_spec_doc_keys() {
-        for key in [
-            "doc.section.where",
-            "doc.step.plan.name",
-            "doc.proof.red",
-            "doc.next.approve",
-            "doc.footer",
-        ] {
-            for lang in [Locale::PtBr, Locale::EnUs] {
-                assert_ne!(translate(key, lang), "<missing-key>", "{key} missing for {lang}");
-            }
-            assert_ne!(
-                translate(key, Locale::PtBr),
-                translate(key, Locale::EnUs),
-                "{key} must differ per locale (proof it is catalogue-driven)"
-            );
-        }
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            assert!(translate("doc.next.execute", lang).contains("{wave}"));
-            assert!(translate("doc.clarified.definition", lang).contains("{term}"));
-        }
-    }
-
     #[test]
     fn translate_unknown_key_is_failopen() {
         // Missing keys return a stable sentinel rather than panicking.
         assert_eq!(translate("banner.missing.xyz", Locale::PtBr), "<missing-key>");
         assert_eq!(translate("banner.missing.xyz", Locale::EnUs), "<missing-key>");
-    }
-
-    #[test]
-    fn apply_tone_didactic_is_identity() {
-        let input = "Hello (world, expanded).";
-        assert_eq!(apply_tone(input, Tone::Didactic), input);
-    }
-
-    #[test]
-    fn apply_tone_technical_strips_parens() {
-        assert_eq!(
-            apply_tone("Hello (world, expanded).", Tone::Technical),
-            "Hello ."
-        );
-    }
-
-    #[test]
-    fn apply_tone_concise_collapses_whitespace() {
-        assert_eq!(
-            apply_tone("Hello   (extra)   world.", Tone::Concise),
-            "Hello world."
-        );
     }
 
     #[test]
@@ -1715,17 +596,8 @@ mod tests {
     }
 
     #[test]
-    fn tone_parse_accepts_pt_and_en_spellings() {
-        assert_eq!(Tone::parse("didactic"), Some(Tone::Didactic));
-        assert_eq!(Tone::parse("didatico"), Some(Tone::Didactic));
-        assert_eq!(Tone::parse("Técnico"), Some(Tone::Technical));
-        assert_eq!(Tone::parse("conciso"), Some(Tone::Concise));
-        assert_eq!(Tone::parse("loud"), None);
-    }
-
-    #[test]
-    fn i18n_render_pipes_translate_through_tone() {
-        let i = I18n::new(Locale::EnUs, Tone::Didactic);
+    fn i18n_render_is_the_translation() {
+        let i = I18n::new(Locale::EnUs);
         assert_eq!(i.render("banner.close.success"), "Pipeline closed successfully.");
     }
 
@@ -1733,19 +605,6 @@ mod tests {
     fn wave_label_formats_per_locale() {
         assert_eq!(wave_label(3, Locale::PtBr), "Onda 3");
         assert_eq!(wave_label(3, Locale::EnUs), "W3");
-    }
-
-    /// TF 2026-06-10-ac-heading-unico: `heading.spec.ac` is the ONLY AC
-    /// heading key — the byte-identical `heading.spec.ac_list` twin is gone
-    /// (a second key for the same heading let the scaffold emit it twice).
-    #[test]
-    fn ac_heading_key_is_single() {
-        assert_eq!(translate("heading.spec.ac", Locale::PtBr), "Critérios de Aceitação");
-        assert_eq!(translate("heading.spec.ac", Locale::EnUs), "Acceptance Criteria");
-        assert_eq!(translate("heading.spec.ac_list", Locale::PtBr), "<missing-key>");
-        assert_eq!(translate("heading.spec.ac_list", Locale::EnUs), "<missing-key>");
-        // `placeholder.see_below` retired with the same fix (dead copy).
-        assert_eq!(translate("placeholder.see_below", Locale::PtBr), "<missing-key>");
     }
 
     #[test]

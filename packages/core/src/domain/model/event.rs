@@ -158,7 +158,7 @@ pub const EVENT_PIPELINE_AMEND_CLOSE: &str = "pipeline.amend_close";
 /// Records that one trackable checklist item was marked done (`- [ ]` →
 /// `- [x]`). Follows the `qa.result` pattern: the name constant + typed
 /// payload ([`ChecklistItemMarkedPayload`]) live here; emission is wired by
-/// the rt-side auto-mark hook / `mark-checklist-item` (Wave 2).
+/// the rt-side auto-mark hook / `mark-checklist-item`.
 pub const EVENT_CHECKLIST_ITEM_MARKED: &str = "checklist.item.marked";
 
 /// Records that one trackable checklist item was dropped ON PURPOSE (`- [ ]`

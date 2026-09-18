@@ -2,36 +2,28 @@
 # ============================================================================
 # build-deb.sh — roda DENTRO do container (packaging/linux/Dockerfile).
 #
-# Compila os 5 binários do CLI (scan, mustard-rt, mustard-mcp, mustard, rtk) e o
-# servidor do dashboard (mustard-dashboard), constrói os assets do React, e
-# empacota TUDO num único pacote Debian:
+# Compila os binários do CLI (scan, mustard-rt, mustard), baixa o rtk na versão
+# fixa do checksums.txt e empacota tudo
+# num único pacote Debian:
 #
 #   dist/mustard_<versao>_amd64.deb
 #
 # Layout instalado pelo .deb:
-#   /usr/lib/mustard/bin/        os 5 binários do CLI + o mustard-dashboard
-#   /usr/lib/mustard/bin/dist/   os assets do React que o servidor serve
+#   /usr/lib/mustard/bin/        os binários do CLI
 #   /usr/lib/mustard/templates/  a carga do `mustard init`
-#   /usr/share/applications/…    atalho .desktop que INICIA O SERVIDOR
 # E o postinst cria os symlinks em /usr/bin para tudo entrar no PATH.
 #
 # The .deb used to be built by EXTRACTING the one the desktop-app bundler
-# produced and injecting the CLI into it — that is where the .desktop entry, the
-# icons and the webkit2gtk/gtk `Depends` came from. That bundler is gone: the
-# tree below is written from scratch, and the dependency list shrank to the C
-# runtime every Rust binary already needs.
+# produced and injecting the CLI into it — that is where the icons and the
+# webkit2gtk/gtk `Depends` came from. That bundler is gone: the tree below is
+# written from scratch, and the dependency list shrank to the C runtime every
+# Rust binary already needs.
 #
-# Por que /usr/lib/mustard/bin + symlinks (e não /usr/bin direto): o mustard e o
-# dashboard resolvem a pasta templates como `<dir-do-exe>/../templates`. Com os
-# reais binários juntos em /usr/lib/mustard/bin, `../templates` aponta para
-# /usr/lib/mustard/templates para TODOS — inclusive o dashboard, que instala
-# projetos chamando mustard_cli::init nativamente. current_exe() resolve o
-# symlink para o caminho real, então a resolução funciona via /usr/bin também.
-#
-# The same invariant is what puts dist/ INSIDE bin/: the server resolves its
-# assets as `<dir of the exe>/dist`, and on Linux `current_exe()` reads
-# /proc/self/exe, which is already symlink-free — so reaching the binary through
-# /usr/bin still lands on /usr/lib/mustard/bin/dist.
+# Por que /usr/lib/mustard/bin + symlinks (e não /usr/bin direto): o mustard
+# resolve a pasta templates como `<dir-do-exe>/../templates`. Com os binários
+# reais juntos em /usr/lib/mustard/bin, `../templates` aponta para
+# /usr/lib/mustard/templates. current_exe() resolve o symlink para o caminho
+# real, então a resolução funciona via /usr/bin também.
 #
 # Montagens esperadas (feitas pelo build-packages.ps1):
 #   /work   -> repo (somente leitura efetiva; copiamos para /build)
@@ -43,11 +35,10 @@ REPO=/work
 BUILD=/build
 DIST=/dist
 CARGO_TARGET=/tmp/cli-target
-PNPM_STORE=/tmp/pnpm-store
 
-CLI_BINS="scan mustard-rt mustard-mcp mustard"
+CLI_BINS="scan mustard-rt mustard"
 
-echo "==> [1/6] copiando o repo para área de build isolada ($BUILD)"
+echo "==> [1/5] copiando o repo para área de build isolada ($BUILD)"
 mkdir -p "$BUILD"
 rsync -a --delete \
   --exclude='.git/' \
@@ -70,49 +61,48 @@ fi
 echo "    versão: $VERSION"
 
 # --- 2. binários (workspace) ------------------------------------------------
-echo "==> [2/6] cargo build --release (CLI + servidor do dashboard)"
+echo "==> [2/5] cargo build --release (CLI)"
 ( cd "$BUILD" && CARGO_TARGET_DIR="$CARGO_TARGET" MUSTARD_RELEASE_VERSION="$VERSION" \
     cargo build --release --locked \
-      --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard --bin mustard-dashboard )
+      --bin scan --bin mustard-rt --bin mustard )
 
-# --- 3. rtk (binário pré-compilado oficial) ---------------------------------
-echo "==> [3/6] obtendo o rtk"
-RTK=""
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh || true
-for p in "$HOME/.local/bin/rtk" "$HOME/.cargo/bin/rtk" /opt/cargo/bin/rtk \
-         /usr/local/bin/rtk /usr/bin/rtk; do
-  if [ -x "$p" ]; then RTK="$p"; echo "    rtk: $p"; break; fi
-done
-[ -n "$RTK" ] || { echo "erro: rtk não pôde ser obtido — pacote incompleto." >&2; exit 1; }
+# --- 3. rtk (a release fixa do checksums.txt, conferida) -------------------
+# A versão e a soma de cada pacote moram no checksums.txt da raiz. O pacote
+# baixado só entra no .deb se a soma dele bater com a linha de lá; qualquer
+# falha (sem rede, soma diferente, pacote sem o binário) para o build.
+echo "==> [3/5] obtendo o rtk"
+SUMS="$REPO/checksums.txt"
+RTK_VERSION=$(sed -n 's/^# rtk v\([0-9][0-9.]*\).*/\1/p' "$SUMS" | head -1)
+[ -n "$RTK_VERSION" ] || { echo "erro: o checksums.txt não diz a versão do rtk." >&2; exit 1; }
+RTK_ASSET=rtk-x86_64-unknown-linux-musl.tar.gz
+RTK_DIR=/tmp/rtk-download
+rm -rf "$RTK_DIR"
+mkdir -p "$RTK_DIR"
+curl -fsSL -o "$RTK_DIR/$RTK_ASSET" \
+  "https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/$RTK_ASSET"
+( cd "$RTK_DIR" && grep "  $RTK_ASSET\$" "$SUMS" | sha256sum -c - )
+tar -xzf "$RTK_DIR/$RTK_ASSET" -C "$RTK_DIR" rtk
+RTK="$RTK_DIR/rtk"
+[ -x "$RTK" ] || { echo "erro: o pacote do rtk não trouxe o binário — pacote incompleto." >&2; exit 1; }
+echo "    rtk: v$RTK_VERSION"
 
-# --- 4. assets do React -----------------------------------------------------
-echo "==> [4/6] pnpm install + build do React (assets do dashboard)"
-# /build é descartável — install normal (sem --frozen-lockfile) para não quebrar
-# o empacotamento por um drift de lock; o store fica cacheado num volume.
-( cd "$BUILD" && pnpm install --store-dir "$PNPM_STORE" )
-( cd "$BUILD" && pnpm --filter mustard-dashboard build )
-DIST_SRC="$BUILD/apps/dashboard/dist"
-[ -f "$DIST_SRC/index.html" ] || { echo "erro: o build do React não gerou $DIST_SRC." >&2; exit 1; }
-
-# --- 5. monta a árvore do .deb ----------------------------------------------
-echo "==> [5/6] montando o .deb"
+# --- 4. monta a árvore do .deb ----------------------------------------------
+echo "==> [4/5] montando o .deb"
 MERGE=/tmp/merge
 rm -rf "$MERGE"
 mkdir -p "$MERGE/DEBIAN" \
          "$MERGE/usr/lib/mustard/bin" \
-         "$MERGE/usr/lib/mustard/templates" \
-         "$MERGE/usr/share/applications"
+         "$MERGE/usr/lib/mustard/templates"
 
-# 5a. binários + rtk + assets + templates.
-for b in $CLI_BINS mustard-dashboard; do
+# 4a. binários + rtk + templates.
+for b in $CLI_BINS; do
   cp "$CARGO_TARGET/release/$b" "$MERGE/usr/lib/mustard/bin/$b"
 done
 cp "$RTK" "$MERGE/usr/lib/mustard/bin/rtk"
 chmod 0755 "$MERGE"/usr/lib/mustard/bin/*
-cp -R "$DIST_SRC" "$MERGE/usr/lib/mustard/bin/dist"
 cp -R "$BUILD/apps/cli/templates/." "$MERGE/usr/lib/mustard/templates/"
 
-# 5a-bis. o passo do plugin. Ele NÃO fica em bin/ de propósito: bin/ inteiro
+# 4a-bis. o passo do plugin. Ele NÃO fica em bin/ de propósito: bin/ inteiro
 # entra no PATH via symlinks em /usr/bin (passo 5c), e este script não é um
 # comando que alguém digita — é uma etapa que o install.sh chama pelo caminho
 # absoluto. No `curl … | sh` nada além do install.sh chega ao disco, então
@@ -120,24 +110,7 @@ cp -R "$BUILD/apps/cli/templates/." "$MERGE/usr/lib/mustard/templates/"
 cp "$REPO/packaging/installer/plugin-step.sh" "$MERGE/usr/lib/mustard/plugin-step.sh"
 chmod 0755 "$MERGE/usr/lib/mustard/plugin-step.sh"
 
-# 5b. atalho .desktop. It starts a SERVER: the entry runs the binary in a
-#     terminal so the URL it prints is visible and Ctrl+C stops it — an app
-#     window is exactly what there no longer is. The icon is a stock
-#     freedesktop name because the icon set came from the old desktop-app bundle
-#     and left with it; dropping a real icon in later only changes this line.
-cat > "$MERGE/usr/share/applications/mustard-dashboard.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=Mustard Dashboard
-Comment=Serve o Mustard Dashboard em http://127.0.0.1:7777 e abre o navegador
-Exec=mustard-dashboard
-Icon=utilities-system-monitor
-Terminal=true
-Categories=Development;
-Keywords=mustard;claude;dashboard;
-EOF
-
-# 5c. control. Depends shrank with the desktop shell: what is left is the C runtime any Rust
+# 4b. control. Depends shrank with the desktop shell: what is left is the C runtime any Rust
 #     binary links. webkit2gtk-4.1/gtk-3/librsvg/appindicator are gone, and with
 #     them the reason the package could not be installed on older systems for
 #     anything but glibc.
@@ -151,50 +124,35 @@ Section: utils
 Priority: optional
 Installed-Size: $INSTALLED_SIZE
 Depends: libc6 (>= 2.35), libgcc-s1
-Description: Mustard — harness de pipeline para Claude Code (CLI + dashboard)
+Description: Mustard — harness de pipeline para Claude Code
  Instalação completa do Mustard: os binários de linha de comando
- (mustard, mustard-rt, mustard-mcp, scan, rtk) e o servidor do Mustard
- Dashboard, num único pacote.
+ (mustard, mustard-rt, scan, rtk) num único pacote.
 EOF
 
-# 5d. maintainer scripts: symlinks em /usr/bin (entram no PATH) + cache do menu
-#     de aplicativos.
+# 4c. maintainer scripts: symlinks em /usr/bin (entram no PATH).
 cat > "$MERGE/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
-for b in mustard mustard-rt mustard-mcp scan rtk mustard-dashboard; do
+for b in mustard mustard-rt scan rtk; do
   ln -sf "/usr/lib/mustard/bin/$b" "/usr/bin/$b"
 done
-if command -v update-desktop-database >/dev/null 2>&1; then
-  update-desktop-database -q /usr/share/applications || true
-fi
 exit 0
 EOF
 cat > "$MERGE/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -e
-for b in mustard mustard-rt mustard-mcp scan rtk mustard-dashboard; do
+for b in mustard mustard-rt scan rtk; do
   rm -f "/usr/bin/$b"
 done
 exit 0
 EOF
-cat > "$MERGE/DEBIAN/postrm" <<'EOF'
-#!/bin/sh
-set -e
-if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
-  if command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database -q /usr/share/applications || true
-  fi
-fi
-exit 0
-EOF
-chmod 0755 "$MERGE/DEBIAN/postinst" "$MERGE/DEBIAN/prerm" "$MERGE/DEBIAN/postrm"
+chmod 0755 "$MERGE/DEBIAN/postinst" "$MERGE/DEBIAN/prerm"
 
-# 5e. md5sums.
+# 4d. md5sums.
 ( cd "$MERGE" && find usr -type f -exec md5sum {} + > DEBIAN/md5sums )
 
-# --- 6. empacota + entrega no /dist -----------------------------------------
-echo "==> [6/6] gerando o .deb e o instalador"
+# --- 5. empacota + entrega no /dist -----------------------------------------
+echo "==> [5/5] gerando o .deb e o instalador"
 mkdir -p "$DIST"
 OUT="$DIST/mustard_${VERSION}_amd64.deb"
 rm -f "$OUT"

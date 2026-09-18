@@ -23,16 +23,12 @@
 #   * any local package of the lock (a `[[package]]` block with no `source`
 #     line) is pinned at something other than <version>. That set is DERIVED, so
 #     every crate of ours in the lock is covered rather than the single name
-#     somebody typed — the dashboard lock pins `mustard-core` AND `mustard-cli`,
-#     and the old guard read only the first.
+#     somebody typed.
 #
 # The lock's own root package is excluded from the derived sweep, for the case
-# where a crate carries a version of its own rather than the workspace's. That
-# case no longer exists here: the dashboard server joined the workspace when the
-# desktop shell was removed, so `mustard-dashboard` inherits
-# `version.workspace` and the derived sweep now covers it like any other member.
-# The exclusion stays because it is about the SHAPE of a lock, not about that one
-# crate. Its name is read from the `Cargo.toml` beside the lock; a virtual
+# where a crate carries a version of its own rather than the workspace's. No
+# crate here is in that case any more; the exclusion stays because it is about
+# the SHAPE of a lock, not about one crate. Its name is read from the `Cargo.toml` beside the lock; a virtual
 # workspace manifest declares no `[package]`, so nothing is excluded for the
 # root lock.
 #

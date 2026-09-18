@@ -2,22 +2,10 @@
 resolver = "2"
 members = [
     "apps/cli",
-    "apps/dashboard/server",
-    "apps/mcp",
     "apps/rt",
     "apps/scan",
     "packages/core",
 ]
-# `apps/dashboard/server` was excluded while it was a desktop-shell wrapper: that
-# wrapper pinned it to edition 2021 with its own Cargo.lock and a dependency set
-# that could not consume `[workspace.dependencies]`. The shell is gone — the
-# dashboard backend is now a plain `tiny_http` server — so the reason evaporated
-# and the crate is a normal member: `cargo build --workspace` compiles it.
-#
-# Still excluded: the mustard-translate sidecar (apps/translate) — candle +
-# lingua are heavy deps that must not bloat the hook (`mustard-rt`) or the
-# deterministic scanner; it builds standalone, as its own workspace.
-exclude = ["apps/translate"]
 
 [workspace.package]
 # The Mustard version, inherited by every workspace crate with
@@ -33,11 +21,11 @@ exclude = ["apps/translate"]
 # it does not read as "a dev build" — it reads as a real, old release, and the
 # harness's own drift warning starts arguing with itself. That is exactly what
 # happened while this sat at 0.1.0 through twenty-eight published releases.
-version = "0.1.71"
+version = "0.2.0"
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`. Versions verified against
-# crates.io, May 2026 (see spec b2 § Stack Rust).
+# crates.io, May 2026, when the Rust stack was chosen.
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
@@ -56,78 +44,23 @@ ureq = { version = "3.3", features = ["json"] }
 # Tarball extraction for `mustard add` (npm package payloads ship as .tgz).
 tar = "0.4.46"
 flate2 = "1.1.9"
-# Official Rust SDK for the Model Context Protocol — backs the `mcp` face of
-# `mustard-rt` (the re-port of the `mustard-memory` TypeScript MCP server).
-# The `server` feature already pulls `macros` (in `default`) and `schemars`;
-# `transport-io` adds the stdio (JSON-RPC over stdin/stdout) transport.
-#
-# Moved 1.8 -> 3.1 (two majors) because 1.8 ANSWERS the `2026-07-28` protocol
-# revision without serving it: driving a real stdio handshake against both
-# builds, each replies `"protocolVersion":"2026-07-28"`, but 1.8 returns a bare
-# `{"tools":[...]}` while 3.1 returns that revision's tool-list cache metadata
-# (`resultType` / `ttlMs` / `cacheScope`). Advertising a revision we do not
-# serve is the drift worth closing.
-#
-# The two majors cost two lines — `model::Content` became
-# `model::content::ContentBlock`, and nothing else in `apps/mcp` moved. Crate
-# count moved 281 -> 282 here (the 3.x line drops `async-trait` and adds `uuid`),
-# and the pruning wave then took it to 278.
-rmcp = { version = "3.1", features = ["server", "transport-io"] }
-# Async runtime — required only by `rmcp` (async-only). Scoped to the `mcp`
-# face: the handler builds a `current_thread` runtime locally so the `on` /
-# `run` / `check` faces stay fully synchronous. Latest stable verified on
-# crates.io (1.52, May 2026).
-tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
-# BPE tokenizer used by `core::economy::estimator` as a Claude-token
-# approximation (cl100k_base ≈ Anthropic models within ~5%). Latest stable
-# verified on crates.io (0.12.0, 2026-06); the 0.12 line made the low-level
-# `CoreBPE::encode`/`count` fallible (`Result<_, EncodeError>`) — the
-# estimator only calls `encode_with_special_tokens`, which stays infallible.
-tiktoken-rs = "0.12"
-# Cross-platform filesystem notification — the dashboard server's per-project
-# `.claude/` watcher. Updated to notify 8.2 (May 2026). `mustard-rt` also
-# declared this entry, for a transcript-watcher daemon that no longer exists;
-# the declaration was removed in the prune, so the dashboard is now the sole
-# consumer and the entry stays here only because that is where versions live.
-notify = "8"
-# Debounced wrapper over `notify` — the dashboard server coalesces a write burst
-# into one ~200 ms batch before pushing it down the server-sent-events channel.
-notify-debouncer-mini = "0.7"
-# Minimal blocking HTTP server, no async runtime. Backs both the OTLP collector
-# (`mustard-rt run otel-collector`) and the dashboard server. Kept at the same
-# version `apps/rt` pins so the two share one graph.
-tiny_http = "0.12"
-# Home-directory resolution — the dashboard server locates `~/.claude/` for the
-# project registry and for the Claude Code transcript store.
-dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-# Data-parallelism primitives — rayon parallelises the per-subproject
-# verification pass (`verify_pipeline`) so targets are checked concurrently.
-# Latest stable on crates.io (1.10, May 2026); pure-Rust, no async runtime.
-rayon = "1.10"
-# SHA-256 — `mustard-core::model::provenance` fingerprints vendored template
-# trees. `mustard-rt` also declared this entry but never imported it (its
-# backup-specs digest runs on the crate's own `util::sha256`), so the prune left
-# `mustard-core` as the only consumer. Bumped to the 0.11 line (May 2026), which
-# moves the digest output from `generic-array` to `hybrid-array`; this crate
-# only consumes the output as a byte slice / iterator / `[u8; 32]`, all of which
-# stay source-compatible.
-sha2 = "0.11"
+# Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::spec_events` reduces
+# each word of an event to its root with the Portuguese stemmer, so "apagar",
+# "apagando" and "apagou" land on the same search term. Pure Rust, no build
+# script; the 1.2 line was already in the lock file through another crate.
+rust-stemmers = "1.2"
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 #
 # Every member opts in except `apps/scan`, which still carries no `[lints]`
-# table. `mustard-dashboard` was the other holdout — the note here used to read
-# "deliberately does not (its command surface predates the `unwrap_used = deny`
-# rule)", which is how the workspace's NEWEST code came to be the only code the
-# rule did not reach.
+# table.
 #
 # `unwrap_used` below is `deny`, and clippy does NOT exempt `#[cfg(test)]` code
-# from it on its own: `mustard-core`, `mustard-cli`, `mustard-rt` and
-# `mustard-mcp` each open their crate root with
+# from it on its own: `mustard-core`, `mustard-cli` and `mustard-rt` each open
+# their crate root with
 # `#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]`, and THAT
-# is what exempts their tests. `mustard-dashboard` deliberately carries no such
-# line — see its `src/lib.rs` header.
+# is what exempts their tests.
 [workspace.lints.rust]
 # A hook on the critical path must never reach for `unsafe`.
 unsafe_code = "forbid"
@@ -182,8 +115,7 @@ bool_to_int_with_if = "allow"
 ref_option = "allow"
 needless_pass_by_value = "allow"  # sometimes required for trait obj / generics
 redundant_closure_for_method_calls = "allow"
-# W2 (claude-paths-single-source): the `ClaudePaths::for_project` fallback
-# pattern `.map(|p| accessor()).unwrap_or_else(|_| legacy_join)` is more
+# The `ClaudePaths::for_project` fallback pattern `.map(|p| accessor()).unwrap_or_else(|_| legacy_join)` is more
 # readable than `map_or_else(|_| legacy, |p| accessor())` because the
 # success path is the dominant case and naturally sits first.
 map_unwrap_or = "allow"
@@ -194,15 +126,12 @@ map_unwrap_or = "allow"
 case_sensitive_file_extension_comparisons = "allow"
 #
 # A `Result` that never errs is the SHAPE OF AN INTERFACE here, not a claim
-# that this implementation can fail. Three places rely on it and all three
-# would get worse if the wrapper were removed: (1) the dashboard's HTTP
-# handlers, where `server.rs` maps every argument table onto a uniform
-# `Result<T, String>` — one handler returning a bare `T` would need its own
-# branch in the dispatcher; (2) ports whose OTHER implementations do fail, so
-# the trait's signature is fixed elsewhere; (3) functions that document the
-# reservation out loud, like `economy::sources::rtk::ingest_with` — "the only
+# that this implementation can fail. Two places rely on it and both would get
+# worse if the wrapper were removed: (1) ports whose OTHER implementations do
+# fail, so the trait's signature is fixed elsewhere; (2) functions that document
+# the reservation out loud, like `economy::sources::rtk::ingest_with` — "the only
 # `Err` shape is reserved for future variants that need to escalate".
-# Verified by reading all three before muting, not assumed.
+# Verified by reading both before muting, not assumed.
 unnecessary_wraps = "allow"
 #
 # Every instance is `&I18n` — a two-byte language tag. Clippy is right that

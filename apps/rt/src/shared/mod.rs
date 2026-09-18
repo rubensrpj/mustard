@@ -7,37 +7,32 @@
 //! invert that layering — this module exists to make that impossible.
 //!
 //! - [`branch_state`] — the ONE sweep of work-unit branches (local AND remote)
-//!   and the classifier that says what state each is in, behind a PR-lookup
-//!   port. Both faces ask it: the exit ritual (`commands::git_settle`), the spec
-//!   inventory and the statusline.
-//! - [`code_state`] — a fingerprint of the working tree, so a recorded test
-//!   run can be told apart from a stale one. Written by `qa-run`, read by the
-//!   close gate: it answers *did the code move since that green*.
+//!   and the classifier that says what state each is in, reading git directly
+//!   and asking about pull requests only when the consumer says to
+//!   ([`branch_state::PrQuery`]). Both faces ask it: the exit ritual
+//!   (`commands::git_settle`), the spec inventory and the statusline.
 //! - [`context`] — run-context resolution (cwd / session-id / current-spec),
 //!   the port of `hook-env.js`'s runtime probing.
-//! - [`gate_mode`] — the three-state gate mode (`off`/`warn`/`strict`) and its
-//!   cascade resolver, shared by the size gates and the close-gate engine.
 //! - [`events`] — the NDJSON event bus: classification/routing ([`events::route`])
 //!   and the append-only writer ([`events::writer_ndjson`]).
 //! - [`prompt`] — tells a person's prompt apart from the runtime's own notices,
 //!   which reach the session through the same `UserPromptSubmit` channel. One
 //!   owner for the rule, shared by every observer on that trigger.
+//! - [`spec_state`] — the ONE ladder that names the current spec (the
+//!   environment override, then the checkout's branch, then the session
+//!   binding). Every door that asks "which spec is this" goes through it.
 //! - [`pr_provider`] — the pull-request ACTIONS (open/edit/ready/view) as a
-//!   port, the acting twin of `branch_state`'s read-only `PrLookup`: callers
-//!   depend on the trait, adapters are the only place a provider and its
-//!   CLI/API are named, and the factory picks by the provider in force.
+//!   port: callers depend on the trait, adapters are the only place a provider
+//!   and its CLI/API are named, and the factory picks by the provider in force.
+//!   A leitura do estado, ao lado, não é porta — ver `branch_state` acima.
 //! - [`pr_azure`] — the Azure DevOps adapter behind that port: the Git REST
 //!   API over an injectable transport, the PAT from `AZURE_DEVOPS_EXT_PAT` or
 //!   the git credential vault, every URL derived from the `origin` remote —
 //!   and deliberately no merge operation.
-//! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
-//!   port, liveness probe) shared by the collector-spawning hook and the
-//!   collector-stopping `run` command, plus [`proc::run_shell_with_deadline`]
+//! - [`proc`] — signal-free, cross-platform process primitives (the liveness
+//!   probe) plus [`proc::run_shell_with_deadline`]
 //!   — the ONE shell-command runner that drains both pipes concurrently and
 //!   waits under a deadline, shared by `verify-pipeline` and `qa-run`.
-//! - [`translate`] — fail-open client for the optional `mustard-translate`
-//!   sidecar (local MT), shared by the `feature` auto-gloss and the
-//!   `scan-equivalences` artifact generation.
 //! - [`work_kind`] — WHAT a work unit is (`feature`/`fix`/`hotfix`), the
 //!   `{kind}/{slug}` name built from it, and the project's base model derived
 //!   from `git.flow`. The crate's ONE parser of a work-branch name, in both the
@@ -47,13 +42,10 @@
 //!   consumed.
 
 pub mod branch_state;
-pub mod code_state;
 pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
 /// for why there used to be two, and what they disagreed about.
 pub mod dag;
-pub mod events;
-pub mod gate_mode;
 // The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod paths;
 pub mod pr_azure;
@@ -63,8 +55,11 @@ pub mod pr_azure;
 pub mod pr_provider;
 pub mod proc;
 pub mod prompt;
+pub mod spec_state;
 // Test-only: cloning git fixture scenery instead of rebuilding it per test.
 #[cfg(test)]
 pub mod test_fixture;
-pub mod translate;
 pub mod work_kind;
+
+// Veio da economia quando ela saiu: a barra de status le o ganho do rtk.
+pub mod rtk_gain;

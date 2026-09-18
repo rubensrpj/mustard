@@ -18,18 +18,18 @@
 //! would pass in an ordinary repository while the mechanism it guards was
 //! silently writing nowhere in the two shapes that matter most.
 //!
-//! ## The four criteria
+//! ## What is proven
 //!
-//! - AC-1 — the rules land in the clone-local exclude file, idempotently.
-//! - AC-2 — the settings land on the untracked local layer, and the shared
+//! - The rules land in the clone-local exclude file, idempotently.
+//! - The settings land on the untracked local layer, and the shared
 //!   settings file is never created.
-//! - AC-3 — a footprint path the host ALREADY tracks is named as residue, and
+//! - A footprint path the host ALREADY tracks is named as residue, and
 //!   nothing is unlinked.
-//! - AC-4 — the regression guard: a shared install writes the same paths and
+//! - The regression guard: a shared install writes the same paths and
 //!   the same bytes it wrote before the mode existed.
 
 #[cfg(unix)]
-// Unix-only: the AC-11 fixture seals a directory with mode 0o555, an API and a
+// Unix-only: the refusal fixture seals a directory with mode 0o555, an API and a
 // semantic Windows does not have (an NTFS read-only directory still accepts new
 // files, so the same seal would refuse nothing there).
 #[cfg(unix)]
@@ -37,18 +37,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mustard_core::{
-    footprint_rules, upsert_project, InstallMode, CLAUDE_GITIGNORE, DISPATCH_MD, MATERIAL_MD,
-    ORCHESTRATOR_MD,
-    SETTINGS_SEED,
-};
+use mustard_core::platform::i18n::Locale;
+use mustard_core::{footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED};
 
 // ---------------------------------------------------------------------------
-// AC-1 — the clone-local exclude file
+// The clone-local exclude file
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac1_private_upsert_writes_clone_local_exclude() {
+fn private_upsert_writes_clone_local_exclude() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -105,11 +102,11 @@ fn ac1_private_upsert_writes_clone_local_exclude() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-2 — the local settings layer
+// The local settings layer
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac2_private_upsert_seeds_local_settings() {
+fn private_upsert_seeds_local_settings() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -142,11 +139,11 @@ fn ac2_private_upsert_seeds_local_settings() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-3 — already-tracked residue
+// Already-tracked residue
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac3_already_tracked_paths_are_reported_not_unlinked() {
+fn already_tracked_paths_are_reported_not_unlinked() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -180,11 +177,11 @@ fn ac3_already_tracked_paths_are_reported_not_unlinked() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-4 — the regression guard
+// The regression guard
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac4_shared_install_is_byte_identical_to_today() {
+fn shared_install_is_byte_identical_to_today() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -200,9 +197,10 @@ fn ac4_shared_install_is_byte_identical_to_today() {
         report.created,
         vec![
             ".claude/settings.json",
-            ".claude/mustard/orchestrator.md",
-            ".claude/mustard/dispatch.md",
-            ".claude/mustard/material.md",
+            ".claude/mustard/mapa-inicio-sessao.md",
+            ".claude/agents/mustard/wave.md",
+            ".claude/agents/mustard/review.md",
+            ".claude/agents/mustard/skill.md",
             ".claude/.gitignore",
             "mustard.json",
         ],
@@ -217,12 +215,9 @@ fn ac4_shared_install_is_byte_identical_to_today() {
         serde_json::to_string_pretty(&seed).expect("re-render the seed"),
     );
     assert_eq!(read(&root.join(".claude/settings.json")), Some(expected_settings));
-    assert_eq!(
-        read(&root.join(".claude/mustard/orchestrator.md")),
-        Some(ORCHESTRATOR_MD.to_string()),
-    );
-    assert_eq!(read(&root.join(".claude/mustard/dispatch.md")), Some(DISPATCH_MD.to_string()));
-    assert_eq!(read(&root.join(".claude/mustard/material.md")), Some(MATERIAL_MD.to_string()));
+    for (rel, body) in harness_texts(Locale::PtBr) {
+        assert_eq!(read(&root.join(".claude").join(&rel)), Some(body.to_string()), "{rel}");
+    }
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));
     assert!(root.join("mustard.json").is_file(), "the project config is written");
 
@@ -246,21 +241,18 @@ fn ac4_shared_install_is_byte_identical_to_today() {
     //    something: a shared footprint IS visible to git. If this were empty the
     //    test would pass while the modes had silently become the same thing.
     //
-    //    It asks whether git TRACKS the file, not whether the file is dirty.
-    //    The install now records the stamp it wrote, so a shared `mustard.json`
-    //    is committed rather than left uncommitted — which is the strongest
-    //    form of visible, not a weaker one. Reading `git status` measured the
-    //    dirt as a proxy for the visibility, and the proxy is what the recording
-    //    removed; the claim itself ("versionable") is unchanged and still true.
-    let tracked = git_out(root, &["ls-files", "--", "mustard.json"]);
+    //    The install never commits, so the config it wrote is a new file git
+    //    sees and nobody has recorded: visible, which is what "versionable"
+    //    means here.
+    let seen = git_out(root, &["status", "--porcelain", "--untracked-files=all", "--", "mustard.json"]);
     assert!(
-        tracked.contains("mustard.json"),
-        "a shared install is versionable — git must track the config: {tracked:?}",
+        seen.contains("mustard.json"),
+        "a shared install is versionable — git must see the config: {seen:?}",
     );
 }
 
 // ---------------------------------------------------------------------------
-// AC-11 — the one failure that must not be narrated away
+// The one failure that must not be narrated away
 // ---------------------------------------------------------------------------
 
 /// A private install that cannot hide REFUSES, and writes nothing.
@@ -286,7 +278,7 @@ fn ac4_shared_install_is_byte_identical_to_today() {
 /// seal — the test runs as an ordinary user, which CI is.)
 #[test]
 #[cfg(unix)]
-fn ac11_private_install_refuses_when_it_cannot_hide() {
+fn private_install_refuses_when_it_cannot_hide() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -324,9 +316,8 @@ fn ac11_private_install_refuses_when_it_cannot_hide() {
     for path in [
         ".claude/settings.json",
         ".claude/settings.local.json",
-        ".claude/mustard/orchestrator.md",
-        ".claude/mustard/dispatch.md",
-        ".claude/mustard/material.md",
+        ".claude/mustard/mapa-inicio-sessao.md",
+        ".claude/agents/mustard/wave.md",
         ".claude/.gitignore",
         ".claude",
         "mustard.json",
@@ -435,7 +426,7 @@ fn git_out(root: &Path, args: &[&str]) -> String {
 }
 
 /// `Some(contents)` when the file exists and is readable, `None` when it is
-/// absent — the distinction AC-4 needs to say "the exclude file was not
+/// absent — the distinction the regression guard needs to say "the exclude file was not
 /// touched" whether or not one existed.
 fn read(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()

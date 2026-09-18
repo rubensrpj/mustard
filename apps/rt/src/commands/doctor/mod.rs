@@ -1,18 +1,14 @@
-pub mod cli;
+//! O diagnóstico e a lista fechada de conferências que o contrato nomeia.
+//!
+//! Quem não está na lista do contrato não mora mais aqui: a auditoria do
+//! catálogo de pastas do `.claude/`, a caça ao `.claude/` aninhado com estado
+//! e a busca pela sequência `.claude/.claude/` saíram na onda dos cortes —
+//! nenhuma delas é uma das conferências que o contrato nomeia, e o comando só
+//! responde pelo que o contrato promete.
 
 // `doctor::doctor` repete o nome do pai de proposito: este modulo E a porta,
-// e cada irmao ao lado dele e UMA checagem especifica (`doctor_i1`,
-// `docs_stale_check`, ...). Renomear a porta para se distinguir dos proprios
-// checks tocaria todo chamador em troca de uma opiniao de nomenclatura.
+// e cada irmao ao lado dele e UMA checagem especifica.
 #[allow(clippy::module_inception)]
 pub mod doctor;
-pub mod doctor_claude_paths;
-pub mod doctor_i1;
-pub mod doctor_workspace_leaks;
-pub mod language_audit;
-pub mod docs_stale_check;
-pub mod superseded_check;
-pub mod capability_drift_check;
-pub mod guards_scaffold_check;
-pub mod inject_delivery_check;
 pub mod bootstrap_check;
+pub mod cli;

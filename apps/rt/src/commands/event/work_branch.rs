@@ -13,223 +13,29 @@
 //! the declared flow ([`crate::shared::work_kind::BaseFlow`]), which is also
 //! the ONE reader of the old shape, so units in flight are never orphaned.
 //!
-//! Both halves live here because three callers must agree about them and a
+//! Both halves live here because two callers must agree about them and a
 //! second spelling is how they stop agreeing:
-//! [`crate::hooks::write::work_branch_gate`] (the first file mutation of a
-//! session), [`crate::commands::spec::spec_draft`] (the draft, which cuts the
-//! branch so the spec is written INSIDE the unit rather than on the base), and
+//! [`crate::commands::spec::spec_draft`] (the draft, which cuts the branch so
+//! the spec is written INSIDE the unit rather than on the base) and
 //! [`super::emit_pipeline`] (which pre-computes the name into the pending
 //! marker). The base set itself is never re-derived here — it comes from
 //! [`mustard_core::domain::config::GitConfig`], the single owner.
 
 use std::path::Path;
-use std::process::Command;
 
-use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind, CUT_BASE_FILE};
+use mustard_core::platform::git;
 
-/// Resolve the base a unit is cut from.
-///
-/// The base is no longer a CONSEQUENCE of the kind. It used to be: an ordinary
-/// unit came from the work base, an emergency from one that was not, and a
-/// `hotfix` cut from the work base was refused as a contradiction. That whole
-/// mechanism existed because the base could not be asked for — the candidate
-/// set was a two-entry list in `mustard.json` and the kind was the only signal
-/// available to choose between its members.
-///
-/// The base is now ASKED, against the branches git really has, so:
-///
-/// - an explicit base is the operator's answer and is taken;
-/// - it is validated against the real catalogue, not against a declaration, so
-///   a typo is still caught while `release/2026-Q3` is not;
-/// - an empty catalogue is UNMEASURED (no git, offline, no remote) and accepts
-///   whatever was asked for — refusing on an unmeasured fact is how a gate
-///   grounds a session it cannot reason about;
-/// - no base at all falls back to the project's primary, which is a default
-///   for the cursor and never a correction of an answer.
-///
-/// The hotfix-versus-work-base refusal is gone with the inference that made it
-/// meaningful. `hotfix/` is a prefix on a name now; where the unit lands is the
-/// base the operator picked, and picking is the whole feature.
-/// The branch the checkout is standing on — `None` when git cannot say, or when
-/// `HEAD` is detached and the answer would be the literal `HEAD`.
-///
-/// The last MEASURED step of the default chain: a repository whose `origin/HEAD`
-/// is unreadable still has a branch under the operator's feet, and it exists,
-/// which is the whole property that matters. Only after this does the chain
-/// reach a literal.
-fn current_branch_of(root: &Path) -> Option<String> {
-    let dir = root.to_string_lossy().to_string();
-    let out = std::process::Command::new("git")
-        .args(["-C", &dir, "rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!name.is_empty() && name != "HEAD").then_some(name)
-}
-
-pub(crate) fn resolve_kind_base(
-    root: &Path,
-    requested: Option<&str>,
-    config: &mustard_core::ProjectConfig,
-) -> Result<String, String> {
-    let Some(requested) = requested.map(str::trim).filter(|b| !b.is_empty()) else {
-        // **The default must be a branch that EXISTS, not a literal.**
-        // `primary_base()` floors to the hardcoded `main` when no `git.flow` is
-        // written — the shape the installer produces today — so with no `--base`
-        // this recorded `main` in a repository that has no `main`. It used to
-        // pass through unchallenged; once the reader started checking existence,
-        // the invented name was correctly dropped and the write gate DENIED the
-        // first edit of every such project. Measured A/B on one fixture: the
-        // baseline cut the branch, this denied it.
-        //
-        // So the default is asked of git — `origin/HEAD`, the remote's own
-        // answer — and the declared primary is used only when the project
-        // states one. A default nobody can check out is not a default.
-        // Order: what the project STATES, then what the remote states, then the
-        // branch the operator is standing on — each a name that exists — and the
-        // literal only when nothing at all could be measured.
-        if !config.git.declared_bases().is_empty() {
-            return Ok(config.git.primary_base());
-        }
-        return Ok(mustard_core::default_branch(root)
-            .or_else(|| current_branch_of(root))
-            .unwrap_or_else(|| config.git.primary_base()));
-    };
-    let catalog = mustard_core::branch_catalog(root, &config.git, false);
-    if catalog.is_empty() || catalog.iter().any(|b| b.name == requested) {
-        return Ok(requested.to_string());
-    }
-    let mut known: Vec<&str> = catalog.iter().map(|b| b.name.as_str()).take(12).collect();
-    known.sort_unstable();
-    Err(format!(
-        "a branch '{requested}' não existe no remoto deste repositório. \
-         Branches disponíveis (mais recentes primeiro): {}.",
-        known.join(", ")
-    ))
-}
-
-/// A short, ref-safe fallback token from the session id. `unknown`/empty →
-/// `work` so the branch always has a non-empty tail.
-fn short_sid(sid: &str) -> String {
-    let s = sid.trim();
-    if s.is_empty() || s == "unknown" {
-        return "work".to_string();
-    }
-    s.chars().take(8).collect()
-}
-
-/// Sanitise `{kind}/{slug}` into a valid git ref: keep `[A-Za-z0-9-_./]`,
-/// map everything else to `-`, collapse `..` runs (git forbids them), and trim
-/// leading `-`/`.`/`/` and trailing `/`/`.`. Never empty — floors to `work`.
-///
-/// Idempotent, and that is what makes it usable as a COMPARISON normaliser and
-/// not only as a builder: a name a branch already carries is a fixed point, so
-/// putting both sides of a slug equality through it lets a raw slug meet the ref
-/// it was spelled as ([`crate::commands::pipeline::resume_bootstrap`]'s
-/// `inside_own_work_branch`, which asks whether the checkout IS a spec's own
-/// branch). Comparing a ref's slug against an unsanitised one answers `false`
-/// for every slug that needed sanitising at all.
-pub(crate) fn sanitize_git_ref(raw: &str) -> String {
-    let mut out: String = raw
-        .chars()
-        .map(|ch| match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '/' => ch,
-            _ => '-',
-        })
-        .collect();
-    while out.contains("..") {
-        out = out.replace("..", "-");
-    }
-    let trimmed = out
-        .trim_start_matches(['-', '.', '/'])
-        .trim_end_matches(['/', '.']);
-    if trimmed.is_empty() {
-        "work".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// Compute the auto-branch name for a `pipeline.kind` work-type signal:
-/// `{kind}/{slug}`, sanitised to a valid git ref. The prefix records WHAT the
-/// unit is — a feature, a fix, an emergency — which is what an operator reading
-/// a branch list needs; the base is no longer parsed back out of the name, and
-/// it is not derived from the kind either — it is the operator's own answer,
-/// taken against the real catalogue and recorded with the unit
-/// ([`BaseFlow::base_of`]). Slug precedence:
-/// 1. `--spec` when present (already a slug — at the base gate that is the
-///    name `emit_pipeline` just MINTED, so this leg carries the canonical one);
-/// 2. else `--intent` through the canonical derivation
-///    ([`crate::commands::spec::spec_slug::canonical_for_project`]) — the SAME
-///    one `spec-draft` names the spec directory with, so the branch half and
-///    the directory cannot be two different spellings of one unit;
-/// 3. else a date-based fallback (`YYYY-MM-DD` from the event `ts`) suffixed
-///    with a short session id for uniqueness.
-///    Never fails — every branch degrades to a valid ref.
-pub(crate) fn compute_work_branch(
-    kind: WorkKind,
-    spec: &str,
-    intent: Option<&str>,
-    sid: &str,
-    ts: &str,
-    project: &str,
-) -> String {
-    let slug = if !spec.trim().is_empty() {
-        spec.trim().to_string()
-    } else if let Some(intent) = intent.map(str::trim).filter(|s| !s.is_empty()) {
-        crate::commands::spec::spec_slug::canonical_for_project(intent, Path::new(project))
-    } else {
-        // Date-based fallback from the shared event timestamp, plus a short
-        // session id so two spec-less/intent-less runs on the same day differ.
-        let date = ts.split('T').next().unwrap_or("").trim();
-        if date.is_empty() {
-            short_sid(sid)
-        } else {
-            format!("{date}-{}", short_sid(sid))
-        }
-    };
-    sanitize_git_ref(&kind.branch_name(&slug))
-}
+use crate::shared::work_kind::{BaseFlow, CUT_BASE_FILE};
+#[cfg(test)]
+use crate::shared::work_kind::UnitBase;
 
 // ---------------------------------------------------------------------------
 // The cut — git primitives shared by the hook gate and the draft
 // ---------------------------------------------------------------------------
 
-/// The current branch name (`git rev-parse --abbrev-ref HEAD`), or `None` on
-/// any failure (not a repo, detached HEAD reported as `"HEAD"`, git absent).
-pub(crate) fn current_branch(vcs: &str, root: &str) -> Option<String> {
-    let out = Command::new(vcs)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
-}
-
 /// `true` when a local branch `refs/heads/<branch>` exists.
-fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
-    Command::new(vcs)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .current_dir(root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+pub(crate) fn local_branch_exists(root: &Path, branch: &str) -> bool {
+    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).ok
 }
 
 /// `true` when the remote-tracking ref `refs/remotes/origin/<branch>` exists.
@@ -237,39 +43,25 @@ fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
 /// The clone's ONLY record of a branch nobody checked out locally — which is
 /// every branch of a fresh clone but the default one, and therefore the shape
 /// the pick this module carries lands in most often.
-fn remote_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
-    Command::new(vcs)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/origin/{branch}"),
-        ])
-        .current_dir(root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+pub(crate) fn remote_branch_exists(root: &Path, branch: &str) -> bool {
+    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")])
+        .ok
 }
 
-/// Run one git subcommand in `root`, mapping a non-zero exit (or spawn error)
-/// to `Err(<stderr|io error>)`. Never panics.
-fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
-    let out = Command::new(vcs)
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let msg = stderr.trim();
-        Err(if msg.is_empty() {
-            format!("git exited with status {}", out.status)
-        } else {
-            msg.to_string()
-        })
+/// Run one git subcommand in `root`, mapping a non-zero exit (or a program that
+/// could not be spawned) to `Err(<stderr|io error>)`. Never panics.
+///
+/// The one reading this file adds on top of the executor: a step that only has
+/// to have HAPPENED, and whose refusal text the operator must see when it did
+/// not. A refusal git wrote with nothing on stderr still has to say something,
+/// or the failure reaches a report as an empty line.
+fn run_git(root: &Path, args: &[&str]) -> Result<(), String> {
+    let run = git::run(root, args);
+    if run.ok {
+        return Ok(());
     }
+    let msg = run.stderr.trim();
+    Err(if msg.is_empty() { "git refused without saying why".to_string() } else { msg.to_string() })
 }
 
 /// Check out `target`, creating it off `base` when it does not yet exist.
@@ -290,7 +82,7 @@ fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
 ///    still trails the remote.
 /// 2. the REMOTE-TRACKING ref `refs/remotes/origin/{base}` — the clone shape,
 ///    and the reason this step had to exist. The base is now the operator's
-///    pick out of the REAL catalogue ([`resolve_kind_base`]), which offers
+///    pick out of the REAL catalogue, which offers
 ///    every branch `origin` has; a fresh clone materialises a local head for
 ///    exactly ONE of them, so any other pick has no `refs/heads/` entry until
 ///    the refresh above creates one — and the refresh is skipped whole whenever
@@ -306,22 +98,21 @@ fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
 /// 3. the current HEAD, when NEITHER ref carries the base — an unmeasurable
 ///    repository, not a choice. A cut has to come from somewhere.
 pub(crate) fn checkout_work_branch(
-    vcs: &str,
-    root: &str,
+    root: &Path,
     target: &str,
     base: &str,
 ) -> Result<(), String> {
-    if local_branch_exists(vcs, root, target) {
-        return run_git(vcs, root, &["checkout", target]);
+    if local_branch_exists(root, target) {
+        return run_git(root, &["checkout", target]);
     }
-    if local_branch_exists(vcs, root, base) {
-        return run_git(vcs, root, &["checkout", "-b", target, base]);
+    if local_branch_exists(root, base) {
+        return run_git(root, &["checkout", "-b", target, base]);
     }
-    if remote_branch_exists(vcs, root, base) {
-        return run_git(vcs, root, &["checkout", "-b", target, &format!("origin/{base}")]);
+    if remote_branch_exists(root, base) {
+        return run_git(root, &["checkout", "-b", target, &format!("origin/{base}")]);
     }
     // Neither ref carries the base — branch off the current HEAD.
-    run_git(vcs, root, &["checkout", "-b", target])
+    run_git(root, &["checkout", "-b", target])
 }
 
 /// `git fetch origin`, so the remote-tracking refs describe what `origin` has
@@ -339,8 +130,8 @@ pub(crate) fn checkout_work_branch(
 /// Called from ONE place — [`crate::commands::event::census_settlement::settle`]
 /// — never from a door: the refresh is a step of the settlement, in the order
 /// that function's body states.
-pub(crate) fn fetch_origin(vcs: &str, root: &str) -> bool {
-    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
+pub(crate) fn fetch_origin(root: &Path) -> bool {
+    if run_git(root, &["fetch", "origin"]).is_err() {
         return false;
     }
     crate::shared::work_kind::forget_remote_names(Path::new(root));
@@ -350,8 +141,8 @@ pub(crate) fn fetch_origin(vcs: &str, root: &str) -> bool {
 /// `true` when `ancestor` is reachable from `descendant` — `git merge-base
 /// --is-ancestor`. `false` on any failure, including a ref that does not
 /// exist: a relation git could not establish is not a fact.
-fn is_ancestor(vcs: &str, root: &str, ancestor: &str, descendant: &str) -> bool {
-    run_git(vcs, root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
+    run_git(root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
 }
 
 /// Which of `candidates` the advance of the checked-out `base` to
@@ -367,13 +158,12 @@ fn is_ancestor(vcs: &str, root: &str, ancestor: &str, descendant: &str) -> bool 
 /// Read only after [`fetch_origin`] answered `true`: the remote-tracking ref it
 /// compares against is the one that fetch just wrote.
 pub(crate) fn paths_the_advance_overwrites(
-    vcs: &str,
-    root: &str,
+    root: &Path,
     base: &str,
     candidates: &[String],
 ) -> Vec<String> {
     let remote = format!("origin/{base}");
-    if candidates.is_empty() || !is_ancestor(vcs, root, "HEAD", &remote) {
+    if candidates.is_empty() || !is_ancestor(root, "HEAD", &remote) {
         return Vec::new();
     }
     let Some(changed) = crate::commands::git_settle::git_out(
@@ -392,22 +182,14 @@ pub(crate) fn paths_the_advance_overwrites(
 ///
 /// Every path a settlement handles is read from `git status --porcelain` and
 /// `git diff --name-only`, which answer RELATIVE TO THE TOPLEVEL — while every
-/// pathspec it hands back (`stash push -- p`, `add -- p`, `status -- p`) is
-/// resolved against the process CWD. Run from anywhere but the toplevel the
-/// two disagree in silence: the pathspec matches nothing, the set-aside is a
-/// no-op, the recording answers "nothing to record", and the census rides into
-/// the unit. So the settlement resolves its root HERE, once, whatever a door
+/// pathspec it hands back (`stash push -- p`, `status -- p`) is resolved
+/// against the process CWD. Run from anywhere but the toplevel the two
+/// disagree in silence: the pathspec matches nothing, the set-aside is a no-op,
+/// and the advance refuses on the very paths it was meant to clear. So the
+/// settlement resolves its root HERE, once, whatever a door
 /// passed it — a door cannot get this wrong because a door no longer chooses.
-pub(crate) fn toplevel_of(vcs: &str, root: &Path) -> Option<std::path::PathBuf> {
-    let out = Command::new(vcs)
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+pub(crate) fn toplevel_of(root: &Path) -> Option<std::path::PathBuf> {
+    let top = git::run(root, &["rev-parse", "--show-toplevel"]).out()?;
     (!top.is_empty()).then(|| std::path::PathBuf::from(top))
 }
 
@@ -486,16 +268,8 @@ pub(crate) fn set_aside_sibling(path: &str) -> String {
 }
 
 /// The stash entry currently at `refs/stash`, `None` when there is none.
-fn stash_head(vcs: &str, root: &str) -> Option<String> {
-    let out = Command::new(vcs)
-        .args(["rev-parse", "--verify", "--quiet", "refs/stash"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+fn stash_head(root: &Path) -> Option<String> {
+    let sha = git::run(root, &["rev-parse", "--verify", "--quiet", "refs/stash"]).out()?;
     (!sha.is_empty()).then_some(sha)
 }
 
@@ -516,17 +290,16 @@ impl CensusSetAside {
     /// fast-forward then refuses on it, and the refusal says so in git's words.
     /// The entry is identified by its commit, never by position, so a stash the
     /// operator already had is never mistaken for this one.
-    pub(crate) fn push(vcs: &str, root: &Path, base: &str, paths: &[String]) -> Self {
+    pub(crate) fn push(root: &Path, base: &str, paths: &[String]) -> Self {
         if paths.is_empty() {
             return Self::none();
         }
-        let root_s = root.to_string_lossy().into_owned();
         let authored: Vec<(String, Vec<u8>)> = paths
             .iter()
             .filter(|p| census_path_is_authored(p))
             .filter_map(|p| std::fs::read(root.join(p)).ok().map(|bytes| (p.clone(), bytes)))
             .collect();
-        let before = stash_head(vcs, &root_s);
+        let before = stash_head(root);
         let message = format!("mustard: census set aside so '{base}' can advance");
         let mut args: Vec<&str> = vec![
             "stash",
@@ -538,8 +311,8 @@ impl CensusSetAside {
             "--",
         ];
         args.extend(paths.iter().map(String::as_str));
-        let pushed = run_git(vcs, &root_s, &args).is_ok();
-        let after = stash_head(vcs, &root_s);
+        let pushed = run_git(root, &args).is_ok();
+        let after = stash_head(root);
         // A push that saved nothing ("No local changes to save") exits 0 and
         // writes no entry: only a NEW head is ours.
         let stash = (pushed && after != before).then_some(after).flatten();
@@ -560,8 +333,8 @@ impl CensusSetAside {
     }
 
     /// `true` when the stash entry is still the one at `refs/stash`.
-    fn is_at_head(&self, vcs: &str, root: &str) -> bool {
-        self.stash.is_some() && stash_head(vcs, root) == self.stash
+    fn is_at_head(&self, root: &Path) -> bool {
+        self.stash.is_some() && stash_head(root) == self.stash
     }
 
     /// The advance was REFUSED: restore every path — index state included —
@@ -570,11 +343,11 @@ impl CensusSetAside {
     /// entry was consumed; `false` (and a line on stderr naming the entry)
     /// when git could not apply it, in which case nothing was lost: the entry
     /// stays in `git stash list`.
-    pub(crate) fn put_back(&self, vcs: &str, root: &str) -> bool {
+    pub(crate) fn put_back(&self, root: &Path) -> bool {
         let Some(sha) = &self.stash else {
             return true;
         };
-        if !self.is_at_head(vcs, root) {
+        if !self.is_at_head(root) {
             eprintln!(
                 "base-gate: census set-aside {sha} is no longer the newest stash entry; left \
                  in `git stash list` for you to apply — {}",
@@ -582,8 +355,8 @@ impl CensusSetAside {
             );
             return false;
         }
-        let restored = run_git(vcs, root, &["stash", "pop", "--index", "--quiet"]).is_ok()
-            || run_git(vcs, root, &["stash", "pop", "--quiet"]).is_ok();
+        let restored = run_git(root, &["stash", "pop", "--index", "--quiet"]).is_ok()
+            || run_git(root, &["stash", "pop", "--quiet"]).is_ok();
         if !restored {
             eprintln!(
                 "base-gate: census set-aside could not be put back and stays in `git stash \
@@ -599,7 +372,7 @@ impl CensusSetAside {
     ///
     /// - miner output (the model, the dictionary, a subproject map, the
     ///   declined list): `origin`'s stands — the deterministic mine regenerates
-    ///   it, and at the door that re-mines it is about to;
+    ///   it on the next scan;
     /// - an authored mold: `origin`'s stays at its path and the text found here
     ///   is written to [`set_aside_sibling`] beside it, so BOTH survive.
     ///
@@ -607,12 +380,11 @@ impl CensusSetAside {
     /// sibling that could not be written keeps the entry, and the report names
     /// it. The report is returned, not printed: the settlement says it in its
     /// own words.
-    pub(crate) fn settle_after_advance(self, vcs: &str, root: &Path) -> SetAsideReport {
+    pub(crate) fn settle_after_advance(self, root: &Path) -> SetAsideReport {
         let mut report = SetAsideReport::default();
         let Some(sha) = &self.stash else {
             return report;
         };
-        let root_s = root.to_string_lossy().into_owned();
         let mut all_homed = true;
         for (path, bytes) in &self.authored {
             let sibling = set_aside_sibling(path);
@@ -628,8 +400,8 @@ impl CensusSetAside {
                 report.origin_kept.push(path.clone());
             }
         }
-        if all_homed && self.is_at_head(vcs, &root_s) {
-            let _ = run_git(vcs, &root_s, &["stash", "drop", "--quiet"]);
+        if all_homed && self.is_at_head(root) {
+            let _ = run_git(root, &["stash", "drop", "--quiet"]);
         } else if !all_homed {
             eprintln!(
                 "base-gate: census set-aside kept in `git stash list` ({sha}): an authored mold \
@@ -676,24 +448,23 @@ pub(crate) enum BaseRefresh {
 /// attempt is `Stale`, with git's words: a unit cut from it re-does merged work,
 /// and the `git pull --ff-only origin {base}` the gate prescribes afterwards
 /// cannot succeed on a branch that has meanwhile diverged. Dropping this result
-/// is how the census commit came to land on a stale base in silence.
+/// is how a unit came to be cut from a stale base in silence.
 ///
 /// Read only after [`fetch_origin`] answered `true`: offline there is no
 /// evidence the base is behind, and the cut takes the local base as before.
 pub(crate) fn fast_forward_base(
-    vcs: &str,
-    root: &str,
+    root: &Path,
     current: Option<&str>,
     base: &str,
 ) -> BaseRefresh {
-    if !remote_branch_exists(vcs, root, base) {
+    if !remote_branch_exists(root, base) {
         return BaseRefresh::Current;
     }
     let remote = format!("origin/{base}");
     let attempt = if current == Some(base) {
-        run_git(vcs, root, &["merge", "--ff-only", &remote])
-    } else if local_branch_exists(vcs, root, base) {
-        run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
+        run_git(root, &["merge", "--ff-only", &remote])
+    } else if local_branch_exists(root, base) {
+        run_git(root, &["fetch", "origin", &format!("{base}:{base}")])
     } else {
         // No local head to advance: the cut starts from `origin/{base}` itself
         // ([`checkout_work_branch`], step 2), and that ref was just fetched.
@@ -703,7 +474,7 @@ pub(crate) fn fast_forward_base(
         Ok(()) => BaseRefresh::Current,
         // Ahead of (or level with) the remote: nothing to advance, and an
         // unpushed commit of the operator's is kept, not a defect.
-        Err(_) if is_ancestor(vcs, root, &remote, base) => BaseRefresh::Current,
+        Err(_) if is_ancestor(root, &remote, base) => BaseRefresh::Current,
         Err(error) => BaseRefresh::Stale {
             base: base.to_string(),
             error,
@@ -735,6 +506,10 @@ pub(crate) fn fast_forward_base(
 ///   request target and its merged-ancestry check included — at a base the
 ///   operator never chose. Callers that must produce a name now say so
 ///   themselves, where they can be heard.
+// Sem chamador na produção desde a refatoração que enxugou o runtime: o que
+// ainda exercita o corte da branch pendente são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 pub(crate) fn base_for(
     root: &Path,
     target: &str,
@@ -743,14 +518,17 @@ pub(crate) fn base_for(
     let flow = BaseFlow::of_at(&config.git, root);
     match flow.base_of(target) {
         UnitBase::Known(base) => Ok(base),
-        UnitBase::NotAUnit => Ok(flow.work_base().to_string()),
+        UnitBase::NotAUnit => flow
+            .work_base()
+            .map(str::to_string)
+            .ok_or_else(Vec::new),
         UnitBase::Ambiguous(candidates) => Err(candidates),
     }
 }
 
 /// The SLUG half of a work branch — `feature/my-unit` → `my-unit`, and
 /// `dev_my-unit` → `my-unit` for a unit still in flight. The inverse of
-/// [`compute_work_branch`]'s `{kind}/{slug}` join.
+/// the `{kind}/{slug}` join.
 ///
 /// This is the DURABLE record of a unit's name. The `pending-work-branch`
 /// marker that carried the name from the gate is consumed and deleted by the
@@ -787,7 +565,7 @@ pub(crate) fn slug_of_work_branch(
 /// falling back to the derivation. What it must never go back to asking is
 /// whether the recorded name appears in `git.flow`'s declared set — that test
 /// refuses a base the operator picked out of the REAL catalogue
-/// ([`resolve_kind_base`], which validates against git and not against a
+/// (a validação contra o git, e não contra uma
 /// declaration) for the sole reason that a file written at `mustard init` does
 /// not list it, and `git.flow` refuses nothing any more
 /// ([`mustard_core::domain::config::GitConfig::preselected_bases`]). Existence
@@ -800,19 +578,19 @@ pub(crate) fn slug_of_work_branch(
 ///
 /// The `Err` is the third state, handed to the caller instead of resolved
 /// behind its back: an emergency whose pick nothing carries has no base a
-/// derivation can honestly supply, and every consumer of this — both cut doors —
-/// can refuse or warn in its own shape. Both of them do, and the hook one has
-/// to: it exits 0, so anything it says on stderr is said to nobody.
-///
-/// Shared by both doors — this cut and [`crate::hooks::write::work_branch_gate`]
-/// — so the branch a session ends up on does not depend on which one opened it.
+/// derivation can honestly supply, and the cut that consumes it
+/// can refuse or warn in its own shape, where the operator reads it.
+// Sem chamador na produção desde a refatoração que enxugou o runtime: o que
+// ainda exercita o corte da branch pendente são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 pub(crate) fn recorded_or_derived_base(
     root: &str,
     session: &str,
     target: &str,
     config: &mustard_core::ProjectConfig,
 ) -> Result<String, Vec<String>> {
-    let recorded = crate::shared::context::pending_base_for(root, session)
+    let recorded = crate::shared::context::pending_branch::pending_base_for(root, session)
         .filter(|b| crate::shared::work_kind::base_still_on_remote(Path::new(root), b));
     match recorded {
         Some(recorded) => Ok(recorded),
@@ -820,25 +598,27 @@ pub(crate) fn recorded_or_derived_base(
     }
 }
 
-/// `true` when `branch` must never be developed on directly.
+/// `true` when `branch` is one of this repository's INTEGRATION BASES.
 ///
-/// The membership question moved: it used to be "is this one of the branches
-/// `git.flow` declares?", which made protection and CUT POINT the same closed
-/// list — so opening the cut point would have opened protection with it. It is
-/// now `mustard_core::protected_branches`: the remote's own default branch
-/// (`origin/HEAD`) plus whatever `git.protected` adds. Normally a set of ONE.
+/// Two sources, and neither of them is a name written here: what the project
+/// declared (`git.flow`, plus the `git.protected` list), and what the remote
+/// itself calls its default branch. The second matters because the installer
+/// writes no flow — for such a project the declaration is empty, and without
+/// the remote's own answer every branch, `origin/HEAD` included, would read as
+/// somebody's work unit.
 ///
-/// Work branches — `feature/x`, `fix/y`, and the older `{base}_*` shape — are
-/// NOT protected, exactly as before. What changed is that `dev` is no longer
-/// protected merely for appearing in a promotion map: a unit may now be cut
-/// from it AND committed on it, which is what a project that promotes through
-/// several branches always needed.
-pub(crate) fn is_protected(
+/// This used to be spelled as "is it protected?", and the two questions came
+/// apart the moment protection began reading the declaration alone: a project
+/// that declares nothing protects nothing, which is the honest answer to THAT
+/// question and the wrong answer to this one. Standing on a base and standing
+/// on a branch nobody may commit to are different facts.
+pub(crate) fn on_integration_base(
     root: &Path,
     branch: &str,
     config: &mustard_core::ProjectConfig,
 ) -> bool {
-    mustard_core::protected_branches(root, &config.git).contains(branch)
+    mustard_core::protected_branches(&config.git).contains(branch)
+        || mustard_core::default_branch(root).as_deref() == Some(branch)
 }
 
 /// `true` when the tree HOLDS work that is not this unit's — its HEAD names a
@@ -851,19 +631,20 @@ pub(crate) fn is_protected(
 /// hand-made `feature/x` carries edits exactly the same way, and taking its
 /// checkout costs exactly the same.
 ///
-/// `None` (unreadable HEAD) and git's `"HEAD"` (a detached checkout) are NOT
-/// measurements of a position, so neither counts: an unmeasured HEAD keeps
-/// today's cut rather than triggering a refusal the operator did not ask for.
+/// `None` (an unreadable HEAD, or a detached checkout, which
+/// [`current_branch`] already answers as no branch) is NOT a measurement of a
+/// position, so it never counts: an unmeasured HEAD keeps today's cut rather
+/// than triggering a refusal the operator did not ask for.
 pub(crate) fn holds_other_work(
     root: &Path,
     current: Option<&str>,
     target: &str,
     config: &mustard_core::ProjectConfig,
 ) -> bool {
-    let Some(branch) = current.filter(|b| *b != "HEAD") else {
+    let Some(branch) = current else {
         return false;
     };
-    branch != target && !is_protected(root, branch, config)
+    branch != target && !on_integration_base(root, branch, config)
 }
 
 // ---------------------------------------------------------------------------
@@ -874,10 +655,8 @@ pub(crate) fn holds_other_work(
 ///
 /// Deliberately not a `Vec<String>`: a caller that CHECKS OUT OVER a tree has to
 /// tell "I measured nothing here" from "I could not measure", and only the first
-/// authorises the checkout. It is the posture
-/// [`crate::commands::maint::worktree_gc`]'s `Contents` already takes, pointed
-/// the other way round because the caller is the other way round: that one
-/// DELETES, so an unproven candidate is KEPT; this one carries another unit's
+/// authorises the checkout. A caller that DELETES reads an unproven candidate as
+/// KEEP; this one carries another unit's
 /// work off, so an unproven checkout is REFUSED. Refusing costs the operator one
 /// commit; being wrong in the other direction costs them their work.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -924,7 +703,7 @@ pub(crate) enum CheckoutWork {
 ///    — lives IN the work branch and is integrated into the base at merge time:
 ///    `spec-draft` cuts the branch FIRST and writes the spec afterwards, and a
 ///    spec write on a bare integration base is denied
-///    ([`crate::hooks::write::work_branch_gate`]). So between approval and the
+///    (the write gate). So between approval and the
 ///    merge, a unit's uncommitted work IS its `.claude/spec/…`, and a probe that
 ///    drops those paths reads the NORMAL state of an in-flight unit as an empty
 ///    tree. `dirty_paths`' carve-out was written when `.claude/` was treated as
@@ -1028,11 +807,8 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
 thread_local! {
     /// How many whole-tree probes [`checkout_work`] has run on THIS thread.
     ///
-    /// Test scaffolding for one specific claim: the collapsed settlement
-    /// measures the tree exactly once per door. Before the collapse a single
-    /// pipeline opening walked the tree up to three times — the re-mine's own
-    /// gate, the recording, and the cut's refusal decision — each with its own
-    /// idea of what "dirty" meant.
+    /// Test scaffolding for one specific claim: the settlement measures the
+    /// tree exactly once per door, and nothing after it measures again.
     pub(crate) static TREE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -1050,7 +826,7 @@ thread_local! {
 /// some. The harness knows what the harness writes; it asks itself.
 ///
 /// The first thing the delegation misread was `.claude/.session/`, where
-/// [`crate::shared::context::set_pending_branch`] writes the very marker this
+/// [`crate::shared::context::pending_branch::set_pending_branch`] writes the very marker this
 /// decision consumes: the cut refused over the gate's own droppings, and told
 /// the operator to commit or stash them.
 ///
@@ -1104,8 +880,7 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
 /// FORA da base não há gravação nenhuma para fechar esse atrito, e aí a
 /// categoria continua nomeando os caminhos mas não libera nada: ver
 /// [`crate::commands::event::census_settlement`].
-const CENSUS_FILES: &[&str] =
-    &["grain.model.json", "grain.dictionary.json", "scan-declined.json", "scan-map.md"];
+const CENSUS_FILES: &[&str] = &["grain.model.json", "scan-declined.json", "scan-map.md"];
 
 /// A subárvore sob um `.claude/` onde os moldes `{papel}-pattern` do censo
 /// vivem, e o nome do arquivo que fecha cada um. A passagem de enriquecimento
@@ -1115,43 +890,43 @@ const CENSUS_SKILLS_DIR: &str = "skills";
 /// Ver [`CENSUS_SKILLS_DIR`].
 const CENSUS_SKILL_FILE: &str = "SKILL.md";
 
-/// De quem é um `.claude/skills/<molde>/SKILL.md`, lido do `source:` do
-/// frontmatter dele.
+/// Who owns a `.claude/skills/<mold>/SKILL.md`, read from the `source:` of its
+/// frontmatter.
 ///
-/// O nome do arquivo NÃO responde a pergunta. Os dois moldes curados deste
-/// repositório (`rt-verdict-pattern`, `core-function-pattern`) têm exatamente o
-/// mesmo caminho de um molde gerado e carregam `source: manual` — o marcador
-/// cujo significado documentado é "edições à mão não são sobrescritas". Tratar
-/// todo `SKILL.md` como censo faz a edição à mão do operador deixar de ser
-/// trabalho dele: o corte para de recusar por causa dela e
-/// a gravação do censo a varre para dentro de um commit da ferramenta — a troca
-/// que a categoria existe para impedir.
+/// The file name does NOT answer the question. The two curated molds of this
+/// repository (`rt-verdict-pattern`, `core-function-pattern`) have exactly the
+/// same path as a generated mold and carry `source: manual` — the marker whose
+/// documented meaning is "hand edits are not overwritten". Treating every
+/// `SKILL.md` as census makes the operator's hand edit stop being their work:
+/// the cut stops refusing because of it and it travels into the new unit — the
+/// swap the category exists to prevent.
 ///
-/// A chave AUSENTE é o mesmo caso do `manual`, e é o comum: um
-/// `.claude/skills/<algo>/SKILL.md` escrito à mão — o lugar padrão de uma skill
-/// de projeto no Claude Code — quase nunca declara `source:`. Ler a ausência
-/// como censo reabriria a mesma troca por OMISSÃO de chave em vez de por
-/// escrita dela.
+/// The ABSENT key is the same case as `manual`, and it is the common one: a
+/// hand-written `.claude/skills/<something>/SKILL.md` — the standard place of a
+/// project skill in Claude Code — almost never declares `source:`. Reading the
+/// absence as census would reopen the same swap by OMITTING the key instead of
+/// by writing it.
 ///
-/// Por isso a leitura é [`DirtyPathKind::Census`] SÓ quando o `source:` resolve
-/// para `scan`. Todo o resto — `manual`, chave ausente, qualquer outro valor,
-/// arquivo ilegível, frontmatter que não fecha — é [`DirtyPathKind::Work`], a
-/// mesma direção segura que a regra de truncamento acima toma: errar para "tem
-/// trabalho" custa um commit, errar para o outro lado custa o trabalho de
-/// alguém.
+/// That is why the read is [`DirtyPathKind::Census`] ONLY when `source:`
+/// resolves to `scan`. Everything else — `manual`, an absent key, any other
+/// value, an unreadable file, a frontmatter that does not close — is
+/// [`DirtyPathKind::Work`], the same safe direction the truncation rule above
+/// takes: erring towards "there is work" costs a commit, erring the other way
+/// costs someone's work.
 ///
-/// A pergunta inteira vai para
-/// [`crate::commands::scan_patterns::origin::is_mustard_generated`], que É a
-/// regra canônica e já lê pelo parser de frontmatter do core (tolerante a BOM e
-/// a CRLF, e ciente do bloco `metadata:`, então um `source:` indentado ali
-/// dentro nunca é confundido com a chave de topo). Reescrever aqui as duas
-/// linhas equivalentes é exatamente como este portão e a varredura passariam a
-/// discordar sobre quem escreveu o mesmo arquivo — que foi o defeito.
+/// The `source:` field is read through the core's frontmatter parser (BOM and
+/// CRLF tolerant, and aware of the `metadata:` block, so an indented `source:`
+/// in there is never mistaken for the top key), which is the one reader of that
+/// key in the crate.
 fn census_skill_kind(root: &Path, path: &str) -> DirtyPathKind {
     let Ok(text) = std::fs::read_to_string(root.join(path)) else {
         return DirtyPathKind::Work;
     };
-    if crate::commands::scan_patterns::origin::is_mustard_generated(&text) {
+    let machine_written = mustard_core::domain::skill::frontmatter::parse(&text)
+        .ok()
+        .and_then(|fm| fm.source())
+        .is_some_and(|s| s.eq_ignore_ascii_case("scan"));
+    if machine_written {
         DirtyPathKind::Census
     } else {
         DirtyPathKind::Work
@@ -1318,15 +1093,6 @@ pub(crate) enum RefusalCause {
     /// unit's (or a tree that could not be measured); a plain checkout would
     /// carry it onto the new branch.
     WorkWouldTravel,
-    /// The tree is dirty ONLY with the census, and the checkout is not the
-    /// base it is recorded on — another unit's branch, a protected branch that
-    /// is not the base, a detached HEAD. The census cannot land here, so it
-    /// must not travel either; the base it belongs to is named.
-    CensusOffBase { base: String },
-    /// The tree is dirty ONLY with the census and the checkout IS the base —
-    /// but the base is protected, and this door (a cut, a hook) may not commit
-    /// there behind the operator's back. The explicit open can, and is named.
-    CensusOnProtectedBase,
     /// The base this move is about trails `origin/{base}` and could not be
     /// fast-forwarded ([`BaseRefresh::Stale`]). Carries git's own words.
     BaseStale { base: String, error: String },
@@ -1362,16 +1128,13 @@ impl BusyCheckout {
         let key = match &self.cause {
             RefusalCause::WorkWouldTravel if named.is_none() => "workbranch.busy.unmeasured",
             RefusalCause::WorkWouldTravel => "workbranch.busy.refusal",
-            RefusalCause::CensusOffBase { .. } => "workbranch.busy.census_off_base",
-            RefusalCause::CensusOnProtectedBase => "workbranch.busy.census_protected",
             RefusalCause::BaseStale { .. } => "workbranch.busy.base_stale",
             RefusalCause::BaseBlockedByWork { .. } => "workbranch.busy.base_blocked",
         };
         let (base, error) = match &self.cause {
-            RefusalCause::CensusOffBase { base } => (base.as_str(), ""),
             RefusalCause::BaseBlockedByWork { base, .. } => (base.as_str(), ""),
             RefusalCause::BaseStale { base, error } => (base.as_str(), error.as_str()),
-            RefusalCause::WorkWouldTravel | RefusalCause::CensusOnProtectedBase => ("", ""),
+            RefusalCause::WorkWouldTravel => ("", ""),
         };
         translate(key, lang)
             .replace("{current}", &self.current)
@@ -1392,6 +1155,10 @@ impl BusyCheckout {
 /// No serde derive — the JSON shape belongs to whichever command reports it
 /// (`spec-draft` folds it into its own document).
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Sem chamador na produção desde a refatoração que enxugou o runtime: o que
+// ainda exercita o corte da branch pendente são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 pub(crate) enum CutOutcome {
     /// No `pending-work-branch` marker for this session (or no VCS at all):
     /// nothing was ever promised, so nothing was cut.
@@ -1438,8 +1205,8 @@ pub(crate) enum CutOutcome {
 /// Consume this session's `pending-work-branch` marker and check that branch
 /// out in `project`, creating it off its base.
 ///
-/// The non-hook door to the SAME cut [`crate::hooks::write::work_branch_gate`]
-/// performs on the first file mutation. `spec-draft` calls it because the spec
+/// The only cut: no hook cuts a branch on a file mutation. `spec-draft` calls
+/// it because the spec
 /// must be written INSIDE the unit: the draft is the first thing the work
 /// produces, and it used to land on the integration base (a `.claude/spec/`
 /// carve-out existed precisely to let it). Cutting here moves the draft, the
@@ -1454,38 +1221,42 @@ pub(crate) enum CutOutcome {
 /// (`spec-draft` calls it at approval, before any `Write` reaches the hook
 /// gate), so a guard living only in the gate never ran. The decision is
 /// [`crate::commands::event::census_settlement::settle`], the same one the gate
-/// takes — one question, one answer, and the base refresh and the census commit
-/// happen inside it rather than in either door.
+/// takes — one question, one answer, and the base refresh happens inside it
+/// rather than in either door.
+// Sem chamador na produção desde a refatoração que enxugou o runtime: o que
+// ainda exercita o corte da branch pendente são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutcome {
     let config = mustard_core::ProjectConfig::load(project);
     // An explicit `vcs: ""` opt-out (or a non-git tree) means there is no
-    // branch to cut and nothing to guard.
-    let Some(vcs) = config.vcs() else {
+    // branch to cut and nothing to guard. The executor would refuse every step
+    // below anyway; answering here keeps the door from reading markers and
+    // reporting a failure for a project that simply does not cut branches.
+    if config.vcs().is_none() {
         return CutOutcome::NoPending;
-    };
+    }
     let root = project.to_string_lossy().into_owned();
-    let Some(target) = crate::shared::context::pending_branch_for(&root, session) else {
+    let Some(target) = crate::shared::context::pending_branch::pending_branch_for(&root, session) else {
         return CutOutcome::NoPending;
     };
 
-    let current = current_branch(&vcs, &root);
+    let current = mustard_core::current_branch(project);
     if current.as_deref() == Some(target.as_str()) {
-        crate::shared::context::clear_pending_branch(&root, session);
+        crate::shared::context::pending_branch::clear_pending_branch(&root, session);
         return CutOutcome::AlreadyThere(target);
     }
 
-    // WHERE from, RESOLVIDO PRIMEIRO e uma vez só: é um dos três insumos da
-    // pergunta abaixo, e a resposta dela precisa saber se a posição É a base.
-    // Resolver aqui não muda a ORDEM das recusas — `Refused` continua vindo
-    // antes de `BaseUnknown`, porque este passo não retorna nada por si.
+    // WHERE from, RESOLVED FIRST and only once: it is one of the inputs of the
+    // question below, which needs to know which base to update. Resolving it
+    // here does not change the ORDER of the refusals — `Refused` still comes
+    // before `BaseUnknown`, because this step returns nothing by itself.
     let resolved_base = recorded_or_derived_base(&root, session, &target, &config);
     let base_hint = resolved_base.as_deref().ok();
 
-    // A PERGUNTA INTEIRA, feita uma vez: o que está sujo, onde o checkout está,
-    // e o que vai acontecer. A resposta já veio com os efeitos feitos — a base
-    // atualizada a partir do `origin` e o censo gravado nela, nessa ordem —, e
-    // esta porta não executa passo nenhum: enquanto executava, cada rodada de
-    // revisão achava a porta que tinha esquecido um deles.
+    // THE WHOLE QUESTION, asked once: what is dirty and where the checkout
+    // stands. The answer already comes with the base updated from `origin`,
+    // and this door executes no step.
     match crate::commands::event::census_settlement::settle(
         project,
         crate::commands::event::census_settlement::CheckoutPosition::at(
@@ -1494,16 +1265,13 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
             base_hint,
         ),
         &config,
-        crate::commands::event::census_settlement::CensusDoor::BranchCut,
     ) {
-        // O checkout pertence a OUTRA unidade que ainda não commitou: recusar
-        // antes de tocar no git é o que deixa o trabalho dela onde o autor
-        // deixou.
+        // Work of ANOTHER unit would travel, or the base could not advance:
+        // refusing before cutting leaves everything where the author left it.
         crate::commands::event::census_settlement::CensusSettlement::Refuse(busy) => {
             return CutOutcome::Refused(busy)
         }
-        crate::commands::event::census_settlement::CensusSettlement::Recorded(_)
-        | crate::commands::event::census_settlement::CensusSettlement::Proceed => {}
+        crate::commands::event::census_settlement::CensusSettlement::Proceed => {}
     }
 
     // An emergency whose pick nothing carries has no honest base, and cutting it
@@ -1520,7 +1288,7 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         }
     };
 
-    match checkout_work_branch(&vcs, &root, &target, &base) {
+    match checkout_work_branch(project, &target, &base) {
         Ok(()) => {
             // The marker that carried the operator's answer is about to be
             // consumed, so this is the LAST moment the answer exists. Write it
@@ -1528,7 +1296,7 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
             // draft folds into `meta.json#base` — a no-op wherever the flow can
             // still re-derive it (see `BaseFlow::record_cut_base`).
             BaseFlow::of_at(&config.git, project).record_cut_base(&target, &base);
-            crate::shared::context::clear_pending_branch(&root, session);
+            crate::shared::context::pending_branch::clear_pending_branch(&root, session);
             CutOutcome::Cut(target)
         }
         Err(error) => CutOutcome::Failed {
@@ -1542,29 +1310,23 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
 #[cfg(test)]
 mod tests {
     // -----------------------------------------------------------------------
-    // Auto-branch name computation (porta-unica)
+    // Auto-branch name computation
     // -----------------------------------------------------------------------
 
-    use crate::shared::work_kind::{BaseFlow, WorkKind, CUT_BASE_FILE};
+    use crate::shared::work_kind::BaseFlow;
 
-    /// AC-2 — protection follows the REPOSITORY, not the promotion map.
+    /// Uma base é o que o projeto declarou, ou o que o próprio remoto chama de
+    /// padrão — e nada mais.
     ///
-    /// The distinction this pins is the whole reason the cut point could open:
-    /// `dev` appears in `git.flow` and is NOT protected by that alone, while
-    /// the branch `origin` itself calls default is — with no configuration
-    /// naming it anywhere.
+    /// A distinção que este teste prende: `dev` e `main` estão no `git.flow`
+    /// deste projeto e por isso são base; `producao` é o que este repositório
+    /// chama de padrão e por isso também é; `feature/x` não é nem uma coisa
+    /// nem outra. Nenhum dos três nomes está escrito no código.
     #[test]
-    fn only_the_remote_default_branch_is_protected() {
+    fn a_base_sai_da_declaracao_ou_do_proprio_remoto() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let git = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;
         if !git(&["init", "-q", "-b", "producao", "."]) {
             return; // no usable git here
         }
@@ -1581,20 +1343,27 @@ mod tests {
             return;
         }
 
-        let config = two_tier(); // declares dev and main
+        let config = two_tier(); // declara dev e main
         assert!(
-            super::is_protected(root, "producao", &config),
-            "the branch the remote calls default is protected, unnamed by any config",
+            super::on_integration_base(root, "producao", &config),
+            "a branch que o próprio remoto chama de padrão é base, sem configuração nenhuma",
         );
         assert!(
-            !super::is_protected(root, "dev", &config),
-            "being in git.flow is no longer a reason to be protected",
+            super::on_integration_base(root, "dev", &config),
+            "e a que o `git.flow` declara também é",
         );
         assert!(
-            !super::is_protected(root, "main", &config),
-            "and neither is being called main when the repository disagrees",
+            super::on_integration_base(root, "main", &config),
+            "inclusive a de cima do fluxo",
         );
-        assert!(!super::is_protected(root, "feature/x", &config), "a work branch never is");
+        assert!(
+            !super::on_integration_base(root, "feature/x", &config),
+            "uma branch de trabalho nunca é",
+        );
+        assert!(
+            mustard_core::protected_branches(&config.git).contains("dev"),
+            "e a proteção sai da declaração: sem `git.flow`, nada fica protegido",
+        );
     }
 
     /// A project declaring the ordinary two-tier flow: `dev` for common work,
@@ -1612,77 +1381,7 @@ mod tests {
         std::path::Path::new("/no/project")
     }
 
-    /// AC-1 — the branch is named by what the unit IS, never by the base it was
-    /// cut from.
-    ///
-    /// The name an operator reads in `git branch` is the assertion: a feature
-    /// says `feature/`, a fix says `fix/`, an emergency says `hotfix/`, and no
-    /// integration base appears in any of them. The old shape put the base
-    /// there, which is the information the operator did NOT need and the only
-    /// one the program did — that split is what this unit undoes.
-    #[test]
-    fn a_unit_branch_is_named_by_its_kind() {
-        let named = |kind| {
-            super::compute_work_branch(
-                kind,
-                "parcelas-virtuais",
-                None,
-                "sess-abcdef12",
-                "2026-07-02T10:00:00.000Z",
-                "/no/project",
-            )
-        };
-        assert_eq!(named(WorkKind::parse("feature").expect("suggested token parses")), "feature/parcelas-virtuais");
-        assert_eq!(named(WorkKind::parse("fix").expect("suggested token parses")), "fix/parcelas-virtuais");
-        assert_eq!(named(WorkKind::parse("hotfix").expect("suggested token parses")), "hotfix/parcelas-virtuais");
-
-        // No integration base of this project appears in any of the names —
-        // stated against the DECLARED bases, not against the literals, so the
-        // assertion means the same thing in a develop/master project.
-        let config = two_tier();
-        for token in WorkKind::SUGGESTED {
-            let kind = WorkKind::parse(token).expect("suggested token parses");
-            let branch = named(kind);
-            for base in config.git.preselected_bases() {
-                assert!(
-                    !branch.starts_with(&format!("{base}_")),
-                    "the name records the kind, not the cut: {branch}",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn compute_work_branch_prefers_spec_slug() {
-        let b = super::compute_work_branch(WorkKind::parse("feature").expect("suggested token parses"), "2026-07-02-my-spec", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "feature/2026-07-02-my-spec");
-    }
-
-    #[test]
-    fn compute_work_branch_falls_back_to_intent_slug() {
-        // No spec → the intent is slugified (pt-BR strips accents by default).
-        let b = super::compute_work_branch(WorkKind::parse("fix").expect("suggested token parses"), "", Some("Corrigir botão de login"), "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "fix/corrigir-botao-login");
-    }
-
-    #[test]
-    fn compute_work_branch_date_fallback_when_no_spec_or_intent() {
-        // No spec, no intent → date-from-ts + short session id.
-        let b = super::compute_work_branch(WorkKind::parse("feature").expect("suggested token parses"), "", None, "sess-abcdef1234", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "feature/2026-07-02-sess-abc");
-    }
-
-    #[test]
-    fn compute_work_branch_sanitizes_unsafe_slug() {
-        // A spec with unsafe chars is sanitised into a valid ref.
-        let b = super::compute_work_branch(WorkKind::parse("feature").expect("suggested token parses"), "weird ..slug/", None, "unknown", "2026-07-02T10:00:00.000Z", "/no/project");
-        // ".." collapsed, spaces mapped to '-', trailing '/' trimmed.
-        assert_eq!(b, "feature/weird--slug");
-        assert!(!b.contains(".."), "no `..` runs in a git ref");
-        assert!(!b.starts_with('-'), "no leading dash");
-    }
-
-    /// AC-2 — with the base gone from the name, it is recovered from the
+    /// With the base gone from the name, it is recovered from the
     /// DECLARED FLOW and from nothing else.
     ///
     /// The proof that the branch string is not consulted is the second project:
@@ -1768,7 +1467,7 @@ mod tests {
         );
     }
 
-    /// AC-4 — a branch in the `{base}_{slug}` shape is still this unit's branch,
+    /// A branch in the `{base}_{slug}` shape is still this unit's branch,
     /// and still resolves to its base.
     ///
     /// Units in flight would be orphaned otherwise: the pull-request target, the
@@ -1800,73 +1499,7 @@ mod tests {
         }
     }
 
-    /// The rule that replaced "the kind decides the base": nothing decides it
-    /// but the operator, and the only thing validated is that the branch EXISTS.
-    ///
-    /// The test this replaced asserted the opposite — that a `hotfix` could not
-    /// be cut from the work base — and that refusal was only meaningful while
-    /// the base was inferred. `hotfix/` is a prefix on a name now.
-    #[test]
-    fn the_base_is_the_operators_answer_not_a_consequence_of_the_kind() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path(); // not a repository: the catalogue is UNMEASURED
-        let config = two_tier();
-
-        assert_eq!(
-            super::resolve_kind_base(root, None, &config).as_deref(),
-            Ok(config.git.primary_base().as_str()),
-            "no answer falls back to the primary base, which is a default",
-        );
-        assert_eq!(
-            super::resolve_kind_base(root, Some("release/2026-Q3"), &config).as_deref(),
-            Ok("release/2026-Q3"),
-            "an unmeasured catalogue accepts the answer rather than refusing on a fact nobody measured",
-        );
-        assert_eq!(
-            super::resolve_kind_base(root, Some("dev"), &config).as_deref(),
-            Ok("dev"),
-            "and the work base is an ordinary answer for ANY kind — the old contradiction is gone",
-        );
-    }
-
-    /// With NO flow declared and NO `--base`, the default is the remote's own
-    /// answer — never the literal `main`.
-    ///
-    /// This is the shape `mustard init` produces today, and it had no test at
-    /// all. `primary_base()` floors to the hardcoded `main` there, so the gate
-    /// recorded a branch the repository does not have; once the reader began
-    /// checking existence, that invented name was correctly dropped and the
-    /// write gate DENIED the first edit of every such project. Measured A/B on
-    /// one fixture: the baseline cut the branch, the wave denied it. A default
-    /// nobody can check out is not a default.
-    #[test]
-    fn with_no_flow_and_no_answer_the_default_is_the_remote_own_head() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        seed_repo_declaring(root, None);
-
-        let config = mustard_core::ProjectConfig::load(root);
-        assert!(
-            config.git.declared_bases().is_empty(),
-            "fixture must be the installer's shape: no flow declared",
-        );
-        let answer = super::resolve_kind_base(root, None, &config);
-        assert_ne!(
-            answer.as_deref(),
-            Ok("main"),
-            "the default is the hardcoded literal again — in a repository that has \
-             no `main`, that name is recorded and then dropped, and the first edit \
-             is denied",
-        );
-        assert_eq!(
-            answer.as_deref(),
-            Ok("dev"),
-            "the default must be the branch `origin/HEAD` really names",
-        );
-    }
-
-
-    /// AC-5, the half the sibling above could not reach — *"and the operator
+    /// The half the sibling above could not reach — *"and the operator
     /// chooses when more than one candidate exists"*.
     ///
     /// Choosing is only half of it: the choice has to SURVIVE. With three bases
@@ -1894,13 +1527,13 @@ mod tests {
         // The operator picks the MIDDLE base. That answer reaches the cut the
         // one way it can — the pending marker `emit-pipeline` writes.
         let sid = "sess-hotfix-pick";
-        crate::shared::context::set_pending_branch(&root_s, sid, "hotfix/my-unit", Some("qas"));
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "hotfix/my-unit", Some("qas"));
 
         let outcome = super::cut_pending_work_branch(root, sid);
         assert_eq!(outcome, super::CutOutcome::Cut("hotfix/my-unit".to_string()), "{outcome:?}");
         // The cut itself honoured the pick: the branch sits on `qas`, not `main`.
         assert_eq!(
-            super::current_branch("git", &root_s).as_deref(),
+            mustard_core::current_branch(root).as_deref(),
             Some("hotfix/my-unit"),
         );
         let head = git_rev(root, "HEAD");
@@ -1908,7 +1541,7 @@ mod tests {
         assert_ne!(head, git_rev(root, "main"), "…and not from the pre-marked one");
 
         // The marker is GONE — which is why it cannot be the durable answer.
-        assert!(crate::shared::context::pending_base_for(&root_s, sid).is_none());
+        assert!(crate::shared::context::pending_branch::pending_base_for(&root_s, sid).is_none());
 
         // Every LATER read answers the middle base. This is the assertion the
         // unit shipped without: each of these resolved `hotfix/…` through the
@@ -1982,7 +1615,7 @@ mod tests {
 
         // The operator picks the release line out of the catalogue.
         let sid = "sess-release-pick";
-        crate::shared::context::set_pending_branch(
+        crate::shared::context::pending_branch::set_pending_branch(
             &root_s,
             sid,
             "fix/erro-no-boleto",
@@ -2005,7 +1638,7 @@ mod tests {
 
         // The marker is spent, and every later read still answers the pick —
         // the unit's own record carries it from here.
-        assert!(crate::shared::context::pending_base_for(&root_s, sid).is_none());
+        assert!(crate::shared::context::pending_branch::pending_base_for(&root_s, sid).is_none());
         let config = mustard_core::ProjectConfig::load(root);
         assert_eq!(
             super::base_for(root, "fix/erro-no-boleto", &config).as_deref(),
@@ -2033,7 +1666,7 @@ mod tests {
             seed_repo_declaring(root, flow);
             let label = flow.unwrap_or("no flow at all");
             assert!(
-                !super::local_branch_exists("git", &root_s, "release/2026-Q3"),
+                !super::local_branch_exists(root, "release/2026-Q3"),
                 "{label}: the fixture IS the clone shape — no local head carries the pick",
             );
 
@@ -2047,7 +1680,7 @@ mod tests {
             );
 
             let sid = "sess-any-project";
-            crate::shared::context::set_pending_branch(
+            crate::shared::context::pending_branch::set_pending_branch(
                 &root_s,
                 sid,
                 "fix/erro-no-boleto",
@@ -2090,11 +1723,11 @@ mod tests {
         clone_project(&bare, &fresh);
         let fresh_s = fresh.to_string_lossy().to_string();
         assert!(
-            !super::local_branch_exists("git", &fresh_s, "release/2026-Q3"),
+            !super::local_branch_exists(&fresh, "release/2026-Q3"),
             "a clone carries a local head for the default branch alone",
         );
         let sid = "sess-real-clone";
-        crate::shared::context::set_pending_branch(
+        crate::shared::context::pending_branch::set_pending_branch(
             &fresh_s,
             sid,
             "fix/erro-no-boleto",
@@ -2127,7 +1760,7 @@ mod tests {
             git_rev(&stale, "origin/release/2026-Q3"),
             "the fixture really does park the local head behind the remote",
         );
-        crate::shared::context::set_pending_branch(
+        crate::shared::context::pending_branch::set_pending_branch(
             &stale_s,
             sid,
             "fix/erro-no-boleto",
@@ -2236,105 +1869,12 @@ mod tests {
         git(root, &["branch", "-D", "release/2026-Q3"]);
     }
 
-    /// The CUT and the DRAFT are two steps of ONE sequence, and the first must
-    /// not lock the second out of the unit's own directory.
-    ///
-    /// Where the base has to be written down (an emergency, several candidates)
-    /// the cut used to write it into `.claude/spec/{slug}/meta.json` — which is
-    /// precisely the file `spec-draft` reads as *"a spec is already drafted
-    /// here"*. So the unit came out CUT and SPEC-LESS: the draft answered
-    /// `output exists; pass --force to overwrite` about a directory holding
-    /// nothing anybody drafted, and the pipeline stopped there. Only this path
-    /// reaches it — a hotfix with more than one candidate base — which is why a
-    /// two-base project cannot expose it.
-    ///
-    /// Driven through BOTH doors in one go, deliberately: the defect lives in
-    /// the seam between them, and each half alone passes.
-    #[test]
-    fn the_cut_records_the_base_without_locking_the_draft_out_of_the_unit() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        let root_s = root.to_string_lossy().to_string();
-        seed_three_tier_repo(root);
-
-        // The operator opens an EMERGENCY and picks the middle base.
-        let sid = "sess-cut-then-draft";
-        crate::shared::context::set_pending_branch(
-            &root_s,
-            sid,
-            "hotfix/emergencia-no-login",
-            Some("qas"),
-        );
-        let outcome = super::cut_pending_work_branch(root, sid);
-        assert_eq!(
-            outcome,
-            super::CutOutcome::Cut("hotfix/emergencia-no-login".to_string()),
-            "{outcome:?}",
-        );
-
-        // What the cut left behind is HARNESS STATE, not a draft: the unit's
-        // directory holds the record and no sidecar.
-        let unit = root.join(".claude").join("spec").join("emergencia-no-login");
-        assert!(unit.join(CUT_BASE_FILE).is_file(), "the pick is written down");
-        assert!(
-            !unit.join("meta.json").exists(),
-            "a sidecar here IS a draft — writing one is what refused the draft that follows",
-        );
-
-        // …so the draft goes through, and the unit HAS a spec.
-        let code = crate::commands::spec::spec_draft::run_at(
-            root,
-            crate::commands::spec::spec_draft::SpecDraftOpts {
-                intent: "Corrigir a emergência no login".to_string(),
-                slug: Some("emergencia-no-login".to_string()),
-                scope: "light".into(),
-                lang: "en-US".into(),
-                signals: None,
-                output: None,
-                material: None,
-                material_only: false,
-                no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
-                waves: 1,
-                plan: None,
-                force: false,
-                query_terms: None,
-                force_scope: false,
-            },
-        );
-        assert_eq!(code, 0, "the draft exits clean");
-        assert!(
-            unit.join("spec.md").is_file(),
-            "the unit was cut and got NO SPEC — the pipeline stops here",
-        );
-
-        // The draft FOLDED the record into the sidecar, which is the answer's
-        // durable home, and retired the file so there is only one of them.
-        assert_eq!(
-            mustard_core::read_meta(&unit.join("meta.json")).expect("sidecar").base.as_deref(),
-            Some("qas"),
-            "the sidecar carries the base the operator chose",
-        );
-        assert!(!unit.join(CUT_BASE_FILE).exists(), "…and the cut's own copy is spent");
-
-        // And every later read still answers the middle base — the whole point
-        // of recording it at all.
-        let config = mustard_core::ProjectConfig::load(root);
-        assert_eq!(
-            super::base_for(root, "hotfix/emergencia-no-login", &config).as_deref(),
-            Ok("qas"),
-            "the pull-request target follows the operator across the fold",
-        );
-    }
 
     /// `git rev-parse <rev>` in `root` — test scaffolding only.
     fn git_rev(root: &std::path::Path, rev: &str) -> String {
-        let out = std::process::Command::new("git")
-            .args(["rev-parse", rev])
-            .current_dir(root)
-            .output()
-            .expect("spawn git");
-        assert!(out.status.success(), "git rev-parse {rev} failed");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        let out = mustard_core::platform::git::run(root, &["rev-parse", rev]);
+        assert!(out.ok, "git rev-parse {rev} failed");
+        out.stdout.trim().to_string()
     }
 
     /// A repo declaring `dev → qas → main`, each base a real local branch at a
@@ -2364,74 +1904,13 @@ mod tests {
         }
     }
 
-    /// The validation that replaced "is it in `git.flow`?": is it a branch the
-    /// REMOTE really has. Same loudness, opposite source — a typo is still
-    /// caught, and a branch cut this morning is not.
-    #[test]
-    fn resolve_kind_base_validates_against_the_real_catalogue() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
-        if !run(&["init", "-q", "-b", "main", "."]) {
-            return;
-        }
-        let _ = run(&["config", "user.email", "t@t.t"]);
-        let _ = run(&["config", "user.name", "t"]);
-        if !run(&["commit", "-q", "--allow-empty", "-m", "seed"]) {
-            return;
-        }
-        // The catalogue reads remote-tracking refs, so the fixture states them.
-        for branch in ["main", "dev", "release/2026-Q3"] {
-            let _ = run(&["update-ref", &format!("refs/remotes/origin/{branch}"), "HEAD"]);
-        }
-
-        let config = two_tier(); // declares dev and main, and NOT the release line
-        assert_eq!(
-            super::resolve_kind_base(root, Some("dev"), &config).as_deref(),
-            Ok("dev"),
-            "a declared branch resolves, as it always did",
-        );
-        assert_eq!(
-            super::resolve_kind_base(root, Some("release/2026-Q3"), &config).as_deref(),
-            Ok("release/2026-Q3"),
-            "and so does one no configuration ever mentioned — the whole point",
-        );
-        assert_eq!(
-            super::resolve_kind_base(root, Some("   "), &config).as_deref(),
-            Ok(config.git.primary_base().as_str()),
-            "blank counts as omitted",
-        );
-
-        let err = super::resolve_kind_base(root, Some("dve"), &config)
-            .expect_err("a branch the remote does not have is refused");
-        assert!(err.contains("dve"), "names the rejected base: {err}");
-        assert!(err.contains("dev"), "and lists what is really there: {err}");
-        assert!(
-            !err.contains("git.flow"),
-            "and no longer points at a configuration file as the fix: {err}",
-        );
-    }
-
     // -----------------------------------------------------------------------
     // The cut itself — the door that opens FIRST
     // -----------------------------------------------------------------------
 
     /// Run git in `root`, asserting success — test scaffolding only.
     fn git(root: &std::path::Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git {args:?} failed");
+        assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?} failed");
     }
 
     /// `.claude/.gitignore` EXACTLY as it shipped in
@@ -2495,11 +1974,11 @@ mod tests {
         std::fs::write(spec.join("spec.md"), "# first unit\n\nuncommitted\n").expect("dirty");
     }
 
-    /// AC-11 — the CUT itself refuses a busy checkout.
+    /// The CUT itself refuses a busy checkout.
     ///
     /// This test deliberately drives [`super::cut_pending_work_branch`] and NOT
-    /// `WorkBranchGate::evaluate`: the previous round's tests all went through
-    /// the gate and passed while the real defect sat here. `spec-draft` calls
+    /// the old write-hook gate: the previous round's tests all went through
+    /// that gate and passed while the real defect sat here. `spec-draft` calls
     /// this function at APPROVAL — before any `Write` exists for a PreToolUse
     /// hook to see — so a guard living only in the gate was a guard on the door
     /// that opens second.
@@ -2518,7 +1997,7 @@ mod tests {
 
         // A SECOND unit is signalled — this is what `spec-draft` consumes.
         let sid = "sess-cut-refuses";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
 
         let outcome = super::cut_pending_work_branch(root, sid);
         let super::CutOutcome::Refused(busy) = outcome else {
@@ -2543,25 +2022,25 @@ mod tests {
 
         // Nothing was touched: the checkout still holds the first unit, its
         // uncommitted work is intact, and the second branch does not exist.
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_first"));
         assert_eq!(
             std::fs::read_to_string(root.join(FIRST_UNIT_SPEC)).expect("read"),
             "# first unit\n\nuncommitted\n",
         );
         assert!(
-            !super::local_branch_exists("git", &root_s, "dev_second"),
+            !super::local_branch_exists(root, "dev_second"),
             "a refused cut creates no branch",
         );
         // The marker SURVIVES — the unit was never started, so nothing was
         // consumed and the next attempt retries after the commit or stash.
         assert_eq!(
-            crate::shared::context::pending_branch_for(&root_s, sid).as_deref(),
+            crate::shared::context::pending_branch::pending_branch_for(&root_s, sid).as_deref(),
             Some("dev_second"),
             "a refusal consumes no intent",
         );
     }
 
-    /// AC-11, the other half of the same decision: a checkout the probe could
+    /// The other half of the same decision: a checkout the probe could
     /// NOT measure is refused too.
     ///
     /// "I could not measure" is not "there is nothing here". This caller's
@@ -2587,13 +2066,13 @@ mod tests {
             "precondition: the probe really cannot answer here",
         );
         assert_eq!(
-            super::current_branch("git", &root_s).as_deref(),
+            mustard_core::current_branch(root).as_deref(),
             Some("dev_first"),
             "precondition: the POSITION is still readable — only the WORK is not",
         );
 
         let sid = "sess-cut-unmeasured";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
         let outcome = super::cut_pending_work_branch(root, sid);
         let super::CutOutcome::Refused(busy) = outcome else {
             panic!("an unmeasurable checkout must be refused, got {outcome:?}");
@@ -2612,9 +2091,9 @@ mod tests {
         assert!(lower.contains("stash"), "and what unblocks it: {reason}");
 
         // Nothing was touched.
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_first"));
         assert!(
-            !super::local_branch_exists("git", &root_s, "dev_second"),
+            !super::local_branch_exists(root, "dev_second"),
             "a refused cut creates no branch",
         );
     }
@@ -2643,7 +2122,7 @@ mod tests {
         git(root, &["commit", "-m", "first unit work"]);
 
         let sid = "sess-cut-clean";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
         // Precondition: the marker really is on disk and really is invisible to
         // this project's ignore rules — otherwise the assertion below would
         // pass for the reason the field does not have.
@@ -2659,7 +2138,7 @@ mod tests {
         );
         let outcome = super::cut_pending_work_branch(root, sid);
         assert_eq!(outcome, super::CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_second"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_second"));
     }
 
     /// The classifier's TRUNCATION rule, stated once where it can be read.
@@ -2730,7 +2209,6 @@ mod tests {
         // corte pela saída da própria ferramenta).
         for census in [
             ".claude/grain.model.json",
-            ".claude/grain.dictionary.json",
             ".claude/scan-declined.json",
             ".claude/scan-map.md",
             "apps/rt/.claude/scan-map.md",
@@ -2838,7 +2316,7 @@ mod tests {
         std::fs::write(spec.join("spec.md"), "# first unit\n").expect("spec");
 
         let sid = "sess-cut-spec-counts";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
 
         let super::CheckoutWork::Holds { theirs: dirty, .. } = super::checkout_work(root) else {
             panic!("the unit's own spec is uncommitted work: {:?}", super::checkout_work(root));
@@ -2860,6 +2338,27 @@ mod tests {
             busy.reason(mustard_core::platform::i18n::Locale::EnUs).contains(FIRST_UNIT_SPEC),
             "the refusal names the work at risk",
         );
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_first"));
+    }
+
+    /// Com o checkout solto, a branch atual responde "nenhuma", e não o texto
+    /// que o git dá no lugar do nome; numa branch sem nenhum commit, também.
+    /// Sem branch, o checkout não conta como trabalho de outra unidade.
+    #[test]
+    fn the_current_branch_is_none_on_a_detached_checkout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        seed_repo(root);
+        git(root, &["checkout", "-q", "-b", "dev_first"]);
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_first"));
+
+        git(root, &["checkout", "-q", "--detach"]);
+        let detached = mustard_core::current_branch(root);
+        assert_eq!(detached, None, "a detached checkout stands on no branch");
+        let config = mustard_core::ProjectConfig::load(root);
+        assert!(!super::holds_other_work(root, detached.as_deref(), "dev_second", &config));
+
+        git(root, &["checkout", "-q", "--orphan", "vazia"]);
+        assert_eq!(mustard_core::current_branch(root), None, "a branch without any commit");
     }
 }

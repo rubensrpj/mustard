@@ -1,5 +1,5 @@
 //! qa-run report rendering: JSON sidecar, Markdown, and standalone HTML
-//! artifacts for a QA run. Split out of `qa_run` (F3 PERF-D).
+//! artifacts for a QA run. Split out of `qa_run`.
 
 use crate::report::{table, Report};
 use mustard_core::io::fs;
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use super::AcResult;
 
 /// Write the JSON sidecar at `<root>/.claude/spec/{spec}/qa-report.json` (the
-/// per-spec aggregate, per the W2 path catalog).
+/// per-spec aggregate, per the path catalog).
 pub(super) fn write_sidecar(cwd: &Path, spec: &str, payload: &Value) {
     let Some(sp) = ClaudePaths::for_project(cwd)
         .ok()
@@ -19,18 +19,17 @@ pub(super) fn write_sidecar(cwd: &Path, spec: &str, payload: &Value) {
         return;
     };
     let target = sp.qa_report_json_path();
-    if let Some(parent) = target.parent() {
-        if fs::create_dir_all(parent).is_err() {
+    if let Some(parent) = target.parent()
+        && fs::create_dir_all(parent).is_err() {
             return;
         }
-    }
     if let Ok(text) = serde_json::to_string_pretty(payload) {
         let _ = fs::write_atomic(&target, text.as_bytes());
     }
 }
 
-/// Write the consolidated Markdown report at `.claude/spec/{spec}/qa/report.md`
-/// (D4). The QA phase materialises its verdict by code so the result is durable
+/// Write the consolidated Markdown report at `.claude/spec/{spec}/qa/report.md`.
+/// The QA phase materialises its verdict by code so the result is durable
 /// and visible in the dashboard, instead of depending on an agent remembering to
 /// fill in a template. Atomic via [`fs::write_atomic`]. Fail-open: a missing
 /// project root or write error is a silent no-op (the `qa.result` event is the
@@ -117,7 +116,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// D4: `write_qa_report_md` materialises `.claude/spec/{spec}/qa/report.md`
+    /// `write_qa_report_md` materialises `.claude/spec/{spec}/qa/report.md`
     /// with the overall verdict + a per-AC table.
     #[test]
     fn qa_report_md_is_materialized() {
@@ -129,6 +128,7 @@ mod tests {
                 exit: Some(0),
                 duration_ms: 120,
                 stderr_excerpt: String::new(),
+                tests_run: None,
             },
             AcResult {
                 id: "AC-2".into(),
@@ -136,6 +136,7 @@ mod tests {
                 exit: Some(1),
                 duration_ms: 50,
                 stderr_excerpt: "boom | pipe".into(),
+                tests_run: None,
             },
         ];
         write_qa_report_md(dir.path(), "demo", "fail", &criteria);
@@ -168,6 +169,7 @@ mod tests {
             exit: None,
             duration_ms: 600_000,
             stderr_excerpt: "timeout after 600000ms".into(),
+            tests_run: None,
         }];
         write_qa_report_md(dir.path(), "slow", "timeout", &criteria);
 
@@ -193,12 +195,13 @@ mod tests {
             exit: Some(0),
             duration_ms: 12,
             stderr_excerpt: String::new(),
+            tests_run: None,
         }];
         let path = write_html_report(dir.path(), "demo", "pass", &criteria).unwrap();
         let html = std::fs::read_to_string(path).unwrap();
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("<style>"));
-        assert!(!html.contains("href=") && !html.contains("src="));
+        crate::report::assert_only_the_fonts_are_external(&html);
         assert!(html.contains("AC-1"));
     }
 }

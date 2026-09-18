@@ -38,7 +38,7 @@ use serde_json::{Map, Value};
 
 use crate::io::fs;
 use crate::platform::error::Result;
-use crate::platform::i18n::{I18n, SupportedLocale, Tone};
+use crate::platform::i18n::SupportedLocale;
 use crate::ClaudePaths;
 
 /// Neutral placeholder returned when `buildCommand` is absent. Human-readable,
@@ -67,12 +67,13 @@ pub struct GitConfig {
     /// answer as old as the install: a branch created after `mustard init` was
     /// refused for existing. A unit is now cut from any branch git really has
     /// ([`crate::platform::git_branches::branch_catalog`]) and this map only
-    /// PRE-SELECTS — see [`preselected_bases`](GitConfig::preselected_bases).
-    /// A project that never declares one loses nothing.
+    /// PRE-SELECTS — see [`declared_bases`](GitConfig::declared_bases). A
+    /// project that never declares one pre-selects nothing, and protects
+    /// nothing, until it does.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub flow: BTreeMap<String, String>,
-    /// Branches that refuse a direct commit or merge, BEYOND the remote's
-    /// default branch — which is protected whether or not this list exists.
+    /// Branches that refuse a direct commit or merge, BEYOND the bases
+    /// `git.flow` already declares.
     ///
     /// The escape hatch for a team that also protects `develop` or a
     /// `release/*` line. Empty for almost every project, which is why it is
@@ -95,56 +96,29 @@ pub struct GitConfig {
     /// every install a permanent override and detection would never run.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
+    /// Whether the unit's branch on the SERVER is deleted when the unit leaves
+    /// the stage. Off by default, and an install writes no key.
+    ///
+    /// Many teams may not delete a branch on the server: the merge is done by
+    /// another area and the branch is theirs. So the server branch is never
+    /// touched unless the project turns this on in `mustard.json`.
+    #[serde(rename = "deleteRemoteBranch", default, skip_serializing_if = "std::ops::Not::not")]
+    pub delete_remote_branch: bool,
 }
 
 
 impl GitConfig {
-    /// The branches this project's `git.flow` names — the ones a base picker
-    /// offers FIRST, derived from [`flow`](GitConfig::flow): every non-`*` key
-    /// ∪ every value.
+    /// The bases this project REALLY declares, derived from
+    /// [`flow`](GitConfig::flow): every non-`*` key ∪ every value.
     ///
-    /// **Read the name carefully: these are PRE-SELECTED, not permitted.** The
-    /// set used to answer two questions at once — "where may a unit be cut
-    /// from?" and "where is a direct commit forbidden?" — and answering both
-    /// with one closed list is what made the first question refuse branches
-    /// that exist. The questions are now apart: cutting reads git
-    /// ([`crate::platform::git_branches::branch_catalog`]) and forbidding reads
-    /// [`crate::platform::git_branches::protected_branches`]. Nothing here
-    /// refuses anything any more.
-    ///
-    /// ONE reading is neither of those two, and it is named here because it is
-    /// the only one that still consults this set and can end in a refusal: a
-    /// branch this set names is not somebody's WORK UNIT, so `git delete`
-    /// declines to remove a project's own `release/2026-Q3` — whose name splits
-    /// into a kind and a slug exactly like `feature/aba` — the way it declines
-    /// `main`. That refuses the operator no base and no cut; it stops the
-    /// harness from mistaking a branch the project ITSELF called a base for a
-    /// disposable unit.
-    ///
-    /// Examples: `{"*":"dev","dev":"main"}` → `{dev, main}`; `{"*":"main"}` →
-    /// `{main}`; `{"*":"develop","develop":"master"}` → `{develop, master}`.
-    /// An empty / absent flow falls back to `{main, master}` — the ONLY place a
-    /// branch name is hardcoded, and only as a last resort.
-    #[must_use]
-    pub fn preselected_bases(&self) -> BTreeSet<String> {
-        let bases = self.declared_bases();
-        if bases.is_empty() {
-            return ["main", "master"].iter().map(|s| (*s).to_string()).collect();
-        }
-        bases
-    }
-
-    /// What the project REALLY declares — [`preselected_bases`] without its
-    /// last-resort `{main, master}`, so an empty / absent flow yields an empty
-    /// set instead of two names this repository may not carry.
-    ///
-    /// This is the one a REPORT reads. The fallback exists to keep a derivation
-    /// from having no answer at all; printing it to an operator states that the
-    /// project pre-selects `main` and `master` when it pre-selects nothing, and
-    /// the installer writes no flow — so that is what every fresh install would
-    /// otherwise be told about itself.
-    ///
-    /// [`preselected_bases`]: GitConfig::preselected_bases
+    /// **The only source of a base name in this project.** There used to be a
+    /// second accessor that floored to `{main, master}` whenever the flow was
+    /// empty, and an install writes no flow — so every fresh project was told
+    /// it declared two branches it might not even carry, and the doors that
+    /// decide by "is this a base?" decided by two literals. An empty flow
+    /// yields an empty set here, and an empty set means the project has
+    /// declared nothing: nothing is pre-selected and nothing is protected until
+    /// it does.
     #[must_use]
     pub fn declared_bases(&self) -> BTreeSet<String> {
         let mut bases: BTreeSet<String> = BTreeSet::new();
@@ -162,19 +136,22 @@ impl GitConfig {
     }
 
     /// The base a picker opens ON: `flow["*"]` when present, else any single
-    /// pre-selected base (lexically-least, deterministic), else `main`.
-    /// Agnostic — the only literal is the last-resort `main` for a project with
-    /// no `git.flow`. A DEFAULT for the cursor, never a restriction on what the
-    /// operator may pick instead.
+    /// declared base (lexically-least, deterministic).
+    ///
+    /// `None` when the project declares no flow at all. It used to floor to
+    /// `main`, and that literal is precisely what sent a unit whose project
+    /// never named `main` off to a branch nobody measured. A caller with no
+    /// answer here must ask the repository or ask the operator — never carry a
+    /// name this project never wrote.
+    ///
+    /// A DEFAULT for the cursor, never a restriction on what the operator may
+    /// pick instead.
     #[must_use]
-    pub fn primary_base(&self) -> String {
+    pub fn primary_base(&self) -> Option<String> {
         if let Some(star) = self.flow.get("*").map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            return star.to_string();
+            return Some(star.to_string());
         }
-        self.preselected_bases()
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "main".to_string())
+        self.declared_bases().into_iter().next()
     }
 }
 
@@ -246,6 +223,58 @@ impl GateModes {
     }
 }
 
+/// The `language` block of `mustard.json`: the two languages a project writes
+/// in, each declared on its own key.
+///
+/// Both are optional, and an install writes only the one the operator chose.
+/// A language nobody chose is never written for them: a written default reads
+/// the same as a choice, and the checks that judge the conversation by its
+/// language would then judge a project by a language it never picked.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LanguageConfig {
+    /// The language of everything a person reads: the conversation, specs,
+    /// pages, comments in the code and commit messages. BCP-47 with the
+    /// dialect (`pt-BR`, `en-US`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The language of the names in the code: variables, functions, files and
+    /// commands. Always `en`: code is written in English, so the installer
+    /// never asks for it and never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+impl LanguageConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.text.is_none() && self.code.is_none()
+    }
+}
+
+/// The languages a project declared, as [`ProjectConfig::language`] reads them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Language {
+    /// The declared text language; `None` when absent, blank or not one of the
+    /// locales Mustard ships messages for.
+    pub text: Option<SupportedLocale>,
+    /// The declared code language, trimmed; `None` when absent or blank.
+    pub code: Option<String>,
+}
+
+impl Language {
+    /// The language Mustard writes its own messages in: the declared text
+    /// language, or `pt-BR` when none was declared.
+    ///
+    /// Only for Mustard's OWN words. A check that judges what the user or the
+    /// assistant wrote reads [`Language::text`] instead, because a default is
+    /// the absence of a choice: an English project that never declared a
+    /// language must not be judged as Portuguese.
+    #[must_use]
+    pub fn text_or_default(&self) -> SupportedLocale {
+        self.text.unwrap_or_default()
+    }
+}
+
 /// Host runtime metadata stamped into `mustard.json` by `init`/`update`.
 ///
 /// `kind` is the literal `"native"` (the CLI is a compiled binary, not a JS
@@ -313,10 +342,15 @@ pub struct Commands {
 /// The full `mustard.json` document — the project config, at the project root.
 ///
 /// `#[serde(rename_all = "camelCase")]` applies to the **top-level** keys only
-/// (`buildCommand`, `specLang`, `maxActiveSpecs`, …). The nested structs keep
+/// (`buildCommand`, `maxActiveSpecs`, …). The nested structs keep
 /// snake/lowercase naming (`amend.drift_threshold`, `git.provider`,
-/// `subprojects.exclude`) to match the on-disk shape. Legacy snake_case command
-/// keys are still accepted on read via `alias`.
+/// `language.text`, `subprojects.exclude`) to match the on-disk shape. Legacy
+/// snake_case command keys are still accepted on read via `alias`.
+///
+/// The language keys that came before `language` (`specLang`, `lang`) and the
+/// `tone` key are no longer part of the schema. A file that still carries them
+/// keeps loading: they land in [`ProjectConfig::extra`] like any unknown key,
+/// preserved on write and read by nobody.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProjectConfig {
@@ -336,16 +370,10 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vcs: Option<String>,
 
-    /// Spec language (BCP-47). Canonical key on write.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spec_lang: Option<String>,
-    /// Legacy alias of `spec_lang`, still read for back-compat (precedence below
-    /// `spec_lang` is via `lang.or(spec_lang)` in [`ProjectConfig::i18n`]).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lang: Option<String>,
-    /// Banner / drafter tone (`didactic` | `technical` | `concise`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tone: Option<String>,
+    /// The text and code languages — see [`LanguageConfig`]. Read only through
+    /// [`ProjectConfig::language`].
+    #[serde(skip_serializing_if = "LanguageConfig::is_empty")]
+    pub language: LanguageConfig,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_extensions: Vec<String>,
@@ -355,6 +383,21 @@ pub struct ProjectConfig {
     pub architecture: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_active_specs: Option<u64>,
+    /// Quantas ondas saem na mesma rodada, que é quantas compilam ao mesmo
+    /// tempo. Ausente ⇒ o padrão do binário; a máquina com mais memória põe
+    /// um número maior aqui.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_compiling_waves: Option<u64>,
+    /// A chave que liga e desliga o Mustard no projeto. Desligado (`false`),
+    /// nenhum gancho do Mustard age aqui; ausente, ele está ligado. Lida só
+    /// por [`ProjectConfig::enabled`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Liga e desliga o gancho do rtk nas configurações locais do projeto.
+    /// Ausente, ligado. Desligar não desinstala o rtk. Lida só por
+    /// [`ProjectConfig::rtk`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtk: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub role_patterns: Vec<RolePattern>,
     /// Declared context injections (`[{on, file, once}]`) — see [`Injectable`].
@@ -382,6 +425,16 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 
+    /// The file is there and did not load: it exists on disk and could not be
+    /// read or parsed, so every field above is a fallback, not the project's
+    /// own answer. An absent file *is* an answer — "this project declares
+    /// nothing" — and leaves this `false`. A rule that would silently switch
+    /// itself off on the empty fallback, like the write gate's base lock, asks
+    /// here and refuses instead. Never on disk: it describes the load, not the
+    /// document.
+    #[serde(skip)]
+    pub unreadable: bool,
+
     /// Any keys not modelled above — preserved verbatim across a load→write
     /// round-trip so a future field (or a user's custom key) is never dropped.
     #[serde(flatten)]
@@ -406,15 +459,22 @@ impl ProjectConfig {
         Self::json_path(root).is_file()
     }
 
-    /// Load the config from `<root>/mustard.json`, fail-open to
+    /// Load the config from `<root>/mustard.json`, falling back to
     /// [`ProjectConfig::default`] on any IO or parse error.
+    ///
+    /// The fallback keeps the two cases apart in
+    /// [`ProjectConfig::unreadable`]: a project with no file declares nothing,
+    /// and a file that exists and does not load declares nothing *that anyone
+    /// can read*. The defaults are the same; what a caller may conclude from
+    /// them is not.
     #[must_use]
     pub fn load(root: &Path) -> Self {
         let path = Self::json_path(root);
+        let broken = || Self { unreadable: true, ..Self::default() };
         let Ok(text) = fs::read_to_string(&path) else {
-            return Self::default();
+            return if path.is_file() { broken() } else { Self::default() };
         };
-        serde_json::from_str(&text).unwrap_or_default()
+        serde_json::from_str(&text).unwrap_or_else(|_| broken())
     }
 
     /// Serialize and atomically write to `<root>/mustard.json`.
@@ -488,6 +548,27 @@ impl ProjectConfig {
         self.max_active_specs.and_then(|n| usize::try_from(n).ok())
     }
 
+    /// Quantas ondas o projeto deixa compilar ao mesmo tempo; `None` cai no
+    /// padrão do binário. O `0` é obedecido ao pé da letra (nada sai).
+    #[must_use]
+    pub fn max_compiling_waves(&self) -> Option<usize> {
+        self.max_compiling_waves.and_then(|n| usize::try_from(n).ok())
+    }
+
+    /// O Mustard está ligado neste projeto: só um `enabled: false` escrito no
+    /// arquivo o desliga. Um arquivo que não se lê não desliga nada.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.enabled != Some(false)
+    }
+
+    /// O gancho do rtk deve estar nas configurações locais: só um
+    /// `rtk: false` escrito no arquivo o tira.
+    #[must_use]
+    pub fn rtk(&self) -> bool {
+        self.rtk != Some(false)
+    }
+
     /// Ordered role-classification overrides; `pattern` lowercased, entries with
     /// a blank `pattern` or `role` skipped (fail-open).
     #[must_use]
@@ -534,21 +615,25 @@ impl ProjectConfig {
             .collect()
     }
 
-    /// Resolve the banner/drafter [`I18n`] (locale + tone) for this project.
+    /// The languages this project declared — the one reader of the
+    /// `language` block, and so the one place any part of Mustard learns a
+    /// project's language.
     ///
-    /// Locale precedence: `lang` then `spec_lang`; unparseable / absent ⇒
-    /// [`SupportedLocale::default`] (`pt-BR`). Tone: `tone` or
-    /// [`Tone::default`] (`didactic`). Reuses the `platform::i18n` primitives.
+    /// Nothing is inferred: an absent, blank or unsupported `language.text`
+    /// is `None`, and the keys that came before it (`specLang`, `lang`) are not
+    /// consulted. Mustard's own messages fall back through
+    /// [`Language::text_or_default`]; a check that judges text reads
+    /// [`Language::text`] and has no verdict without it.
     #[must_use]
-    pub fn i18n(&self) -> I18n {
-        let lang = self
-            .lang
-            .as_deref()
-            .or(self.spec_lang.as_deref())
-            .and_then(|s| s.parse::<SupportedLocale>().ok())
-            .unwrap_or_default();
-        let tone = self.tone.as_deref().and_then(Tone::parse).unwrap_or_default();
-        I18n::new(lang, tone)
+    pub fn language(&self) -> Language {
+        Language {
+            text: self
+                .language
+                .text
+                .as_deref()
+                .and_then(|raw| raw.parse::<SupportedLocale>().ok()),
+            code: non_blank(self.language.code.as_deref()),
+        }
     }
 }
 
@@ -587,11 +672,10 @@ pub fn glob_matches(pattern: &str, haystack: &str) -> bool {
         }
         cursor = abs + seg.len();
     }
-    if anchored_end {
-        if let Some(last) = segments.iter().rev().find(|s| !s.is_empty()) {
+    if anchored_end
+        && let Some(last) = segments.iter().rev().find(|s| !s.is_empty()) {
             return haystack.ends_with(last);
         }
-    }
     true
 }
 
@@ -610,6 +694,30 @@ mod tests {
         assert_eq!(cfg.git.provider, "");
         assert!(cfg.build_command().is_none());
         assert_eq!(cfg.vcs(), Some("git".to_string()));
+        assert!(!cfg.unreadable, "no file is an answer: this project declares nothing");
+    }
+
+    /// A file that is there and does not load gives the same defaults as no
+    /// file at all, and says so: the defaults are a fallback, not the
+    /// project's own answer. The flag never reaches the disk.
+    #[test]
+    fn a_file_that_does_not_load_is_told_apart_from_no_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+        for broken in ["{ not json", "[]", ""] {
+            std::fs::write(&path, broken).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert!(cfg.unreadable, "{broken:?} is there and does not load");
+            assert!(cfg.git.declared_bases().is_empty(), "{broken:?} declares no base either");
+        }
+        std::fs::write(&path, r#"{"git":{"flow":{"*":"dev"}}}"#).unwrap();
+        assert!(!ProjectConfig::load(dir.path()).unreadable, "a readable file is an answer");
+
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        ProjectConfig { unreadable: true, ..ProjectConfig::default() }.write(&out).unwrap();
+        let raw = std::fs::read_to_string(out.join("mustard.json")).unwrap();
+        assert!(!raw.contains("unreadable"), "it describes the load, not the document: {raw}");
     }
 
     #[test]
@@ -617,19 +725,31 @@ mod tests {
         let dir = tempdir().unwrap();
         let cfg = ProjectConfig {
             build_command: Some("cargo build".into()),
-            spec_lang: Some("pt-BR".into()),
-            tone: Some("technical".into()),
+            language: LanguageConfig { text: Some("pt-BR".into()), code: Some("en".into()) },
             ..Default::default()
         };
         cfg.write(dir.path()).unwrap();
 
         let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
         assert!(raw.contains("\"buildCommand\""), "top-level key is camelCase");
-        assert!(raw.contains("\"specLang\""));
         assert!(!raw.contains("build_command"), "no snake_case on write");
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["language"], serde_json::json!({"text": "pt-BR", "code": "en"}));
 
         let back = ProjectConfig::load(dir.path());
         assert_eq!(back.build_command(), Some("cargo build".to_string()));
+        assert_eq!(back.language().text, Some(SupportedLocale::PtBr));
+        assert_eq!(back.language().code.as_deref(), Some("en"));
+    }
+
+    /// Um projeto que não declarou idioma não ganha a chave: nada é gravado
+    /// por padrão.
+    #[test]
+    fn an_undeclared_language_writes_no_key() {
+        let dir = tempdir().unwrap();
+        ProjectConfig::default().write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("\"language\""), "no language was chosen: {raw}");
     }
 
     #[test]
@@ -680,17 +800,56 @@ mod tests {
         assert_eq!(cfg.max_active_specs(), Some(5));
     }
 
+    /// O idioma vem só do bloco `language`: o texto e o código, cada um na
+    /// sua chave. Sem declaração não há idioma, e as mensagens do Mustard
+    /// caem no pt-BR.
     #[test]
-    fn i18n_precedence_lang_over_spec_lang_and_tone() {
-        let mut cfg = ProjectConfig::default();
-        // default → pt-BR / didactic
-        assert_eq!(cfg.i18n(), I18n::new(SupportedLocale::PtBr, Tone::Didactic));
-        cfg.spec_lang = Some("en-US".into());
-        assert_eq!(cfg.i18n().lang, SupportedLocale::EnUs);
-        cfg.lang = Some("pt-BR".into()); // lang wins over spec_lang
-        assert_eq!(cfg.i18n().lang, SupportedLocale::PtBr);
-        cfg.tone = Some("concise".into());
-        assert_eq!(cfg.i18n().tone, Tone::Concise);
+    fn language_reads_the_text_and_code_keys() {
+        let cfg = ProjectConfig::default();
+        assert_eq!(cfg.language(), Language::default());
+        assert_eq!(cfg.language().text_or_default(), SupportedLocale::PtBr);
+
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"language":{"text":"en-US","code":" en "}}"#,
+        )
+        .unwrap();
+        let language = ProjectConfig::load(dir.path()).language();
+        assert_eq!(language.text, Some(SupportedLocale::EnUs));
+        assert_eq!(language.text_or_default(), SupportedLocale::EnUs);
+        assert_eq!(language.code.as_deref(), Some("en"), "the code language is trimmed");
+
+        // A short form or an unknown locale is not a declared text language.
+        for text in ["pt", "fr-FR", "  "] {
+            std::fs::write(
+                dir.path().join("mustard.json"),
+                format!(r#"{{"language":{{"text":"{text}"}}}}"#),
+            )
+            .unwrap();
+            assert_eq!(ProjectConfig::load(dir.path()).language().text, None, "{text:?}");
+        }
+    }
+
+    /// As chaves antigas de idioma e a do tom não são mais lidas: um projeto
+    /// que só as tem não declarou idioma nenhum. Elas continuam no arquivo,
+    /// como qualquer chave desconhecida.
+    #[test]
+    fn the_old_language_keys_and_the_tone_are_kept_but_never_read() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"specLang":"en-US","lang":"en-US","tone":"technical"}"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.language(), Language::default(), "nothing is read from the old keys");
+        for key in ["specLang", "lang", "tone"] {
+            assert!(cfg.extra.contains_key(key), "{key} survives as an unknown key");
+        }
+        cfg.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"specLang\"") && !raw.contains("\"language\""), "{raw}");
     }
 
     #[test]
@@ -810,57 +969,70 @@ mod tests {
         assert!(!glob_matches("*.rb", "x.rs"));
     }
 
+    /// As bases saem das chaves e dos valores do fluxo, e a chave `*` não é
+    /// base nenhuma.
     #[test]
-    fn preselected_bases_derives_from_flow_keys_and_values() {
-        // Standard two-tier flow → {dev, main}.
+    fn as_bases_declaradas_saem_do_fluxo() {
+        // Fluxo de dois degraus → {dev, main}.
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "dev".into());
         cfg.git.flow.insert("dev".into(), "main".into());
-        let bases = cfg.git.preselected_bases();
+        let bases = cfg.git.declared_bases();
         assert!(bases.contains("dev") && bases.contains("main"));
-        assert_eq!(bases.len(), 2, "the `*` key is not itself a base: {bases:?}");
+        assert_eq!(bases.len(), 2, "a chave `*` não é base: {bases:?}");
 
-        // GitHub-flow single main → {main}.
+        // Um degrau só → {main}.
         let mut single = ProjectConfig::default();
         single.git.flow.insert("*".into(), "main".into());
-        assert_eq!(
-            single.git.preselected_bases(),
-            BTreeSet::from(["main".to_string()]),
-        );
+        assert_eq!(single.git.declared_bases(), BTreeSet::from(["main".to_string()]));
 
-        // develop/master flow (agnostic — no dev/main anywhere) → {develop, master}.
+        // Fluxo develop/master — nenhum nome deste projeto aparece no código.
         let mut dm = ProjectConfig::default();
         dm.git.flow.insert("*".into(), "develop".into());
         dm.git.flow.insert("develop".into(), "master".into());
         assert_eq!(
-            dm.git.preselected_bases(),
+            dm.git.declared_bases(),
             BTreeSet::from(["develop".to_string(), "master".to_string()]),
         );
     }
 
+    /// Um projeto que não declara fluxo não declara base nenhuma: a lista sai
+    /// vazia, e não com dois nomes que este repositório pode nem ter.
     #[test]
-    fn preselected_bases_empty_flow_falls_back_to_main_master() {
-        let cfg = ProjectConfig::default();
-        assert_eq!(
-            cfg.git.preselected_bases(),
-            BTreeSet::from(["main".to_string(), "master".to_string()]),
-        );
+    fn sem_fluxo_o_projeto_nao_declara_base_nenhuma() {
+        assert!(ProjectConfig::default().git.declared_bases().is_empty());
+        assert_eq!(ProjectConfig::default().git.primary_base(), None);
     }
 
+    /// A base do cursor é a do `*`; sem ela, a menor das declaradas.
     #[test]
-    fn primary_base_prefers_star_then_first_then_main() {
-        // flow["*"] wins.
+    fn a_base_do_cursor_vem_do_fluxo_e_nunca_de_um_nome_fixo() {
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "develop".into());
         cfg.git.flow.insert("develop".into(), "master".into());
-        assert_eq!(cfg.git.primary_base(), "develop");
+        assert_eq!(cfg.git.primary_base().as_deref(), Some("develop"));
 
-        // No `*` → lexically-least integration base.
         let mut no_star = ProjectConfig::default();
         no_star.git.flow.insert("develop".into(), "master".into());
-        assert_eq!(no_star.git.primary_base(), "develop");
+        assert_eq!(no_star.git.primary_base().as_deref(), Some("develop"));
+    }
 
-        // Empty flow → last-resort `main`.
-        assert_eq!(ProjectConfig::default().git.primary_base(), "main");
+    /// As duas chaves do projeto valem ligadas quando faltam; só o `false`
+    /// escrito as desliga, e voltam ao arquivo como foram escritas.
+    #[test]
+    fn as_chaves_do_mustard_e_do_rtk_so_desligam_com_false_escrito() {
+        let dir = tempdir().unwrap();
+        let absent = ProjectConfig::load(dir.path());
+        assert!(absent.enabled() && absent.rtk());
+
+        std::fs::write(dir.path().join("mustard.json"), r#"{"enabled":false,"rtk":false}"#).unwrap();
+        let off = ProjectConfig::load(dir.path());
+        assert!(!off.enabled() && !off.rtk());
+        off.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"enabled\": false") && raw.contains("\"rtk\": false"), "{raw}");
+
+        std::fs::write(dir.path().join("mustard.json"), "{ not json").unwrap();
+        assert!(ProjectConfig::load(dir.path()).enabled(), "an unreadable file turns nothing off");
     }
 }

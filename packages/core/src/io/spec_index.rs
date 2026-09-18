@@ -1,0 +1,693 @@
+//! `spec_index` — o índice das specs no disco (`.claude/spec/index.ndjson`).
+//!
+//! Quem grava um evento numa pasta de spec do projeto refaz a linha daquela
+//! spec no índice dentro da mesma gravação (`io::spec_events`), sem custo de
+//! tokens. O [`rebuild`] refaz o índice inteiro a partir dos arquivos de
+//! eventos, quando ele falta ou diverge, e recalcula o campo `search` das
+//! linhas dos arquivos de eventos e do banco de lições. O [`divergence`] só lê
+//! e diz onde o índice difere do que os arquivos de eventos dariam.
+//!
+//! As travas são pegas sempre na mesma ordem: primeiro a da spec, depois a do
+//! índice. Nenhum código segura a trava do índice enquanto espera a de uma
+//! spec, então duas gravações ao mesmo tempo nunca se travam uma à outra.
+//!
+//! A spec descartada e arquivada (`.claude/spec/.descartadas/<nome>/`)
+//! continua no índice, com a fase descartada: o [`rebuild`] a lê de lá, e só
+//! a spec viva de mesmo nome passa na frente dela.
+//!
+//! As regras de cada linha moram em `domain::spec_index`; aqui ficam o disco
+//! e a trava.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use crate::domain::spec_events::{self as model, Refusal, SpecLog};
+use crate::domain::spec_index as index;
+use crate::io::claude_paths::{ClaudePaths, SPEC_INDEX_FILE};
+use crate::io::fs::lock::{read_shared, LockedFile};
+use crate::platform::error::Error;
+
+/// O nome do arquivo de eventos de cada spec.
+const EVENTS_FILE: &str = "spec.ndjson";
+
+/// A pasta, dentro da pasta das specs, em que as specs descartadas ficam
+/// guardadas.
+pub const DISCARDED_DIR: &str = ".descartadas";
+
+/// O índice de um arquivo de eventos e o nome da spec dele, quando o caminho
+/// tem a forma de uma spec do projeto: `<raiz>/.claude/spec/<nome>/spec.ndjson`.
+/// Qualquer outro caminho não tem índice: um arquivo de eventos solto numa
+/// pasta temporária nunca grava um índice fora dela.
+#[must_use]
+pub fn index_for(events: &Path) -> Option<(PathBuf, String)> {
+    if events.file_name()? != EVENTS_FILE {
+        return None;
+    }
+    let spec_dir = events.parent()?;
+    let name = spec_dir.file_name()?.to_str()?;
+    let specs = spec_dir.parent()?;
+    let claude = specs.parent()?;
+    if specs.file_name()? != "spec" || claude.file_name()? != ".claude" {
+        return None;
+    }
+    Some((specs.join(SPEC_INDEX_FILE), name.to_string()))
+}
+
+/// Refaz a linha da spec `name` no índice `index_path` a partir de `log`, o
+/// arquivo de eventos como acabou de ficar. Pega a trava do índice, e o
+/// arquivo só é reescrito quando muda. Quem chama já segura a trava da spec.
+pub fn refresh_line(index_path: &Path, name: &str, log: &SpecLog) -> Result<(), Refusal> {
+    let line = index::spec_line(name, log);
+    let mut file = LockedFile::exclusive(index_path).map_err(io_refusal)?;
+    let current = file.read_to_string().map_err(io_refusal)?;
+    let next = index::merge(&current, name, line.as_deref());
+    if next != current {
+        file.replace(next.as_bytes()).map_err(io_refusal)?;
+    }
+    Ok(())
+}
+
+/// Grava `url` na linha do projeto do índice `index_path`: é o endereço da
+/// página do projeto que acabou de ser publicada. Pega a trava do índice, e o
+/// arquivo só é reescrito quando muda. Quem chama já segura a trava da spec
+/// em que a publicação foi gravada.
+///
+/// # Errors
+///
+/// [`Refusal::Io`] quando a trava, a leitura ou a escrita falham.
+pub fn set_project_url(index_path: &Path, url: &str) -> Result<(), Refusal> {
+    let mut file = LockedFile::exclusive(index_path).map_err(io_refusal)?;
+    let current = file.read_to_string().map_err(io_refusal)?;
+    let next = index::with_project_url(&current, url);
+    if next != current {
+        file.replace(next.as_bytes()).map_err(io_refusal)?;
+    }
+    Ok(())
+}
+
+/// Tira do índice do projeto `root` a linha da spec `name`. É o que acontece
+/// com a spec apagada: a arquivada fica com a linha. A linha do projeto e as
+/// das outras specs ficam como estão. Pega a trava do índice, e o arquivo só é
+/// reescrito quando muda.
+///
+/// # Errors
+///
+/// [`Refusal::Io`] quando a trava, a leitura ou a escrita falham.
+pub fn drop_line(root: &Path, name: &str) -> Result<(), Refusal> {
+    let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
+    let index_path = paths.spec_index_path();
+    if !index_path.is_file() {
+        return Ok(());
+    }
+    let mut file = LockedFile::exclusive(&index_path).map_err(io_refusal)?;
+    let current = file.read_to_string().map_err(io_refusal)?;
+    let next = index::merge(&current, name, None);
+    if next != current {
+        file.replace(next.as_bytes()).map_err(io_refusal)?;
+    }
+    Ok(())
+}
+
+/// O que o [`rebuild`] fez.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rebuilt {
+    /// O caminho do índice.
+    pub index: PathBuf,
+    /// Quantas specs entraram no índice.
+    pub specs: usize,
+    /// Quantas linhas dos arquivos de eventos tiveram o `search` recalculado.
+    pub search_updated: usize,
+    /// Quantas linhas do banco de lições tiveram o `search` recalculado.
+    pub lessons_search_updated: usize,
+    /// As pastas de `.claude/spec/` que ficaram fora: sem arquivo de eventos
+    /// (o formato antigo) ou com um nome que não serve para spec.
+    pub skipped: Vec<String>,
+}
+
+/// Refaz o índice inteiro do projeto `root` a partir dos arquivos de eventos.
+///
+/// Para cada spec, viva ou arquivada, em ordem de nome: pega a trava do
+/// arquivo de eventos, recalcula o `search` das linhas (e reescreve o arquivo
+/// só se algo mudou), refaz a linha dela no índice e solta a trava. Por
+/// último, só com a trava do índice, tira as linhas de specs que não existem
+/// mais e as que não se entendem, e garante a linha do projeto: com o
+/// endereço da última publicação da página do projeto gravada nas specs, ou,
+/// sem nenhuma, como estava.
+///
+/// Sem spec, grava só a linha do projeto. Recusa só quando a trava ou a
+/// escrita falham, com [`Refusal::Io`].
+pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
+    let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
+    let index_path = paths.spec_index_path();
+    let listing = list_specs(&paths)?;
+    let mut out = Rebuilt {
+        index: index_path.clone(),
+        specs: 0,
+        search_updated: 0,
+        lessons_search_updated: 0,
+        skipped: listing.skipped,
+    };
+    let mut project: Option<(String, String)> = None;
+    for (name, events) in &listing.specs {
+        let mut file = match LockedFile::existing(events) {
+            Ok(file) => file,
+            Err(Error::NotFound(_)) => {
+                out.skipped.push(name.clone());
+                continue;
+            }
+            Err(e) => return Err(io_refusal(e)),
+        };
+        let content = file.read_to_string().map_err(io_refusal)?;
+        let (fixed, changed) = model::refresh_search_lines(&content);
+        if changed > 0 {
+            file.replace(fixed.as_bytes()).map_err(io_refusal)?;
+        }
+        let log = model::parse_log(&fixed);
+        refresh_line(&index_path, name, &log)?;
+        if let Some((at, url)) = index::project_publish(&log)
+            && project.as_ref().is_none_or(|(latest, _)| later(at, latest))
+        {
+            project = Some((at.to_string(), url.to_string()));
+        }
+        drop(file);
+        out.specs += 1;
+        out.search_updated += changed;
+    }
+    out.lessons_search_updated = crate::io::lessons::refresh_search(&paths.lessons_path())?;
+
+    let mut file = LockedFile::exclusive(&index_path).map_err(io_refusal)?;
+    let current = file.read_to_string().map_err(io_refusal)?;
+    let mut next = index::prune(&current, |name| events_file(&paths, name).is_some());
+    if let Some((_, url)) = &project {
+        next = index::with_project_url(&next, url);
+    }
+    if next != current {
+        file.replace(next.as_bytes()).map_err(io_refusal)?;
+    }
+    drop(file);
+    out.skipped.sort();
+    out.skipped.dedup();
+    Ok(out)
+}
+
+/// `a` é uma hora depois de `b`. As duas vêm das gravações, com o fuso; a que
+/// não se lê como hora é comparada como texto.
+fn later(a: &str, b: &str) -> bool {
+    match (chrono::DateTime::parse_from_rfc3339(a), chrono::DateTime::parse_from_rfc3339(b)) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => a > b,
+    }
+}
+
+/// O arquivo de eventos da spec `name`: o da pasta viva ou, sem ele, o da
+/// arquivada.
+fn events_file(paths: &ClaudePaths, name: &str) -> Option<PathBuf> {
+    let live = paths.for_spec(name).ok()?.spec_ndjson_path();
+    let archived = paths.spec_dir().join(DISCARDED_DIR).join(name).join(EVENTS_FILE);
+    [live, archived].into_iter().find(|path| path.is_file())
+}
+
+/// Onde o índice difere do que os arquivos de eventos dariam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Divergence {
+    /// Quantas specs têm arquivo de eventos.
+    pub specs: usize,
+    /// O índice existe.
+    pub index_exists: bool,
+    /// As specs cuja linha falta, sobra ou é outra, e `#<n>` para cada linha
+    /// que não se entende (veja `domain::spec_index::diff`). Vazio quando o
+    /// índice não existe.
+    pub diverged: Vec<String>,
+    /// Quantas linhas, nos arquivos de eventos e no banco de lições, têm o
+    /// `search` calculado por outro redutor.
+    pub stale_search: usize,
+}
+
+/// Monta em memória o índice que os arquivos de eventos dariam e compara com
+/// o gravado. Só lê, cada arquivo com a trava compartilhada, e nunca segura
+/// duas travas ao mesmo tempo.
+pub fn divergence(root: &Path) -> Result<Divergence, Refusal> {
+    let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
+    let listing = list_specs(&paths)?;
+    let mut lines = BTreeMap::new();
+    let mut specs = 0usize;
+    let mut stale_search = 0usize;
+    for (name, events) in &listing.specs {
+        let content = match read_shared(events) {
+            Ok(content) => content,
+            Err(Error::NotFound(_)) => continue,
+            Err(e) => return Err(io_refusal(e)),
+        };
+        specs += 1;
+        stale_search += model::refresh_search_lines(&content).1;
+        if let Some(line) = index::spec_line(name, &model::parse_log(&content)) {
+            lines.insert(name.clone(), line);
+        }
+    }
+    stale_search += crate::io::lessons::stale_search(&paths.lessons_path())?;
+    let (current, index_exists) = match read_shared(&paths.spec_index_path()) {
+        Ok(content) => (content, true),
+        Err(Error::NotFound(_)) => (String::new(), false),
+        Err(e) => return Err(io_refusal(e)),
+    };
+    let diverged = if index_exists { index::diff(&current, &index::canonical(&current, &lines)) } else { Vec::new() };
+    Ok(Divergence { specs, index_exists, diverged, stale_search })
+}
+
+/// As linhas de spec do índice do projeto `root`, pelo mesmo leitor das
+/// gravações. Sem índice, ou com um índice que não se lê, nenhuma: quem busca
+/// nas specs anteriores segue sem elas. A linha que não se entende é pulada, e
+/// a da spec descartada também: a pasta dela saiu do lugar, e a busca não
+/// teria o que abrir.
+#[must_use]
+pub fn read(root: &Path) -> Vec<index::IndexLine> {
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return Vec::new();
+    };
+    read_shared(&paths.spec_index_path())
+        .map(|content| index::spec_lines(&content))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|line| line.phase.as_deref() != Some("discarded"))
+        .collect()
+}
+
+/// As linhas de spec do índice do projeto `root` como a página do projeto as
+/// mostra, pelo mesmo leitor de [`read`]. Sem índice, nenhuma.
+#[must_use]
+pub fn read_rows(root: &Path) -> Vec<index::ProjectRow> {
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return Vec::new();
+    };
+    read_shared(&paths.spec_index_path()).map(|content| index::project_rows(&content)).unwrap_or_default()
+}
+
+/// A data de hoje na hora local, a mesma das horas que as gravações
+/// escrevem: `2026-09-17`. É o dia em que a página do projeto é vista.
+#[must_use]
+pub fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// O arquivo de eventos de cada spec viva do projeto `root`, lido com a trava
+/// compartilhada, em ordem de nome. A pasta sem arquivo de eventos (o formato
+/// antigo), a spec descartada e o arquivo que não se lê ficam de fora.
+#[must_use]
+pub fn read_specs(root: &Path) -> Vec<(String, SpecLog)> {
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return Vec::new();
+    };
+    let Ok(listing) = list_specs(&paths) else {
+        return Vec::new();
+    };
+    listing
+        .specs
+        .into_iter()
+        .filter(|(_, events)| !is_archived(&paths, events))
+        .filter_map(|(name, events)| read_shared(&events).ok().map(|content| (name, model::parse_log(&content))))
+        .collect()
+}
+
+/// As pastas de `.claude/spec/`, em ordem de nome.
+struct Listing {
+    /// O nome e o arquivo de eventos de cada spec que tem um: as vivas e as
+    /// arquivadas, uma vez por nome, com a viva na frente.
+    specs: Vec<(String, PathBuf)>,
+    /// As pastas sem arquivo de eventos ou com nome que não serve.
+    skipped: Vec<String>,
+}
+
+fn is_archived(paths: &ClaudePaths, events: &Path) -> bool {
+    events.starts_with(paths.spec_dir().join(DISCARDED_DIR))
+}
+
+fn spec_folders(dir: &Path) -> Result<Vec<String>, Refusal> {
+    let mut entries = match crate::io::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(Error::NotFound(_)) => Vec::new(),
+        Err(e) => return Err(io_refusal(e)),
+    };
+    entries.retain(|e| e.is_dir);
+    Ok(entries.into_iter().map(|e| e.file_name).collect())
+}
+
+fn list_specs(paths: &ClaudePaths) -> Result<Listing, Refusal> {
+    let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut skipped = Vec::new();
+    for name in spec_folders(&paths.spec_dir())? {
+        if name == DISCARDED_DIR {
+            continue;
+        }
+        match paths.for_spec(&name).map(|s| s.spec_ndjson_path()) {
+            Ok(events) if events.is_file() => {
+                found.insert(name, events);
+            }
+            _ => skipped.push(name),
+        }
+    }
+    let archive = paths.spec_dir().join(DISCARDED_DIR);
+    for name in spec_folders(&archive)? {
+        let events = archive.join(&name).join(EVENTS_FILE);
+        if paths.for_spec(&name).is_ok() && events.is_file() {
+            found.entry(name).or_insert(events);
+        }
+    }
+    skipped.sort();
+    Ok(Listing { specs: found.into_iter().collect(), skipped })
+}
+
+fn io_refusal(error: Error) -> Refusal {
+    Refusal::Io { detail: error.to_string() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::spec_events::{write_at, Written};
+    use serde_json::{json, Map, Value};
+
+    fn obj(value: Value) -> Map<String, Value> {
+        match value {
+            Value::Object(map) => map,
+            other => panic!("not an object: {other}"),
+        }
+    }
+
+    fn at(hm: &str) -> String {
+        format!("2026-09-11T{hm}:00-03:00")
+    }
+
+    fn events(root: &Path, spec: &str) -> PathBuf {
+        root.join(".claude").join("spec").join(spec).join("spec.ndjson")
+    }
+
+    fn index_file(root: &Path) -> PathBuf {
+        root.join(".claude").join("spec").join("index.ndjson")
+    }
+
+    fn put(root: &Path, spec: &str, event_type: &str, hm: &str, draft: Value) -> Written {
+        write_at(&events(root, spec), event_type, obj(draft), &[], &at(hm))
+            .unwrap_or_else(|r| panic!("{event_type} was refused: {r:?}"))
+    }
+
+    fn line_of(root: &Path, spec: &str) -> Value {
+        let raw = std::fs::read_to_string(index_file(root)).unwrap();
+        let line = raw
+            .lines()
+            .find(|l| l.contains(&format!("\"name\":\"{spec}\"")))
+            .unwrap_or_else(|| panic!("no line for {spec}: {raw}"));
+        serde_json::from_str(line).unwrap()
+    }
+
+    /// Duas specs com alguns eventos, gravadas pelo gravador de verdade.
+    fn two_specs(root: &Path) {
+        put(root, "trava", "state", "08:40", json!({"author": "binary", "phase": "survey", "branch": "feature/trava", "base": "dev"}));
+        put(root, "trava", "message", "08:41", json!({"author": "user", "text": "A trava confere o programa"}));
+        put(root, "trava", "context", "08:42", json!({"text": "Barrar comando que apaga trabalho. Sem falso positivo.", "origin": 2}));
+        put(root, "trava", "rule", "08:43", json!({"text": "A trava confere o programa, nunca o texto entre aspas.", "example": "e", "keys": ["trava"], "origin": 2}));
+        put(root, "busca", "message", "09:00", json!({"author": "user", "text": "Quero buscar lições"}));
+        put(root, "busca", "decision", "09:01", json!({"text": "**BM25.** Sem embeddings.", "why": "w", "keys": ["busca"], "origin": 1}));
+    }
+
+    /// A gravação de um evento muda a linha da spec no índice na mesma
+    /// gravação, e só a dela.
+    #[test]
+    fn a_write_changes_the_spec_line_in_the_index_in_the_same_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let before = line_of(root, "trava");
+        assert_eq!(before["updated"], json!(at("08:43")));
+        assert_eq!(before["phase"], json!("survey"));
+        let other = line_of(root, "busca");
+
+        put(root, "trava", "state", "10:00", json!({"author": "binary", "phase": "plan"}));
+        let after = line_of(root, "trava");
+        assert_eq!(after["updated"], json!(at("10:00")));
+        assert_eq!(after["phase"], json!("plan"));
+        assert_eq!(after["goal"], json!("Barrar comando que apaga trabalho."));
+        assert_eq!(line_of(root, "busca"), other, "the other spec's line did not move");
+        let raw = std::fs::read_to_string(index_file(root)).unwrap();
+        assert!(raw.starts_with("{\"v\":1,\"type\":\"project\"}\n"), "{raw}");
+    }
+
+    /// Apagado o índice, o `rebuild` devolve o arquivo com os mesmos bytes
+    /// que as gravações tinham deixado; rodar de novo não muda nada.
+    #[test]
+    fn rebuilding_a_deleted_index_gives_back_the_same_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let written = std::fs::read(index_file(root)).unwrap();
+        std::fs::remove_file(index_file(root)).unwrap();
+
+        let rebuilt = rebuild(root).unwrap();
+        assert_eq!((rebuilt.specs, rebuilt.search_updated), (2, 0));
+        assert_eq!(std::fs::read(index_file(root)).unwrap(), written);
+        rebuild(root).unwrap();
+        assert_eq!(std::fs::read(index_file(root)).unwrap(), written);
+        let quiet = divergence(root).unwrap();
+        assert_eq!(quiet, Divergence { specs: 2, index_exists: true, diverged: Vec::new(), stale_search: 0 });
+    }
+
+    /// Um `search` calculado por outro redutor é recalculado; as outras
+    /// linhas do arquivo de eventos ficam byte a byte.
+    #[test]
+    fn rebuilding_recomputes_a_stale_search_and_leaves_the_other_lines_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let path = events(root, "trava");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let rule = original.lines().find(|l| l.contains("\"type\":\"rule\"")).unwrap().to_string();
+        let (head, _) = rule.rsplit_once(",\"search\":").unwrap();
+        let stale = format!("{head},\"search\":\"redutor antigo\"}}");
+        std::fs::write(&path, original.replace(&rule, &stale)).unwrap();
+        assert_eq!(divergence(root).unwrap().stale_search, 1);
+
+        let rebuilt = rebuild(root).unwrap();
+        assert_eq!(rebuilt.search_updated, 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "only the stale line changed back");
+        assert_eq!(divergence(root).unwrap().stale_search, 0);
+    }
+
+    #[test]
+    fn the_project_line_is_kept_when_the_index_is_rebuilt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let raw = std::fs::read_to_string(index_file(root)).unwrap();
+        let project = index::project_line(Some("https://example.com/projeto"));
+        let edited = raw.replacen(&index::project_line(None), &project, 1);
+        std::fs::write(index_file(root), format!("{edited}lixo\n")).unwrap();
+        assert_eq!(divergence(root).unwrap().diverged, ["#4"]);
+
+        rebuild(root).unwrap();
+        assert_eq!(std::fs::read_to_string(index_file(root)).unwrap(), edited, "the address stays, the garbage goes");
+    }
+
+    /// Uma pasta do formato antigo, sem arquivo de eventos, fica fora do
+    /// índice e aparece em `skipped`; uma spec apagada perde a linha.
+    #[test]
+    fn a_folder_without_an_event_file_stays_out_of_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("velha").join(".events")).unwrap();
+        std::fs::remove_dir_all(root.join(".claude").join("spec").join("busca")).unwrap();
+        assert_eq!(divergence(root).unwrap().diverged, ["busca"]);
+
+        let rebuilt = rebuild(root).unwrap();
+        assert_eq!(rebuilt.specs, 1);
+        assert_eq!(rebuilt.skipped, ["velha"]);
+        let raw = std::fs::read_to_string(index_file(root)).unwrap();
+        assert_eq!(raw.lines().count(), 2, "{raw}");
+        assert!(!raw.contains("velha") && !raw.contains("busca"), "{raw}");
+    }
+
+    /// A publicação da página do projeto grava o endereço na linha do
+    /// projeto, na mesma gravação; uma gravação depois, na mesma spec ou em
+    /// outra, não o desfaz, e a publicação seguinte, de outra spec, o troca.
+    /// Apagado o índice, o `rebuild` devolve o endereço da última.
+    #[test]
+    fn the_project_page_address_lands_on_the_project_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let publish = |url: &str| json!({"page": "project", "milestone": "approval", "ok": true, "url": url});
+        let raw = || std::fs::read_to_string(index_file(root)).unwrap();
+
+        put(root, "trava", "publish", "10:00", publish("https://claude.ai/p1"));
+        assert!(raw().starts_with(&format!("{}\n", index::project_line(Some("https://claude.ai/p1")))), "{}", raw());
+        assert!(line_of(root, "trava").get("url").is_none(), "the project page is not the spec page");
+        put(root, "busca", "message", "10:05", json!({"author": "user", "text": "outra gravação"}));
+        put(root, "trava", "message", "10:06", json!({"author": "user", "text": "mais uma"}));
+        assert_eq!(index::project_url(&raw()).as_deref(), Some("https://claude.ai/p1"));
+
+        put(root, "busca", "publish", "10:10", publish("https://claude.ai/p2"));
+        put(root, "trava", "publish", "10:11",
+            json!({"page": "project", "milestone": "round", "ok": false, "reason": "caiu"}));
+        put(root, "trava", "message", "10:12", json!({"author": "user", "text": "depois da falha"}));
+        let written = raw();
+        assert_eq!(index::project_url(&written).as_deref(), Some("https://claude.ai/p2"));
+
+        std::fs::remove_file(index_file(root)).unwrap();
+        rebuild(root).unwrap();
+        assert_eq!(raw(), written, "the rebuilt index keeps the last project page address");
+    }
+
+    /// A spec descartada e arquivada continua no índice, com a fase
+    /// descartada, depois de o índice ser refeito; a viva de mesmo nome passa
+    /// na frente dela. A busca das specs anteriores não a lê.
+    #[test]
+    fn an_archived_spec_keeps_its_line_through_a_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        put(root, "busca", "state", "10:00", json!({"author": "binary", "phase": "discarded", "reason": "parou"}));
+        let specs = root.join(".claude").join("spec");
+        std::fs::create_dir_all(specs.join(DISCARDED_DIR)).unwrap();
+        std::fs::rename(specs.join("busca"), specs.join(DISCARDED_DIR).join("busca")).unwrap();
+        let before = std::fs::read(index_file(root)).unwrap();
+
+        let rebuilt = rebuild(root).unwrap();
+        assert_eq!((rebuilt.specs, rebuilt.skipped.len()), (2, 0), "{rebuilt:?}");
+        assert_eq!(std::fs::read(index_file(root)).unwrap(), before, "the discarded line stays");
+        assert_eq!(line_of(root, "busca")["phase"], json!("discarded"));
+        assert!(divergence(root).unwrap().diverged.is_empty());
+        let names: Vec<String> = read(root).into_iter().map(|line| line.name).collect();
+        assert_eq!(names, ["trava"], "the survey does not search a discarded spec");
+        let names: Vec<String> = read_specs(root).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["trava"]);
+
+        put(root, "busca", "message", "11:00", json!({"author": "user", "text": "começa de novo"}));
+        rebuild(root).unwrap();
+        assert!(line_of(root, "busca").get("phase").is_none(), "the live spec of the same name wins");
+    }
+
+    /// O `index` recalcula também o `search` desatualizado do banco de
+    /// lições, e o `divergence` o conta.
+    #[test]
+    fn rebuilding_recomputes_a_stale_lesson_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let bank = ClaudePaths::for_project(root).unwrap().lessons_path();
+        let lesson = json!({"class": "defect", "text": "Apagar a pasta.", "keys": ["apagar"], "applies_to": {"subproject": "apps/rt"}, "found_in": {"spec": "trava"}});
+        crate::io::lessons::write_at(&bank, obj(lesson), None, &at("11:00")).unwrap();
+        let original = std::fs::read_to_string(&bank).unwrap();
+        let (head, _) = original.trim_end().rsplit_once(",\"search\":").unwrap();
+        std::fs::write(&bank, format!("{head},\"search\":\"velho\"}}\n")).unwrap();
+        assert_eq!(divergence(root).unwrap().stale_search, 1);
+
+        let rebuilt = rebuild(root).unwrap();
+        assert_eq!((rebuilt.search_updated, rebuilt.lessons_search_updated), (0, 1));
+        assert_eq!(std::fs::read_to_string(&bank).unwrap(), original);
+        let index = std::fs::read_to_string(index_file(root)).unwrap();
+        assert!(!index.contains("lessons"), "the bank is not a spec: {index}");
+    }
+
+    #[test]
+    fn a_project_without_specs_gets_only_the_project_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let rebuilt = rebuild(dir.path()).unwrap();
+        assert_eq!((rebuilt.specs, rebuilt.skipped.len()), (0, 0));
+        assert_eq!(std::fs::read_to_string(index_file(dir.path())).unwrap(), format!("{}\n", index::project_line(None)));
+        assert_eq!(divergence(dir.path()).unwrap().specs, 0);
+    }
+
+    /// Duas specs gravadas ao mesmo tempo: as duas linhas chegam ao índice, e
+    /// cada uma é a do último estado do arquivo dela.
+    #[test]
+    fn two_specs_written_at_once_both_land_in_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writers: Vec<_> = ["um", "dois"]
+            .into_iter()
+            .map(|spec| {
+                let root = root.clone();
+                let start = std::sync::Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    for i in 0..15 {
+                        let text = format!("gravação {i}");
+                        put(&root, spec, "message", &format!("10:{i:02}"), json!({"author": "user", "text": text}));
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        assert_eq!(line_of(&root, "um")["updated"], json!(at("10:14")));
+        assert_eq!(line_of(&root, "dois")["updated"], json!(at("10:14")));
+        assert!(divergence(&root).unwrap().diverged.is_empty());
+    }
+
+    /// Um arquivo de eventos fora da forma `.claude/spec/<nome>/spec.ndjson`
+    /// não grava índice nenhum.
+    #[test]
+    fn a_write_outside_the_spec_folder_shape_touches_no_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let loose = [
+            root.join("spec.ndjson"),
+            root.join("spec").join("n").join("spec.ndjson"),
+            root.join(".claude").join("specs").join("n").join("spec.ndjson"),
+            root.join(".claude").join("spec").join("n").join("eventos.ndjson"),
+        ];
+        for path in &loose {
+            assert!(index_for(path).is_none(), "{}", path.display());
+            let written = write_at(path, "message", obj(json!({"author": "user", "text": "solto"})), &[], &at("10:00")).unwrap();
+            assert!(written.index_warning.is_none());
+        }
+        let mut found = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.file_name().is_some_and(|n| n == SPEC_INDEX_FILE) {
+                    found.push(path);
+                }
+            }
+        }
+        assert!(found.is_empty(), "{found:?}");
+        assert_eq!(index_for(&events(root, "s")), Some((index_file(root), "s".to_string())));
+    }
+
+    /// Quando o índice não pode ser gravado, o evento fica gravado e a
+    /// gravação diz por quê.
+    #[test]
+    fn an_index_that_cannot_be_written_leaves_the_event_written_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(index_file(root)).unwrap();
+        let written = put(root, "s", "message", "10:00", json!({"author": "user", "text": "fica gravado"}));
+        assert!(matches!(written.index_warning, Some(Refusal::Io { .. })), "{written:?}");
+        assert!(std::fs::read_to_string(events(root, "s")).unwrap().contains("fica gravado"));
+        assert!(matches!(rebuild(root), Err(Refusal::Io { .. })));
+        assert!(matches!(divergence(root), Err(Refusal::Io { .. })));
+    }
+
+    /// Os leitores do índice e das specs devolvem as specs em ordem de nome;
+    /// a pasta sem arquivo de eventos, do formato antigo, fica de fora, e um
+    /// projeto sem specs não tem nenhuma.
+    #[test]
+    fn a_prior_spec_folder_without_an_event_file_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let old = root.join(".claude").join("spec").join("antiga");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("meta.json"), "{}").unwrap();
+        let names: Vec<String> = read_specs(root).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["busca", "trava"]);
+        let lines: Vec<String> = read(root).into_iter().map(|line| line.name).collect();
+        assert_eq!(lines, ["busca", "trava"]);
+        let empty = tempfile::tempdir().unwrap();
+        assert!(read(empty.path()).is_empty() && read_specs(empty.path()).is_empty());
+    }
+}

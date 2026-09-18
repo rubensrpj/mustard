@@ -2,8 +2,8 @@
 # ============================================================================
 # Mustard — instalador para teste (Windows)
 #
-# Instala os binários pré-compilados do Mustard (scan, mustard-rt, mustard-mcp,
-# mustard) + o rtk empacotado + a carga templates/. NÃO precisa do toolchain
+# Instala os binários pré-compilados do Mustard (scan, mustard-rt, mustard)
+# + o rtk empacotado + a carga templates/. NÃO precisa do toolchain
 # Rust — são binários já compilados.
 #
 # Layout após instalar (auto-contido, fácil de remover):

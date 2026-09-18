@@ -11,7 +11,7 @@
 //! proves the fix for both faces at once.
 //!
 //! These fixtures build REAL git repos in tempdirs (like the `git_settle` /
-//! `work_branch_gate` suites) and no-op on a git-less host. They live in the rt
+//! `write_gate` suites) and no-op on a git-less host. They live in the rt
 //! crate — not core — because core's own test binary is currently unbuildable on
 //! this branch (an unrelated stale `retrieval` test in `domain/config.rs`), so
 //! `cargo test -p mustard-rt` is the vehicle that actually runs them.

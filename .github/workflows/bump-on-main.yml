@@ -1,6 +1,8 @@
 # bump-on-main — versão automática da era plugin: CADA merge na main
 # incrementa o PATCH do plugin (plugin/.claude-plugin/plugin.json), commita,
-# tagueia vX.Y.Z e despacha o workflow Release NO REF DA TAG — lá dentro,
+# tagueia vX.Y.Z e despacha o workflow Release NO REF DA TAG. A versão que
+# chega à main maior que a última tag sai como está, sem somar 1 — é assim que
+# uma versão nova (a 0.2.0) é publicada. Lá dentro do Release,
 # `github.ref_type == 'tag'` satisfaz o gate do job `publish`, e a conferência
 # "tag == plugin.json" passa por construção (o bump acabou de gravar ambos).
 #
@@ -32,10 +34,13 @@ concurrency:
   group: bump-on-main
   cancel-in-progress: false
 
+# Todo job para em 30 minutos: sem isso, um passo travado segura a máquina
+# pelas seis horas do padrão do GitHub.
 jobs:
   bump:
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,10 +65,22 @@ jobs:
           set -euo pipefail
           manifest=plugin/.claude-plugin/plugin.json
           cargo_toml=Cargo.toml
+          # --- a versão que sai: início ---
+          # A última tag é a mais próxima do commit que chegou, e não a de
+          # número maior: o repositório guarda tags de uma numeração antiga
+          # (v3.x). A versão do plugin.json maior que ela sai como está; igual
+          # ou menor, soma 1 no último número.
           pv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
-          IFS=. read -r ma mi pa <<<"$pv"
-          nv="$ma.$mi.$((pa+1))"
-          echo "bump: $pv -> $nv"
+          lt=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          lt=${lt#v}
+          if [ "$pv" != "$lt" ] && [ "$(printf '%s\n%s\n' "$lt" "$pv" | sort -V | tail -1)" = "$pv" ]; then
+            nv="$pv"
+          else
+            IFS=. read -r ma mi pa <<<"$pv"
+            nv="$ma.$mi.$((pa+1))"
+          fi
+          # --- a versão que sai: fim ---
+          echo "bump: $pv (última tag: ${lt:-nenhuma}) -> $nv"
           sed -i "s/\"version\": \"$pv\"/\"version\": \"$nv\"/" "$manifest"
           grep -q "\"version\": \"$nv\"" "$manifest"   # o sed realmente aplicou
 
@@ -77,7 +94,10 @@ jobs:
           # "build de dev", lia como release velho, e o aviso de drift do próprio
           # harness discutia consigo mesmo. `tests/version_line.rs` reprova se as
           # duas divergirem — este passo é o que as mantém iguais na origem.
-          sed -i "0,/^version = \"$pv\"$/s//version = \"$nv\"/" "$cargo_toml"
+          # A versão do Cargo.toml é lida dele, e não suposta igual à do
+          # manifesto: o valor é SETADO, como na perna do dev.
+          mcv=$(sed -n '0,/^version = "/s/^version = "\([^"]*\)".*/\1/p' "$cargo_toml" | head -1)
+          sed -i "0,/^version = \"$mcv\"$/s//version = \"$nv\"/" "$cargo_toml"
           grep -q "^version = \"$nv\"$" "$cargo_toml"   # o sed realmente aplicou
 
           # TERCEIRA perna: o Cargo.lock grava a versao de cada membro do
@@ -94,21 +114,15 @@ jobs:
           # command: a bare `grep -q '^version = "$nv"$'` is satisfied by any
           # third-party dependency sitting on our number, so it matches per
           # PACKAGE instead. See .github/scripts/check-lock-pins.sh.
-          bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan   # o lock realmente andou
+          bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-rt scan   # o lock realmente andou
 
-          # O selo tinha uma QUARTA perna: o dashboard era workspace root PROPRIO
-          # (o involucro de aplicativo de mesa o prendia a edition 2021), tinha o SEU
-          # Cargo.lock, e o `cargo update --workspace` acima nao o alcancava — ficou
-          # tres releases para tras sem ninguem notar. Sem esse involucro o crate
-          # virou membro normal do
-          # workspace (`apps/dashboard/server`) e seu lock foi apagado: o lock da
-          # raiz acima ja o cobre, e uma perna que nao existe mais nao pode ficar
-          # para tras. Sao tres pernas agora.
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$manifest" "$cargo_toml" Cargo.lock
-          git commit -m "chore(release): v$nv — bump automático pós-merge na main"
+          # A versão que chegou pronta nas três pernas não tem o que comitar: a
+          # tag vai no commit que chegou.
+          git diff --cached --quiet || git commit -m "chore(release): v$nv — bump automático pós-merge na main"
           # Rebase ANTES da tag: se outro merge entrou no meio-tempo, o commit
           # de bump é reescrito e a tag precisa apontar para o sha final.
           git pull --rebase origin main
@@ -135,7 +149,7 @@ jobs:
           # mensagem abaixo reivindicava todas as pernas enquanto o teste
           # consultava menos, entao um dev com so o Cargo.lock atrasado pulava o
           # bloco inteiro. Um leitor por perna, e a decisao consulta todos.
-          root_pin=$(bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan && echo ok || echo stale)
+          root_pin=$(bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-rt scan && echo ok || echo stale)
           if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$root_pin" = ok ]; then
             echo "dev já está em v$nv nas três pernas — nada a propagar"
           else
@@ -148,10 +162,7 @@ jobs:
             # …e o lock junto, senão o `--locked` do Release reprova o dev pelo
             # mesmo motivo que reprovou a main.
             cargo update --workspace
-            bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan
-            # O lock proprio do dashboard era a quarta perna e nao existe mais:
-            # o crate agora e membro do workspace, entao o `cargo update
-            # --workspace` acima ja o alcanca. Ver a nota na perna da main.
+            bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-rt scan
             git add "$manifest" "$cargo_toml" Cargo.lock
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
             if git push origin "dev-sync:dev"; then

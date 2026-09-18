@@ -13,8 +13,7 @@
 //!   * a hub anchors only when a matched term lives in its DECLARATIONS — a
 //!     path hit ALONE keeps it in `hubs`, never in `files` (path BOOSTS, never
 //!     admits);
-//!   * `files_detail` mirrors `files` with the BM25F score + carrying terms,
-//!     and `slices_omitted` mirrors `terms_omitted` (no silent loss);
+//!   * `files_detail` mirrors `files` with the BM25F score + carrying terms;
 //!   * the whole ranking is deterministic across runs (stable tie-breaks).
 //!
 //! Plus the `QueryResult` stack contract over the committed php_laravel
@@ -282,39 +281,6 @@ fn anchor_ranking_guarantees_each_project_stratum_an_early_slot() {
     // The app file would trail at #4 without the guarantee: all three api files
     // out-score it by pure relevance, yet it must not be crowded past slot #2.
     assert!(files.iter().take(3).filter(|f| f.starts_with("api/")).count() >= 1, "api still well represented: {q}");
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn query_slices_omitted_mirrors_the_cap_and_terms_omitted_contract() {
-    // 15 slice conventions match the query term; the per-query cap keeps 12
-    // and `slices_omitted` names the 3 trimmed — the same no-silent-loss
-    // contract `terms_omitted` already carries.
-    let conventions: Vec<serde_json::Value> = (0..15)
-        .map(|i| {
-            serde_json::json!({
-                "name": format!("conv{i:02}"), "roles": ["Quince", format!("Widget{i:02}")],
-                "recurrence": 30 - i, "entities": [format!("Entity{i:02}")], "confidence": 0.9,
-                "is_slice": true, "steps": [], "examples": [], "exemplar": "", "summary": ""
-            })
-        })
-        .collect();
-    let dir = std::env::temp_dir().join(format!("scan-anchor-ranking-slicecap-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let model = dir.join("grain.model.json");
-    let v = serde_json::json!({
-        "root": dir.to_string_lossy(),
-        "modules": [module("m/quince.rs", &["QuinceEntry"])],
-        "conventions": conventions,
-    });
-    std::fs::write(&model, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    let (_, q) = run_query(&model, "quince", "query.json");
-
-    assert_eq!(q["slices"].as_array().unwrap().len(), 12, "per-query slice cap holds: {q}");
-    assert_eq!(q["slices_omitted"], 3, "the trimmed tail is counted, never silent: {q}");
-    assert_eq!(q["terms_omitted"], 0, "sibling field still present: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

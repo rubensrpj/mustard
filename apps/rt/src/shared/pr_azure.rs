@@ -41,8 +41,8 @@ use serde_json::{json, Value};
 
 use crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE};
 use crate::shared::pr_provider::{
-    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrToOpen,
-    PrView, HEADS, PROVIDER_AZURE,
+    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrRef,
+    PrToOpen, PrView, HEADS, PROVIDER_AZURE,
 };
 
 /// The Azure DevOps REST API version every call pins. One spelling, so a bump
@@ -170,6 +170,17 @@ impl AzureRemote {
             "{}/{}/_apis/git/repositories/{}/pullrequests",
             self.base, self.project, self.repo
         )
+    }
+
+    /// The REST collection the branch policies of this project live in.
+    ///
+    /// The PROJECT-scoped endpoint, narrowed by `refName`: the repository
+    /// -scoped one addresses the repository by GUID, and the remote spells a
+    /// NAME. Asking for a GUID would mean one extra round trip before the
+    /// question this exists to answer, and the `refName` filter already does
+    /// what the diagnostic needs — name the policies in force on that branch.
+    pub(crate) fn api_policies(&self) -> String {
+        format!("{}/{}/_apis/git/policy/configurations", self.base, self.project)
     }
 
     /// The canonical https remote — what `git credential fill` is asked for,
@@ -474,6 +485,43 @@ pub(crate) fn do_checks(
     Ok(checks_from_azure(&rows))
 }
 
+/// GET the branch policies in force on `branch`, and answer whether any of
+/// them would stop a direct push.
+///
+/// A document without a `value` array could not be read — `parse-error`,
+/// never an empty answer, because an empty answer here means "this branch is
+/// open to anyone with push rights" and that sentence must only ever be said
+/// about a reading that really happened.
+pub(crate) fn do_branch_policy(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    branch: &str,
+) -> Result<bool, String> {
+    let url = format!(
+        "{}?refName={}&api-version={API_VERSION}",
+        remote.api_policies(),
+        query_encode(&format!("{HEADS}{branch}")),
+    );
+    let doc = transport.call("GET", &url, auth, None)?;
+    let rows =
+        doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())?;
+    Ok(policies_protect(&rows))
+}
+
+/// Whether any policy row really stands in the way of a direct push.
+///
+/// A row counts only when it is BOTH enabled and blocking. Azure carries
+/// disabled policies and advisory ones in the same list, and a policy that
+/// merely comments on a pull request stops nobody: counting it would report a
+/// branch as protected while a push to it succeeds.
+pub(crate) fn policies_protect(rows: &[Value]) -> bool {
+    rows.iter().any(|row| {
+        let flag = |key: &str| row.get(key).and_then(Value::as_bool).unwrap_or(false);
+        flag("isEnabled") && flag("isBlocking")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // The evidence read — what the exit ritual's pruning verdict stands on
 // ---------------------------------------------------------------------------
@@ -539,7 +587,7 @@ pub(crate) fn evidence_from_rows(rows: &[Value]) -> PrEvidence {
     PrEvidence { status, merged_heads }
 }
 
-/// The [`crate::shared::branch_state::PrLookup`] answer for an Azure branch:
+/// The [`crate::shared::branch_state::PrQuery`] answer for an Azure branch:
 /// resolve the context, run ONE search, reduce it purely. Every failure
 /// degrades to [`PrStatus::Unknown`] with a stable reason — an unreachable
 /// REST API is an unmeasured state, never a measured "no PR" — because a
@@ -564,85 +612,15 @@ pub(crate) fn evidence_of(repo: &Path, branch: &str) -> PrEvidence {
 }
 
 // ---------------------------------------------------------------------------
-// The prefetch reads — what review-prefetch composes its document from
-// ---------------------------------------------------------------------------
-
-/// GET PR `number` VERBATIM — the raw `GitPullRequest` document, for the one
-/// consumer (review-prefetch) that needs fields the port's [`PrView`] does
-/// not carry (`description`, `createdBy`).
-pub(crate) fn fetch_pr(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<Value, String> {
-    let url = format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls());
-    transport.call("GET", &url, auth, None)
-}
-
-/// GET the comment THREADS of PR `number` — where the human conversation
-/// lives on Azure (there is no flat comment list like GitHub's).
-pub(crate) fn fetch_threads(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<Vec<Value>, String> {
-    let url = format!("{}/{number}/threads?api-version={API_VERSION}", remote.api_pulls());
-    let doc = transport.call("GET", &url, auth, None)?;
-    doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())
-}
-
-/// GET the REVIEWERS of PR `number` — each row carries the reviewer's `vote`,
-/// the Azure spelling of a review verdict.
-pub(crate) fn fetch_reviewers(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<Vec<Value>, String> {
-    let url = format!("{}/{number}/reviewers?api-version={API_VERSION}", remote.api_pulls());
-    let doc = transport.call("GET", &url, auth, None)?;
-    doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())
-}
-
-/// The three documents `review-prefetch`'s Azure route composes from, fetched
-/// in ONE resolution of the remote + credential. Diff counters and file lists
-/// are deliberately absent: the local git already has them, identically on
-/// every provider — the port's own long-standing decision.
-pub(crate) struct AzurePrefetch {
-    pub(crate) pr: Value,
-    pub(crate) threads: Vec<Value>,
-    pub(crate) reviewers: Vec<Value>,
-}
-
-/// Fetch an [`AzurePrefetch`] over the real transport.
-pub(crate) fn prefetch(repo: &Path, number: u64) -> Result<AzurePrefetch, String> {
-    let adapter = AzurePrRest::new(repo);
-    let (remote, auth) = adapter.context()?;
-    let transport = adapter.transport.as_ref();
-    Ok(AzurePrefetch {
-        pr: fetch_pr(&remote, transport, &auth, number)?,
-        threads: fetch_threads(&remote, transport, &auth, number)?,
-        reviewers: fetch_reviewers(&remote, transport, &auth, number)?,
-    })
-}
-
-// ---------------------------------------------------------------------------
 // The adapter — context resolution wired onto the pure operations
 // ---------------------------------------------------------------------------
 
 /// Run `git` in `root` and return its trimmed stdout — the same degradation
 /// shape as the GitHub adapter's `gh_out`, for the same reason.
 fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
-    let Ok(out) = Command::new("git").args(args).current_dir(root).output() else {
-        return Err("git-not-found".to_string());
-    };
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if stderr.is_empty() { "git-failed".to_string() } else { stderr });
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    mustard_core::platform::git::run(root, args)
+        .result()
+        .map_err(|err| if err.is_empty() { "git-failed".to_string() } else { err })
 }
 
 /// The Azure DevOps adapter — REST over the injectable transport, credential
@@ -696,13 +674,15 @@ impl PrProvider for AzurePrRest {
         do_patch(&remote, self.transport.as_ref(), &auth, number, &json!({ "isDraft": false }))
     }
 
-    fn view(&self, number: Option<u64>) -> Result<PrView, String> {
+    fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
         let (remote, auth) = self.context()?;
-        match number {
-            Some(n) => do_view_number(&remote, self.transport.as_ref(), &auth, n),
-            None => {
-                let branch = git_out(&self.repo, &["rev-parse", "--abbrev-ref", "HEAD"])
-                    .map_err(|e| format!("azure-branch-unreadable: {e}"))?;
+        match which {
+            PrRef::Number(n) => do_view_number(&remote, self.transport.as_ref(), &auth, n),
+            PrRef::Head(head) => do_view_branch(&remote, self.transport.as_ref(), &auth, head),
+            PrRef::Checkout => {
+                let branch = mustard_core::current_branch(&self.repo).ok_or_else(|| {
+                    "azure-branch-unreadable: the checkout names no branch".to_string()
+                })?;
                 do_view_branch(&remote, self.transport.as_ref(), &auth, &branch)
             }
         }
@@ -711,6 +691,11 @@ impl PrProvider for AzurePrRest {
     fn checks(&self, number: u64) -> Result<PrChecks, String> {
         let (remote, auth) = self.context()?;
         do_checks(&remote, self.transport.as_ref(), &auth, number)
+    }
+
+    fn branch_protection(&self, branch: &str) -> Result<bool, String> {
+        let (remote, auth) = self.context()?;
+        do_branch_policy(&remote, self.transport.as_ref(), &auth, branch)
     }
 }
 
@@ -779,7 +764,7 @@ pub(crate) mod test_support {
 
     /// The canonical parsed remote every operation test stands on.
     pub(crate) fn remote() -> AzureRemote {
-        AzureRemote::parse("https://dev.azure.com/suzano/florestal/_git/portal")
+        AzureRemote::parse("https://dev.azure.com/contoso/vendas/_git/portal")
             .expect("a canonical https remote parses")
     }
 }
@@ -790,7 +775,7 @@ mod tests {
     use super::*;
     use crate::shared::branch_state::PrStatus;
 
-    /// T4 — the RFC 4648 vectors, plus the one composition the module exists
+    /// The RFC 4648 vectors, plus the one composition the module exists
     /// for: Basic auth of `:PAT`.
     #[test]
     fn base64_matches_the_rfc_vectors() {
@@ -816,7 +801,7 @@ mod tests {
         for url in [
             "https://github.com/org/repo.git",
             "git@gitlab.com:team/repo.git",
-            "https://dev.azure.com/suzano",
+            "https://dev.azure.com/contoso",
             "/local/path/no/remote",
             "",
         ] {
@@ -824,7 +809,7 @@ mod tests {
         }
     }
 
-    /// T3 — edit_body and ready are both one PATCH of the field that changes,
+    /// `edit_body` and `ready` are both one PATCH of the field that changes,
     /// addressed to the PR by number.
     #[test]
     fn edit_body_and_ready_patch_one_field_each() {
@@ -842,7 +827,7 @@ mod tests {
         assert_eq!(calls[1].body, Some(json!({ "isDraft": false })));
     }
 
-    /// T3 — view(None)'s shape: the current branch is asked for via
+    /// `view(None)`'s shape: the current branch is asked for via
     /// `searchCriteria.sourceRefName` with the FULL ref, the first row
     /// answers, and an empty answer is "no PR", distinct from a broken one.
     #[test]
@@ -889,7 +874,7 @@ mod tests {
         );
     }
 
-    /// T1 — the evidence reduction: merged beats open beats closed, an empty
+    /// The evidence reduction: merged beats open beats closed, an empty
     /// answer is a MEASURED absence, and only the completed rows contribute
     /// their frozen heads (`lastMergeSourceCommit.commitId`). Rows whose
     /// status word cannot be read are an unreadable answer, never an absence.
@@ -931,7 +916,7 @@ mod tests {
         );
     }
 
-    /// T1 — the evidence read asks the SAME search `do_view_branch` asks
+    /// The evidence read asks the SAME search `do_view_branch` asks
     /// (`searchCriteria.sourceRefName` + `status=all`), so a just-completed
     /// PR still answers — which is the read that authorises a prune.
     #[test]
@@ -964,26 +949,47 @@ mod tests {
         );
     }
 
-    /// T1 — the prefetch fetchers address the PR's own sub-resources and
-    /// answer their `value` arrays; the raw PR document travels verbatim.
+    /// A política da branch é perguntada ao Azure pela branch, e só conta a
+    /// que está ligada E bloqueia.
+    ///
+    /// O que isto pega: uma política desligada, e uma que só comenta no pull
+    /// request. Contar qualquer uma das duas reportaria como protegida uma
+    /// branch em que um envio direto passa — que é exatamente a frase que esta
+    /// conferência existe para não dizer errado.
     #[test]
-    fn prefetch_fetchers_address_the_pr_subresources() {
+    fn a_politica_da_branch_so_conta_quando_liga_e_bloqueia() {
         let remote = remote();
-        let pr_url = format!("{}/7?api-version=7.1", remote.api_pulls());
-        let threads_url = format!("{}/7/threads?api-version=7.1", remote.api_pulls());
-        let reviewers_url = format!("{}/7/reviewers?api-version=7.1", remote.api_pulls());
-        let fake = FakeTransport::of(&[
-            ("GET", &pr_url, json!({ "pullRequestId": 7, "description": "why" })),
-            ("GET", &threads_url, json!({ "value": [{ "status": "active" }] })),
-            ("GET", &reviewers_url, json!({ "value": [{ "vote": 10 }] })),
-        ]);
+        let url = format!(
+            "{}?refName=refs/heads/master&api-version=7.1",
+            remote.api_policies(),
+        );
+        let answer = |value: Value| {
+            let fake = FakeTransport::of(&[("GET", &url, json!({ "value": value }))]);
+            do_branch_policy(&remote, &fake, "a", "master")
+        };
 
-        let pr = fetch_pr(&remote, &fake, "a", 7).expect("pr answers");
-        assert_eq!(pr["description"], json!("why"), "the raw document travels verbatim");
-        let threads = fetch_threads(&remote, &fake, "a", 7).expect("threads answer");
-        assert_eq!(threads, vec![json!({ "status": "active" })]);
-        let reviewers = fetch_reviewers(&remote, &fake, "a", 7).expect("reviewers answer");
-        assert_eq!(reviewers, vec![json!({ "vote": 10 })]);
+        assert_eq!(answer(json!([])), Ok(false), "sem política nenhuma, a branch está aberta");
+        assert_eq!(
+            answer(json!([{ "isEnabled": true, "isBlocking": true }])),
+            Ok(true),
+            "uma política ligada e bloqueante protege",
+        );
+        assert_eq!(
+            answer(json!([{ "isEnabled": false, "isBlocking": true }])),
+            Ok(false),
+            "uma política desligada não para ninguém",
+        );
+        assert_eq!(
+            answer(json!([{ "isEnabled": true, "isBlocking": false }])),
+            Ok(false),
+            "e uma que só avisa também não",
+        );
+
+        let sem_value = FakeTransport::of(&[("GET", &url, json!({}))]);
+        assert!(
+            do_branch_policy(&remote, &sem_value, "a", "master").is_err(),
+            "resposta ilegível é erro, nunca uma branch aberta medida",
+        );
     }
 
     /// The checks read addresses the PR's own `statuses` sub-resource and

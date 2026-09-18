@@ -1,20 +1,20 @@
-//! Locks the published `mustard-rt run` CLI surface.
+//! O retrato da superfície publicada de `mustard-rt run`.
 //!
-//! The `run <name>` commands are called by hooks, `settings.json`, the SKILL
-//! templates and the orchestrator prompts across the whole product: a rename or
-//! a dropped registration does not break the build, it makes the command
-//! silently VANISH at runtime. That is exactly the failure the two-registration
-//! rule (variant + `dispatch()` arm, per family in `commands/<family>/cli.rs`)
-//! guards against by hand — this test guards it mechanically, straight off the
-//! clap `Command` tree.
+//! Os nomes de `run <nome>` são chamados pelos ganchos, pelo `settings.json`,
+//! pelos moldes e pela prosa do produto: um renome ou um registro perdido não
+//! quebra a compilação — faz o comando SUMIR em tempo de execução. Este arquivo
+//! transforma isso numa falha de teste.
 //!
-//! It also reads the SHIPPED instruction surfaces (`plugin/**`) from disk: the
-//! CLI tree alone cannot catch a ritual that promises something the reader will
-//! not find, and a wrong instruction fails just as silently as a dropped
-//! registration.
+//! O retrato, e não uma lista escrita à mão: a superfície vive no arquivo
+//! `tests/fixtures/run-surface.txt`, uma linha por nome em ordem alfabética, e
+//! o teste compara a árvore do clap com ele. Quem acrescenta ou tira um comando regrava o arquivo
+//! com o texto que a falha imprime — nada de manter a mesma lista em dois
+//! lugares.
 //!
-//! Adding a command: append its name here (sorted) in the same change. Renaming
-//! or removing one: update every caller first — this list is the contract.
+//! O arquivo também lê as superfícies de instrução ENTREGUES (`plugin/**`): a
+//! árvore do clap sozinha não pega um texto que promete um comando que o leitor
+//! não vai achar, e uma instrução errada falha tão em silêncio quanto um
+//! registro perdido.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,126 +22,29 @@ use std::path::{Path, PathBuf};
 use clap::{Command, Subcommand};
 use mustard_rt::commands::RunCmd;
 
-/// Every subcommand `mustard-rt run --help` publishes, sorted by name.
-///
-/// 98 declared variants + `help`, which clap generates at build time.
-const RUN_SUBCOMMANDS: &[&str] = &[
-    "ac-add",
-    "ac-amend",
-    "ac-negative-check",
-    "active-specs",
-    "adapt-cursor",
-    "agent-prompt-render",
-    "amend-finalize",
-    "analyze-validation",
-    "approve-spec",
-    "artifact-update",
-    "base-candidates",
-    "capability",
-    "change-request",
-    "claude-dir-prune",
-    "close-orchestrate",
-    "close-pipeline",
-    "complete-spec",
-    "context-slice",
-    "dependency-precheck",
-    "diagnose-otel",
-    "diff-context",
-    "digest-adherence-finalize",
-    "docs-stale-check",
-    "doctor",
-    "emit-event",
-    "emit-phase",
-    "emit-pipeline",
-    "equivalence-learn",
-    "event-projections",
-    "exec-rewave-check",
-    "feature",
-    "finding-collect",
-    "gate-regression-check",
-    "git-delete",
-    "git-settle",
-    "glossary-coverage",
-    "grill-capture",
-    "help",
-    "language-audit",
-    "maint-deps",
-    "maint-validate",
-    "mark-checklist-item",
-    "mark-finding",
-    "material-add",
-    "metrics",
-    "metrics-wave-status",
-    "notebook",
-    "orient",
-    "otel-collector",
-    "otel-stop",
-    "pending",
-    "pipeline-summary",
-    "plan-materialize",
-    "plan-prepare",
-    "pr-edit",
-    "pr-list",
-    "pr-merge",
-    "pr-open",
-    "pr-ready",
-    "pr-review",
-    "qa-run",
-    "rebuild-specs",
-    "rehook",
-    "resume-bootstrap",
-    "review-dispatch",
-    "review-prefetch",
-    "review-result",
-    "scan",
-    "scan-guards-apply",
-    "scan-guards-list",
-    "scan-lapidation",
-    "scan-patterns-apply",
-    "scan-patterns-decline",
-    "scan-patterns-list",
-    "scan-patterns-relay",
-    "scan-patterns-sweep",
-    "scan-spec",
-    "scope-classify",
-    "scope-decompose",
-    "security-scan",
-    "spec-children",
-    "spec-children-tree",
-    "spec-doc",
-    "spec-draft",
-    "status",
-    "statusline",
-    "tactical-fix-create",
-    "tactical-fix-detect",
-    "unhook",
-    "upsert",
-    "verify-pipeline",
-    "wave-advance",
-    "wave-collapse",
-    "wave-dependency",
-    "wave-done",
-    "wave-files",
-    "wave-overlap-check",
-    "wave-size-check",
-    "wave-tree",
-    "work-unit-open",
-    "worktree-gc",
-];
+/// O retrato da superfície, relativo à raiz do repositório.
+const SURFACE_SNAPSHOT: &str = "apps/rt/tests/fixtures/run-surface.txt";
 
 /// Instruction surfaces SHIPPED to the reader, relative to the repo root, with
 /// the file extension each one is scanned through (`None` = every file).
 ///
 /// `plugin/**/*.md` is what the agent loads at runtime (commands, refs, agent
-/// prompts); `apps/dashboard/src` is what the UI prints in its hints. Each entry
-/// is ASSERTED to exist and to yield files — a surface that silently disappears
-/// would turn this guard into a green no-op.
-const DOC_SURFACES: &[(&str, Option<&str>)] = &[("plugin", Some("md")), ("apps/dashboard/src", None)];
+/// prompts). Each entry is ASSERTED to exist and to yield files — a surface that
+/// silently disappears would turn this guard into a green no-op.
+const DOC_SURFACES: &[(&str, Option<&str>)] = &[("plugin", Some("md"))];
 
 /// The repo root, resolved from this crate (`apps/rt`) so the scan does not
 /// depend on the directory the test runner happens to start in.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Os nomes gravados no retrato, em ordem alfabética.
+fn snapshot_names() -> Vec<String> {
+    let path = repo_root().join(SURFACE_SNAPSHOT);
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|_| panic!("o retrato da superfície não abriu: {}", path.display()));
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
 }
 
 /// Recursively collect files under `dir` in a deterministic (sorted) order,
@@ -222,7 +125,7 @@ fn documented_run_tokens(text: &str) -> Vec<String> {
     out
 }
 
-/// Build the `run` command tree exactly as `main.rs` hands it to clap.
+/// The `run` subcommand tree as clap materialises it.
 fn run_command_tree() -> Command {
     let mut cmd = RunCmd::augment_subcommands(Command::new("run"));
     // `build()` materialises what the parser/help actually expose (it is what
@@ -231,52 +134,52 @@ fn run_command_tree() -> Command {
     cmd
 }
 
+/// A árvore do clap é igual ao retrato gravado, nome por nome.
 #[test]
-fn run_subcommand_names_are_locked() {
+fn a_superficie_publicada_e_igual_ao_retrato() {
     let cmd = run_command_tree();
-    let mut names: Vec<&str> = cmd.get_subcommands().map(clap::Command::get_name).collect();
-    names.sort_unstable();
+    let mut atual: Vec<String> =
+        cmd.get_subcommands().map(|c| c.get_name().to_string()).collect();
+    atual.sort();
 
     assert_eq!(
-        names, RUN_SUBCOMMANDS,
-        "the `run` CLI surface changed: hooks, settings.json and the SKILL \
-         templates call these names by hand, so a rename or a dropped \
-         registration silently kills the command"
+        atual,
+        snapshot_names(),
+        "a superfície de `run` mudou. Se a mudança é a pretendida, regrave \
+         {SURFACE_SNAPSHOT} com estes nomes, um por linha:\n{}",
+        atual.join("\n")
     );
 }
 
+/// Dois comandos no mesmo lugar da lista fariam o `run --help` embaralhar
+/// sozinho: o clap ordena por `(display_order, name)`.
 #[test]
-fn every_declared_command_keeps_its_help_slot() {
-    // clap orders the flat `run --help` listing by `(display_order, name)`.
-    // The families are split across `commands/<family>/cli.rs`, so each variant
-    // pins its historical slot explicitly. A duplicate or a gap would reshuffle
-    // the published listing — assert the 93 declared commands still carry the
-    // exact permutation 0..=92 (`help` is clap's own, appended last).
+fn nenhum_comando_divide_o_lugar_de_outro_na_ajuda() {
     let cmd = run_command_tree();
-    let mut orders: Vec<usize> = cmd
+    let mut slots: Vec<usize> = cmd
         .get_subcommands()
         .filter(|c| c.get_name() != "help")
         .map(clap::Command::get_display_order)
         .collect();
-    orders.sort_unstable();
-
-    let expected: Vec<usize> = (0..RUN_SUBCOMMANDS.len() - 1).collect();
-    assert_eq!(orders, expected, "display_order slots must stay a gapless permutation");
+    slots.sort_unstable();
+    let mut unicos = slots.clone();
+    unicos.dedup();
+    assert_eq!(slots, unicos, "dois comandos declaram o mesmo `display_order`");
 }
 
 /// Every `mustard-rt run <name>` a SHIPPED instruction surface tells the reader
 /// (or an agent) to type must be a name the CLI actually publishes.
 ///
-/// Field defect (btw-plan-rework-fixes): `wave-scaffold` was absorbed into
-/// `plan-materialize`, but the dashboard's `wave-integrity` hint still told the
-/// reader to run it. Nothing broke at build time — the command simply does not
-/// exist, so an obedient agent burns a call on a clap error. `template_parity`
-/// runs the same forward check over the template/plugin/packaging corpus; this
-/// one adds `apps/dashboard/src`, which that corpus never walks — exactly where
-/// the defect lived.
+/// Field defect: `wave-scaffold` was absorbed into
+/// `plan-materialize`, but a shipped hint still told the reader to run it.
+/// Nothing broke at build time — the command simply does not exist, so an
+/// obedient agent burns a call on a clap error. `template_parity` runs the same
+/// forward check over the template/plugin/packaging corpus; this one walks the
+/// plugin tree as the reader's own instruction surface.
 #[test]
 fn every_documented_run_command_exists() {
     let root = repo_root();
+    let publicados = snapshot_names();
     let mut offenders = Vec::new();
 
     for (rel, ext) in DOC_SURFACES {
@@ -297,7 +200,7 @@ fn every_documented_run_command_exists() {
                 continue;
             };
             for name in documented_run_tokens(&text) {
-                if !RUN_SUBCOMMANDS.contains(&name.as_str()) {
+                if !publicados.contains(&name) {
                     let shown = file.strip_prefix(&root).unwrap_or(&file);
                     offenders.push(format!("{} -> `mustard-rt run {name}`", shown.display()));
                 }
@@ -320,7 +223,7 @@ fn every_documented_run_command_exists() {
 #[test]
 fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
     let found = documented_run_tokens(
-        "run `mustard-rt run status` first.\n\
+        "run `mustard-rt run resume` first.\n\
          On Windows: `mustard-rt.exe run doctor`.\n\
          Packaging uses `$RtExe run upsert`.\n\
          Shapes teach nothing: `mustard-rt run <name>`, `mustard-rt run {kind}`, \
@@ -328,14 +231,15 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
     );
     assert_eq!(
         found,
-        vec!["status", "doctor", "upsert"],
+        vec!["resume", "doctor", "upsert"],
         "all three invocation spellings must be caught, in order, and every \
          placeholder skipped",
     );
     // Every name it caught here is real — the guard flags exactly the ones that
     // are not.
+    let publicados = snapshot_names();
     for name in &found {
-        assert!(RUN_SUBCOMMANDS.contains(&name.as_str()), "{name} should be a real command");
+        assert!(publicados.contains(name), "{name} should be a real command");
     }
     assert_eq!(
         documented_run_tokens("`mustard-rt run wave-scaffold` (the shipped defect)"),
@@ -343,194 +247,5 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
         "the absorbed command must still be recognised as a name — that is what \
          makes the guard fail when a surface names it",
     );
-    assert!(!RUN_SUBCOMMANDS.contains(&"wave-scaffold"));
-}
-
-/// The amendment path must be PUBLISHED and INSTRUCTED — both halves, or it is
-/// dark surface.
-///
-/// `ac-negative-check` produces the proof ledger at PLAN time and `ac-amend` is
-/// the one door that rewrites a frozen criterion and re-proves the replacement.
-/// A registration nobody is told to type is a command that never runs; and the
-/// dispatch loop used to close its mid-round paragraph by telling the reader to
-/// fold a behaviour change into `## Acceptance Criteria` — the hand edit that
-/// leaves `wave-plan.md` and every wave spec carrying the superseded command.
-/// Both failures are silent, so both are asserted here: the clap tree publishes
-/// the two names, and the shipped prose names the command instead of the hand.
-#[test]
-fn amendment_path_is_published_and_instructed() {
-    let tree = run_command_tree();
-    let published: Vec<&str> = tree.get_subcommands().map(clap::Command::get_name).collect();
-    for name in ["ac-amend", "ac-negative-check"] {
-        assert!(
-            published.contains(&name),
-            "`mustard-rt run {name}` must stay published — the amendment path is reached by \
-             typing it, and a dropped registration dies on a clap error at runtime"
-        );
-    }
-
-    // Same on-disk read the surface checks above do: `plugin/**` is what the
-    // agent actually loads, so the instruction is asserted where it ships.
-    let loop_md = repo_root().join("plugin/refs/spec/resume-loop.md");
-    let text = fs::read_to_string(&loop_md).expect("plugin/refs/spec/resume-loop.md is the shipped dispatch loop");
-
-    assert!(
-        documented_run_tokens(&text).iter().any(|n| n == "ac-amend"),
-        "the dispatch loop must NAME `mustard-rt run ac-amend` — without an operation to \
-         point at, the mid-round change has only the hand edit it used to prescribe"
-    );
-
-    // Every surviving mention of the criteria heading has to carry the command.
-    // A line that still says "fold this into `## Acceptance Criteria`" and names
-    // no operation IS the hand edit, whatever words it wraps it in.
-    let hand_edits: Vec<&str> = text
-        .lines()
-        .filter(|l| l.contains("## Acceptance Criteria") && !l.contains("ac-amend"))
-        .collect();
-    assert!(
-        hand_edits.is_empty(),
-        "the dispatch loop still instructs a criterion change with no operation to make it — \
-         a hand edit rewrites only the root and leaves each wave spec on the superseded \
-         command:\n{}",
-        hand_edits.join("\n")
-    );
-
-    // The two surfaces a mid-pipeline change request corrected during this
-    // spec's own run. They were implemented and named by NO criterion, so
-    // reverting either kept the whole suite green — which is the exact failure
-    // the paragraph above forbids, committed one layer up. Asserted here by the
-    // ONE fact each correction turns on, never by a quoted sentence: prose gets
-    // rewritten, and a test that pins wording fails on an edit that changed
-    // nothing.
-    let gate_md = repo_root().join("plugin/pipeline-config.md");
-    let gate_text =
-        fs::read_to_string(&gate_md).expect("plugin/pipeline-config.md declares the gates");
-    assert!(
-        gate_text.contains("ac-negative-check"),
-        "pipeline-config must name the command that mints the proof `approve-spec` now \
-         requires — describing that gate as marker-only sends the reader to a knob that \
-         cannot move it"
-    );
-
-    let grill_md = repo_root().join("plugin/refs/feature/glossary-grill.md");
-    let grill_text =
-        fs::read_to_string(&grill_md).expect("plugin/refs/feature/glossary-grill.md is the grill");
-    // The fact, not the wording: no sample may pair an absent glossary with a
-    // populated term list. That pairing is what the stale document showed, and
-    // the engine can no longer produce it — a reader who copies it learns a
-    // payload that does not exist.
-    // Per BLOCK, never per line: the sample spans several lines, so a line-wise
-    // filter never sees both halves at once and passes on the very payload it
-    // exists to reject. (Found by reverting the file and watching this
-    // assertion stay green — the vacuous criterion this spec is about, caught
-    // in its own test.)
-    let impossible_sample: Vec<&str> = grill_text
-        .split("```")
-        .filter(|block| {
-            let absent = block.replace(' ', "").contains("\"present\":false");
-            let populated = block
-                .split("\"uncovered\"")
-                .nth(1)
-                .and_then(|after| after.split(']').next())
-                .is_some_and(|list| list.contains('"'));
-            absent && populated
-        })
-        .collect();
-    assert!(
-        impossible_sample.is_empty(),
-        "the grill shows a sample pairing `present:false` with a populated `uncovered` — a \
-         payload the report cannot emit since an absent glossary publishes an empty list:\n{}",
-        impossible_sample.join("\n")
-    );
-}
-
-/// The shipped `pr close` ritual must NAME submodules.
-///
-/// `plugin/commands/git.md` declares "Submodules before parent, always" as an
-/// iron rule, and its `commit`, `push` and `pr` steps each obey it — while
-/// `pr close`, three lines below that rule, described a single-repo exit. The
-/// tool followed the doc: it settled the parent, answered `settled`, and left
-/// the submodule sitting on the work branch. `git-settle` now reports one entry
-/// per repo (`repos` / `complete`); this keeps the instruction surface from
-/// drifting back away from it.
-#[test]
-fn finish_ritual_names_submodules() {
-    // Resolved through the shared `repo_root()` helper rather than a second
-    // inline `CARGO_MANIFEST_DIR` join: the two units that met in this file each
-    // taught it to read shipped surfaces, and keeping both resolutions is the
-    // drift this test exists to catch.
-    let git_md = repo_root().join("plugin/commands/git.md");
-    let text = fs::read_to_string(&git_md).expect("plugin/commands/git.md is the shipped ritual");
-
-    // The exit ritual was called `pr close` until the doors were split by what
-    // they touch; it is `finish` now, and it stayed in `/git` because returning
-    // to the base and pruning a branch happen in YOUR tree, not on the provider.
-    let row = text
-        .lines()
-        .find(|l| l.trim_start().starts_with("| `finish"))
-        .expect("the actions table still describes the exit ritual (`finish`)");
-    assert!(
-        row.to_lowercase().contains("submodule"),
-        "the `finish` action must state the submodule-first order its own iron rule promises: {row}"
-    );
-
-    let step = text
-        .lines()
-        .find(|l| l.trim_start().starts_with("- **finish**"))
-        .expect("the procedure still spells out `finish`");
-    assert!(
-        step.to_lowercase().contains("submodule"),
-        "the `finish` procedure must close each repo of the unit, submodules first: {step}"
-    );
-
-    // And the door it moved AWAY from must not still offer to open a PR: two
-    // doors that both create pull requests is the confusion the split removed.
-    assert!(
-        !text.lines().any(|l| l.trim_start().starts_with("- **pr** — work branch")),
-        "`/git` still carries the PR-opening procedure — it belongs to `/mustard:pr open`",
-    );
-}
-
-/// The `--spec` / `--from-spec` flags are interchangeable on the spec-path
-/// commands. Field friction (sialia): an orchestrator that reached for the
-/// sibling command's flag (`scope-classify --spec` / `analyze-validation
-/// --from-spec`) hit a hard clap error and burned a retry. Each command keeps
-/// its canonical flag and accepts the sibling spelling as a hidden alias.
-#[test]
-fn spec_path_flag_aliases_are_interchangeable() {
-    let tree = run_command_tree();
-    let accepts = |args: &[&str]| tree.clone().try_get_matches_from(args).is_ok();
-
-    // Canonical `--from-spec`, alias `--spec`.
-    for flag in ["--from-spec", "--spec"] {
-        assert!(accepts(&["run", "scope-classify", flag, "x.md"]), "scope-classify {flag}");
-        assert!(accepts(&["run", "plan-prepare", flag, "x.md"]), "plan-prepare {flag}");
-        assert!(accepts(&["run", "scope-decompose", flag, "x.md"]), "scope-decompose {flag}");
-    }
-    // Canonical `--spec`, alias `--from-spec`.
-    for flag in ["--spec", "--from-spec"] {
-        assert!(accepts(&["run", "analyze-validation", flag, "x.md"]), "analyze-validation {flag}");
-        assert!(accepts(&["run", "qa-run", flag, "x"]), "qa-run {flag}");
-    }
-}
-
-/// Same friction, the other half of the family: the four `--spec-dir` commands
-/// were left out of the earlier alias fix, so the habit the interface teaches
-/// (`--spec` / `--from-spec`) was punished here by a hard clap error and a
-/// burned retry. `--spec-dir` stays canonical; the two siblings are hidden
-/// aliases.
-#[test]
-fn spec_dir_flag_aliases_are_interchangeable() {
-    let tree = run_command_tree();
-    let accepts = |args: &[&str]| tree.clone().try_get_matches_from(args).is_ok();
-
-    for flag in ["--spec-dir", "--spec", "--from-spec"] {
-        assert!(
-            accepts(&["run", "plan-materialize", flag, "d", "--plan", "p.json"]),
-            "plan-materialize {flag}"
-        );
-        assert!(accepts(&["run", "pipeline-summary", flag, "d"]), "pipeline-summary {flag}");
-        assert!(accepts(&["run", "wave-tree", flag, "d"]), "wave-tree {flag}");
-        assert!(accepts(&["run", "wave-size-check", flag, "d"]), "wave-size-check {flag}");
-    }
+    assert!(!publicados.contains(&"wave-scaffold".to_string()));
 }

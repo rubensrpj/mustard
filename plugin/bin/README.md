@@ -8,8 +8,7 @@ When the plugin is enabled, `bin/` is prepended to the Bash tool `PATH`, and
 Claude Code auto-resolves the correct binary for the host OS. The release stamps:
 
 - `mustard-rt` / `mustard-rt.exe` — the enforcement runtime (hooks call it as
-  `"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt" on <Event>`; the MCP server is
-  `mustard-rt mcp`).
+  `"${CLAUDE_PLUGIN_ROOT}/bin/mustard-rt" on <Event>`).
 - `scan` / `scan.exe` — the deterministic grain miner.
 
 ## Version stamping

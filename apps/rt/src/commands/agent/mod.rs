@@ -1,7 +1,4 @@
-pub mod cli;
+//! O que sobrou do despacho de agente: as peças de montagem de texto que a
+//! porta do pull request e a lista de pendências ainda usam.
 
-pub mod agent_prompt_render;
-pub mod amend_finalize;
-pub mod context_inject;
-pub mod digest_adherence_finalize;
 pub mod render;

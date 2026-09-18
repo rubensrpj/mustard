@@ -1,32 +1,46 @@
-//! `clarity` — mede uma resposta do assistente contra a regra de tom didático.
+//! `clarity` — mede uma resposta do assistente contra a regra de escrita.
 //!
-//! A regra que o assistente recebe em toda mensagem quando o projeto declara
-//! `tone: didactic` pede quatro coisas: uma ideia por frase; termo técnico e
-//! nome inventado traduzidos na primeira vez da conversa; nenhuma sigla sem as
-//! palavras por extenso; e nenhuma resposta maior do que o assunto pede. Este
-//! módulo confere essas quatro coisas por sinais objetivos — quantas palavras
-//! tem cada frase, quais siglas e termos aparecem sem explicação, quantas
-//! linhas de texto a resposta tem. Ele não tenta entender o sentido do texto.
+//! A regra pede uma escrita que se lê uma vez, por quem não escreveu o código:
+//! uma ideia por frase; nenhuma sigla sem as palavras por extenso; nenhum
+//! código do Mustard (`MSTD-RULE-0005`) no lugar do nome do assunto; e nenhuma
+//! resposta maior do que o assunto pede. Este módulo confere isso por sinais
+//! objetivos — quantas palavras tem cada frase, quais siglas e códigos
+//! aparecem, quantas linhas a resposta tem e a nota de facilidade de leitura
+//! (o índice de Flesch adaptado ao português). Ele não tenta entender o
+//! sentido do texto.
 //!
-//! Função pura: sem disco, sem log, sem relógio. A lista de nomes inventados
-//! vem do chamador (lista do output style, Definições da spec ativa, glossário
-//! `CONTEXT.md`); aqui não existe lista de termos escrita à mão. A única lista
-//! fixa é a das poucas siglas que dispensam expansão.
+//! Função pura: sem disco, sem log, sem relógio. A única lista fixa é a das
+//! poucas siglas que dispensam expansão.
 //!
-//! Fica fora da medição tudo o que não é texto corrido: blocos de código,
-//! código inline, URLs, caminhos de arquivo, linhas de tabela e JSON. Cada
-//! linha de texto é medida sozinha: numa resposta de chat a quebra de linha
-//! separa ideias, e um item de lista conta como frase.
+//! Fica fora da medição do texto tudo o que não é texto corrido: blocos de
+//! código, código inline, URLs, caminhos de arquivo, linhas de tabela e JSON.
+//! Cada linha de texto é medida sozinha: numa resposta de chat a quebra de
+//! linha separa ideias, e um item de lista conta como frase. O tamanho é a
+//! exceção: conta todas as linhas não vazias ([`MAX_LINES`]), porque é o que o
+//! leitor tem de percorrer.
+//!
+//! Há ainda a medição do idioma. A resposta sai no idioma do projeto, que é o
+//! do usuário. O idioma da prosa sai de uma contagem de palavras comuns do
+//! português e do inglês ([`COMMON_WORDS_PT`], [`COMMON_WORDS_EN`], que moram
+//! em `domain::text`). Não há modelo estatístico: a contagem é determinística
+//! e só julga com prosa bastante ([`MIN_LANGUAGE_WORDS`]). Ela vale para todo
+//! projeto, qualquer que seja o tom: [`measure_language`] a faz sozinha, e
+//! [`measure`] a inclui junto das medições da escrita.
 
-use crate::domain::vocabulary::aho::KeyedAutomaton;
+use crate::domain::mustard_id;
+use crate::domain::text::{COMMON_WORDS_EN, COMMON_WORDS_PT};
 use crate::platform::i18n::{translate, Locale};
-use std::cmp::Reverse;
 
 /// Palavras acima das quais uma frase conta como longa.
 pub const MAX_SENTENCE_WORDS: usize = 25;
 
-/// Linhas de texto acima das quais a resposta conta como longa demais.
-pub const MAX_PROSE_LINES: usize = 20;
+/// Linhas não vazias acima das quais a resposta conta como longa demais. Conta
+/// a resposta inteira, com código e tabela: é o que o leitor tem de percorrer.
+pub const MAX_LINES: usize = 15;
+
+/// A nota mínima de facilidade de leitura, no índice de Flesch adaptado ao
+/// português (Martins et al., 1996). Abaixo de 25 a escala diz "muito difícil".
+pub const MIN_READING_EASE: i32 = 25;
 
 /// Quantas palavras do começo de uma frase longa vão para o relatório: o
 /// bastante para o leitor achar a frase, pouco para não repetir a resposta.
@@ -43,12 +57,12 @@ const COMMON_ACRONYMS: &[&str] = &[
 ];
 
 /// Travessão ou hífen colado logo depois do termo: abre um aposto que explica o
-/// termo em qualquer ponto da frase ("o slug — o nome curto da spec — mudou").
+/// termo em qualquer ponto da frase ("o CI — a integração contínua — mudou").
 const APPOSITION_MARKS: &[&str] = &[" — ", " - "];
 
 /// Dois-pontos colado logo depois do termo. Só explica quando o termo abre a
 /// frase, como num glossário ("CI: integração contínua"). No meio da frase
-/// ("Troquei o slug: agora é outro") ele anuncia o que vem depois, não o termo.
+/// ("Troquei o CI: agora é outro") ele anuncia o que vem depois, não o termo.
 const LABEL_MARK: &str = ": ";
 
 /// Expressões que anunciam a explicação quando ocupam as palavras logo depois
@@ -62,7 +76,7 @@ const EXPLAINING_PHRASES: &[&str] = &[
 const PHRASE_WINDOW: usize = 2;
 
 /// Pontuação que fecha o termo sem separá-lo do que vem depois (ênfase do
-/// markdown, aspas): "**slug** — o nome curto" ainda é o termo colado ao
+/// markdown, aspas): "**CI** — a integração contínua" ainda é o termo colado ao
 /// travessão.
 const TERM_CLOSERS: &[char] = &['*', '_', '"', '\'', '”', '»'];
 
@@ -78,6 +92,20 @@ const TRAILERS: &[char] = &[
 /// Pontuação que pode vir colada depois do ponto final de uma frase.
 const CLOSERS: &[char] = &['"', '\'', ')', ']', '»', '”', '*', '_'];
 
+/// Palavras de texto corrido abaixo das quais o idioma não é julgado: resposta
+/// curta ou só de código não traz palavras comuns bastantes para uma contagem
+/// honesta.
+pub const MIN_LANGUAGE_WORDS: usize = 30;
+
+/// Palavras comuns que o idioma dominante precisa somar. Trinta palavras de
+/// nomes técnicos e quase nenhuma palavra comum não dizem idioma algum.
+const MIN_LANGUAGE_MARKERS: usize = 5;
+
+/// Quantas vezes as palavras comuns de um idioma precisam superar as do outro
+/// para ele ser o idioma da resposta. Uma resposta em português que cita uma
+/// frase em inglês continua em português.
+const LANGUAGE_DOMINANCE: usize = 2;
+
 /// Uma frase acima do limite de palavras.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LongSentence {
@@ -87,6 +115,25 @@ pub struct LongSentence {
     pub opening: String,
 }
 
+/// A prosa da resposta saiu num idioma que não é o do projeto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrongLanguage {
+    /// O idioma em que a prosa foi escrita.
+    pub found: Locale,
+    /// O idioma do projeto, o mesmo em que o usuário escreve.
+    pub expected: Locale,
+}
+
+impl WrongLanguage {
+    /// A linha do defeito, no idioma pedido, tirada do catálogo i18n.
+    #[must_use]
+    pub fn defect(self, lang: Locale) -> String {
+        translate("clarity.wrong_language", lang)
+            .replace("{found}", self.found.as_str())
+            .replace("{expected}", self.expected.as_str())
+    }
+}
+
 /// O resultado da medição de uma resposta.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClarityReport {
@@ -94,16 +141,27 @@ pub struct ClarityReport {
     pub long_sentences: Vec<LongSentence>,
     /// Siglas sem as palavras por extenso nesta resposta nem antes na sessão.
     pub unexpanded_acronyms: Vec<String>,
-    /// Nomes inventados cujo primeiro uso na sessão veio sem tradução.
-    pub unexplained_terms: Vec<String>,
+    /// Códigos do Mustard (`MSTD-RULE-0005`) no texto corrido, cada um uma
+    /// vez, na ordem em que aparecem.
+    pub internal_codes: Vec<String>,
     /// Linhas de texto corrido, sem código, tabela nem JSON.
     pub prose_lines: usize,
-    /// A resposta passou de [`MAX_PROSE_LINES`] linhas de texto.
+    /// Linhas não vazias da resposta inteira, com código e tabela.
+    pub lines: usize,
+    /// A resposta passou de [`MAX_LINES`] linhas.
     pub too_long: bool,
+    /// A nota de facilidade de leitura do texto corrido (Flesch adaptado ao
+    /// português). `None` quando a prosa não está em português ou é curta
+    /// demais para uma média honesta.
+    pub reading_ease: Option<i32>,
+    /// A nota ficou abaixo de [`MIN_READING_EASE`].
+    pub hard_to_read: bool,
+    /// A prosa saiu noutro idioma que não o do projeto.
+    pub wrong_language: Option<WrongLanguage>,
     /// Nenhum defeito encontrado.
     pub passed: bool,
-    /// Siglas e termos que esta resposta explicou. O chamador acumula na
-    /// sessão e devolve em `already_explained` na próxima medição.
+    /// Siglas que esta resposta explicou. O chamador acumula na sessão e
+    /// devolve em `already_explained` na próxima medição.
     pub explained: Vec<String>,
 }
 
@@ -122,15 +180,25 @@ impl ClarityReport {
         for acronym in &self.unexpanded_acronyms {
             out.push(translate("clarity.unexpanded_acronym", lang).replace("{acronym}", acronym));
         }
-        for term in &self.unexplained_terms {
-            out.push(translate("clarity.unexplained_term", lang).replace("{term}", term));
+        for code in &self.internal_codes {
+            out.push(translate("clarity.internal_code", lang).replace("{code}", code));
         }
         if self.too_long {
             out.push(
                 translate("clarity.too_long", lang)
-                    .replace("{lines}", &self.prose_lines.to_string())
-                    .replace("{limit}", &MAX_PROSE_LINES.to_string()),
+                    .replace("{lines}", &self.lines.to_string())
+                    .replace("{limit}", &MAX_LINES.to_string()),
             );
+        }
+        if let (true, Some(score)) = (self.hard_to_read, self.reading_ease) {
+            out.push(
+                translate("clarity.hard_to_read", lang)
+                    .replace("{score}", &score.to_string())
+                    .replace("{min}", &MIN_READING_EASE.to_string()),
+            );
+        }
+        if let Some(wrong) = self.wrong_language {
+            out.push(wrong.defect(lang));
         }
         out
     }
@@ -138,34 +206,198 @@ impl ClarityReport {
 
 /// Mede `text` contra a regra de tom didático.
 ///
-/// `known_terms` são os nomes inventados do projeto; `already_explained` são as
-/// siglas e termos que respostas anteriores da mesma sessão já explicaram (o
-/// campo [`ClarityReport::explained`] de cada medição anterior, acumulado).
+/// `already_explained` são as siglas que respostas anteriores da mesma sessão
+/// já explicaram (o campo [`ClarityReport::explained`] de cada medição
+/// anterior, acumulado). `expected` é o idioma que o projeto DECLAROU: a prosa
+/// da resposta precisa sair nele. `None` quando o projeto não declarou idioma —
+/// sem ele não há veredito de idioma, porque o padrão resolvido não é uma
+/// escolha.
 #[must_use]
-pub fn measure(text: &str, known_terms: &[String], already_explained: &[String]) -> ClarityReport {
+pub fn measure(text: &str, already_explained: &[String], expected: Option<Locale>) -> ClarityReport {
     let lines = prose_lines(text);
     let sentences: Vec<&str> = lines.iter().flat_map(|line| split_sentences(line)).collect();
 
     let long_sentences = long_sentences(&sentences);
     let mut explained = Vec::new();
-    let unexpanded_acronyms =
-        unexpanded_acronyms(&sentences, known_terms, already_explained, &mut explained);
-    let unexplained_terms =
-        unexplained_terms(&sentences, known_terms, already_explained, &mut explained);
-    let too_long = lines.len() > MAX_PROSE_LINES;
+    let unexpanded_acronyms = unexpanded_acronyms(&sentences, already_explained, &mut explained);
+    let internal_codes = internal_codes(&sentences);
+    let total_lines = text.lines().filter(|line| !line.trim().is_empty()).count();
+    let too_long = total_lines > MAX_LINES;
+    let reading_ease = reading_ease(&lines, &sentences);
+    let hard_to_read = reading_ease.is_some_and(|score| score < MIN_READING_EASE);
+    let wrong_language = expected.and_then(|lang| wrong_language(&lines, lang));
     let passed = long_sentences.is_empty()
         && unexpanded_acronyms.is_empty()
-        && unexplained_terms.is_empty()
-        && !too_long;
+        && internal_codes.is_empty()
+        && !too_long
+        && !hard_to_read
+        && wrong_language.is_none();
 
     ClarityReport {
         long_sentences,
         unexpanded_acronyms,
-        unexplained_terms,
+        internal_codes,
         prose_lines: lines.len(),
+        lines: total_lines,
         too_long,
+        reading_ease,
+        hard_to_read,
+        wrong_language,
         passed,
         explained,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Código interno
+// ---------------------------------------------------------------------------
+
+/// Os códigos do Mustard (`MSTD-RULE-0005`) no texto corrido, cada um uma
+/// vez, na ordem em que aparecem: na conversa, o assunto se diz pelo nome.
+/// Só esse formato conta; letra com número ("R2 da Cloudflare", "S3", "A4")
+/// é texto comum. Código inline já saiu da prosa: entre crases, o código é
+/// citação, não conversa.
+fn internal_codes(sentences: &[&str]) -> Vec<String> {
+    let mut codes = Vec::new();
+    for sentence in sentences {
+        for (start, end) in mustard_id::find(sentence) {
+            push_unique(&mut codes, sentence[start..end].to_string());
+        }
+    }
+    codes
+}
+
+// ---------------------------------------------------------------------------
+// Facilidade de leitura
+// ---------------------------------------------------------------------------
+
+/// A nota de facilidade de leitura da prosa, pelo índice de Flesch adaptado ao
+/// português (Martins et al., 1996): 248,835 − 1,015 × palavras por frase −
+/// 84,6 × sílabas por palavra. Quanto maior, mais fácil. `None` quando a prosa
+/// não está em português (a fórmula é do português) ou tem menos de
+/// [`MIN_LANGUAGE_WORDS`] palavras.
+fn reading_ease(lines: &[String], sentences: &[&str]) -> Option<i32> {
+    let (total, pt, en) = language_counts(lines);
+    if total < MIN_LANGUAGE_WORDS || dominant_language(pt, en) != Some(Locale::PtBr) {
+        return None;
+    }
+    let (mut word_count, mut syllable_count) = (0_usize, 0_usize);
+    for word in sentences.iter().flat_map(|sentence| words(sentence)) {
+        let letters: String = word.chars().filter(|c| c.is_alphabetic()).flat_map(char::to_lowercase).collect();
+        if !letters.is_empty() {
+            word_count += 1;
+            syllable_count += syllables_pt(&letters);
+        }
+    }
+    if word_count == 0 || sentences.is_empty() {
+        return None;
+    }
+    let per_sentence = word_count as f64 / sentences.len() as f64;
+    let per_word = syllable_count as f64 / word_count as f64;
+    Some((248.835 - 1.015 * per_sentence - 84.6 * per_word).round() as i32)
+}
+
+/// As sílabas de uma palavra em português, já em minúsculas. Cada grupo de
+/// vogais é uma sílaba, e o grupo se parte quando uma vogal com acento agudo
+/// ou circunflexo vem depois de outra ("sa-ú-de") ou quando duas vogais fortes
+/// se encontram ("po-e-ta", "le-ão"); depois de "ã" e "õ" a vogal fecha o
+/// ditongo ("ão", "õe"). O "u" de "que", "qui", "gue" e "gui" é mudo. É uma
+/// aproximação: o hiato que só a pronúncia separa ("di-a") conta como uma.
+fn syllables_pt(word: &str) -> usize {
+    let chars: Vec<char> = word.chars().collect();
+    let mut count = 0;
+    let mut previous: Option<char> = None;
+    for (at, &c) in chars.iter().enumerate() {
+        let mute_u = c == 'u'
+            && at > 0
+            && matches!(chars[at - 1], 'q' | 'g')
+            && chars.get(at + 1).is_some_and(|&next| is_vowel(next));
+        if !is_vowel(c) || mute_u {
+            previous = None;
+            continue;
+        }
+        let starts = match previous {
+            None => true,
+            Some(before) => {
+                !matches!(before, 'ã' | 'õ')
+                    && (is_stressed(c) || (is_strong_vowel(before) && is_strong_vowel(c)))
+            }
+        };
+        if starts {
+            count += 1;
+        }
+        previous = Some(c);
+    }
+    count.max(1)
+}
+
+fn is_vowel(c: char) -> bool {
+    "aeiouyáàâãéêíóôõúü".contains(c)
+}
+
+/// A, E e O, com ou sem acento: duas delas juntas são hiato.
+fn is_strong_vowel(c: char) -> bool {
+    "aeoáàâãéêóôõ".contains(c)
+}
+
+/// Vogal com acento agudo ou circunflexo: abre sílaba própria.
+fn is_stressed(c: char) -> bool {
+    "áéíóúâêô".contains(c)
+}
+
+// ---------------------------------------------------------------------------
+// Idioma
+// ---------------------------------------------------------------------------
+
+/// Mede só o idioma de `text`: a medição que vale para todo projeto, qualquer
+/// que seja o tom. `lang` é o idioma do projeto. `None` quando a prosa está
+/// nele, é curta demais ou não tem idioma dominante.
+#[must_use]
+pub fn measure_language(text: &str, lang: Locale) -> Option<WrongLanguage> {
+    wrong_language(&prose_lines(text), lang)
+}
+
+/// O idioma dominante da prosa, quando ele não é `expected`. `None` com menos
+/// de [`MIN_LANGUAGE_WORDS`] palavras de texto corrido, sem idioma dominante ou
+/// com a prosa no idioma certo. As linhas já vêm sem código, tabela nem JSON.
+fn wrong_language(lines: &[String], expected: Locale) -> Option<WrongLanguage> {
+    let (total, pt, en) = language_counts(lines);
+    if total < MIN_LANGUAGE_WORDS {
+        return None;
+    }
+    let found = dominant_language(pt, en)?;
+    (found != expected).then_some(WrongLanguage { found, expected })
+}
+
+/// Quantas palavras a prosa tem, e quantas delas são palavras comuns do
+/// português e do inglês: `(total, pt, en)`.
+fn language_counts(lines: &[String]) -> (usize, usize, usize) {
+    let (mut total, mut pt, mut en) = (0, 0, 0);
+    for word in lines.iter().flat_map(|line| words(line)) {
+        total += 1;
+        let word = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+        if COMMON_WORDS_PT.contains(&word.as_str()) {
+            pt += 1;
+        } else if COMMON_WORDS_EN.contains(&word.as_str()) {
+            en += 1;
+        }
+    }
+    (total, pt, en)
+}
+
+/// O idioma cujas palavras comuns somam ao menos [`MIN_LANGUAGE_MARKERS`] e
+/// mais de [`LANGUAGE_DOMINANCE`] vezes as do outro. `None` num empate ou numa
+/// mistura sem vencedor claro.
+fn dominant_language(pt: usize, en: usize) -> Option<Locale> {
+    let dominates = |mine: usize, other: usize| {
+        mine >= MIN_LANGUAGE_MARKERS && mine > LANGUAGE_DOMINANCE * other
+    };
+    if dominates(pt, en) {
+        Some(Locale::PtBr)
+    } else if dominates(en, pt) {
+        Some(Locale::EnUs)
+    } else {
+        None
     }
 }
 
@@ -187,7 +419,6 @@ fn long_sentences(sentences: &[&str]) -> Vec<LongSentence> {
 /// As que ganharam expansão entram em `explained`.
 fn unexpanded_acronyms(
     sentences: &[&str],
-    known_terms: &[String],
     already_explained: &[String],
     explained: &mut Vec<String>,
 ) -> Vec<String> {
@@ -196,9 +427,7 @@ fn unexpanded_acronyms(
     for sentence in sentences {
         for (start, end, acronym) in acronyms_in(sentence) {
             let skip = COMMON_ACRONYMS.contains(&acronym)
-                || already_explained.iter().any(|done| done == acronym)
-                // um nome inventado em maiúsculas segue a regra dos termos
-                || known_terms.iter().any(|term| term.trim() == acronym);
+                || already_explained.iter().any(|done| done == acronym);
             if skip {
                 continue;
             }
@@ -218,75 +447,6 @@ fn unexpanded_acronyms(
         }
     }
     missing
-}
-
-/// Nomes inventados cujo primeiro uso na sessão veio sem tradução. Os usos
-/// seguintes não contam: basta traduzir uma vez. Os que ganharam tradução
-/// entram em `explained`.
-fn unexplained_terms(
-    sentences: &[&str],
-    known_terms: &[String],
-    already_explained: &[String],
-    explained: &mut Vec<String>,
-) -> Vec<String> {
-    let Some(matcher) = term_matcher(known_terms) else {
-        return Vec::new();
-    };
-    let mut first_seen: Vec<&str> = Vec::new();
-    let mut missing = Vec::new();
-    for sentence in sentences {
-        for hit in matcher.scan(sentence) {
-            if !bounded(sentence, hit.start, hit.end, true) {
-                continue;
-            }
-            let Some(term) = known_terms.get(hit.key).map(|term| term.trim()) else {
-                continue;
-            };
-            if already_explained.iter().any(|done| done == term) {
-                continue;
-            }
-            let translated_here = explained_at(sentence, hit.start, hit.end);
-            if translated_here {
-                push_unique(explained, term.to_string());
-            }
-            if !first_seen.contains(&term) {
-                first_seen.push(term);
-                if !translated_here {
-                    missing.push(term.to_string());
-                }
-            }
-        }
-    }
-    missing
-}
-
-/// O casador dos nomes inventados, sobre o motor único de `vocabulary::aho`.
-/// Cada termo é um grupo, com a grafia original e a de começo de frase
-/// ("slug" e "Slug"). Os grupos vão do termo mais longo para o mais curto: com
-/// `LeftmostFirst`, "spec ativa" precisa vencer "spec" quando os dois começam
-/// no mesmo ponto. `None` quando a lista não tem termo nenhum.
-fn term_matcher(known_terms: &[String]) -> Option<KeyedAutomaton<usize>> {
-    let mut order: Vec<usize> = (0..known_terms.len()).collect();
-    order.sort_by_key(|&idx| Reverse(known_terms[idx].trim().len()));
-    let groups = order.into_iter().map(|idx| {
-        let term = known_terms[idx].trim();
-        let mut spellings = vec![term.to_string()];
-        let capitalized = capitalize(term);
-        if capitalized != term {
-            spellings.push(capitalized);
-        }
-        (idx, spellings)
-    });
-    KeyedAutomaton::from_groups(groups).ok()
-}
-
-/// A mesma palavra com a primeira letra maiúscula.
-fn capitalize(term: &str) -> String {
-    let mut chars = term.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 /// Acrescenta `item` a `list` só se ainda não estiver lá.
@@ -317,7 +477,7 @@ fn explained_at(sentence: &str, start: usize, end: usize) -> bool {
     let is_decoration =
         |c: char| c.is_whitespace() || matches!(c, '*' | '_' | '"' | '\'' | '“' | '”' | '«' | '»');
     let after = &sentence[end..];
-    // O `s` do plural ("slugs") ainda é o termo.
+    // O `s` do plural ("CIs") ainda é o termo.
     let after = after
         .strip_prefix('s')
         .filter(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
@@ -332,13 +492,11 @@ fn explained_at(sentence: &str, start: usize, end: usize) -> bool {
     }
 
     let before = sentence[..start].trim_end_matches(is_decoration);
-    if next.starts_with(')') {
-        if let Some(words_before) = before.strip_suffix('(') {
-            if words_before.chars().any(char::is_alphabetic) {
+    if next.starts_with(')')
+        && let Some(words_before) = before.strip_suffix('(')
+            && words_before.chars().any(char::is_alphabetic) {
                 return true;
             }
-        }
-    }
 
     let glued = after.trim_start_matches(TERM_CLOSERS);
     if APPOSITION_MARKS.iter().any(|mark| glued.starts_with(mark)) {
@@ -359,21 +517,6 @@ fn explained_at(sentence: &str, start: usize, end: usize) -> bool {
         let wanted: Vec<&str> = phrase.split_whitespace().collect();
         following.len() >= wanted.len() && following.iter().zip(&wanted).all(|(got, want)| got == want)
     })
-}
-
-/// `text[start..end]` é uma palavra inteira: nenhuma letra, dígito ou `_`
-/// colado antes nem depois. Com `plural`, um `s` final ainda conta como a
-/// mesma palavra ("slugs" é uso de "slug").
-fn bounded(text: &str, start: usize, end: usize, plural: bool) -> bool {
-    let joins = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-    if joins(text[..start].chars().next_back()) {
-        return false;
-    }
-    let mut after = text[end..].chars();
-    match after.next() {
-        Some('s') if plural => !joins(after.next()),
-        next => !joins(next),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +571,10 @@ fn is_acronym(word: &str) -> bool {
 /// - ênfase: faz parte de uma sequência de palavras em maiúsculas ("IN THIS
 ///   CONVERSATION") ou é uma palavra comprida com vogais ("NUNCA", "RESUMO");
 /// - a região de um código de idioma ("pt-BR", "en-US");
-/// - um numeral romano ("Fase II", "onda IV").
+/// - um numeral romano ("Fase II", "onda IV");
+/// - as letras de um rótulo com hífen e número ("AC" em "AC-5");
+/// - uma parte de um código do Mustard ("MSTD" e "RULE" em `MSTD-RULE-0005`),
+///   que a medição dos códigos já aponta inteiro.
 ///
 /// Limite aceito: ênfase curta e com poucas vogais, sozinha ("MUST"), continua
 /// contando como sigla — não há como separá-la de "SSH" só pela forma.
@@ -437,6 +583,19 @@ fn mimics_acronym(sentence: &str, runs: &[(usize, usize)], idx: usize, core: &st
         || is_shouted_word(core)
         || in_shouted_sequence(sentence, runs, idx)
         || is_locale_region(sentence, runs[idx].0, core)
+        || opens_internal_code(sentence, runs[idx].1)
+        || inside_mustard_id(sentence, runs[idx])
+}
+
+/// A palavra `(início, fim)` está dentro de um código do Mustard.
+fn inside_mustard_id(sentence: &str, (start, end): (usize, usize)) -> bool {
+    mustard_id::find(sentence).iter().any(|&(s, e)| s <= start && end <= e)
+}
+
+/// A palavra que termina em `end` é seguida de hífen e número: são as letras
+/// de um rótulo ("AC-5"), não uma sigla.
+fn opens_internal_code(sentence: &str, end: usize) -> bool {
+    sentence[end..].strip_prefix('-').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// Só I, V e X: "II", "IV", "IX". O I sozinho nem chega a ser candidato.
@@ -709,7 +868,7 @@ mod tests {
         list.iter().map(ToString::to_string).collect()
     }
 
-    /// AC-1: a frase acima do limite sai com a contagem e o começo dela; a
+    /// A frase acima do limite sai com a contagem e o começo dela; a
     /// frase curta e o item de lista curto não saem.
     #[test]
     fn clarity_flags_long_sentences() {
@@ -717,7 +876,7 @@ mod tests {
                     que a regra de tom aceita numa única frase da resposta e por isso \
                     precisa aparecer.";
         let text = format!("Uma frase curta. {long}\n- item curto\n- outro item curto");
-        let report = measure(&text, &[], &[]);
+        let report = measure(&text, &[], Some(Locale::PtBr));
 
         assert_eq!(report.long_sentences.len(), 1, "{report:?}");
         assert_eq!(report.long_sentences[0].words, 28);
@@ -734,72 +893,39 @@ mod tests {
         // Exatamente no limite ainda passa; o item de lista é frase própria.
         let at_limit = vec!["palavra"; MAX_SENTENCE_WORDS].join(" ");
         let item = format!("- {}", vec!["item"; MAX_SENTENCE_WORDS + 1].join(" "));
-        assert!(measure(&at_limit, &[], &[]).passed);
-        assert_eq!(measure(&item, &[], &[]).long_sentences[0].words, MAX_SENTENCE_WORDS + 1);
+        assert!(measure(&at_limit, &[], Some(Locale::PtBr)).passed);
+        assert_eq!(measure(&item, &[], Some(Locale::PtBr)).long_sentences[0].words, MAX_SENTENCE_WORDS + 1);
     }
 
-    /// AC-2: sigla sem as palavras por extenso é apontada; com a expansão entre
+    /// Sigla sem as palavras por extenso é apontada; com a expansão entre
     /// parênteses (antes ou depois), já expandida na sessão ou de uso comum,
     /// não é.
     #[test]
     fn clarity_flags_unexpanded_acronym() {
-        let bare = measure("O CI falhou de novo.", &[], &[]);
+        let bare = measure("O CI falhou de novo.", &[], Some(Locale::PtBr));
         assert_eq!(bare.unexpanded_acronyms, vec!["CI"]);
         assert!(!bare.passed);
         assert_eq!(bare.defects(Locale::PtBr), vec!["CI sem as palavras por extenso"]);
 
-        let expanded = measure("O CI (integração contínua) falhou de novo.", &[], &[]);
+        let expanded = measure("O CI (integração contínua) falhou de novo.", &[], Some(Locale::PtBr));
         assert!(expanded.unexpanded_acronyms.is_empty(), "{expanded:?}");
         assert_eq!(expanded.explained, vec!["CI"]);
 
-        let reverse = measure("A integração contínua (CI) falhou.", &[], &[]);
+        let reverse = measure("A integração contínua (CI) falhou.", &[], Some(Locale::PtBr));
         assert!(reverse.unexpanded_acronyms.is_empty(), "{reverse:?}");
 
-        let later = measure("O CI falhou.", &[], &terms(&["CI"]));
+        let later = measure("O CI falhou.", &terms(&["CI"]), Some(Locale::PtBr));
         assert!(later.unexpanded_acronyms.is_empty());
 
-        let common = measure("Abri o PR e os PRs com JSON e HTML.", &[], &[]);
+        let common = measure("Abri o PR e os PRs com JSON e HTML.", &[], Some(Locale::PtBr));
         assert!(common.unexpanded_acronyms.is_empty(), "{common:?}");
     }
 
-    /// AC-3: o nome inventado sem tradução no primeiro uso da sessão é
-    /// apontado; traduzido uma vez, os usos seguintes passam — na mesma
-    /// resposta e nas próximas.
-    #[test]
-    fn clarity_invented_term_needs_translation_once() {
-        let known = terms(&["slug", "work unit"]);
-
-        let first = measure("Troquei o slug da spec.", &known, &[]);
-        assert_eq!(first.unexplained_terms, vec!["slug"]);
-        assert_eq!(first.defects(Locale::PtBr), vec!["slug usado sem tradução"]);
-
-        let translated = measure(
-            "Troquei o slug (o nome curto da spec, usado nas pastas). Depois o slug foi salvo.",
-            &known,
-            &[],
-        );
-        assert!(translated.unexplained_terms.is_empty(), "{translated:?}");
-        assert_eq!(translated.explained, vec!["slug"]);
-
-        let next_reply = measure("O slug mudou de novo.", &known, &translated.explained);
-        assert!(next_reply.unexplained_terms.is_empty());
-        assert!(next_reply.passed);
-
-        let dash = measure("O slug — o nome curto da spec — mudou.", &known, &[]);
-        assert!(dash.unexplained_terms.is_empty(), "{dash:?}");
-
-        // Começo de frase e plural contam como uso; palavra maior não conta.
-        assert_eq!(measure("Slugs mudaram.", &known, &[]).unexplained_terms, vec!["slug"]);
-        assert!(measure("Rodei o slugify.", &known, &[]).unexplained_terms.is_empty());
-    }
-
-    /// AC-13: a explicação só conta quando vem logo depois do termo.
+    /// A explicação só conta quando vem logo depois da sigla.
     /// Dois-pontos, travessão ou "que é" mais adiante na frase falam de outra
-    /// coisa, e a sigla ou o nome inventado continua sem explicação.
+    /// coisa, e a sigla continua sem explicação.
     #[test]
     fn clarity_explanation_must_follow_the_term() {
-        let known = terms(&["slug"]);
-
         // Mais adiante na frase: aponta.
         for text in [
             "O CI falhou: veja o log.",
@@ -807,18 +933,12 @@ mod tests {
             "O CI falhou, e o que e pior, parou tudo.",
             "O CI falhou — veja o log.",
         ] {
-            let report = measure(text, &known, &[]);
+            let report = measure(text, &[], Some(Locale::PtBr));
             assert_eq!(report.unexpanded_acronyms, vec!["CI"], "{text}: {report:?}");
             assert!(report.explained.is_empty(), "{text}: {report:?}");
         }
-        // Dois-pontos colado ao termo, mas no meio da frase: anuncia o que vem
-        // depois, não o termo.
-        for text in ["Troquei o slug: agora é outro", "Troquei o slug: agora e outro"] {
-            let report = measure(text, &known, &[]);
-            assert_eq!(report.unexplained_terms, vec!["slug"], "{text}: {report:?}");
-        }
 
-        // Logo depois do termo: não aponta.
+        // Logo depois da sigla: não aponta.
         for text in [
             "CI: integracao continua, falhou.",
             "CI: integração contínua, falhou.",
@@ -831,20 +951,16 @@ mod tests {
             "O CI (integração contínua) falhou.",
             "A integração contínua (CI) falhou.",
         ] {
-            let report = measure(text, &known, &[]);
+            let report = measure(text, &[], Some(Locale::PtBr));
             assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
             assert_eq!(report.explained, vec!["CI"], "{text}");
         }
-        // O plural ainda é o termo colado à explicação.
-        let plural = measure("Os slugs, ou seja, os nomes curtos, mudaram.", &known, &[]);
-        assert!(plural.unexplained_terms.is_empty(), "{plural:?}");
     }
 
-    /// AC-4: blocos de código, código inline, caminhos, links, URLs, tabelas e
-    /// JSON não contam como frase, sigla nem termo.
+    /// Blocos de código, código inline, caminhos, links, URLs, tabelas e
+    /// JSON não contam como frase nem sigla.
     #[test]
     fn clarity_ignores_code_and_paths() {
-        let known = terms(&["slug"]);
         let text = r#"Resumo curto.
 
 ```rust
@@ -860,27 +976,119 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
 
 {"key": "SLUG", "ABC": 1}
 "#;
-        let report = measure(text, &known, &[]);
+        let report = measure(text, &[], Some(Locale::PtBr));
         assert!(report.long_sentences.is_empty(), "{report:?}");
         assert!(report.unexpanded_acronyms.is_empty(), "{report:?}");
-        assert!(report.unexplained_terms.is_empty(), "{report:?}");
         assert_eq!(report.prose_lines, 3);
         assert!(report.passed);
     }
 
-    /// Mais de vinte linhas de texto reprovam a resposta pelo tamanho.
+    /// Mais de quinze linhas reprovam a resposta pelo tamanho, e o tamanho
+    /// conta a resposta inteira: linhas de código também são lidas.
     #[test]
-    fn clarity_reply_over_twenty_prose_lines_is_too_long() {
-        let fits = vec!["Uma linha curta."; MAX_PROSE_LINES].join("\n");
-        assert!(measure(&fits, &[], &[]).passed);
+    fn clarity_reply_over_fifteen_lines_is_too_long() {
+        let fits = vec!["Uma linha curta."; MAX_LINES].join("\n\n");
+        assert!(measure(&fits, &[], Some(Locale::PtBr)).passed, "blank lines do not count");
 
-        let over = vec!["Uma linha curta."; MAX_PROSE_LINES + 1].join("\n");
-        let report = measure(&over, &[], &[]);
+        let over = vec!["Uma linha curta."; MAX_LINES + 1].join("\n");
+        let report = measure(&over, &[], Some(Locale::PtBr));
         assert!(report.too_long && !report.passed);
-        assert_eq!(
-            report.defects(Locale::EnUs),
-            vec!["reply with 21 lines of prose; the limit is 20"]
+        assert_eq!(report.defects(Locale::EnUs), vec!["reply with 16 lines; the limit is 15"]);
+        assert_eq!(report.defects(Locale::PtBr), vec!["resposta com 16 linhas; o limite é 15"]);
+
+        let code = format!("Rode isto:\n```text\n{}\n```", vec!["linha"; MAX_LINES].join("\n"));
+        let report = measure(&code, &[], Some(Locale::PtBr));
+        assert_eq!((report.prose_lines, report.lines), (1, MAX_LINES + 3), "{report:?}");
+        assert!(report.too_long, "{report:?}");
+    }
+
+    /// Código do Mustard no texto corrido é apontado, cada um uma vez, e pede
+    /// o nome do assunto; as partes dele não contam como sigla. Código entre
+    /// crases, letra com número fora do formato, versão e palavra comum não
+    /// são apontados.
+    #[test]
+    fn clarity_flags_internal_codes() {
+        let report = measure(
+            "A regra MSTD-RULE-0008 vale. Veja o MSTD-CRIT-0015 e de novo (MSTD-RULE-0008).",
+            &[],
+            Some(Locale::PtBr),
         );
+        assert_eq!(report.internal_codes, vec!["MSTD-RULE-0008", "MSTD-CRIT-0015"], "{report:?}");
+        assert!(report.unexpanded_acronyms.is_empty(), "MSTD and RULE are the code, not acronyms: {report:?}");
+        assert!(!report.passed);
+        assert_eq!(
+            report.defects(Locale::PtBr)[0],
+            "MSTD-RULE-0008 é um código interno; diga o assunto pelo nome"
+        );
+        assert_eq!(report.defects(Locale::EnUs)[0], "MSTD-RULE-0008 is an internal code; name the subject instead");
+
+        for clean in [
+            "Rode `MSTD-RULE-0008` no terminal.",
+            "Guardei o arquivo no R2 da Cloudflare, no S3 e numa folha A4.",
+            "A regra R8 vale, e o C-15 e o AC-5 também.",
+            "Instalei a versão v0.3 e o UTF-8 num x86.",
+            "O teste E2E passou em 2026.",
+            "A regra ficou pronta.",
+        ] {
+            let report = measure(clean, &[], Some(Locale::PtBr));
+            assert!(report.internal_codes.is_empty(), "{clean}: {report:?}");
+            assert!(report.unexpanded_acronyms.is_empty(), "{clean}: {report:?}");
+        }
+        let plain = measure("Guardei o arquivo no R2 da Cloudflare, no S3 e numa folha A4.", &[], Some(Locale::PtBr));
+        assert!(plain.passed, "{plain:?}");
+    }
+
+    /// As sílabas em português seguem a separação escolar nos casos comuns:
+    /// ditongo nasal, hiato com acento, duas vogais fortes e o "u" mudo.
+    #[test]
+    fn portuguese_syllables_follow_the_common_cases() {
+        for (word, want) in [
+            ("configuração", 5),
+            ("saúde", 3),
+            ("leão", 2),
+            ("poeta", 3),
+            ("queijo", 2),
+            ("água", 2),
+            ("coordenação", 5),
+            ("automação", 4),
+            ("é", 1),
+            ("psst", 1),
+        ] {
+            assert_eq!(syllables_pt(word), want, "{word}");
+        }
+    }
+
+    /// A nota de Flesch só sai para prosa em português com palavras bastantes;
+    /// frases curtas de palavras curtas passam, e frases compridas de palavras
+    /// compridas reprovam pela nota.
+    #[test]
+    fn clarity_scores_reading_ease_in_portuguese() {
+        let plain = measure(PORTUGUESE_REPLY, &[], Some(Locale::PtBr));
+        let score = plain.reading_ease.unwrap_or_else(|| panic!("Portuguese prose is scored: {plain:?}"));
+        assert!(score >= MIN_READING_EASE && !plain.hard_to_read && plain.passed, "{plain:?}");
+
+        let dense = "A implementação da configuração automatizada da infraestrutura \
+                     organizacional exige documentação complementar significativamente \
+                     detalhada. A coordenação interdepartamental das especificações \
+                     técnicas necessárias demanda comunicação institucionalizada e \
+                     planejamento estratégico permanentemente atualizado. A parametrização \
+                     das integrações corporativas depende da homologação das funcionalidades \
+                     disponibilizadas pela arquitetura.";
+        let report = measure(dense, &[], Some(Locale::PtBr));
+        let score = report.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {report:?}"));
+        assert!(score < MIN_READING_EASE && report.hard_to_read && !report.passed, "{report:?}");
+        let defect = report.defects(Locale::PtBr).pop().unwrap_or_default();
+        assert_eq!(
+            defect,
+            format!(
+                "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é 25; use \
+                 frases e palavras mais curtas"
+            )
+        );
+
+        // Inglês e prosa curta não recebem nota.
+        assert_eq!(measure(ENGLISH_REPLY, &[], Some(Locale::EnUs)).reading_ease, None);
+        assert_eq!(measure("Frase curta.", &[], Some(Locale::PtBr)).reading_ease, None);
     }
 
     /// Ênfase em maiúsculas não é sigla: nem a palavra comprida com vogais,
@@ -894,17 +1102,17 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
             "Use only what was said IN THIS CONVERSATION.",
             "**NÃO USE ISSO** em produção.",
         ] {
-            let report = measure(text, &[], &[]);
+            let report = measure(text, &[], Some(Locale::PtBr));
             assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
         }
 
-        let real = measure("NUNCA pule o CI. O QA e o SSH falharam.", &[], &[]);
+        let real = measure("NUNCA pule o CI. O QA e o SSH falharam.", &[], Some(Locale::PtBr));
         assert_eq!(real.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{real:?}");
         // Vírgula quebra a sequência: siglas enfileiradas não viram ênfase.
-        let listed = measure("Falharam CI, QA, SSH.", &[], &[]);
+        let listed = measure("Falharam CI, QA, SSH.", &[], Some(Locale::PtBr));
         assert_eq!(listed.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{listed:?}");
 
-        let short = measure("You MUST read it.", &[], &[]);
+        let short = measure("You MUST read it.", &[], Some(Locale::PtBr));
         assert_eq!(short.unexpanded_acronyms, vec!["MUST"], "{short:?}");
     }
 
@@ -917,13 +1125,86 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
             "A Fase II e a onda IV terminaram, e o capítulo IX também.",
             "O item III vem antes do XI.",
         ] {
-            let report = measure(text, &[], &[]);
+            let report = measure(text, &[], Some(Locale::PtBr));
             assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
         }
 
-        let near_locale = measure("O CI roda em pt-BR.", &[], &[]);
+        let near_locale = measure("O CI roda em pt-BR.", &[], Some(Locale::PtBr));
         assert_eq!(near_locale.unexpanded_acronyms, vec!["CI"], "{near_locale:?}");
-        let hyphen = measure("O CI-QA e o anti-SSH falharam.", &[], &[]);
+        let hyphen = measure("O CI-QA e o anti-SSH falharam.", &[], Some(Locale::PtBr));
         assert_eq!(hyphen.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{hyphen:?}");
+    }
+
+    /// Prosa em inglês: 39 palavras, frases curtas, sem sigla.
+    const ENGLISH_REPLY: &str = "The wave is done and the tests pass.\n\
+        The check now compares the language of the reply with the language of the project.\n\
+        It counts the common words of each language.\n\
+        A short reply is not judged at all.";
+
+    /// Prosa em português: 35 palavras, frases curtas, sem sigla.
+    const PORTUGUESE_REPLY: &str = "A onda terminou e os testes passaram.\n\
+        A medição agora compara o idioma da resposta com o idioma do projeto.\n\
+        Ela conta as palavras comuns de cada idioma.\n\
+        Uma resposta curta não é julgada por ela.";
+
+    /// A resposta em inglês num projeto em português aponta o idioma
+    /// errado, com o defeito tirado do catálogo. No idioma certo, a mesma
+    /// resposta passa.
+    #[test]
+    fn clarity_flags_a_reply_in_another_language() {
+        let wrong = measure(ENGLISH_REPLY, &[], Some(Locale::PtBr));
+        assert_eq!(
+            wrong.wrong_language,
+            Some(WrongLanguage { found: Locale::EnUs, expected: Locale::PtBr }),
+            "{wrong:?}"
+        );
+        assert!(!wrong.passed);
+        assert_eq!(
+            wrong.defects(Locale::PtBr),
+            vec!["resposta em en-US; o idioma do projeto e do usuário é pt-BR"]
+        );
+
+        let right = measure(ENGLISH_REPLY, &[], Some(Locale::EnUs));
+        assert_eq!(right.wrong_language, None, "{right:?}");
+        assert!(right.passed, "{right:?}");
+
+        // O inverso também: português num projeto em inglês.
+        let wrong = measure(PORTUGUESE_REPLY, &[], Some(Locale::EnUs));
+        assert_eq!(
+            wrong.wrong_language,
+            Some(WrongLanguage { found: Locale::PtBr, expected: Locale::EnUs }),
+            "{wrong:?}"
+        );
+        assert!(measure(PORTUGUESE_REPLY, &[], Some(Locale::PtBr)).passed);
+    }
+
+    /// Resposta curta, prosa só dentro de código e mistura sem vencedor claro
+    /// não são julgadas pelo idioma.
+    #[test]
+    fn clarity_leaves_short_or_code_only_replies_unjudged() {
+        let short = "The wave is done and the tests pass.";
+        assert_eq!(measure(short, &[], Some(Locale::PtBr)).wrong_language, None);
+
+        // O inglês mora no bloco de código e no código inline; a prosa em
+        // volta é curta.
+        let code_only = format!(
+            "Rode isto:\n\n```text\n{ENGLISH_REPLY}\n```\n\nE depois `{}`.",
+            ENGLISH_REPLY.replace('\n', " ")
+        );
+        let report = measure(&code_only, &[], Some(Locale::PtBr));
+        assert_eq!(report.wrong_language, None, "{report:?}");
+
+        // Uma resposta em português que cita uma frase em inglês continua em
+        // português.
+        let quoting = format!("{PORTUGUESE_REPLY}\nO aviso dizia: the check is done.");
+        let report = measure(&quoting, &[], Some(Locale::PtBr));
+        assert_eq!(report.wrong_language, None, "{report:?}");
+
+        // Trinta palavras sem palavra comum não dizem idioma algum.
+        let nouns = vec!["palavraextraordinariamentecomprida"; MIN_LANGUAGE_WORDS * 2].join(" ");
+        assert_eq!(measure(&nouns, &[], Some(Locale::EnUs)).wrong_language, None);
+
+        // Sem idioma declarado no projeto não há veredito de idioma.
+        assert_eq!(measure(ENGLISH_REPLY, &[], None).wrong_language, None);
     }
 }

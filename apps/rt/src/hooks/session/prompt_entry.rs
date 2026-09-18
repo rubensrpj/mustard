@@ -1,0 +1,552 @@
+//! `prompt_entry` — a entrada da mensagem, o único gancho do
+//! `UserPromptSubmit`.
+//!
+//! Uma chamada por mensagem, com três passos, nesta ordem:
+//!
+//! 1. **A trava de instalação.** Num projeto sem `mustard.json` na raiz, um
+//!    comando `/mustard:*` é barrado com a indicação do `/mustard:upsert`, o
+//!    único liberado (é a porta que instala). O `/mustard` sozinho, sem dois
+//!    pontos, é a ajuda e passa. Texto comum nunca é barrado: num projeto sem
+//!    Mustard os ganchos ficam calados.
+//! 2. **A mensagem, gravada.** Com uma spec atual, a mensagem do usuário vai
+//!    para o bloco da conversa, como ele a escreveu. O aviso que o próprio
+//!    Claude Code manda pelo mesmo canal (o fim de um comando em segundo
+//!    plano, a volta de um subagente) não é mensagem de ninguém e não é
+//!    gravado.
+//! 3. **A linha curta.** Todo projeto instalado recebe, a cada mensagem, uma
+//!    linha de até 100 caracteres: responder no idioma do usuário, em texto
+//!    simples. A regra de escrita inteira mora no estilo de resposta; a
+//!    linha só lembra, e vai em toda mensagem porque o que ela rege é sempre
+//!    a resposta mais nova. É o único texto que uma mensagem comum coloca na
+//!    conversa: os textos grandes de regras não vão mais a cada mensagem.
+
+use std::path::Path;
+
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::platform::error::Error;
+use mustard_core::ProjectConfig;
+
+use crate::commands::spec_events::conversation::record_message;
+use crate::shared::prompt::is_harness_notice;
+
+/// A entrada da mensagem.
+pub struct PromptEntry;
+
+/// `true` quando `prompt` chama um comando `/mustard:`. O `/mustard` sozinho,
+/// sem dois pontos, é a ajuda e não casa: ela precisa funcionar num projeto
+/// sem instalação. Só os comandos do Mustard contam: barrar o comando de
+/// outro plugin por falta do `mustard.json` quebraria o que não é dele.
+fn is_mustard_command(prompt: &str) -> bool {
+    prompt.trim_start().to_ascii_lowercase().starts_with("/mustard:")
+}
+
+/// `true` quando `prompt` chama o `/mustard:upsert`, a porta que instala.
+/// `/mustard:upsertish` é outro comando e não passa.
+fn is_upsert_prompt(prompt: &str) -> bool {
+    let t = prompt.trim_start().to_ascii_lowercase();
+    let Some(rest) = t.strip_prefix("/mustard:") else {
+        return false;
+    };
+    const CMD: &str = "upsert";
+    rest.starts_with(CMD)
+        && rest.as_bytes().get(CMD.len()).is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'))
+}
+
+/// A linha curta de cada mensagem: responder no idioma do usuário, em texto
+/// simples, com frases curtas e nenhum código interno. Até 100 caracteres nos
+/// dois idiomas.
+///
+/// O idioma só é nomeado quando o projeto o declarou (`language.text`). Sem
+/// declaração, a linha manda responder no idioma de quem escreve e não nomeia
+/// nenhum: o idioma padrão é o pt-BR, e nomeá-lo mandaria um projeto em
+/// inglês responder em português. Um `mustard.json` que não se lê não declara
+/// nada, e recebe a mesma linha.
+///
+/// `None` num projeto sem `mustard.json`.
+fn message_line(root: &Path) -> Option<String> {
+    if !ProjectConfig::exists(root) {
+        return None;
+    }
+    let language = ProjectConfig::load(root).language();
+    let key = match language.text {
+        Some(_) => "prompt_entry.line",
+        None => "prompt_entry.line.undeclared",
+    };
+    Some(mustard_core::translate(key, language.text_or_default()).to_string())
+}
+
+/// A recusa da trava de instalação.
+const NOT_INSTALLED_REASON: &str = "Mustard is not installed in this project (no mustard.json at \
+     the root). Run /mustard:upsert to install it — everything else stays disabled until then.";
+
+impl Check for PromptEntry {
+    fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
+        if ctx.trigger != Some(Trigger::UserPromptSubmit) {
+            return Ok(Verdict::Allow);
+        }
+        let prompt = input.user_prompt().unwrap_or_default();
+        let cwd = ctx.project_dir_or_cwd(input);
+        let root = Path::new(&cwd);
+        if !ProjectConfig::exists(root) {
+            if is_mustard_command(prompt) && !is_upsert_prompt(prompt) {
+                return Ok(Verdict::Deny { reason: NOT_INSTALLED_REASON.to_string() });
+            }
+            return Ok(Verdict::Allow);
+        }
+        if !is_harness_notice(prompt) {
+            let _ = record_message(root, input.session_id.as_deref(), prompt);
+        }
+        Ok(message_line(root).map_or(Verdict::Allow, |context| Verdict::Inject { context }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::spec_events::write::record_open;
+    use crate::shared::spec_state::{stand_on_spec_branch, DiskSpecState};
+    use mustard_core::domain::spec_state::SpecState;
+    use mustard_core::platform::i18n::Locale;
+
+    /// Um contexto numa pasta temporária sem nada: nem `mustard.json`, nem
+    /// branch, nem spec.
+    fn ctx() -> (tempfile::TempDir, Ctx) {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        (dir, ctx)
+    }
+
+    fn prompt_input(prompt: &str) -> HookInput {
+        prompt_input_with_session(prompt, "s1")
+    }
+
+    fn prompt_input_with_session(prompt: &str, session: &str) -> HookInput {
+        HookInput {
+            hook_event_name: Some("UserPromptSubmit".to_string()),
+            session_id: Some(session.to_string()),
+            raw: serde_json::json!({ "prompt": prompt }),
+            ..HookInput::default()
+        }
+    }
+
+    /// Um projeto que declarou o português do Brasil como idioma do texto.
+    const PT_PROJECT: &str = r#"{"language":{"text":"pt-BR"}}"#;
+
+    /// A linha de um projeto que declarou pt-BR.
+    const PT_LINE: &str =
+        "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
+
+    /// A linha de um projeto que declarou en-US.
+    const EN_LINE: &str = "Answer in US English, in plain text: short sentences and no internal codes.";
+
+    /// A linha de um projeto que não declarou idioma, no idioma padrão das
+    /// mensagens do Mustard.
+    const UNDECLARED_LINE: &str =
+        "Responda no idioma de quem escreve, em texto simples: frases curtas e nenhum código interno.";
+
+    /// A mesma linha, em inglês.
+    const UNDECLARED_LINE_EN: &str =
+        "Answer in the language the user writes in, in plain text: short sentences and no internal codes.";
+
+    /// Um projeto com este `mustard.json`.
+    fn project_with(config: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("mustard.json"), config).expect("write config");
+        dir
+    }
+
+    /// O veredito de uma mensagem num projeto com este `mustard.json`, pelo
+    /// gancho de verdade — nunca pela função auxiliar, para que desligar a
+    /// ligação derrube o teste.
+    fn verdict_for(config: &str, prompt: &str) -> (tempfile::TempDir, Verdict) {
+        let dir = project_with(config);
+        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        let verdict = PromptEntry.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
+        (dir, verdict)
+    }
+
+    /// O texto que o veredito coloca na conversa.
+    fn context_of(verdict: Verdict) -> String {
+        match verdict {
+            Verdict::Inject { context } => context,
+            other => panic!("an installed project always gets the line, got {other:?}"),
+        }
+    }
+
+    /// As mensagens de usuário gravadas na spec `spec`.
+    fn messages(root: &Path, spec: &str) -> Vec<String> {
+        DiskSpecState::new(root)
+            .log(spec)
+            .map(|log| {
+                log.visible()
+                    .into_iter()
+                    .filter(|e| e.event_type == "message" && e.str_field("author") == Some("user"))
+                    .filter_map(|e| e.str_field("text").map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Um projeto instalado, com injetáveis declarados para a mensagem e
+    /// escritos no disco, parado na branch de uma spec aberta.
+    fn project_with_injectables_on(spec: &str) -> tempfile::TempDir {
+        let dir = project_with(
+            r#"{"language":{"text":"pt-BR"},"inject":[{"on":"userPromptSubmit","file":".claude/mustard/mapa-inicio-sessao.md","once":true}]}"#,
+        );
+        let root = dir.path();
+        let mustard_dir = root.join(".claude").join("mustard");
+        std::fs::create_dir_all(&mustard_dir).unwrap();
+        std::fs::write(
+            mustard_dir.join("mapa-inicio-sessao.md"),
+            mustard_core::session_map(mustard_core::platform::i18n::Locale::PtBr),
+        )
+        .unwrap();
+        stand_on_spec_branch(root, spec);
+        record_open(root, spec, &format!("feature/{spec}"), "dev").expect("open");
+        dir
+    }
+
+    /// Uma mensagem comum roda uma chamada só de gancho, coloca até 100
+    /// caracteres na conversa e é gravada no bloco da conversa.
+    ///
+    /// Uma chamada só: o `hooks.json` registra um comando só no
+    /// `UserPromptSubmit`, sem nenhum injetável próprio, e o registro tem um
+    /// gancho só nesse evento. Até 100 caracteres: as quatro linhas cabem, e
+    /// pelo despachante, num projeto com injetáveis declarados e uma spec
+    /// atual, o texto colocado é só a linha. Gravada: a mensagem aparece na
+    /// spec, como o usuário a escreveu.
+    #[test]
+    fn the_message_line_fits_in_one_hundred_characters_in_both_languages() {
+        for (key, lang, line) in [
+            ("prompt_entry.line", Locale::PtBr, PT_LINE),
+            ("prompt_entry.line", Locale::EnUs, EN_LINE),
+            ("prompt_entry.line.undeclared", Locale::PtBr, UNDECLARED_LINE),
+            ("prompt_entry.line.undeclared", Locale::EnUs, UNDECLARED_LINE_EN),
+        ] {
+            let text = mustard_core::translate(key, lang);
+            assert_eq!(text, line, "{key} in {lang}");
+            assert!(text.chars().count() <= 100, "{key} in {lang}: {} characters", text.chars().count());
+        }
+
+        // Uma chamada só, no manifesto e no registro.
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../../../plugin/hooks/hooks.json"))
+            .expect("the manifest is JSON");
+        let commands: Vec<&str> = manifest["hooks"]["UserPromptSubmit"]
+            .as_array()
+            .expect("the message has a hook")
+            .iter()
+            .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+            .filter_map(|hook| hook["command"].as_str())
+            .collect();
+        assert_eq!(commands.len(), 1, "one hook call per message: {commands:?}");
+        assert!(!commands[0].contains("--inject"), "the call carries no injectable: {commands:?}");
+        let registry = crate::registry::Registry::new();
+        let on_prompt: Vec<&str> =
+            registry.applicable(Trigger::UserPromptSubmit, None).iter().map(|m| m.id).collect();
+        assert_eq!(on_prompt, ["prompt_entry"]);
+
+        // Pelo despachante: só a linha entra, e a mensagem fica gravada.
+        let dir = project_with_injectables_on("entrada");
+        let root = dir.path();
+        let input = HookInput {
+            cwd: Some(root.to_string_lossy().into_owned()),
+            ..prompt_input("como eu faço o login?")
+        };
+        let outcome = crate::dispatch::run_event(Some(Trigger::UserPromptSubmit), &input);
+        let Verdict::Inject { context } = &outcome.verdict else {
+            panic!("the message carries the line: {:?}", outcome.verdict);
+        };
+        assert!(context.chars().count() <= 100, "{} characters: {context}", context.chars().count());
+        assert_eq!(context, PT_LINE);
+        assert_eq!(messages(root, "entrada"), ["como eu faço o login?"]);
+    }
+
+    /// Toda mensagem recebe a linha curta, e só ela, mesmo com injetáveis
+    /// declarados e uma spec atual: os textos grandes de regras e o aviso de
+    /// spec em curso não vão mais a cada mensagem.
+    #[test]
+    fn every_message_gets_only_the_short_line() {
+        let dir = project_with_injectables_on("so-a-linha");
+        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        for prompt in ["uma mensagem comum", "e agora?", "/mustard:feature x", "/grill-me"] {
+            let verdict = PromptEntry.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
+            assert_eq!(context_of(verdict), PT_LINE, "{prompt}");
+        }
+        assert!(
+            !dir.path().join(".claude/.session/s1/injected-mapa-inicio-sessao.md").exists(),
+            "no injectable is delivered, so no marker is burned",
+        );
+    }
+
+    /// A mensagem vai para o bloco da conversa da spec atual. O aviso do
+    /// próprio Claude Code não é gravado, e sem spec atual nada é gravado.
+    #[test]
+    fn the_message_is_recorded_in_the_current_spec() {
+        let dir = project_with_injectables_on("gravada");
+        let root = dir.path();
+        let c = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        for prompt in [
+            "arrume o botão",
+            "<task-notification>\n<status>completed</status>",
+            "[SYSTEM NOTIFICATION - NOT USER INPUT]\ncorpo",
+            "/mustard:continue",
+        ] {
+            let _ = PromptEntry.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
+        }
+        assert_eq!(messages(root, "gravada"), ["arrume o botão", "/mustard:continue"]);
+
+        let (bare, _) = ctx();
+        std::fs::write(bare.path().join("mustard.json"), "{}").unwrap();
+        let c = Ctx::for_test(bare.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        let _ = PromptEntry.evaluate(&prompt_input("sem spec"), &c).expect("the gate never errors");
+        assert!(!bare.path().join(".claude").exists(), "no spec, nothing recorded");
+    }
+
+    /// A linha segue o idioma declarado em `language.text`: pt-BR recebe a
+    /// linha em português, en-US a inglesa.
+    #[test]
+    fn the_line_follows_the_declared_language() {
+        for (config, line) in [(PT_PROJECT, PT_LINE), (r#"{"language":{"text":"en-US"}}"#, EN_LINE)] {
+            let (_dir, verdict) = verdict_for(config, "uma mensagem comum");
+            assert_eq!(context_of(verdict), line, "{config}");
+        }
+    }
+
+    /// Sem `language.text` no `mustard.json`, o idioma nunca é suposto, e as
+    /// chaves antigas de idioma não contam como declaração: a linha manda
+    /// responder no idioma de quem escreve, sem nomear idioma, e uma resposta
+    /// em inglês não ganha defeito de idioma. Com pt-BR declarado, o defeito
+    /// continua.
+    #[test]
+    fn undeclared_language_is_never_assumed() {
+        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
+
+        let english = "The wave is done and the tests pass.\n\
+            The check now compares the language of the reply with the language of the project.\n\
+            It counts the common words of each language.\n\
+            A short reply is not judged at all.";
+        let stop = HookInput {
+            hook_event_name: Some("Stop".to_string()),
+            session_id: Some("s1".to_string()),
+            raw: serde_json::json!({ "last_assistant_message": english }),
+            ..HookInput::default()
+        };
+        let context_or_reason = |verdict: Verdict| match verdict {
+            Verdict::Inject { context } => context,
+            Verdict::Deny { reason } => reason,
+            _ => String::new(),
+        };
+
+        for config in ["{}", r#"{"specLang":"pt-BR","lang":"pt-BR"}"#] {
+            let dir = project_with(config);
+            let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+            let line = context_of(PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap());
+            assert_eq!(line, UNDECLARED_LINE, "{config}");
+            for named in ["português", "Brasil", "pt-BR", "en-US"] {
+                assert!(!line.contains(named), "{config}: an undeclared language is named ({named}): {line}");
+            }
+            let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
+            let block = context_or_reason(EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap());
+            assert!(!block.contains("resposta em"), "{config}: no language verdict: {block}");
+        }
+
+        let dir = project_with(PT_PROJECT);
+        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::Stop));
+        let block = context_or_reason(EndOfTurnCheck.evaluate(&stop, &c).unwrap());
+        assert!(block.contains("resposta em en-US; o idioma do projeto e do usuário é pt-BR"), "{block}");
+    }
+
+    /// A linha curta e a medição de idioma valem para todo projeto com
+    /// `mustard.json`. Com ou sem a antiga chave do tom, a mensagem leva a
+    /// linha do idioma declarado, e uma resposta em inglês num projeto em
+    /// pt-BR é barrada no fim da resposta; a mensagem seguinte não repete o
+    /// defeito. Sem `mustard.json`, nada.
+    #[test]
+    fn the_language_line_reaches_every_mustard_project() {
+        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
+
+        let english = "The wave is done and the tests pass.\n\
+            The check now compares the language of the reply with the language of the project.\n\
+            It counts the common words of each language.\n\
+            A short reply is not judged at all.";
+        let defect = "resposta em en-US; o idioma do projeto e do usuário é pt-BR";
+        let stop = HookInput {
+            hook_event_name: Some("Stop".to_string()),
+            session_id: Some("s1".to_string()),
+            raw: serde_json::json!({ "last_assistant_message": english }),
+            ..HookInput::default()
+        };
+
+        for config in [PT_PROJECT, r#"{"language":{"text":"pt-BR"},"tone":"technical"}"#] {
+            let dir = project_with(config);
+            let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+            let context = context_of(PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap());
+            assert_eq!(context, PT_LINE, "{config}");
+
+            let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
+            let Verdict::Deny { reason } = EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap() else {
+                panic!("{config}: an English reply in a pt-BR project is blocked");
+            };
+            assert!(reason.contains(defect), "{config}: {reason}");
+
+            let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &c).unwrap());
+            assert!(!next.contains(defect), "{config}: the defect rode the block, not the next prompt: {next}");
+        }
+
+        let (none, c) = ctx();
+        let verdict = PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap();
+        assert_eq!(verdict, Verdict::Allow, "an uninstalled project gets no line");
+        let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c };
+        assert_eq!(EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap(), Verdict::Allow);
+        drop(none);
+    }
+
+    /// Todo projeto com `mustard.json` leva a linha curta, declare ou não o
+    /// idioma; a antiga chave do tom não a desliga. Sem `mustard.json`, nada.
+    #[test]
+    fn the_line_rides_every_installed_project() {
+        for (config, line) in
+            [("{}", UNDECLARED_LINE), (r#"{"tone":"technical"}"#, UNDECLARED_LINE), (PT_PROJECT, PT_LINE)]
+        {
+            let (_dir, verdict) = verdict_for(config, "uma mensagem comum");
+            assert_eq!(context_of(verdict), line, "{config}: every installed project carries the line");
+        }
+        let (_none, c) = ctx();
+        let verdict = PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap();
+        assert_eq!(verdict, Verdict::Allow, "an uninstalled project declared nothing");
+    }
+
+    /// Um comando de barra leva a linha também: ela rege como a resposta é
+    /// escrita, e essa resposta é lida pela mesma pessoa.
+    #[test]
+    fn the_line_rides_a_slash_command_too() {
+        let (_dir, verdict) = verdict_for(PT_PROJECT, "/mustard:pr merge");
+        assert_eq!(verdict, Verdict::Inject { context: PT_LINE.to_string() });
+    }
+
+    /// Sem idioma declarado, a linha não nomeia nenhum, nos dois idiomas.
+    #[test]
+    fn an_undeclared_language_is_not_named_in_the_line() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let line = mustard_core::translate("prompt_entry.line.undeclared", lang);
+            for named in ["português", "Brasil", "English", "pt-BR", "en-US"] {
+                assert!(!line.contains(named), "{lang} names {named}: {line}");
+            }
+        }
+        let (_dir, verdict) = verdict_for("{}", "uma mensagem comum");
+        assert_eq!(context_of(verdict), UNDECLARED_LINE);
+    }
+
+    /// Os parágrafos antigos de escrita e de idioma não vão em mensagem
+    /// nenhuma: nem comum, nem comando de barra, com ou sem idioma declarado.
+    #[test]
+    fn no_message_carries_the_old_writing_paragraph() {
+        for config in [PT_PROJECT, r#"{"language":{"text":"en-US"}}"#, "{}"] {
+            for prompt in ["uma mensagem comum", "/mustard:pr merge", "/grill-me"] {
+                let (_dir, verdict) = verdict_for(config, prompt);
+                let context = context_of(verdict);
+                for old in ["ONE idea per sentence", "in the language they write in"] {
+                    assert!(!context.contains(old), "{config} {prompt}: {old}: {context}");
+                }
+            }
+        }
+    }
+
+    /// Um `mustard.json` que não se lê ainda quer dizer projeto instalado: a
+    /// linha vai, sem nomear idioma.
+    #[test]
+    fn a_broken_mustard_json_gets_the_line_without_a_language() {
+        let (_dir, verdict) = verdict_for("{ not json", "uma mensagem comum");
+        assert_eq!(context_of(verdict), UNDECLARED_LINE);
+    }
+
+    /// Sem `mustard.json`, todo comando `/mustard:*` é barrado com a
+    /// indicação da porta que instala e o nome do arquivo que falta.
+    #[test]
+    fn gate_denies_mustard_command_without_installation() {
+        let (_dir, c) = ctx();
+        for prompt in ["/mustard:feature x", "/mustard:git", "  /MUSTARD:QA"] {
+            match PromptEntry.evaluate(&prompt_input(prompt), &c).unwrap() {
+                Verdict::Deny { reason } => {
+                    assert!(reason.contains("/mustard:upsert"), "{reason}");
+                    assert!(reason.contains("mustard.json"), "{reason}");
+                }
+                other => panic!("expected Deny for {prompt:?} without mustard.json, got {other:?}"),
+            }
+        }
+    }
+
+    /// A porta que instala passa sem instalação; `/mustard:upsertish` é outro
+    /// comando e continua barrado.
+    #[test]
+    fn gate_allows_upsert_without_installation() {
+        let (_dir, c) = ctx();
+        assert_eq!(PromptEntry.evaluate(&prompt_input("/mustard:upsert"), &c).unwrap(), Verdict::Allow);
+        assert!(matches!(
+            PromptEntry.evaluate(&prompt_input("/mustard:upsertish"), &c).unwrap(),
+            Verdict::Deny { .. }
+        ));
+    }
+
+    /// O `/mustard` sozinho é a ajuda e precisa funcionar sem instalação.
+    #[test]
+    fn gate_allows_bare_mustard_help_without_installation() {
+        let (_dir, c) = ctx();
+        assert_eq!(PromptEntry.evaluate(&prompt_input("/mustard"), &c).unwrap(), Verdict::Allow);
+    }
+
+    /// Texto comum nunca é barrado num projeto sem instalação.
+    #[test]
+    fn gate_ignores_normal_prompts_without_installation() {
+        let (_dir, c) = ctx();
+        assert_eq!(PromptEntry.evaluate(&prompt_input("hello there"), &c).unwrap(), Verdict::Allow);
+    }
+
+    /// Fora do `UserPromptSubmit`, o gancho passa.
+    #[test]
+    fn non_user_prompt_submit_trigger_allows() {
+        let other = Ctx::for_test(".".to_string(), Some(Trigger::PreToolUse));
+        assert_eq!(PromptEntry.evaluate(&prompt_input("/mustard:feature x"), &other).unwrap(), Verdict::Allow);
+    }
+
+    /// No `UserPromptSubmit` e no `SessionStart`, um só gancho coloca texto:
+    /// a linha curta chega uma vez.
+    #[test]
+    fn prompt_and_session_start_have_one_injecting_check() {
+        use crate::registry::Registry;
+        use mustard_core::domain::model::contract::Outcome;
+
+        let dir = project_with(PT_PROJECT);
+        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), None);
+        let registry = Registry::new();
+        let on_prompt = prompt_input_with_session("e agora?", "s1");
+        let on_start = HookInput {
+            hook_event_name: Some("SessionStart".to_string()),
+            session_id: Some("s1".to_string()),
+            ..HookInput::default()
+        };
+        for (name, trigger, input) in [
+            ("UserPromptSubmit", Trigger::UserPromptSubmit, &on_prompt),
+            ("SessionStart", Trigger::SessionStart, &on_start),
+        ] {
+            let at = Ctx { trigger: Some(trigger), ..c.clone() };
+            let mut outcome = Outcome::allow();
+            let mut injecting = Vec::new();
+            for module in registry.applicable(trigger, None) {
+                let Some(check) = &module.check else { continue };
+                let verdict = check.evaluate(input, &at).unwrap_or(Verdict::Allow);
+                if matches!(verdict, Verdict::Inject { .. }) {
+                    injecting.push(module.id);
+                }
+                outcome.fold(verdict);
+            }
+            assert!(injecting.len() <= 1, "{name}: {injecting:?} would share one response");
+            if name == "UserPromptSubmit" {
+                let Verdict::Inject { context } = &outcome.verdict else {
+                    panic!("the prompt carries the line: {:?}", outcome.verdict);
+                };
+                assert_eq!(context.matches(PT_LINE).count(), 1, "{context}");
+            }
+        }
+    }
+}

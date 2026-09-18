@@ -10,150 +10,27 @@
 //!   runtime; one typing a flag clap never registered dies with `error:
 //!   unexpected argument` and exit 2. This walk turns both into a test failure.
 //! - **REVERSE** — every registered subcommand must have at least one static
-//!   product caller (prose instruction or spawned argv), or a justified entry
-//!   in [`RUNTIME_WHITELIST`]. A command nobody calls is dark surface: it
-//!   ships, it bit-rots, and nothing notices.
+//!   product caller (prose instruction or spawned argv). Sem lista de
+//!   exceções: com 22 comandos, um comando que nenhum texto chama é superfície
+//!   escura — ele é entregue, apodrece, e nada percebe.
+//!
+//! - **GANCHOS** — o registro dos ganchos tem só os que ficam, nenhum que
+//!   saiu, e casa com os eventos do `plugin/hooks/hooks.json`: uma entrada que
+//!   chama evento sem gancho gasta uma chamada à toa.
 //!
 //! Deterministic: walks the repo tree only (sorted), no network, no env vars.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use clap::{Command, Subcommand};
+use regex::Regex;
+use mustard_core::domain::spec_state::State;
+use mustard_rt::commands::flow::resume::{next_command, step_command, NEXT_BY_PHASE};
+use mustard_rt::commands::flow::round::DONE_STEP;
 use mustard_rt::commands::RunCmd;
-
-/// Registered commands with no static product caller that are still shipped
-/// deliberately. Each justification cites where the runtime caller or the
-/// instructing surface actually lives. A name with NO honest justification
-/// must NOT be parked here — remove the registration instead. Kept sorted.
-const RUNTIME_WHITELIST: &[(&str, &str)] = &[
-    (
-        "adapt-cursor",
-        "user-invoked .cursorrules generator (commands/maint/adapt_cursor.rs); its \n         only prose caller was the pre-2.0 `init --cursor` hint, dropped by the \n         thin-init rewrite; a maintenance escape hatch with no scripted caller",
-    ),
-    (
-        "amend-finalize",
-        "SessionEnd finalizes the amend window in-process \
-         (hooks/session/session_cleanup_observer.rs); the CLI face is the \
-         documented manual re-run for a crashed session",
-    ),
-    (
-        "claude-dir-prune",
-        "user-invoked .claude/ drift audit (commands/maint/claude_dir_prune.rs \
-         module doc); maintenance escape hatch with no scripted caller",
-    ),
-    (
-        "dependency-precheck",
-        "EXECUTE pre-gate the orchestrator runs from the bare-name instruction \
-         in commands/mustard/feature/SKILL.md section 3 (never spelled with \
-         the mustard-rt prefix there)",
-    ),
-    (
-        "diagnose-otel",
-        "OTEL half of the consolidated doctor report \
-         (commands/economy/otel/diagnose.rs); its only prose caller was the \
-         `/maint doctor` section, dropped by the four-door surface prune - a \
-         telemetry diagnostic with no scripted caller",
-    ),
-    (
-        "docs-stale-check",
-        "CLOSE gate 4 - run in-process by close-orchestrate and named (with \
-         --skip-docs) in commands/mustard/close/SKILL.md; the CLI face is the \
-         standalone re-run",
-    ),
-    (
-        "exec-rewave-check",
-        "EXECUTE pre-gate named bare in commands/mustard/feature/SKILL.md \
-         section 3 dispatch chain",
-    ),
-    (
-        "finding-collect",
-        "deterministic seeder of meta.json#findings from the reviewer's files \
-         and the ac-proof.json removal column \
-         (commands/review/finding_collect.rs); consumed IN-PROCESS by the close \
-         findings sub-gate (commands/pipeline/close_gates.rs: open_findings), \
-         which re-collects on every CLOSE - the CLI face is the standalone \
-         collection a reader takes before deciding",
-    ),
-    (
-        "gate-regression-check",
-        "regression-gate engine consumed in-process \
-         (commands/agent/context_inject.rs build_vocab_matcher; \
-         review_spans.rs parses its verdicts); the CLI face has no scripted \
-         caller - flagged as dark surface in the F1 LOT C report",
-    ),
-    (
-        "maint-deps",
-        "user-invoked per-subproject dependency install \
-         (commands/maint/maint_deps.rs); its only prose caller was the `/maint \
-         deps` action, dropped by the four-door surface prune - a maintenance \
-         escape hatch with no scripted caller",
-    ),
-    (
-        "maint-validate",
-        "user-invoked per-subproject build/type-check \
-         (commands/maint/maint_validate.rs); its only prose caller was the \
-         `/maint validate` action, dropped by the four-door surface prune - a \
-         maintenance escape hatch with no scripted caller",
-    ),
-    (
-        "mark-checklist-item",
-        "instructed by the close-gate deny remediation \
-         (commands/pipeline/close_gates.rs: mark each via mustard-rt run \
-         mark-checklist-item)",
-    ),
-    (
-        "mark-finding",
-        "instructed by the close-gate deny remediation, once per open finding \
-         (commands/pipeline/close_gates.rs: finding_refusal prints the exact \
-         mustard-rt run mark-finding line that settles each one)",
-    ),
-    (
-        "metrics",
-        "user-invoked pipeline/hook metrics (collect + report faces, \
-         commands/economy/); its only prose caller was the `/stats` door, \
-         dropped by the four-door surface prune - the dashboard renders the \
-         same `.metrics/` corpus through its own readers",
-    ),
-    (
-        "metrics-wave-status",
-        "user-facing wave telemetry; main.rs keeps the two-token rewrite \
-         (metrics wave-status) for human invocation - its dashboard spawn was \
-         removed in the 2.0 dashboard cut (flagged in the F1 LOT C report)",
-    ),
-    (
-        "pipeline-summary",
-        "CLOSE gate 5 (advisory) - run in-process by close-orchestrate and \
-         named in commands/mustard/close/SKILL.md step 7",
-    ),
-    (
-        "rebuild-specs",
-        "manual repair tool: regenerates the committed .summary.json sidecars \
-         (commands/spec/rebuild_specs.rs module doc); user-invoked only \
-         (flagged in the F1 LOT C report)",
-    ),
-    (
-        "review-dispatch",
-        "built to replace the review SKILL's imperative steps, but the SKILL \
-         still calls review-prefetch/diff-context directly - unadopted \
-         (flagged as dark surface in the F1 LOT C report)",
-    ),
-    (
-        "security-scan",
-        "secret/permission scanner with an exit-code contract \
-         (commands/review/security_scan.rs, JS-era port); no product caller \
-         since scripts/ was retired (flagged as dark surface in the F1 LOT C \
-         report)",
-    ),
-    (
-        "status",
-        "user-invoked consolidated git/pipeline/harness report \
-         (commands/pipeline/status.rs); its only prose caller was the \
-         `/status` door, dropped by the four-door surface prune - an \
-         observability escape hatch with no scripted caller",
-    ),
-];
 
 /// Declared long flags that NO product prose spells, kept deliberately. Sorted
 /// by `(command, flag)`; each justification says why a reader is never left
@@ -164,203 +41,7 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
 /// honest fixes are to document it or to remove it. A row here says the flag is
 /// reachable some OTHER way — it mirrors a documented sibling, it is the escape
 /// hatch a refusal message prints, or it exists for a caller that is not prose.
-const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
-    (
-        "ac-negative-check",
-        "from",
-        "the revision the REMOVAL pass restores the work to; omitted it is the \
-         merge base of HEAD and the primary integration base, which is what \
-         every documented `--removal` invocation wants",
-    ),
-    (
-        "adapt-cursor",
-        "repo",
-        "project-root override on a command RUNTIME_WHITELIST already records as \
-         callerless - a path argument, not a behaviour",
-    ),
-    (
-        "amend-finalize",
-        "session-id",
-        "the required argument of a command the SessionEnd hook runs in-process; \
-         the CLI face exists for a CRASHED session, and its operator has the \
-         session id in front of them",
-    ),
-    (
-        "artifact-update",
-        "manifest",
-        "manifest path override, defaulting to `apps/cli/templates/.artifacts.json` \
-         - the documented invocation is the default",
-    ),
-    (
-        "base-candidates",
-        "no-fetch",
-        "opt-out of the `git fetch` the default performs; the flag's own help \
-         states the reason to leave it alone - the whole point of the menu is \
-         that it is true TODAY",
-    ),
-    (
-        "capability",
-        "status",
-        "frontmatter `status` of a created capability doc; the subcommand help \
-         spells the whole `create --slug X --title Y [--status active]` line, and \
-         the default is what every caller wants",
-    ),
-    (
-        "claude-dir-prune",
-        "repo",
-        "project-root override on a command RUNTIME_WHITELIST already records as \
-         callerless",
-    ),
-    (
-        "complete-spec",
-        "archive-followups",
-        "a declared NO-OP retained for compatibility: the single-stage close no \
-         longer produces `closed-followup` specs, so there is nothing to sweep. \
-         Prose naming it would teach a reader to pass a flag that does nothing",
-    ),
-    (
-        "complete-spec",
-        "archive-stale",
-        "the same declared no-op as `--archive-followups`, kept for the same \
-         compatibility reason",
-    ),
-    (
-        "context-slice",
-        "context-claude-md",
-        "the slicer's SECOND input path; the CONTEXT.md slice is the documented \
-         one and this adds a CLAUDE.md pass after it, described in the command's \
-         own help",
-    ),
-    (
-        "diagnose-otel",
-        "expect-rows-after",
-        "the wait window of a telemetry diagnostic RUNTIME_WHITELIST already \
-         records as callerless - documenting the flag ahead of the command would \
-         document a road to nowhere",
-    ),
-    (
-        "docs-stale-check",
-        "from",
-        "narrows the audit to one spec's recorded audits; CLOSE gate 4 runs the \
-         whole-repo default in-process",
-    ),
-    (
-        "docs-stale-check",
-        "include-nested",
-        "opt-in to nested `.claude` installs, with an env twin \
-         (`MUSTARD_DOCS_AUDIT_INCLUDE_NESTED`); the default - skip them - is what \
-         the CLOSE gate runs",
-    ),
-    (
-        "emit-phase",
-        "from",
-        "the optional prior phase; its help says it defaults to the spec's last \
-         known phase, which is why every instructed invocation omits it",
-    ),
-    (
-        "emit-pipeline",
-        "allow-no-qa",
-        "the escape hatch of the REVIEW/QA gate, for trusted callers like \
-         `qa-run` itself. Prose that advertised it would advertise the way \
-         AROUND the gate to exactly the reader the gate is for",
-    ),
-    (
-        "gate-regression-check",
-        "moment",
-        "the 1/2/3 selector (default 1) of an engine consumed in-process by \
-         commands/agent/context_inject.rs; RUNTIME_WHITELIST already records the \
-         CLI face as callerless",
-    ),
-    (
-        "gate-regression-check",
-        "wave-dir",
-        "the `--moment 3` companion on that same callerless CLI face; its help \
-         carries the whole contract, exit code included",
-    ),
-    (
-        "git-settle",
-        "report",
-        "the READING face of the exit ritual, settling nothing. The door prose \
-         instructs the ritual; the report is what an operator runs to look first, \
-         and the command's help describes it",
-    ),
-    (
-        "mark-checklist-item",
-        "cwd",
-        "project-root override; the close-gate refusal that instructs this \
-         command is read from the project root",
-    ),
-    (
-        "mark-checklist-item",
-        "item",
-        "the refusal hands it over already filled in - close_gates.rs prints \
-         `mark-checklist-item --spec {spec} --item <text>` per unchecked box, so \
-         the reader meets the flag at the moment it is needed",
-    ),
-    (
-        "mark-finding",
-        "id",
-        "same shape: `finding_refusal` prints `mark-finding --spec {spec} --id \
-         {id} --to <dest> --reason <why>` once per open finding, with the id \
-         already substituted",
-    ),
-    (
-        "pipeline-summary",
-        "self-test",
-        "a self-check face whose only caller is an acceptance criterion; its help \
-         carries the exact `cargo run` line to type",
-    ),
-    (
-        "rehook",
-        "repo",
-        "project-root override on the harness re-enable door, which `/upsert --on` \
-         runs from the project root",
-    ),
-    (
-        "spec-draft",
-        "output",
-        "output directory override, defaulting to `.claude/spec/{slug}/` - the \
-         layout every flow downstream assumes",
-    ),
-    (
-        "spec-draft",
-        "signals",
-        "an optional free-form comma-separated list embedded in `spec.md` as a \
-         comment; nothing reads it back, so there is no behaviour for prose to \
-         describe",
-    ),
-    (
-        "statusline",
-        "preview",
-        "renders every shipped theme on its own labelled line, for a human \
-         picking one. `statusline` proper is wired by settings.json and reads its \
-         payload from stdin",
-    ),
-    (
-        "unhook",
-        "repo",
-        "project-root override on the harness disable door, which `/upsert --off` \
-         runs from the project root",
-    ),
-    (
-        "work-unit-open",
-        "branch",
-        "the alternative to the documented `--spec`/`--intent` pair, for a unit \
-         whose branch already exists; the flag's help says exactly that",
-    ),
-    (
-        "worktree-gc",
-        "age-days",
-        "the age threshold (default 7) of a sweep that is dry-run by default; the \
-         command's help carries both numbers",
-    ),
-    (
-        "worktree-gc",
-        "repo",
-        "project-root override; the instructed invocation runs from the project \
-         root",
-    ),
-];
+const FLAG_WHITELIST: &[(&str, &str, &str)] = &[];
 
 /// Caller spellings that precede a `run <name>` instruction in product files.
 /// `$RtExe` is `install.ps1`'s handle for the freshly built `mustard-rt.exe`.
@@ -435,9 +116,12 @@ struct RunInvocation {
 }
 
 /// Extract every `run <name> [--flag …]` instruction reachable through one of
-/// the [`CALLER_PREFIXES`], normalizing the two two-token rewrite forms
-/// (`metrics wave-status` and `scan spec`, collapsed by `main.rs` argv
-/// pre-routing) to their registered single-token names.
+/// the [`CALLER_PREFIXES`].
+///
+/// Um nome é um token só. As duas formas de dois tokens que existiam aqui
+/// (`metrics wave-status` e `scan spec`, que o `main.rs` colava antes do clap)
+/// saíram com os comandos que as usavam, e a colagem saiu junto: o `main.rs`
+/// não reescreve mais argv nenhum.
 fn extract_run_invocations(text: &str) -> Vec<RunInvocation> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -453,33 +137,8 @@ fn extract_run_invocations(text: &str) -> Vec<RunInvocation> {
             if end == start || !bytes[start].is_ascii_lowercase() {
                 continue;
             }
-            let first = &text[start..end];
-            let mut name = first.to_string();
-            // Where THIS command's arguments begin — after the second token
-            // when the two-token form was collapsed, so `scan spec --entity`
-            // reads `--entity` as `scan-spec`'s and not as a stray word.
-            let mut args_from = end;
-            if end < bytes.len() && bytes[end] == b' ' {
-                let second_start = end + 1;
-                let mut second_end = second_start;
-                while second_end < bytes.len() && is_token_byte(bytes[second_end]) {
-                    second_end += 1;
-                }
-                if second_end > second_start && bytes[second_start].is_ascii_lowercase() {
-                    match (first, &text[second_start..second_end]) {
-                        ("metrics", "wave-status") => {
-                            name = "metrics-wave-status".to_string();
-                            args_from = second_end;
-                        }
-                        ("scan", "spec") => {
-                            name = "scan-spec".to_string();
-                            args_from = second_end;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            let flags = long_flags_of(&text[args_from..]);
+            let name = text[start..end].to_string();
+            let flags = long_flags_of(&text[end..]);
             out.push(RunInvocation { name, flags });
         }
     }
@@ -623,16 +282,13 @@ fn squash_whitespace(text: &str) -> String {
 ///
 /// rt sources exclude the registration/list surfaces (`cli.rs` family files,
 /// `doctor.rs` known-list) and the command's own module — a command's own
-/// docs are not a caller. Dashboard backend (`apps/dashboard/server/src`)
-/// sources count in full.
+/// docs are not a caller.
 fn has_argv_caller(root: &Path, name: &str) -> bool {
     let needle = format!("\"run\", \"{name}\"");
     let own_module = format!("{}.rs", name.replace('-', "_"));
 
     let mut rt_sources = Vec::new();
     walk_files(&root.join("apps/rt/src"), &mut rt_sources);
-    let mut dash_sources = Vec::new();
-    walk_files(&root.join("apps/dashboard/server/src"), &mut dash_sources);
 
     let excluded = |p: &Path| {
         p.file_name()
@@ -642,7 +298,6 @@ fn has_argv_caller(root: &Path, name: &str) -> bool {
     rt_sources
         .iter()
         .filter(|p| has_extension(p, &["rs"]) && !excluded(p))
-        .chain(dash_sources.iter().filter(|p| has_extension(p, &["rs"])))
         .any(|p| squash_whitespace(&read_lossy(p)).contains(&needle))
 }
 
@@ -715,17 +370,682 @@ fn forward_every_instructed_flag_is_declared() {
     );
 }
 
+/// O campo do próximo passo é uma instrução como a de qualquer arquivo do
+/// produto, e passa pela mesma catraca: o nome que ele manda rodar tem de estar
+/// registrado, a opção que ele já vem escrita, declarada, e a linha inteira,
+/// com as opções que o comando exige, aceita pelo parser.
+///
+/// A ida anda pelos arquivos do repositório, e esta instrução não mora em
+/// arquivo nenhum: o binário a monta na hora e a entrega no campo `command` da
+/// resposta, de onde quem conduz a conversa a copia e roda. Um renome do
+/// comando, a opção `--spec` deixando de ser declarada, ou uma opção
+/// obrigatória que a linha não traz, entrega um passo que morre num erro do
+/// parser e código 2 — e nada no repositório teria como acusar, porque nenhum
+/// texto do produto escreve essa linha.
+///
+/// A instrução conferida é a que o próprio binário monta, nunca uma cópia do
+/// formato dela escrita aqui: um teste que remontasse a linha à mão conferiria
+/// a própria cópia e continuaria verde depois de a montagem mudar. Entram as
+/// fases da tabela e o fechamento, que a rodada devolve com tudo aprovado.
+#[test]
+fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
+    let tree = run_command_tree();
+    assert!(!NEXT_BY_PHASE.is_empty(), "a tabela do próximo passo está vazia");
+
+    let estado = State {
+        branch: Some("feature/alguma-spec".to_string()),
+        base: Some("dev".to_string()),
+        ..State::default()
+    };
+    let mut montadas: Vec<(String, Option<String>)> = NEXT_BY_PHASE
+        .iter()
+        .map(|(fase, _)| {
+            (format!("a fase `{fase}`"), next_command(fase, "alguma-spec", &estado).as_str().map(str::to_string))
+        })
+        .collect();
+    montadas.push(("a rodada com tudo aprovado".to_string(), step_command(DONE_STEP, "alguma-spec", &estado)));
+
+    let mut offenders = Vec::new();
+    for (quem, montado) in &montadas {
+        let Some(instrucao) = montado.as_deref() else {
+            offenders.push(format!("{quem} está na tabela e não monta comando nenhum"));
+            continue;
+        };
+        let mut invocacoes = extract_run_invocations(instrucao);
+        let Some(inv) = invocacoes.pop() else {
+            offenders.push(format!("{quem} monta `{instrucao}`, que não é uma chamada de `mustard-rt run`"));
+            continue;
+        };
+        let Some(cmd) = tree.get_subcommands().find(|c| c.get_name() == inv.name) else {
+            offenders.push(format!("{quem} manda rodar `run {}`, que não é registrado", inv.name));
+            continue;
+        };
+        let declaradas = declared_long_flags(cmd);
+        for flag in inv.flags {
+            if !declaradas.contains(flag.as_str()) {
+                offenders.push(format!(
+                    "{quem} manda rodar `run {} --{flag}`, que esse comando não declara",
+                    inv.name
+                ));
+            }
+        }
+        // A linha inteira, como quem obedece a resposta a roda: o parser de
+        // verdade cobra as opções obrigatórias que a conferência das opções
+        // escritas não vê.
+        let argv: Vec<&str> = instrucao.split_whitespace().skip(1).collect();
+        if let Err(erro) = tree.clone().try_get_matches_from(argv) {
+            offenders.push(format!("{quem} monta `{instrucao}`, que o parser recusa: {erro}"));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "o campo do próximo passo entrega uma linha que o binário recusa - quem \
+         obedecer a resposta gasta a chamada num erro do clap. Conserte a tabela \
+         do próximo passo ou o comando que ela nomeia:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Os ganchos que ficam: os únicos que o registro pode ter.
+const KEPT_HOOKS: &[&str] = &[
+    "approval_witness",
+    "command_guard",
+    "end_of_turn_check",
+    "prompt_entry",
+    "session_cleanup_observer",
+    "session_start_inject",
+    "statusline_heal_observer",
+    "subagent_inject",
+    "write_gate",
+];
+
+/// Os ganchos que saíram, pelo nome com que estavam registrados. Nenhum deles
+/// volta ao registro.
+const REMOVED_HOOKS: &[&str] = &[
+    "active_spec_limit_gate",
+    "amend_window_inject",
+    "bash_command_gate",
+    "boundary_gate",
+    "change_request_log",
+    "clarification_observer",
+    "context_budget_gate",
+    "delegation_advisory",
+    "main_context_counter",
+    "metrics_observer",
+    "mold_gate",
+    "picker_approval_observer",
+    "plan_approval_observer",
+    "post_edit",
+    "prompt_submit_inject",
+    "rewave_observer",
+    "scan_gate",
+    "session_knowledge_observer",
+    "size_gate",
+    "skill_usage_observer",
+    "spec_hygiene_observer",
+    "subagent_observer",
+    "tool_result_observer",
+    "tool_use_counter",
+    "user_prompt_observer",
+    "wave_complete_observer",
+    "wave_start_observer",
+    "wikilink_footer_observer",
+    "worktree_create",
+];
+
+/// Os comandos `run` que saíram, pelo nome com que estavam registrados: os
+/// que viraram parte de outro comando e os que saíram sem substituto. Nenhum
+/// deles volta ao que o binário imprime nem à prosa.
+const REMOVED_COMMANDS: &[&str] = &[
+    "ac-add",
+    "ac-amend",
+    "ac-negative-check",
+    "active-specs",
+    "adapt-cursor",
+    "agent-prompt-render",
+    "amend-finalize",
+    "analyze-validation",
+    "approve-spec",
+    "artifact-update",
+    "base-candidates",
+    "capability",
+    "change-request",
+    "claude-dir-prune",
+    "close-orchestrate",
+    "close-pipeline",
+    "complete-spec",
+    "context-slice",
+    "dependency-precheck",
+    "diagnose-otel",
+    "diff-context",
+    "digest-adherence-finalize",
+    "doc-page",
+    "docs-stale-check",
+    "emit-event",
+    "emit-phase",
+    "emit-pipeline",
+    "equivalence-learn",
+    "event-projections",
+    "exec-rewave-check",
+    "feature",
+    "finding-collect",
+    "gate-regression-check",
+    "git-delete",
+    "git-settle",
+    "glossary-coverage",
+    "grill-capture",
+    "language-audit",
+    "maint-deps",
+    "maint-validate",
+    "mark-checklist-item",
+    "mark-finding",
+    "material-add",
+    "metrics",
+    "metrics-wave-status",
+    "notebook",
+    "orient",
+    "otel-collector",
+    "otel-stop",
+    "pipeline-summary",
+    "plan-materialize",
+    "plan-prepare",
+    "pr-edit",
+    "pr-list",
+    "pr-ready",
+    "qa-run",
+    "rebuild-specs",
+    "rehook",
+    "resume-bootstrap",
+    "review-dispatch",
+    "review-prefetch",
+    "review-result",
+    "scan-guards-apply",
+    "scan-guards-list",
+    "scan-lapidation",
+    "scan-patterns-apply",
+    "scan-patterns-decline",
+    "scan-patterns-list",
+    "scan-patterns-relay",
+    "scan-patterns-sweep",
+    "scan-spec",
+    "scope-classify",
+    "scope-decompose",
+    "scratch-gc",
+    "security-scan",
+    "spec-children",
+    "spec-children-tree",
+    "spec-doc",
+    "spec-draft",
+    "status",
+    "tactical-fix-create",
+    "tactical-fix-detect",
+    "unhook",
+    "verify-pipeline",
+    "wave-advance",
+    "wave-collapse",
+    "wave-dependency",
+    "wave-done",
+    "wave-files",
+    "wave-overlap-check",
+    "wave-scaffold",
+    "wave-size-check",
+    "wave-tree",
+    "work-unit-open",
+    "worktree-gc",
+];
+
+/// `true` quando o byte pode continuar um nome de comando ou de gancho.
+fn is_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+/// Os começos de cada ocorrência de `name` inteiro em `text`: nem colado a
+/// outra letra antes, nem continuado depois.
+fn whole_name_at<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let bytes = text.as_bytes();
+    text.match_indices(name).map(|(at, _)| at).filter(move |&at| {
+        let end = at + name.len();
+        (at == 0 || !is_name_byte(bytes[at - 1])) && bytes.get(end).is_none_or(|b| !is_name_byte(*b))
+    })
+}
+
+/// Os nomes que saíram e que `text` ainda dá ao leitor. Um gancho conta em
+/// qualquer lugar, porque o nome dele não é palavra comum. Um comando conta
+/// quando o texto manda rodá-lo (`run <nome>`) ou, se o nome tem hífen, quando
+/// o cita como código (`` `<nome>` ``): é assim que o leitor o toma por um
+/// comando que existe. Um nome de uma palavra só, como `status`, citado como
+/// código é outra coisa, e não conta.
+fn removed_names_in(text: &str) -> Vec<&'static str> {
+    let bytes = text.as_bytes();
+    let hooks = REMOVED_HOOKS.iter().filter(|name| whole_name_at(text, name).next().is_some());
+    let commands = REMOVED_COMMANDS.iter().filter(|name| {
+        whole_name_at(text, name).any(|at| {
+            text[..at].ends_with("run ") || (name.contains('-') && at > 0 && bytes[at - 1] == b'`')
+        })
+    });
+    hooks.chain(commands).copied().collect()
+}
+
+/// O literal de string que começa em `rest[0]` (`"…"`, `b"…"`, `r#"…"#` ou
+/// `br"…"`), com o tamanho que ele ocupa no código. O texto sai como o
+/// programa o vê: os escapes comuns viram o caractere, os outros viram um
+/// espaço, e a continuação de linha some com os espaços que a seguem.
+fn string_literal(rest: &[u8]) -> Option<(String, usize)> {
+    let prefix = usize::from(matches!(rest.first(), Some(b'b' | b'c')));
+    let raw = rest.get(prefix) == Some(&b'r');
+    let hashes = if raw { rest[prefix + 1..].iter().take_while(|c| **c == b'#').count() } else { 0 };
+    let open = prefix + usize::from(raw) + hashes;
+    if rest.get(open) != Some(&b'"') {
+        return None;
+    }
+    let body = &rest[open + 1..];
+    if raw {
+        let close = [&b"\""[..], &vec![b'#'; hashes]].concat();
+        let end = body.windows(close.len()).position(|w| w == close.as_slice())?;
+        return Some((String::from_utf8_lossy(&body[..end]).into_owned(), open + 1 + end + close.len()));
+    }
+    let mut text = Vec::new();
+    let mut j = 0;
+    while j < body.len() && body[j] != b'"' {
+        if body[j] != b'\\' {
+            text.push(body[j]);
+            j += 1;
+            continue;
+        }
+        let escaped = body.get(j + 1).copied().unwrap_or(b' ');
+        j += 2;
+        match escaped {
+            b'\n' | b'\r' => j += body[j..].iter().take_while(|c| c.is_ascii_whitespace()).count(),
+            b'n' => text.push(b'\n'),
+            b't' => text.push(b'\t'),
+            b'"' | b'\\' | b'\'' => text.push(escaped),
+            _ => text.push(b' '),
+        }
+    }
+    Some((String::from_utf8_lossy(&text).into_owned(), open + 1 + j + 1))
+}
+
+/// O tamanho do literal de caractere que começa em `rest[0]`, ou 1 quando o
+/// apóstrofo abre um tempo de vida, como `'static`.
+fn char_literal_len(rest: &[u8]) -> usize {
+    if rest.get(1) == Some(&b'\\') {
+        return rest[2..].iter().position(|c| *c == b'\'').map_or(1, |at| at + 3);
+    }
+    let width = match rest.get(1) {
+        Some(0xC0..=0xDF) => 2,
+        Some(0xE0..=0xEF) => 3,
+        Some(0xF0..=0xFF) => 4,
+        _ => 1,
+    };
+    if rest.get(1 + width) == Some(&b'\'') { width + 2 } else { 1 }
+}
+
+/// O texto de cada literal de string do código de produção de um arquivo
+/// `.rs`, em ordem. Os comentários ficam de fora, e cada item marcado com
+/// `#[cfg(test)]` também, até o `;` ou a vírgula dele ou até o fim do bloco de
+/// chaves dele; as chaves dentro de um literal não contam.
+fn production_literals(source: &str) -> Vec<String> {
+    const TEST_ONLY: &[u8] = b"#[cfg(test)]";
+    let b = source.as_bytes();
+    let mut out = Vec::new();
+    // O item de teste que está sendo pulado: a fundura das chaves e dos
+    // parênteses dele, e se o bloco de chaves já abriu.
+    let mut skipping: Option<(usize, usize, bool)> = None;
+    let mut i = 0;
+    while i < b.len() {
+        let rest = &b[i..];
+        // Um prefixo de literal (`b`, `r`, `c`) só abre um literal no começo
+        // de um nome, nunca no fim de outro.
+        let literal = match rest[0] {
+            b'"' => string_literal(rest),
+            b'b' | b'r' | b'c' if i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_') => {
+                string_literal(rest)
+            }
+            _ => None,
+        };
+        if rest.starts_with(b"//") {
+            i += rest.iter().position(|c| *c == b'\n').unwrap_or(rest.len());
+        } else if rest.starts_with(b"/*") {
+            i += rest.windows(2).position(|w| w == b"*/").map_or(rest.len(), |end| end + 2);
+        } else if let Some((text, len)) = literal {
+            if skipping.is_none() {
+                out.push(text);
+            }
+            i += len;
+        } else if rest[0] == b'\'' {
+            i += char_literal_len(rest);
+        } else if skipping.is_none() && rest.starts_with(TEST_ONLY) {
+            skipping = Some((0, 0, false));
+            i += TEST_ONLY.len();
+        } else {
+            if let Some((braces, nest, opened)) = skipping.as_mut() {
+                let ends = match rest[0] {
+                    b'{' => {
+                        (*braces, *opened) = (*braces + 1, true);
+                        false
+                    }
+                    b'}' => {
+                        *braces = braces.saturating_sub(1);
+                        *braces == 0
+                    }
+                    b'(' | b'[' => {
+                        *nest += 1;
+                        false
+                    }
+                    b')' | b']' if *nest > 0 => {
+                        *nest -= 1;
+                        false
+                    }
+                    b')' | b']' | b';' | b',' => !*opened && *nest == 0,
+                    _ => false,
+                };
+                if ends {
+                    skipping = None;
+                }
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// O que o código de produção de um arquivo `.rs` pode imprimir: cada
+/// literal, e cada comando mandado rodar por argumentos separados
+/// (`"run", "<nome>"`), escrito como `run <nome>`.
+fn rust_texts(source: &str) -> Vec<String> {
+    let literals = production_literals(source);
+    let argv: Vec<String> =
+        literals.windows(2).filter(|pair| pair[0] == "run").map(|pair| format!("run {}", pair[1])).collect();
+    literals.into_iter().chain(argv).collect()
+}
+
+/// Todo texto que o binário imprime ou grava para o leitor, com a origem de
+/// cada um: a prosa do plugin e os moldes que o instalador grava no projeto;
+/// cada literal de string do código de produção, que é de onde saem o
+/// catálogo de textos, as dicas e as recusas; a ajuda de cada comando `run`; e
+/// o próximo passo de cada fase.
+fn printed_texts(root: &Path) -> Vec<(String, String)> {
+    let shown = |path: &Path| path.strip_prefix(root).unwrap_or(path).display().to_string();
+    let mut texts = Vec::new();
+    for dir in ["plugin", "packages/core/templates"] {
+        let mut files = Vec::new();
+        walk_files(&root.join(dir), &mut files);
+        assert!(!files.is_empty(), "{dir} holds no text to sweep");
+        texts.extend(files.iter().map(|file| (shown(file), read_lossy(file))));
+    }
+    for dir in ["apps/rt/src", "apps/cli/src", "packages/core/src"] {
+        let mut files = Vec::new();
+        walk_files(&root.join(dir), &mut files);
+        for file in files.iter().filter(|f| has_extension(f, &["rs"])) {
+            texts.extend(rust_texts(&read_lossy(file)).into_iter().map(|text| (shown(file), text)));
+        }
+    }
+    let tree = run_command_tree();
+    texts.push(("run --help".to_string(), tree.clone().render_long_help().to_string()));
+    for sub in tree.get_subcommands() {
+        texts.push((format!("run {} --help", sub.get_name()), sub.clone().render_long_help().to_string()));
+    }
+    let state = State { branch: Some("feature/alguma-spec".to_string()), base: Some("dev".to_string()), ..State::default() };
+    for (phase, _) in NEXT_BY_PHASE {
+        let next = next_command(phase, "alguma-spec", &state);
+        texts.push((format!("the next step of `{phase}`"), next.as_str().unwrap_or_default().to_string()));
+    }
+    let done = step_command(DONE_STEP, "alguma-spec", &state).unwrap_or_default();
+    texts.push(("the next step once every wave is approved".to_string(), done));
+    texts
+}
+
+/// Nenhum texto que o binário imprime ou grava — o catálogo, as dicas, a
+/// ajuda, o próximo passo — nem a prosa do plugin dá ao leitor um comando ou
+/// um gancho que saiu. Cortar um comando e esquecer uma frase que o cita manda
+/// quem lê gastar uma chamada num comando que não existe.
+#[test]
+fn no_printed_text_names_a_command_or_hook_that_left() {
+    let root = repo_root();
+    let surface: BTreeSet<String> = surface_names().into_iter().collect();
+    let back: Vec<&&str> = REMOVED_COMMANDS.iter().filter(|name| surface.contains(**name)).collect();
+    assert!(back.is_empty(), "commands that left are registered again: {back:?}");
+
+    let texts = printed_texts(&root);
+    let helps = texts.iter().filter(|(origin, _)| origin.ends_with("--help")).count();
+    assert_eq!(helps, surface.len() + 2, "every `run` command's help is swept, plus `run --help` and `help`");
+    assert!(texts.len() > 2_000, "the sweep read only {} texts", texts.len());
+    // A varredura enxerga o que procura: o catálogo de textos está nela.
+    assert!(
+        texts.iter().any(|(origin, text)| {
+            // No Windows o caminho vem com a barra invertida.
+            origin.replace('\\', "/").ends_with("i18n/flow.rs") && text.contains("mustard-rt run open")
+        }),
+        "the sweep never reads the catalog",
+    );
+
+    let found: Vec<String> = texts
+        .iter()
+        .flat_map(|(origin, text)| removed_names_in(text).into_iter().map(move |name| format!("{origin}: {name}")))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "texts the binary prints or writes still name a command or hook that left - \
+         whoever reads them is sent to something that does not exist:\n{}",
+        found.join("\n")
+    );
+}
+
+/// A varredura acha o nome que saiu em cada forma que o leitor toma por
+/// comando, e deixa passar o que não é chamada: o comando que fica, a palavra
+/// comum citada como código, o comentário e o código de teste.
+#[test]
+fn the_sweep_finds_each_way_a_removed_name_reaches_the_reader() {
+    assert_eq!(removed_names_in("rode `mustard-rt run qa-run --spec x`"), ["qa-run"]);
+    assert_eq!(removed_names_in("O `spec-draft` saiu do fluxo."), ["spec-draft"]);
+    assert_eq!(removed_names_in("mustard-rt run status"), ["status"]);
+    assert_eq!(removed_names_in("o gancho amend_window_inject grava"), ["amend_window_inject"]);
+    for clean in ["mustard-rt run statusline", "o campo `status`", "[qa-run] aviso", "run open-spec-draft", "subagent_inject"] {
+        assert!(removed_names_in(clean).is_empty(), "{clean}");
+    }
+
+    let source = concat!(
+        "// \"`qa-run`\" num comentário\n",
+        "fn a() -> &'static str { let _ = '\"'; let _ = b'{'; \"rode \\\n    `mustard-rt run git-settle`\" }\n",
+        "const B: &str = r#\"um \"cru\" `emit-event`\"#;\n",
+        "#[cfg(test)]\nconst C: &[&str] = &[\"`spec-doc`\"];\n",
+        "const D: &str = \"fica\";\n",
+        "#[cfg(test)]\nmod tests {\n    fn t() { let _ = \"{ `wave-done`\"; }\n}\n",
+        "fn e() { spawn(&[\"run\", \"orient\"]); }\n",
+    );
+    let texts = rust_texts(source);
+    assert_eq!(texts, ["rode `mustard-rt run git-settle`", "um \"cru\" `emit-event`", "fica", "run", "orient", "run orient"]);
+    let found: Vec<&str> = texts.iter().flat_map(|text| removed_names_in(text)).collect();
+    assert_eq!(found, ["git-settle", "emit-event", "orient"]);
+}
+
+/// Os comentários de um arquivo `.rs`, cada um com a sua linha, e o código que
+/// sobra sem eles. Um literal de string ou de caractere nunca abre comentário,
+/// e no código ele vira um par de aspas vazio.
+fn comments_and_code(source: &str) -> (Vec<(usize, String)>, String) {
+    let b = source.as_bytes();
+    let breaks: Vec<usize> = source.match_indices('\n').map(|(at, _)| at).collect();
+    let (mut comments, mut code) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < b.len() {
+        let rest = &b[i..];
+        let line = 1 + breaks.partition_point(|at| *at < i);
+        let literal = match rest[0] {
+            b'"' => string_literal(rest),
+            b'b' | b'r' | b'c' if i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_') => {
+                string_literal(rest)
+            }
+            _ => None,
+        };
+        if rest.starts_with(b"//") || rest.starts_with(b"/*") {
+            let len = if rest[1] == b'/' {
+                rest.iter().position(|c| *c == b'\n').unwrap_or(rest.len())
+            } else {
+                rest.windows(2).position(|w| w == b"*/").map_or(rest.len(), |end| end + 2)
+            };
+            let text = String::from_utf8_lossy(&rest[..len]).into_owned();
+            comments.extend(text.lines().enumerate().map(|(k, part)| (line + k, part.to_string())));
+            i += len;
+        } else if let Some((_, len)) = literal {
+            code.extend_from_slice(b"\"\"");
+            i += len;
+        } else if rest[0] == b'\'' {
+            code.push(b'\'');
+            i += char_literal_len(rest);
+        } else {
+            code.push(rest[0]);
+            i += 1;
+        }
+    }
+    (comments, String::from_utf8_lossy(&code).into_owned())
+}
+
+/// Os códigos de spec que um comentário cita: o código do Mustard
+/// (`MSTD-RULE-0005`), o rótulo com hífen de critério, ponto ou limite
+/// (`AC-3`, `P-17`, `L-3.3`), a letra com número de regra, onda ou tarefa
+/// (`R5`, `W4`, `T1.7`, `W8A-2`) e a seção com o sinal de parágrafo. O que
+/// está entre crases ou aspas é dado, não citação: o formato de um código ou a
+/// entrada de um teste.
+fn spec_codes_in(comment: &str) -> Vec<String> {
+    static QUOTED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"`[^`]*`|"[^"]*"|“[^”]*”"#).expect("the quote pattern compiles"));
+    // Um código começa o texto ou vem depois de um caractere que não o
+    // continua: `release/2026-Q3` e `U+E0B0` não são códigos.
+    static CODE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(concat!(
+            r"(?:^|[^\w/.+-])(",
+            r"MSTD-[A-Z]+-\d+",
+            r"|(?:AC|CT|[A-Z])-(?:[A-Z]{1,2}\d*-?)?\d+(?:\.\d+)*\b",
+            r"|[A-Z]+\d+[A-Z]+-\d+",
+            r"|[A-Z]\d{1,2}(?:\.\d+)*\b",
+            r"|§\s*\d",
+            r")",
+        ))
+        .expect("the code pattern compiles")
+    });
+    let bare = QUOTED.replace_all(comment, " ");
+    CODE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
+}
+
+/// Os nomes de função que carregam um código de spec, como `ac8_…` ou
+/// `…_t1_3_…`: uma letra (ou `ac`) com um ou dois dígitos, entre sublinhados.
+fn spec_coded_fn_names(code: &str) -> Vec<String> {
+    static NAME: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\bfn\s+([A-Za-z0-9_]+)").expect("the fn pattern compiles"));
+    static CODED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:^|_)(?:ac|[a-z])\d{1,2}(?:_\d+)*(?:_|$)").expect("the name pattern compiles")
+    });
+    NAME.captures_iter(code).map(|c| c[1].to_string()).filter(|n| CODED.is_match(n)).collect()
+}
+
+/// Nenhum comentário nem nome de teste do código cita código de spec: a spec
+/// fica fora do git, e o código que aponta para ela não leva a lugar nenhum.
+/// Cada comentário diz o comportamento em palavras.
+#[test]
+fn no_comment_or_test_name_cites_a_spec_code() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    for dir in ["apps", "packages"] {
+        walk_files(&root.join(dir), &mut files);
+    }
+    let files: Vec<&PathBuf> = files.iter().filter(|f| has_extension(f, &["rs"])).collect();
+    assert!(files.len() > 300, "the sweep read only {} Rust files", files.len());
+    let mut found = Vec::new();
+    let mut read = 0;
+    for file in files {
+        let shown = file.strip_prefix(&root).unwrap_or(file).display().to_string();
+        let (comments, code) = comments_and_code(&read_lossy(file));
+        read += comments.len();
+        for (line, comment) in comments {
+            for cited in spec_codes_in(&comment) {
+                found.push(format!("{shown}:{line}: {cited} in {}", comment.trim()));
+            }
+        }
+        found.extend(spec_coded_fn_names(&code).into_iter().map(|name| format!("{shown}: fn {name}")));
+    }
+    assert!(read > 20_000, "the sweep read only {read} comment lines");
+    assert!(
+        found.is_empty(),
+        "comments or test names still cite a spec code - say the behaviour in words:\n{}",
+        found.join("\n")
+    );
+}
+
+/// A varredura acha cada forma de citar um código de spec e deixa passar o
+/// dado entre crases ou aspas, as siglas comuns e o comentário dentro de um
+/// texto.
+#[test]
+fn the_comment_sweep_finds_each_spec_code_and_lets_data_pass() {
+    for (comment, cited) in [
+        ("// fecha a regra (MSTD-RULE-0038)", "MSTD-RULE-0038"),
+        ("/// AC-7 — installs privately", "AC-7"),
+        ("// Wave-plans use AC-W4-1", "AC-W4-1"),
+        ("// Spec contract AC-A-14", "AC-A-14"),
+        ("// the limit L-3.3 holds", "L-3.3"),
+        ("// D4: materialise the verdict", "D4"),
+        ("// Layer promotion guard (T1.7)", "T1.7"),
+        ("/// W8A-2 supersedes the old reader", "W8A-2"),
+        ("// see the audit § 4", "§ 4"),
+    ] {
+        assert_eq!(spec_codes_in(comment), [cited], "{comment}");
+    }
+    for clean in [
+        "/// like `MSTD-CRIT-0016`",
+        "/// o número escrito `P-12` vira `12`",
+        r#"/// um código como "MSTD-RULE-0008" e uma frase"#,
+        "/// UTF-8, SHA-256, BCP-47 and ISO-8601 are not codes",
+        "/// the U+E0B0 glyph and the release/2026-Q3 line",
+    ] {
+        assert!(spec_codes_in(clean).is_empty(), "{clean}");
+    }
+
+    let source = concat!(
+        "/// T3 — um código\n",
+        "fn ac8_host_is_clean() { let _ = \"// R5 num texto\"; let _ = '\"'; }\n",
+        "/* bloco\n   com W4 */\n",
+        "fn similarity_x1024() {}\n",
+    );
+    let (comments, code) = comments_and_code(source);
+    assert_eq!(comments, [(1, "/// T3 — um código".to_string()), (3, "/* bloco".to_string()), (4, "   com W4 */".to_string())]);
+    assert_eq!(spec_coded_fn_names(&code), ["ac8_host_is_clean"]);
+}
+
+/// Os eventos que o manifesto do Claude Code registra.
+fn manifest_events(root: &Path) -> BTreeSet<String> {
+    let text = read_lossy(&root.join("plugin").join("hooks").join("hooks.json"));
+    let manifest: serde_json::Value = serde_json::from_str(&text).expect("hooks.json is JSON");
+    manifest["hooks"].as_object().expect("hooks.json has hooks").keys().cloned().collect()
+}
+
+/// Os cortes terminaram: nenhum gancho que saiu segue registrado, o registro
+/// tem só os que ficam, o manifesto só chama evento que tem gancho e todo
+/// evento com gancho está no manifesto; e nenhum comando `run` fica sem
+/// chamador.
 #[test]
 fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     let root = repo_root();
+
+    let registry = mustard_rt::registry::Registry::new();
+    let mut registered = registry.ids();
+    let back: Vec<&str> = registered.iter().copied().filter(|id| REMOVED_HOOKS.contains(id)).collect();
+    assert!(back.is_empty(), "hooks that left are registered again: {back:?}");
+    registered.sort_unstable();
+    assert_eq!(registered, KEPT_HOOKS, "the registry holds exactly the hooks that stay");
+    let with_hook: BTreeSet<String> =
+        registry.triggers().into_iter().map(|trigger| trigger.as_event_name().to_string()).collect();
+    assert_eq!(
+        manifest_events(&root),
+        with_hook,
+        "an entry of hooks.json calls an event with no hook, or a hook has no entry that calls it",
+    );
+
     let instructed: BTreeSet<String> = reverse_prose_corpus(&root)
         .iter()
         .flat_map(|p| extract_run_names(&read_lossy(p)))
         .collect();
     let mut dark = Vec::new();
     for name in surface_names() {
-        let whitelisted = RUNTIME_WHITELIST.iter().any(|(n, _)| *n == name);
-        if whitelisted || instructed.contains(&name) || has_argv_caller(&root, &name) {
+        if instructed.contains(&name) || has_argv_caller(&root, &name) {
             continue;
         }
         dark.push(name);
@@ -733,9 +1053,8 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     assert!(
         dark.is_empty(),
         "registered `run` subcommands with no product caller (templates, CLI \
-         sources, installer, settings template, rt/dashboard argv spawns) and \
-         no RUNTIME_WHITELIST justification - dark surface. Wire a caller, \
-         add a JUSTIFIED whitelist entry, or remove the registration:\n{}",
+         sources, installer, settings template, rt argv spawns) - dark \
+         surface. Wire a caller or remove the registration:\n{}",
         dark.join("\n")
     );
 }
@@ -824,35 +1143,23 @@ fn flag_whitelist_stays_sorted_live_and_not_redundant() {
     }
 }
 
+/// O mapa do início da sessão manda toda página mostrada ao usuário passar
+/// pelo `page`, escrita em markdown, e ser publicada no claude.ai, nos dois
+/// idiomas.
+///
+/// Lido do texto que o binário embute e grava no projeto, e conferido pelo
+/// mesmo extrator da catraca: a chamada tem de ser uma invocação de verdade,
+/// não o nome solto na prosa. Confere o fato, nunca a frase.
 #[test]
-fn runtime_whitelist_stays_sorted_live_and_not_redundant() {
-    for pair in RUNTIME_WHITELIST.windows(2) {
+fn the_session_map_sends_every_page_through_the_page_command() {
+    for text in [mustard_core::platform::i18n::Locale::PtBr, mustard_core::platform::i18n::Locale::EnUs] {
+        let map = mustard_core::session_map(text);
+        let invocations = extract_run_invocations(map);
         assert!(
-            pair[0].0 < pair[1].0,
-            "RUNTIME_WHITELIST must stay sorted: {} before {}",
-            pair[0].0,
-            pair[1].0
+            invocations.iter().any(|inv| inv.name == "page"),
+            "the {text} session map never tells the reader to run `mustard-rt run page`"
         );
-    }
-    let registered: BTreeSet<String> = surface_names().into_iter().collect();
-    let root = repo_root();
-    let instructed: BTreeSet<String> = reverse_prose_corpus(&root)
-        .iter()
-        .flat_map(|p| extract_run_names(&read_lossy(p)))
-        .collect();
-    for (name, justification) in RUNTIME_WHITELIST {
-        assert!(
-            registered.contains(*name),
-            "RUNTIME_WHITELIST entry {name} is not a registered subcommand - drop the row"
-        );
-        assert!(
-            !justification.trim().is_empty(),
-            "RUNTIME_WHITELIST entry {name} carries no justification"
-        );
-        assert!(
-            !(instructed.contains(*name) || has_argv_caller(&root, name)),
-            "RUNTIME_WHITELIST entry {name} now has a static product caller - \
-             the row is redundant, drop it"
-        );
+        assert!(map.contains("claude.ai"), "the {text} session map never says the page is published on claude.ai");
+        assert!(map.contains("markdown"), "the {text} session map never says a page is written in markdown");
     }
 }

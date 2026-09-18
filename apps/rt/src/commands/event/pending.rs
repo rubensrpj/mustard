@@ -26,18 +26,41 @@
 //! arquivo. Cada item carrega id `P-{n}`, título, detalhe e estado (`open`,
 //! `closed` ou `dropped`); fechar ou descartar exige motivo, e um motivo em
 //! branco é recusado com o arquivo intacto — um item que some sem dizer por quê
-//! é a perda que esta lista existe para impedir.
+//! é a perda que esta lista existe para impedir. Um item entra uma vez só: o
+//! mesmo título, sem ligar para maiúscula nem acento, é recusado apontando o
+//! item que já está aberto.
+//!
+//! ## Datas e notas
+//!
+//! Cada item guarda o dia em que entrou (`created`, `AAAA-MM-DD` em UTC). Um
+//! item gravado antes de a data existir ganha a data do dia na primeira
+//! gravação da lista: assim, trinta dias depois, os antigos não voltam todos de
+//! uma vez. Dois campos vêm depois: `swept`, o dia em que a faxina mostrou o
+//! item, e `became`, a nota "virou a spec X".
+//!
+//! O início da sessão mostra só uma linha, com a contagem ([`count_line`]); a
+//! lista inteira sai da listagem.
 //!
 //! Recusa sai com exit 1 e o JSON `ok: false`, como o `material-add`.
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::search::{query_terms, SearchIndex};
+use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, SpecLog};
+use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::text;
+use mustard_core::platform::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use mustard_core::io::fs::lock::{read_shared, LockedFile};
+
+use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::git_settle::main_checkout_root;
+use crate::shared::spec_state::DiskSpecState;
 
 /// Options for `mustard-rt run pending`.
+#[derive(Debug, Clone, Default)]
 pub struct PendingOpts {
     /// Qualquer diretório dentro do repositório; o ledger é resolvido no
     /// checkout principal a partir dele.
@@ -48,6 +71,31 @@ pub struct PendingOpts {
     pub close: Option<String>,
     pub drop: Option<String>,
     pub reason: Option<String>,
+    /// O dia de hoje, `AAAA-MM-DD`. `None` lê o relógio; os testes passam um
+    /// dia fixo para darem sempre a mesma resposta.
+    pub now: Option<String>,
+    /// Tira pendências da lista, com um seletor (`id`, `term` ou `before`) e
+    /// sempre com motivo. Sem `confirm`, só mostra o que sairia e devolve o
+    /// código da confirmação.
+    pub remove: bool,
+    /// Seletor da remoção: os números, separados por vírgula (`P-2,P-5`).
+    pub id: Option<String>,
+    /// Seletor da remoção: as palavras, pela busca sobre título e detalhe.
+    pub term: Option<String>,
+    /// Seletor da remoção: as que entraram antes deste dia, `AAAA-MM-DD`.
+    pub before: Option<String>,
+    /// O código que a prévia devolveu: a remoção tira exatamente aquele
+    /// conjunto.
+    pub confirm: Option<String>,
+    /// Volta a aberta uma pendência descartada.
+    pub reopen: Option<String>,
+    /// A faxina: mostra, uma vez só, as abertas paradas há 30 dias ou mais.
+    pub stale: bool,
+    /// Tira como vencidas as paradas que a última faxina mostrou, menos as de
+    /// `keep`.
+    pub expire: bool,
+    /// As paradas que ficam, na resposta à pergunta da faxina: `P-2,P-5`.
+    pub keep: Option<String>,
 }
 
 /// O estado de um item. Fechado (`closed`) e descartado (`dropped`) ficam
@@ -82,6 +130,15 @@ struct PendingItem {
     /// Por que o item saiu da lista — presente só depois de fechado ou descartado.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// O dia em que o item entrou, `AAAA-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created: Option<String>,
+    /// O dia em que a faxina mostrou o item parado: ele volta uma vez só.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    swept: Option<String>,
+    /// A nota "virou a spec X": o nome da spec que nasceu deste item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    became: Option<String>,
 }
 
 /// O documento inteiro. `deny_unknown_fields` pelo mesmo motivo do
@@ -92,14 +149,61 @@ struct PendingItem {
 struct Ledger {
     #[serde(default)]
     items: Vec<PendingItem>,
+    /// O lote da faxina que o usuário ainda não respondeu: os números que o
+    /// `--stale` mostrou. O `--expire` o consome.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sweep: Vec<String>,
+    /// Quantas gravações a lista já teve. Toda gravação conta uma, e o código
+    /// de uma remoção muda com ela: se a lista mudou, nada sai.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    revision: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// A recusa de uma pendência repetida: o mesmo título, sem ligar para
+/// maiúscula nem acento, de uma que já está aberta.
+fn duplicate(open: &PendingItem, lang: Locale) -> Value {
+    let hint = mustard_core::translate("pending.duplicate", lang)
+        .replace("{id}", &open.id)
+        .replace("{title}", &open.title);
+    json!({ "ok": false, "reason": "duplicate", "id": open.id, "hint": hint })
 }
 
 /// O que a chamada pede — exatamente uma ação.
 enum Action {
     List,
     Add { title: String, detail: String },
-    Settle { id: String, status: Status, reason: String },
+    Close { id: String, reason: String },
+    Remove { selector: Selector, reason: String, confirm: Option<String> },
+    Reopen { id: String },
+    Stale,
+    Expire { keep: Vec<String> },
 }
+
+/// O que uma remoção tira: números, palavras ou uma data.
+enum Selector {
+    Ids(Vec<String>),
+    Term(String),
+    Before(String),
+}
+
+impl Selector {
+    /// O seletor como a chamada o escreveu, para a recusa.
+    fn spelled(&self) -> String {
+        match self {
+            Self::Ids(ids) => format!("--id {}", ids.join(",")),
+            Self::Term(term) => format!("--term \"{term}\""),
+            Self::Before(day) => format!("--before {day}"),
+        }
+    }
+}
+
+/// Há quantos dias, no mínimo, uma pendência aberta está parada para a faxina
+/// mostrá-la.
+const STALE_DAYS: i64 = 30;
 
 /// Um texto como o arquivo guarda: uma linha, espaços colapsados. Um detalhe
 /// colado com quebras de linha não pode virar vários itens nem nenhum.
@@ -111,17 +215,97 @@ fn refused(reason: &str, hint: &str) -> Value {
     json!({ "ok": false, "reason": reason, "hint": hint })
 }
 
+/// O dia de hoje, `AAAA-MM-DD` em UTC: o de `now` quando vem, senão o do
+/// relógio.
+fn today(now: Option<&str>) -> String {
+    now.map(str::trim).filter(|day| !day.is_empty()).map_or_else(
+        || mustard_core::time::now_iso8601().get(..10).unwrap_or_default().to_string(),
+        str::to_string,
+    )
+}
+
+/// Uma recusa com o texto do catálogo, no idioma do projeto.
+fn refused_in(reason: &str, key: &str, lang: Locale, slots: &[(&str, &str)]) -> Value {
+    let hint = slots
+        .iter()
+        .fold(mustard_core::translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
+    refused(reason, &hint)
+}
+
+/// Os números de uma lista `P-2,p-5`, sem espaço, em maiúsculas e sem
+/// repetição.
+fn parse_ids(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for id in text.split(',').map(|id| id.trim().to_ascii_uppercase()).filter(|id| !id.is_empty()) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// O número do dia `AAAA-MM-DD` contado desde 1970; `None` para um texto
+/// que não é uma data nesse formato.
+fn day_number(day: &str) -> Option<i64> {
+    let day = day.trim();
+    let shaped = day.len() == 10
+        && day.bytes().enumerate().all(|(at, b)| if at == 4 || at == 7 { b == b'-' } else { b.is_ascii_digit() });
+    if !shaped {
+        return None;
+    }
+    let month: u32 = day.get(5..7)?.parse().ok()?;
+    let date: u32 = day.get(8..10)?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&date) {
+        return None;
+    }
+    mustard_core::time::parse_iso_millis(&format!("{day}T00:00:00Z")).map(|ms| ms.div_euclid(86_400_000))
+}
+
+/// A pendência está aberta, entrou há [`STALE_DAYS`] dias ou mais de `today`
+/// e a faxina ainda não a mostrou.
+fn is_stale(item: &PendingItem, today: Option<i64>) -> bool {
+    let entered = item.created.as_deref().and_then(day_number);
+    item.status == Status::Open
+        && item.swept.is_none()
+        && matches!((today, entered), (Some(today), Some(entered)) if today - entered >= STALE_DAYS)
+}
+
+/// O seletor da remoção: exatamente um de `--id`, `--term` e `--before`.
+fn selector_of(opts: &PendingOpts, lang: Locale) -> Result<Selector, Value> {
+    let text = |value: &Option<String>| value.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let mut given = [
+        text(&opts.id).map(|ids| Selector::Ids(parse_ids(&ids))),
+        text(&opts.term).map(Selector::Term),
+        text(&opts.before).map(Selector::Before),
+    ]
+    .into_iter()
+    .flatten();
+    let required = || refused_in("selector-required", "pending.selector_required", lang, &[]);
+    let (Some(selector), None) = (given.next(), given.next()) else {
+        return Err(required());
+    };
+    match &selector {
+        Selector::Ids(ids) if ids.is_empty() => Err(required()),
+        Selector::Before(day) if day_number(day).is_none() => {
+            Err(refused_in("bad-date", "pending.bad_date", lang, &[("{date}", day)]))
+        }
+        _ => Ok(selector),
+    }
+}
+
 /// Traduz as flags em UMA ação, recusando o que não fecha. Toda validação de
 /// argumento acontece aqui, ANTES de ler o arquivo — uma recusa nunca toca nele.
-fn resolve_action(opts: &PendingOpts) -> Result<Action, Value> {
-    let chosen = [opts.add, opts.close.is_some(), opts.drop.is_some()]
+fn resolve_action(opts: &PendingOpts, lang: Locale) -> Result<Action, Value> {
+    let removing = opts.remove || opts.drop.is_some();
+    let chosen = [opts.add, opts.close.is_some(), removing, opts.reopen.is_some(), opts.stale, opts.expire]
         .iter()
         .filter(|on| **on)
         .count();
-    if chosen > 1 {
+    if chosen > 1 || (opts.remove && opts.drop.is_some()) {
         return Err(refused(
             "conflicting-actions",
-            "pass ONE of `--add`, `--close <id>` or `--drop <id>` per call",
+            "pass ONE of `--add`, `--close <id>`, `--drop <id>`, `--remove`, `--reopen <id>`, \
+             `--stale` or `--expire` per call",
         ));
     }
     if !opts.add && (opts.title.is_some() || opts.detail.is_some()) {
@@ -130,10 +314,11 @@ fn resolve_action(opts: &PendingOpts) -> Result<Action, Value> {
             "`--title` and `--detail` describe a NEW item — pass them with `--add`",
         ));
     }
-    if opts.close.is_none() && opts.drop.is_none() && opts.reason.is_some() {
+    if opts.close.is_none() && !removing && opts.reason.is_some() {
         return Err(refused(
             "stray-flag",
-            "`--reason` explains why an item left the list — pass it with `--close <id>` or `--drop <id>`",
+            "`--reason` explains why an item left the list — pass it with `--close <id>`, \
+             `--drop <id>` or `--remove`",
         ));
     }
 
@@ -149,28 +334,130 @@ fn resolve_action(opts: &PendingOpts) -> Result<Action, Value> {
         return Ok(Action::Add { title, detail });
     }
 
-    let settle = opts
-        .close
-        .as_deref()
-        .map(|id| (id, Status::Closed))
-        .or_else(|| opts.drop.as_deref().map(|id| (id, Status::Dropped)));
-    let Some((id, status)) = settle else {
-        return Ok(Action::List);
-    };
-    let id = id.trim().to_ascii_uppercase();
-    if id.is_empty() {
-        return Err(refused("missing-id", "name the item to settle, e.g. `--close P-1`"));
-    }
     // Motivo em branco é motivo nenhum: `--reason ""` e `--reason "   "` recusam
     // igual à flag ausente.
     let reason = opts.reason.as_deref().map(one_line).unwrap_or_default();
-    if reason.is_empty() {
-        return Err(refused(
-            "reason-required",
-            "closing or dropping an item always carries `--reason \"<what delivered it / why it no longer stands>\"` — nothing was written",
-        ));
+    if let Some(id) = &opts.close {
+        let id = id.trim().to_ascii_uppercase();
+        if id.is_empty() {
+            return Err(refused("missing-id", "name the item to settle, e.g. `--close P-1`"));
+        }
+        if reason.is_empty() {
+            return Err(refused(
+                "reason-required",
+                "closing or dropping an item always carries `--reason \"<what delivered it / why it no longer stands>\"` — nothing was written",
+            ));
+        }
+        return Ok(Action::Close { id, reason });
     }
-    Ok(Action::Settle { id, status, reason })
+    if removing {
+        if opts.drop.as_deref().is_some_and(|id| id.trim().is_empty()) {
+            return Err(refused("missing-id", "name the item to settle, e.g. `--drop P-1`"));
+        }
+        if reason.is_empty() {
+            return Err(refused_in("reason-required", "pending.reason_required", lang, &[]));
+        }
+        // `--drop P-12` é a remoção pelo número, com a mesma prévia.
+        let selector = match &opts.drop {
+            Some(id) => Selector::Ids(vec![id.trim().to_ascii_uppercase()]),
+            None => selector_of(opts, lang)?,
+        };
+        let confirm = opts.confirm.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(str::to_string);
+        return Ok(Action::Remove { selector, reason, confirm });
+    }
+    if let Some(id) = &opts.reopen {
+        return Ok(Action::Reopen { id: id.trim().to_ascii_uppercase() });
+    }
+    if opts.stale {
+        return Ok(Action::Stale);
+    }
+    if opts.expire {
+        return Ok(Action::Expire { keep: opts.keep.as_deref().map(parse_ids).unwrap_or_default() });
+    }
+    Ok(Action::List)
+}
+
+/// A recusa de um número que não está na lista.
+fn unknown_id(id: &str) -> Value {
+    refused("unknown-id", &format!("no pending item `{id}` — list the ledger with `mustard-rt run pending`"))
+}
+
+/// A recusa de um número que já saiu da lista.
+fn already_settled(id: &str, status: Status) -> Value {
+    refused("already-settled", &format!("`{id}` is already {} — nothing was written", status.as_str()))
+}
+
+/// O número `n` de `P-n`.
+fn number(id: &str) -> Option<u64> {
+    id.strip_prefix("P-").and_then(|n| n.parse().ok())
+}
+
+/// As pendências abertas que o seletor pega, na ordem da lista. Recusa, com o
+/// arquivo intacto, quando nenhuma casa, e quando um número pedido não é de
+/// uma pendência aberta.
+fn select(ledger: &Ledger, selector: &Selector, lang: Locale) -> Result<Vec<String>, Value> {
+    let open = || ledger.items.iter().filter(|i| i.status == Status::Open);
+    let chosen: Vec<String> = match selector {
+        Selector::Ids(ids) => {
+            for id in ids {
+                let Some(item) = ledger.items.iter().find(|i| &i.id == id) else {
+                    return Err(unknown_id(id));
+                };
+                if item.status != Status::Open {
+                    return Err(already_settled(id, item.status));
+                }
+            }
+            open().filter(|i| ids.contains(&i.id)).map(|i| i.id.clone()).collect()
+        }
+        Selector::Term(term) => {
+            let docs: Vec<(u64, String)> = open()
+                .filter_map(|i| Some((number(&i.id)?, search_field(Some(&format!("{} {}", i.title, i.detail)), &[]))))
+                .collect();
+            let hits = SearchIndex::build(docs.iter().map(|(n, search)| (*n, search.as_str())))
+                .top(&query_terms(term), docs.len());
+            let found: Vec<String> = hits.iter().map(|hit| format!("P-{}", hit.id)).collect();
+            open().filter(|i| found.contains(&i.id)).map(|i| i.id.clone()).collect()
+        }
+        Selector::Before(day) => open()
+            .filter(|i| i.created.as_deref().is_some_and(|entered| entered < day.as_str()))
+            .map(|i| i.id.clone())
+            .collect(),
+    };
+    if chosen.is_empty() {
+        return Err(refused_in("nothing-matches", "pending.nothing_matches", lang, &[("{selector}", &selector.spelled())]));
+    }
+    Ok(chosen)
+}
+
+/// O código da confirmação: a impressão da revisão da lista, do motivo, de
+/// cada pendência que sairia (número, estado e título) e da lista aberta
+/// inteira. Outro motivo, qualquer gravação no meio (um `--reopen`, uma
+/// pendência nova) ou qualquer mudança na lista aberta dão outro código.
+fn token(ledger: &Ledger, chosen: &[String], reason: &str) -> String {
+    let mut parts = vec![ledger.revision.to_string(), reason.to_string()];
+    parts.extend(
+        ledger
+            .items
+            .iter()
+            .filter(|i| chosen.contains(&i.id))
+            .map(|i| format!("{} {} {}", i.id, i.status.as_str(), i.title)),
+    );
+    parts.push("--".to_string());
+    parts.extend(
+        ledger.items.iter().filter(|i| i.status == Status::Open).map(|i| format!("{} {}", i.id, i.title)),
+    );
+    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+    format!("{:08x}", fnv1a64(&refs) >> 32)
+}
+
+/// As pendências `ids`, como os leitores de fora as veem, na ordem da lista.
+fn open_items(ledger: &Ledger, ids: &[String]) -> Vec<OpenPending> {
+    ledger
+        .items
+        .iter()
+        .filter(|i| ids.contains(&i.id))
+        .map(|i| OpenPending { id: i.id.clone(), title: i.title.clone() })
+        .collect()
 }
 
 /// O checkout principal, visto de `root`.
@@ -181,11 +468,16 @@ fn resolve_action(opts: &PendingOpts) -> Result<Action, Value> {
 /// worktree grave e leia o mesmo arquivo que o principal. Fora de um repositório
 /// git, a âncora fica.
 fn ledger_root(root: &Path) -> PathBuf {
-    let anchor = if root.join("mustard.json").is_file() {
-        root.to_path_buf()
-    } else {
-        PathBuf::from(crate::shared::context::project_dir())
-    };
+    // Num worktree ligado, a lista mora no checkout principal, e é ele que
+    // tem o `mustard.json`: perguntar ao git antes de desistir tira a lista da
+    // pasta do processo, que num worktree fica fora do projeto.
+    if let Some(main) = main_checkout_root(root).filter(|found| found.join("mustard.json").is_file()) {
+        return main;
+    }
+    if root.join("mustard.json").is_file() {
+        return root.to_path_buf();
+    }
+    let anchor = PathBuf::from(crate::shared::context::env::project_dir());
     main_checkout_root(&anchor).unwrap_or(anchor)
 }
 
@@ -202,11 +494,31 @@ fn load(path: &Path) -> Result<Ledger, Value> {
             "the pending ledger exists and could not be read — fix its permissions; nothing was written",
         ));
     };
-    // Vazio não é corrompido: uma criação interrompida deixa zero bytes.
+    parse_ledger(&raw)
+}
+
+/// Abre a lista com a trava exclusiva presa e devolve o que ela guarda. A
+/// trava fica presa até quem chamou soltar o arquivo: assim dois pedidos ao
+/// mesmo tempo nunca leem a mesma lista e ganham o mesmo número. É a mesma
+/// trava que os fechamentos armados já usavam.
+fn open_locked(path: &Path) -> Result<(LockedFile, Ledger), Value> {
+    let mut file = LockedFile::exclusive(path).map_err(|e| {
+        refused("ledger-unreadable", &format!("the pending ledger could not be locked ({e}); nothing was written"))
+    })?;
+    let raw = file.read_to_string().map_err(|e| {
+        refused("ledger-unreadable", &format!("the pending ledger could not be read ({e}); nothing was written"))
+    })?;
+    let ledger = parse_ledger(&raw)?;
+    Ok((file, ledger))
+}
+
+/// O que um arquivo de lista guarda. Vazio não é corrompido: uma criação
+/// interrompida deixa zero bytes.
+fn parse_ledger(raw: &str) -> Result<Ledger, Value> {
     if raw.trim().is_empty() {
         return Ok(Ledger::default());
     }
-    serde_json::from_str::<Ledger>(&raw).map_err(|e| {
+    serde_json::from_str::<Ledger>(raw).map_err(|e| {
         refused(
             "ledger-corrupt",
             &format!(
@@ -230,97 +542,220 @@ fn next_id(ledger: &Ledger) -> String {
 }
 
 fn item_json(item: &PendingItem) -> Value {
-    let mut out = json!({
-        "id": item.id,
-        "title": item.title,
-        "detail": item.detail,
-        "status": item.status.as_str(),
-    });
-    if let (Some(reason), Some(map)) = (&item.reason, out.as_object_mut()) {
-        map.insert("reason".into(), json!(reason));
+    let mut out = Map::new();
+    out.insert("id".into(), json!(item.id));
+    out.insert("title".into(), json!(item.title));
+    out.insert("detail".into(), json!(item.detail));
+    out.insert("status".into(), json!(item.status.as_str()));
+    for (key, value) in [
+        ("reason", &item.reason),
+        ("created", &item.created),
+        ("swept", &item.swept),
+        ("became", &item.became),
+    ] {
+        if let Some(value) = value {
+            out.insert(key.into(), json!(value));
+        }
     }
-    out
+    Value::Object(out)
 }
 
-fn write(path: &Path, ledger: &Ledger) -> Result<(), Value> {
+/// Grava a lista. Antes, todo item sem data ganha a data do dia (é a
+/// primeira gravação dele desde que a data existe), e a revisão conta mais
+/// uma.
+fn write(file: &mut LockedFile, ledger: &mut Ledger, today: &str) -> Result<(), Value> {
+    for item in ledger.items.iter_mut().filter(|i| i.created.is_none()) {
+        item.created = Some(today.to_string());
+    }
+    ledger.revision = ledger.revision.saturating_add(1);
     let mut body = serde_json::to_string_pretty(ledger)
         .map_err(|e| refused("write-failed", &e.to_string()))?;
     body.push('\n');
-    mustard_core::io::fs::write_atomic(path, body.as_bytes())
-        .map_err(|e| refused("write-failed", &e.to_string()))
+    file.replace(body.as_bytes()).map_err(|e| refused("write-failed", &e.to_string()))
 }
 
 /// O passe do ledger — o núcleo testável de [`run`]. Nunca entra em pânico.
 #[must_use]
 pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
-    let action = match resolve_action(opts) {
+    let project = ledger_root(&opts.root);
+    let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
+    let action = match resolve_action(opts, lang) {
         Ok(a) => a,
         Err(refusal) => return refusal,
     };
-    let project = ledger_root(&opts.root);
     let paths = match mustard_core::ClaudePaths::for_project(&project) {
         Ok(p) => p,
         Err(e) => return refused("bad-root", &e.to_string()),
     };
     let path = paths.pending_ledger_path();
-    let mut ledger = match load(&path) {
-        Ok(l) => l,
+    // A trava fica presa da leitura à gravação: dois pedidos ao mesmo tempo
+    // nunca leem a mesma lista, então nunca ganham o mesmo número.
+    let (mut file, mut ledger) = match open_locked(&path) {
+        Ok(opened) => opened,
         Err(refusal) => return refusal,
     };
+    let today = today(opts.now.as_deref());
 
     let mut extra = Map::new();
     match action {
         Action::List => {}
         Action::Add { title, detail } => {
-            // Repetir o mesmo combinado não duplica: um item ABERTO de mesmo
-            // título devolve o id que já existe.
-            let existing = ledger
-                .items
-                .iter()
-                .find(|i| i.status == Status::Open && i.title == title)
-                .map(|i| i.id.clone());
-            let (id, added) = match existing {
-                Some(id) => (id, false),
-                None => {
-                    let id = next_id(&ledger);
-                    ledger.items.push(PendingItem {
-                        id: id.clone(),
-                        title,
-                        detail,
-                        status: Status::Open,
-                        reason: None,
-                    });
-                    (id, true)
-                }
-            };
-            if added {
-                if let Err(refusal) = write(&path, &ledger) {
-                    return refusal;
-                }
+            // Uma pendência entra uma vez só: o título é comparado sem
+            // maiúscula nem acento ("Humanize" e "humanize" são a mesma), e a
+            // repetição é recusada apontando a que já está aberta.
+            let key = text::fold(&title);
+            if let Some(open) =
+                ledger.items.iter().find(|i| i.status == Status::Open && text::fold(&i.title) == key)
+            {
+                return duplicate(open, lang);
             }
-            extra.insert("id".into(), json!(id));
-            extra.insert("added".into(), json!(added));
-        }
-        Action::Settle { id, status, reason } => {
-            let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) else {
-                return refused(
-                    "unknown-id",
-                    &format!("no pending item `{id}` — list the ledger with `mustard-rt run pending`"),
-                );
-            };
-            if item.status != Status::Open {
-                return refused(
-                    "already-settled",
-                    &format!("`{id}` is already {} — nothing was written", item.status.as_str()),
-                );
-            }
-            item.status = status;
-            item.reason = Some(reason);
-            if let Err(refusal) = write(&path, &ledger) {
+            let id = next_id(&ledger);
+            ledger.items.push(PendingItem {
+                id: id.clone(),
+                title,
+                detail,
+                status: Status::Open,
+                reason: None,
+                created: Some(today.clone()),
+                swept: None,
+                became: None,
+            });
+            if let Err(refusal) = write(&mut file, &mut ledger, &today) {
                 return refusal;
             }
             extra.insert("id".into(), json!(id));
-            extra.insert("status".into(), json!(status.as_str()));
+            extra.insert("added".into(), json!(true));
+        }
+        Action::Close { id, reason } => {
+            let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) else {
+                return unknown_id(&id);
+            };
+            if item.status != Status::Open {
+                return already_settled(&id, item.status);
+            }
+            item.status = Status::Closed;
+            item.reason = Some(reason);
+            if let Err(refusal) = write(&mut file, &mut ledger, &today) {
+                return refusal;
+            }
+            extra.insert("id".into(), json!(id));
+            extra.insert("status".into(), json!(Status::Closed.as_str()));
+        }
+        Action::Remove { selector, reason, confirm } => {
+            // Duas chamadas: a primeira mostra o que sairia e devolve o código;
+            // a segunda, com o código e depois do sim do usuário, tira
+            // exatamente aquele conjunto. Se a lista mudou, nada sai.
+            let chosen = match select(&ledger, &selector, lang) {
+                Ok(ids) => ids,
+                Err(refusal) => return refusal,
+            };
+            let code = token(&ledger, &chosen, &reason);
+            match confirm {
+                None => {
+                    let items = open_items(&ledger, &chosen);
+                    let hint = mustard_core::translate("pending.remove.preview", lang)
+                        .replace("{count}", &items.len().to_string())
+                        .replace("{items}", &format_pending_items(&items, items.len()))
+                        .replace("{reason}", &reason)
+                        .replace("{token}", &code);
+                    extra.insert("preview".into(), json!(true));
+                    extra.insert("remove".into(), json!(items));
+                    extra.insert("token".into(), json!(code));
+                    extra.insert("hint".into(), json!(hint));
+                }
+                Some(given) if given == code => {
+                    for item in ledger.items.iter_mut().filter(|i| chosen.contains(&i.id)) {
+                        item.status = Status::Dropped;
+                        item.reason = Some(reason.clone());
+                    }
+                    if let Err(refusal) = write(&mut file, &mut ledger, &today) {
+                        return refusal;
+                    }
+                    extra.insert("removed".into(), json!(chosen));
+                }
+                Some(_) => return refused_in("confirm-mismatch", "pending.confirm_mismatch", lang, &[]),
+            }
+        }
+        Action::Reopen { id } => {
+            let Some(item) = ledger.items.iter().find(|i| i.id == id) else {
+                return unknown_id(&id);
+            };
+            if item.status != Status::Dropped {
+                return refused_in("not-dropped", "pending.not_dropped", lang, &[("{id}", &id)]);
+            }
+            // Reabrir não cria uma repetida: com o mesmo título já aberto, a
+            // reabertura é recusada apontando a que está aberta.
+            let key = text::fold(&item.title);
+            if let Some(open) =
+                ledger.items.iter().find(|i| i.status == Status::Open && text::fold(&i.title) == key)
+            {
+                return duplicate(open, lang);
+            }
+            // A reaberta volta a poder aparecer na faxina.
+            ledger.sweep.retain(|swept| swept != &id);
+            if let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) {
+                item.status = Status::Open;
+                item.reason = None;
+                item.swept = None;
+            }
+            if let Err(refusal) = write(&mut file, &mut ledger, &today) {
+                return refusal;
+            }
+            extra.insert("id".into(), json!(id));
+            extra.insert("reopened".into(), json!(true));
+        }
+        Action::Stale => {
+            // A faxina mostra cada parada uma vez só: o dia fica gravado nela.
+            let now = day_number(&today);
+            let stale: Vec<String> =
+                ledger.items.iter().filter(|i| is_stale(i, now)).map(|i| i.id.clone()).collect();
+            if !stale.is_empty() {
+                for item in ledger.items.iter_mut().filter(|i| stale.contains(&i.id)) {
+                    item.swept = Some(today.clone());
+                }
+                for id in &stale {
+                    if !ledger.sweep.contains(id) {
+                        ledger.sweep.push(id.clone());
+                    }
+                }
+                if let Err(refusal) = write(&mut file, &mut ledger, &today) {
+                    return refusal;
+                }
+                extra.insert("question".into(), json!(mustard_core::translate("pending.stale.question", lang)));
+            }
+            let shown: Vec<Value> =
+                ledger.items.iter().filter(|i| stale.contains(&i.id)).map(item_json).collect();
+            extra.insert("stale".into(), Value::Array(shown));
+        }
+        Action::Expire { keep } => {
+            // O lote é o da faxina que o usuário ainda não respondeu. As que
+            // ele não marcou saem como vencidas, e o lote se consome: um
+            // segundo `--expire` não tira as que ficaram.
+            let batch: Vec<String> = ledger
+                .items
+                .iter()
+                .filter(|i| i.status == Status::Open && ledger.sweep.contains(&i.id))
+                .map(|i| i.id.clone())
+                .collect();
+            if batch.is_empty() {
+                return refused_in("nothing-matches", "pending.nothing_matches", lang, &[("{selector}", "--expire")]);
+            }
+            if let Some(stray) = keep.iter().find(|id| !batch.contains(id)) {
+                let selector = format!("--keep {stray}");
+                return refused_in("nothing-matches", "pending.nothing_matches", lang, &[("{selector}", &selector)]);
+            }
+            let expired: Vec<String> = batch.iter().filter(|id| !keep.contains(id)).cloned().collect();
+            let reason = mustard_core::translate("pending.expired_reason", lang);
+            for item in ledger.items.iter_mut().filter(|i| expired.contains(&i.id)) {
+                item.status = Status::Dropped;
+                item.reason = Some(reason.to_string());
+            }
+            ledger.sweep.clear();
+            if let Err(refusal) = write(&mut file, &mut ledger, &today) {
+                return refusal;
+            }
+            extra.insert("expired".into(), json!(expired));
+            extra.insert("kept".into(), json!(keep));
         }
     }
 
@@ -340,14 +775,39 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
     );
     report.insert("open".into(), Value::Array(open.into_iter().map(item_json).collect()));
     report.insert("closed".into(), Value::Array(closed.into_iter().map(item_json).collect()));
+    report.insert("count_line".into(), json!(count_line_of(&ledger, &today, lang)));
     report.extend(extra);
     Value::Object(report)
 }
 
-/// A chave, no payload do evento `pipeline.kind`, que liga a unidade a uma
-/// pendência. Um só nome para quem grava (`emit-pipeline --pending`) e para
-/// quem lê (`pr-merge`), para que os dois nunca discordem da grafia.
-pub(crate) const UNIT_PENDING_KEY: &str = "pending";
+/// A linha de contagem das pendências abertas, com o complemento das paradas
+/// há 30 dias ou mais que a faxina ainda não mostrou; `None` quando nada está
+/// aberto.
+fn count_line_of(ledger: &Ledger, today: &str, lang: Locale) -> Option<String> {
+    let mut line = match ledger.items.iter().filter(|i| i.status == Status::Open).count() {
+        0 => return None,
+        1 => mustard_core::translate("pending.count.one", lang).to_string(),
+        count => mustard_core::translate("pending.count.many", lang).replace("{count}", &count.to_string()),
+    };
+    let now = day_number(today);
+    let stale = ledger.items.iter().filter(|i| is_stale(i, now)).count();
+    if stale > 0 {
+        line.push_str(&mustard_core::translate("pending.count.stale", lang).replace("{stale}", &stale.to_string()));
+    }
+    Some(line)
+}
+
+/// A linha que o início da sessão mostra: quantas pendências estão abertas e
+/// onde está a lista inteira. `None` quando nada está aberto, ou quando a
+/// lista não se lê: quem recusa e explica o conserto é `run pending`.
+#[must_use]
+pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<String> {
+    let project = ledger_root(root);
+    let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
+    let ledger = load(&paths.pending_ledger_path()).ok()?;
+    count_line_of(&ledger, &today(None), lang)
+}
+
 
 /// Uma pendência aberta, como a enxergam os leitores de fora do ledger — o
 /// início de sessão, a cobrança de fim de turno, a abertura e o merge da
@@ -382,18 +842,187 @@ pub(crate) fn open_pending(root: &Path) -> Vec<OpenPending> {
         .unwrap_or_default()
 }
 
+/// O número de uma pendência escrito à mão, como `P-12`, `p-12` ou `12`, com
+/// ou sem espaço nas pontas: devolve a grafia da lista, `P-12`. Zero e texto
+/// sem número dão `None`. É a leitura única do número, a do pedido adiado e a
+/// do `open --pending`.
+#[must_use]
+pub(crate) fn pending_id(text: &str) -> Option<String> {
+    let text = text.trim();
+    let digits = text.strip_prefix("P-").or_else(|| text.strip_prefix("p-")).unwrap_or(text);
+    digits.trim().parse::<u64>().ok().filter(|n| *n > 0).map(|n| format!("P-{n}"))
+}
+
+/// A pendência `id` na lista, lida como [`open_pending`] lê: `Some(true)`
+/// aberta, `Some(false)` fechada ou descartada, `None` quando a lista não a
+/// tem. Uma lista ausente, ilegível ou corrompida não tem pendência nenhuma: é
+/// o `run pending` quem diz como consertá-la. O pedido adiado de uma spec só
+/// aponta uma pendência aberta daqui.
+#[must_use]
+pub(crate) fn pending_is_open(root: &Path, id: &str) -> Option<bool> {
+    let project = ledger_root(root);
+    let ledger = mustard_core::ClaudePaths::for_project(&project)
+        .ok()
+        .and_then(|paths| load(&paths.pending_ledger_path()).ok())?;
+    ledger.items.iter().find(|item| item.id == id).map(|item| item.status == Status::Open)
+}
+
+/// Os números das pendências que nasceram na spec: as que um evento
+/// `deferred` visível dela cita no campo `pending`.
+#[must_use]
+pub(crate) fn born_in(log: &SpecLog) -> Vec<String> {
+    log.block(BlockQuery::Block(Block::Notes))
+        .into_iter()
+        .filter(|event| event.event_type == "deferred")
+        .filter_map(|event| event.int("pending"))
+        .map(|n| format!("P-{n}"))
+        .collect()
+}
+
+/// As pendências abertas, na ordem da lista, que nasceram na spec do
+/// arquivo de eventos `log`.
+#[must_use]
+pub(crate) fn open_born_in(root: &Path, log: &SpecLog) -> Vec<OpenPending> {
+    let born = born_in(log);
+    open_pending(root).into_iter().filter(|item| born.contains(&item.id)).collect()
+}
+
+/// As pendências abertas que nasceram na spec `spec` do projeto em `root`: é
+/// só delas que a entrega pergunta. Vazio quando a spec não tem arquivo de
+/// eventos.
+#[must_use]
+pub(crate) fn open_pending_born_in(root: &Path, spec: &str) -> Vec<OpenPending> {
+    DiskSpecState::new(root).log(spec).map(|log| open_born_in(root, &log)).unwrap_or_default()
+}
+
+/// Grava na pendência aberta `id` a nota "virou a spec `spec`": a unidade que
+/// nasceu dela se chama `spec`, e o merge dessa spec fecha a pendência.
+/// `true` quando a nota está gravada.
+pub(crate) fn mark_became(root: &Path, id: &str, spec: &str) -> bool {
+    let project = ledger_root(root);
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(&project) else {
+        return false;
+    };
+    let path = paths.pending_ledger_path();
+    let Ok((mut file, mut ledger)) = open_locked(&path) else {
+        return false;
+    };
+    let Some(item) = ledger.items.iter_mut().find(|i| i.id == id && i.status == Status::Open) else {
+        return false;
+    };
+    if item.became.as_deref() == Some(spec) {
+        return true;
+    }
+    item.became = Some(spec.to_string());
+    write(&mut file, &mut ledger, &today(None)).is_ok()
+}
+
+/// O arquivo dos fechamentos armados, ao lado da lista.
+const CHARGES_FILE: &str = "charges.json";
+
+/// Um fechamento ou um merge que a ponte armou para a cobrança do fim da
+/// resposta: a spec, o número do `state` que fechou e quantas vezes a cobrança
+/// já bloqueou por ele.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Charge {
+    pub(crate) spec: String,
+    pub(crate) closure: u64,
+    pub(crate) blocks: u32,
+    /// A sessão que armou, quando ela era conhecida: só essa sessão é cobrada.
+    /// Sem sessão conhecida, qualquer sessão principal é.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session: Option<String>,
+}
+
+/// O arquivo dos fechamentos armados.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Charges {
+    #[serde(default)]
+    armed: Vec<Charge>,
+}
+
+/// `<checkout principal>/.claude/pending/charges.json`: ao lado da lista, fora
+/// da pasta da sessão e fora do git. O checkout principal é o mesmo em que a
+/// spec mora, então quem fecha de dentro de um worktree arma o mesmo arquivo
+/// que o fim da resposta lê no checkout principal, e vice-versa.
+fn charges_path(root: &Path) -> Option<PathBuf> {
+    let main = mustard_core::io::spec_events::spec_root(root);
+    let ledger = mustard_core::ClaudePaths::for_project(&main).ok()?.pending_ledger_path();
+    Some(ledger.parent()?.join(CHARGES_FILE))
+}
+
+/// Os fechamentos armados, na ordem em que foram armados. Arquivo ausente ou
+/// ilegível dá lista vazia: a cobrança nunca barra por erro próprio.
+#[must_use]
+pub(crate) fn armed_charges(root: &Path) -> Vec<Charge> {
+    charges_path(root)
+        .and_then(|path| read_shared(&path).ok())
+        .map(|body| parse_charges(&body))
+        .unwrap_or_default()
+}
+
+/// Os fechamentos de um arquivo; vazio ou ilegível dá lista vazia.
+fn parse_charges(body: &str) -> Vec<Charge> {
+    serde_json::from_str::<Charges>(body).map(|charges| charges.armed).unwrap_or_default()
+}
+
+/// Lê, muda com `change` e grava os fechamentos armados, com a trava
+/// exclusiva do arquivo presa do começo ao fim: um fechamento armado por
+/// outro processo no meio não some. Sem nenhum fechamento, o arquivo fica
+/// vazio. `true` quando gravou.
+pub(crate) fn update_charges(root: &Path, change: impl FnOnce(Vec<Charge>) -> Vec<Charge>) -> bool {
+    let Some(path) = charges_path(root) else {
+        return false;
+    };
+    let Ok(mut file) = LockedFile::exclusive(&path) else {
+        return false;
+    };
+    let armed = file.read_to_string().map(|body| parse_charges(&body)).unwrap_or_default();
+    let next = change(armed);
+    let body = if next.is_empty() {
+        Ok(Vec::new())
+    } else {
+        serde_json::to_vec_pretty(&Charges { armed: next })
+    };
+    body.is_ok_and(|body| file.replace(&body).is_ok())
+}
+
+/// Arma a cobrança do fechamento `closure` da spec `spec`, no lugar de um
+/// fechamento anterior da mesma spec, guardando a sessão de quem fechou,
+/// quando ela é conhecida. `true` quando gravou.
+pub(crate) fn arm_charge(root: &Path, spec: &str, closure: u64, session: Option<&str>) -> bool {
+    let session = session.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    update_charges(root, |mut armed| {
+        armed.retain(|charge| charge.spec != spec);
+        armed.push(Charge { spec: spec.to_string(), closure, blocks: 0, session });
+        armed
+    })
+}
+
+/// A pendência aberta que virou a spec `spec`, pela nota da lista.
+#[must_use]
+pub(crate) fn became_of(root: &Path, spec: &str) -> Option<String> {
+    let project = ledger_root(root);
+    let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
+    load(&paths.pending_ledger_path())
+        .ok()?
+        .items
+        .into_iter()
+        .find(|i| i.status == Status::Open && i.became.as_deref() == Some(spec))
+        .map(|i| i.id)
+}
+
 /// Fecha `id` como ENTREGUE com `reason`, pelo mesmo passe de `run pending`
 /// (motivo obrigatório, item já resolvido recusado). `true` só quando o
 /// arquivo foi de fato gravado.
 pub(crate) fn close_pending(root: &Path, id: &str, reason: &str) -> bool {
     pending_at(&PendingOpts {
         root: root.to_path_buf(),
-        add: false,
-        title: None,
-        detail: None,
         close: Some(id.to_string()),
-        drop: None,
         reason: Some(reason.to_string()),
+        ..PendingOpts::default()
     })["ok"]
         == json!(true)
 }
@@ -434,6 +1063,27 @@ mod tests {
         assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
     }
 
+    /// O número de uma pendência se lê como `P-12`, `p-12` ou `12`, com
+    /// espaço nas pontas, e sai na grafia da lista; zero, texto sem número e
+    /// o vazio não são pendência.
+    #[test]
+    fn a_pending_number_is_read_as_p_n_or_n() {
+        let table = [
+            ("P-12", Some("P-12")),
+            ("p-12", Some("P-12")),
+            ("12", Some("P-12")),
+            (" P-12 ", Some("P-12")),
+            ("+12", Some("P-12")),
+            ("P-0", None),
+            ("0", None),
+            ("P-x", None),
+            ("", None),
+        ];
+        for (text, id) in table {
+            assert_eq!(pending_id(text).as_deref(), id, "{text:?}");
+        }
+    }
+
     /// Um repositório parado na base de integração `dev` — nenhuma unidade aberta.
     fn repo() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
@@ -450,15 +1100,7 @@ mod tests {
     }
 
     fn opts(root: &Path) -> PendingOpts {
-        PendingOpts {
-            root: root.to_path_buf(),
-            add: false,
-            title: None,
-            detail: None,
-            close: None,
-            drop: None,
-            reason: None,
-        }
+        PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() }
     }
 
     fn add(root: &Path, title: &str, detail: &str) -> Value {
@@ -476,7 +1118,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// AC-1 — uma pendência gravada sem nenhuma unidade aberta aparece na
+    /// Uma pendência gravada sem nenhuma unidade aberta aparece na
     /// listagem lida de OUTRO branch do mesmo checkout, e também de um worktree.
     #[test]
     fn pending_item_added_without_unit_is_listed() {
@@ -511,7 +1153,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — fechar ou descartar sem motivo (ausente ou em branco) recusa, e o
+    /// Fechar ou descartar sem motivo (ausente ou em branco) recusa, e o
     /// arquivo fica byte a byte intacto.
     #[test]
     fn pending_close_without_reason_is_refused() {
@@ -557,30 +1199,16 @@ mod tests {
         assert_eq!(again["reason"], json!("already-settled"), "{again}");
     }
 
-    /// AC-3 — o `material.md` injetado manda gravar com `run pending` todo
-    /// trabalho combinado além da unidade aberta, e continua cabendo no teto do
-    /// injetável.
+    /// O mapa do início da sessão manda gravar o assunto diferente como
+    /// pendência, pela porta `run pending --add`, nos dois idiomas.
     #[test]
-    fn material_injectable_names_the_pending_door() {
-        // O mesmo teto e a mesma medida de `apps/cli/tests/template_budget.rs`
-        // (`INJECTABLE_CHAR_CAP`, `payload_size`): o maior entre caracteres e
-        // bytes, porque o harness não documenta qual dos dois conta.
-        const INJECTABLE_CHAR_CAP: usize = 8_000;
-        let material = mustard_core::MATERIAL_MD;
-        assert!(
-            material.contains("mustard-rt run pending --add"),
-            "the material part never tells the reader to record agreed work as a pending item",
-        );
-        assert!(
-            material.contains("--close") && material.contains("--drop") && material.contains("--reason"),
-            "the material part never says an item leaves the list only with a reason",
-        );
-        assert!(
-            material.contains("BEFORE the gate call"),
-            "the material part never says WHEN to record — before the unit opens",
-        );
-        let size = material.chars().count().max(material.len());
-        assert!(size <= INJECTABLE_CHAR_CAP, "material.md is {size}, over the {INJECTABLE_CHAR_CAP} cap");
+    fn the_session_map_names_the_pending_door() {
+        for text in [Locale::PtBr, Locale::EnUs] {
+            assert!(
+                mustard_core::session_map(text).contains("mustard-rt run pending --add"),
+                "the {text} session map never tells the reader to record a different subject as a pending item",
+            );
+        }
     }
 
     /// Arquivo corrompido falha fechado: nada é gravado por cima.
@@ -598,19 +1226,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&ledger).expect("read"), r#"{"items":[{"id":"P-1""#);
     }
 
-    /// Ids sequenciais que nunca se repetem, repetição dobrada, e as recusas de
-    /// argumento que não fazem sentido juntas.
+    /// Ids sequenciais que nunca se repetem, repetição recusada, e as recusas
+    /// de argumento que não fazem sentido juntas.
     #[test]
-    fn ids_are_sequential_a_repeat_folds_and_stray_flags_refuse() {
+    fn ids_are_sequential_a_repeat_is_refused_and_stray_flags_refuse() {
         let dir = repo();
         let root = dir.path();
         assert_eq!(add(root, "um", "a")["id"], json!("P-1"));
         assert_eq!(add(root, "dois", "b")["id"], json!("P-2"));
         let again = add(root, "um", "outro detalhe");
-        assert_eq!(again["id"], json!("P-1"), "an open item with the same title folds");
-        assert_eq!(again["added"], json!(false));
+        assert_eq!(again["reason"], json!("duplicate"), "{again}");
+        assert_eq!(again["id"], json!("P-1"), "the refusal points at the open item");
 
-        let _ = pending_at(&PendingOpts { drop: Some("P-2".into()), reason: Some("x".into()), ..opts(root) });
+        let preview = pending_at(&PendingOpts { drop: Some("P-2".into()), reason: Some("x".into()), ..opts(root) });
+        let token = preview["token"].as_str().map(str::to_string);
+        let dropped = pending_at(&PendingOpts { drop: Some("P-2".into()), reason: Some("x".into()), confirm: token, ..opts(root) });
+        assert_eq!(dropped["removed"], json!(["P-2"]), "{dropped}");
         assert_eq!(add(root, "tres", "c")["id"], json!("P-3"), "a settled id is never reused");
 
         let unknown = pending_at(&PendingOpts { close: Some("P-9".into()), reason: Some("x".into()), ..opts(root) });
@@ -619,5 +1250,335 @@ mod tests {
         assert_eq!(missing["reason"], json!("missing-field"));
         let stray = pending_at(&PendingOpts { reason: Some("sem acao".into()), ..opts(root) });
         assert_eq!(stray["reason"], json!("stray-flag"));
+    }
+
+    /// "Humanize" com uma "humanize" já aberta é a mesma pendência: a segunda
+    /// é recusada apontando a primeira, e o arquivo fica intacto. Fechada a
+    /// primeira, o mesmo título volta a ser uma pendência nova.
+    #[test]
+    fn a_title_differing_only_in_case_or_accent_is_a_duplicate() {
+        let dir = repo();
+        let root = dir.path();
+        assert_eq!(add(root, "humanize", "a")["id"], json!("P-1"));
+        let ledger = root.join(".claude/pending/ledger.json");
+        let before = std::fs::read_to_string(&ledger).expect("read");
+        for repeat in ["Humanize", "HUMANIZE", "humanizé", "  humanize  "] {
+            let refused = add(root, repeat, "b");
+            assert_eq!(refused["ok"], json!(false), "{repeat}: {refused}");
+            assert_eq!(refused["reason"], json!("duplicate"));
+            assert_eq!(refused["id"], json!("P-1"));
+            assert!(refused["hint"].as_str().unwrap_or_default().contains("P-1 \"humanize\""));
+        }
+        assert_eq!(std::fs::read_to_string(&ledger).expect("read"), before, "nothing was written");
+
+        let closed = pending_at(&PendingOpts {
+            close: Some("P-1".into()),
+            reason: Some("feito".into()),
+            ..opts(root)
+        });
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(add(root, "Humanize", "c")["id"], json!("P-2"));
+    }
+
+    /// O `--add` grava o dia em que o item entrou, e um item gravado antes de
+    /// a data existir ganha a data do dia na primeira gravação da lista.
+    #[test]
+    fn an_added_item_carries_its_day_and_an_undated_one_gets_today_on_the_next_write() {
+        let dir = repo();
+        let root = dir.path();
+        let ledger = root.join(".claude/pending/ledger.json");
+        std::fs::create_dir_all(ledger.parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            &ledger,
+            r#"{"items":[{"id":"P-1","title":"antigo","detail":"sem data","status":"open"}]}"#,
+        )
+        .expect("seed");
+
+        let listed = pending_at(&opts(root));
+        assert_eq!(listed["open"][0].get("created"), None, "listing writes nothing: {listed}");
+
+        let added = pending_at(&PendingOpts {
+            add: true,
+            title: Some("novo".into()),
+            detail: Some("com data".into()),
+            now: Some("2026-09-13".into()),
+            ..opts(root)
+        });
+        assert_eq!(added["ok"], json!(true), "{added}");
+        assert_eq!(added["open"][1]["created"], json!("2026-09-13"), "{added}");
+        assert_eq!(added["open"][0]["created"], json!("2026-09-13"), "the undated item got today: {added}");
+    }
+
+    /// A listagem traz a linha de contagem das abertas, no idioma do projeto,
+    /// e nenhuma linha quando nada está aberto.
+    #[test]
+    fn the_listing_carries_the_count_line() {
+        let dir = repo();
+        let root = dir.path();
+        assert_eq!(pending_at(&opts(root))["count_line"], Value::Null, "nothing open");
+        add(root, "um", "a");
+        assert_eq!(
+            pending_at(&opts(root))["count_line"],
+            json!(mustard_core::translate("pending.count.one", Locale::default()))
+        );
+        add(root, "dois", "b");
+        let line = pending_at(&opts(root))["count_line"].as_str().unwrap_or_default().to_string();
+        assert!(line.starts_with("[Mustard] 2 "), "{line}");
+        assert_eq!(count_line(root, Locale::default()).as_deref(), Some(line.as_str()));
+    }
+
+    /// Hoje, nos testes da faxina e da remoção.
+    const TODAY: &str = "2026-09-13";
+
+    /// Uma pendência gravada no dia `day`, pelo mesmo passe do `--add`.
+    fn add_on(root: &Path, title: &str, day: &str) -> Value {
+        let out = pending_at(&PendingOpts {
+            add: true,
+            title: Some(title.into()),
+            detail: Some("combinado".into()),
+            now: Some(day.into()),
+            ..opts(root)
+        });
+        assert_eq!(out["ok"], json!(true), "seed: {out}");
+        out
+    }
+
+    fn ledger_bytes(root: &Path) -> Vec<u8> {
+        std::fs::read(root.join(".claude/pending/ledger.json")).expect("ledger")
+    }
+
+    /// As paradas há 30 dias ou mais aparecem na linha de contagem e voltam
+    /// numa faxina só, uma vez; as que o usuário não marcou saem como
+    /// vencidas, e as marcadas ficam.
+    #[test]
+    fn stale_items_come_back_once_and_the_unmarked_ones_expire() {
+        let dir = repo();
+        let root = dir.path();
+        for title in ["velha um", "velha dois", "velha tres"] {
+            add_on(root, title, "2026-08-01");
+        }
+        for title in ["nova um", "nova dois"] {
+            add_on(root, title, "2026-09-10");
+        }
+        let listed = pending_at(&PendingOpts { now: Some(TODAY.into()), ..opts(root) });
+        let line = listed["count_line"].as_str().unwrap_or_default();
+        assert!(line.contains(" 3 ") && line.contains("--stale"), "the three idle ones are counted: {line}");
+
+        let swept = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
+        assert_eq!(ids(&swept["stale"]), vec!["P-1", "P-2", "P-3"], "{swept}");
+        assert_eq!(swept["question"], json!(mustard_core::translate("pending.stale.question", Locale::default())));
+        let again = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
+        assert_eq!(again["stale"], json!([]), "they come back once: {again}");
+        assert!(!again["count_line"].as_str().unwrap_or_default().contains("--stale"), "{again}");
+
+        let before = ledger_bytes(root);
+        let stray = pending_at(&PendingOpts { expire: true, keep: Some("P-4".into()), ..opts(root) });
+        assert_eq!(stray["reason"], json!("nothing-matches"), "a kept item outside the batch: {stray}");
+        assert_eq!(ledger_bytes(root), before, "nothing was removed");
+
+        let expired = pending_at(&PendingOpts { expire: true, keep: Some("p-2".into()), ..opts(root) });
+        assert_eq!(expired["expired"], json!(["P-1", "P-3"]), "{expired}");
+        assert_eq!(ids(&expired["open"]), vec!["P-2", "P-4", "P-5"], "the marked one stays: {expired}");
+        let reason = mustard_core::translate("pending.expired_reason", Locale::default());
+        for item in expired["closed"].as_array().expect("closed list") {
+            assert_eq!(item["status"], json!("dropped"), "{item}");
+            assert_eq!(item["reason"], json!(reason), "{item}");
+        }
+
+        // O lote se consome: um segundo `--expire` sem faxina nova não tira a
+        // que o usuário marcou para ficar.
+        let before = ledger_bytes(root);
+        let again = pending_at(&PendingOpts { expire: true, ..opts(root) });
+        assert_eq!(again["reason"], json!("nothing-matches"), "{again}");
+        assert_eq!(ledger_bytes(root), before, "the kept one stays");
+        assert_eq!(ids(&pending_at(&opts(root))["open"]), vec!["P-2", "P-4", "P-5"]);
+    }
+
+    /// O código da remoção muda com o motivo, com qualquer gravação no meio
+    /// (uma reabertura, sem novo sim) e com qualquer mudança na lista aberta,
+    /// mesmo fora do que sairia.
+    #[test]
+    fn the_removal_code_changes_with_the_reason_a_reopen_or_any_change_in_the_list() {
+        let dir = repo();
+        let root = dir.path();
+        add(root, "Humanize", "a");
+        add(root, "Painel", "b");
+        let remove = |reason: &str, confirm: Option<String>| {
+            pending_at(&PendingOpts {
+                remove: true,
+                id: Some("P-1".into()),
+                reason: Some(reason.into()),
+                confirm,
+                ..opts(root)
+            })
+        };
+        let token = |report: &Value| report["token"].as_str().map(str::to_string);
+
+        // Outro motivo na confirmação.
+        let shown = remove("mudou o plano", None);
+        let other = remove("outro motivo", token(&shown));
+        assert_eq!(other["reason"], json!("confirm-mismatch"), "{other}");
+
+        // Depois de tirar e reabrir, o código antigo não vale de novo.
+        let gone = remove("mudou o plano", token(&shown));
+        assert_eq!(gone["removed"], json!(["P-1"]), "{gone}");
+        assert_eq!(pending_at(&PendingOpts { reopen: Some("P-1".into()), ..opts(root) })["reopened"], json!(true));
+        let replayed = remove("mudou o plano", token(&shown));
+        assert_eq!(replayed["reason"], json!("confirm-mismatch"), "a reopen asks for a new yes: {replayed}");
+
+        // Uma pendência nova, fora do que sairia, também muda a lista.
+        let shown = remove("mudou o plano", None);
+        add(root, "Relatorio", "c");
+        let changed = remove("mudou o plano", token(&shown));
+        assert_eq!(changed["reason"], json!("confirm-mismatch"), "{changed}");
+        assert_eq!(ids(&pending_at(&opts(root))["open"]), vec!["P-1", "P-2", "P-3"], "nothing left");
+    }
+
+    /// Reabrir uma pendência com o título de uma já aberta é recusado
+    /// apontando a aberta; a reaberta volta a poder aparecer na faxina.
+    #[test]
+    fn a_reopen_refuses_a_duplicate_and_the_reopened_item_can_be_swept_again() {
+        let dir = repo();
+        let root = dir.path();
+        add_on(root, "Humanize", "2020-01-01");
+        let swept = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
+        assert_eq!(ids(&swept["stale"]), vec!["P-1"], "{swept}");
+        let expired = pending_at(&PendingOpts { expire: true, ..opts(root) });
+        assert_eq!(expired["expired"], json!(["P-1"]), "{expired}");
+
+        add_on(root, "humanize", TODAY);
+        let refused = pending_at(&PendingOpts { reopen: Some("P-1".into()), ..opts(root) });
+        assert_eq!(refused["reason"], json!("duplicate"), "{refused}");
+        assert_eq!(refused["id"], json!("P-2"), "the refusal points at the open one");
+
+        let closed = pending_at(&PendingOpts { close: Some("P-2".into()), reason: Some("feito".into()), ..opts(root) });
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        let back = pending_at(&PendingOpts { reopen: Some("P-1".into()), ..opts(root) });
+        assert_eq!(back["reopened"], json!(true), "{back}");
+        assert_eq!(back["open"][0].get("swept"), None, "the sweep day is cleared: {back}");
+        let again = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
+        assert_eq!(ids(&again["stale"]), vec!["P-1"], "the reopened item comes back to the sweep: {again}");
+    }
+
+    /// A remoção pelo número, por palavra e por data mostra primeiro o que
+    /// sairia e devolve um código, sem tocar na lista; com o código, tira
+    /// exatamente aquelas; se a lista mudou entre as duas chamadas, nada sai.
+    #[test]
+    fn removing_by_number_word_or_date_shows_first_and_removes_only_what_was_confirmed() {
+        let dir = repo();
+        let root = dir.path();
+        add_on(root, "Humanize o texto", TODAY);
+        add_on(root, "Humanize a pagina", TODAY);
+        add_on(root, "Painel novo", TODAY);
+        add_on(root, "Relatorio antigo", "2026-07-20");
+        let remove = |selector: PendingOpts, confirm: Option<String>| {
+            pending_at(&PendingOpts { remove: true, reason: Some("o usuario pediu".into()), confirm, ..selector })
+        };
+        let by_id = || PendingOpts { id: Some("p-3".into()), ..opts(root) };
+        let by_term = || PendingOpts { term: Some("humanize".into()), ..opts(root) };
+        let by_day = || PendingOpts { before: Some("2026-08-01".into()), ..opts(root) };
+        let token = |report: &Value| report["token"].as_str().map(str::to_string);
+
+        // Pelo número.
+        let before = ledger_bytes(root);
+        let shown = remove(by_id(), None);
+        assert_eq!(shown["preview"], json!(true), "{shown}");
+        assert_eq!(shown["remove"], json!([{ "id": "P-3", "title": "Painel novo" }]));
+        assert!(shown["hint"].as_str().unwrap_or_default().contains(&token(&shown).unwrap_or_default()));
+        assert_eq!(ledger_bytes(root), before, "the preview writes nothing");
+        assert_eq!(remove(by_id(), token(&shown))["removed"], json!(["P-3"]));
+
+        // Por palavra: a lista muda entre as duas chamadas, e nada sai.
+        let shown = remove(by_term(), None);
+        assert_eq!(ids(&shown["remove"]), vec!["P-1", "P-2"], "{shown}");
+        add_on(root, "Humanize de novo", TODAY);
+        let before = ledger_bytes(root);
+        let refused = remove(by_term(), token(&shown));
+        assert_eq!(refused["reason"], json!("confirm-mismatch"), "{refused}");
+        assert_eq!(ledger_bytes(root), before, "nothing was removed");
+        let shown = remove(by_term(), None);
+        assert_eq!(ids(&shown["remove"]), vec!["P-1", "P-2", "P-5"], "{shown}");
+        assert_eq!(remove(by_term(), token(&shown))["removed"], json!(["P-1", "P-2", "P-5"]));
+
+        // Pela data.
+        let shown = remove(by_day(), None);
+        assert_eq!(ids(&shown["remove"]), vec!["P-4"], "{shown}");
+        let gone = remove(by_day(), token(&shown));
+        assert_eq!(gone["removed"], json!(["P-4"]), "{gone}");
+        assert_eq!(gone["open"], json!([]), "only what was confirmed left, and all of it did");
+    }
+
+    /// Uma remoção sem motivo, ou sem dizer o que remover, é recusada com o
+    /// texto do catálogo e a lista fica intacta; um seletor que não pega nada
+    /// e uma data que não se lê também.
+    #[test]
+    fn a_removal_without_a_reason_is_refused_and_nothing_is_written() {
+        let dir = repo();
+        let root = dir.path();
+        add(root, "Humanize", "a");
+        let before = ledger_bytes(root);
+        let lang = Locale::default();
+        let removal = |id: Option<&str>, term: Option<&str>, day: Option<&str>, reason: Option<&str>| {
+            pending_at(&PendingOpts {
+                remove: true,
+                id: id.map(str::to_string),
+                term: term.map(str::to_string),
+                before: day.map(str::to_string),
+                reason: reason.map(str::to_string),
+                ..opts(root)
+            })
+        };
+        for (out, code, key) in [
+            (removal(Some("P-1"), None, None, None), "reason-required", "pending.reason_required"),
+            (removal(Some("P-1"), None, None, Some("   ")), "reason-required", "pending.reason_required"),
+            (removal(None, None, None, Some("x")), "selector-required", "pending.selector_required"),
+            (removal(None, Some("zzz"), Some("2026-08-01"), Some("x")), "selector-required", "pending.selector_required"),
+        ] {
+            assert_eq!(out["ok"], json!(false), "{out}");
+            assert_eq!(out["reason"], json!(code), "{out}");
+            assert_eq!(out["hint"], json!(mustard_core::translate(key, lang)), "{out}");
+            assert_eq!(ledger_bytes(root), before, "nothing was written");
+        }
+        let nothing = removal(None, Some("zzz"), None, Some("x"));
+        assert_eq!(nothing["reason"], json!("nothing-matches"), "{nothing}");
+        assert!(nothing["hint"].as_str().unwrap_or_default().contains("--term \"zzz\""), "{nothing}");
+        let bad = removal(None, None, Some("2026-13-40"), Some("x"));
+        assert_eq!(bad["reason"], json!("bad-date"), "{bad}");
+        assert_eq!(ledger_bytes(root), before, "nothing was written");
+    }
+
+    /// A pendência tirada fica na lista como descartada, com o motivo, e volta
+    /// a aberta pelo `--reopen`; só uma descartada volta.
+    #[test]
+    fn a_removed_item_stays_dropped_with_its_reason_and_can_be_reopened() {
+        let dir = repo();
+        let root = dir.path();
+        add(root, "Humanize", "a");
+        add(root, "Painel", "b");
+        let drop = |confirm: Option<String>| {
+            pending_at(&PendingOpts {
+                drop: Some("P-1".into()),
+                reason: Some("mudou o plano".into()),
+                confirm,
+                ..opts(root)
+            })
+        };
+        let gone = drop(drop(None)["token"].as_str().map(str::to_string));
+        let dropped = &gone["closed"][0];
+        assert_eq!(dropped["id"], json!("P-1"), "{gone}");
+        assert_eq!(dropped["status"], json!("dropped"));
+        assert_eq!(dropped["reason"], json!("mudou o plano"), "the reason stays on the item");
+
+        let back = pending_at(&PendingOpts { reopen: Some("p-1".into()), ..opts(root) });
+        assert_eq!(back["reopened"], json!(true), "{back}");
+        assert_eq!(ids(&back["open"]), vec!["P-1", "P-2"]);
+        assert_eq!(back["open"][0].get("reason"), None, "an open item carries no reason");
+
+        let not = pending_at(&PendingOpts { reopen: Some("P-2".into()), ..opts(root) });
+        assert_eq!(not["reason"], json!("not-dropped"), "{not}");
+        assert_eq!(
+            not["hint"],
+            json!(mustard_core::translate("pending.not_dropped", Locale::default()).replace("{id}", "P-2"))
+        );
     }
 }

@@ -6,9 +6,9 @@
 //! Four reviews in a row found the same shape: `init_with_templates` is a
 //! `Result`-returning library function that took environment acts — first
 //! `process::exit(1)` through the RTK gate, then `sh -c "curl … | sh"` through
-//! `ensure_rtk`, then `$HOME/.claude/settings.json` through
-//! `ensure_global_permissions`. Each moved to `cli::dispatch`, where the binary —
-//! and only the binary — may take them.
+//! an rtk installer, then `$HOME/.claude/settings.json` through a global
+//! permissions write. The gate moved to `cli::dispatch`, where the binary — and
+//! only the binary — may take it; the other two left the product.
 //!
 //! A substring ratchet over `init.rs` was tried first and defeated by five
 //! spellings. So this measures CONSEQUENCES instead. That version was defeated
@@ -149,10 +149,10 @@ fn library_probe_child() {
         .expect("init_with_templates runs");
     assert_eq!(first, InitOutcome::Installed, "a seeded project reports Installed");
 
-    // Door 2: `init`, which its own doc calls "the library entry point the
-    // dashboard backend calls". Restoring the acts HERE was green before this
-    // call existed. `MUSTARD_TEMPLATES_DIR` is how the parent points it at the
-    // fixture without a process-global default.
+    // Door 2: `init`, which its own doc calls "the library entry point".
+    // Restoring the acts HERE was green before this call existed.
+    // `MUSTARD_TEMPLATES_DIR` is how the parent points it at the fixture
+    // without a process-global default.
     let second = init(&work.join("project-two"), &opts).expect("init runs");
     assert_eq!(second, InitOutcome::Installed, "the second door also installs");
 
@@ -198,9 +198,6 @@ fn a_library_init_touches_nothing_outside_the_project() {
         .env("HOME", &home)
         .env("TERM", "xterm-256color")
         .env("MUSTARD_TEMPLATES_DIR", work.join("templates"))
-        // Armed on purpose: with the opt-in OFF this passes even if the library
-        // calls the global-settings write.
-        .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
         .output()
         .expect("the probe child runs");
 

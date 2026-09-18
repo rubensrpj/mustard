@@ -5,7 +5,7 @@
 //! Every Mustard skill — both the foundation skills shipped under
 //! `apps/cli/templates/skills/` and the scan-generated ones under
 //! `{subproject}/.claude/skills/` — exposes a YAML frontmatter block. Before
-//! Wave 1 of `2026-05-25-mustard-deep-refactor` the shape was implicit
+//! this contract the shape was implicit
 //! (`name`, `description`, `source`). The new contract adds four fields
 //! consumed by `skill-resolve` to score relevance deterministically:
 //!
@@ -608,11 +608,10 @@ fn read_metadata_block(
                         if !l.starts_with("    ") && !l.starts_with("\t\t") {
                             break;
                         }
-                        if let Some((kk, vv)) = l_trim.split_once(':') {
-                            if kk.trim() == "label" {
+                        if let Some((kk, vv)) = l_trim.split_once(':')
+                            && kk.trim() == "label" {
                                 cluster.label = unquote(vv.trim()).to_string();
                             }
-                        }
                         k2 += 1;
                     }
                     meta.cluster = Some(cluster);
@@ -654,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_canonical_t1_3_schema() {
+    fn parses_the_canonical_skill_schema() {
         let raw = r"---
 name: my-skill
 description: Use when the user wants to do something that needs at least fifty characters.
@@ -776,7 +775,7 @@ metadata:
     fn tolerates_leading_bom() {
         // A BOM before the opening fence must not defeat extraction — this is
         // the tolerance the scan-pattern origin reader always had and the core
-        // now shares (P2.8).
+        // now shares too.
         let raw = "\u{feff}---\nname: x\ndescription: Use when the user wants something with enough characters here.\nsource: scan\n---\nbody";
         let fm = parse(raw).expect("BOM-prefixed frontmatter parses");
         assert_eq!(fm.name, "x");

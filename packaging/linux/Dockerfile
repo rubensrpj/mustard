@@ -1,12 +1,11 @@
 # ============================================================================
-# Ambiente de build do pacote Linux do Mustard (CLI + dashboard num único .deb).
+# Ambiente de build do pacote Linux do Mustard (CLI num único .deb).
 #
 # Base Ubuntu 22.04 -> glibc 2.35: o artefato roda em Ubuntu 22.04+. The floor
 # used to be webkit2gtk-4.1 (absent on 20.04) and is now just the glibc this
-# image links against — the dashboard is a `tiny_http` server with no system
-# dependency at all, so the WebKitGTK/GTK/librsvg/appindicator build packages
-# left with the desktop shell. Os binários do CLI e o servidor do dashboard são compilados
-# aqui dentro e empacotados num só .deb pelo packaging/linux/build-deb.sh.
+# image links against — the WebKitGTK/GTK/librsvg/appindicator build packages
+# left with the desktop shell. Os binários do CLI são compilados aqui dentro e
+# empacotados num só .deb pelo packaging/linux/build-deb.sh.
 #
 # A imagem é cacheada por camadas do Docker; o build-packages.ps1 faz `docker
 # build` (rápido após a 1ª vez) e depois `docker run` montando o repo + o dist.
@@ -15,18 +14,12 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Pré-requisitos de Rust/Node + as ferramentas de empacotamento .deb (dpkg-dev,
+# Pré-requisitos de Rust + as ferramentas de empacotamento .deb (dpkg-dev,
 # fakeroot) e cópia (rsync).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config file curl wget ca-certificates xz-utils git \
       rsync dpkg-dev fakeroot \
       libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Node.js 20 (NodeSource) + pnpm fixado na versão do dashboard (packageManager).
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g pnpm@10.18.1 \
     && rm -rf /var/lib/apt/lists/*
 
 # rustup only — NO toolchain baked in. The repo is mounted at /work and pins its

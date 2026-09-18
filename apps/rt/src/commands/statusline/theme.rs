@@ -294,8 +294,7 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
 // ---------------------------------------------------------------------------
 
 // Each themes block packs styles in the same order as `SegmentKind`:
-// Module, Git, Context, Duration, Savings, Diff, Cost, Model, Version, Mustard,
-// Prune.
+// Module, Git, Context, Duration, Savings, Diff, Cost, Model, Unit, Inert.
 
 /// `default` — pipes, ANSI 8 colors, no bg. Looks like a classic terminal
 /// prompt; safe on any terminal.
@@ -322,12 +321,6 @@ pub const DEFAULT: Theme = Theme {
         Style::fg(Color::Ansi(2)),
         // Model — blue
         Style::fg(Color::Ansi(4)),
-        // Version — dim white
-        Style::fg(Color::Ansi(8)),
-        // Mustard — dim white (drift turns it yellow via the builder override)
-        Style::fg(Color::Ansi(8)),
-        // Prune — yellow: a delivered unit still owes its exit ritual
-        Style::fg(Color::Ansi(3)),
         // Unit — cyan: where the operator stopped
         Style::fg(Color::Ansi(6)),
         // Inert — red: the plugin is off, so no hook runs at all
@@ -371,12 +364,6 @@ pub(crate) const CATPPUCCIN: Theme = Theme {
         Style::pl(Color::Rgb(0xa6, 0xe3, 0xa1), Color::Rgb(0x18, 0x18, 0x25)),
         // Model — base on sapphire (mirrors module cap, balances the line)
         Style::pl_bold(Color::Rgb(0x1e, 0x1e, 0x2e), Color::Rgb(0x74, 0xc7, 0xec)),
-        // Version — pink on crust (tail accent)
-        Style::pl(Color::Rgb(0xf5, 0xc2, 0xe7), Color::Rgb(0x11, 0x11, 0x1b)),
-        // Mustard — yellow on crust (the harness's own tail mark)
-        Style::pl(Color::Rgb(0xf9, 0xe2, 0xaf), Color::Rgb(0x11, 0x11, 0x1b)),
-        // Prune — peach on crust: owed, not broken
-        Style::pl(Color::Rgb(0xfa, 0xb3, 0x87), Color::Rgb(0x11, 0x11, 0x1b)),
         // Unit — sky on crust: where the operator stopped
         Style::pl(Color::Rgb(0x89, 0xdc, 0xeb), Color::Rgb(0x11, 0x11, 0x1b)),
         // Inert — crust on red: the harness is not running
@@ -410,12 +397,6 @@ pub(crate) const TOKYO_NIGHT: Theme = Theme {
         Style::pl(Color::Rgb(0x9e, 0xce, 0x6a), Color::Rgb(0x24, 0x28, 0x3b)),
         // Model — bg on magenta (mirrors module cap on the right side)
         Style::pl_bold(Color::Rgb(0x1a, 0x1b, 0x26), Color::Rgb(0xbb, 0x9a, 0xf7)),
-        // Version — fg dim on bg
-        Style::pl(Color::Rgb(0x56, 0x5f, 0x89), Color::Rgb(0x1a, 0x1b, 0x26)),
-        // Mustard — yellow on bg (the harness's own tail mark)
-        Style::pl(Color::Rgb(0xe0, 0xaf, 0x68), Color::Rgb(0x1a, 0x1b, 0x26)),
-        // Prune — yellow on bg-storm: owed, not broken
-        Style::pl(Color::Rgb(0xe0, 0xaf, 0x68), Color::Rgb(0x24, 0x28, 0x3b)),
         // Unit — cyan on bg-storm: where the operator stopped
         Style::pl(Color::Rgb(0x7d, 0xcf, 0xff), Color::Rgb(0x24, 0x28, 0x3b)),
         // Inert — bg on red: the harness is not running
@@ -448,12 +429,6 @@ pub(crate) const PASTEL_POWERLINE: Theme = Theme {
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xcb, 0xa6, 0xf7)),
         // Model — crust on pastel lavender
         Style::pl_bold(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xb4, 0xbe, 0xfe)),
-        // Version — crust on muted pink
-        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xea, 0x9a, 0x97)),
-        // Mustard — crust on pastel yellow (the harness's own tail mark)
-        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf9, 0xe2, 0xaf)),
-        // Prune — crust on pastel peach: owed, not broken
-        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xfa, 0xb3, 0x87)),
         // Unit — crust on pastel sky: where the operator stopped
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0x89, 0xdc, 0xeb)),
         // Inert — crust on pastel red: the harness is not running
@@ -487,12 +462,6 @@ pub(crate) const GRUVBOX_RAINBOW: Theme = Theme {
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x83, 0xa5, 0x98)),
         // Model — bg on red (right-side accent)
         Style::pl_bold(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xcc, 0x24, 0x1d)),
-        // Version — fg dim on bg0_h
-        Style::pl(Color::Rgb(0xa8, 0x99, 0x84), Color::Rgb(0x1d, 0x20, 0x21)),
-        // Mustard — bg on yellow (echoes the module head, closes the ribbon)
-        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd7, 0x99, 0x21)),
-        // Prune — bg on orange: owed, not broken
-        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd6, 0x5d, 0x0e)),
         // Unit — bg on aqua: where the operator stopped
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x68, 0x9d, 0x6a)),
         // Inert — bg on red: the harness is not running

@@ -1,8 +1,10 @@
 //! The `run` subcommands for the Claude Code status bar (`statusline/`).
 //!
-//! TWO registrations per command, both in this file: the variant in
-//! [`StatuslineCmd`] AND its arm in [`dispatch`] below. Forgetting the second
-//! still compiles, but the command vanishes from the CLI.
+//! A new command takes its variant in [`StatuslineCmd`] and its arm in
+//! [`dispatch`] below (the compiler demands the arm), its line in
+//! `tests/fixtures/run-surface.txt`, which `tests/run_command_surface.rs`
+//! compares with the clap tree, and a caller in the product text, which
+//! `tests/template_parity.rs` demands with no exception list.
 //!
 //! [`crate::commands::RunCmd`] hoists this enum with `#[command(flatten)]`, so
 //! every name stays FLAT: `mustard-rt run <name>`, never `run statusline <name>`.
@@ -20,7 +22,7 @@ use crate::commands::{statusline};
 pub enum StatuslineCmd {
     /// Render the Claude Code status bar (reads the payload JSON from stdin),
     /// or `--preview` every shipped theme on its own labelled line.
-    #[command(display_order = 36)]
+    #[command(display_order = 21)]
     Statusline {
         /// Skip stdin; render every theme with a synthetic payload.
         #[arg(long)]

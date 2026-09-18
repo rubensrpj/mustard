@@ -6,8 +6,8 @@
 //! behaviours a component can have: [`Check`] (may affect the result) and
 //! [`Observer`] (telemetry only, never blocks).
 //!
-//! **Frozen at the end of b2 Wave 1.** B3 (hooks → Rust) and B4 (scripts →
-//! Rust) build a dispatcher on top of these types; a late change here
+//! **Frozen.** The port of the hooks to Rust and the port of the scripts to
+//! Rust build a dispatcher on top of these types; a late change here
 //! propagates everywhere. Add to it via `#[non_exhaustive]`, do not reshape it.
 
 use crate::platform::error::Error;
@@ -213,10 +213,11 @@ impl HookInput {
     }
 
     /// The `file_path` a Write/Edit (or Read) invocation targets, accepting the
-    /// legacy `path` key (`tool_input.file_path || tool_input.path`).
+    /// legacy `path` key and `NotebookEdit`'s `notebook_path`
+    /// (`tool_input.file_path || tool_input.path || tool_input.notebook_path`).
     ///
     /// Returns the raw string exactly as the harness sent it — `None` when
-    /// neither key holds a string. Callers that need forward-slash normalisation
+    /// no key holds a string. Callers that need forward-slash normalisation
     /// apply it at their own boundary (their `relative_to_cwd` re-normalises
     /// regardless). Before this method the same body was copy-pasted
     /// byte-identically into seven hook modules across `mustard-rt`.
@@ -225,8 +226,101 @@ impl HookInput {
         let ti = &self.tool_input;
         ti.get("file_path")
             .or_else(|| ti.get("path"))
+            .or_else(|| ti.get("notebook_path"))
             .and_then(Value::as_str)
             .map(str::to_string)
+    }
+
+    /// The text the user typed (`prompt`, on `UserPromptSubmit`). `None` on
+    /// every other event, or when the field is not a string.
+    #[must_use]
+    pub fn user_prompt(&self) -> Option<&str> {
+        self.raw.get("prompt").and_then(Value::as_str)
+    }
+
+    /// The assistant's final text for the turn (`last_assistant_message`, on
+    /// `Stop` and `SubagentStop`).
+    #[must_use]
+    pub fn last_assistant_message(&self) -> Option<&str> {
+        self.raw.get("last_assistant_message").and_then(Value::as_str)
+    }
+
+    /// `true` when this `Stop` fires right after a hook blocked the previous
+    /// one (`stop_hook_active`). Blocking again here loops the turn, so a
+    /// stop hook only warns.
+    #[must_use]
+    pub fn stop_hook_active(&self) -> bool {
+        self.raw.get("stop_hook_active").and_then(Value::as_bool) == Some(true)
+    }
+
+    /// The answers of an `AskUserQuestion` call, read from
+    /// `tool_response.answers` (`{<question>: <label> | [<label>, …]}`) and
+    /// `tool_response.annotations.<question>.notes`. Empty when the call was
+    /// cancelled or the event carries no answers.
+    #[must_use]
+    pub fn ask_answers(&self) -> AskAnswers {
+        AskAnswers::from_tool_response(self.raw.get("tool_response"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AskAnswers
+// ---------------------------------------------------------------------------
+
+/// The answers of one `AskUserQuestion` call, in the order the harness sent
+/// them. See [`HookInput::ask_answers`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AskAnswers {
+    /// One entry per question in `tool_response.answers`.
+    pub items: Vec<AskAnswer>,
+}
+
+/// One question and what the user chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskAnswer {
+    /// The question, exactly as the harness keyed it.
+    pub question: String,
+    /// The chosen labels exactly as sent, blank ones left out: one for a
+    /// single choice, several for a multi-select, none for a blank answer.
+    pub labels: Vec<String>,
+    /// The note the user wrote next to the answer, exactly as sent, when any.
+    pub notes: Option<String>,
+}
+
+impl AskAnswers {
+    fn from_tool_response(response: Option<&Value>) -> Self {
+        let Some(response) = response else {
+            return Self::default();
+        };
+        let Some(answers) = response.get("answers").and_then(Value::as_object) else {
+            return Self::default();
+        };
+        let annotations = response.get("annotations").and_then(Value::as_object);
+        let items = answers
+            .iter()
+            .map(|(question, value)| {
+                let labels = match value {
+                    Value::String(s) => vec![s.as_str()],
+                    Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                let notes = annotations
+                    .and_then(|a| a.get(question))
+                    .and_then(|n| n.get("notes"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                AskAnswer {
+                    question: question.clone(),
+                    labels: labels
+                        .into_iter()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                    notes,
+                }
+            })
+            .collect();
+        Self { items }
     }
 }
 
@@ -296,7 +390,7 @@ impl Verdict {
 /// The consolidated result of running one or more [`Check`]s against a hook
 /// invocation.
 ///
-/// The B3 dispatcher folds every [`Verdict`] produced for an invocation into
+/// The hook dispatcher folds every [`Verdict`] produced for an invocation into
 /// one `Outcome`, then turns it into stdout JSON + a process exit code. A
 /// blocking [`Verdict::Deny`] dominates; otherwise warnings, rewrites, and
 /// injections accumulate.
@@ -371,10 +465,11 @@ impl Outcome {
 
 /// Ambient context handed to a [`Check`] alongside the [`HookInput`].
 ///
-/// **Minimal placeholder for Wave 1.** It carries only what a check needs to
-/// resolve "where am I": the project directory and the [`Trigger`]. b2 Wave 3
-/// grows this with enforcement config, the event sink, and pipeline-state
-/// access; B3 may extend it further. New fields are additive.
+/// It carries what a check needs to know about the invocation: where the
+/// project is, which event fired, and the project's `mustard.json`, loaded
+/// once by the dispatcher so a check reads its choices (the declared bases,
+/// the language) without touching the disk. This type only holds the values;
+/// the loading lives with the dispatcher. New fields are additive.
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
     /// Absolute path to the project root for this invocation.
@@ -388,17 +483,21 @@ pub struct Ctx {
     /// point at a monorepo subproject). `None` when resolution failed; the
     /// dispatcher fails open in that case.
     pub workspace_root: Option<std::path::PathBuf>,
-    /// The single declared injectable this invocation must deliver, when the
-    /// hook was registered with `--inject <file>`.
-    ///
-    /// Each injectable rides its OWN sibling hook, because the 10,000-character
-    /// `additionalContext` ceiling is per hook RESPONSE and siblings do not
-    /// share one (measured 2026-08-25). `None` means the legacy behaviour:
-    /// deliver every entry declared on the trigger, folded into one payload.
-    pub inject_only: Option<String>,
+    /// The project's `mustard.json`. A missing or broken file is the default
+    /// configuration, the same answer every reader of the file gets.
+    pub config: crate::domain::config::ProjectConfig,
 }
 
 impl Ctx {
+    /// A context for tests: the project directory and the trigger, nothing
+    /// resolved. Tests build their `Ctx` here instead of with a struct
+    /// literal, so a new field does not touch every test.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test(project_dir: impl Into<String>, trigger: Option<Trigger>) -> Self {
+        Self { project_dir: project_dir.into(), trigger, ..Self::default() }
+    }
+
     /// The project directory for this invocation: the dispatcher-resolved
     /// [`Ctx::project_dir`] when populated, else the harness-provided
     /// [`HookInput::cwd`], else `"."`.
@@ -468,6 +567,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hook_input_readers_read_the_harness_fields() {
+        let input: HookInput = serde_json::from_value(serde_json::json!({
+            "prompt": "oi",
+            "last_assistant_message": "feito",
+            "stop_hook_active": true,
+            "tool_input": { "notebook_path": "/p/a.ipynb" },
+            "tool_response": {
+                "answers": { "Qual?": "A", "Quais?": ["B", " ", "C"], "Vazia?": "  " },
+                "annotations": { "Qual?": { "notes": " nota " } }
+            }
+        }))
+        .expect("valid hook input");
+        assert_eq!(input.user_prompt(), Some("oi"));
+        assert_eq!(input.last_assistant_message(), Some("feito"));
+        assert!(input.stop_hook_active());
+        assert_eq!(input.file_path().as_deref(), Some("/p/a.ipynb"), "NotebookEdit's path counts");
+
+        let answers = input.ask_answers();
+        let find = |q: &str| answers.items.iter().find(|a| a.question == q).expect("question");
+        assert_eq!(find("Qual?").labels, ["A"]);
+        assert_eq!(find("Qual?").notes.as_deref(), Some(" nota "), "notes come as sent");
+        assert_eq!(find("Quais?").labels, ["B", "C"], "blank labels are left out");
+        assert!(find("Vazia?").labels.is_empty());
+        assert_eq!(answers.items.len(), 3);
+    }
+
+    #[test]
+    fn hook_input_readers_answer_empty_when_the_field_is_absent() {
+        let input: HookInput = serde_json::from_value(serde_json::json!({
+            "tool_input": { "file_path": "/a.rs", "notebook_path": "/b.ipynb" },
+            "stop_hook_active": "yes"
+        }))
+        .expect("valid hook input");
+        assert_eq!(input.user_prompt(), None);
+        assert_eq!(input.last_assistant_message(), None);
+        assert!(!input.stop_hook_active(), "only a JSON true counts");
+        assert_eq!(input.file_path().as_deref(), Some("/a.rs"), "file_path wins");
+        assert_eq!(input.ask_answers(), AskAnswers::default());
+    }
+
+    #[test]
+    fn ctx_for_test_sets_only_the_directory_and_the_trigger() {
+        let ctx = Ctx::for_test("/p", Some(Trigger::Stop));
+        assert_eq!(ctx.project_dir, "/p");
+        assert_eq!(ctx.trigger, Some(Trigger::Stop));
+        assert!(ctx.workspace_root.is_none());
+    }
+
+    #[test]
     fn hook_input_is_lenient_about_unknown_fields() {
         // `future_field` is not modelled — it must land in `raw`, not error.
         let raw = r#"{"tool_name":"Bash","hook_event_name":"PreToolUse","tool_input":{"command":"ls"},"future_field":42}"#;
@@ -516,10 +664,9 @@ mod tests {
 
     #[test]
     fn allow_does_not_clobber_prior_decisive_verdict() {
-        // Regression guard for spec 2026-05-20-restore-rtk-rewrite: when one
-        // module returns Rewrite and a later module (tool_use_counter /
-        // main_context_counter) returns Allow, the Rewrite must survive —
-        // otherwise rtk-rewrite is silently swallowed by the dispatcher.
+        // When one module returns Rewrite and a later module returns Allow,
+        // the Rewrite must survive — otherwise the tool input a module
+        // handed back is silently swallowed by the dispatcher.
         let mut outcome = Outcome::allow();
         let rewrite = Verdict::Rewrite {
             tool_input: serde_json::json!({ "command": "rtk git status" }),

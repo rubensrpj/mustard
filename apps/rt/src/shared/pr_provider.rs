@@ -1,6 +1,13 @@
-//! `pr_provider` — the pull-request ACTIONS (open / edit / ready / view) as a
-//! port, mirroring what [`crate::shared::branch_state`] already does for the
-//! pull-request STATUS query ([`crate::shared::branch_state::PrLookup`]).
+//! `pr_provider` — the pull-request ACTIONS (open / edit / ready / view) and
+//! the two readings only the provider can give (its checks, and whether it
+//! protects a branch) as a port, beside the pull-request STATUS query that
+//! [`crate::shared::branch_state`] answers with
+//! [`crate::shared::branch_state::PrQuery`].
+//!
+//! Só as AÇÕES são porta. A consulta de estado foi porta e deixou de ser: ela
+//! tem dois casos fechados — perguntar ou não perguntar — e um traço para dois
+//! casos era máquina a mais. Já as ações cada provedor faz de um jeito, e é
+//! essa diferença que o traço aqui existe para absorver.
 //!
 //! The trait is what every caller depends on; no consumer ever names a provider
 //! or its CLI. The adapters — [`GithubPrCli`] below, and the REST-speaking
@@ -94,7 +101,7 @@ pub(crate) fn status_from_azure(status: &str) -> PrStatus {
 /// Map GitHub's `state` word onto the canonical [`PrStatus`].
 ///
 /// `gh` answers UPPERCASE (`OPEN` / `MERGED` / `CLOSED`) — the same contract
-/// [`crate::shared::branch_state::ProviderPrCli`] already reduces over, and
+/// [`crate::shared::branch_state::PrQuery::reduce`] already reduces over, and
 /// matched case-insensitively for the same reason it upper-cases there.
 pub(crate) fn status_from_github(state: &str) -> PrStatus {
     match state.to_ascii_uppercase().as_str() {
@@ -271,6 +278,24 @@ pub(crate) struct PrOpened {
     pub(crate) url: String,
 }
 
+/// Como um pull request é apontado numa consulta.
+///
+/// Apontar pela BRANCH é o que quem abre e quem refaz o corpo precisam: a
+/// branch em jogo chega por opção, e não é necessariamente aquela em que o
+/// checkout está. Perguntar pelo checkout onde se queria perguntar pela branch
+/// faz a porta reescrever o corpo do pull request de outra unidade e relatar
+/// que editou aquele.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrRef<'a> {
+    /// Pelo número do pull request.
+    Number(u64),
+    /// Pela branch que o pull request leva.
+    Head(&'a str),
+    /// Pela branch em que o checkout está — a forma que as portas usam de
+    /// dentro da unidade.
+    Checkout,
+}
+
 // ---------------------------------------------------------------------------
 // The port
 // ---------------------------------------------------------------------------
@@ -278,12 +303,15 @@ pub(crate) struct PrOpened {
 /// The pull-request actions as a PORT.
 ///
 /// Callers depend on this trait and never on a provider's CLI or REST API, so
-/// a new provider is a new adapter and not one line of new caller logic —
-/// the same inversion [`crate::shared::branch_state::PrLookup`] already made
-/// for the status query. Every operation degrades to `Err(String)` (a stable
-/// token where this module decides the words, the CLI's own stderr where it
-/// does not), never a panic — `clippy::unwrap_used` is `deny` crate-wide and
-/// these run on command paths that must keep answering JSON.
+/// a new provider is a new adapter and not one line of new caller logic. Every
+/// operation degrades to `Err(String)` (a stable token where this module
+/// decides the words, the CLI's own stderr where it does not), never a panic —
+/// `clippy::unwrap_used` is `deny` crate-wide and these run on command paths
+/// that must keep answering JSON.
+///
+/// O mesmo NÃO vale para a consulta de estado, que já foi um traço ao lado
+/// deste e não é mais: lá o que muda de provedor para provedor é só a quem
+/// perguntar, e isso cabe em [`crate::shared::branch_state::PrQuery`].
 pub(crate) trait PrProvider {
     /// The provider token this adapter speaks for — what a report prints so
     /// the operator knows WHO was asked. `resolve_provider`'s vocabulary.
@@ -298,10 +326,8 @@ pub(crate) trait PrProvider {
     /// Mark draft pull request `number` ready for review.
     fn ready(&self, number: u64) -> Result<(), String>;
 
-    /// One pull request, normalised. `None` = the PR whose head is the branch
-    /// the checkout is standing on — the shape the doors use from inside a
-    /// unit.
-    fn view(&self, number: Option<u64>) -> Result<PrView, String>;
+    /// One pull request, normalised — the one [`PrRef`] points at.
+    fn view(&self, which: PrRef<'_>) -> Result<PrView, String>;
 
     /// What the PROVIDER'S own checks say about pull request `number`.
     ///
@@ -313,6 +339,21 @@ pub(crate) trait PrProvider {
     /// [`PrChecks::Absent`]: "nobody ran anything" and "nobody could be asked"
     /// are different facts and the door treats them differently.
     fn checks(&self, number: u64) -> Result<PrChecks, String>;
+
+    /// Whether the PROVIDER itself refuses a direct push to `branch`.
+    ///
+    /// The one question the harness cannot answer from this side of the wire.
+    /// Everything else it knows about a base — that the project declared it,
+    /// that the write gate refuses an edit on it — is true only inside this
+    /// machine; a colleague with a terminal and push rights is stopped by the
+    /// server or by nothing at all. So the diagnostic asks the server.
+    ///
+    /// `Ok(false)` means the provider ANSWERED and named no rule. `Err` means
+    /// nobody could be asked — no credential, no CLI, an offline machine — and
+    /// the two must never be folded together: reporting "not protected" for a
+    /// question that was never asked is how a diagnostic teaches the operator
+    /// to ignore it.
+    fn branch_protection(&self, branch: &str) -> Result<bool, String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,10 +563,16 @@ impl PrProvider for GithubPrCli {
         gh_out(&self.repo, &["pr", "ready", &number.to_string()]).map(|_| ())
     }
 
-    fn view(&self, number: Option<u64>) -> Result<PrView, String> {
-        let number = number.map(|n| n.to_string());
+    fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
+        // `gh pr view` aceita o número ou a branch no mesmo lugar, e sem
+        // argumento nenhum responde pela branch do checkout.
+        let pointed = match which {
+            PrRef::Number(n) => Some(n.to_string()),
+            PrRef::Head(head) => Some(head.to_string()),
+            PrRef::Checkout => None,
+        };
         let mut args: Vec<&str> = vec!["pr", "view"];
-        if let Some(n) = number.as_deref() {
+        if let Some(n) = pointed.as_deref() {
             args.push(n);
         }
         args.extend_from_slice(&[
@@ -546,6 +593,34 @@ impl PrProvider for GithubPrCli {
         )?;
         checks_from_github(&row)
     }
+
+    fn branch_protection(&self, branch: &str) -> Result<bool, String> {
+        // The RULES endpoint, not `branches/{branch}/protection`.
+        //
+        // Two reasons, both measured on real repositories. The protection
+        // endpoint answers 404 for a branch protected by a RULESET — the shape
+        // GitHub now steers every new repository towards — so a correctly
+        // protected base reads as an open one. And it is admin-only: a
+        // collaborator without admin gets 403, which is "you may not ask",
+        // reported as "no protection". `rules/branches/{branch}` answers with
+        // the rules IN FORCE for that branch, from classic protection and
+        // rulesets alike, to anyone who can read the repository.
+        let row = gh_json(
+            &self.repo,
+            &["api", &format!("repos/{{owner}}/{{repo}}/rules/branches/{branch}")],
+        )?;
+        Ok(rules_protect(&row))
+    }
+}
+
+/// Whether a `rules/branches/{branch}` document names any rule at all.
+///
+/// Pure, so the reading is provable without a network. ANY rule counts: a
+/// repository that has taken the trouble to write one for this branch has
+/// stopped treating it as a branch anybody may push to, and grading the kinds
+/// here would be this harness deciding what a team's policy ought to contain.
+fn rules_protect(doc: &Value) -> bool {
+    doc.as_array().is_some_and(|rules| !rules.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -553,7 +628,7 @@ impl PrProvider for GithubPrCli {
 // ---------------------------------------------------------------------------
 
 /// The one answer of an operation nobody implemented: the stable token
-/// [`PR_UNSUPPORTED`] — the same word `branch_state`'s status port uses for a
+/// [`PR_UNSUPPORTED`] — the same word `branch_state`'s status query uses for a
 /// provider without an adapter, and for the same reason. Never a fabricated
 /// success and never a measured-looking absence.
 fn unsupported<T>() -> Result<T, String> {
@@ -562,9 +637,8 @@ fn unsupported<T>() -> Result<T, String> {
 
 /// The adapter for a provider this module has no adapter FOR (`gitlab`,
 /// `bitbucket`, anything the resolver may learn later): every operation is
-/// [`PR_UNSUPPORTED`]. Separate from [`AzurePrRest`] because the two are
-/// different facts — Azure is an adapter that is not written YET; this is the
-/// honest answer for providers that have none at all.
+/// [`PR_UNSUPPORTED`] — the honest answer for a provider nobody wrote an
+/// adapter for, where GitHub and Azure each have one.
 pub(crate) struct UnsupportedPr {
     /// The resolved provider token, kept so a report can still NAME who was
     /// asked-for even though nothing could be asked.
@@ -588,11 +662,15 @@ impl PrProvider for UnsupportedPr {
         unsupported()
     }
 
-    fn view(&self, _number: Option<u64>) -> Result<PrView, String> {
+    fn view(&self, _which: PrRef<'_>) -> Result<PrView, String> {
         unsupported()
     }
 
     fn checks(&self, _number: u64) -> Result<PrChecks, String> {
+        unsupported()
+    }
+
+    fn branch_protection(&self, _branch: &str) -> Result<bool, String> {
         unsupported()
     }
 }
@@ -610,11 +688,18 @@ impl PrProvider for UnsupportedPr {
 /// commands that open/edit/ready a PR ask for "the provider", and WHICH one
 /// answers stays an internal detail of this module.
 pub(crate) fn provider_for(root: &Path) -> Box<dyn PrProvider> {
-    let cfg = mustard_core::ProjectConfig::load(root);
-    let provider = mustard_core::resolve_provider(root, &cfg.git.provider);
+    provider_in(root, root)
+}
+
+/// O adaptador do repositório `repo`, com o provedor que o projeto de
+/// `config_root` declara e, sem declaração, o que o `origin` de `repo` diz. É
+/// como um submódulo, que não tem `mustard.json`, fala com o provedor dele.
+pub(crate) fn provider_in(config_root: &Path, repo: &Path) -> Box<dyn PrProvider> {
+    let cfg = mustard_core::ProjectConfig::load(config_root);
+    let provider = mustard_core::resolve_provider(repo, &cfg.git.provider);
     match provider.as_str() {
-        PROVIDER_GITHUB => Box::new(GithubPrCli::new(root)),
-        PROVIDER_AZURE => Box::new(crate::shared::pr_azure::AzurePrRest::new(root)),
+        PROVIDER_GITHUB => Box::new(GithubPrCli::new(repo)),
+        PROVIDER_AZURE => Box::new(crate::shared::pr_azure::AzurePrRest::new(repo)),
         _ => Box::new(UnsupportedPr { provider }),
     }
 }
@@ -760,13 +845,46 @@ mod tests {
         assert_eq!(provider.open(&to_open), Err(token()));
         assert_eq!(provider.edit_body(1, "body"), Err(token()));
         assert_eq!(provider.ready(1), Err(token()));
-        assert_eq!(provider.view(Some(1)), Err(token()));
+        assert_eq!(provider.view(PrRef::Number(1)), Err(token()));
         assert_eq!(
             provider.checks(1),
             Err(token()),
             "an unasked provider never answers a green check",
         );
+        assert_eq!(
+            provider.branch_protection("main"),
+            Err(token()),
+            "an unasked provider never answers an open branch",
+        );
         assert_eq!(provider.provider(), "gitlab");
+    }
+
+    /// O lado GitHub da conferência de proteção, que é o caminho de todo
+    /// projeto no github.com. O endpoint de regras responde uma lista: a lista
+    /// vazia é o servidor dizendo que ninguém escreveu regra para a branch, e
+    /// qualquer regra nela — de qualquer tipo — a protege.
+    ///
+    /// A leitura é pura, então se prova sem rede. As regras abaixo têm o
+    /// formato que o endpoint devolve para um conjunto de regras.
+    #[test]
+    fn no_github_qualquer_regra_protege_e_a_lista_vazia_deixa_aberta() {
+        assert!(!rules_protect(&json!([])), "sem regra nenhuma, a branch está aberta");
+        assert!(
+            rules_protect(&json!([{
+                "type": "pull_request",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "org/repo",
+                "ruleset_id": 7,
+            }])),
+            "uma regra que exige pull request protege",
+        );
+        assert!(
+            rules_protect(&json!([
+                { "type": "deletion", "ruleset_source_type": "Organization", "ruleset_id": 3 },
+                { "type": "non_fast_forward", "ruleset_source_type": "Organization", "ruleset_id": 3 },
+            ])),
+            "qualquer tipo de regra conta: julgar os tipos seria decidir a política da equipe",
+        );
     }
 
     /// The reduction the merge door stands on: a decided failure outranks a
@@ -874,7 +992,7 @@ mod tests {
         assert_eq!(azure.provider(), "azure");
         // The tempdir has no `origin`, so the REAL Azure adapter refuses at
         // remote derivation — deterministically, before any network.
-        let refusal = azure.view(Some(1)).expect_err("no origin remote to derive from");
+        let refusal = azure.view(PrRef::Number(1)).expect_err("no origin remote to derive from");
         assert!(refusal.starts_with("azure-remote-"), "stable token: {refusal}");
 
         declare("gitlab");
@@ -903,7 +1021,7 @@ mod tests {
             &create_url,
             json!({
                 "pullRequestId": 42,
-                "url": "https://dev.azure.com/suzano/_apis/git/NOT-THE-WEB-URL",
+                "url": "https://dev.azure.com/contoso/_apis/git/NOT-THE-WEB-URL",
             }),
         )]);
         let pr = PrToOpen {
@@ -917,7 +1035,7 @@ mod tests {
         let opened = do_open(&remote, &fake, "Basic Zzo=", &pr).expect("create succeeds");
         assert_eq!(opened.number, 42);
         assert_eq!(
-            opened.url, "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/42",
+            opened.url, "https://dev.azure.com/contoso/vendas/_git/portal/pullrequest/42",
             "derived from the remote, never read from the response",
         );
 
@@ -947,7 +1065,7 @@ mod tests {
     /// operator knows the two ways to fix it.
     #[test]
     fn azure_without_credential_refuses_naming_both_sources() {
-        let url = "https://dev.azure.com/suzano/florestal/_git/portal";
+        let url = "https://dev.azure.com/contoso/vendas/_git/portal";
         assert_eq!(
             pat_from(Some("env-pat".into()), || Some("vault-pat".into()), url),
             Ok("env-pat".to_string()),
@@ -999,7 +1117,7 @@ mod tests {
                 status: PrStatus::Open,
                 merge_status: Some("conflicts".into()),
                 draft: false,
-                url: "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/9".into(),
+                url: "https://dev.azure.com/contoso/vendas/_git/portal/pullrequest/9".into(),
             }
         );
     }
@@ -1011,40 +1129,40 @@ mod tests {
     #[test]
     fn every_azure_remote_spelling_yields_the_rest_base() {
         let modern = [
-            "https://dev.azure.com/suzano/florestal/_git/portal",
-            "https://suzano@dev.azure.com/suzano/florestal/_git/portal",
-            "git@ssh.dev.azure.com:v3/suzano/florestal/portal",
-            "ssh://git@ssh.dev.azure.com/v3/suzano/florestal/portal",
+            "https://dev.azure.com/contoso/vendas/_git/portal",
+            "https://contoso@dev.azure.com/contoso/vendas/_git/portal",
+            "git@ssh.dev.azure.com:v3/contoso/vendas/portal",
+            "ssh://git@ssh.dev.azure.com/v3/contoso/vendas/portal",
         ];
         for url in modern {
             let remote = AzureRemote::parse(url).unwrap_or_else(|| panic!("{url:?} parses"));
             assert_eq!(
                 remote.api_pulls(),
-                "https://dev.azure.com/suzano/florestal/_apis/git/repositories/portal/pullrequests",
+                "https://dev.azure.com/contoso/vendas/_apis/git/repositories/portal/pullrequests",
                 "for {url:?}",
             );
             assert_eq!(
                 remote.https_remote(),
-                "https://dev.azure.com/suzano/florestal/_git/portal",
+                "https://dev.azure.com/contoso/vendas/_git/portal",
                 "for {url:?}",
             );
             assert_eq!(
                 remote.pr_url(7),
-                "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/7",
+                "https://dev.azure.com/contoso/vendas/_git/portal/pullrequest/7",
                 "for {url:?}",
             );
         }
 
         let legacy = [
-            "https://suzano.visualstudio.com/florestal/_git/portal",
-            "https://suzano.visualstudio.com/DefaultCollection/florestal/_git/portal",
-            "suzano@vs-ssh.visualstudio.com:v3/suzano/florestal/portal",
+            "https://contoso.visualstudio.com/vendas/_git/portal",
+            "https://contoso.visualstudio.com/DefaultCollection/vendas/_git/portal",
+            "contoso@vs-ssh.visualstudio.com:v3/contoso/vendas/portal",
         ];
         for url in legacy {
             let remote = AzureRemote::parse(url).unwrap_or_else(|| panic!("{url:?} parses"));
             assert_eq!(
                 remote.https_remote(),
-                "https://suzano.visualstudio.com/florestal/_git/portal",
+                "https://contoso.visualstudio.com/vendas/_git/portal",
                 "for {url:?}",
             );
         }

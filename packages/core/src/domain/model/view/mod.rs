@@ -1,27 +1,11 @@
 //! Typed `ViewModels` — the surface other crates render against.
 //!
-//! Each sub-module owns one cohesive shape so the project naturally honours
-//! the Single Responsibility Principle: a change to "how we surface
-//! acceptance criteria" touches `quality.rs` alone. Cross-cutting enums
-//! (`Phase`, `Scope`) live here in `mod.rs` since multiple views
-//! reference them.
+//! Sobrou o estado do cabeçalho da spec; as vistas do painel saíram com ele.
+//! Os enums transversais (`Phase`, `Scope`) moram aqui.
 
-mod filter;
-mod quality;
 mod spec;
-mod timeline;
-mod wave;
-mod workspace;
 
-pub use filter::{SpecFilter, SpecStatusFilter, TimeWindow};
-pub use quality::{AcStatus, AcceptanceCriterion, QualityRollup};
 pub use spec::{Flags, Outcome, SpecChild, SpecState, SpecSummary, SpecView, Stage, StateError};
-pub use timeline::{TimelineKind, TimelineNode};
-pub use wave::{WaveStatus, WaveView};
-pub use workspace::{
-    FileCount, PhaseSegment, SegmentState, SpecTrack, WorkspaceAlert, WorkspaceAlertKind,
-    WorkspaceSummary,
-};
 
 use serde::{Deserialize, Serialize};
 

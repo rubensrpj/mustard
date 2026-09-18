@@ -77,7 +77,7 @@ impl Sha256 {
         self.buffer.extend_from_slice(&bit_len.to_be_bytes());
         // Process the remaining (now block-aligned) buffer.
         let blocks = self.buffer.clone();
-        for chunk in blocks.chunks_exact(64) {
+        for chunk in blocks.as_chunks::<64>().0 {
             let mut block = [0u8; 64];
             block.copy_from_slice(chunk);
             self.process_block(&block);

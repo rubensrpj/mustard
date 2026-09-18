@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used)]
-//! Invariant tests for the canonical [`SpecState`] model introduced in
-//! `spec-lifecycle-unification` Wave 1.
+//! Invariant tests for the canonical [`SpecState`] model.
 //!
 //! Covers two things the unit tests in `model/view/spec.rs` complement:
 //!
@@ -12,20 +11,19 @@
 //!    [`project_spec_view_with_header`] so the whole header → view path is
 //!    under test.
 //!
-//! W8A-4 (no-sqlite Wave 8) deleted the `mustard_core::reader` layer
-//! (`SpecReader` trait + `InMemorySpecReader` + `SqliteSpecReader`). The
+//! The `mustard_core::reader` layer (`SpecReader` trait +
+//! `InMemorySpecReader` + `SqliteSpecReader`) is gone. The
 //! header-parsing assertions now call the pure projection directly with the
 //! on-disk `spec.md` path, exercising the same code path production readers
 //! consume.
 
 use mustard_core::{Flags, Outcome, SpecState, Stage, StateError};
-use std::io::Write;
 
 // ---------------------------------------------------------------------------
 // Constructor invariants
 // ---------------------------------------------------------------------------
 
-/// AC-W1-4: a terminal outcome paired with a non-Close stage is rejected.
+/// A terminal outcome paired with a non-Close stage is rejected.
 #[test]
 fn rejects_completed_with_active_stage() {
     let err = SpecState::new(Stage::Plan, Outcome::Completed, Flags::default());
@@ -113,65 +111,6 @@ fn active_terminal_split_follows_the_outcome() {
 // Header parsing — through the public projection
 // ---------------------------------------------------------------------------
 
-/// Write a `spec.md` with `body` under `{root}/{spec}/spec.md` and return its
-/// full path.
-fn write_spec_md(root: &std::path::Path, spec: &str, body: &str) -> std::path::PathBuf {
-    let dir = root.join(spec);
-    std::fs::create_dir_all(&dir).expect("create spec dir");
-    let path = dir.join("spec.md");
-    let mut f = std::fs::File::create(&path).expect("create spec.md");
-    f.write_all(body.as_bytes()).expect("write spec.md");
-    path
-}
 
-/// AC-W1-5: legacy `### Status: approved` derives Stage::Plan + Outcome::Active.
-#[test]
-fn parses_legacy_approved_as_plan_active() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = write_spec_md(
-        tmp.path(),
-        "feat",
-        "# Feature\n\n### Status: approved\n### Phase: plan\n\n## Resumo\n…",
-    );
 
-    // Empty event slice + path → projection falls back to header parse.
-    let view =
-        mustard_core::view::projection::project_spec_view_with_header("feat", &[], Some(path.as_path()));
-    assert_eq!(view.state.stage, Stage::Plan);
-    assert_eq!(view.state.outcome, Outcome::Active);
-    assert!(!view.state.flags.blocked);
-}
 
-/// AC-W1-6: the new header format parses into the matching state.
-#[test]
-fn parses_new_format() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = write_spec_md(
-        tmp.path(),
-        "feat",
-        "# Feature\n\n### Stage: Execute\n### Outcome: Active\n### Flags: blocked\n\n## Resumo\n…",
-    );
-
-    let view =
-        mustard_core::view::projection::project_spec_view_with_header("feat", &[], Some(path.as_path()));
-    assert_eq!(view.state.stage, Stage::Execute);
-    assert_eq!(view.state.outcome, Outcome::Active);
-    assert!(view.state.flags.blocked);
-}
-
-/// A terminal new-format header (Close + Completed) parses and projects.
-#[test]
-fn parses_new_format_terminal() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = write_spec_md(
-        tmp.path(),
-        "done",
-        "# Done\n\n### Stage: Close\n### Outcome: Completed\n\n## Resumo\n…",
-    );
-
-    let view =
-        mustard_core::view::projection::project_spec_view_with_header("done", &[], Some(path.as_path()));
-    assert_eq!(view.state.stage, Stage::Close);
-    assert_eq!(view.state.outcome, Outcome::Completed);
-    assert!(view.state.is_terminal());
-}

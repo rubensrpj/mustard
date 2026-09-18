@@ -9,8 +9,8 @@
 //! - [`event`] — the harness event schema (stored in `mustard.db`).
 //! - [`contract`] — the hook contract: [`contract::HookInput`],
 //!   [`contract::Verdict`], [`contract::Outcome`], [`contract::Trigger`], and
-//!   the [`contract::Check`] / [`contract::Observer`] traits. **Frozen at the
-//!   end of Wave 1** — B3/B4 depend on it.
+//!   the [`contract::Check`] / [`contract::Observer`] traits. **Frozen**: every
+//!   hook module depends on it.
 //! - [`pipeline`] — `pipeline-state` types ([`pipeline::PipelineState`],
 //!   [`pipeline::Phase`], [`pipeline::Scope`]).
 //! - [`provenance`] — the managed-artifact manifest
@@ -30,9 +30,4 @@ pub mod view;
 // directly. Consumers that need the SDD Phase/Scope should import from
 // `mustard_core::domain::model::view::{Phase, Scope}` to avoid ambiguity with
 // `mustard_core::domain::model::pipeline::{Phase, Scope}`.
-pub use view::{
-    AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, PhaseSegment, QualityRollup,
-    SegmentState, SpecFilter, SpecState, SpecStatusFilter, SpecSummary, SpecTrack, SpecView, Stage,
-    StateError, TimeWindow, TimelineKind, TimelineNode, WaveStatus, WaveView, WorkspaceAlert,
-    WorkspaceAlertKind, WorkspaceSummary,
-};
+pub use view::{Flags, Outcome, SpecState, SpecSummary, SpecView, Stage, StateError};

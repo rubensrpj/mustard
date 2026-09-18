@@ -5,17 +5,17 @@
 //! cross-language bridge. Every tier below is an EXACT key equality — no prefix
 //! or substring test survives anywhere on the ladder:
 //!
-//!   T1 `exact`   — raw lowercased token (or whole-identifier) equality;
-//!   T2 `fold`    — equality after folding Latin diacritics to ASCII;
-//!   T3 `stem`    — English Snowball stem equality; a truncation pair needs
-//!                  unanimous morphological backing (see the guard note below);
-//!   T5 `trigram` — opt-in fuzzy RESCUE (pg_trgm-style Jaccard) the caller turns
-//!                  on only to salvage an otherwise weak/none query.
+//!   tier 1, `exact`   — raw lowercased token (or whole-identifier) equality;
+//!   tier 2, `fold`    — equality after folding Latin diacritics to ASCII;
+//!   tier 3, `stem`    — English Snowball stem equality; a truncation pair needs
+//!                     unanimous morphological backing (see the guard note below);
+//!   tier 5, `trigram` — opt-in fuzzy RESCUE (pg_trgm-style Jaccard) the caller
+//!                     turns on only to salvage an otherwise weak/none query.
 //!
 //! Weights drop ~10x per tier (Zoekt-style: exact >> fold >> stem), so a real
 //! vocabulary hit always outranks a derived one.
 //!
-//! Anti-truncation guard (T3): a stemmer happily maps a word ONTO another that
+//! Anti-truncation guard (the `stem` tier): a stemmer happily maps a word ONTO another that
 //! is merely its prefix, so for surfaces that ARE prefix-related ("payables" ~
 //! "payable") one language's lone stem collision is the dead prefix heuristic
 //! wearing a stemmer hat. A truncation pair is therefore accepted ONLY on
@@ -43,18 +43,19 @@ pub fn tier_name(tier: u8) -> &'static str {
     }
 }
 
-/// Minimum trigram Jaccard similarity (×1000) for the T5 fuzzy RESCUE rung.
+/// Minimum trigram Jaccard similarity (×1000) for the fuzzy `trigram` RESCUE rung.
 /// pg_trgm's default is 0.3; we use a stricter 0.5 to curb the false cognates
 /// the exact ladder was built to avoid (`card`~`discard` ≈ 0.4 stays a miss),
 /// while shared-root + morphology bridge (`calculados`~`calculate` ≈ 0.5,
-/// `invalidadas`~`invalidate` ≈ 0.55). T5 fires ONLY when the caller opts in
+/// `invalidadas`~`invalidate` ≈ 0.55). The trigram fires ONLY when the caller opts in
 /// (`tier(.., allow_fuzzy=true)`) — the digest enables it only to RESCUE a query
 /// the strict ladder leaves weak/none, so the precision cost lands only on
 /// queries that were already failing; a strong query never sees it.
 const TRIGRAM_SIM_MIN_X1000: u64 = 500;
 
 /// A tier hit: which rung matched and the natural-language evidence behind it
-/// (the stemmer language for T3, the literal `trigram` for T5, empty for T1/T2 —
+/// (the stemmer language for `stem`, the literal `trigram` for `trigram`, empty
+/// for `exact` and `fold` —
 /// those are language-free equalities).
 pub struct Hit {
     pub tier: u8,
@@ -70,7 +71,7 @@ pub struct Sig {
     fold: String,
     stems: Vec<String>,
     /// Overlapping 3-char windows of the folded form (the pg_trgm/Google-Code-
-    /// Search substrate) — compared by Jaccard on the opt-in T5 fuzzy rung.
+    /// Search substrate) — compared by Jaccard on the opt-in fuzzy `trigram` rung.
     /// Language-free: no tokenization or stemming.
     tri: BTreeSet<String>,
 }
@@ -129,7 +130,7 @@ impl Ladder {
 
     /// Climb the ladder: the index token `key` against the request token `q`.
     /// First rung that holds wins; `None` is an honest miss. `allow_fuzzy` opens
-    /// the T5 trigram RESCUE rung (off by default — the caller turns it on only
+    /// the `trigram` RESCUE rung (off by default — the caller turns it on only
     /// to rescue an otherwise weak/none query, never on the strict path).
     pub fn tier(&self, key: &Sig, q: &Sig, allow_fuzzy: bool) -> Option<Hit> {
         if key.raw == q.raw {
@@ -138,7 +139,7 @@ impl Ladder {
         if key.fold == q.fold {
             return Some(Hit { tier: 2, lang: String::new() });
         }
-        // T3 — same-language stem equality. A truncation pair needs UNANIMOUS
+        // The `stem` tier — same-language stem equality. A truncation pair needs UNANIMOUS
         // backing (every active stemmer collapses both surfaces to one non-empty
         // key — see the module note); one row's lone collision on such a pair is
         // truncation, not morphology. Non-truncation surfaces keep the any-row
@@ -156,7 +157,7 @@ impl Ladder {
                 }
             }
         }
-        // T5 — trigram Jaccard RESCUE (pg_trgm-style), opt-in only. A language-
+        // The `trigram` tier — Jaccard RESCUE (pg_trgm-style), opt-in only. A language-
         // free fuzzy rung BELOW the strict ladder: bridges shared-root +
         // morphology by form, gated by a similarity floor.
         if allow_fuzzy {
@@ -219,7 +220,7 @@ mod tests {
         ladder.tier(&ladder.sig(key), &ladder.sig(q), false).map(|h| (h.tier, h.lang))
     }
 
-    /// Same, but with the T5 fuzzy RESCUE rung enabled (the digest's weak/none path).
+    /// Same, but with the fuzzy `trigram` RESCUE rung enabled (the digest's weak/none path).
     fn fuzzy(ladder: &Ladder, key: &str, q: &str) -> Option<(u8, String)> {
         ladder.tier(&ladder.sig(key), &ladder.sig(q), true).map(|h| (h.tier, h.lang))
     }
@@ -229,19 +230,19 @@ mod tests {
         let l = Ladder::new();
         // OFF by default: the strict ladder never fuzzes (the existing contract).
         assert!(hit(&l, "calculate", "calculados").is_none(), "strict path stays exact");
-        // ON (rescue): shared-root + morphology bridge at T5.
+        // ON (rescue): shared-root + morphology bridge at the `trigram` tier.
         assert_eq!(fuzzy(&l, "calculate", "calculados").map(|(t, _)| t), Some(5), "calculados~calculate");
         assert_eq!(fuzzy(&l, "invalidate", "invalidadas").map(|(t, _)| t), Some(5), "invalidadas~invalidate");
         // The similarity floor still rejects a low-overlap pair, even fuzzy.
         assert!(fuzzy(&l, "discard", "card").is_none(), "0.4 overlap stays below the 0.5 floor");
-        // A genuine exact match never downgrades to T5 just because fuzzy is on.
+        // A genuine exact match never downgrades to `trigram` just because fuzzy is on.
         assert_eq!(fuzzy(&l, "payable", "payable").map(|(t, _)| t), Some(1), "exact still wins under fuzzy");
     }
 
     #[test]
     fn truncation_pair_needs_unanimous_stem_backing() {
         // A pair the English stemmer collapses to one key is genuine
-        // plural/singular morphology and matches at T3; a bare prefix with
+        // plural/singular morphology and matches at `stem`; a bare prefix with
         // distinct stems stays dead.
         let l = Ladder::new();
         assert_eq!(hit(&l, "payable", "payables").map(|(t, _)| t), Some(3), "genuine plural");

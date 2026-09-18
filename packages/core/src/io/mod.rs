@@ -1,5 +1,9 @@
-pub mod atomic_md;
 pub mod fs;
 pub mod claude_paths;
-pub mod events;
 pub mod workspace;
+pub mod citation;
+pub mod spec_events;
+pub mod spec_index;
+pub mod lessons;
+pub mod project_map;
+pub mod wave_prompt;

@@ -138,8 +138,7 @@ pub fn unix_secs_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
 
 /// A filename-safe stamp of `now` — date + time to second precision with the
 /// `:` separators replaced by `-` (so it can name a file on every platform).
-/// Shape: `YYYY-MM-DDTHH-MM-SS`. The single home for what used to be
-/// `cli::timestamp_slug` and `unhook::filename_safe_timestamp`.
+/// Shape: `YYYY-MM-DDTHH-MM-SS`.
 #[must_use]
 pub fn filename_safe_now() -> String {
     let (y, m, d, h, mi, s) = unix_secs_to_ymdhms(now_unix_millis() / 1000);
@@ -176,6 +175,16 @@ mod tests {
         let a = parse_iso_millis("2026-05-20T10:00:00Z").unwrap();
         let b = parse_iso_millis("2026-05-20T10:00:01Z").unwrap();
         assert_eq!(b - a, 1000);
+    }
+
+    /// A hora de agora sai no formato `AAAA-MM-DDThh:mm:ss.sssZ`.
+    #[test]
+    fn now_iso8601_is_well_formed() {
+        let ts = now_iso8601();
+        assert_eq!(ts.len(), 24, "ts: {ts}");
+        assert!(ts.ends_with('Z'));
+        assert_eq!(&ts[4..5], "-");
+        assert_eq!(&ts[10..11], "T");
     }
 
     #[test]

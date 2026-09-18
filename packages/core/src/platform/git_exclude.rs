@@ -44,10 +44,10 @@
 //! - No `println!`: this is a library seam. Callers render the outcome.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::io::fs;
 use crate::platform::error::Error;
+use crate::platform::git;
 
 // ---------------------------------------------------------------------------
 // Outcome
@@ -271,20 +271,7 @@ fn missing_rules(existing: &str, rules: &[String]) -> Vec<String> {
 /// `io::workspace::git_rev_parse` (private there, and `rev-parse`-only; this
 /// one also has to run `ls-files`).
 fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    git::run(dir, args).out().filter(|text| !text.is_empty())
 }
 
 #[cfg(test)]
@@ -301,13 +288,7 @@ mod tests {
             vec!["config", "user.email", "t@example.com"],
             vec!["config", "user.name", "t"],
         ] {
-            let ok = Command::new("git")
-                .args(&args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            assert!(ok, "git {args:?} failed");
+            assert!(git::run(root, &args).ok, "git {args:?} failed");
         }
     }
 
@@ -397,13 +378,7 @@ mod tests {
         init_repo(root);
         std_fs::write(root.join("CLAUDE.md"), "theirs\n").unwrap();
         std_fs::write(root.join("mustard.json"), "{}\n").unwrap();
-        let ok = Command::new("git")
-            .args(["add", "CLAUDE.md"])
-            .current_dir(root)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git add failed");
+        assert!(git::run(root, &["add", "CLAUDE.md"]).ok, "git add failed");
 
         let tracked = tracked_paths(root, &rules(&["CLAUDE.md", "mustard.json", ".claude/"]));
 

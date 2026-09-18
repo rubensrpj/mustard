@@ -10,8 +10,8 @@
 //!     request term lands at tier `exact` ("parentid");
 //!   * same-language stems bridge real morphology only ("studies" ~ "study"),
 //!     reported as tier `stem` with the language named;
-//!   * a shared-root form a strict rung leaves weak/none is rescued by the T5
-//!     trigram rung ("natureza" ~ "nature", "cancelado" ~ "cancel"), reported as
+//!   * a shared-root form a strict rung leaves weak/none is rescued by the
+//!     `trigram` rung ("natureza" ~ "nature", "cancelado" ~ "cancel"), reported as
 //!     tier `trigram` and flagged `bridged`;
 //!   * the answer carries the per-term report (term, tier, lang, files) plus the
 //!     aggregate matched k/n and reason; byte-stable across runs.
@@ -86,7 +86,7 @@ fn plural_singular_with_stem_backing_matches_and_bare_prefix_stays_dead() {
 fn shared_root_form_bridges_via_the_trigram_rescue() {
     // natureza ~ nature: a shared-root form the STRICT ladder leaves unmatched
     // (stemmers disagree on the truncation pair). Because the strict pass is
-    // weak/none, the T5 trigram RESCUE turns on and bridges the pair by form
+    // weak/none, the `trigram` RESCUE turns on and bridges the pair by form
     // similarity — no glossary needed. The hit reports tier "trigram" and rides
     // as `bridged` (real evidence, form-not-literal), so the consumer keeps
     // planning. (The rescue's precision cost is confined here: it only fires
@@ -108,7 +108,7 @@ fn shared_root_form_bridges_via_the_trigram_rescue() {
 #[test]
 fn cancelado_bridges_via_the_trigram_rescue() {
     // "cancelado" vs the identifier token "cancel": a truncation pair no STRICT
-    // tier bridges by form. The strict ladder is weak/none, so the T5 trigram
+    // tier bridges by form. The strict ladder is weak/none, so the `trigram`
     // RESCUE bridges it onto "cancel" by shared root (tier "trigram", `bridged`).
     let (dir, model) = write_model("cancelado", serde_json::json!([module("src/billing/cancel.rs", &["CancelCharge"])]));
     let (_, q) = run_query(&model, "cancelado", "q.json");

@@ -1,110 +1,45 @@
-//! `template_budget` — the leanness gate for the `.md` template corpus, aligned
-//! to Claude Code's OWN standards for command/skill/injectable markdown.
+//! `template_budget` — o tamanho do texto do Mustard que o modelo lê.
 //!
-//! Claude Code does NOT cap the BODY of a command by word count. The published
-//! doctrine is "progressive disclosure": keep the primary file lean and push
-//! detail into reference files that load on demand
-//! (`code.claude.com/docs/en/skills`, `.../memory`). Mustard already follows
-//! that structurally — the LIGHT command body + the `refs/` tree that opens only
-//! when a flow reaches it. So this test does NOT re-impose a home-grown word
-//! budget; the 2026-07-07 audit's leanness intent is now anchored to the two
-//! places where Claude Code publishes a REAL, runtime-breaking limit:
+//! Em cada idioma, todo texto que o modelo lê — os comandos e o estilo de
+//! resposta do plugin, os agentes e o mapa do início da sessão que o
+//! instalador grava — soma menos de 20.480 bytes, e nenhum arquivo passa de
+//! 3.072 bytes. O mapa é o texto do início da sessão, e tem até 3.072 bytes.
 //!
-//! 1. A command/skill `description` is truncated at **1,536 characters** in the
-//!    skill listing. Past that, the trigger text is cut mid-sentence and the
-//!    command mis-triggers.
-//! 2. An injectable spliced as `additionalContext` is capped at **10,000
-//!    characters** per hook RESPONSE. The overflow is NOT cut mid-sentence:
-//!    hook output past the limit "is saved to a file and replaced with a
-//!    preview and file path". An injectable over budget does not lose a clause,
-//!    it stops being TEXT IN FORCE and becomes a pointer the model may or may
-//!    not open. For a router the window needs on every unit, that is the whole
-//!    failure.
+//! A conta é a do disco, byte a byte, como `find … -printf '%s'` a faz. Um
+//! arquivo pertence a um idioma quando o caminho dele diz o idioma (uma pasta
+//! `pt-BR/` ou um nome terminado em `-pt-BR`); o que não diz idioma nenhum é
+//! lido nos dois e conta nas duas somas.
 //!
-//!    The ceiling is per response, so each injectable gets its OWN sibling hook
-//!    and there is no composite budget between siblings — measured 2026-08-25:
-//!    two siblings emitting 6,000 characters each on one `UserPromptSubmit`
-//!    both arrived intact and separate. A document that outgrows 10,000 is
-//!    SPLIT and given another hook, never compressed until a rule drops out
-//!    (see `packages/core/templates/mustard/{orchestrator,dispatch,material}.md`
-//!    and `plugin/refs/mustard/router-rationale.md`). The material channel is
-//!    the second document to take that remedy: `dispatch.md` had reached ten
-//!    characters of margin on a CRLF checkout, and the alternative prescription
-//!    — trim the justification off a rule — buys margin by shipping rules the
-//!    next reader can argue away.
-//!
-//! Everything else (command / ref body size) is governed by structure
-//! (progressive disclosure) and human review, not a numeric tripwire — and
-//! that rationale never rides inside the loaded templates.
+//! O corte da descrição de um comando é outra conta, que o Claude Code faz: a
+//! descrição passa de 1.536 caracteres e é cortada no meio da frase na lista
+//! de comandos.
 
 use std::path::{Path, PathBuf};
 
-/// Hard cap on a command/skill `description` frontmatter field. Claude Code
-/// truncates `description` (combined with `when_to_use`) at 1,536 characters in
-/// the skill listing; past that the trigger text is cut mid-sentence.
+/// O teto da soma de um idioma, em bytes.
+const LANGUAGE_BUDGET: u64 = 20_480;
+
+/// O teto de um arquivo, e do texto do início da sessão, em bytes.
+const FILE_CAP: u64 = 3_072;
+
+/// O corte da descrição de um comando na lista do Claude Code, em caracteres.
 const DESCRIPTION_CHAR_CAP: usize = 1_536;
 
-/// Advisory cap per injectable template (`templates/mustard/*.md`): the size at
-/// which a document is carrying prose it should not.
-///
-/// It is deliberately NOT the real ceiling. Measured on the rewrite that
-/// introduced it, `orchestrator.md` and `dispatch.md` held nothing but rules,
-/// and a tighter target could only be met by
-/// deleting instruction — a first attempt at one lost four real rules before
-/// they were restored. A budget that forces a rule out is a guard that lies: it
-/// stays green while the product gets worse. So this is an alarm for prose
-/// creep, and [`HOOK_RESPONSE_CAP`] is what actually binds.
-///
-/// **The answer to this alarm is a SPLIT**, which is what the failure message
-/// below prescribes and what the material channel did when `dispatch.md`
-/// reached ten characters of margin. Trimming a rule down to the rule alone,
-/// with its dated justification cut off, is the one remedy that is never
-/// available here: a document of unexplained rules is one the reader argues
-/// with, which is the whole reason these files carry their measurements.
-///
-/// **The count is of the file AS CHECKED OUT, line endings included.** A Windows
-/// checkout carries CRLF, one extra character per line. An earlier budget left 5
-/// characters of margin and passed locally while failing CI on Windows only —
-/// green where it is written, red where nobody is looking.
-const INJECTABLE_CHAR_CAP: usize = 8_000;
+/// Os dois idiomas do Mustard, como aparecem nos caminhos.
+const LANGUAGES: [&str; 2] = ["pt-BR", "en-US"];
 
-/// The real ceiling: characters one HOOK RESPONSE may carry.
-///
-/// Per RESPONSE, not per event. Sibling hooks on one event are separate
-/// invocations and Claude Code keeps every one of their `additionalContext`
-/// blocks — measured 2026-08-25 with two siblings emitting 6,000 characters
-/// each. Rationale: `plugin/refs/mustard/router-rationale.md`.
-const HOOK_RESPONSE_CAP: usize = 10_000;
-
-/// The size a hook response has to carry for this text: the LARGER of its
-/// character count and its byte count.
-///
-/// Which unit the harness counts is not documented, and the two differ wherever
-/// the text is not plain ASCII — the shipped templates carry accents, em dashes
-/// and `▸`/`⨯`. Measuring the smaller number would call a file clean while it is
-/// already past the ceiling and degraded to a path, so the conservative reading
-/// is the only honest one here.
-fn payload_size(text: &str) -> usize {
-    text.chars().count().max(text.len())
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The `plugin/` tree — home of the command/ref corpus.
-fn plugin_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin")
-}
-
-/// The core seed tree — the compiled-in harness seeds; the `mustard/`
-/// injectables are spliced as `additionalContext` by the session hooks.
-fn core_templates_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core/templates")
-}
-
+/// Todo `.md` debaixo de `dir`, em ordem.
 fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
         if path.is_dir() {
             collect_md(&path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
@@ -113,10 +48,94 @@ fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Extract the `description:` value from a template's YAML frontmatter (the
-/// block between the leading `---` fences). Handles a single-line scalar and a
-/// folded/literal block (`>` / `|`). Returns `None` when the file has no
-/// frontmatter or no `description` key (refs, injectables) — those are skipped.
+/// O texto que o modelo lê: todo `.md` do plugin, fora a pasta dos binários
+/// (o `README.md` dela explica a pasta para quem mantém o projeto e nunca
+/// chega a uma janela), e os moldes que o instalador grava no projeto.
+fn read_by_the_model() -> Vec<PathBuf> {
+    let root = repo_root();
+    let mut files = Vec::new();
+    collect_md(&root.join("plugin"), &mut files);
+    files.retain(|p| !p.starts_with(root.join("plugin/bin")));
+    for dir in ["packages/core/templates/mustard", "packages/core/templates/agents"] {
+        collect_md(&root.join(dir), &mut files);
+    }
+    files
+}
+
+/// O idioma que o caminho diz, ou `None` para o texto dos dois.
+fn language_of(path: &Path) -> Option<&'static str> {
+    LANGUAGES.into_iter().find(|lang| {
+        path.components().any(|c| c.as_os_str() == *lang)
+            || path.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.ends_with(&format!("-{lang}")))
+    })
+}
+
+fn bytes(path: &Path) -> u64 {
+    std::fs::metadata(path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display())).len()
+}
+
+fn shown(path: &Path) -> String {
+    path.strip_prefix(repo_root()).unwrap_or(path).display().to_string()
+}
+
+/// Em cada idioma, o texto que o modelo lê soma menos de 20.480 bytes, e
+/// nenhum arquivo passa de 3.072.
+#[test]
+fn each_language_reads_under_the_prose_budget() {
+    let files = read_by_the_model();
+    assert!(files.len() >= 8, "the walk found almost nothing to measure: {files:?}");
+
+    let oversized: Vec<String> = files
+        .iter()
+        .filter(|p| bytes(p) > FILE_CAP)
+        .map(|p| format!("{}: {} bytes", shown(p), bytes(p)))
+        .collect();
+    assert!(oversized.is_empty(), "files over {FILE_CAP} bytes:\n{}", oversized.join("\n"));
+
+    for lang in LANGUAGES {
+        let read: Vec<&PathBuf> =
+            files.iter().filter(|p| language_of(p).is_none_or(|own| own == lang)).collect();
+        let own = read.iter().filter(|p| language_of(p) == Some(lang)).count();
+        assert!(own >= 5, "{lang} has only {own} texts of its own: the map, the style and three agents");
+        let total: u64 = read.iter().map(|p| bytes(p)).sum();
+        assert!(
+            total < LANGUAGE_BUDGET,
+            "the {lang} prose adds up to {total} bytes, over the {LANGUAGE_BUDGET} budget:\n{}",
+            read.iter().map(|p| format!("{} {}", bytes(p), shown(p))).collect::<Vec<_>>().join("\n"),
+        );
+    }
+}
+
+/// Cada texto de um idioma tem o seu par no outro: os dois idiomas existem
+/// como molde do produto.
+#[test]
+fn every_text_exists_in_both_languages() {
+    let files = read_by_the_model();
+    let key = |p: &Path, lang: &str| shown(p).replace(lang, "{lang}");
+    for (lang, other) in [(LANGUAGES[0], LANGUAGES[1]), (LANGUAGES[1], LANGUAGES[0])] {
+        for path in files.iter().filter(|p| language_of(p) == Some(lang)) {
+            let twin = key(path, lang);
+            assert!(
+                files.iter().any(|p| language_of(p) == Some(other) && key(p, other) == twin),
+                "{} has no {other} twin",
+                shown(path),
+            );
+        }
+    }
+}
+
+/// O texto do início da sessão — o mapa — tem até 3.072 bytes em cada
+/// idioma, medido no texto que o binário embute e grava no projeto.
+#[test]
+fn the_session_start_text_fits_its_cap() {
+    for text in [mustard_core::platform::i18n::Locale::PtBr, mustard_core::platform::i18n::Locale::EnUs] {
+        let size = mustard_core::session_map(text).len() as u64;
+        assert!(size <= FILE_CAP, "the {text} session map is {size} bytes, over {FILE_CAP}");
+    }
+}
+
+/// A descrição do cabeçalho: um valor numa linha só, ou um bloco dobrado
+/// (`>` / `|`). `None` quando o arquivo não tem cabeçalho ou descrição.
 fn frontmatter_description(text: &str) -> Option<String> {
     let after_open = text.strip_prefix("---")?;
     let end = after_open.find("\n---")?;
@@ -126,217 +145,31 @@ fn frontmatter_description(text: &str) -> Option<String> {
             continue;
         };
         let rest = rest.trim();
-        // Folded / literal scalar: the value is the indented lines that follow.
         if matches!(rest, ">" | "|" | ">-" | "|-") {
-            let mut folded = String::new();
-            for cont in &lines[i + 1..] {
-                if cont.trim().is_empty() {
-                    continue;
-                }
-                // A non-indented line is the next key — the block ended.
-                if !cont.starts_with([' ', '\t']) {
-                    break;
-                }
-                if !folded.is_empty() {
-                    folded.push(' ');
-                }
-                folded.push_str(cont.trim());
-            }
-            return Some(folded);
+            let folded: Vec<&str> = lines[i + 1..]
+                .iter()
+                .take_while(|cont| cont.trim().is_empty() || cont.starts_with([' ', '\t']))
+                .map(|cont| cont.trim())
+                .filter(|cont| !cont.is_empty())
+                .collect();
+            return Some(folded.join(" "));
         }
-        // Single-line scalar (optionally quoted).
         return Some(rest.trim_matches(['"', '\'']).to_string());
     }
     None
 }
 
-/// A command whose `description` (the auto-trigger + `/` listing text) exceeds
-/// Claude Code's 1,536-character cut-off mis-triggers, because the harness
-/// truncates it mid-sentence. Scan every command `.md` and hold the cap.
+/// A descrição de cada comando cabe no corte de 1.536 caracteres: passado
+/// dele, o Claude Code corta o gatilho no meio da frase.
 #[test]
 fn command_descriptions_fit_the_listing_cap() {
     let mut files = Vec::new();
-    collect_md(&plugin_dir().join("commands"), &mut files);
-    assert!(
-        !files.is_empty(),
-        "no command templates found under {}/commands",
-        plugin_dir().display()
-    );
-
-    let mut violations: Vec<String> = Vec::new();
+    collect_md(&repo_root().join("plugin/commands"), &mut files);
+    assert!(!files.is_empty(), "no command found under plugin/commands");
     for path in &files {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let Some(desc) = frontmatter_description(&text) else {
-            continue;
-        };
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let desc = frontmatter_description(&text).unwrap_or_else(|| panic!("{} has no description", shown(path)));
         let chars = desc.chars().count();
-        if chars > DESCRIPTION_CHAR_CAP {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            violations.push(format!(
-                "{name}: description is {chars} chars (cap {DESCRIPTION_CHAR_CAP} — \
-                 Claude Code truncates it mid-sentence in the skill listing)"
-            ));
-        }
+        assert!(chars <= DESCRIPTION_CHAR_CAP, "{}: description is {chars} characters", shown(path));
     }
-    assert!(
-        violations.is_empty(),
-        "command descriptions over Claude Code's 1,536-char listing cap - shorten them:\n{}",
-        violations.join("\n"),
-    );
-}
-
-/// Every injectable template must fit the `additionalContext` payload with
-/// margin: the harness caps that payload at 10,000 characters per hook
-/// response, and the overflow is saved to a FILE the window receives only as a
-/// preview plus a path — so an injectable over budget silently stops being in
-/// force, which for a router injected every prompt is the whole point of it.
-/// 9,500 leaves room for the composition separators and any sibling block
-/// injected in the same hook response.
-#[test]
-fn injectable_templates_fit_the_additional_context_cap() {
-    let dir = core_templates_dir().join("mustard");
-    let mut files = Vec::new();
-    collect_md(&dir, &mut files);
-    assert!(
-        !files.is_empty(),
-        "no injectable templates found under {} — init would seed nothing",
-        dir.display()
-    );
-
-    let mut violations: Vec<String> = Vec::new();
-    for path in &files {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            violations.push(format!("{}: unreadable", path.display()));
-            continue;
-        };
-        let chars = payload_size(&text);
-        if chars > INJECTABLE_CHAR_CAP {
-            violations.push(format!(
-                "{}: {chars} (larger of chars/bytes; cap {INJECTABLE_CHAR_CAP} — a hook response \
-                 carries 10,000 characters of additionalContext; the overflow becomes a \
-                 file path instead of text in force. SPLIT it onto a second event, do \
-                 not compress it)",
-                path.display()
-            ));
-        }
-    }
-    assert!(
-        violations.is_empty(),
-        "injectable templates over the additionalContext budget:\n{}",
-        violations.join("\n"),
-    );
-}
-
-/// AC-1 — every declared injectable owns the ceiling of its OWN hook response,
-/// and siblings on one event impose no composite budget on each other.
-///
-/// This replaces a per-EVENT sum that measured a constraint the harness does not
-/// have. That test asserted two 6,000-character documents on one event would
-/// blow the response; the experiment run on 2026-08-25 registered exactly that
-/// shape — two sibling `UserPromptSubmit` hooks emitting 6,000 characters each,
-/// 12,000 combined — and BOTH arrived intact, in separate blocks, each with its
-/// own header and end marker. Nothing was truncated. The official guide states
-/// the same rule: "Text from `additionalContext` is kept from every hook and
-/// passed to Claude together."
-///
-/// So the cap is per hook RESPONSE. The rule this test holds is the one that
-/// follows: each injectable is delivered by its own sibling hook, so each is
-/// measured on its own against the real 10,000, and a document that outgrows it
-/// is split — never compressed past the point where a rule goes out.
-#[test]
-fn each_injectable_owns_its_hook_ceiling() {
-    let dir = core_templates_dir().join("mustard");
-    let entries = mustard_core::platform::project_seed::default_inject_entries();
-    assert!(!entries.is_empty(), "no injectables are declared — the router reaches nobody");
-
-    let mut violations = Vec::new();
-    for entry in &entries {
-        // The declared path is project-relative (`.claude/mustard/x.md`); the
-        // SEED that fills it lives in the templates tree under the same name.
-        let name = Path::new(&entry.file)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let path = dir.join(&name);
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("declared injectable {} has no seed at {}: {e}", entry.file, path.display())
-        });
-        let chars = payload_size(&text);
-        if chars > HOOK_RESPONSE_CAP {
-            violations.push(format!(
-                "{name} on {}: {chars} (larger of chars/bytes) over the {HOOK_RESPONSE_CAP} a single hook \
-                 response carries. Its own sibling hook cannot save it — SPLIT the document \
-                 and give each half a hook, never compress a rule out to fit.",
-                entry.on,
-            ));
-        }
-    }
-    assert!(violations.is_empty(), "injectables over their own hook ceiling:\n{}", violations.join("\n"));
-}
-
-/// The ratchet that would have caught the compaction overflow: no single hook
-/// RESPONSE may exceed the ceiling, whatever it composes.
-///
-/// The per-injectable check above answers "does this document fit?" — and a
-/// review found that was not the binding question. A `SessionStart` response
-/// folds the terrain census, every `sessionStart` injectable and two advisories
-/// into ONE string. An earlier revision of this unit also folded the
-/// `userPromptSubmit` family in on a compaction, and the response measured
-/// 11,973 characters on this repository: over the cap, so the router became a
-/// file path instead of text in force.
-///
-/// The predecessor of this test summed per EVENT, which was wrong in the other
-/// direction — sibling hooks are separate responses and do not share a budget
-/// (measured 2026-08-25). What binds is the RESPONSE, so that is what this
-/// measures: the largest set of blocks any one invocation can compose.
-#[test]
-fn no_single_hook_response_can_exceed_the_ceiling() {
-    // What a `SessionStart` response composes alongside its injectables: the
-    // terrain census (16 rows at ~45 chars, plus header and truncation line)
-    // and the two advisories. Sized from `TERRAIN_ROWS_CAP`, not guessed.
-    const COMPOSED_SIBLINGS: usize = 1_600;
-
-    let dir = core_templates_dir().join("mustard");
-    let mut per_event: std::collections::BTreeMap<String, (usize, Vec<String>)> =
-        std::collections::BTreeMap::new();
-    for entry in mustard_core::platform::project_seed::default_inject_entries() {
-        let name = Path::new(&entry.file)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let text = std::fs::read_to_string(dir.join(&name)).unwrap_or_else(|e| {
-            panic!("declared injectable {} has no seed: {e}", entry.file)
-        });
-        let slot = per_event.entry(entry.on.clone()).or_insert((0, Vec::new()));
-        slot.0 += payload_size(&text);
-        slot.1.push(name);
-    }
-
-    // Each injectable rides its OWN sibling hook, so an event's injectables are
-    // never summed against each other. What IS summed into one response is the
-    // largest injectable plus everything the hook composes around it.
-    let mut violations = Vec::new();
-    for (event, (_total, files)) in &per_event {
-        let largest = files
-            .iter()
-            .map(|f| {
-                std::fs::read_to_string(dir.join(f))
-                    .map(|s| payload_size(&s))
-                    .unwrap_or(0)
-            })
-            .max()
-            .unwrap_or(0);
-        let composed = largest + COMPOSED_SIBLINGS;
-        if composed > HOOK_RESPONSE_CAP {
-            violations.push(format!(
-                "{event}: the largest injectable [{}] plus the {COMPOSED_SIBLINGS} chars the \
-                 hook composes around it is {composed}, over the {HOOK_RESPONSE_CAP} one \
-                 RESPONSE carries. Split the document and give each half its own sibling hook.",
-                files.join(", "),
-            ));
-        }
-    }
-    assert!(violations.is_empty(), "hook responses over the ceiling:\n{}", violations.join("\n"));
 }

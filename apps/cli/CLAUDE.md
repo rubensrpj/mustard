@@ -12,6 +12,6 @@
 - `update --force` skips the prompt, never the backup.
 - Read JSON fail-open (`read_json_object`); merge with `entry().or_insert_with()`; write via `mfs::write_atomic` + trailing newline. Don't clobber user keys.
 - Don't mutate `~/.claude/settings.json` unless `MUSTARD_GLOBAL_PERMISSIONS=1`.
-- No language/framework identifier in `.rs` source — language data lives in `templates/grammars-suggestions.json`; commands come from `detect_commands`.
+- No language/framework identifier in `.rs` source — commands come from `detect_commands`.
 - Validate template/skill names (`[A-Za-z0-9_-]`, reject `..`) before FS/network use.
 - No `unwrap`/`expect` outside `#[cfg(test)]`. Keep `main.rs` thin; all logic in the library.
