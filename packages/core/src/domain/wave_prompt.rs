@@ -57,8 +57,10 @@ pub struct Skill {
 pub struct WaveCopy {
     /// A pasta da cópia.
     pub path: String,
-    /// A pasta de compilação fixa, que passa de uma cópia para a seguinte;
-    /// sem ela, o pedido não diz onde compilar.
+    /// A pasta de compilação fixa, que passa de uma cópia para a seguinte.
+    /// Toda onda recebe uma, porque ela é também a vaga que conta quantas
+    /// ondas rodam juntas; o pedido só a cita quando o projeto é Rust
+    /// ([`Execution::rust`]).
     pub build_dir: Option<String>,
 }
 
@@ -82,6 +84,10 @@ pub struct Execution {
     pub copy: Option<WaveCopy>,
     /// A cópia em que o revisor da onda trabalha.
     pub review: WaveCopy,
+    /// O mapa do projeto marca alguma parte dele como `cargo`. Só então o
+    /// pedido traz a frase que manda compilar na pasta de compilação da cópia
+    /// e cita o Cargo: num projeto Node, por exemplo, ela não serve.
+    pub rust: bool,
 }
 
 /// Os blocos já lidos de que o pedido de uma onda é feito.
@@ -875,9 +881,10 @@ impl Writer<'_> {
     }
 
     /// As regras da execução do agente da onda: a cópia separada que a rodada
-    /// criou e a pasta de compilação dela, quando há cópia; os comandos do
-    /// projeto, a proibição de comitar e as outras ondas em andamento, com os
-    /// arquivos delas. De onde ler a spec, o exemplo de leitura já diz.
+    /// criou e, num projeto Rust, a pasta de compilação dela, quando há
+    /// cópia; os comandos do projeto, a proibição de comitar e as outras
+    /// ondas em andamento, com os arquivos delas. De onde ler a spec, o
+    /// exemplo de leitura já diz.
     fn execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let running = &execution.running;
@@ -905,9 +912,9 @@ impl Writer<'_> {
     }
 
     /// As regras da execução do revisor: criar a cópia que o pedido indica no
-    /// commit da onda, compilar na pasta de compilação dela, os comandos do
-    /// projeto com menos processos, não comitar e apagar a cópia no fim. De
-    /// onde ler a spec, o exemplo de leitura já diz.
+    /// commit da onda, compilar na pasta de compilação dela num projeto Rust,
+    /// os comandos do projeto com menos processos, não comitar e apagar a
+    /// cópia no fim. De onde ler a spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let (copy, root) = (&execution.review, &execution.root);
@@ -923,8 +930,12 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// A pasta de compilação da cópia, quando ela tem uma.
+    /// A pasta de compilação da cópia, quando ela tem uma e o projeto é Rust:
+    /// a frase cita o Cargo, e fora dele não serve.
     fn build_dir(&self, out: &mut String, copy: &WaveCopy) {
+        if !self.material.execution.rust {
+            return;
+        }
         if let Some(dir) = &copy.build_dir {
             let _ = writeln!(out, "- {}", self.t("prompt.execution.build_dir").replace("{dir}", dir));
         }
@@ -1744,7 +1755,8 @@ mod tests {
         assert!(section(&write_review(&plain, Locale::PtBr), "Conserto").is_empty());
     }
 
-    /// A execução de um pedido montado com a cópia que a rodada criou.
+    /// A execução de um pedido montado com a cópia que a rodada criou, num
+    /// projeto Rust.
     fn with_copy() -> Execution {
         Execution {
             build: Some("make".into()),
@@ -1754,6 +1766,33 @@ mod tests {
             root: "/repo".into(),
             copy: Some(WaveCopy { path: "/repo/copia-1".into(), build_dir: Some("/repo/target/copias/a".into()) }),
             review: WaveCopy { path: "/repo/revisao-1".into(), build_dir: Some("/repo/target/copias/b".into()) },
+            rust: true,
+        }
+    }
+
+    /// Num projeto sem parte Rust, a cópia recebe a pasta de compilação do
+    /// mesmo jeito, porque ela é a vaga das ondas que rodam juntas, mas
+    /// nenhum dos três pedidos a cita nem fala do Cargo; a cópia e o resto
+    /// das regras continuam. Num projeto Rust, os três citam a pasta.
+    #[test]
+    fn the_build_folder_sentence_is_written_only_for_a_rust_project() {
+        let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
+        let mut m = material(&log, 1);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let rules = translate("prompt.part.execution", lang);
+            for rust in [false, true] {
+                m.execution = Execution { rust, ..with_copy() };
+                let wave = section(&write(&m, lang), rules).to_string();
+                let review = section(&write_review(&m, lang), rules).to_string();
+                let last = section(&write_final_review(&m, lang), rules).to_string();
+                for (text, folder) in [(&wave, "/repo/target/copias/a"), (&review, "/repo/target/copias/b"), (&last, "/repo/target/copias/b")] {
+                    let sentence = translate("prompt.execution.build_dir", lang).replace("{dir}", folder);
+                    assert_eq!(text.contains(&sentence), rust, "{lang:?} rust={rust}: {text}");
+                    assert_eq!(text.contains("Cargo") || text.contains("target/copias"), rust, "{lang:?} rust={rust}: {text}");
+                }
+                assert!(wave.contains("`/repo/copia-1`") && review.contains("`/repo/revisao-1`"), "{wave}\n{review}");
+                assert!(wave.contains("`make test`") && review.contains("`make test`"), "{wave}\n{review}");
+            }
         }
     }
 

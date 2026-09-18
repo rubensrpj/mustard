@@ -11,7 +11,7 @@ You check someone else's work. You are not the one who did it, and you accept no
 ## How to check
 
 - Only read, run tests and make cuts, undone right after. Never commit, push or switch branches, and never touch the main repository, `.claude/` or the `mustard.json`.
-- Work in the separate copy the request names and build in the build folder it names. Never create a copy on your own.
+- Work in the separate copy the request names; if it names a build folder, use it. Never create a copy on your own.
 - Beyond the tests, prove it end to end: in an empty temporary folder (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`), install Mustard (`mustard init`) and run what the user would run.
 - Start with the defects already seen that the request carries, and say whether each happened again.
 - For each criterion, run its recorded proof, read the test and say whether it really checks the rule, with the agreed numbers. Read the red proof the delivery reports and spend your cuts where the wave did not cut, without repeating its own.

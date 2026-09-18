@@ -1,6 +1,7 @@
 //! O pedido de cada onda, montado do disco: o arquivo de eventos da spec, o
-//! banco de lições, os arquivos das skills que as tarefas nomeiam e os
-//! comandos de compilar e testar que o projeto declara.
+//! banco de lições, os arquivos das skills que as tarefas nomeiam, os
+//! comandos de compilar e testar que o projeto declara e o mapa do projeto,
+//! que diz se ele tem uma parte Rust.
 //!
 //! A regra de escrever o pedido mora em `domain::wave_prompt`, sem disco;
 //! aqui ficam só as leituras. Os dois leitores do pedido — o passo do plano,
@@ -71,6 +72,7 @@ pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Fl
         build: commands.build,
         test: commands.test,
         root: shown(root),
+        rust: has_rust_part(map.as_ref()),
         ..Execution::default()
     };
     let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, flight, lang };
@@ -132,6 +134,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
             path: shown(&final_copy_path(root, spec)),
             build_dir: last_sent.and_then(|n| recorded_copy(log, n)).and_then(|copy| copy.build_dir),
         },
+        rust: has_rust_part(crate::io::project_map::read(root).ok().as_ref()),
         ..Execution::default()
     };
     let material = Material {
@@ -153,6 +156,15 @@ pub fn recorded_copy(log: &SpecLog, wave: u64) -> Option<WaveCopy> {
     let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
     let path = sent.str_field("copy")?.to_string();
     Some(WaveCopy { path, build_dir: sent.str_field("build_dir").map(str::to_string) })
+}
+
+/// O mapa do projeto marca alguma parte dele como `cargo`? Só então os
+/// pedidos mandam compilar na pasta de compilação da cópia, com o nome do
+/// Cargo. Sem mapa, o Mustard não sabe que o projeto é Rust, e a frase fica
+/// fora; a pasta continua escolhida, porque é ela a vaga das ondas que rodam
+/// juntas.
+fn has_rust_part(map: Option<&ProjectMap>) -> bool {
+    map.is_some_and(|map| map.projects.iter().any(|part| part.kind == "cargo"))
 }
 
 /// Um caminho como o pedido e o envio gravado o mostram: sempre com barras
@@ -867,11 +879,14 @@ mod tests {
     /// onda em andamento, a cópia gravada no envio dela, e o da onda que não
     /// está fora não fala de cópia. O pedido do revisor traz a cópia dele,
     /// dentro das cópias do checkout, e a pasta de compilação que a cópia da
-    /// onda usou.
+    /// onda usou. O projeto é Rust: o mapa marca a raiz como `cargo`.
     #[test]
     fn the_request_carries_the_copy_the_round_chose_or_recorded_and_the_review_its_build_folder() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo"}]}).to_string();
+        std::fs::write(crate::io::project_map::model_path(root), model).unwrap();
         let log = log_of(&[
             ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
@@ -901,6 +916,55 @@ mod tests {
         let still = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         assert!(!still[0].text.contains("/c/um") && !still[0].text.contains("CARGO_TARGET_DIR"), "{}", still[0].text);
         assert!(!still[0].text.contains("--root"), "sem cópia, o agente lê a spec de onde está: {}", still[0].text);
+    }
+
+    /// Os pedidos que a rodada monta — o da onda, o do revisor dela e o da
+    /// revisão final — num projeto sem mapa, num só com parte Node, num com
+    /// uma parte Node e uma Rust e num só Rust. A onda tem a cópia e a pasta
+    /// de compilação que a rodada escolheu nos quatro, mas só os dois com
+    /// parte `cargo` no mapa trazem a frase da pasta e citam o Cargo e a
+    /// pasta `target/copias`; a cópia aparece em todos.
+    #[test]
+    fn the_build_folder_rule_goes_only_to_rust_projects() {
+        let node = json!({"name": "web", "dir": "web", "kind": "npm", "code_files": 3});
+        let rust = json!({"name": "api", "dir": "api", "kind": "cargo", "code_files": 3});
+        for (map, cites) in [
+            (None, false),
+            (Some(json!([node])), false),
+            (Some(json!([node, rust])), true),
+            (Some(json!([rust])), true),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            if let Some(projects) = &map {
+                std::fs::create_dir_all(root.join(".claude")).unwrap();
+                let model = json!({"projects": projects}).to_string();
+                std::fs::write(crate::io::project_map::model_path(root), model).unwrap();
+            }
+            let folder = shown(&root.join("target").join("copias").join("a"));
+            let copy = shown(&copy_path(root, "teste", 1, false));
+            let log = log_of(&[
+                ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+                ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+                (
+                    "send",
+                    json!({"wave": 1, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1],
+                           "mustard": "0", "author": "binary", "copy": copy, "build_dir": folder}),
+                ),
+            ]);
+            let flight = Flight { running: [1].into(), copies: BTreeMap::new() };
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                let built = prompts(root, "teste", &log, lang, &flight);
+                let last = final_review(root, "teste", &log, lang);
+                let sentence = crate::platform::i18n::translate("prompt.execution.build_dir", lang).replace("{dir}", &folder);
+                for (what, text) in [("wave", &built[0].text), ("review", &built[0].review), ("final", &last)] {
+                    assert_eq!(text.contains(&sentence), cites, "{map:?} {lang:?} {what}: {text}");
+                    assert_eq!(text.contains("Cargo"), cites, "{map:?} {lang:?} {what}: {text}");
+                    assert_eq!(text.contains("target/copias"), cites, "{map:?} {lang:?} {what}: {text}");
+                }
+                assert!(built[0].text.contains(&format!("`{copy}`")), "{map:?} {lang:?}: {}", built[0].text);
+            }
+        }
     }
 
     /// A skill que a tarefa nomeia e que não está no disco é recusada, com o

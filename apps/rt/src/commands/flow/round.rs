@@ -202,6 +202,14 @@ mod tests {
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
     }
 
+    /// O mapa do projeto em `root`, como o scan o grava, com uma parte só, na
+    /// raiz, do tipo `kind` (`cargo`, `npm`). Chame depois de [`approved`]:
+    /// o mapa fica fora do commit, como no projeto de verdade.
+    pub(super) fn mapped(root: &Path, kind: &str) {
+        let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": kind, "code_files": 1}]});
+        std::fs::write(mustard_core::io::project_map::model_path(root), model.to_string()).unwrap();
+    }
+
     /// O projeto em `root` com o submódulo `libs/sub`, clonado de um servidor
     /// em `servers` cuja base é `main`, com o arquivo `lib.txt` e quem comita
     /// configurado no submódulo. Chame antes de [`approved`].

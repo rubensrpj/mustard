@@ -192,6 +192,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              main repository `{root}`, and the copy stays where it is: on the way back, the round \
              merges the delivered files, new and deleted ones included, and deletes it after the commit."
         }
+        // A pasta de compilação da cópia. A frase cita o Cargo, então só vai
+        // ao pedido quando o mapa do projeto tem uma parte `cargo`; a pasta é
+        // escolhida para toda onda, porque é a vaga das ondas que rodam juntas.
         ("prompt.execution.build_dir", Locale::PtBr) => {
             "Compile e teste só na pasta de compilação `{dir}` (no Cargo, `CARGO_TARGET_DIR={dir}`), \
              em primeiro plano: ela é fixa e passa de uma cópia para a seguinte."

@@ -228,9 +228,10 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
 /// Nenhum texto de agente manda criar cópia do projeto por conta própria —
 /// nem os três que o projeto recebe, em cada idioma, nem as instruções fixas
 /// que o binário monta no pedido da onda e da revisão —; os de onda e de
-/// revisão mandam trabalhar na cópia separada e na pasta de compilação que o
-/// pedido indica. O pedido que a rodada monta, pelo binário, traz a cópia que
-/// ela criou e a pasta de compilação. O aviso das sobras no disco continua no
+/// revisão mandam trabalhar na cópia separada que o pedido indica e usar a
+/// pasta de compilação quando ele indicar uma. O pedido que a rodada monta,
+/// pelo binário, num projeto que o mapa marca como Rust, traz a cópia que ela
+/// criou e a pasta de compilação. O aviso das sobras no disco continua no
 /// catálogo do início da sessão, com o comando que as limpa.
 #[test]
 fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_the_build_folder() {
@@ -246,9 +247,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
             }
         }
         let said: [&str; 3] = if text == Locale::PtBr {
-            ["cópia separada que o pedido indica", "pasta de compilação que ele indica", "Nunca crie cópia por conta própria"]
+            ["cópia separada que o pedido indica", "se ele indicar uma pasta de compilação, use-a", "Nunca crie cópia por conta própria"]
         } else {
-            ["separate copy the request names", "build folder it names", "Never create a copy on your own"]
+            ["separate copy the request names", "if it names a build folder, use it", "Never create a copy on your own"]
         };
         for name in ["wave", "review"] {
             for line in said {
@@ -279,6 +280,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
         put("task", json!({"wave": n, "text": "Mexer no mesmo arquivo.", "files": [{"path": "src/main.rs"}], "origin": said}));
     }
     put("state", json!({"phase": "running", "branch": "feature/copia"}));
+    // O mapa marca o projeto como Rust, como o scan o grava.
+    let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo", "code_files": 1}]});
+    std::fs::write(root.join(".claude/grain.model.json"), model.to_string()).unwrap();
 
     let round = rt(&root, &home, &["run", "round", "--spec", "copia"], None);
     assert_eq!(round["ok"], json!(true), "{round}");

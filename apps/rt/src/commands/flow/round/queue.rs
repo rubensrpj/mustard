@@ -393,34 +393,42 @@ mod tests {
 
     /// Duas ondas sem dependência que mexem no mesmo arquivo saem juntas,
     /// cada uma na sua cópia, criada no commit atual, e com a sua pasta de
-    /// compilação, uma das fixas do projeto; o pedido de cada uma traz as
-    /// duas. O teto de compilações do projeto limita quantas saem.
+    /// compilação, uma das fixas do projeto, porque a pasta é também a vaga
+    /// das ondas que rodam juntas. O pedido de cada uma traz a cópia; a pasta,
+    /// com o nome do Cargo, só quando o mapa marca o projeto como Rust, e não
+    /// num projeto Node. O teto de compilações do projeto limita quantas
+    /// saem.
     #[test]
     fn two_waves_on_the_same_file_go_out_together_each_in_its_own_copy_and_the_cap_holds() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        for (kind, cites) in [("npm", false), ("cargo", true)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
+            mapped(root, kind);
 
-        let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "a onda 2 divide arquivo com a 1 e sai junto: {out}");
-        let head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap();
-        let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
-        let target = mustard_core::io::wave_prompt::shown(&root.join("target").join("copias"));
-        let mut folders = Vec::new();
-        for (at, wave) in [1_u64, 2].iter().enumerate() {
-            let (copy, build) = sent_copy(root, *wave);
-            let expected = mustard_core::io::wave_prompt::copy_path(root, "x", *wave, false);
-            assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "{out}");
-            assert!(expected.join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
-            assert_eq!(std::fs::read_to_string(expected.join("src/a.rs")).unwrap(), "fn um() {}\n");
-            let copy_head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&expected).output().unwrap();
-            assert_eq!(String::from_utf8_lossy(&copy_head.stdout).trim(), head, "the copy stands on the current commit");
-            assert!(build.starts_with(&target), "{build}");
-            let prompt = out["dispatch"][at]["prompt"].as_str().unwrap_or_default();
-            assert!(prompt.contains(&format!("`{copy}`")) && prompt.contains(&format!("={build}`")), "{prompt}");
-            folders.push(build);
+            let out = round(root, "x", None);
+            assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "a onda 2 divide arquivo com a 1 e sai junto: {out}");
+            let head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap();
+            let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+            let target = mustard_core::io::wave_prompt::shown(&root.join("target").join("copias"));
+            let mut folders = Vec::new();
+            for (at, wave) in [1_u64, 2].iter().enumerate() {
+                let (copy, build) = sent_copy(root, *wave);
+                let expected = mustard_core::io::wave_prompt::copy_path(root, "x", *wave, false);
+                assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "{out}");
+                assert!(expected.join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
+                assert_eq!(std::fs::read_to_string(expected.join("src/a.rs")).unwrap(), "fn um() {}\n");
+                let copy_head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&expected).output().unwrap();
+                assert_eq!(String::from_utf8_lossy(&copy_head.stdout).trim(), head, "the copy stands on the current commit");
+                assert!(build.starts_with(&target), "{build}");
+                let prompt = out["dispatch"][at]["prompt"].as_str().unwrap_or_default();
+                assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
+                assert_eq!(prompt.contains(&format!("={build}`")), cites, "{kind}: {prompt}");
+                assert_eq!(prompt.contains("Cargo") || prompt.contains("target/copias"), cites, "{kind}: {prompt}");
+                folders.push(build);
+            }
+            assert_eq!(folders, [format!("{target}/a"), format!("{target}/b")], "{kind}: each copy gets its own folder");
         }
-        assert_eq!(folders, [format!("{target}/a"), format!("{target}/b")], "each copy gets its own folder");
 
         // Com o teto do projeto em 1, só uma onda sai por rodada.
         let dir = tempdir().unwrap();

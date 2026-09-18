@@ -655,6 +655,8 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        // Um projeto Rust: só nele o pedido cita a pasta de compilação.
+        mapped(root, "cargo");
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
         let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);

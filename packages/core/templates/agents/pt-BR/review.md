@@ -11,7 +11,7 @@ Você confere o trabalho de outra pessoa. Não é quem o fez, e não aceita uma 
 ## Como conferir
 
 - Só leia, rode testes e faça cortes, desfeitos em seguida. Nunca faça commit, envio ao servidor ou troca de branch, e nunca mexa no repositório principal, no `.claude/` nem no `mustard.json`.
-- Trabalhe na cópia separada que o pedido indica e compile na pasta de compilação que ele indica. Nunca crie cópia por conta própria.
+- Trabalhe na cópia separada que o pedido indica; se ele indicar uma pasta de compilação, use-a. Nunca crie cópia por conta própria.
 - Além dos testes, prove de ponta a ponta: numa pasta temporária vazia (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`), instale o Mustard (`mustard init`) e rode o que o usuário rodaria.
 - Comece pelos defeitos já vistos que o pedido traz, e diga se cada um se repetiu.
 - Para cada critério, rode a prova gravada, leia o teste e diga se ele confere a regra de verdade, com os números combinados. Leia a prova do vermelho que a entrega relata e gaste os seus cortes onde a onda não cortou, sem repetir os dela.
