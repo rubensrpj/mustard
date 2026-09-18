@@ -345,7 +345,15 @@ mod tests {
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{out}");
         let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default().to_string();
-        assert!(prompt.contains("--term MSTD-TASK-0001"), "{prompt}");
+        // A lista só com os códigos, e o comando de leitura uma vez só, no
+        // exemplo, com o caminho do repositório principal: a onda trabalha na
+        // cópia que a rodada criou.
+        assert!(prompt.lines().any(|l| l.starts_with("- `waves`: ") && l.contains("MSTD-TASK-0001")), "{prompt}");
+        let example = translate("prompt.read", Locale::PtBr)
+            .replace("{root}", &format!("--root {} ", mustard_core::io::wave_prompt::shown(root)))
+            .replace("{spec}", "x");
+        assert!(prompt.contains(&example), "{prompt}");
+        assert_eq!(prompt.matches("mustard-rt run read").count(), 1, "{prompt}");
 
         // O envio gravado guarda o pedido exato, letra por letra.
         let path = store::spec_file(root, "x").unwrap();
@@ -383,19 +391,21 @@ mod tests {
         let fix = text(&round(root, "x", Some(&verdict(1, "rejected", "faltou o teste"))), "dispatch", 1);
         let heading = format!("## Conserto\n\n{}", translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");
-        for code in ["--term MSTD-VERD-0001`", "--term MSTD-DELIV-0001`", "--term MSTD-DEC-0001`"] {
-            assert!(fix.split("\n## ").nth(1).unwrap_or_default().contains(code), "{code}: {fix}");
-        }
+        let fix_lines = |text: &str| -> Vec<String> {
+            let part = text.split("\n## ").nth(1).unwrap_or_default();
+            part.lines().filter(|l| l.starts_with("- ")).map(str::to_string).collect()
+        };
+        let lines = fix_lines(&fix);
+        assert_eq!(lines[..2], ["- `review`: MSTD-VERD-0001", "- `waves`: MSTD-DELIV-0001"], "{fix}");
+        assert!(lines[2].starts_with("- `agreed`: ") && lines[2].contains("MSTD-DEC-0001"), "{fix}");
 
         let back = round(root, "x", Some(&delivered(root, 1, "Teste acrescentado.", &["src/a.rs"])));
         let review = text(&back, "reviews", 1);
         let sha = back["commit"]["sha"].as_str().unwrap_or_default();
         assert!(review.contains(&format!("## Conserto\n\n{}", translate("prompt.fix.review", Locale::PtBr))), "{review}");
-        let fix_part = review.split("\n## ").nth(1).unwrap_or_default();
-        for line in ["--term MSTD-VERD-0001`", "--term MSTD-DELIV-0001`", "--term MSTD-DEC-0001`"] {
-            assert!(fix_part.contains(line), "{line}: {review}");
-        }
-        assert!(review.contains("## O que esta onda entregou\n\n- MSTD-DELIV-0002 (entregou) — `mustard-rt run read waves --spec x --term MSTD-DELIV-0002`\n\n"), "{review}");
+        assert_eq!(fix_lines(&review), lines, "a revisão do conserto traz as mesmas linhas: {review}");
+        assert!(review.contains("## O que esta onda entregou\n\n- `waves`: MSTD-DELIV-0002\n\n"), "{review}");
+        assert_eq!(review.matches("mustard-rt run read").count(), 1, "{review}");
         let review_copy = mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copy_path(root, "x", 1, true));
         assert!(!sha.is_empty() && review.contains(&format!("--detach {review_copy} {sha}`")), "{sha}: {review}");
     }

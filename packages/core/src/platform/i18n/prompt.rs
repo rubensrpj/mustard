@@ -48,28 +48,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
         ("prompt.fixed", Locale::PtBr) => {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
-             binário a partir da spec. Nenhum texto vem copiado: cada linha traz o número do item, \
-             o tipo dele e o comando que o lê.\n\n\
+             binário a partir da spec. Nenhum texto vem copiado: cada parte traz só os códigos dos \
+             itens, em sequência, numa linha por bloco da spec.\n\n\
              **O que devolver.** A linha `<DELIVERED>` desta onda."
         }
         ("prompt.fixed", Locale::EnUs) => {
             "**What this is.** The list of this wave's items, in execution order, assembled by the \
-             binary from the spec. No text is copied in: each line carries the item's number, its \
-             type and the command that reads it.\n\n\
+             binary from the spec. No text is copied in: each part carries only the items' codes, in \
+             sequence, one line per spec block.\n\n\
              **What to return.** This wave's `<DELIVERED>` line."
         }
         ("prompt.review.title", Locale::PtBr) => "{spec} — revisão da onda {n}",
         ("prompt.review.title", Locale::EnUs) => "{spec} — review of wave {n}",
         ("prompt.review.fixed", Locale::PtBr) => {
             "**O que é isto.** O pedido da revisão desta onda, montado pelo binário a partir da \
-             spec. Nenhum texto vem copiado: cada linha traz o número do item, o tipo dele e o \
-             comando que o lê.\n\n\
+             spec. Nenhum texto vem copiado: cada parte traz só os códigos dos itens, em sequência, \
+             numa linha por bloco da spec.\n\n\
              **O que devolver.** A linha `<VERDICT>` desta onda."
         }
         ("prompt.review.fixed", Locale::EnUs) => {
             "**What this is.** This wave's review request, assembled by the binary from the spec. \
-             No text is copied in: each line carries the item's number, its type and the command \
-             that reads it.\n\n\
+             No text is copied in: each part carries only the items' codes, in sequence, one line \
+             per spec block.\n\n\
              **What to return.** This wave's `<VERDICT>` line."
         }
 
@@ -79,8 +79,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.final.title", Locale::EnUs) => "{spec} — final review of the whole",
         ("prompt.final.fixed", Locale::PtBr) => {
             "**O que é isto.** O pedido da revisão final desta spec, com as ondas juntas, montado \
-             pelo binário a partir dela. Nenhum texto vem copiado: cada linha traz o número do \
-             item, o tipo dele e o comando que o lê.\n\n\
+             pelo binário a partir dela. Nenhum texto vem copiado: cada parte traz só os códigos \
+             dos itens, em sequência, numa linha por bloco da spec.\n\n\
              **O que olhar.** Só como as ondas se encaixam: código repetido entre ondas, decisão de \
              uma que contradiz a de outra, prova que uma apagou da outra. Cada onda já teve a sua \
              revisão, e esta não a refaz.\n\n\
@@ -89,13 +89,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("prompt.final.fixed", Locale::EnUs) => {
             "**What this is.** The final review request of this spec, with the waves together, \
-             assembled by the binary from it. No text is copied in: each line carries the item's \
-             number, its type and the command that reads it.\n\n\
+             assembled by the binary from it. No text is copied in: each part carries only the \
+             items' codes, in sequence, one line per spec block.\n\n\
              **What to look at.** Only how the waves fit together: code repeated across waves, a \
              decision of one that contradicts another's, a proof one erased from another. Each wave \
              already had its own review, and this one does not redo it.\n\n\
              **What to return.** The `<VERDICT>` line with `\"final\":true`: approved, with no \
              `wave`; rejected, with the wave the fix redoes in `wave`."
+        }
+        // O exemplo único do comando que lê um item, que os três pedidos
+        // trazem logo depois da parte fixa. `{root}` é `--root <caminho> `
+        // quando o agente trabalha numa cópia, e nada quando não trabalha.
+        ("prompt.read", Locale::PtBr) => {
+            "**Como ler.** Leia cada código na ordem com `mustard-rt run read <bloco> {root}--spec {spec} \
+             --term <código>`, trocando `<bloco>` pelo bloco que abre a linha do código."
+        }
+        ("prompt.read", Locale::EnUs) => {
+            "**How to read.** Read each code in order with `mustard-rt run read <block> {root}--spec {spec} \
+             --term <item-code>`, replacing `<block>` with the block that opens the code's line."
         }
         ("prompt.part.waves", Locale::PtBr) => "As ondas e as tarefas delas",
         ("prompt.part.waves", Locale::EnUs) => "The waves and their tasks",
@@ -189,14 +200,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Build and test only in the build folder `{dir}` (with Cargo, `CARGO_TARGET_DIR={dir}`), in \
              the foreground: it is fixed and passes from one copy to the next."
         }
-        ("prompt.execution.root", Locale::PtBr) => {
-            "A spec mora no repositório principal: toda leitura dela leva `--root {root}`, como em \
-             `mustard-rt run read waves --root {root} --spec …`."
-        }
-        ("prompt.execution.root", Locale::EnUs) => {
-            "The spec lives in the main repository: every read of it takes `--root {root}`, as in \
-             `mustard-rt run read waves --root {root} --spec …`."
-        }
         ("prompt.review.copy", Locale::PtBr) => {
             "Revise na cópia separada `{copy}`, nunca no repositório principal `{root}`: crie-a no \
              commit da onda com `git worktree add --detach {copy} {commit}` e rode tudo dentro dela."
@@ -231,7 +234,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             38,
-            0xe6e9_5753_ec93_f556,
+            0x3869_a135_e779_f38d,
         );
     }
 }

@@ -988,8 +988,14 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        for _ in 0..600 {
-            write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        // Os códigos das tarefas cabem numa linha só: o que passa do teto é
+        // uma parte de uma linha por item, como a das skills que elas nomeiam.
+        for i in 0..600 {
+            let skill = root.join(".claude").join("skills").join(format!("s{i}"));
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(skill.join("SKILL.md"), format!("# s{i}\n")).unwrap();
+            write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
+                "skill": format!("s{i}"), "origin": said}));
         }
 
         let report = plan(root, "x");

@@ -558,9 +558,64 @@ mod tests {
             ),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        assert!(built[0].text.contains("--term MSTD-LIMIT-0001"), "{}", built[0].text);
-        assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 2, "{}", built[0].text);
+        let agreed = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.agreed", Locale::PtBr));
+        assert_eq!(agreed, ["`agreed`: MSTD-LIMIT-0001"], "{}", built[0].text);
+        assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 1, "{}", built[0].text);
         assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
+    }
+
+    /// O pedido de uma onda e o da revisão dela, montados como a rodada os
+    /// monta — com a cópia que ela criou para a onda —, listam só os códigos:
+    /// cada parte traz uma linha por bloco da spec, com os códigos em
+    /// sequência (os da onda na ordem de execução que ela declara). O comando
+    /// de leitura aparece uma vez só, no exemplo, com o caminho do
+    /// repositório principal, e nenhum item repete o comando nem o código.
+    #[test]
+    fn the_wave_and_review_requests_list_only_the_codes_per_block_with_one_example() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let everywhere = json!({"files": ["**"]});
+        let log = log_of(&[
+            ("context", json!({"text": "O objetivo da obra.", "keys": ["objetivo"], "label": "objetivo"})),
+            ("context", json!({"text": "Como reproduzir.", "keys": ["reproduzir"], "label": "reproduzir"})),
+            ("decision", json!({"text": "Os códigos em sequência.", "keys": ["códigos"], "why": "menos linhas",
+                                "applies_to": everywhere})),
+            ("rule", json!({"text": "Um exemplo só.", "keys": ["exemplo"], "example": "e", "applies_to": everywhere})),
+            ("criterion", json!({"when": "a rodada monta", "then": "a lista sai curta", "proof": "cargo test"})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [5], "done_when": "passa", "order": [8, 7]})),
+            ("task", json!({"wave": 1, "text": "Montar a lista", "files": [{"path": "src/a.rs"}]})),
+            ("task", json!({"wave": 1, "text": "Trocar o texto", "files": [{"path": "src/b.rs"}]})),
+            ("delivered", json!({"wave": 1, "text": "A lista saiu.", "files": ["src/a.rs"]})),
+        ]);
+        let copy = WaveCopy { path: "/c/um".into(), build_dir: Some("/t/a".into()) };
+        let flight = Flight { running: [1].into(), copies: [(1, copy)].into() };
+        let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
+        let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
+        let example = part("prompt.read")
+            .replace("{root}", &format!("--root {} ", shown(root)))
+            .replace("{spec}", "teste");
+        assert!(example.contains("`mustard-rt run read <bloco> --root /") && example.contains("--term <código>`"), "{example}");
+        let (wave, review) = (&built[0].text, &built[0].review);
+
+        let waves = ["`waves`: MSTD-TASK-0002, MSTD-TASK-0001, MSTD-WAVE-0001"];
+        let criteria = ["`criteria`: MSTD-CRIT-0001"];
+        assert_eq!(section_lines(wave, part("prompt.part.specification")), ["`specification`: MSTD-CTX-0001, MSTD-CTX-0002"], "{wave}");
+        assert_eq!(section_lines(wave, part("prompt.part.agreed")), ["`agreed`: MSTD-DEC-0001, MSTD-RULE-0001"], "{wave}");
+        assert_eq!(section_lines(wave, part("prompt.part.wave")), waves, "{wave}");
+        assert_eq!(section_lines(wave, part("prompt.part.criteria")), criteria, "{wave}");
+        assert_eq!(section_lines(review, part("prompt.part.wave")), waves, "{review}");
+        assert_eq!(section_lines(review, part("prompt.part.own_delivered")), ["`waves`: MSTD-DELIV-0001"], "{review}");
+        assert_eq!(section_lines(review, part("prompt.part.criteria")), criteria, "{review}");
+
+        for text in [wave, review] {
+            assert!(text.contains(&example), "{text}");
+            for once in ["mustard-rt run read", "--term", "--root", "MSTD-TASK-0001", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
+                assert_eq!(text.matches(once).count(), 1, "{once}: {text}");
+            }
+            for copied in ["O objetivo da obra.", "Montar a lista", "a lista sai curta", "A lista saiu."] {
+                assert!(!text.contains(copied), "{copied} foi copiado: {text}");
+            }
+        }
     }
 
     /// O pedido do revisor de uma onda leva os defeitos já vistos nos
@@ -839,10 +894,12 @@ mod tests {
         assert!(review.ends_with("/.claude/worktrees/mustard-teste-1-review"), "{review}");
         assert!(built[0].review.contains(&format!("--detach {review} HEAD`")), "{}", built[0].review);
         assert!(built[0].review.contains("CARGO_TARGET_DIR=/t/a`"), "{}", built[0].review);
-        assert!(built[0].review.contains(&format!("`--root {}`", shown(root))), "{}", built[0].review);
+        assert!(built[0].review.contains(&format!("--root {} --spec teste", shown(root))), "{}", built[0].review);
+        assert!(built[0].text.contains(&format!("--root {} --spec teste", shown(root))), "{}", built[0].text);
 
         let still = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         assert!(!still[0].text.contains("/c/um") && !still[0].text.contains("CARGO_TARGET_DIR"), "{}", still[0].text);
+        assert!(!still[0].text.contains("--root"), "sem cópia, o agente lê a spec de onde está: {}", still[0].text);
     }
 
     /// A skill que a tarefa nomeia e que não está no disco é recusada, com o

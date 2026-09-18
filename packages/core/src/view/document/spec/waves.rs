@@ -151,13 +151,27 @@ fn receives(prompt: &str) -> String {
     for line in prompt.lines() {
         if let Some(title) = line.strip_prefix("## ") {
             parts.push((title.trim().to_string(), 0));
-        } else if line.starts_with("- ")
+        } else if let Some(item) = line.strip_prefix("- ")
             && let Some((_, count)) = parts.last_mut()
         {
-            *count += 1;
+            *count += listed(item);
         }
     }
     join(parts.into_iter().filter(|(_, n)| *n > 0).map(|(title, n)| format!("{title} ({n})")))
+}
+
+/// Quantos itens uma linha de lista do pedido traz: a linha de um bloco da
+/// spec — o nome do bloco entre crases, dois-pontos e os códigos separados
+/// por vírgula — traz um por código; a linha de uma lição, de uma skill ou de
+/// uma regra da execução — e a de um item no pedido antigo, já gravado no
+/// envio — traz um só.
+fn listed(item: &str) -> usize {
+    let codes = item
+        .strip_prefix('`')
+        .and_then(|rest| rest.split_once("`: "))
+        .filter(|(block, _)| Block::parse(block).is_some())
+        .map(|(_, codes)| codes);
+    codes.map_or(1, |codes| codes.split(", ").count())
 }
 
 /// Quantas linhas um texto tem; a última conta mesmo sem quebra no fim.
@@ -287,7 +301,10 @@ mod tests {
         .concat();
         let mut prompts = WavePrompts::new();
         prompts.insert(1, "não aparece: a onda já foi enviada".into());
-        prompts.insert(2, "# s — onda 2\n\n## Combinado\n\n- MSTD-RULE-0001 (regra) — `ler`\n".into());
+        prompts.insert(
+            2,
+            "# s — onda 2\n\n## Combinado\n\n- `agreed`: MSTD-RULE-0001, MSTD-DEC-0001\n\n## Lições\n\n- `cargo`: rode em primeiro plano.\n".into(),
+        );
         let states = WaveStates::from([(1, WaveState::Approved)]);
         let doc = spec_page("s", &parse_log(&content), SpecInputs { prompts: &prompts, rtk: &[], waves: &states }, Locale::PtBr);
         let waves = section(&doc, "waves");
@@ -316,11 +333,14 @@ mod tests {
         let two = items(waves).into_iter().find(|i| i.code == "MSTD-WAVE-0002").unwrap();
         assert_eq!(field(two, "Estado da onda"), Some("a fazer"));
         assert_eq!(field(two, "Commit"), None);
-        assert_eq!(field(two, "Recebe"), Some("Combinado (1)"));
+        // O pedido de hoje traz os códigos de cada bloco numa linha: conta um
+        // item por código. A linha da lição, mesmo aberta por um nome entre
+        // crases, conta um; o pedido antigo do envio, um por linha.
+        assert_eq!(field(two, "Recebe"), Some("Combinado (2), Lições (1)"));
         let prompt = group(waves, "waves-2").body.last().unwrap();
         let Node::Details { summary, body, owner } = prompt else { panic!("{prompt:?}") };
         assert_eq!(owner, &None, "the assembled request belongs to no single item");
-        assert_eq!(summary, "O pedido da onda 2 · 5 linhas, como o agente as recebe");
+        assert_eq!(summary, "O pedido da onda 2 · 9 linhas, como o agente as recebe");
         assert_eq!(body, &[Node::Markdown(prompts[&2].clone())]);
     }
 }
