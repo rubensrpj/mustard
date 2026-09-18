@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::domain::lessons::{in_scope, Scope};
+use crate::domain::lessons::{in_scope, rules_limited, Scope};
 use crate::domain::project_map::{check_skill, file_history, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
 use crate::domain::wave_prompt::{self, wave_files, Execution, Material, Skill, WaveCopy};
@@ -216,6 +216,9 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
 
     let files = wave_files(log, wave);
     let named = skills_named(log, wave);
+    // As regras do projeto que valem para a onda entram só as mais ligadas ao
+    // texto das tarefas: uma pasta com centenas delas passaria do teto de
+    // linhas, e o pedido seria recusado. As outras lições entram todas.
     let lessons = bank
         .map(|bank| {
             let mut found: Vec<&SpecEvent> = Vec::new();
@@ -227,8 +230,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
                     }
                 }
             }
-            found.sort_by_key(|lesson| lesson.id);
-            found
+            rules_limited(found, &tasks_text(log, wave))
         })
         .unwrap_or_default();
 
@@ -313,6 +315,17 @@ fn execution(context: &Context, wave: u64) -> Execution {
         build_dir: recorded.and_then(|copy| copy.build_dir),
     };
     Execution { running, commit, copy, review, ..context.base.clone() }
+}
+
+/// O texto das tarefas de uma onda, uma por linha: a consulta que escolhe as
+/// regras do projeto que o pedido leva.
+fn tasks_text(log: &SpecLog, wave: u64) -> String {
+    log.block(BlockQuery::Wave(wave))
+        .iter()
+        .filter(|e| e.event_type == "task")
+        .filter_map(|task| task.str_field("text"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.
@@ -583,6 +596,64 @@ mod tests {
         assert!(!defects.contains("O comentário vai em português."), "só defeito entra: {defects}");
         assert!(!before.contains("Apagar a pasta"), "{before}");
         assert!(!built[0].text.contains(heading), "o pedido da onda não tem a seção: {}", built[0].text);
+    }
+
+    /// Uma lição como o gravador a deixa no banco, com o `search`.
+    fn bank_line(id: u64, class: &str, text: &str, files: &str) -> String {
+        let draft = json!({"class": class, "text": text, "keys": ["k"], "applies_to": {"files": [files]},
+                           "found_in": {"source": "apps/rt/CLAUDE.md"}});
+        let event = crate::domain::lessons::normalize(draft.as_object().cloned().unwrap_or_default(), None);
+        format!("{}\n", render_line(&stamp(event, id, None, "2026-09-15T10:00:00-03:00")))
+    }
+
+    /// Uma pasta com 500 regras do projeto, e a onda mexe num arquivo dela: o
+    /// pedido leva no máximo 5 regras, as mais ligadas ao texto das tarefas,
+    /// e fica abaixo do teto de linhas. A regra que só divide uma palavra com
+    /// a tarefa perde o lugar para as que dividem quatro; as outras classes
+    /// de lição entram todas, como antes.
+    #[test]
+    fn a_folder_with_hundreds_of_rules_sends_at_most_the_five_closest_to_the_tasks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let folder = "apps/rt/src/**";
+        let mut bank = String::new();
+        let mut id = 0;
+        let mut next = |class: &str, text: String| {
+            id += 1;
+            bank.push_str(&bank_line(id, class, &text, folder));
+        };
+        for n in 1..=500 {
+            next("project_rule", format!("Regra {n}: cada módulo declara o dono dele."));
+        }
+        let strong: Vec<String> =
+            (1..=5).map(|n| format!("Somar o total da fatura exige conferir o relatório {n}.")).collect();
+        let weak: Vec<String> = (1..=2).map(|n| format!("A fatura antiga fica no arquivo morto {n}.")).collect();
+        for text in strong.iter().chain(&weak) {
+            next("project_rule", text.clone());
+        }
+        next("defect", "Apagar a pasta perde trabalho.".to_string());
+        next("user_preference", "Resposta curta.".to_string());
+        let path = root.join(".claude").join("spec");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("lessons.ndjson"), bank).unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar o total da fatura no relatório.",
+                            "files": [{"path": "apps/rt/src/a.rs"}]})),
+        ]);
+
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(built[0].too_long.is_none(), "{} linhas", built[0].lines);
+        assert!(built[0].lines <= wave_prompt::MAX_LINES, "{} linhas", built[0].lines);
+        let heading = format!("## {}", crate::platform::i18n::translate("prompt.part.lessons", Locale::PtBr));
+        let (_, after) = built[0].text.split_once(&heading).expect("a seção das lições");
+        let section = after.split("\n## ").next().unwrap_or_default();
+        let shown: Vec<&str> = section.lines().filter_map(|line| line.strip_prefix("- ")).collect();
+        let rules: Vec<&str> = shown.iter().copied().filter(|line| line.contains("fatura") || line.contains("Regra")).collect();
+        assert_eq!(rules, strong.iter().map(String::as_str).collect::<Vec<_>>(), "{section}");
+        assert!(shown.contains(&"Apagar a pasta perde trabalho."), "{section}");
+        assert!(shown.contains(&"Resposta curta."), "{section}");
+        assert_eq!(shown.len(), 7, "{section}");
     }
 
     /// A skill cujo arquivo de exemplo mudou no git depois dela sai marcada

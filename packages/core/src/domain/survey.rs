@@ -6,7 +6,8 @@
 //!   refatoração, juntas sem repetir no pedido misto, cada uma no bloco dela;
 //!   a lacuna que o mapa do projeto já responde vem com o fato e a fonte;
 //! - as lições do banco que casam com o objetivo, pelo BM25 de
-//!   `domain::search`, com o texto original, nunca o `search`;
+//!   `domain::search`, com o texto original, nunca o `search`; a regra do
+//!   projeto fica fora, porque vale sempre e não vira pergunta;
 //! - as specs anteriores que casam com o objetivo, pelo `search` do índice,
 //!   com as regras, as decisões e os erros delas que casam;
 //! - dentro desses pontos, nunca num ponto novo, até 3 lembretes: mensagens do
@@ -901,12 +902,18 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
 
 /// Um ponto por lição do banco que casa com o objetivo, as mais fortes
 /// primeiro: o título da lição como lacuna e o texto original dela como fato,
-/// com o arquivo e a linha do banco como fonte.
+/// com o arquivo e a linha do banco como fonte. A regra do projeto nunca vira
+/// ponto: ela vale sempre, e perguntar por ela em cada spec não acrescenta
+/// nada. Ela sai antes da busca, para que centenas de regras não tomem o
+/// lugar dos defeitos, das armadilhas e das preferências entre as mais
+/// fortes.
 fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
     let Some(bank) = sources.bank else {
         return Vec::new();
     };
-    lessons::matching(bank, sources.goal)
+    let asked: Vec<&SpecEvent> =
+        bank.visible().into_iter().filter(|lesson| lesson.event_type != lessons::PROJECT_RULE).collect();
+    lessons::matching_among(&asked, sources.goal)
         .into_iter()
         .filter_map(|hit| {
             let lesson = bank.get(hit.id)?;

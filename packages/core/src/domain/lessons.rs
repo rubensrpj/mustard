@@ -18,6 +18,8 @@
 //! Duas buscas, só do Rust: por escopo ([`in_scope`]), pelo caminho dos
 //! arquivos, pelo subprojeto e pela skill; e por palavras ([`matching`]), com
 //! o BM25 de `domain::search` sobre o `search`, que devolve as 5 mais fortes.
+//! A mesma busca por palavras limita as regras do projeto que o pedido de uma
+//! onda leva ([`rules_limited`]): uma pasta pode ter centenas delas.
 //! Quem mostra uma lição mostra o texto original ([`shown`]), nunca o
 //! `search`.
 //!
@@ -204,6 +206,11 @@ pub fn defects_in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEve
 /// A classe da lição que guarda um defeito que pode se repetir.
 pub const DEFECT: &str = "defect";
 
+/// A classe da lição que guarda uma regra do projeto: vale sempre, então
+/// não vira pergunta no levantamento, e o pedido da onda leva só as mais
+/// ligadas à tarefa.
+pub const PROJECT_RULE: &str = "project_rule";
+
 /// O "onde vale" de um evento casa com `scope`? A mesma leitura serve à lição
 /// e ao item combinado, que declaram o campo do mesmo jeito: sem ela, o
 /// recorte dos itens por onda e a busca de lições discordariam sobre o mesmo
@@ -263,8 +270,30 @@ fn path_matches(pattern: &str, file: &str) -> bool {
 /// fortes, pelo BM25.
 #[must_use]
 pub fn matching(bank: &SpecLog, words: &str) -> Vec<Hit> {
-    let lessons = bank.visible();
+    matching_among(&bank.visible(), words)
+}
+
+/// A mesma busca de [`matching`], só entre `lessons`: quem já separou as
+/// lições que interessam não deixa as outras tomarem o lugar delas entre as
+/// 5 mais fortes.
+#[must_use]
+pub fn matching_among(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
     search::search(lessons.iter().map(|lesson| (lesson.id, lesson.str_field("search").unwrap_or_default())), words)
+}
+
+/// As lições que o pedido de uma onda leva, entre as `found` que valem para
+/// ela: todas as que não são regra do projeto, e das regras do projeto só as
+/// 5 mais ligadas às palavras da tarefa (`words`), pela busca de
+/// [`matching`]. A regra que não tem palavra nenhuma em comum com a tarefa
+/// fica fora. Em ordem de número, como `found` chega.
+#[must_use]
+pub fn rules_limited<'a>(found: Vec<&'a SpecEvent>, words: &str) -> Vec<&'a SpecEvent> {
+    let (rules, mut kept): (Vec<&SpecEvent>, Vec<&SpecEvent>) =
+        found.into_iter().partition(|lesson| lesson.event_type == PROJECT_RULE);
+    let related = matching_among(&rules, words);
+    kept.extend(rules.into_iter().filter(|rule| related.iter().any(|hit| hit.id == rule.id)));
+    kept.sort_by_key(|lesson| lesson.id);
+    kept
 }
 
 /// A lição como é mostrada: a linha com o texto original, sem o `search`.
@@ -375,6 +404,25 @@ mod tests {
         assert!(shown.contains("\"text\":\"Um rm -rf na pasta errada perde trabalho.\""), "{shown}");
         assert!(!shown.contains("search"), "{shown}");
         assert!(!shown.contains(lesson.str_field("search").unwrap()), "{shown}");
+    }
+
+    /// Das regras do projeto ficam só as 5 mais ligadas às palavras, e a que
+    /// não divide palavra nenhuma sai; as outras classes ficam todas, e tudo
+    /// volta em ordem de número.
+    #[test]
+    fn only_the_five_rules_closest_to_the_words_are_kept_and_every_other_class_stays() {
+        let rule = |id: u64, text: &str| lesson(id, json!({"class": "project_rule", "text": text, "keys": ["k"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"source": "CLAUDE.md"}}));
+        let mut content = vec![lesson(1, json!({"class": "environment_trap", "text": "O cargo não está no PATH.", "keys": ["cargo"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}))];
+        for id in 2..=7 {
+            content.push(rule(id, &format!("A fatura soma o total {id}.")));
+        }
+        content.push(rule(8, "O módulo declara o dono."));
+        let bank = parse_log(&content.concat());
+        let kept: Vec<u64> = rules_limited(bank.visible(), "Somar o total da fatura").iter().map(|l| l.id).collect();
+        assert_eq!(kept.len(), 6, "{kept:?}");
+        assert_eq!(kept[0], 1, "a armadilha fica: {kept:?}");
+        assert!(!kept.contains(&8), "a regra sem palavra em comum sai: {kept:?}");
+        assert!(kept.windows(2).all(|w| w[0] < w[1]), "{kept:?}");
     }
 
     #[test]
