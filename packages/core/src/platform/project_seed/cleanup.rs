@@ -27,14 +27,18 @@
 //! block leaves without becoming one. A text becomes one lesson only, however
 //! many files carry it: the guards are compared as the assistant's own lesson
 //! write compares them (`domain::lessons::comparable`), and the lesson holds
-//! in every place its text came from.
+//! in every place its text came from. A guard is known in the bank by its text
+//! and by where it holds: when the bank keeps the same text only for other
+//! places, that lesson gets a new version (`replaces`) that holds where the
+//! guard held too, and only then does the guard leave its file.
 
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::domain::lessons::{self as model, WHOLE_PROJECT};
+use crate::domain::lessons::{self as model, Scope, WHOLE_PROJECT};
+use crate::domain::spec_events::{SpecEvent, SpecLog};
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs::{self, PRUNE_DIRS};
 use crate::io::lessons;
@@ -112,6 +116,11 @@ pub struct GuardLesson {
     /// one lesson holds there too.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_in: Vec<String>,
+    /// The lesson of the bank with the same text, when it does not hold yet in
+    /// every place of this guard: the guard becomes a new version of it, which
+    /// holds where it held and where the guard held.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<u64>,
 }
 
 impl GuardLesson {
@@ -142,8 +151,8 @@ pub struct CleanupPlan {
     /// listed for the person to decide, never touched.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unmarked: Vec<String>,
-    /// The guards that would become lessons, those already in the bank left
-    /// out.
+    /// The guards that would become lessons, those the bank already holds
+    /// where they held left out.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lessons: Vec<GuardLesson>,
 }
@@ -209,6 +218,7 @@ pub fn plan(root: &Path) -> CleanupPlan {
                     source: rel.clone(),
                     subproject: subproject.clone(),
                     also_in: Vec::new(),
+                    replaces: None,
                 }));
                 out.files.push(FileChange {
                     path: rel,
@@ -242,29 +252,111 @@ fn team_settings_change(root: &Path) -> Option<FileChange> {
     })
 }
 
-/// The guards not yet in the bank, each text once. A guard is known by its
-/// text alone, compared as the assistant's own lesson write compares it
-/// (spaces, case and accents aside), against every lesson in the bank and
-/// against the guards already taken in this pass: a guard the lesson write
-/// would refuse as repeated never reaches it. The versioned instruction file
-/// wins over its local twin, which usually repeats it; the same text in
-/// another subproject does not become a second lesson, it makes the first one
-/// hold there too.
+/// The guards the bank does not hold yet where they held, each text once.
+/// The versioned instruction file wins over its local twin, which usually
+/// repeats it; the same text in another subproject does not become a second
+/// lesson, it makes the first one hold there too. Texts are compared as the
+/// assistant's own lesson write compares them (spaces, case and accents
+/// aside), so a guard never reaches the write as a repeated lesson.
+///
+/// Against the bank, a guard is known by its text and by where it holds: the
+/// lesson with the same text that already holds in every place of the guard
+/// leaves the guard out; the one that holds only elsewhere is replaced by a
+/// version that holds in the guard's places too. Recognized by the text alone,
+/// the guard would leave its file while the rule held only somewhere else.
 fn new_lessons(root: &Path, mut guards: Vec<GuardLesson>) -> Vec<GuardLesson> {
     guards.sort_by_key(|g| g.source.ends_with(CLAUDE_LOCAL_MD));
-    let bank = lesson_bank(root).and_then(|path| lessons::read(&path).ok().flatten());
     let mut out: Vec<GuardLesson> = Vec::new();
     for guard in guards {
-        if bank.as_ref().is_some_and(|bank| model::repeated(bank, &guard.text, &[]).is_some()) {
-            continue;
-        }
         let text = model::comparable(&guard.text);
         match out.iter_mut().find(|taken| model::comparable(&taken.text) == text) {
             Some(taken) => taken.hold_also(guard.subproject),
             None => out.push(guard),
         }
     }
-    out
+    let Some(bank) = lesson_bank(root).and_then(|path| lessons::read(&path).ok().flatten()) else {
+        return out;
+    };
+    out.into_iter()
+        .filter_map(|mut guard| match model::repeated(&bank, &guard.text, &[]) {
+            None => Some(guard),
+            Some(kept) if places(&guard).iter().all(|place| holds_in(kept, place.as_deref())) => None,
+            Some(kept) => {
+                guard.replaces = Some(kept.id);
+                Some(guard)
+            }
+        })
+        .collect()
+}
+
+/// Every place a guard's lesson holds for: `None` is the whole project.
+fn places(guard: &GuardLesson) -> Vec<Option<String>> {
+    match &guard.subproject {
+        None => vec![None],
+        Some(sub) => std::iter::once(sub).chain(&guard.also_in).cloned().map(Some).collect(),
+    }
+}
+
+/// Whether the bank's `lesson` already holds in `place`: for every file of
+/// the subproject, or, with `None`, for the whole project.
+fn holds_in(lesson: &SpecEvent, place: Option<&str>) -> bool {
+    let scope = match place {
+        // Sem arquivo, sem subprojeto e sem skill, só a lição do projeto todo
+        // vale.
+        None => Scope::default(),
+        Some(sub) => Scope { files: vec![sub.to_string()], subproject: Some(sub.to_string()), skill: None },
+    };
+    model::applies_to(lesson, &scope)
+}
+
+/// The new version of the bank's lesson `id` that holds also in every place
+/// of `guard`: the same class, author, text, keys, label and origin, and where
+/// it holds widened. `None` when `id` is no longer a lesson the reading of
+/// `bank` shows: the lesson changed after the plan read it. The write checks
+/// the same thing again with the bank's lock held, so a new version written
+/// between this reading and the write refuses this one.
+fn widened(bank: &SpecLog, id: u64, guard: &GuardLesson) -> Option<Map<String, Value>> {
+    let lesson = model::kept(bank).into_iter().find(|lesson| lesson.id == id)?;
+    let mut draft = Map::new();
+    draft.insert("class".into(), Value::from(lesson.event_type.as_str()));
+    for field in ["author", "text", "keys", "label", "found_in"] {
+        if let Some(value) = lesson.fields.get(field) {
+            draft.insert(field.into(), value.clone());
+        }
+    }
+    draft.insert("applies_to".into(), widened_scope(lesson, guard));
+    draft.insert("replaces".into(), Value::from(id));
+    Some(draft)
+}
+
+/// Where the bank's `lesson` holds once it holds in every place of `guard`
+/// too: the whole project, when one of them is; otherwise its own places,
+/// with the subproject of the guard it did not cover yet as its subproject,
+/// or, when it already has one, among its files.
+fn widened_scope(lesson: &SpecEvent, guard: &GuardLesson) -> Value {
+    let places = places(guard);
+    if places.iter().any(Option::is_none) {
+        return serde_json::json!({ "files": [WHOLE_PROJECT] });
+    }
+    let mut scope = lesson.fields.get("applies_to").and_then(Value::as_object).cloned().unwrap_or_default();
+    for sub in places.into_iter().flatten().filter(|sub| !holds_in(lesson, Some(sub.as_str()))) {
+        let has_subproject = scope.get("subproject").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty());
+        if !has_subproject {
+            scope.insert("subproject".into(), Value::from(sub));
+            continue;
+        }
+        match scope.get_mut("files") {
+            Some(Value::Array(files)) => {
+                if !files.iter().any(|file| file.as_str() == Some(sub.as_str())) {
+                    files.push(Value::from(sub));
+                }
+            }
+            _ => {
+                scope.insert("files".into(), Value::Array(vec![Value::from(sub)]));
+            }
+        }
+    }
+    Value::Object(scope)
 }
 
 /// Where a guard's lesson holds: its subproject, with the other subprojects
@@ -464,8 +556,9 @@ fn guards_in(lines: &[String]) -> Vec<String> {
 
 /// Do what [`plan`] listed.
 ///
-/// The guards become lessons first. When one of them cannot be written, no
-/// file is touched, so no guard leaves a file without having become a lesson;
+/// The guards become lessons first, or new versions of the bank's lessons
+/// that hold where the guards held too. When one of them cannot be written, no
+/// file is touched, so no guard leaves a file without its rule holding there;
 /// the next run finds the ones already written in the bank and retries only
 /// the rest. After that every file is handled on its own: a failure is
 /// reported and the rest goes on.
@@ -480,8 +573,25 @@ pub fn apply(root: &Path, plan: &CleanupPlan) -> Result<CleanupDone> {
             done.failed.push("lessons: the lesson bank of this project could not be found".to_string());
             return Ok(done);
         };
+        // A nova versão de uma lição parte do banco como está agora; se a
+        // lição mudou depois do plano, a guard falha e nenhum arquivo sai.
+        let current = if plan.lessons.iter().any(|guard| guard.replaces.is_some()) {
+            lessons::read(&bank).ok().flatten()
+        } else {
+            None
+        };
         for guard in &plan.lessons {
-            match lessons::write(&bank, lesson_draft(guard), None) {
+            let draft = match guard.replaces {
+                None => lesson_draft(guard),
+                Some(id) => match current.as_ref().and_then(|log| widened(log, id, guard)) {
+                    Some(draft) => draft,
+                    None => {
+                        done.failed.push(format!("{}: lesson {id} changed after the plan", guard.source));
+                        continue;
+                    }
+                },
+            };
+            match lessons::write(&bank, draft, None) {
                 Ok(written) => done.lessons.push(written.id),
                 Err(refusal) => done.failed.push(format!("{}: {refusal:?}", guard.source)),
             }
@@ -737,8 +847,7 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
     /// A mesma guard em dois subprojetos vira uma lição só, que vale nos
     /// dois: os três arquivos saem, e a busca de lições pelos arquivos de cada
     /// subprojeto acha a mesma lição. O par `CLAUDE.md` e `CLAUDE.local.md` do
-    /// mesmo subprojeto continua valendo uma lição só. E, com a lição já no
-    /// banco, a mesma guard noutro subprojeto não entra de novo.
+    /// mesmo subprojeto continua valendo uma lição só.
     #[test]
     fn the_same_guard_in_two_subprojects_enters_the_lessons_once_and_holds_in_both() {
         let body = "# Svc\n\n<!-- mustard:guards -->\n- Never call the database from a handler.\n<!-- /mustard:guards -->\n";
@@ -767,14 +876,186 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         }
         let elsewhere = crate::domain::lessons::Scope { files: vec!["apps/c/src/x.rs".into()], ..Default::default() };
         assert!(crate::domain::lessons::in_scope(&bank, &elsewhere).is_empty(), "the rule holds only where it came from");
+    }
 
-        let other = tempdir().unwrap();
-        let root = other.path();
-        write(root, "apps/a/CLAUDE.md", body);
-        apply(root, &plan(root)).unwrap();
-        write(root, "apps/b/CLAUDE.md", body);
-        let later = plan(root);
-        assert!(later.lessons.is_empty(), "the bank already holds the text: {:?}", later.lessons);
+    /// As lições vigentes do banco com o texto `text`, pela comparação da
+    /// gravação.
+    fn kept_with<'a>(bank: &'a SpecLog, text: &str) -> Vec<&'a SpecEvent> {
+        let wanted = model::comparable(text);
+        model::kept(bank).into_iter().filter(|l| l.str_field("text").is_some_and(|t| model::comparable(t) == wanted)).collect()
+    }
+
+    /// Os números das lições vigentes que valem para o arquivo `file`.
+    fn holding_for(bank: &SpecLog, file: &str) -> Vec<u64> {
+        let scope = Scope { files: vec![file.to_string()], ..Default::default() };
+        model::in_scope(bank, &scope).iter().map(|l| l.id).collect()
+    }
+
+    /// Grava no banco uma lição do assistente que vale só em `apps/a`.
+    fn kept_in_a(root: &Path, text: &str, key: &str) -> u64 {
+        let draft = serde_json::json!({"class": "project_rule", "author": "assistant", "text": text, "keys": [key],
+                                       "label": key, "applies_to": {"subproject": "apps/a"}, "found_in": {"spec": "s"}});
+        lessons::write(&lesson_bank(root).unwrap(), draft.as_object().cloned().unwrap_or_default(), None).unwrap().id
+    }
+
+    /// A regra que o banco já guarda, mas só para outro lugar, não se perde
+    /// onde a instrução valia. A instalação dá à lição do banco uma versão
+    /// nova, com o mesmo texto, a mesma classe, o mesmo autor e as mesmas
+    /// chaves, que vale lá também, e só então a instrução sai do arquivo; o
+    /// banco segue com uma lição só para cada texto. A instrução da raiz do
+    /// projeto faz a lição valer no projeto todo. E a que o banco já guarda
+    /// para o mesmo lugar não mexe no banco.
+    #[test]
+    fn a_guard_whose_text_the_lessons_hold_elsewhere_widens_that_lesson_to_its_place() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let handler = kept_in_a(root, "Não chame o banco de dentro do controlador.", "controlador");
+        let suite = kept_in_a(root, "Rode a suíte em primeiro plano.", "suite");
+        let local = kept_in_a(root, "Feche a trava antes de gravar.", "trava");
+        write(root, "apps/b/CLAUDE.md", "# B\n<!-- mustard:guards -->\n- NAO chame o banco  de dentro do controlador.\n<!-- /mustard:guards -->\n");
+        write(root, "CLAUDE.md", "# Root\n<!-- mustard:guards -->\n- rode a suite em primeiro plano.\n<!-- /mustard:guards -->\n");
+        write(root, "apps/a/CLAUDE.md", "# A\n<!-- mustard:guards -->\n- feche a trava antes de gravar.\n<!-- /mustard:guards -->\n");
+
+        let report = super::super::upsert_project(root, None, super::super::InstallMode::Private).unwrap();
+        let listed = report.cleanup.expect("the plan was shown");
+        let replaced: Vec<(&str, Option<u64>)> = listed.lessons.iter().map(|l| (l.source.as_str(), l.replaces)).collect();
+        assert_eq!(replaced, [("CLAUDE.md", Some(suite)), ("apps/b/CLAUDE.md", Some(handler))], "{:?}", listed.lessons);
+        let done = report.cleaned.expect("the cleanup ran");
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(done.lessons.len(), 2, "{done:?}");
+        assert_eq!(done.deleted, ["CLAUDE.md", "apps/a/CLAUDE.md", "apps/b/CLAUDE.md"]);
+
+        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
+        let widened = kept_with(&bank, "nao chame o banco de dentro do controlador.");
+        assert_eq!(widened.len(), 1, "one lesson for the text: {widened:?}");
+        let widened = widened[0];
+        assert_eq!(widened.int("replaces"), Some(handler));
+        assert_eq!(widened.str_field("text"), Some("Não chame o banco de dentro do controlador."));
+        assert_eq!((widened.event_type.as_str(), widened.str_field("author")), (PROJECT_RULE, Some("assistant")));
+        assert_eq!(widened.fields.get("keys"), Some(&serde_json::json!(["controlador"])));
+        assert_eq!(widened.fields.get("found_in"), Some(&serde_json::json!({"spec": "s"})));
+        for file in ["apps/a/src/x.rs", "apps/b/src/x.rs"] {
+            assert!(holding_for(&bank, file).contains(&widened.id), "{file} keeps the rule");
+        }
+        assert!(!holding_for(&bank, "apps/c/src/x.rs").contains(&widened.id), "the rule holds only where it held");
+
+        let everywhere = kept_with(&bank, "Rode a suíte em primeiro plano.");
+        assert_eq!(everywhere.len(), 1, "{everywhere:?}");
+        assert_eq!(everywhere[0].int("replaces"), Some(suite));
+        assert!(holding_for(&bank, "apps/c/src/x.rs").contains(&everywhere[0].id), "the root rule holds everywhere");
+
+        let same_place = kept_with(&bank, "Feche a trava antes de gravar.");
+        assert_eq!(same_place.iter().map(|l| l.id).collect::<Vec<_>>(), [local], "the bank already held it there");
+        assert_eq!(bank.events.len(), 5, "three lessons and two new versions");
+        assert!(plan(root).is_empty(), "a second install finds nothing");
+    }
+
+    /// Duas limpezas ao mesmo tempo, cada uma dando à mesma lição do banco um
+    /// lugar novo, não perdem regra nem repetem lição: com a trava presa, a
+    /// gravação confere que a lição substituída ainda é a que a leitura mostra
+    /// e que o texto não repete outra, então uma entra e a outra é recusada
+    /// sem apagar o arquivo dela. A instalação seguinte completa o que faltou.
+    #[test]
+    fn two_installs_widening_one_of_the_lessons_at_once_lose_no_rule() {
+        let body = "# X\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n";
+        for _ in 0..10 {
+            let dir = tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let first = kept_in_a(&root, "Não chame o banco de dentro do controlador.", "controlador");
+            write(&root, "apps/b/CLAUDE.md", body);
+            let for_b = plan(&root);
+            std_fs::remove_file(root.join("apps/b/CLAUDE.md")).unwrap();
+            write(&root, "apps/c/CLAUDE.md", body);
+            let for_c = plan(&root);
+            write(&root, "apps/b/CLAUDE.md", body);
+            assert_eq!(for_b.lessons[0].replaces, Some(first));
+            assert_eq!(for_c.lessons[0].replaces, Some(first));
+
+            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let runs: Vec<_> = [for_b, for_c]
+                .into_iter()
+                .map(|listed| {
+                    let root = root.clone();
+                    let start = std::sync::Arc::clone(&start);
+                    std::thread::spawn(move || {
+                        start.wait();
+                        apply(&root, &listed).unwrap()
+                    })
+                })
+                .collect();
+            let done: Vec<CleanupDone> = runs.into_iter().map(|run| run.join().unwrap()).collect();
+            let widened: Vec<usize> = (0..2).filter(|i| done[*i].failed.is_empty()).collect();
+            assert_eq!(widened.len(), 1, "one widens, the other is refused: {done:?}");
+            let loser = ["apps/b/CLAUDE.md", "apps/c/CLAUDE.md"][1 - widened[0]];
+            assert!(root.join(loser).exists(), "the refused one keeps its file: {done:?}");
+            let bank = lessons::read(&lesson_bank(&root).unwrap()).unwrap().unwrap();
+            assert_eq!(kept_with(&bank, "nao chame o banco de dentro do controlador.").len(), 1, "{:?}", bank.events);
+
+            let again = apply(&root, &plan(&root)).unwrap();
+            assert!(again.failed.is_empty(), "{again:?}");
+            let bank = lessons::read(&lesson_bank(&root).unwrap()).unwrap().unwrap();
+            let kept = kept_with(&bank, "nao chame o banco de dentro do controlador.");
+            assert_eq!(kept.len(), 1, "{:?}", bank.events);
+            for file in ["apps/a/src/x.rs", "apps/b/src/x.rs", "apps/c/src/x.rs"] {
+                assert!(holding_for(&bank, file).contains(&kept[0].id), "{file} keeps the rule");
+            }
+            assert!(!root.join("apps/b/CLAUDE.md").exists() && !root.join("apps/c/CLAUDE.md").exists());
+        }
+    }
+
+    /// A instalação que amplia uma lição e o assistente que grava, ao mesmo
+    /// tempo, outra versão dela com outro texto não deixam duas versões da
+    /// mesma lição: a gravação confere, com a trava presa, que a lição
+    /// substituída ainda é a que a leitura mostra, então só uma das duas
+    /// entra. Se a da instalação é recusada, o arquivo fica, e a instalação
+    /// seguinte grava a regra onde ela valia.
+    #[test]
+    fn an_install_and_a_new_version_of_one_of_the_lessons_at_once_leave_one_version() {
+        let body = "# X\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n";
+        for _ in 0..10 {
+            let dir = tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let first = kept_in_a(&root, "Não chame o banco de dentro do controlador.", "controlador");
+            write(&root, "apps/b/CLAUDE.md", body);
+            let listed = plan(&root);
+            assert_eq!(listed.lessons[0].replaces, Some(first));
+            let rewrite = serde_json::json!({"class": "project_rule", "author": "assistant", "text": "Nunca chame o banco pelo controlador.",
+                                             "keys": ["controlador"], "applies_to": {"subproject": "apps/a"}, "found_in": {"spec": "s"},
+                                             "replaces": first});
+
+            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let install = {
+                let (root, start) = (root.clone(), std::sync::Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    apply(&root, &listed).unwrap()
+                })
+            };
+            let assistant = {
+                let (bank, start) = (lesson_bank(&root).unwrap(), std::sync::Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    lessons::write(&bank, rewrite.as_object().cloned().unwrap_or_default(), None)
+                })
+            };
+            let installed = install.join().unwrap();
+            let rewritten = assistant.join().unwrap();
+            let bank = lessons::read(&lesson_bank(&root).unwrap()).unwrap().unwrap();
+            let versions: Vec<u64> = bank.events.iter().filter(|e| e.replaced().contains(&first)).map(|e| e.id).collect();
+            assert_eq!(versions.len(), 1, "one version of the lesson: {installed:?} {rewritten:?} {:?}", bank.events);
+            assert_ne!(installed.failed.is_empty(), rewritten.is_ok(), "only one of the two writes: {installed:?} {rewritten:?}");
+            if !installed.failed.is_empty() {
+                assert!(root.join("apps/b/CLAUDE.md").exists(), "the refused install keeps the file: {installed:?}");
+            }
+
+            let again = apply(&root, &plan(&root)).unwrap();
+            assert!(again.failed.is_empty(), "{again:?}");
+            let bank = lessons::read(&lesson_bank(&root).unwrap()).unwrap().unwrap();
+            let rule = kept_with(&bank, "nao chame o banco de dentro do controlador.");
+            assert_eq!(rule.len(), 1, "{:?}", bank.events);
+            assert!(holding_for(&bank, "apps/b/src/x.rs").contains(&rule[0].id), "apps/b keeps the rule");
+            assert!(!root.join("apps/b/CLAUDE.md").exists());
+        }
     }
 
     /// A instalação num projeto com a mesma instrução em dois arquivos, com
