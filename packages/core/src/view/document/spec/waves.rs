@@ -54,6 +54,9 @@ impl Page<'_> {
                     if let Some(parts) = prompt.map(receives).filter(|p| !p.is_empty()) {
                         item.fields.push(self.field("page.field.wave_receives", parts));
                     }
+                    if let Some(points) = self.wave_points(n) {
+                        item.fields.push(self.field("page.field.wave_points", points.to_string()));
+                    }
                 }
                 if event.event_type == "send" {
                     // O texto enviado vem logo abaixo, recolhido.
@@ -126,6 +129,18 @@ impl Page<'_> {
                 .filter(|c| c.ints("waves").contains(&n))
                 .map(|c| format!("{} ({})", code_span(c.str_field("sha").unwrap_or_default()), self.code(c.id))),
         )
+    }
+
+    /// A soma das notas das tarefas da onda `n`; `None` quando nenhuma tarefa
+    /// dela tem nota, para a página não mostrar um zero que não foi dado.
+    fn wave_points(&self, n: u64) -> Option<u64> {
+        let points: Vec<u64> = self
+            .of_type("task")
+            .into_iter()
+            .filter(|task| task.wave() == Some(n))
+            .filter_map(|task| task.int("points"))
+            .collect();
+        (!points.is_empty()).then(|| points.iter().sum())
     }
 
     /// O estado da onda `n`, como chegou de quem lê a rodada.
@@ -342,5 +357,34 @@ mod tests {
         assert_eq!(owner, &None, "the assembled request belongs to no single item");
         assert_eq!(summary, "O pedido da onda 2 · 9 linhas, como o agente as recebe");
         assert_eq!(body, &[Node::Markdown(prompts[&2].clone())]);
+    }
+
+    /// A página mostra a nota de cada tarefa e, na onda, a soma das notas das
+    /// tarefas vigentes dela: a versão nova da tarefa troca a nota velha na
+    /// conta. A onda sem tarefa com nota não mostra soma nenhuma.
+    #[test]
+    fn each_task_shows_its_points_and_each_wave_the_sum() {
+        let task = |id: u64, wave: u64, extra: &str| {
+            line(id, "task", &format!(",\"wave\":{wave},\"text\":\"t\",\"origin\":1{extra}"))
+        };
+        let content = [
+            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(2, "wave", ",\"n\":1,\"text\":\"Um.\",\"criteria\":[1],\"done_when\":\"d\",\"origin\":1"),
+            line(3, "wave", ",\"n\":2,\"text\":\"Dois.\",\"criteria\":[1],\"done_when\":\"d\",\"origin\":1"),
+            task(4, 1, ",\"points\":8"),
+            task(5, 1, ",\"points\":3"),
+            task(6, 1, ",\"points\":5,\"replaces\":5"),
+            task(7, 2, ""),
+        ]
+        .concat();
+        let doc = page_with(&content, &WaveStates::new());
+        let waves = section(&doc, "waves");
+        let item = |code: &str| items(waves).into_iter().find(|i| i.code == code).unwrap();
+
+        assert_eq!(field(item("MSTD-TASK-0001"), "Nota"), Some("8"));
+        assert_eq!(field(item("MSTD-TASK-0002"), "Nota"), Some("5"), "a versão nova, com o código da velha");
+        assert_eq!(field(item("MSTD-TASK-0003"), "Nota"), None, "a tarefa sem nota não inventa uma");
+        assert_eq!(field(item("MSTD-WAVE-0001"), "Soma das notas"), Some("13"), "8 + 5, sem a nota substituída");
+        assert_eq!(field(item("MSTD-WAVE-0002"), "Soma das notas"), None, "{:?}", item("MSTD-WAVE-0002"));
     }
 }

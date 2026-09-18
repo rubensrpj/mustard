@@ -169,6 +169,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("plan.no_suggestion", Locale::PtBr) => "nada — o mapa não achou arquivo para esta tarefa",
         ("plan.no_suggestion", Locale::EnUs) => "nothing — the map found no file for this task",
+        // A nota de trabalho de cada tarefa: a escala e o exemplo de cada nota
+        // moram só aqui, e a recusa da tarefa sem nota os mostra.
+        ("plan.points_scale", Locale::PtBr) => {
+            "A nota vai em `\"points\"`, na escala do Scrum, comparando a tarefa com o exemplo de \
+             cada nota. 1: trocar um texto, uma lista ou um número, como ligar o link clicável na \
+             configuração. 2: mudar uma regra num lugar só, com teste, como aceitar a unidade de \
+             tamanho de arquivo na conferência de escrita. 3: mudar uma regra que passa por vários \
+             arquivos, como o scan apontar as lições parecidas. 5: mexer no caminho que grava ou junta \
+             o trabalho, como o pedido da onda listar só os códigos. 8: mudar uma fase inteira, como a \
+             rodada criar a cópia de cada onda e juntar tudo no commit. 13: tarefa grande e incerta, \
+             que vale quebrar antes de gravar."
+        }
+        ("plan.points_scale", Locale::EnUs) => {
+            "The points go in `\"points\"`, on the Scrum scale, comparing the task with the example of \
+             each value. 1: change a text, a list or a number, like turning on the clickable link in \
+             the settings. 2: change a rule in one place only, with a test, like accepting the file \
+             size unit in the writing check. 3: change a rule that runs through several files, like \
+             the scan pointing out similar lessons. 5: touch the path that writes or merges the work, \
+             like the wave request listing only the codes. 8: change a whole phase, like the round \
+             creating the copy of each wave and merging everything into the commit. 13: a large and \
+             uncertain task, worth breaking up before recording."
+        }
+        ("plan.task_without_points", Locale::PtBr) => {
+            "A tarefa sem nota segura a aprovação: {tasks}. Grave uma versão nova de cada uma, com a \
+             nota dela. {scale}"
+        }
+        ("plan.task_without_points", Locale::EnUs) => {
+            "A task without points holds the approval: {tasks}. Record a new version of each one, \
+             with its points. {scale}"
+        }
+        ("plan.wave_points_over_cap", Locale::PtBr) => {
+            "A onda {wave} soma {points} pontos, acima do teto de {cap}: é trabalho demais para uma \
+             onda só. O aviso não segura a aprovação, e quem aprova decide se a onda segue assim."
+        }
+        ("plan.wave_points_over_cap", Locale::EnUs) => {
+            "Wave {wave} adds up to {points} points, over the cap of {cap}: too much work for a single \
+             wave. The warning does not hold the approval, and whoever approves decides whether the \
+             wave goes on as it is."
+        }
         // O descarte de uma spec (`commands/flow/discard.rs`).
         ("discard.preview", Locale::PtBr) => {
             "Descartar a spec {spec} fecha o pull request dela, apaga a branch {branch} \
@@ -803,8 +842,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            110,
-            0x6c4a_ea06_d645_7434,
+            113,
+            0x2f9f_b637_e840_cb9a,
         );
     }
 
@@ -893,6 +932,9 @@ mod tests {
             ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
             ("plan.skill_to_be_born", &["{task}"][..]),
             ("plan.no_suggestion", &[][..]),
+            ("plan.points_scale", &[][..]),
+            ("plan.task_without_points", &["{tasks}", "{scale}"][..]),
+            ("plan.wave_points_over_cap", &["{wave}", "{points}", "{cap}"][..]),
             ("plan.finding.label", &[][..]),
             ("discard.preview", &["{spec}", "{branch}", "{remote}", "{what}", "{token}"][..]),
             ("discard.archive", &[][..]),

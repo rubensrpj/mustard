@@ -399,6 +399,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.kind.one_of", Locale::EnUs) => "one of these words: {values}",
         ("spec_events.kind.many_of", Locale::PtBr) => "uma lista só com estas palavras: {values}",
         ("spec_events.kind.many_of", Locale::EnUs) => "a list with only these words: {values}",
+        ("spec_events.kind.one_of_numbers", Locale::PtBr) => "um destes números: {values}",
+        ("spec_events.kind.one_of_numbers", Locale::EnUs) => "one of these numbers: {values}",
         ("spec_events.kind.text_or_object", Locale::PtBr) => "um texto ou um objeto JSON",
         ("spec_events.kind.text_or_object", Locale::EnUs) => "a text or a JSON object",
         ("spec_events.kind.time", Locale::PtBr) => "uma data e hora como 2026-09-11T21:03",
@@ -544,8 +546,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            74,
-            0x0474_34ad_961c_9e03,
+            75,
+            0x8d16_b266_0821_7123,
         );
     }
 
@@ -614,6 +616,7 @@ mod tests {
             ("spec_events.kind.list", &[][..]),
             ("spec_events.kind.one_of", &["{values}"][..]),
             ("spec_events.kind.many_of", &["{values}"][..]),
+            ("spec_events.kind.one_of_numbers", &["{values}"][..]),
             ("spec_events.kind.text_or_object", &[][..]),
             ("spec_events.kind.time", &[][..]),
             ("spec_events.kind.ref", &[][..]),

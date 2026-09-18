@@ -16,15 +16,17 @@
 //! acima do teto de linhas; skill que a conferência recusa; arquivo citado
 //! que não existe e não está marcado como novo; tarefa que mexe em código
 //! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere;
-//! tarefa cujo texto não casa com onda nenhuma do plano; e item combinado sem
-//! dono — nenhuma tarefa de uma onda do plano o cobre, ele não diz as ondas
-//! dele nem vale no projeto todo.
+//! tarefa sem nota de trabalho, que volta com a escala e o exemplo de cada
+//! nota; tarefa cujo texto não casa com onda nenhuma do plano; e item
+//! combinado sem dono — nenhuma tarefa de uma onda do plano o cobre, ele não
+//! diz as ondas dele nem vale no projeto todo.
 //!
 //! **O que só avisa**, e a decisão fica com quem aprova: arquivo citado fora
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
 //! mapa não acha; ondas que saem na mesma rodada e dividem arquivo; onda com
 //! partes independentes, que deve sair dividida em ondas paralelas; spec com
-//! partes independentes, pela mesma conta, que pode ser dividida; item
+//! partes independentes, pela mesma conta, que pode ser dividida; onda cuja
+//! soma das notas passa do teto; item
 //! combinado de uma onda que nenhuma tarefa cobre — menos o marcado como "não
 //! vira código", que traz o motivo na linha dele, e o do projeto, que vale
 //! sempre; contrato que nenhum critério cita; tarefa que podia nomear uma
@@ -48,7 +50,7 @@
 //! para o usuário copiar a página para a máquina dele: a aprovação não fica
 //! presa a uma dependência de fora.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
@@ -92,6 +94,11 @@ enum PlanFinding {
     /// Uma spec com partes independentes, que pode ser dividida, uma spec
     /// por parte.
     SpecShouldSplit { parts: String },
+    /// As tarefas sem nota de trabalho, pelos códigos, numa recusa só: a
+    /// escala e os exemplos vêm uma vez, e não uma por tarefa.
+    TasksWithoutPoints { tasks: String },
+    /// Uma onda cuja soma das notas passa do teto.
+    WavePointsOverCap { wave: u64, points: u64 },
     /// Um ciclo de dependência entre ondas.
     WaveLoop { waves: String },
     /// Uma onda que depende de outra que o plano não tem.
@@ -134,11 +141,13 @@ impl PlanFinding {
             | Self::TaskWithoutWave { .. }
             | Self::ItemWithoutOwner { .. }
             | Self::TaskWithoutFile { .. }
+            | Self::TasksWithoutPoints { .. }
             | Self::TaskMatchesNoWave { .. } => true,
             Self::Cited { finding, .. } => finding.is_refusal(),
             Self::SharedFile { .. }
             | Self::WaveShouldSplit { .. }
             | Self::SpecShouldSplit { .. }
+            | Self::WavePointsOverCap { .. }
             | Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
@@ -156,6 +165,8 @@ impl PlanFinding {
             Self::SharedFile { .. } => "waves-share-a-file".into(),
             Self::WaveShouldSplit { .. } => "wave-should-split".into(),
             Self::SpecShouldSplit { .. } => "spec-should-split".into(),
+            Self::TasksWithoutPoints { .. } => "task-without-points".into(),
+            Self::WavePointsOverCap { .. } => "wave-points-over-cap".into(),
             Self::WaveLoop { .. } => "waves-loop".into(),
             Self::DependsOnMissing { .. } => "depends-on-missing-wave".into(),
             Self::TaskWithoutWave { .. } => "task-without-wave".into(),
@@ -197,6 +208,14 @@ impl PlanFinding {
                 &[("{wave}", wave.to_string()), ("{parts}", parts.clone())],
             ),
             Self::SpecShouldSplit { parts } => fill("plan.spec_should_split", &[("{parts}", parts.clone())]),
+            Self::TasksWithoutPoints { tasks } => fill(
+                "plan.task_without_points",
+                &[("{tasks}", tasks.clone()), ("{scale}", translate("plan.points_scale", lang).to_string())],
+            ),
+            Self::WavePointsOverCap { wave, points } => fill(
+                "plan.wave_points_over_cap",
+                &[("{wave}", wave.to_string()), ("{points}", points.to_string()), ("{cap}", WAVE_POINTS_CAP.to_string())],
+            ),
             Self::WaveLoop { waves } => fill("plan.wave_loop", &[("{waves}", waves.clone())]),
             Self::DependsOnMissing { wave, on } => {
                 fill("plan.depends_on_missing", &[("{wave}", wave.to_string()), ("{on}", on.to_string())])
@@ -466,6 +485,30 @@ fn check(
     if spec_parts.len() > 1 {
         out.push(PlanFinding::SpecShouldSplit { parts: listed(&spec_parts) });
     }
+    // A nota de cada tarefa, na mesma leitura do tamanho da onda: a tarefa
+    // sem nota numa onda que ainda não saiu segura a pergunta, como a tarefa
+    // sem arquivo, e a onda cuja soma passa do teto só avisa — o aviso nunca
+    // recusa nem divide a onda. A onda já entregue fica de fora das duas.
+    let mut unrated: Vec<String> = Vec::new();
+    let mut sums: BTreeMap<u64, u64> = BTreeMap::new();
+    for task in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task") {
+        let Some(wave) = task.wave() else { continue };
+        if delivered.contains(&wave) {
+            continue;
+        }
+        match task.int("points") {
+            Some(points) => *sums.entry(wave).or_default() += points,
+            None => unrated.push(code_of(task)),
+        }
+    }
+    if !unrated.is_empty() {
+        out.push(PlanFinding::TasksWithoutPoints { tasks: unrated.join(", ") });
+    }
+    for (wave, points) in sums {
+        if points > WAVE_POINTS_CAP {
+            out.push(PlanFinding::WavePointsOverCap { wave, points });
+        }
+    }
 
     // Cada pedido cabe no teto de linhas, e cada skill nomeada passa.
     for prompt in built {
@@ -677,6 +720,10 @@ fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
 /// Quantos arquivos o mapa sugere junto da recusa da tarefa sem arquivo.
 const MAP_SUGGESTIONS: usize = 3;
 
+/// O teto da soma das notas de uma onda: acima dele, o plano avisa, sem
+/// segurar a aprovação. Fica no código, sem chave de configuração.
+const WAVE_POINTS_CAP: u64 = 13;
+
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
 /// nenhum — a de prosa, a de decisão, a de medida e a que só escreve na spec.
 /// Essa tarefa pode vir sem o campo dos arquivos; qualquer outra é recusada.
@@ -819,7 +866,7 @@ mod tests {
     fn sound_plan(root: &Path, spec: &str, said: u64) {
         let crit = criterion(root, spec, said);
         write(root, Some(spec), "wave", json!({"n": 1, "text": "Escrever a soma.", "criteria": [crit], "done_when": "A suíte passa.", "origin": said}));
-        write(root, Some(spec), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some(spec), "task", json!({"points": 1, "wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
     }
 
     fn plan(root: &Path, spec: &str) -> Value {
@@ -892,9 +939,9 @@ mod tests {
         write(root, Some("x"), "rule", json!({"text": "No máximo 3 tentativas de compilação.",
             "example": "a quarta para", "keys": ["tentativas"], "applies_to": {"files": ["**"]}, "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Escrever a soma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Escrever a subtração.", "criteria": [crit], "done_when": "passa", "depends_on": [1], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Escrever a subtração.", "files": [{"path": "src/b.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Escrever a subtração.", "files": [{"path": "src/b.rs"}], "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
@@ -969,7 +1016,7 @@ mod tests {
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "depends_on": [2], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Outra.", "criteria": [crit], "done_when": "passa", "depends_on": [1, 9], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 7, "text": "Perdida.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 7, "text": "Perdida.", "files": [{"path": "src/a.rs"}], "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
@@ -994,7 +1041,7 @@ mod tests {
             let skill = root.join(".claude").join("skills").join(format!("s{i}"));
             std::fs::create_dir_all(&skill).unwrap();
             std::fs::write(skill.join("SKILL.md"), format!("# s{i}\n")).unwrap();
-            write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
+            write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
                 "skill": format!("s{i}"), "origin": said}));
         }
 
@@ -1014,9 +1061,9 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Some com o `Somador`.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Some com o `Somador`.",
             "files": [{"path": "src/nao-existe.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Escreve o resto.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Escreve o resto.",
             "files": [{"path": "src/novo.rs", "new": true}], "origin": said}));
 
         let report = plan(root, "x");
@@ -1039,10 +1086,10 @@ mod tests {
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no código.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}, {"path": "src/fora.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}, {"path": "src/fora.rs"}], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Mexer na spec.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer também.", "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer também.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
@@ -1065,16 +1112,16 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no código.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código de um.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de um.",
             "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código de dois.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de dois.",
             "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código de três.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de três.",
             "files": [{"path": "src/c.rs", "new": true}], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Mexer na página.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer na página de um.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer na página de um.",
             "files": [{"path": "src/d.rs", "new": true}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer na página de dois.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer na página de dois.",
             "files": [{"path": "src/d.rs", "new": true}], "origin": said}));
 
         let report = plan(root, "x");
@@ -1101,9 +1148,9 @@ mod tests {
         for n in [1, 2] {
             write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
                 "done_when": "passa", "origin": said}));
-            write(root, Some("x"), "task", json!({"wave": n, "text": "Mexer no código de um.",
+            write(root, Some("x"), "task", json!({"points": 1, "wave": n, "text": "Mexer no código de um.",
                 "files": [{"path": format!("src/a{n}.rs"), "new": true}], "origin": said}));
-            write(root, Some("x"), "task", json!({"wave": n, "text": "Mexer no código de dois.",
+            write(root, Some("x"), "task", json!({"points": 1, "wave": n, "text": "Mexer no código de dois.",
                 "files": [{"path": format!("src/b{n}.rs"), "new": true}], "origin": said}));
         }
         let record = write(root, Some("x"), "delivered",
@@ -1135,11 +1182,11 @@ mod tests {
             write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
                 "done_when": "passa", "depends_on": depends_on, "origin": said}));
         }
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código de um.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de um.",
             "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer no código de dois.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer no código de dois.",
             "files": [{"path": "src/b.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 3, "text": "Mexer no código de três.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 3, "text": "Mexer no código de três.",
             "files": [{"path": "src/a.rs"}, {"path": "src/c.rs", "new": true}], "origin": said}));
 
         let report = plan(root, "x");
@@ -1152,7 +1199,7 @@ mod tests {
         assert_eq!(split, vec![expected], "as partes se juntam pelo arquivo, não pela onda: {report}");
 
         // A tarefa que toca os dois arquivos junta as duas partes numa só.
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer no código de um e de dois.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer no código de um e de dois.",
             "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}], "origin": said}));
         let joined = plan(root, "x");
         assert_eq!(joined["ok"], json!(true), "{joined}");
@@ -1172,11 +1219,11 @@ mod tests {
             write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
                 "done_when": "passa", "depends_on": depends_on, "origin": said}));
         }
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código de um e de dois.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de um e de dois.",
             "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer no código de um.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer no código de um.",
             "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 3, "text": "Mexer no código de dois.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 3, "text": "Mexer no código de dois.",
             "files": [{"path": "src/b.rs"}], "origin": said}));
         let before = plan(root, "x");
         assert!(hints_of(&before, "warnings", "spec-should-split").is_empty(), "a onda 1 liga as outras: {before}");
@@ -1208,9 +1255,9 @@ mod tests {
         )
         .unwrap();
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
             "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
             "files": [{"path": "src/b.rs"}], "origin": said}));
 
         let report = plan(root, "x");
@@ -1255,12 +1302,12 @@ mod tests {
             "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 3, "text": "O instalador: semear o projeto e as permissões.",
             "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "O gancho que bloqueia a gravação avisa o motivo.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "O gancho que bloqueia a gravação avisa o motivo.",
             "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "A publicação da página da spec sai no fim do passo.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "A publicação da página da spec sai no fim do passo.",
             "files": [{"path": "src/b.rs"}], "origin": said}));
         let torn = "O gancho avisa que a publicação da página da spec saiu.";
-        write(root, Some("x"), "task", json!({"wave": 1, "text": torn, "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": torn, "files": [{"path": "src/a.rs"}], "origin": said}));
 
         // A terceira tarefa casa com a onda dela, e a onda que casa mais forte
         // com ela é outra.
@@ -1289,10 +1336,10 @@ mod tests {
             "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "A página da spec e a publicação.",
             "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "O gancho avisa o motivo.",
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "O gancho avisa o motivo.",
             "files": [{"path": "src/a.rs"}], "origin": said}));
         let lost = "Somar dois números inteiros.";
-        write(root, Some("x"), "task", json!({"wave": 2, "text": lost, "files": [{"path": "src/b.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": lost, "files": [{"path": "src/b.rs"}], "origin": said}));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(wave_prompt::closest_wave(&log, lost), None, "o texto não casa com onda nenhuma");
 
@@ -1327,7 +1374,7 @@ mod tests {
         for n in [1, 2] {
             write(root, Some("x"), "wave", json!({"n": n, "text": "Os comandos de execução novos.",
                 "criteria": [crit], "done_when": "passa", "origin": said}));
-            write(root, Some("x"), "task", json!({"wave": n, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
+            write(root, Some("x"), "task", json!({"points": 1, "wave": n, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
                 "files": [{"path": "src/a.rs"}], "origin": said}));
         }
         let record = write(root, Some("x"), "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
@@ -1355,7 +1402,7 @@ mod tests {
         // A mesma tarefa quebrada nas duas ondas: cita um arquivo que não
         // existe e não está marcado como novo.
         for wave in [1, 2] {
-            write(root, Some("x"), "task", json!({"wave": wave, "text": "Somar dois números.",
+            write(root, Some("x"), "task", json!({"points": 1, "wave": wave, "text": "Somar dois números.",
                 "files": [{"path": "src/somar.rs"}], "origin": said}));
         }
         let record = write(root, Some("x"), "delivered",
@@ -1388,7 +1435,7 @@ mod tests {
         write(root, Some("x"), "decision", json!({"text": "A rodada formata os arquivos dela.", "keys": ["formatador"],
             "why": "o commit sai formatado", "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
 
         let report = plan(root, "x");
         let uncovered: Vec<String> = report["warnings"]
@@ -1424,7 +1471,7 @@ mod tests {
         decision("Do projeto.", json!({"applies_to": {"files": ["**"]}}));
         decision("Da onda que não existe.", json!({"waves": [9]}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
             "covers": [covered], "origin": said}));
 
         let report = plan(root, "x");
@@ -1458,8 +1505,8 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar dois números.", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Não mexe em arquivo de código: é escrita na spec.", "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Somar dois números.", "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Não mexe em arquivo de código: é escrita na spec.", "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
@@ -1484,8 +1531,8 @@ mod tests {
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no arquivo e na spec.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/fora.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/fora.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
@@ -1536,7 +1583,7 @@ mod tests {
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit],
             "done_when": "passa", "depends_on": [7], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
@@ -1629,5 +1676,152 @@ mod tests {
         let local = plan_for(&opts, None, None);
         let path = local["copy"].as_str().unwrap_or_default();
         assert!(path.ends_with("spec.html") && !path.starts_with("scp "), "{path}");
+    }
+
+    /// Uma tarefa da onda `wave`, num arquivo novo só dela, com a nota dada
+    /// ou sem nota nenhuma.
+    fn rated(root: &Path, said: u64, wave: u64, file: &str, points: Option<u64>) -> Value {
+        let mut body = json!({"wave": wave, "text": "Mexer no código.", "files": [{"path": file, "new": true}], "origin": said});
+        if let Some(points) = points {
+            body["points"] = json!(points);
+        }
+        write(root, Some("x"), "task", body)
+    }
+
+    /// As ondas `1..=count`, todas com o mesmo texto das tarefas.
+    fn waves_of_code(root: &Path, said: u64, count: u64) {
+        let crit = criterion(root, "x", said);
+        for n in 1..=count {
+            write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
+                "done_when": "passa", "origin": said}));
+        }
+    }
+
+    /// A tarefa sem nota segura a aprovação, e a recusa traz a escala com o
+    /// exemplo de cada nota, o texto único do catálogo. A spec não anda. Só
+    /// depois de a tarefa ganhar a nota, numa versão nova, o plano passa.
+    #[test]
+    fn a_task_without_points_holds_the_approval_and_shows_the_scale() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 1);
+        rated(root, said, 1, "src/um.rs", Some(3));
+        let unrated = id_of(&rated(root, said, 1, "src/dois.rs", None));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let scale = translate("plan.points_scale", Locale::PtBr);
+        let expected = translate("plan.task_without_points", Locale::PtBr)
+            .replace("{tasks}", "MSTD-TASK-0002")
+            .replace("{scale}", scale);
+        assert_eq!(hints_of(&report, "blocking", "task-without-points"), vec![expected], "{report}");
+        for example in ["1: trocar um texto", "5: mexer no caminho que grava", "13: tarefa grande e incerta"] {
+            assert!(scale.contains(example), "a escala perdeu o exemplo {example:?}");
+        }
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert_eq!(State::from_log(&log).phase, Some("survey"), "a fase não andou");
+
+        let rated_again = write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código.",
+            "files": [{"path": "src/dois.rs", "new": true}], "points": 2, "replaces": unrated, "origin": said}));
+        assert_eq!(rated_again["ok"], json!(true), "{rated_again}");
+        let after = plan(root, "x");
+        assert_eq!(after["ok"], json!(true), "com a nota, a tarefa não segura mais: {after}");
+        assert!(hints_of(&after, "blocking", "task-without-points").is_empty(), "{after}");
+    }
+
+    /// Na divisa do teto: a onda que soma 13 passa sem aviso; a que soma 14
+    /// ganha o aviso, com a soma e o teto, e a aprovação segue.
+    #[test]
+    fn a_wave_over_the_points_cap_is_warned_about_without_holding_the_approval() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 2);
+        rated(root, said, 1, "src/a1.rs", Some(8));
+        rated(root, said, 1, "src/b1.rs", Some(5));
+        rated(root, said, 2, "src/a2.rs", Some(8));
+        rated(root, said, 2, "src/b2.rs", Some(5));
+        rated(root, said, 2, "src/c2.rs", Some(1));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(true), "o aviso não segura a aprovação: {report}");
+        assert!(hints_of(&report, "blocking", "wave-points-over-cap").is_empty(), "{report}");
+        let expected = translate("plan.wave_points_over_cap", Locale::PtBr)
+            .replace("{wave}", "2")
+            .replace("{points}", "14")
+            .replace("{cap}", "13");
+        assert_eq!(
+            hints_of(&report, "warnings", "wave-points-over-cap"),
+            vec![expected],
+            "só a onda de 14 é avisada, a de 13 não: {report}"
+        );
+    }
+
+    /// A onda já entregue fica de fora: as tarefas dela sem nota não seguram
+    /// nada, e a soma dela acima do teto não avisa. Antes da entrega, a mesma
+    /// onda segura a aprovação e ganha o aviso.
+    #[test]
+    fn a_delivered_wave_without_points_holds_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 2);
+        rated(root, said, 1, "src/a1.rs", None);
+        rated(root, said, 1, "src/b1.rs", Some(13));
+        rated(root, said, 1, "src/c1.rs", Some(8));
+        rated(root, said, 2, "src/a2.rs", Some(3));
+
+        let before = plan(root, "x");
+        assert_eq!(before["ok"], json!(false), "{before}");
+        assert_eq!(hints_of(&before, "blocking", "task-without-points").len(), 1, "{before}");
+        assert!(hints_of(&before, "blocking", "task-without-points")[0].contains("MSTD-TASK-0001"), "{before}");
+        assert_eq!(hints_of(&before, "warnings", "wave-points-over-cap").len(), 1, "{before}");
+
+        let delivered = write(root, Some("x"), "delivered",
+            json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a1.rs", "src/b1.rs", "src/c1.rs"]}));
+        assert_eq!(delivered["ok"], json!(true), "{delivered}");
+        let after = plan(root, "x");
+        assert_eq!(after["ok"], json!(true), "a onda entregue não segura nada: {after}");
+        assert!(hints_of(&after, "blocking", "task-without-points").is_empty(), "{after}");
+        assert!(hints_of(&after, "warnings", "wave-points-over-cap").is_empty(), "{after}");
+    }
+
+    /// A gravação pelo comando aceita só as notas da escala: na divisa, 3, 5
+    /// e 13 entram; 4, 14, 0 e o texto "5" são recusados, a recusa diz os
+    /// números aceitos, e o arquivo de eventos fica como estava.
+    #[test]
+    fn a_task_with_points_off_the_scale_is_refused_and_nothing_is_written() {
+        use crate::commands::spec_events::write::write_at;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 1);
+        let file = store::spec_file(root, "x").unwrap();
+        let task = |points: Value| {
+            write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                event_type: "task".into(),
+                json: json!({"wave": 1, "text": "Mexer no código.", "files": [{"path": "src/a.rs"}],
+                    "points": points, "origin": said})
+                .to_string(),
+            })
+        };
+        let refusal = translate("spec_events.invalid_value", Locale::PtBr)
+            .replace("{field}", "points")
+            .replace("{type}", "task")
+            .replace("{expected}", "um destes números: 1, 2, 3, 5, 8, 13");
+        for off in [json!(4), json!(14), json!(0), json!("5")] {
+            let before = std::fs::read(&file).unwrap();
+            let report = task(off.clone());
+            assert_eq!(report["ok"], json!(false), "{off}: {report}");
+            assert_eq!(report["reason"], json!("invalid-value"), "{off}: {report}");
+            assert_eq!(report["hint"], json!(refusal), "{off}: {report}");
+            assert_eq!(std::fs::read(&file).unwrap(), before, "{off}: nada é gravado");
+        }
+        for on in [3, 5, 13] {
+            assert_eq!(task(json!(on))["ok"], json!(true), "{on} está na escala");
+        }
     }
 }

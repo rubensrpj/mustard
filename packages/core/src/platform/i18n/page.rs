@@ -461,6 +461,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.skill", _) => "Skill",
         ("page.field.covers", Locale::PtBr) => "Cobre",
         ("page.field.covers", Locale::EnUs) => "Covers",
+        ("page.field.points", Locale::PtBr) => "Nota",
+        ("page.field.points", Locale::EnUs) => "Points",
         ("page.field.must_read", Locale::PtBr) => "Precisa ler",
         ("page.field.must_read", Locale::EnUs) => "Must read",
         ("page.field.name", Locale::PtBr) => "Nome",
@@ -514,6 +516,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.wave_commit", Locale::EnUs) => "Commit",
         ("page.field.wave_receives", Locale::PtBr) => "Recebe",
         ("page.field.wave_receives", Locale::EnUs) => "Receives",
+        ("page.field.wave_points", Locale::PtBr) => "Soma das notas",
+        ("page.field.wave_points", Locale::EnUs) => "Points total",
 
         ("page.value.warn", Locale::PtBr) => "aviso",
         ("page.value.warn", Locale::EnUs) => "warning",
@@ -806,8 +810,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            319,
-            0xd29d_6444_4ab4_0f5f,
+            321,
+            0x03be_12e4_8634_f440,
         );
     }
 }
