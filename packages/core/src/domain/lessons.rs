@@ -37,7 +37,10 @@
 //! versão nova de uma lição. A lição que já não vale sai por uma linha de
 //! retirada ([`RETIRE`]), com `targets` e `reason`, do mesmo jeito que o
 //! `remove` tira um item da spec: a linha fica no arquivo, e a lição some da
-//! leitura. Só se junta ou retira a lição que a leitura ainda mostra.
+//! leitura. A retirada não aceita outro campo, nem o filtro por hora nem a
+//! substituição do `remove` da spec: só sai da leitura a lição que ela
+//! aponta, e a saída diz qual. Só se junta ou retira a lição que a leitura
+//! ainda mostra.
 //!
 //! O scan aponta o que enxugar e não muda o banco: os grupos de lições
 //! parecidas ([`similar`]), pela mesma busca por palavras-chave, entre lições
@@ -69,6 +72,12 @@ pub const CLASSES: &[&str] = &["defect", "project_rule", "environment_trap", "us
 /// as lições em `targets` e o motivo em `reason`. Quem grava pelo `write
 /// lesson` manda só esses dois campos, sem `class`.
 pub const RETIRE: &str = "remove";
+
+/// Os campos que a retirada aceita: as lições que saem, o motivo e o autor,
+/// além do tipo que o binário põe. O `filter` e o `replaces` que o `remove`
+/// da spec aceita tirariam da leitura lições que a conferência não olhou e
+/// que a saída não diz; por isso a retirada os recusa pelo nome.
+const RETIRE_FIELDS: &[&str] = &["targets", "reason", "author"];
 
 /// O padrão de arquivos da lição que vale no projeto todo.
 pub const WHOLE_PROJECT: &str = "**";
@@ -133,6 +142,16 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
     if is_retirement(event) {
         for field in [req("author", Kind::OneOf(AUTHORS)), req("targets", Kind::Ints), req("reason", Kind::Text)] {
             check_field(event, LESSON, field)?;
+        }
+        // A retirada tira da leitura só as lições de `targets`, que a
+        // conferência contra o banco olha e a saída devolve: qualquer outro
+        // campo é recusado pelo nome.
+        if let Some(extra) = event.keys().find(|key| *key != "type" && !RETIRE_FIELDS.contains(&key.as_str())) {
+            return Err(Refusal::UnknownField {
+                event_type: RETIRE.to_string(),
+                field: extra.clone(),
+                accepted: RETIRE_FIELDS.join(", "),
+            });
         }
         return Ok(());
     }
@@ -470,29 +489,13 @@ pub fn similar(bank: &SpecLog, leaving: &[u64]) -> Vec<Vec<u64>> {
     }
     let mut groups: Vec<Vec<u64>> = Vec::new();
     for lessons in buckets.into_values().filter(|lessons| lessons.len() > 1) {
-        let terms: Vec<(u64, Vec<String>)> = lessons.iter().map(|lesson| (lesson.id, key_terms(lesson))).collect();
-        let docs: Vec<(u64, String)> = terms.iter().map(|(id, own)| (*id, own.join(" "))).collect();
-        let index = SearchIndex::build(docs.iter().map(|(id, own)| (*id, own.as_str())));
-        // A nota de cada lição para o pedido feito com as palavras-chave de
-        // cada uma.
-        let scores: BTreeMap<u64, BTreeMap<u64, u64>> = terms
-            .iter()
-            .map(|(id, own)| {
-                let hits = index.top(own, lessons.len());
-                (*id, hits.into_iter().map(|hit| (hit.id, hit.score)).collect())
-            })
-            .collect();
-        let finds = |from: u64, to: u64| -> bool {
-            let Some(hits) = scores.get(&from) else { return false };
-            let own = hits.get(&from).copied().unwrap_or_default();
-            hits.get(&to).is_some_and(|score| own > 0 && score.saturating_mul(2) >= own)
-        };
-        let ids: Vec<u64> = terms.iter().map(|(id, _)| *id).collect();
+        let scores = key_scores(&lessons);
+        let ids: Vec<u64> = lessons.iter().map(|lesson| lesson.id).collect();
         let mut group_of: BTreeMap<u64, usize> = BTreeMap::new();
         let mut bucket_groups: Vec<BTreeSet<u64>> = Vec::new();
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
-                if !(finds(*a, *b) && finds(*b, *a)) {
+                if !(finds(&scores, *a, *b) && finds(&scores, *b, *a)) {
                     continue;
                 }
                 match (group_of.get(a).copied(), group_of.get(b).copied()) {
@@ -524,6 +527,29 @@ pub fn similar(bank: &SpecLog, leaving: &[u64]) -> Vec<Vec<u64>> {
     }
     groups.sort();
     groups
+}
+
+/// A nota com que as palavras-chave de cada lição de `lessons` acham cada
+/// uma delas, a própria inclusive: de quem pede para quem é achada.
+fn key_scores(lessons: &[&SpecEvent]) -> BTreeMap<u64, BTreeMap<u64, u64>> {
+    let terms: Vec<(u64, Vec<String>)> = lessons.iter().map(|lesson| (lesson.id, key_terms(lesson))).collect();
+    let docs: Vec<(u64, String)> = terms.iter().map(|(id, own)| (*id, own.join(" "))).collect();
+    let index = SearchIndex::build(docs.iter().map(|(id, own)| (*id, own.as_str())));
+    terms
+        .iter()
+        .map(|(id, own)| {
+            let hits = index.top(own, lessons.len());
+            (*id, hits.into_iter().map(|hit| (hit.id, hit.score)).collect())
+        })
+        .collect()
+}
+
+/// A lição `from` acha a `to` com pelo menos metade da nota com que acha a
+/// si mesma.
+fn finds(scores: &BTreeMap<u64, BTreeMap<u64, u64>>, from: u64, to: u64) -> bool {
+    let Some(hits) = scores.get(&from) else { return false };
+    let own = hits.get(&from).copied().unwrap_or_default();
+    hits.get(&to).is_some_and(|score| own > 0 && score.saturating_mul(2) >= own)
 }
 
 /// Onde a lição vale, numa forma que não depende da ordem dos campos: o
@@ -802,6 +828,103 @@ mod tests {
         let mut other_class = rt_rules(None);
         other_class[4] = other_class[4].replace("\"type\":\"project_rule\"", "\"type\":\"defect\"");
         assert!(similar(&parse_log(&other_class.concat()), &[]).is_empty(), "outra classe, outra lição");
+    }
+
+    /// Uma regra do subprojeto `apps/rt` só com as palavras-chave `keys`: o
+    /// que compara duas lições são elas.
+    fn keyed(id: u64, keys: &[&str]) -> String {
+        rule(id, "apps/rt", &format!("A regra {id} do subprojeto."), keys)
+    }
+
+    /// As duas notas que comparam a lição `from` com a `to`, no banco
+    /// `bank`: a nota com que as palavras-chave de `from` acham `to`, e a nota
+    /// com que acham a própria `from`.
+    fn notes(bank: &SpecLog, from: u64, to: u64) -> (u64, u64) {
+        let scores = key_scores(&kept(bank));
+        let hits = &scores[&from];
+        (hits.get(&to).copied().unwrap_or_default(), hits[&from])
+    }
+
+    /// Duas lições do mesmo lugar: as palavras-chave `shared`, que as duas
+    /// têm, mais as `first` na primeira e as `second` na segunda.
+    fn pair(shared: &[&str], first: &[&str], second: &[&str]) -> SpecLog {
+        let first: Vec<&str> = shared.iter().chain(first).copied().collect();
+        let second: Vec<&str> = shared.iter().chain(second).copied().collect();
+        parse_log(&[keyed(1, &first), keyed(2, &second)].concat())
+    }
+
+    /// Duas lições são parecidas quando cada uma acha a outra com pelo menos
+    /// metade da nota com que acha a si mesma. Na divisa: com três
+    /// palavras-chave em comum e duas só de cada uma, a nota de uma para a
+    /// outra é exatamente a metade, e as duas formam grupo; com cinco em comum
+    /// e três só de cada uma, um pouco acima da metade, também; com sete em
+    /// comum e cinco só de cada uma, um pouco abaixo, não.
+    #[test]
+    fn two_lessons_are_similar_from_half_of_the_score_up_and_not_just_below_it() {
+        let half = pair(&["trava", "pasta", "suíte"], &["cache", "barra"], &["página", "versão"]);
+        for (from, to) in [(1, 2), (2, 1)] {
+            let (score, own) = notes(&half, from, to);
+            assert_eq!(score * 2, own, "exatamente a metade, de {from} para {to}");
+        }
+        assert_eq!(similar(&half, &[]), vec![vec![1, 2]], "a metade ainda é parecida");
+
+        let above = pair(&["trava", "pasta", "suíte", "cache", "barra"], &["página", "versão", "branch"], &["commit", "gancho", "sessão"]);
+        for (from, to) in [(1, 2), (2, 1)] {
+            let (score, own) = notes(&above, from, to);
+            assert!(score * 2 > own && score * 20 < own * 11, "um pouco acima da metade, de {from} para {to}: {score} de {own}");
+        }
+        assert_eq!(similar(&above, &[]), vec![vec![1, 2]]);
+
+        let below = pair(
+            &["trava", "pasta", "suíte", "cache", "barra", "página", "versão"],
+            &["branch", "commit", "gancho", "hook", "sessão"],
+            &["banco", "lição", "prova", "teste", "limite"],
+        );
+        for (from, to) in [(1, 2), (2, 1)] {
+            let (score, own) = notes(&below, from, to);
+            assert!(score * 2 < own && score * 20 > own * 9, "um pouco abaixo da metade, de {from} para {to}: {score} de {own}");
+        }
+        assert!(similar(&below, &[]).is_empty(), "abaixo da metade não é parecida");
+    }
+
+    /// Quando só uma das duas acha a outra, elas não são parecidas: a lição
+    /// de três palavras-chave, todas dentro da outra, acha a de oito com mais
+    /// da metade da nota; a de oito acha a de três com menos da metade.
+    #[test]
+    fn a_lesson_that_finds_the_other_without_being_found_back_forms_no_group() {
+        let bank = pair(&["trava", "pasta", "suíte"], &[], &["cache", "barra", "página", "versão", "banco"]);
+        let (score, own) = notes(&bank, 1, 2);
+        assert!(score * 2 >= own, "a curta acha a longa: {score} de {own}");
+        let (score, own) = notes(&bank, 2, 1);
+        assert!(score * 2 < own, "a longa não acha a curta: {score} de {own}");
+        assert!(similar(&bank, &[]).is_empty());
+    }
+
+    /// Lições ligadas por uma corrente de pares parecidos ficam num grupo só,
+    /// mesmo quando a corrente liga dois grupos que já existiam: a 1 é
+    /// parecida com a 3, a 2 com a 4, e só depois a 3 com a 4. A 1 e a 2 não
+    /// dividem palavra-chave nenhuma.
+    #[test]
+    fn two_groups_linked_by_a_similar_pair_become_one() {
+        let bank = parse_log(
+            &[
+                keyed(1, &["gancho", "trava", "pasta"]),
+                keyed(2, &["cache", "barra"]),
+                keyed(3, &["trava", "pasta", "suíte", "commit"]),
+                keyed(4, &["suíte", "commit", "cache", "barra"]),
+            ]
+            .concat(),
+        );
+        for (a, b) in [(1, 3), (2, 4), (3, 4)] {
+            for (from, to) in [(a, b), (b, a)] {
+                let (score, own) = notes(&bank, from, to);
+                assert!(score * 2 >= own, "{from} acha {to}: {score} de {own}");
+            }
+        }
+        for (a, b) in [(1, 2), (1, 4), (2, 3)] {
+            assert_eq!(notes(&bank, a, b).0, 0, "{a} não acha {b}");
+        }
+        assert_eq!(similar(&bank, &[]), vec![vec![1, 2, 3, 4]]);
     }
 
     /// A lição que cita um arquivo que o projeto já não tem é apontada com o

@@ -56,7 +56,7 @@ pub enum SpecEventsCmd {
     /// repeats a lesson already in the bank (spaces, case and accents aside)
     /// is refused, naming that lesson. A lesson with `"replaces":[3,5]` merges
     /// those lessons into one; `{"targets":[4],"reason":"…"}`, with no
-    /// `class`, retires lesson 4.
+    /// `class` and no other field, retires lesson 4.
     #[command(display_order = 9, after_help = fields_of_each_type())]
     Write {
         /// The event type, e.g. `rule`, `decision`, `wave`, `remove` or

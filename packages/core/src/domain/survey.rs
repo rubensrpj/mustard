@@ -906,13 +906,14 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
 /// ponto: ela vale sempre, e perguntar por ela em cada spec não acrescenta
 /// nada. Ela sai antes da busca, para que centenas de regras não tomem o
 /// lugar dos defeitos, das armadilhas e das preferências entre as mais
-/// fortes.
+/// fortes. As lições são as que a leitura do banco mostra
+/// ([`lessons::kept`]): a linha que retira lições não é lição.
 fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
     let Some(bank) = sources.bank else {
         return Vec::new();
     };
     let asked: Vec<&SpecEvent> =
-        bank.visible().into_iter().filter(|lesson| lesson.event_type != lessons::PROJECT_RULE).collect();
+        lessons::kept(bank).into_iter().filter(|lesson| lesson.event_type != lessons::PROJECT_RULE).collect();
     lessons::matching_among(&asked, sources.goal)
         .into_iter()
         .filter_map(|hit| {
@@ -1297,6 +1298,30 @@ mod tests {
         assert_eq!(points[0].facts[0].source, ".claude/spec/lessons.ndjson:1");
         let shown = points[0].to_value(Some(7)).to_string();
         assert!(!shown.contains("search") && !shown.contains("merg pendenc"), "{shown}");
+    }
+
+    /// O levantamento lê as lições como a leitura do banco as mostra: a
+    /// linha que retira uma lição não vira ponto, nem quando traz um texto
+    /// que casa com o objetivo, como a que o gravador aceitava antes de
+    /// recusar campo a mais na retirada. A lição retirada também não.
+    #[test]
+    fn a_retirement_line_never_becomes_a_lesson_point() {
+        let retirement = json!({"targets": [2], "reason": "saiu", "text": "O merge com pendência aberta saiu."});
+        let bank = log_of(&[
+            lesson(1, "**Merge com pendência.** O merge não passa com pendência aberta.", &["merge", "pendência"]),
+            lesson(2, "**Pendência no merge.** A pendência aberta segura o merge.", &["merge", "pendência"]),
+            format!("{}\n", render_line(&stamp(lessons::normalize(obj(retirement), None), 3, None, "2026-09-14T09:00:00-03:00"))),
+        ]);
+        let list = build(&sources(&["fix"], Some(&bank), &[], &[]));
+        let lines: Vec<&str> = list
+            .iter()
+            .filter(|p| p.from == "lesson")
+            .flat_map(|p| p.facts.iter().map(|f| f.source.as_str()))
+            .collect();
+        let shown: Vec<String> =
+            lessons::kept(&bank).iter().map(|l| format!(".claude/spec/lessons.ndjson:{}", l.line)).collect();
+        assert_eq!(lines, shown, "{list:?}");
+        assert_eq!(lines, [".claude/spec/lessons.ndjson:1"]);
     }
 
     /// A spec anterior que casa vira ponto, com as regras e as decisões que

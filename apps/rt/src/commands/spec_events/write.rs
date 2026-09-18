@@ -1776,6 +1776,56 @@ mod tests {
         assert_eq!(kept, [4]);
     }
 
+    /// Pelo comando de gravar lição, a retirada com o filtro por hora, que
+    /// pegaria as quatro lições, ou com uma substituição, que tiraria outra
+    /// sem conferir, é recusada pelo nome do campo, e nada é gravado. Na
+    /// retirada e na junção que entram, a saída diz exatamente as lições que
+    /// saíram da leitura: as que ela mostrava antes e não mostra depois.
+    #[test]
+    fn a_retirement_with_a_filter_or_a_replacement_is_refused_by_the_write_command() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for text in [
+            "Não apague a pasta de outra sessão.",
+            "Remover a pasta alheia perde trabalho.",
+            "A suíte roda no servidor antigo.",
+            "O cargo fica fora do caminho do shell.",
+        ] {
+            assert_eq!(lesson_text(root, text)["ok"], json!(true));
+        }
+        let kept = || -> Vec<u64> {
+            let bank = lessons::read(&root.join(".claude/spec/lessons.ndjson")).unwrap().unwrap();
+            mustard_core::domain::lessons::kept(&bank).iter().map(|l| l.id).collect()
+        };
+        let lines = bank_lines(root);
+        let every_lesson = json!({"type": "defect", "from": "2000-01-01T00:00", "to": "2100-01-01T00:00"});
+        for (extra, value) in [("filter", every_lesson), ("replaces", json!(4))] {
+            let mut draft = json!({"targets": [3], "reason": "o servidor antigo saiu"});
+            draft[extra] = value;
+            let out = write_to(root, None, "lesson", &draft.to_string());
+            assert_eq!(out["reason"], json!("unknown-field"), "{out}");
+            let hint = out["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(extra) && hint.contains("targets, reason, author"), "{out}");
+        }
+        assert_eq!(bank_lines(root), lines, "a recusa não gravou nada");
+        assert_eq!(kept(), [1, 2, 3, 4]);
+
+        let gone = |before: &[u64], after: &[u64]| -> Value {
+            json!(before.iter().filter(|id| !after.contains(id)).collect::<Vec<_>>())
+        };
+        let before = kept();
+        let out = write_to(root, None, "lesson", r#"{"targets":[3],"reason":"o servidor antigo saiu"}"#);
+        assert_eq!(out["retired"], gone(&before, &kept()), "{out}");
+        assert_eq!(out["retired"], json!([3]));
+
+        let before = kept();
+        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+            "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
+        let out = write_to(root, None, "lesson", &merged.to_string());
+        assert_eq!(out["replaced"], gone(&before, &kept()), "{out}");
+        assert_eq!(kept(), [4, 6]);
+    }
+
     /// O `search` é gravado no arquivo de eventos e nunca aparece na página
     /// nem no `.md`: os dois mostram só o texto original.
     #[test]

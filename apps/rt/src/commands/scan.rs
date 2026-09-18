@@ -14,14 +14,16 @@
 //! enxugar nele, sem mudar o banco: os grupos de lições parecidas, a juntar
 //! numa lição só, e as lições que citam um caminho que o projeto já não tem,
 //! a retirar. A lista sai em `lessons` e o que fazer com ela, em `next`; quem
-//! junta e retira é o assistente, pelo `run write lesson`.
+//! junta e retira é o assistente, pelo `run write lesson`. O caminho que
+//! falta só é apontado com o mapa desta vez: quando a ferramenta do scan
+//! falha, só as lições parecidas saem.
 
 use std::path::{Path, PathBuf};
 
 use mustard_core::Scan;
 use mustard_core::domain::lessons::{self, MissingPaths};
 use mustard_core::domain::project_map::{self, ProjectMap};
-use mustard_core::domain::scan::{mark_own_git_roots, read_projects};
+use mustard_core::domain::scan::{mark_own_git_roots, read_projects, ScanReport};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
@@ -46,12 +48,20 @@ pub(crate) fn default_model_path(root: &Path) -> PathBuf {
 /// `CLAUDE.md` is ever written. The hard cap guards the map against a runaway
 /// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
-    let result = scan_at(root, out, full);
+    let result = scan_at(root, out, full, |root, model| Scan::locate().scan(root, model));
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
 }
 
-/// O núcleo testável de [`run`]: o relatório que o comando imprime.
-pub(crate) fn scan_at(root: &Path, out: Option<&Path>, full: bool) -> Value {
+/// O núcleo testável de [`run`]: o relatório que o comando imprime. `mine`
+/// é a leitura do projeto pela ferramenta do scan, que grava o mapa em
+/// `model`; o comando passa a ferramenta instalada, e o teste, uma que
+/// grava o mapa dos arquivos do disco ou que falha.
+pub(crate) fn scan_at(
+    root: &Path,
+    out: Option<&Path>,
+    full: bool,
+    mine: impl FnOnce(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
+) -> Value {
     let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
 
     // Preflight BEFORE the miner: an unpopulated submodule is indistinguishable
@@ -78,7 +88,7 @@ pub(crate) fn scan_at(root: &Path, out: Option<&Path>, full: bool) -> Value {
         });
     }
 
-    let scan_result = Scan::locate().scan(root, &model_path);
+    let scan_result = mine(root, &model_path);
 
     let mut result: Value = match &scan_result {
         Ok(report) => json!({
@@ -136,15 +146,18 @@ pub(crate) fn scan_at(root: &Path, out: Option<&Path>, full: bool) -> Value {
 /// que o projeto já não tem (`missing_paths`); em `next`, o que o assistente
 /// faz com eles. Só lê: o banco fica com os mesmos bytes. Sem banco, ou com
 /// nada a enxugar, o relatório fica como estava. `model_path` é o mapa que o
-/// scan acabou de gravar; sem ele, o caminho é procurado só no disco.
+/// scan acabou de gravar. Sem ele, nenhum caminho é dado como faltando: o
+/// disco sozinho não acha o caminho que a lição cita só pelo fim, e a lição
+/// cujo arquivo existe seria mandada embora.
 fn review_lessons(root: &Path, model_path: Option<&Path>, result: &mut Value) {
     let home = mustard_core::io::spec_events::spec_root(root);
     let Some(path) = ClaudePaths::for_project(&home).ok().map(|paths| paths.lessons_path()) else { return };
     let Ok(Some(bank)) = mustard_core::io::lessons::read(&path) else { return };
     let map: Option<ProjectMap> =
         model_path.and_then(|model| std::fs::read_to_string(model).ok()).and_then(|text| serde_json::from_str(&text).ok());
-    let found = |cited: &str, inside: Option<&str>| path_found(root, map.as_ref(), cited, inside);
-    let missing = lessons::citing_missing_paths(&bank, found);
+    let missing = map.as_ref().map_or_else(Vec::new, |map| {
+        lessons::citing_missing_paths(&bank, |cited: &str, inside: Option<&str>| path_found(root, map, cited, inside))
+    });
     let leaving: Vec<u64> = missing.iter().map(|m| m.id).collect();
     let similar = lessons::similar(&bank, &leaving);
     if similar.is_empty() && missing.is_empty() {
@@ -180,7 +193,7 @@ fn next_step(similar: &[Vec<u64>], missing: &[MissingPaths], lang: Locale) -> St
 /// O caminho que uma lição cita existe no projeto: no disco, a partir da raiz
 /// ou de uma das pastas do subprojeto da lição (`inside`) até ela, ou no mapa
 /// que o scan acabou de gravar, que aceita só o fim do caminho.
-fn path_found(root: &Path, map: Option<&ProjectMap>, cited: &str, inside: Option<&str>) -> bool {
+fn path_found(root: &Path, map: &ProjectMap, cited: &str, inside: Option<&str>) -> bool {
     if root.join(cited).exists() {
         return true;
     }
@@ -191,7 +204,7 @@ fn path_found(root: &Path, map: Option<&ProjectMap>, cited: &str, inside: Option
         }
         folder = dir.parent().filter(|up| up.starts_with(root) && *up != root).map(Path::to_path_buf);
     }
-    map.is_some_and(|map| project_map::map_knows(map, cited))
+    project_map::map_knows(map, cited)
 }
 
 /// Submodule paths declared in `.gitmodules` whose working directory holds no
@@ -233,6 +246,39 @@ mod tests {
         std::fs::write(path, body).expect("write");
     }
 
+    /// A ferramenta do scan no teste: grava em `model` o mapa com os arquivos
+    /// que o disco tem em `root`, fora a pasta `.claude`, como a ferramenta
+    /// instalada faz, e devolve o relatório de uma leitura inteira. O teste
+    /// não depende da ferramenta instalada na máquina.
+    fn mine_disk(root: &Path, model: &Path) -> mustard_core::platform::error::Result<ScanReport> {
+        fn walk(root: &Path, dir: &Path, out: &mut Vec<Value>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            let mut entries: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            entries.sort();
+            for path in entries {
+                if path.file_name().is_some_and(|name| name == ".claude") {
+                    continue;
+                }
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(json!({ "path": rel.to_string_lossy().replace('\\', "/") }));
+                }
+            }
+        }
+        let mut modules = Vec::new();
+        walk(root, root, &mut modules);
+        let files = modules.len();
+        write(model, &json!({ "modules": modules }).to_string());
+        Ok(ScanReport { full: true, files, ..ScanReport::default() })
+    }
+
+    /// A ferramenta do scan que não roda, como quando ela não está no caminho
+    /// do shell.
+    fn mine_fails(_: &Path, _: &Path) -> mustard_core::platform::error::Result<ScanReport> {
+        Err(mustard_core::platform::error::Error::check_failed("scan: No such file or directory"))
+    }
+
     /// Uma regra do projeto como o importador das instruções a deixa no
     /// banco, gravada pelo mesmo gravador do comando de gravar lição.
     fn rule(bank: &Path, subproject: &str, text: &str, keys: &[&str]) -> u64 {
@@ -264,13 +310,13 @@ mod tests {
         let second = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros (variante no enum, braço no `dispatch()`, entrada na lista trancada e um chamador).", &["rt", "subcomando", "exige", "quatro", "registros", "variante", "família"]);
         let stale = rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
 
-        let before = scan_at(root, None, false);
+        let before = scan_at(root, None, false, mine_disk);
         assert_eq!(before["lessons"]["similar"], serde_json::json!([[first, second]]), "{before}");
         assert_eq!(before["lessons"]["missing_paths"], serde_json::json!([]), "o arquivo ainda existe: {before}");
 
         std::fs::remove_file(&cited).expect("apaga o arquivo citado");
         let bytes = std::fs::read(&bank).expect("o banco");
-        let result = scan_at(root, None, false);
+        let result = scan_at(root, None, false, mine_disk);
         assert_eq!(result["lessons"]["similar"], serde_json::json!([[first, second]]), "{result}");
         assert_eq!(
             result["lessons"]["missing_paths"],
@@ -284,6 +330,40 @@ mod tests {
         assert_eq!(std::fs::read(&bank).expect("o banco"), bytes, "o scan não muda o banco");
     }
 
+    /// Quando a ferramenta do scan falha, não há mapa desta vez, e o disco
+    /// sozinho não acha o arquivo que a lição cita só pelo fim do caminho: o
+    /// scan não aponta caminho nenhum como faltando, nem a lição cujo arquivo
+    /// saiu, porque sem o mapa não dá para saber. As lições parecidas, que não
+    /// dependem do mapa, continuam apontadas. Com a ferramenta rodando, o
+    /// arquivo que existe é achado pelo mapa.
+    #[test]
+    fn a_failed_scan_points_out_no_missing_path_and_keeps_the_similar_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let cited = root.join("packages/core/src/domain/economy/estimator.rs");
+        write(&cited, "pub fn estimate() -> usize { 0 }\n");
+        write(&root.join("apps/rt/src/lib.rs"), "pub fn run() {}\n");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        let sub = "apps/rt";
+        let first = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros; esquecer qualquer um compila mas quebra algo em silêncio.", &["rt", "subcomando", "exige", "quatro", "registros", "esquecer", "qualquer"]);
+        let second = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros (variante no enum, braço no `dispatch()`, entrada na lista trancada e um chamador).", &["rt", "subcomando", "exige", "quatro", "registros", "variante", "família"]);
+        rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
+
+        let mined = scan_at(root, None, false, mine_disk);
+        assert_eq!(mined["lessons"]["missing_paths"], serde_json::json!([]), "o mapa acha o arquivo: {mined}");
+
+        let failed = scan_at(root, None, false, mine_fails);
+        assert_eq!(failed["ok"], serde_json::json!(false), "{failed}");
+        assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "o arquivo existe: {failed}");
+        assert_eq!(failed["lessons"]["similar"], serde_json::json!([[first, second]]), "{failed}");
+        let next = failed["next"].as_str().expect("o passo seguinte");
+        assert!(!next.contains("\"targets\""), "nada a retirar: {next}");
+
+        std::fs::remove_file(&cited).expect("apaga o arquivo citado");
+        let failed = scan_at(root, None, false, mine_fails);
+        assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "sem o mapa, nada falta: {failed}");
+    }
+
     /// Sem banco de lições, ou sem nada a enxugar, o relatório do scan não
     /// ganha a lista nem o passo seguinte.
     #[test]
@@ -291,11 +371,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         write(&root.join("src/main.rs"), "fn main() {}\n");
-        let result = scan_at(root, None, false);
+        let result = scan_at(root, None, false, mine_disk);
         assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
         let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
         rule(&bank, "src", "O `main.rs` só chama a biblioteca.", &["main"]);
-        let result = scan_at(root, None, false);
+        let result = scan_at(root, None, false, mine_disk);
         assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
     }
 

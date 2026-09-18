@@ -413,6 +413,47 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
+    /// A retirada leva só `targets` e `reason`. Com o filtro por hora do
+    /// `remove` da spec, que pegaria as três lições, com uma substituição que
+    /// apontaria outra ou com um texto, ela é recusada pelo nome do campo, e o
+    /// banco fica com os mesmos bytes e as três lições na leitura. A mesma
+    /// retirada sem o campo a mais entra e tira da leitura só a lição
+    /// apontada, a que a gravação devolve.
+    #[test]
+    fn a_retirement_with_a_filter_or_a_replacement_is_refused_and_hides_only_what_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lessons.ndjson");
+        let a = write_at(&path, obj(defect("Um", &["um"])), None, &at("10:00")).unwrap();
+        let b = write_at(&path, obj(defect("Dois", &["dois"])), None, &at("10:01")).unwrap();
+        let c = write_at(&path, obj(defect("Três", &["tres"])), None, &at("10:02")).unwrap();
+        let kept = |path: &Path| model::kept(&read(path).unwrap().unwrap()).iter().map(|l| l.id).collect::<Vec<_>>();
+        let before = std::fs::read(&path).unwrap();
+        let every_lesson = json!({"type": "defect", "from": "2026-09-12T10:00", "to": "2026-09-12T10:02"});
+        for (extra, value) in [
+            ("filter", every_lesson),
+            ("replaces", json!([a.id])),
+            ("replaces", json!(b.id)),
+            ("text", json!("O servidor antigo saiu.")),
+        ] {
+            let mut draft = json!({"targets": [c.id], "reason": "o servidor antigo saiu"});
+            draft[extra] = value;
+            let refused = write_at(&path, obj(draft.clone()), None, &at("10:10"));
+            let expected = Refusal::UnknownField {
+                event_type: model::RETIRE.into(),
+                field: extra.into(),
+                accepted: "targets, reason, author".into(),
+            };
+            assert_eq!(refused, Err(expected), "{draft}");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before, "a recusa não gravou nada");
+        assert_eq!(kept(&path), [a.id, b.id, c.id]);
+
+        let draft = json!({"targets": [c.id], "reason": "o servidor antigo saiu", "author": "assistant"});
+        let retired = write_at(&path, obj(draft), None, &at("10:10")).unwrap();
+        assert_eq!(retired.hidden, [c.id]);
+        assert_eq!(kept(&path), [a.id, b.id]);
+    }
+
     /// Duas rodadas que juntam as mesmas lições ao mesmo tempo, com textos
     /// diferentes, e duas que retiram a mesma lição ao mesmo tempo: a trava
     /// cobre a leitura do banco, a conferência e a gravação, então só uma de
