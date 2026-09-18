@@ -77,6 +77,17 @@ const RETIRED_DENY_RULES: &[&str] = &[
     "Bash(git branch -d master:*)",
 ];
 
+/// As variáveis do `env` que um molde antigo escrevia e o de hoje não traz
+/// mais, cada uma com o valor que o molde escrevia, letra por letra.
+///
+/// Os mesmos dois usos de [`RETIRED_DENY_RULES`]: a linha sai do arquivo de
+/// configurações que a instalação grava, e a limpeza do arquivo da equipe
+/// ainda a reconhece como do molde. O valor que a pessoa mudou é dela e fica.
+///
+/// O modo de tamanho da spec: nenhuma conferência o lia, e o molde deixou de
+/// escrevê-lo.
+const RETIRED_ENV: &[(&str, &str)] = &[("MUSTARD_SPEC_SIZE_MODE", "warn")];
+
 /// The signature value the seed used to write before it wrote the empty one.
 const RETIRED_SIGNATURE: &str = "assistant";
 
@@ -337,10 +348,16 @@ fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<S
     }
 }
 
-/// Take out of the local settings the deny rules an older seed wrote and the
-/// current one retired ([`RETIRED_DENY_RULES`]), matched by exact text. The
-/// local file is Mustard's own, so a rule it no longer ships leaves it.
+/// Tira das configurações locais as regras de bloqueio e as variáveis do
+/// `env` que um molde antigo escrevia e o de hoje aposentou
+/// ([`RETIRED_DENY_RULES`], [`RETIRED_ENV`]), pelo texto exato. O arquivo
+/// local é do Mustard, então a linha que ele não entrega mais sai dele. O
+/// `env` que fica vazio fica, vazio: tirá-lo traria o `env` inteiro do molde
+/// de volta na instalação seguinte.
 fn retire_old_rules(settings: &mut Map<String, Value>) {
+    if let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) {
+        env.retain(|name, value| !is_retired_env(name, value));
+    }
     let Some(deny) = settings
         .get_mut("permissions")
         .and_then(Value::as_object_mut)
@@ -565,7 +582,7 @@ pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>,
                 if let (Some(env), Some(seed_env)) = (out.get_mut("env").and_then(Value::as_object_mut), seed_env) {
                     let mine: Vec<String> = env
                         .iter()
-                        .filter(|(name, v)| seed_value_of_env(seed_env, name) == Some(*v))
+                        .filter(|(name, v)| seed_value_of_env(seed_env, name) == Some(*v) || is_retired_env(name, v))
                         .map(|(name, _)| name.clone())
                         .collect();
                     for name in mine {
@@ -623,6 +640,12 @@ pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>,
 fn seed_value_of_env<'a>(seed_env: &'a Map<String, Value>, name: &str) -> Option<&'a Value> {
     let name = if name == SKILL_VALIDATE_DEAD_KEY { SKILL_VALIDATE_LIVE_KEY } else { name };
     seed_env.get(name)
+}
+
+/// `true` para a variável do `env` que um molde antigo escrevia, com o valor
+/// que ele escrevia, e que o de hoje aposentou ([`RETIRED_ENV`]).
+fn is_retired_env(name: &str, value: &Value) -> bool {
+    RETIRED_ENV.iter().any(|(retired, written)| name == *retired && value.as_str() == Some(*written))
 }
 
 /// The permission lists whose seed rules leave a team's file. `deny` is not
@@ -1048,7 +1071,7 @@ mod tests {
         assert!(!removed.iter().any(|r| r.starts_with("permissions.deny")), "{removed:?}");
 
         let team = parse_json_object(
-            r#"{"env":{"MUSTARD_SPEC_SIZE_MODE":"strict","TEAM":"1","MUSTARD_BOUNDARY_MODE":"warn"},
+            r#"{"env":{"MUSTARD_SKILL_SIZE_MODE":"strict","TEAM":"1","MUSTARD_BOUNDARY_MODE":"warn"},
                 "permissions":{"allow":["Read","Bash(npm test:*)"],"deny":["Bash(git branch -D main:*)"]},
                 "attribution":{"commit":"assistant","pr":"assistant"},
                 "cleanupPeriodDays":7,
@@ -1059,7 +1082,7 @@ mod tests {
             removed,
             ["env.MUSTARD_BOUNDARY_MODE", "permissions.allow: Read", "attribution"],
         );
-        assert_eq!(left["env"], json!({"MUSTARD_SPEC_SIZE_MODE": "strict", "TEAM": "1"}), "a changed value is theirs");
+        assert_eq!(left["env"], json!({"MUSTARD_SKILL_SIZE_MODE": "strict", "TEAM": "1"}), "a changed value is theirs");
         assert_eq!(
             left["permissions"],
             json!({"allow": ["Bash(npm test:*)"], "deny": ["Bash(git branch -D main:*)"]}),
@@ -1068,6 +1091,37 @@ mod tests {
         assert_eq!(left["cleanupPeriodDays"], json!(7));
         assert!(left.get("hooks").is_some());
         assert!(left.get("attribution").is_none());
+    }
+
+    /// O modo de tamanho da spec saiu do molde: a instalação nova não o
+    /// escreve; na instalação que já existe, a linha com o valor que o molde
+    /// antigo escrevia sai das configurações locais, e a limpeza do arquivo da
+    /// equipe ainda a reconhece como do molde. O valor que a pessoa mudou é
+    /// dela e fica, nos dois arquivos.
+    #[test]
+    fn the_retired_spec_size_line_leaves_and_is_still_known_as_the_seeds() {
+        let seed = parse_json_object(SETTINGS_SEED);
+        assert!(seed["env"].get("MUSTARD_SPEC_SIZE_MODE").is_none(), "the seed still writes it");
+
+        for (value, leaves) in [("warn", true), ("strict", false)] {
+            let dir = tempdir().unwrap();
+            let claude = dir.path().join(".claude");
+            std_fs::create_dir_all(&claude).unwrap();
+            std_fs::write(
+                claude.join("settings.local.json"),
+                format!(r#"{{"env":{{"MUSTARD_SPEC_SIZE_MODE":"{value}","MY_OWN":"1"}}}}"#),
+            )
+            .unwrap();
+            seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+            let env = local_settings(dir.path())["env"].clone();
+            assert_eq!(env.get("MUSTARD_SPEC_SIZE_MODE").is_none(), leaves, "{value}: {env}");
+            assert_eq!(env["MY_OWN"], json!("1"), "{value}: {env}");
+
+            let team = parse_json_object(&format!(r#"{{"env":{{"MUSTARD_SPEC_SIZE_MODE":"{value}"}}}}"#));
+            let (left, removed) = without_seed_lines(&team);
+            assert_eq!(removed.contains(&"env.MUSTARD_SPEC_SIZE_MODE".to_string()), leaves, "{value}: {removed:?}");
+            assert_eq!(left.is_empty(), leaves, "{value}: {left:?}");
+        }
     }
 
     /// O estilo de resposta segue o idioma do texto: a instalação local grava
@@ -1146,12 +1200,12 @@ mod tests {
         std_fs::create_dir_all(&claude).unwrap();
         std_fs::write(
             claude.join("settings.local.json"),
-            r#"{"env":{"MUSTARD_SPEC_SIZE_MODE":"strict","MY_OWN":"1"}}"#,
+            r#"{"env":{"MUSTARD_SKILL_SIZE_MODE":"strict","MY_OWN":"1"}}"#,
         )
         .unwrap();
         let env = env_after_upsert(installed.path());
         assert_eq!(env.get(FORCE_HYPERLINK_KEY), Some(&json!("1")), "an installed project: {env:?}");
-        assert_eq!(env["MUSTARD_SPEC_SIZE_MODE"], json!("strict"), "the person's value stays");
+        assert_eq!(env["MUSTARD_SKILL_SIZE_MODE"], json!("strict"), "the person's value stays");
         assert_eq!(env["MY_OWN"], json!("1"));
         assert_eq!(env.len(), 3, "only the link variable arrives: {env:?}");
     }

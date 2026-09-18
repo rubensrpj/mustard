@@ -23,7 +23,8 @@
 //! **O que só avisa**, e a decisão fica com quem aprova: arquivo citado fora
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
 //! mapa não acha; ondas que saem na mesma rodada e dividem arquivo; onda com
-//! partes independentes, que deve sair dividida em ondas paralelas; item
+//! partes independentes, que deve sair dividida em ondas paralelas; spec com
+//! partes independentes, pela mesma conta, que pode ser dividida; item
 //! combinado de uma onda que nenhuma tarefa cobre — menos o marcado como "não
 //! vira código", que traz o motivo na linha dele, e o do projeto, que vale
 //! sempre; contrato que nenhum critério cita; tarefa que podia nomear uma
@@ -88,6 +89,9 @@ enum PlanFinding {
     /// Uma onda com partes independentes, que deve sair dividida em ondas
     /// paralelas, uma por parte.
     WaveShouldSplit { wave: u64, parts: String },
+    /// Uma spec com partes independentes, que pode ser dividida, uma spec
+    /// por parte.
+    SpecShouldSplit { parts: String },
     /// Um ciclo de dependência entre ondas.
     WaveLoop { waves: String },
     /// Uma onda que depende de outra que o plano não tem.
@@ -134,6 +138,7 @@ impl PlanFinding {
             Self::Cited { finding, .. } => finding.is_refusal(),
             Self::SharedFile { .. }
             | Self::WaveShouldSplit { .. }
+            | Self::SpecShouldSplit { .. }
             | Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
@@ -150,6 +155,7 @@ impl PlanFinding {
             Self::Skill { refusal, .. } => refusal.reason().to_string(),
             Self::SharedFile { .. } => "waves-share-a-file".into(),
             Self::WaveShouldSplit { .. } => "wave-should-split".into(),
+            Self::SpecShouldSplit { .. } => "spec-should-split".into(),
             Self::WaveLoop { .. } => "waves-loop".into(),
             Self::DependsOnMissing { .. } => "depends-on-missing-wave".into(),
             Self::TaskWithoutWave { .. } => "task-without-wave".into(),
@@ -190,6 +196,7 @@ impl PlanFinding {
                 "plan.wave_should_split",
                 &[("{wave}", wave.to_string()), ("{parts}", parts.clone())],
             ),
+            Self::SpecShouldSplit { parts } => fill("plan.spec_should_split", &[("{parts}", parts.clone())]),
             Self::WaveLoop { waves } => fill("plan.wave_loop", &[("{waves}", waves.clone())]),
             Self::DependsOnMissing { wave, on } => {
                 fill("plan.depends_on_missing", &[("{wave}", wave.to_string()), ("{on}", on.to_string())])
@@ -445,14 +452,19 @@ fn check(
     // paralelo. É aviso, e não recusa — nem toda divisão compensa, e a
     // decisão fica com quem aprova. A onda já entregue não é mais divisível.
     let delivered = log.delivered_waves();
+    let listed = |parts: &[Vec<String>]| parts.iter().map(|part| part.join(" + ")).collect::<Vec<_>>().join("; ");
     for (wave, parts) in &graph.parts {
         if delivered.contains(wave) {
             continue;
         }
-        out.push(PlanFinding::WaveShouldSplit {
-            wave: *wave,
-            parts: parts.iter().map(|part| part.join(" + ")).collect::<Vec<_>>().join("; "),
-        });
+        out.push(PlanFinding::WaveShouldSplit { wave: *wave, parts: listed(parts) });
+    }
+    // A mesma conta, olhando a spec inteira: as tarefas de todas as ondas que
+    // ainda vêm entram juntas, e a spec cujas partes não dividem arquivo entre
+    // si pode ser dividida, uma spec por parte. Também só avisa.
+    let spec_parts = graph.spec_parts(&delivered);
+    if spec_parts.len() > 1 {
+        out.push(PlanFinding::SpecShouldSplit { parts: listed(&spec_parts) });
     }
 
     // Cada pedido cabe no teto de linhas, e cada skill nomeada passa.
@@ -1099,6 +1111,77 @@ mod tests {
             .replace("{wave}", "2")
             .replace("{parts}", "MSTD-TASK-0003; MSTD-TASK-0004");
         assert_eq!(split[0], expected, "{split:?}");
+    }
+
+    /// A spec cujas tarefas, em ondas diferentes, não dividem arquivo entre
+    /// si tem partes independentes: o plano avisa, pela mesma conta que avisa
+    /// a onda, que ela pode ser dividida, e a pergunta segue. Nenhuma onda
+    /// aqui tem duas partes, então o aviso é só o da spec. Na divisa: com duas
+    /// partes o aviso sai; a tarefa que liga as duas por um arquivo em comum
+    /// deixa a spec com uma parte só, e o aviso some.
+    #[test]
+    fn a_spec_with_independent_parts_across_waves_is_told_it_can_be_split() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        for (n, depends_on) in [(1, json!([])), (2, json!([1])), (3, json!([2]))] {
+            write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
+                "done_when": "passa", "depends_on": depends_on, "origin": said}));
+        }
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código de um.",
+            "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer no código de dois.",
+            "files": [{"path": "src/b.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 3, "text": "Mexer no código de três.",
+            "files": [{"path": "src/a.rs"}, {"path": "src/c.rs", "new": true}], "origin": said}));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(true), "o aviso não segura a pergunta: {report}");
+        assert!(hints_of(&report, "blocking", "spec-should-split").is_empty(), "{report}");
+        assert!(hints_of(&report, "warnings", "wave-should-split").is_empty(), "nenhuma onda tem duas partes: {report}");
+        let split = hints_of(&report, "warnings", "spec-should-split");
+        let expected = translate("plan.spec_should_split", Locale::PtBr)
+            .replace("{parts}", "MSTD-TASK-0001 + MSTD-TASK-0003; MSTD-TASK-0002");
+        assert_eq!(split, vec![expected], "as partes se juntam pelo arquivo, não pela onda: {report}");
+
+        // A tarefa que toca os dois arquivos junta as duas partes numa só.
+        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer no código de um e de dois.",
+            "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}], "origin": said}));
+        let joined = plan(root, "x");
+        assert_eq!(joined["ok"], json!(true), "{joined}");
+        assert!(hints_of(&joined, "warnings", "spec-should-split").is_empty(), "uma parte só não é avisada: {joined}");
+    }
+
+    /// A onda já entregue não entra na conta da spec: o que ela fez já está
+    /// na spec e não sai para outra. As duas ondas que ainda vêm, que só a
+    /// entregue ligava por arquivo, são duas partes, e o aviso sai.
+    #[test]
+    fn a_delivered_wave_does_not_join_the_parts_of_the_spec() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        for (n, depends_on) in [(1, json!([])), (2, json!([1])), (3, json!([2]))] {
+            write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
+                "done_when": "passa", "depends_on": depends_on, "origin": said}));
+        }
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código de um e de dois.",
+            "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer no código de um.",
+            "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 3, "text": "Mexer no código de dois.",
+            "files": [{"path": "src/b.rs"}], "origin": said}));
+        let before = plan(root, "x");
+        assert!(hints_of(&before, "warnings", "spec-should-split").is_empty(), "a onda 1 liga as outras: {before}");
+
+        let record = write(root, Some("x"), "delivered",
+            json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs", "src/b.rs"]}));
+        assert_eq!(record["ok"], json!(true), "{record}");
+        let after = plan(root, "x");
+        let expected = translate("plan.spec_should_split", Locale::PtBr)
+            .replace("{parts}", "MSTD-TASK-0002; MSTD-TASK-0003");
+        assert_eq!(hints_of(&after, "warnings", "spec-should-split"), vec![expected], "{after}");
     }
 
     /// A tarefa que não nomeia skill ganha o nome da skill que já existe e

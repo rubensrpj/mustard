@@ -198,8 +198,6 @@ impl Amend {
 #[serde(rename_all = "camelCase")]
 pub struct GateModes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spec_size: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_size: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_validate_lines: Option<String>,
@@ -214,8 +212,7 @@ pub struct GateModes {
 impl GateModes {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.spec_size.is_none()
-            && self.skill_size.is_none()
+        self.skill_size.is_none()
             && self.skill_validate_lines.is_none()
             && self.checklist.is_none()
             && self.boundary.is_none()

@@ -73,6 +73,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} has parts that share no file with each other ({parts}): it goes out split, \
              one wave per part, and the parts run in parallel."
         }
+        ("plan.spec_should_split", Locale::PtBr) => {
+            "A spec tem partes que não dividem arquivo entre si ({parts}): ela pode ser dividida, \
+             uma spec por parte."
+        }
+        ("plan.spec_should_split", Locale::EnUs) => {
+            "The spec has parts that share no file with each other ({parts}): it can be split, one \
+             spec per part."
+        }
         ("plan.file_outside_git", Locale::PtBr) => {
             "A tarefa {task} cita {path}, que o git não guarda: um agente noutra sessão ou noutra \
              máquina não o vê."
@@ -788,8 +796,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            109,
-            0x8fcc_ec1b_61e4_7fbe,
+            110,
+            0x3c32_38ee_d73e_8eef,
         );
     }
 
@@ -866,6 +874,7 @@ mod tests {
             ("plan.task_without_wave", &["{task}", "{wave}"][..]),
             ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
             ("plan.wave_should_split", &["{wave}", "{parts}"][..]),
+            ("plan.spec_should_split", &["{parts}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
             ("plan.item_without_owner", &["{code}"][..]),
