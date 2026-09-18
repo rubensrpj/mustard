@@ -578,9 +578,12 @@ fn survey_report(
     let mut next: Vec<String> = Vec::new();
     for step in steps {
         match step {
-            SurveyStep::ReviewBlock { block, closed, records } => {
+            SurveyStep::ReviewBlock { block, closed, records, outside_review } => {
                 let go_on = translate("survey.continue_option", lang);
                 next.push(translate("survey.review_step", lang).replace("{block}", &block).replace("{continue}", go_on));
+                if outside_review {
+                    next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
+                }
                 out.insert(
                     "review".to_string(),
                     json!({
@@ -591,9 +594,6 @@ fn survey_report(
                         "options": [go_on],
                     }),
                 );
-            }
-            SurveyStep::OutsideReview => {
-                next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
             }
             SurveyStep::Point(point) if point.str_field("block").map(str::trim) == Some(survey::CONDENSED) => {
                 next.push(translate("survey.present_all", lang).to_string());
