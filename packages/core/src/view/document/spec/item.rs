@@ -275,7 +275,7 @@ mod tests {
     use super::super::tests::*;
     use crate::domain::spec_events::parse_log;
     use crate::platform::i18n::Locale;
-    use crate::view::document::{spec_document, Item, Tone, WavePrompts};
+    use crate::view::document::{spec_document, Item, Node, Tone, WavePrompts};
 
     /// Cada item traz a linha recolhida: o título (o primeiro parágrafo do
     /// texto, ou os campos quando não há texto), a situação com o tom dela e
@@ -338,6 +338,52 @@ mod tests {
         let criterion = items(section(&doc, "criteria"))[0];
         assert!(criterion.fields.iter().any(|f| f.value == "`cargo test`"));
         assert!(criterion.fields.iter().any(|f| f.value == "passou (MSTD-CRUN-0001)"), "{criterion:?}");
+    }
+
+    /// O ponto do levantamento que outro fechou mostra o código do ponto que
+    /// o fechou, que é um endereço da página e sai como link; também quando
+    /// o fechamento aponta a versão antiga de um ponto revisto. O ponto ainda
+    /// aberto e o próprio fechamento não mostram fechamento nenhum.
+    #[test]
+    fn a_closed_survey_point_links_to_the_point_that_closed_it() {
+        let point = |status: &str, gap: &str, more: &str| {
+            format!(",\"block\":\"limits\",\"gap\":\"{gap}\",\"from\":\"gap\",\"status\":\"{status}\",\"facts\":[],\"origin\":1{more}")
+        };
+        let content = [
+            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(2, "point", &point("open", "Tamanho", "")),
+            line(3, "point", &point("open", "Prazo", "")),
+            line(4, "point", &point("closed", "Tamanho", ",\"closes\":2")),
+            line(5, "point", &point("open", "Formato", "")),
+            line(6, "point", &point("open", "Formato revisto", ",\"replaces\":5")),
+            line(7, "point", &point("not_applicable", "Formato", ",\"closes\":5,\"reason\":\"não se aplica\"")),
+        ]
+        .concat();
+        let closed_by = |lang: Locale, label: &str| -> Vec<(String, Option<String>)> {
+            let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), lang);
+            Node::items(&group(section(&doc, "agreed"), "agreed-point").body)
+                .into_iter()
+                .map(|item| {
+                    let link = item.fields.iter().find(|f| f.label == label).map(|f| f.value.clone());
+                    if let Some(code) = &link {
+                        assert!(doc.anchors().contains(code), "{code} is an address on the page, so it comes out as a link");
+                    }
+                    (item.code.clone(), link)
+                })
+                .collect()
+        };
+        let expected = |code: &str, link: Option<&str>| (code.to_string(), link.map(str::to_string));
+        assert_eq!(
+            closed_by(Locale::PtBr, "Fechado por"),
+            [
+                expected("MSTD-POINT-0001", Some("MSTD-POINT-0003")),
+                expected("MSTD-POINT-0002", None),
+                expected("MSTD-POINT-0003", None),
+                expected("MSTD-POINT-0004", Some("MSTD-POINT-0005")),
+                expected("MSTD-POINT-0005", None),
+            ]
+        );
+        assert_eq!(closed_by(Locale::EnUs, "Closed by")[0], expected("MSTD-POINT-0001", Some("MSTD-POINT-0003")));
     }
 
     /// Uma tarefa sem arquivo sai sem a linha dos arquivos; a que cita

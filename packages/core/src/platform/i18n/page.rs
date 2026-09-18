@@ -474,6 +474,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.label", Locale::EnUs) => "Draft label",
         ("page.field.last_run", Locale::PtBr) => "Última execução",
         ("page.field.last_run", Locale::EnUs) => "Last run",
+        ("page.field.closed_by", Locale::PtBr) => "Fechado por",
+        ("page.field.closed_by", Locale::EnUs) => "Closed by",
         ("page.field.wave_state", Locale::PtBr) => "Estado da onda",
         ("page.field.wave_state", Locale::EnUs) => "Wave state",
         ("page.field.wave_commit", Locale::PtBr) => "Commit",
@@ -772,8 +774,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            313,
-            0xf8b3_9b4b_4baa_0479,
+            314,
+            0x767d_3fe5_e444_387c,
         );
     }
 }
