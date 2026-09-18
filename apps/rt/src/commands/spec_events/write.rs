@@ -34,6 +34,16 @@
 //! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
 //! ```
 //!
+//! O mesmo comando enxuga o banco. A lição que junta outras numa só aponta
+//! todas em `replaces`, e a saída diz quais saíram da leitura; um `--json`
+//! só com `targets` e `reason`, sem `class`, retira as lições apontadas,
+//! como o `remove` tira um item da spec:
+//!
+//! ```text
+//! {"ok": true, "id": 9, "type": "lesson", "class": "defect", "replaced": [3, 5]}
+//! {"ok": true, "id": 10, "type": "lesson", "retired": [4]}
+//! ```
+//!
 //! Uma onda gravada depois da aprovação que leva a spec a ter mais ondas do
 //! que tinha quando foi aprovada avisa o crescimento em `warnings`, com as
 //! duas contas; o aviso nunca recusa. Um pedido (`request`) devolve em `next`
@@ -129,7 +139,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::lessons::LESSON;
+use mustard_core::domain::lessons::{LESSON, RETIRE};
 use mustard_core::domain::spec_events::{type_spec, Hidden, Refusal, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
@@ -862,6 +872,12 @@ fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String,
         Err(e) => return refuse(Refusal::Io { detail: e.to_string() }),
     };
     match lessons::write(&path, draft, spec) {
+        Ok(written) if written.class == RETIRE => {
+            json!({ "ok": true, "id": written.id, "type": LESSON, "retired": written.hidden })
+        }
+        Ok(written) if !written.hidden.is_empty() => json!({
+            "ok": true, "id": written.id, "type": LESSON, "class": written.class, "replaced": written.hidden,
+        }),
         Ok(written) => json!({ "ok": true, "id": written.id, "type": LESSON, "class": written.class }),
         Err(refusal) => refuse(refusal),
     }
@@ -1725,6 +1741,39 @@ mod tests {
         assert_eq!(std::fs::read(root.join(".claude/spec/lessons.ndjson")).unwrap(), before);
         let draft = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 1});
         assert_eq!(write_to(root, None, "lesson", &draft.to_string())["id"], json!(2));
+    }
+
+    /// Pelo comando de gravar lição, duas lições viram uma só, com
+    /// `replaces` apontando as duas, e uma terceira é retirada com o motivo:
+    /// a saída diz quais saíram, e a leitura do banco mostra só a junta. A
+    /// retirada sem motivo é recusada pelo nome, e nada é gravado.
+    #[test]
+    fn merging_and_retiring_lessons_go_through_the_write_command() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(lesson_text(root, "Não apague a pasta de outra sessão.")["id"], json!(1));
+        assert_eq!(lesson_text(root, "Remover a pasta alheia perde trabalho.")["id"], json!(2));
+        assert_eq!(lesson_text(root, "A suíte roda no servidor antigo.")["id"], json!(3));
+
+        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+            "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
+        let out = write_to(root, None, "lesson", &merged.to_string());
+        assert_eq!(out, json!({"ok": true, "id": 4, "type": "lesson", "class": "defect", "replaced": [1, 2]}));
+
+        let lines = bank_lines(root);
+        let no_reason = write_to(root, None, "lesson", r#"{"targets":[3]}"#);
+        assert_eq!(no_reason["reason"], json!("missing-field"), "{no_reason}");
+        assert!(no_reason["hint"].as_str().unwrap_or_default().contains("reason"), "{no_reason}");
+        assert_eq!(bank_lines(root), lines, "a recusa não gravou nada");
+
+        let out = write_to(root, None, "lesson", r#"{"targets":[3],"reason":"o servidor antigo saiu"}"#);
+        assert_eq!(out, json!({"ok": true, "id": 5, "type": "lesson", "retired": [3]}));
+        let again = write_to(root, None, "lesson", r#"{"targets":[3],"reason":"de novo"}"#);
+        assert_eq!(again["reason"], json!("unknown-lesson"), "{again}");
+
+        let bank = lessons::read(&root.join(".claude/spec/lessons.ndjson")).unwrap().unwrap();
+        let kept: Vec<u64> = mustard_core::domain::lessons::kept(&bank).iter().map(|l| l.id).collect();
+        assert_eq!(kept, [4]);
     }
 
     /// O `search` é gravado no arquivo de eventos e nunca aparece na página

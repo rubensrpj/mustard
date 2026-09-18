@@ -500,6 +500,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              of the end of a response found: {defects}. Rewrite the text and write it again. \
              Nothing was written."
         }
+        // O que o scan aponta para enxugar o banco de lições (`run scan`).
+        ("lessons.scan_merge", Locale::PtBr) => {
+            "Junte cada grupo de lições parecidas numa lição só, resumida no jeito de escrever do \
+             projeto, gravada com `mustard-rt run write lesson` e com `\"replaces\"` apontando as \
+             lições do grupo: {groups}."
+        }
+        ("lessons.scan_merge", Locale::EnUs) => {
+            "Merge each group of similar lessons into one lesson, summarized the project's way, \
+             written with `mustard-rt run write lesson` and `\"replaces\"` naming the group's \
+             lessons: {groups}."
+        }
+        ("lessons.scan_retire", Locale::PtBr) => {
+            "Retire as lições que já não valem, porque citam um caminho que o projeto já não tem, \
+             com `mustard-rt run write lesson --json '{\"targets\":[…],\"reason\":\"…\"}'`: \
+             {lessons}."
+        }
+        ("lessons.scan_retire", Locale::EnUs) => {
+            "Retire the lessons that no longer hold, because they cite a path the project no \
+             longer has, with `mustard-rt run write lesson --json '{\"targets\":[…],\"reason\":\"…\"}'`: \
+             {lessons}."
+        }
+        ("lessons.scan_untouched", Locale::PtBr) => "O scan não mudou o banco de lições.",
+        ("lessons.scan_untouched", Locale::EnUs) => "The scan did not change the lesson bank.",
         ("spec_index.no_specs", Locale::PtBr) => {
             "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
         }
@@ -521,8 +544,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            71,
-            0xdcfa_36aa_b2fd_16c1,
+            74,
+            0x0474_34ad_961c_9e03,
         );
     }
 
@@ -621,6 +644,9 @@ mod tests {
             ("lessons.origin_missing", &[][..]),
             ("lessons.repeated", &["{id}", "{text}"][..]),
             ("lessons.unclear", &["{defects}"][..]),
+            ("lessons.scan_merge", &["{groups}"][..]),
+            ("lessons.scan_retire", &["{lessons}"][..]),
+            ("lessons.scan_untouched", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

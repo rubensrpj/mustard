@@ -9,11 +9,21 @@
 //! [`mustard_core::Scan`] client (`digest --query`, `spec`), never by reading
 //! source. No skills or agents are produced; with `--full`, the one file
 //! written per subproject is its `.claude/scan-map.md`.
+//!
+//! A cada vez que roda, o scan também lê o banco de lições e aponta o que
+//! enxugar nele, sem mudar o banco: os grupos de lições parecidas, a juntar
+//! numa lição só, e as lições que citam um caminho que o projeto já não tem,
+//! a retirar. A lista sai em `lessons` e o que fazer com ela, em `next`; quem
+//! junta e retira é o assistente, pelo `run write lesson`.
 
 use std::path::{Path, PathBuf};
 
 use mustard_core::Scan;
+use mustard_core::domain::lessons::{self, MissingPaths};
+use mustard_core::domain::project_map::{self, ProjectMap};
 use mustard_core::domain::scan::{mark_own_git_roots, read_projects};
+use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 
 use super::scan_claude;
@@ -36,6 +46,12 @@ pub(crate) fn default_model_path(root: &Path) -> PathBuf {
 /// `CLAUDE.md` is ever written. The hard cap guards the map against a runaway
 /// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
+    let result = scan_at(root, out, full);
+    println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
+}
+
+/// O núcleo testável de [`run`]: o relatório que o comando imprime.
+pub(crate) fn scan_at(root: &Path, out: Option<&Path>, full: bool) -> Value {
     let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
 
     // Preflight BEFORE the miner: an unpopulated submodule is indistinguishable
@@ -55,13 +71,11 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
             "scan: refusing to mine a hollow model (the existing one is left untouched). \
              Populate with `git submodule update --init --recursive`, then re-run."
         );
-        let result = json!({
+        return json!({
             "ok": false,
             "reason": "hollow-submodules",
             "empty_submodules": hollow,
         });
-        println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
-        return;
     }
 
     let scan_result = Scan::locate().scan(root, &model_path);
@@ -111,7 +125,73 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
         }
     }
 
-    println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
+    // O mapa só vale quando o scan desta vez deu certo: o de uma volta
+    // anterior ainda acha o arquivo que já saiu.
+    review_lessons(root, scan_result.is_ok().then_some(model_path.as_path()), &mut result);
+    result
+}
+
+/// Lê o banco de lições e põe no relatório o que enxugar nele: em `lessons`,
+/// os grupos de lições parecidas (`similar`) e as lições que citam caminhos
+/// que o projeto já não tem (`missing_paths`); em `next`, o que o assistente
+/// faz com eles. Só lê: o banco fica com os mesmos bytes. Sem banco, ou com
+/// nada a enxugar, o relatório fica como estava. `model_path` é o mapa que o
+/// scan acabou de gravar; sem ele, o caminho é procurado só no disco.
+fn review_lessons(root: &Path, model_path: Option<&Path>, result: &mut Value) {
+    let home = mustard_core::io::spec_events::spec_root(root);
+    let Some(path) = ClaudePaths::for_project(&home).ok().map(|paths| paths.lessons_path()) else { return };
+    let Ok(Some(bank)) = mustard_core::io::lessons::read(&path) else { return };
+    let map: Option<ProjectMap> =
+        model_path.and_then(|model| std::fs::read_to_string(model).ok()).and_then(|text| serde_json::from_str(&text).ok());
+    let found = |cited: &str, inside: Option<&str>| path_found(root, map.as_ref(), cited, inside);
+    let missing = lessons::citing_missing_paths(&bank, found);
+    let leaving: Vec<u64> = missing.iter().map(|m| m.id).collect();
+    let similar = lessons::similar(&bank, &leaving);
+    if similar.is_empty() && missing.is_empty() {
+        return;
+    }
+    let lang = mustard_core::ProjectConfig::load(&home).language().text_or_default();
+    result["lessons"] = json!({
+        "similar": similar,
+        "missing_paths": missing.iter().map(|m| json!({ "id": m.id, "paths": m.paths })).collect::<Vec<_>>(),
+    });
+    result["next"] = json!(next_step(&similar, &missing, lang));
+}
+
+/// O passo seguinte do scan: juntar cada grupo e retirar as lições que já
+/// não valem, pelo `run write lesson`.
+fn next_step(similar: &[Vec<u64>], missing: &[MissingPaths], lang: Locale) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !similar.is_empty() {
+        let groups: Vec<String> = similar
+            .iter()
+            .map(|group| format!("[{}]", group.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")))
+            .collect();
+        parts.push(translate("lessons.scan_merge", lang).replace("{groups}", &groups.join(", ")));
+    }
+    if !missing.is_empty() {
+        let shown: Vec<String> = missing.iter().map(|m| format!("{} ({})", m.id, m.paths.join(", "))).collect();
+        parts.push(translate("lessons.scan_retire", lang).replace("{lessons}", &shown.join(", ")));
+    }
+    parts.push(translate("lessons.scan_untouched", lang).to_string());
+    parts.join(" ")
+}
+
+/// O caminho que uma lição cita existe no projeto: no disco, a partir da raiz
+/// ou de uma das pastas do subprojeto da lição (`inside`) até ela, ou no mapa
+/// que o scan acabou de gravar, que aceita só o fim do caminho.
+fn path_found(root: &Path, map: Option<&ProjectMap>, cited: &str, inside: Option<&str>) -> bool {
+    if root.join(cited).exists() {
+        return true;
+    }
+    let mut folder = inside.map(|sub| root.join(sub));
+    while let Some(dir) = folder {
+        if dir.join(cited).exists() {
+            return true;
+        }
+        folder = dir.parent().filter(|up| up.starts_with(root) && *up != root).map(Path::to_path_buf);
+    }
+    map.is_some_and(|map| project_map::map_knows(map, cited))
 }
 
 /// Submodule paths declared in `.gitmodules` whose working directory holds no
@@ -151,6 +231,72 @@ mod tests {
             std::fs::create_dir_all(parent).expect("mkdir");
         }
         std::fs::write(path, body).expect("write");
+    }
+
+    /// Uma regra do projeto como o importador das instruções a deixa no
+    /// banco, gravada pelo mesmo gravador do comando de gravar lição.
+    fn rule(bank: &Path, subproject: &str, text: &str, keys: &[&str]) -> u64 {
+        let draft = serde_json::json!({"class": "project_rule", "text": text, "keys": keys,
+            "applies_to": {"subproject": subproject}, "found_in": {"source": format!("{subproject}/CLAUDE.md")}});
+        let Value::Object(draft) = draft else { unreachable!() };
+        mustard_core::io::lessons::write(bank, draft, None).expect("a lição entra no banco").id
+    }
+
+    /// O scan roda num projeto cujo banco tem duas regras reais com o mesmo
+    /// assunto em palavras diferentes, vizinhas do mesmo subprojeto que só
+    /// dividem com elas a palavra dele, e uma lição que cita um arquivo. Com o
+    /// arquivo no lugar, o scan não aponta a lição; depois de o arquivo ser
+    /// apagado, aponta as duas parecidas como um grupo a juntar e a outra como
+    /// candidata a sair, e o passo seguinte manda juntar e retirar pelo
+    /// comando de gravar lição. O banco fica com os mesmos bytes.
+    #[test]
+    fn the_scan_points_out_similar_lessons_and_the_one_citing_a_deleted_file_without_touching_the_bank() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("apps/rt/src/main.rs"), "fn main() {}\n");
+        let cited = root.join("packages/core/src/domain/economy/estimator.rs");
+        write(&cited, "pub fn estimate() -> usize { 0 }\n");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        let sub = "apps/rt";
+        rule(&bank, sub, "Hook nunca pode entrar em pânico nem barrar a sessão por erro próprio.", &["rt", "nunca", "entrar", "pânico", "barrar", "sessão", "próprio"]);
+        let first = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros; esquecer qualquer um compila mas quebra algo em silêncio.", &["rt", "subcomando", "exige", "quatro", "registros", "esquecer", "qualquer"]);
+        rule(&bank, sub, "A face `run` NÃO lê o stdin do harness.", &["rt", "stdin", "harness", "despachada", "antes", "leitura", "check"]);
+        let second = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros (variante no enum, braço no `dispatch()`, entrada na lista trancada e um chamador).", &["rt", "subcomando", "exige", "quatro", "registros", "variante", "família"]);
+        let stale = rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
+
+        let before = scan_at(root, None, false);
+        assert_eq!(before["lessons"]["similar"], serde_json::json!([[first, second]]), "{before}");
+        assert_eq!(before["lessons"]["missing_paths"], serde_json::json!([]), "o arquivo ainda existe: {before}");
+
+        std::fs::remove_file(&cited).expect("apaga o arquivo citado");
+        let bytes = std::fs::read(&bank).expect("o banco");
+        let result = scan_at(root, None, false);
+        assert_eq!(result["lessons"]["similar"], serde_json::json!([[first, second]]), "{result}");
+        assert_eq!(
+            result["lessons"]["missing_paths"],
+            serde_json::json!([{"id": stale, "paths": ["domain/economy/estimator.rs"]}]),
+            "{result}"
+        );
+        let next = result["next"].as_str().expect("o passo seguinte");
+        assert!(next.contains(&format!("[{first}, {second}]")), "{next}");
+        assert!(next.contains(&format!("{stale} (domain/economy/estimator.rs)")), "{next}");
+        assert!(next.contains("mustard-rt run write lesson") && next.contains("\"replaces\"") && next.contains("\"targets\""), "{next}");
+        assert_eq!(std::fs::read(&bank).expect("o banco"), bytes, "o scan não muda o banco");
+    }
+
+    /// Sem banco de lições, ou sem nada a enxugar, o relatório do scan não
+    /// ganha a lista nem o passo seguinte.
+    #[test]
+    fn a_scan_with_nothing_to_trim_in_the_bank_adds_no_next_step() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("src/main.rs"), "fn main() {}\n");
+        let result = scan_at(root, None, false);
+        assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        rule(&bank, "src", "O `main.rs` só chama a biblioteca.", &["main"]);
+        let result = scan_at(root, None, false);
+        assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
     }
 
     #[test]

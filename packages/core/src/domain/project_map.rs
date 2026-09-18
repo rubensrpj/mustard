@@ -884,8 +884,9 @@ pub fn summary(map: &ProjectMap, lang: Locale) -> String {
 
 /// Os caminhos que uma skill cita entre crases: com barra, e com extensão no
 /// último pedaço ou com barra no fim. Ficam de fora os modelos (`<nome>`,
-/// `{x}`, `*`, `$VAR`), os endereços e o que tem espaço. Um `:linha` no fim
-/// sai.
+/// `{x}`, `*`, `$VAR`), os endereços — também os com esquema antes da
+/// primeira barra, como `package:flutter/material.dart` — e o que tem
+/// espaço. Um `:linha` no fim sai.
 #[must_use]
 pub fn cited_paths(text: &str) -> Vec<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
@@ -901,6 +902,7 @@ pub fn cited_paths(text: &str) -> Vec<String> {
             || span.starts_with('/')
             || span.contains(['<', '>', '{', '}', '*', '$', '|', '(', ')', '[', ']', '…', '"', '\''])
             || !span.contains('/')
+            || span.split('/').next().is_some_and(|head| head.contains(':'))
         {
             continue;
         }
@@ -931,14 +933,21 @@ pub fn check_skill(text: &str, exists: impl Fn(&str) -> bool) -> Result<(), MapR
     Ok(())
 }
 
-/// `true` quando algum arquivo do mapa é `cited` ou termina com `/cited`: a
-/// skill pode citar só o fim do caminho, como `spec_events/mod.rs`.
+/// `true` quando algum arquivo do mapa é `cited`, termina com `/cited` ou
+/// fica dentro de uma pasta que é ou termina com `cited`: a skill, e a lição,
+/// pode citar só o fim do caminho, como `spec_events/mod.rs` ou
+/// `domain/model/`.
 #[must_use]
 pub fn map_knows(map: &ProjectMap, cited: &str) -> bool {
     let cited = clean_path(cited);
     let tail = format!("/{cited}");
+    let inside = format!("/{cited}/");
     map.modules.iter().any(|m| {
-        m.path == cited || m.path.ends_with(&tail) || folder_of(&m.path) == cited || m.path.starts_with(&format!("{cited}/"))
+        m.path == cited
+            || m.path.ends_with(&tail)
+            || folder_of(&m.path) == cited
+            || m.path.starts_with(&format!("{cited}/"))
+            || m.path.contains(&inside)
     })
 }
 
@@ -1208,7 +1217,7 @@ mod tests {
     fn a_skill_citing_a_path_that_does_not_exist_is_refused() {
         let text = "Veja `apps/rt/src/commands/spec_events/write.rs`, `spec_events/mod.rs:12` e \
                     `apps/rt/src/commands/nao_existe.rs`; o modelo `packages/core/src/domain/<assunto>.rs` \
-                    e `plugin/**` não contam, nem `pt-BR/en-US`.";
+                    e `plugin/**` não contam, nem `pt-BR/en-US`, nem o endereço `package:flutter/material.dart`.";
         assert_eq!(
             cited_paths(text),
             vec![
@@ -1232,6 +1241,23 @@ mod tests {
         let long = "linha\n".repeat(SKILL_MAX_LINES + 1);
         assert_eq!(check_skill(&long, |_| true), Err(MapRefusal::SkillTooLong { lines: SKILL_MAX_LINES + 1 }));
         assert!(check_skill("`apps/rt/src/commands/spec_events/write.rs`", |p| map_knows(&map, p)).is_ok());
+    }
+
+    /// A pasta citada só pelo fim é achada quando algum arquivo do mapa mora
+    /// numa pasta que termina com ela; a pasta que nenhum arquivo tem
+    /// continua recusada, e um pedaço do nome da pasta não conta.
+    #[test]
+    fn a_folder_cited_by_its_tail_is_known_only_when_a_file_lives_under_it() {
+        let map = ProjectMap {
+            modules: vec![module("packages/core/src/domain/model/contract.rs", 1, &[])],
+            ..ProjectMap::default()
+        };
+        assert!(map_knows(&map, "domain/model/"));
+        assert!(map_knows(&map, "src/domain/"));
+        assert!(!map_knows(&map, "domain/modelo/"), "a pasta que nenhum arquivo tem");
+        assert!(!map_knows(&map, "main/model/"), "um pedaço do nome da pasta não conta");
+        let refused = check_skill("Veja `domain/modelo/`.", |p| map_knows(&map, p)).unwrap_err();
+        assert_eq!(refused, MapRefusal::SkillMissingPaths { paths: vec!["domain/modelo/".to_string()] });
     }
 
     #[test]

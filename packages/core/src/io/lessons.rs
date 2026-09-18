@@ -7,6 +7,10 @@
 //! a trava e grava com o número seguinte. A lição que repete o texto de outra
 //! já guardada é conferida com a trava presa, sobre o banco que acabou de ser
 //! lido: duas gravações do mesmo texto ao mesmo tempo deixam uma lição só.
+//! Juntar lições e retirar uma lição passam pela mesma trava: a conferência
+//! de que a lição apontada ainda está na leitura é feita sobre o banco lido
+//! com a trava presa, então duas rodadas que juntam ou retiram a mesma lição
+//! ao mesmo tempo deixam uma gravação só, e a outra é recusada.
 //! Uma lição recusada não toca no arquivo. A leitura pega a trava
 //! compartilhada.
 //!
@@ -27,8 +31,11 @@ use crate::platform::error::Error;
 pub struct WrittenLesson {
     /// O número da lição no banco.
     pub id: u64,
-    /// A classe da lição.
+    /// A classe da lição; numa retirada, o tipo dela (`remove`).
     pub class: String,
+    /// As lições que saíram da leitura com esta gravação: as que a lição nova
+    /// substitui ou junta, ou as que a retirada aponta.
+    pub hidden: Vec<u64>,
 }
 
 /// Grava uma lição com a hora de agora. Veja [`write_at`].
@@ -39,16 +46,21 @@ pub fn write(path: &Path, draft: Map<String, Value>, spec: Option<&str>) -> Resu
 /// Grava a lição de `draft` no banco `path`, com a hora `at`. `spec`, quando
 /// vem, diz em que spec a lição nasceu, se ela mesma não diz.
 ///
+/// Com `replaces` apontando várias lições, a lição nova junta todas elas numa
+/// só; um rascunho só com `targets` e `reason` retira as lições apontadas.
+///
 /// Recusa, sem tocar no arquivo: classe desconhecida, campo obrigatório
 /// vazio, lição sem dizer onde vale ou onde nasceu, código mandado por quem
-/// grava, lição substituída que não existe no banco e lição com o mesmo texto
-/// de outra já guardada (`domain::lessons::repeated`).
+/// grava, lição substituída, junta ou retirada que a leitura do banco não
+/// mostra e lição com o mesmo texto de outra já guardada
+/// (`domain::lessons::repeated`).
 pub fn write_at(path: &Path, draft: Map<String, Value>, spec: Option<&str>, at: &str) -> Result<WrittenLesson, Refusal> {
     let event = model::normalize(draft, spec);
     model::validate(&event)?;
-    // Num banco que ainda não existe, nenhuma lição pode ser substituída: a
-    // recusa sai antes de o arquivo nascer.
-    if let Some(id) = event.get("replaces").and_then(Value::as_u64)
+    let hidden = model::hidden_by(&event);
+    // Num banco que ainda não existe, nenhuma lição pode ser substituída nem
+    // retirada: a recusa sai antes de o arquivo nascer.
+    if let Some(id) = hidden.first().copied()
         && !path.is_file()
     {
         return Err(Refusal::UnknownLesson { id });
@@ -65,7 +77,7 @@ pub fn write_at(path: &Path, draft: Map<String, Value>, spec: Option<&str>, at: 
     let added = if clean { line } else { format!("\n{line}") };
     file.append_line(&added).map_err(io_refusal)?;
     drop(file);
-    Ok(WrittenLesson { id, class })
+    Ok(WrittenLesson { id, class, hidden })
 }
 
 /// Lê o banco inteiro, com a trava compartilhada. `Ok(None)` quando o banco
@@ -138,7 +150,7 @@ mod tests {
     fn a_lesson_is_written_with_the_next_number_and_its_search_field() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lessons.ndjson");
-        assert_eq!(put(&path, defect("Um", &["um"])), WrittenLesson { id: 1, class: "defect".into() });
+        assert_eq!(put(&path, defect("Um", &["um"])), WrittenLesson { id: 1, class: "defect".into(), hidden: vec![] });
         let second = write_at(&path, obj(defect("Dois", &["dois"])), Some("outra"), &at("10:01")).unwrap();
         assert_eq!(second.id, 2);
 
@@ -319,6 +331,128 @@ mod tests {
         let hits = matching(&bank, "apagando a pasta");
         assert_eq!(hits.len(), top, "{hits:?}");
         assert!(hits.iter().any(|h| h.id == target.id), "the lesson keyed apagar is in the top five: {hits:?}");
+    }
+
+    /// Uma lição que vale no projeto todo, com as palavras-chave `keys`.
+    fn everywhere(text: &str, keys: &[&str]) -> Value {
+        json!({"class": "defect", "text": text, "keys": keys, "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}})
+    }
+
+    /// Os textos das lições que o pedido da onda 1 e o da revisão dela
+    /// levam, montados como a rodada os monta, do banco do projeto `root`.
+    fn requested(root: &Path) -> (String, String) {
+        let log = events::parse_log(&format!(
+            "{}\n{}\n",
+            r#"{"v":1,"id":1,"at":"2026-09-18T10:00:00-03:00","type":"wave","n":1,"text":"A onda","criteria":[],"done_when":"passa"}"#,
+            r#"{"v":1,"id":2,"at":"2026-09-18T10:00:00-03:00","type":"task","wave":1,"text":"Apagar a pasta velha e rodar a suíte em primeiro plano.","files":[{"path":"src/a.rs"}]}"#,
+        ));
+        let built = crate::io::wave_prompt::prompts(root, "teste", &log, crate::platform::i18n::Locale::PtBr, &Default::default());
+        (built[0].text.clone(), built[0].review.clone())
+    }
+
+    /// Pelo gravador do comando de gravar lição: duas lições parecidas viram
+    /// uma só, que aponta as duas em `replaces`, e a que já não vale é
+    /// retirada com o motivo. A leitura do banco mostra a lição junta no lugar
+    /// das duas e deixa de mostrar a retirada; o pedido da onda e o da
+    /// revisão, que levavam as três, passam a levar só a junta. Nenhuma linha
+    /// sai do arquivo.
+    #[test]
+    fn merging_two_lessons_and_retiring_one_leave_the_bank_lean_and_the_requests_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let path = crate::ClaudePaths::for_project(root).unwrap().lessons_path();
+        let first = put(&path, everywhere("Apagar a pasta de outra sessão perde o trabalho dela.", &["apagar", "pasta"]));
+        let second = put(&path, everywhere("Remover a pasta alheia joga fora o que a outra sessão fez.", &["pasta", "remover"]));
+        let old = put(&path, everywhere("A suíte roda em segundo plano no servidor antigo.", &["suíte", "primeiro plano"]));
+        let (text, review) = requested(root);
+        for lesson in ["Apagar a pasta de outra sessão", "Remover a pasta alheia", "A suíte roda em segundo plano"] {
+            assert!(text.contains(lesson) && review.contains(lesson), "antes, o pedido leva {lesson}: {text}");
+        }
+
+        let mut merged = everywhere("Nunca apague a pasta de outra sessão: o trabalho dela se perde.", &["apagar", "pasta"]);
+        merged["replaces"] = json!([first.id, second.id]);
+        let merged = write_at(&path, obj(merged), None, &at("10:10")).unwrap();
+        assert_eq!(merged.hidden, [first.id, second.id]);
+        let retired = write_at(&path, obj(json!({"targets": [old.id], "reason": "o servidor antigo saiu"})), None, &at("10:11")).unwrap();
+        assert_eq!((retired.class.as_str(), retired.hidden.as_slice()), (model::RETIRE, [old.id].as_slice()));
+
+        let bank = read(&path).unwrap().unwrap();
+        assert_eq!(model::kept(&bank).iter().map(|l| l.id).collect::<Vec<_>>(), [merged.id]);
+        assert_eq!(bank.events.len(), 5, "as linhas antigas ficam no arquivo");
+        let (text, review) = requested(root);
+        assert!(text.contains("Nunca apague a pasta de outra sessão") && review.contains("Nunca apague a pasta de outra sessão"), "{text}");
+        for gone in ["Apagar a pasta de outra sessão", "Remover a pasta alheia", "A suíte roda em segundo plano"] {
+            assert!(!text.contains(gone) && !review.contains(gone), "{gone} saiu dos dois pedidos: {text}");
+        }
+    }
+
+    /// Só se junta ou retira a lição que a leitura ainda mostra: a lição já
+    /// junta ou retirada, e a que nunca existiu, são recusadas pelo número, e
+    /// o banco fica com os mesmos bytes.
+    #[test]
+    fn a_lesson_already_merged_or_retired_is_not_merged_or_retired_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lessons.ndjson");
+        assert_eq!(write_at(&path, obj(json!({"targets": [1], "reason": "r"})), None, &at("10:00")).unwrap_err(), Refusal::UnknownLesson { id: 1 });
+        assert!(!path.exists(), "a recusa não criou o banco");
+        let a = put(&path, defect("Um", &["um"]));
+        let b = put(&path, defect("Dois", &["dois"]));
+        let mut merged = defect("Um e dois", &["um", "dois"]);
+        merged["replaces"] = json!([a.id, b.id]);
+        put(&path, merged);
+        let gone = put(&path, json!({"targets": [3], "reason": "saiu"}));
+        let before = std::fs::read(&path).unwrap();
+        for (draft, id) in [
+            (json!({"targets": [a.id], "reason": "de novo"}), a.id),
+            (json!({"targets": [3], "reason": "de novo"}), 3),
+            (json!({"targets": [gone.id], "reason": "a linha da retirada"}), gone.id),
+            (json!({"class": "defect", "text": "Três", "keys": ["k"], "applies_to": {"subproject": "apps/rt"}, "found_in": {"spec": "s"}, "replaces": [b.id, 99]}), b.id),
+        ] {
+            assert_eq!(write_at(&path, obj(draft.clone()), None, &at("10:20")).unwrap_err(), Refusal::UnknownLesson { id }, "{draft}");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Duas rodadas que juntam as mesmas lições ao mesmo tempo, com textos
+    /// diferentes, e duas que retiram a mesma lição ao mesmo tempo: a trava
+    /// cobre a leitura do banco, a conferência e a gravação, então só uma de
+    /// cada par grava, e a outra é recusada apontando a lição que já saiu.
+    #[test]
+    fn two_merges_or_two_retirements_of_the_same_lessons_at_once_leave_one() {
+        for _ in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spec").join("lessons.ndjson");
+            let a = put(&path, defect("Um", &["um"]));
+            let b = put(&path, defect("Dois", &["dois"]));
+            let c = put(&path, defect("Três", &["tres"]));
+            let start = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let writers: Vec<_> = (0..4)
+                .map(|w| {
+                    let path = path.clone();
+                    let start = std::sync::Arc::clone(&start);
+                    std::thread::spawn(move || {
+                        let draft = if w < 2 {
+                            let mut merged = defect(&format!("Um e dois, versão {w}"), &["um", "dois"]);
+                            merged["replaces"] = json!([a.id, b.id]);
+                            merged
+                        } else {
+                            json!({"targets": [c.id], "reason": format!("rodada {w}")})
+                        };
+                        start.wait();
+                        (w < 2, write_at(&path, obj(draft), None, &at("10:30")))
+                    })
+                })
+                .collect();
+            let results: Vec<(bool, Result<WrittenLesson, Refusal>)> = writers.into_iter().map(|h| h.join().unwrap()).collect();
+            for merge in [true, false] {
+                let pair: Vec<&Result<WrittenLesson, Refusal>> = results.iter().filter(|(m, _)| *m == merge).map(|(_, r)| r).collect();
+                assert_eq!(pair.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+                assert!(pair.iter().any(|r| matches!(r, Err(Refusal::UnknownLesson { .. }))), "{results:?}");
+            }
+            let bank = read(&path).unwrap().unwrap();
+            assert_eq!(model::kept(&bank).len(), 1, "só a lição junta fica: {:?}", bank.events);
+            assert!(bank.skipped.is_empty(), "{:?}", bank.skipped);
+        }
     }
 
     #[test]

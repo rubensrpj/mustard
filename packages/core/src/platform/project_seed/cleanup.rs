@@ -255,7 +255,7 @@ fn new_lessons(root: &Path, mut guards: Vec<GuardLesson>) -> Vec<GuardLesson> {
     let bank = lesson_bank(root).and_then(|path| lessons::read(&path).ok().flatten());
     let mut out: Vec<GuardLesson> = Vec::new();
     for guard in guards {
-        if bank.as_ref().is_some_and(|bank| model::repeated(bank, &guard.text, None).is_some()) {
+        if bank.as_ref().is_some_and(|bank| model::repeated(bank, &guard.text, &[]).is_some()) {
             continue;
         }
         let text = model::comparable(&guard.text);

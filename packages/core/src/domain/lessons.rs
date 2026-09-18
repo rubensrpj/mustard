@@ -18,9 +18,11 @@
 //! Duas buscas, só do Rust: por escopo ([`in_scope`]), pelo caminho dos
 //! arquivos, pelo subprojeto e pela skill; e por palavras ([`matching`]), com
 //! o BM25 de `domain::search` sobre o `search`, que devolve as 5 mais fortes.
-//! A mesma busca por palavras limita as lições que o pedido de uma onda e o
-//! da revisão levam ([`related_to_tasks`]): de cada classe, só as mais
-//! ligadas às tarefas, porque uma pasta pode ter centenas delas.
+//! O pedido de uma onda e o da revisão levam, de cada classe, só as lições
+//! mais ligadas às tarefas ([`related_to_tasks`]), porque uma pasta pode ter
+//! centenas delas: a mesma busca, mas sobre as palavras-chave de cada lição,
+//! e não sobre o texto inteiro, em que quase toda lição longa divide alguma
+//! palavra comum com qualquer tarefa.
 //! Quem mostra uma lição mostra o texto original ([`shown`]), nunca o
 //! `search`.
 //!
@@ -30,18 +32,31 @@
 //! gravação do assistente e a importação das instruções do projeto passam
 //! pela mesma comparação.
 //!
+//! O banco se enxuga pelo mesmo gravador. A lição que junta outras numa só
+//! aponta todas elas em `replaces`, e as antigas saem da leitura, como a
+//! versão nova de uma lição. A lição que já não vale sai por uma linha de
+//! retirada ([`RETIRE`]), com `targets` e `reason`, do mesmo jeito que o
+//! `remove` tira um item da spec: a linha fica no arquivo, e a lição some da
+//! leitura. Só se junta ou retira a lição que a leitura ainda mostra.
+//!
+//! O scan aponta o que enxugar e não muda o banco: os grupos de lições
+//! parecidas ([`similar`]), pela mesma busca por palavras-chave, entre lições
+//! da mesma classe e do mesmo lugar; e as lições que citam um caminho que o
+//! projeto já não tem ([`citing_missing_paths`]).
+//!
 //! Função pura: sem disco e sem relógio. A gravação mora em `io::lessons`.
 
 use serde_json::{Map, Value};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::config::glob_matches;
-use crate::domain::search::{self, Hit};
+use crate::domain::project_map::cited_paths;
+use crate::domain::search::{self, Hit, SearchIndex};
 use crate::domain::text::fold;
 use crate::domain::spec_events::{
-    check_field, is_empty, opt, req, shown_line, Kind, Refusal, SpecEvent, SpecLog, AUTHORS, BINARY_FIELDS,
-    DEFAULT_AUTHOR, PURGED_FIELD, REFUSED_FIELDS,
+    check_field, is_empty, opt, req, search_terms, shown_line, Kind, Refusal, SpecEvent, SpecLog, AUTHORS,
+    BINARY_FIELDS, DEFAULT_AUTHOR, PURGED_FIELD, REFUSED_FIELDS,
 };
 
 /// O tipo com que o `write` recebe uma lição.
@@ -49,6 +64,11 @@ pub const LESSON: &str = "lesson";
 
 /// As classes de lição, gravadas no `type` da linha.
 pub const CLASSES: &[&str] = &["defect", "project_rule", "environment_trap", "user_preference"];
+
+/// O tipo da linha que retira lições do banco: o mesmo `remove` da spec, com
+/// as lições em `targets` e o motivo em `reason`. Quem grava pelo `write
+/// lesson` manda só esses dois campos, sem `class`.
+pub const RETIRE: &str = "remove";
 
 /// O padrão de arquivos da lição que vale no projeto todo.
 pub const WHOLE_PROJECT: &str = "**";
@@ -62,7 +82,9 @@ const ORIGIN_FIELDS: &[&str] = &["spec", "branch", "commit", "source"];
 /// O rascunho de quem grava, pronto para a conferência: sem os campos que só
 /// o binário escreve, com a classe (`class`) no `type`, com o autor (o
 /// assistente, quando quem grava não diz) e, quando o `write` recebeu uma
-/// spec, com ela em `found_in.spec`, se faltava.
+/// spec, com ela em `found_in.spec`, se faltava. O rascunho sem classe que
+/// aponta lições em `targets` é uma retirada ([`RETIRE`]), e não ganha
+/// `found_in`.
 #[must_use]
 pub fn normalize(mut draft: Map<String, Value>, spec: Option<&str>) -> Map<String, Value> {
     for field in BINARY_FIELDS.iter().filter(|f| !REFUSED_FIELDS.contains(f)) {
@@ -73,9 +95,14 @@ pub fn normalize(mut draft: Map<String, Value>, spec: Option<&str>) -> Map<Strin
     draft.remove("type");
     if let Some(class) = class {
         draft.insert("type".into(), class);
+    } else if draft.contains_key("targets") {
+        draft.insert("type".into(), Value::from(RETIRE));
     }
     if draft.get("author").is_none_or(is_empty) {
         draft.insert("author".into(), Value::String(DEFAULT_AUTHOR.into()));
+    }
+    if is_retirement(&draft) {
+        return draft;
     }
     if let Some(spec) = spec.map(str::trim).filter(|s| !s.is_empty()) {
         match draft.get_mut("found_in") {
@@ -103,6 +130,12 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
     if let Some(field) = REFUSED_FIELDS.iter().find(|f| event.contains_key(**f)) {
         return Err(Refusal::BinaryOnlyField { field: (*field).to_string() });
     }
+    if is_retirement(event) {
+        for field in [req("author", Kind::OneOf(AUTHORS)), req("targets", Kind::Ints), req("reason", Kind::Text)] {
+            check_field(event, LESSON, field)?;
+        }
+        return Ok(());
+    }
     match event.get("type") {
         Some(class) if !is_empty(class) => {
             if !Kind::OneOf(CLASSES).accepts(class) {
@@ -116,12 +149,42 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
         req("text", Kind::Text),
         req("keys", Kind::Texts),
         opt("label", Kind::Text),
-        opt("replaces", Kind::Int),
     ] {
         check_field(event, LESSON, field)?;
     }
+    check_replaces(event)?;
     check_applies_to(event)?;
     check_found_in(event)
+}
+
+/// A linha é uma retirada de lições, e não uma lição.
+#[must_use]
+pub fn is_retirement(event: &Map<String, Value>) -> bool {
+    event.get("type").and_then(Value::as_str) == Some(RETIRE)
+}
+
+/// As lições que a gravação tira da leitura: as que a lição nova substitui
+/// ou junta (`replaces`, um número ou uma lista) ou as que a retirada aponta
+/// (`targets`).
+#[must_use]
+pub fn hidden_by(event: &Map<String, Value>) -> Vec<u64> {
+    let field = if is_retirement(event) { "targets" } else { "replaces" };
+    match event.get(field) {
+        Some(Value::Array(list)) => list.iter().filter_map(Value::as_u64).collect(),
+        Some(one) => one.as_u64().into_iter().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// `replaces`, quando vem, é o número de uma lição ou a lista, não vazia, das
+/// lições que a nova junta numa só.
+fn check_replaces(event: &Map<String, Value>) -> Result<(), Refusal> {
+    match event.get("replaces") {
+        None | Some(Value::Null) => Ok(()),
+        Some(value) if Kind::Int.accepts(value) => Ok(()),
+        Some(value) if Kind::Ints.accepts(value) && !is_empty(value) => Ok(()),
+        Some(_) => Err(invalid("replaces", Kind::Ints)),
+    }
 }
 
 fn missing(field: &str) -> Refusal {
@@ -176,18 +239,21 @@ fn check_found_in(event: &Map<String, Value>) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Confere a lição contra o banco como está: a lição que ela substitui
-/// (`replaces`) existe, e nenhuma outra lição guardada tem o mesmo texto. A
-/// que ela substitui não conta: a versão nova pode só pôr os acentos.
+/// Confere a lição contra o banco como está: cada lição que ela substitui ou
+/// junta (`replaces`), ou que a retirada aponta, é uma que a leitura mostra,
+/// e nenhuma outra lição guardada tem o mesmo texto. As que ela substitui não
+/// contam: a versão nova pode só pôr os acentos.
 pub fn check_against(bank: &SpecLog, event: &Map<String, Value>) -> Result<(), Refusal> {
-    let replaces = event.get("replaces").and_then(Value::as_u64);
-    if let Some(id) = replaces
-        && bank.get(id).is_none()
-    {
+    let gone = hidden_by(event);
+    let shown: BTreeSet<u64> = kept(bank).iter().map(|lesson| lesson.id).collect();
+    if let Some(id) = gone.iter().copied().find(|id| !shown.contains(id)) {
         return Err(Refusal::UnknownLesson { id });
     }
+    if is_retirement(event) {
+        return Ok(());
+    }
     let text = event.get("text").and_then(Value::as_str).unwrap_or_default();
-    match repeated(bank, text, replaces) {
+    match repeated(bank, text, &gone) {
         Some(same) => Err(Refusal::LessonRepeated {
             id: same.id,
             text: same.str_field("text").unwrap_or_default().to_string(),
@@ -205,18 +271,26 @@ pub fn comparable(text: &str) -> String {
 }
 
 /// A lição vigente do banco cujo texto é o mesmo de `text`, pela forma de
-/// [`comparable`], de qualquer classe. `except` é a lição que a nova
-/// substitui, que não conta. Texto vazio não repete nada.
+/// [`comparable`], de qualquer classe. `except` são as lições que a nova
+/// substitui, que não contam. Texto vazio não repete nada.
 #[must_use]
-pub fn repeated<'a>(bank: &'a SpecLog, text: &str, except: Option<u64>) -> Option<&'a SpecEvent> {
+pub fn repeated<'a>(bank: &'a SpecLog, text: &str, except: &[u64]) -> Option<&'a SpecEvent> {
     let wanted = comparable(text);
     if wanted.is_empty() {
         return None;
     }
-    bank.visible()
+    kept(bank)
         .into_iter()
-        .filter(|lesson| Some(lesson.id) != except)
+        .filter(|lesson| !except.contains(&lesson.id))
         .find(|lesson| lesson.str_field("text").is_some_and(|own| comparable(own) == wanted))
+}
+
+/// As lições que a leitura do banco mostra, em ordem: as das quatro classes
+/// que nenhuma versão nova substituiu e nenhuma retirada tirou. A linha da
+/// retirada não é lição.
+#[must_use]
+pub fn kept(bank: &SpecLog) -> Vec<&SpecEvent> {
+    bank.visible().into_iter().filter(|lesson| CLASSES.contains(&lesson.event_type.as_str())).collect()
 }
 
 /// Onde se procura lição: os arquivos, o subprojeto e a skill de uma onda.
@@ -233,7 +307,7 @@ pub struct Scope {
 /// escopo fica dentro dele, ou em que a skill é a dela.
 #[must_use]
 pub fn in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
-    let mut found: Vec<&SpecEvent> = bank.visible().into_iter().filter(|lesson| applies(lesson, scope)).collect();
+    let mut found: Vec<&SpecEvent> = kept(bank).into_iter().filter(|lesson| applies(lesson, scope)).collect();
     found.sort_by_key(|lesson| lesson.id);
     found
 }
@@ -313,7 +387,7 @@ fn path_matches(pattern: &str, file: &str) -> bool {
 /// fortes, pelo BM25.
 #[must_use]
 pub fn matching(bank: &SpecLog, words: &str) -> Vec<Hit> {
-    matching_among(&bank.visible(), words)
+    matching_among(&kept(bank), words)
 }
 
 /// A mesma busca de [`matching`], só entre `lessons`: quem já separou as
@@ -326,22 +400,199 @@ pub fn matching_among(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
 
 /// As lições que o pedido de uma onda e o da revisão levam, entre as `found`
 /// que valem para ela: de cada classe, só as 5 mais ligadas às palavras das
-/// tarefas (`words`), pela busca de [`matching`]. A lição que não tem palavra
-/// nenhuma em comum com as tarefas fica fora, seja qual for a classe. Em
-/// ordem de número.
+/// tarefas (`words`), pela busca de [`matching`] feita sobre as palavras-chave
+/// de cada lição ([`by_keys`]), e não sobre o texto dela. A lição sem
+/// palavra-chave em comum com as tarefas fica fora, seja qual for a classe,
+/// mesmo que o texto dela divida palavras com elas. Em ordem de número.
 #[must_use]
 pub fn related_to_tasks<'a>(found: Vec<&'a SpecEvent>, words: &str) -> Vec<&'a SpecEvent> {
     let mut by_class: BTreeMap<&str, Vec<&SpecEvent>> = BTreeMap::new();
     for lesson in found {
         by_class.entry(lesson.event_type.as_str()).or_default().push(lesson);
     }
-    let mut kept: Vec<&SpecEvent> = Vec::new();
+    let mut taken: Vec<&SpecEvent> = Vec::new();
     for lessons in by_class.into_values() {
-        let related = matching_among(&lessons, words);
-        kept.extend(lessons.into_iter().filter(|lesson| related.iter().any(|hit| hit.id == lesson.id)));
+        let related = by_keys(&lessons, words);
+        taken.extend(lessons.into_iter().filter(|lesson| related.iter().any(|hit| hit.id == lesson.id)));
     }
-    kept.sort_by_key(|lesson| lesson.id);
-    kept
+    taken.sort_by_key(|lesson| lesson.id);
+    taken
+}
+
+/// Cada palavra-chave de uma lição como um termo só da busca: as raízes de
+/// todas as palavras dela, ligadas por `_`. "ao mesmo tempo" vira um termo, e
+/// não três: a lição só é ligada a uma tarefa quando a palavra-chave inteira
+/// aparece nela, e não só um pedaço, como "tempo".
+fn key_terms(lesson: &SpecEvent) -> Vec<String> {
+    let keys = lesson.fields.get("keys").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    keys.iter().filter_map(Value::as_str).filter_map(key_term).collect()
+}
+
+/// Uma palavra-chave como termo da busca; `None` quando ela só tem palavras
+/// funcionais, que qualquer texto tem.
+fn key_term(key: &str) -> Option<String> {
+    if search::query_terms(key).is_empty() {
+        return None;
+    }
+    Some(search_terms(key).join("_"))
+}
+
+/// A busca de [`matching_among`], só que sobre as palavras-chave de cada
+/// lição: as 5 mais fortes para as palavras `words`. O pedido é feito com as
+/// palavras-chave que aparecem inteiras em `words`, com todas as palavras
+/// delas, na forma reduzida do `search`.
+#[must_use]
+pub fn by_keys(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
+    let said: BTreeSet<String> = search_terms(words).into_iter().collect();
+    let docs: Vec<(u64, String)> = lessons.iter().map(|lesson| (lesson.id, key_terms(lesson).join(" "))).collect();
+    let asked: Vec<String> = lessons
+        .iter()
+        .flat_map(|lesson| key_terms(lesson))
+        .filter(|term| term.split('_').all(|root| said.contains(root)))
+        .collect();
+    SearchIndex::build(docs.iter().map(|(id, terms)| (*id, terms.as_str()))).top(&asked, search::TOP)
+}
+
+/// Os grupos de lições parecidas que o scan manda juntar, cada um em ordem de
+/// número, e os grupos em ordem da primeira lição. Só se comparam lições da
+/// mesma classe e do mesmo lugar ([`place`]), pela busca de [`by_keys`]: as
+/// palavras-chave de uma são o pedido, e as das outras, o que se procura.
+/// Duas lições são parecidas quando cada uma acha a outra com pelo menos
+/// metade da nota com que acha a si mesma: a que divide só a palavra do
+/// subprojeto, que toda lição dali tem, fica longe da metade. Lições ligadas
+/// por uma corrente de pares parecidos ficam no mesmo grupo. As lições de
+/// `leaving`, que o scan já manda retirar, não entram em grupo nenhum.
+#[must_use]
+pub fn similar(bank: &SpecLog, leaving: &[u64]) -> Vec<Vec<u64>> {
+    let mut buckets: BTreeMap<(String, String), Vec<&SpecEvent>> = BTreeMap::new();
+    for lesson in kept(bank).into_iter().filter(|lesson| !leaving.contains(&lesson.id)) {
+        buckets.entry((lesson.event_type.clone(), place(lesson))).or_default().push(lesson);
+    }
+    let mut groups: Vec<Vec<u64>> = Vec::new();
+    for lessons in buckets.into_values().filter(|lessons| lessons.len() > 1) {
+        let terms: Vec<(u64, Vec<String>)> = lessons.iter().map(|lesson| (lesson.id, key_terms(lesson))).collect();
+        let docs: Vec<(u64, String)> = terms.iter().map(|(id, own)| (*id, own.join(" "))).collect();
+        let index = SearchIndex::build(docs.iter().map(|(id, own)| (*id, own.as_str())));
+        // A nota de cada lição para o pedido feito com as palavras-chave de
+        // cada uma.
+        let scores: BTreeMap<u64, BTreeMap<u64, u64>> = terms
+            .iter()
+            .map(|(id, own)| {
+                let hits = index.top(own, lessons.len());
+                (*id, hits.into_iter().map(|hit| (hit.id, hit.score)).collect())
+            })
+            .collect();
+        let finds = |from: u64, to: u64| -> bool {
+            let Some(hits) = scores.get(&from) else { return false };
+            let own = hits.get(&from).copied().unwrap_or_default();
+            hits.get(&to).is_some_and(|score| own > 0 && score.saturating_mul(2) >= own)
+        };
+        let ids: Vec<u64> = terms.iter().map(|(id, _)| *id).collect();
+        let mut group_of: BTreeMap<u64, usize> = BTreeMap::new();
+        let mut bucket_groups: Vec<BTreeSet<u64>> = Vec::new();
+        for (i, a) in ids.iter().enumerate() {
+            for b in &ids[i + 1..] {
+                if !(finds(*a, *b) && finds(*b, *a)) {
+                    continue;
+                }
+                match (group_of.get(a).copied(), group_of.get(b).copied()) {
+                    (Some(x), Some(y)) if x != y => {
+                        let moved = std::mem::take(&mut bucket_groups[y]);
+                        for id in &moved {
+                            group_of.insert(*id, x);
+                        }
+                        bucket_groups[x].extend(moved);
+                    }
+                    (Some(_), Some(_)) => {}
+                    (Some(x), None) => {
+                        bucket_groups[x].insert(*b);
+                        group_of.insert(*b, x);
+                    }
+                    (None, Some(y)) => {
+                        bucket_groups[y].insert(*a);
+                        group_of.insert(*a, y);
+                    }
+                    (None, None) => {
+                        group_of.insert(*a, bucket_groups.len());
+                        group_of.insert(*b, bucket_groups.len());
+                        bucket_groups.push([*a, *b].into());
+                    }
+                }
+            }
+        }
+        groups.extend(bucket_groups.into_iter().filter(|g| g.len() > 1).map(|g| g.into_iter().collect()));
+    }
+    groups.sort();
+    groups
+}
+
+/// Onde a lição vale, numa forma que não depende da ordem dos campos: o
+/// subprojeto, os arquivos em ordem e a skill. Duas lições do mesmo lugar
+/// têm a mesma forma.
+fn place(lesson: &SpecEvent) -> String {
+    let Some(at) = lesson.fields.get("applies_to").and_then(Value::as_object) else {
+        return String::new();
+    };
+    let text = |name: &str| at.get(name).and_then(Value::as_str).map(clean_path).unwrap_or_default();
+    let mut files: Vec<String> = at
+        .get("files")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_str).map(clean_path).collect())
+        .unwrap_or_default();
+    files.sort();
+    files.dedup();
+    format!("{}|{}|{}", text("subproject"), files.join(","), text("skill"))
+}
+
+/// Uma lição que cita caminhos que o projeto já não tem, com esses caminhos.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingPaths {
+    pub id: u64,
+    pub paths: Vec<String>,
+}
+
+/// As lições que citam um caminho que o projeto já não tem, em ordem de
+/// número, cada uma com os caminhos que faltam. Conta o arquivo citado entre
+/// crases no texto e o lugar em que a lição vale: o subprojeto e cada
+/// caminho sem `*` dos arquivos dela. A pasta citada no texto não conta: a
+/// lição cita justamente a pasta que não deve existir, como a que a
+/// instalação de dependências cria. Quem responde se o caminho existe é
+/// `found`, com o subprojeto da lição, porque a lição de um subprojeto pode
+/// citar o caminho a partir dele.
+#[must_use]
+pub fn citing_missing_paths(bank: &SpecLog, found: impl Fn(&str, Option<&str>) -> bool) -> Vec<MissingPaths> {
+    let mut out = Vec::new();
+    for lesson in kept(bank) {
+        let at = lesson.fields.get("applies_to").and_then(Value::as_object);
+        let subproject =
+            at.and_then(|at| at.get("subproject")).and_then(Value::as_str).map(clean_path).filter(|s| !s.is_empty());
+        let mut cited: Vec<String> = cited_paths(lesson.str_field("text").unwrap_or_default())
+            .into_iter()
+            .filter(|path| !path.ends_with('/'))
+            .collect();
+        cited.extend(subproject.clone());
+        cited.extend(
+            at.and_then(|at| at.get("files"))
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(clean_path)
+                .filter(|p| !p.is_empty() && !p.contains('*')),
+        );
+        let mut paths: Vec<String> = Vec::new();
+        for path in cited {
+            let inside = subproject.as_deref().filter(|sub| *sub != path);
+            if !found(&path, inside) && !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        if !paths.is_empty() {
+            out.push(MissingPaths { id: lesson.id, paths });
+        }
+    }
+    out
 }
 
 /// A lição como é mostrada: a linha com o texto original, sem o `search`.
@@ -457,10 +708,15 @@ mod tests {
     /// De cada classe ficam só as 5 mais ligadas às palavras das tarefas, e a
     /// lição sem palavra em comum com elas sai, seja qual for a classe; tudo
     /// volta em ordem de número. Com seis defeitos ligados, o sexto, o mais
-    /// fraco, perde o lugar: cinco é o último número que passa inteiro.
+    /// fraco, perde o lugar: cinco é o último número que passa inteiro. Cada
+    /// palavra da lição é aqui uma palavra-chave dela, porque é nas
+    /// palavras-chave que a busca procura.
     #[test]
     fn of_each_class_only_the_five_lessons_closest_to_the_tasks_are_kept() {
-        let of = |id: u64, class: &str, text: &str| lesson(id, json!({"class": class, "text": text, "keys": ["k"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"source": "CLAUDE.md"}}));
+        let of = |id: u64, class: &str, text: &str| {
+            let keys: Vec<&str> = text.trim_end_matches('.').split(' ').collect();
+            lesson(id, json!({"class": class, "text": text, "keys": keys, "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"source": "CLAUDE.md"}}))
+        };
         let mut content = vec![of(1, "environment_trap", "O cargo não está no PATH.")];
         for id in 2..=7 {
             content.push(of(id, "project_rule", &format!("A fatura soma o total {id}.")));
@@ -483,6 +739,126 @@ mod tests {
         assert!(!kept.contains(&1), "a armadilha sem palavra em comum sai: {kept:?}");
         assert!(kept.contains(&16), "a preferência ligada fica: {kept:?}");
         assert!(kept.windows(2).all(|w| w[0] < w[1]), "{kept:?}");
+    }
+
+    /// A lição entra no pedido pelas palavras-chave, e não pelo texto: a
+    /// lição longa que divide palavras do texto com a tarefa, sem nenhuma
+    /// palavra-chave nela, fica de fora; a que tem uma palavra-chave na
+    /// tarefa entra. Na divisa, a palavra-chave de várias palavras só conta
+    /// inteira: "ao mesmo tempo" não aparece numa tarefa que diz só "tempo",
+    /// e aparece numa que diz "ao mesmo tempo".
+    #[test]
+    fn a_lesson_is_tied_to_the_tasks_by_its_whole_keywords_and_never_by_its_text() {
+        let of = |id: u64, text: &str, keys: &[&str]| lesson(id, json!({"class": "defect", "text": text, "keys": keys, "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}));
+        let bank = parse_log(
+            &[
+                of(1, "A primeira linha da lista mostra o uso e o tempo da conversa inteira.", &["pedido", "subagente"]),
+                of(2, "Rode o teste em primeiro plano.", &["teste"]),
+                of(3, "Duas rodadas gravam juntas.", &["ao mesmo tempo"]),
+            ]
+            .concat(),
+        );
+        let task = "A primeira linha da barra mostra o uso da conversa e o tempo. O teste confere a linha.";
+        let ids = |words: &str| -> Vec<u64> { related_to_tasks(bank.visible(), words).iter().map(|l| l.id).collect() };
+        assert_eq!(ids(task), [2], "só a lição com palavra-chave na tarefa entra");
+        assert!(matching(&bank, task).iter().any(|hit| hit.id == 1), "pelo texto, a lição 1 entraria");
+        assert_eq!(ids(&format!("{task} As duas gravam ao mesmo tempo.")), [2, 3], "a palavra-chave inteira entra");
+    }
+
+    /// Uma lição como o importador das instruções deixa no banco, com o
+    /// texto e as palavras-chave reais do banco deste projeto.
+    fn rule(id: u64, subproject: &str, text: &str, keys: &[&str]) -> String {
+        lesson(id, json!({"class": "project_rule", "text": text, "keys": keys, "applies_to": {"subproject": subproject}, "found_in": {"source": format!("{subproject}/CLAUDE.md")}}))
+    }
+
+    /// As regras reais do subprojeto `apps/rt`: a 7 e a 78 são a mesma regra
+    /// escrita em dois arquivos de instruções, com palavras diferentes; as
+    /// outras dividem com elas só a palavra do subprojeto.
+    fn rt_rules(other_place_for_78: Option<&str>) -> Vec<String> {
+        let sub = "apps/rt";
+        vec![
+            rule(5, sub, "Hook nunca pode entrar em pânico nem barrar a sessão por erro próprio.", &["rt", "nunca", "entrar", "pânico", "barrar", "sessão", "próprio"]),
+            rule(6, sub, "`clippy::unwrap_used`/`expect_used` são `deny` em todo o crate.", &["rt", "clippy", "unwrap", "expect", "crate", "degrade"]),
+            rule(7, sub, "Subcomando novo de `run` exige QUATRO registros; esquecer qualquer um compila mas quebra algo em silêncio.", &["rt", "subcomando", "exige", "quatro", "registros", "esquecer", "qualquer"]),
+            rule(9, sub, "A face `run` NÃO lê o stdin do harness.", &["rt", "stdin", "harness", "despachada", "antes", "leitura", "check"]),
+            rule(78, other_place_for_78.unwrap_or(sub), "Subcomando novo de `run` exige QUATRO registros (variante no enum, braço no `dispatch()`, entrada na lista trancada e um chamador).", &["rt", "subcomando", "exige", "quatro", "registros", "variante", "família"]),
+            rule(79, sub, "`notify`, `sha2` e `rayon` já foram removidos por não terem import nenhum consumindo.", &["rt", "notify", "rayon", "foram", "removidos", "terem", "import"]),
+        ]
+    }
+
+    /// As duas regras com o mesmo assunto em palavras diferentes formam um
+    /// grupo, e as vizinhas do mesmo lugar, que dividem só a palavra do
+    /// subprojeto, ficam fora. A mesma regra em outro lugar, a que já vai
+    /// sair e a de outra classe não formam grupo.
+    #[test]
+    fn two_lessons_on_the_same_subject_in_other_words_form_one_group() {
+        let bank = parse_log(&rt_rules(None).concat());
+        assert_eq!(similar(&bank, &[]), vec![vec![7, 78]]);
+        assert!(similar(&bank, &[78]).is_empty(), "a lição que já vai sair não entra em grupo");
+
+        let elsewhere = parse_log(&rt_rules(Some("packages/core")).concat());
+        assert!(similar(&elsewhere, &[]).is_empty(), "outro lugar, outra lição");
+
+        let mut other_class = rt_rules(None);
+        other_class[4] = other_class[4].replace("\"type\":\"project_rule\"", "\"type\":\"defect\"");
+        assert!(similar(&parse_log(&other_class.concat()), &[]).is_empty(), "outra classe, outra lição");
+    }
+
+    /// A lição que cita um arquivo que o projeto já não tem é apontada com o
+    /// caminho; a que cita um arquivo que existe, a pasta que não deve
+    /// existir e o endereço de um pacote não. O subprojeto que saiu também
+    /// é apontado, e o arquivo citado a partir do subprojeto é achado nele.
+    #[test]
+    fn a_lesson_citing_a_path_the_project_no_longer_has_is_pointed_out() {
+        let bank = parse_log(
+            &[
+                rule(1, "packages/core", "Trate a contagem de `domain/economy/estimator.rs` como aproximação.", &["tokens"]),
+                rule(2, "packages/core", "Escreva por `io/fs.rs`, nunca direto; o `target/` fica fora.", &["escrita"]),
+                rule(3, "apps/scan/tests/fixtures/flutter_app", "Importe `package:flutter/material.dart` e nunca `lib/counter.g.dart`.", &["flutter"]),
+                rule(4, "apps/mcp", "O `main.rs` só chama a biblioteca.", &["mcp"]),
+            ]
+            .concat(),
+        );
+        let exists = [
+            "packages/core",
+            "packages/core/src/io/fs.rs",
+            "apps/scan/tests/fixtures/flutter_app",
+            "apps/scan/tests/fixtures/flutter_app/lib/counter.g.dart",
+        ];
+        let found = |path: &str, inside: Option<&str>| {
+            exists.contains(&path)
+                || inside.is_some_and(|sub| exists.contains(&format!("{sub}/{path}").as_str()))
+                || exists.iter().any(|known| known.ends_with(&format!("/{path}")))
+        };
+        let missing = citing_missing_paths(&bank, found);
+        assert_eq!(
+            missing,
+            vec![
+                MissingPaths { id: 1, paths: vec!["domain/economy/estimator.rs".into()] },
+                MissingPaths { id: 4, paths: vec!["apps/mcp".into()] },
+            ]
+        );
+    }
+
+    /// A retirada é o rascunho sem classe com as lições em `targets` e o
+    /// motivo em `reason`: sem um deles, é recusada pelo nome. A lição que
+    /// junta outras aponta todas em `replaces`; a lista vazia é recusada.
+    #[test]
+    fn a_retirement_needs_targets_and_reason_and_a_merge_a_list_of_lessons() {
+        let retire = normalize(obj(json!({"targets": [3], "reason": "cita um arquivo que saiu"})), Some("s"));
+        assert_eq!(retire["type"], json!(RETIRE));
+        assert!(retire.get("found_in").is_none(), "a retirada não nasce em lugar nenhum");
+        assert!(validate(&retire).is_ok());
+        let no_reason = normalize(obj(json!({"targets": [3]})), None);
+        assert_eq!(validate(&no_reason).unwrap_err(), missing("reason"));
+        let no_targets = normalize(obj(json!({"targets": [], "reason": "r"})), None);
+        assert_eq!(validate(&no_targets).unwrap_err(), missing("targets"));
+
+        let merge = |replaces: Value| checked(json!({"class": "defect", "text": "t", "keys": ["k"], "applies_to": {"skill": "s"}, "found_in": {"spec": "x"}, "replaces": replaces}));
+        assert!(merge(json!([1, 2])).is_ok());
+        assert!(merge(json!(1)).is_ok());
+        assert_eq!(merge(json!([])).unwrap_err(), invalid("replaces", Kind::Ints));
+        assert_eq!(merge(json!("1")).unwrap_err(), invalid("replaces", Kind::Ints));
     }
 
     /// O mesmo texto, com outros espaços, maiúsculas e acentos, é a mesma

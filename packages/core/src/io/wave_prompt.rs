@@ -649,13 +649,74 @@ mod tests {
         }
     }
 
-    /// Uma lição como o gravador a deixa no banco, com o `search`.
+    /// Uma lição como o gravador a deixa no banco, com o `search`. Cada
+    /// palavra do texto é também uma palavra-chave dela: é nas palavras-chave
+    /// que o pedido procura as lições ligadas às tarefas.
     fn bank_line(id: u64, class: &str, text: &str, files: &str) -> String {
-        let draft = json!({"class": class, "text": text, "keys": ["k"], "applies_to": {"files": [files]},
-                           "found_in": {"source": "apps/rt/CLAUDE.md"}});
+        let keys: Vec<&str> = text.trim_end_matches('.').split(' ').collect();
+        keyed_line(id, class, text, &keys, json!({"files": [files]}), json!({"source": "apps/rt/CLAUDE.md"}))
+    }
+
+    /// Uma lição como o gravador a deixa no banco, com as palavras-chave, o
+    /// lugar em que vale e o lugar em que nasceu dados.
+    fn keyed_line(id: u64, class: &str, text: &str, keys: &[&str], applies_to: Value, found_in: Value) -> String {
+        let draft = json!({"class": class, "text": text, "keys": keys, "applies_to": applies_to, "found_in": found_in});
         let event = crate::domain::lessons::normalize(draft.as_object().cloned().unwrap_or_default(), None);
         format!("{}\n", render_line(&stamp(event, id, None, "2026-09-15T10:00:00-03:00")))
     }
+
+    /// O caso real: as quatro lições do projeto todo do banco deste projeto,
+    /// com o texto e as palavras-chave de verdade, e a tarefa real da onda
+    /// que só mexe na barra de status. A lição longa sobre o envio do pedido
+    /// divide palavras do texto com a tarefa ("primeira", "linha"), mas
+    /// nenhuma palavra-chave dela aparece na tarefa: ela fica fora do pedido
+    /// da onda e do da revisão. A lição do teste, cuja palavra-chave "teste"
+    /// aparece na tarefa, continua entrando nos dois; a da trava, cuja
+    /// palavra-chave "ao mesmo tempo" só aparece pela metade ("tempo"), e a
+    /// da suíte ficam fora.
+    #[test]
+    fn the_request_carries_a_lesson_by_its_keywords_and_not_by_the_words_of_its_text() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let everywhere = json!({"files": ["**"]});
+        let lines = [
+            keyed_line(1, "defect", DISPATCH_LESSON, &["pedido", "onda", "subagente", "despacho", "contexto"], everywhere.clone(), json!({"spec": "mustard-enxuto"})),
+            keyed_line(3, "defect", "Subagente nunca roda compilação ou teste em segundo plano: o aviso de término não chega a ele, e ele encerra dizendo que espera a suíte, com o trabalho pela metade. Rode tudo em primeiro plano, com o teto de tempo do comando, e só devolva o relatório depois de ver o resultado. Em 17/09 duas revisões pararam assim e precisaram ser retomadas.", &["segundo plano", "suíte", "subagente", "revisão", "espera"], everywhere.clone(), json!({"spec": "mustard-enxuto"})),
+            keyed_line(4, "defect", "Quem tira uma proteção (trava, reserva, recusa) prova que o que ela protegia continua protegido: a trava que sobra cobre o bloco inteiro (ler, juntar, gravar, comitar e desfazer), e o teste roda duas voltas ao mesmo tempo, não só uma de cada vez. Em 17/09 a onda 33 tirou a reserva de arquivos e a trava do git seguiu cobrindo só o commit: duas rodadas simultâneas no mesmo arquivo perdiam a mudança de uma delas para sempre.", &["trava", "reserva", "ao mesmo tempo", "concorrência", "proteção"], everywhere.clone(), json!({"spec": "mustard-enxuto"})),
+            keyed_line(96, "defect", "O teste tem de falhar quando o código está errado. Teste na divisa: o último valor que passa e o primeiro que já não passa. Teste pelo caminho que a pessoa usa, com os ganchos e os comandos, sem montar a conversa à mão. E teste com os dados completos de uma sessão real. Em 18/09, três testes desta obra passavam com o código errado por falta disso.", &["teste", "prova", "vermelho", "divisa", "caminho real", "dados completos"], everywhere, json!({"spec": "conferencia-instalacao-barra"})),
+        ];
+        let path = root.join(".claude").join("spec");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("lessons.ndjson"), lines.concat()).unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 7, "text": "Os dois ajustes pedidos depois das revisões", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 7, "label": "Onda 7, a barra sem a contagem de linhas mudadas", "text": STATUS_BAR_TASK,
+                            "files": [{"path": "apps/rt/src/commands/statusline/mod.rs"}, {"path": "apps/rt/src/commands/statusline/segment.rs"}]})),
+        ]);
+
+        let bank = crate::io::lessons::read(&path.join("lessons.ndjson")).unwrap().unwrap();
+        let by_text = crate::domain::lessons::matching(&bank, STATUS_BAR_TASK);
+        assert!(by_text.iter().any(|hit| hit.id == 1), "pelo texto inteiro, a lição do envio entraria: {by_text:?}");
+
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
+        let lessons = section_lines(&built[0].text, part("prompt.part.lessons"));
+        let defects = section_lines(&built[0].review, part("prompt.part.defects"));
+        for shown in [&lessons, &defects] {
+            assert_eq!(shown.len(), 1, "{shown:?}");
+            assert!(shown[0].starts_with("O teste tem de falhar"), "{shown:?}");
+        }
+        for out in ["O pedido da onda vai INTEIRO", "Subagente nunca roda", "Quem tira uma proteção"] {
+            assert!(!built[0].text.contains(out) && !built[0].review.contains(out), "{out} fica fora dos dois pedidos");
+        }
+    }
+
+    /// A lição real sobre o envio do pedido de uma onda, do banco deste
+    /// projeto.
+    const DISPATCH_LESSON: &str = "O pedido da onda vai INTEIRO no corpo do prompt do subagente, como a rodada o devolve. Mandar no lugar dele um endereco — o codigo do envio gravado, ou um arquivo temporario — nao economiza contexto nenhum: a primeira coisa que o agente faz e abrir esse endereco e receber o mesmo texto de uma vez, so que em JSON cru e gastando uma chamada a mais. O que e preguicoso nao e o pedido, sao os itens dentro dele: cada linha da lista e um endereco, e o agente so abre o conteudo de um item quando chega a hora de trabalhar nele. Em 16/09 o usuario cortou dois agentes seguidos por isso, um por arquivo temporario e outro pelo codigo do envio.";
+
+    /// A tarefa real da onda que só mexe na barra de status.
+    const STATUS_BAR_TASK: &str = "A primeira linha da barra deixa de mostrar a contagem de linhas mudadas (+N-N) e fica igual ao exemplo aprovado: projeto, branch, spec, uso da conversa e tempo. O teste do exemplo aprovado passa a usar uma sessão com linhas mudadas e todos os dados que a sessão real traz, e reprova se a contagem voltar.";
 
     /// Uma pasta com 500 regras do projeto, e a onda mexe num arquivo dela: o
     /// pedido leva no máximo 5 regras, as mais ligadas ao texto das tarefas,

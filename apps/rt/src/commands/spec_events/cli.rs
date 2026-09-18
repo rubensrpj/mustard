@@ -54,7 +54,9 @@ pub enum SpecEventsCmd {
     /// lesson is the assistant's summary, written the project's way: its text
     /// goes through the writing check that ends a response, and a text that
     /// repeats a lesson already in the bank (spaces, case and accents aside)
-    /// is refused, naming that lesson.
+    /// is refused, naming that lesson. A lesson with `"replaces":[3,5]` merges
+    /// those lessons into one; `{"targets":[4],"reason":"…"}`, with no
+    /// `class`, retires lesson 4.
     #[command(display_order = 9, after_help = fields_of_each_type())]
     Write {
         /// The event type, e.g. `rule`, `decision`, `wave`, `remove` or
