@@ -239,7 +239,7 @@ fn build(
     moment: Moment,
     lang: Locale,
 ) -> Result<Option<Prepared>, Refusal> {
-    let SpecPage { url, since, old } = spec_page(log);
+    let SpecPage { url, since, old, republished } = spec_page(log);
     if moment == Moment::Request && url.is_none() {
         return Ok(None);
     }
@@ -261,7 +261,10 @@ fn build(
     }
     let (collection, doc) = COMPUTED.split_once('/').unwrap_or((COMPUTED, "current"));
     writes.push(set(place, collection, doc, &computed(place, log, rtk, lang))?);
-    if since != 0 {
+    // Uma república no mesmo endereço zera `since`, mas o documento calculado
+    // já está no banco desde a primeira publicação daquele endereço: a
+    // primeira cópia depois da república também tem de nomeá-lo.
+    if since != 0 || republished {
         existing.push(COMPUTED.to_string());
     }
     if url.is_none() {
@@ -301,6 +304,9 @@ struct SpecPage {
     since: u64,
     /// Uma versão antiga publicou a página inteira, sem template.
     old: bool,
+    /// O endereço da última publicação já tinha sido publicado antes dela: o
+    /// documento calculado já está no banco desde essa publicação anterior.
+    republished: bool,
 }
 
 /// A página da spec do arquivo `log`. Só a publicação do template conta: a
@@ -312,16 +318,17 @@ fn spec_page(log: &SpecLog) -> SpecPage {
         .filter_map(|e| published_to(e, SPEC_PAGE).map(|url| (e.id, url, is_template(e))))
         .collect();
     let old = published.iter().any(|(_, _, template)| !template);
-    let Some((at, url, _)) = published.into_iter().rfind(|(_, _, template)| *template) else {
-        return SpecPage { url: None, since: 0, old };
+    let Some((at, url, _)) = published.iter().copied().rfind(|(_, _, template)| *template) else {
+        return SpecPage { url: None, since: 0, old, republished: false };
     };
+    let republished = published.iter().any(|&(id, other, _)| id < at && other == url);
     let since = visible
         .iter()
         .filter(|e| e.id > at && copy_of(e) == Some(SPEC_PAGE))
         .filter_map(|e| e.int("last"))
         .max()
         .unwrap_or(0);
-    SpecPage { url: Some(url.to_string()), since, old }
+    SpecPage { url: Some(url.to_string()), since, old, republished }
 }
 
 /// A página de um registro de cópia.
@@ -1101,6 +1108,29 @@ mod tests {
         let second = round(root);
         assert_eq!(second["copy"]["spec"]["first"], json!(true), "the republish restarts the copy: {second}");
         assert_eq!(sent_items(root, &second).first(), Some(&1), "the whole spec goes again: {second}");
+    }
+
+    /// A república no mesmo endereço também zera a contagem, mas o documento
+    /// calculado já está no banco desde a primeira publicação daquele
+    /// endereço: a ordem da primeira cópia depois da república tem de
+    /// nomeá-lo entre os que já existem, senão o banco recusa a troca sem
+    /// versão.
+    #[test]
+    fn the_first_copy_after_a_republish_names_the_computed_doc() {
+        let dir = approved_project();
+        let root = dir.path();
+        let lang = Locale::PtBr;
+        let first = round(root);
+        follow(root, &first);
+
+        write(root, "publish",
+            json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "url": SPEC_URL}));
+
+        let second = round(root);
+        assert_eq!(second["copy"]["spec"]["first"], json!(true), "the republish resets the count: {second}");
+        let next2 = full_next(root, &second);
+        let expected2 = batches_order_with(&second, "x", SPEC_URL, &[COMPUTED], lang);
+        assert!(next2.contains(&expected2), "the computed document is pinned after a same-address republish: {next2}");
     }
 
     /// Um pedido que muda o plano, gravado pelo `run write`, faz a cópia sair
