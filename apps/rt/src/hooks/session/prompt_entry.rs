@@ -5,9 +5,11 @@
 //!
 //! 1. **A trava de instalação.** Num projeto sem `mustard.json` na raiz, um
 //!    comando `/mustard:*` é barrado com a indicação do `/mustard:upsert`, o
-//!    único liberado (é a porta que instala). O `/mustard` sozinho, sem dois
-//!    pontos, é a ajuda e passa. Texto comum nunca é barrado: num projeto sem
-//!    Mustard os ganchos ficam calados.
+//!    único liberado (é a porta que instala). Sem o arquivo, o idioma do
+//!    projeto ainda não é conhecido, então a recusa sai do catálogo nos dois
+//!    idiomas, uma linha em cada. O `/mustard` sozinho, sem dois pontos, é a
+//!    ajuda e passa. Texto comum nunca é barrado: num projeto sem Mustard os
+//!    ganchos ficam calados.
 //! 2. **A mensagem, gravada.** Com uma spec atual, a mensagem do usuário vai
 //!    para o bloco da conversa, como ele a escreveu. O aviso que o próprio
 //!    Claude Code manda pelo mesmo canal (o fim de um comando em segundo
@@ -82,9 +84,15 @@ fn message_line(root: &Path) -> Option<String> {
     Some(mustard_core::translate(key, language.text_or_default()).to_string())
 }
 
-/// A recusa da trava de instalação.
-const NOT_INSTALLED_REASON: &str = "Mustard is not installed in this project (no mustard.json at \
-     the root). Run /mustard:upsert to install it — everything else stays disabled until then.";
+/// A recusa da trava de instalação, do catálogo, uma linha em cada idioma:
+/// sem `mustard.json` o Mustard ainda não sabe qual é o idioma do projeto.
+fn not_installed_reason() -> String {
+    format!(
+        "{}\n{}",
+        mustard_core::translate("install_lock.not_installed", mustard_core::SupportedLocale::PtBr),
+        mustard_core::translate("install_lock.not_installed", mustard_core::SupportedLocale::EnUs),
+    )
+}
 
 impl Check for PromptEntry {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
@@ -96,7 +104,7 @@ impl Check for PromptEntry {
         let root = Path::new(&cwd);
         if !ProjectConfig::exists(root) {
             if is_mustard_command(prompt) && !is_upsert_prompt(prompt) {
-                return Ok(Verdict::Deny { reason: NOT_INSTALLED_REASON.to_string() });
+                return Ok(Verdict::Deny { reason: not_installed_reason() });
             }
             return Ok(Verdict::Allow);
         }
@@ -488,6 +496,21 @@ mod tests {
                 other => panic!("expected Deny for {prompt:?} without mustard.json, got {other:?}"),
             }
         }
+    }
+
+    /// Sem `mustard.json` o idioma do projeto ainda não é conhecido: a
+    /// recusa sai do catálogo com uma linha em português e outra em inglês,
+    /// e não com o texto fixo que morava no próprio arquivo.
+    #[test]
+    fn the_install_lock_speaks_both_languages() {
+        let (_dir, c) = ctx();
+        let Verdict::Deny { reason } = PromptEntry.evaluate(&prompt_input("/mustard:feature x"), &c).unwrap() else {
+            panic!("expected Deny without installation");
+        };
+        let pt = mustard_core::translate("install_lock.not_installed", mustard_core::SupportedLocale::PtBr);
+        let en = mustard_core::translate("install_lock.not_installed", mustard_core::SupportedLocale::EnUs);
+        assert_ne!(pt, en, "the two lines must differ");
+        assert_eq!(reason, format!("{pt}\n{en}"));
     }
 
     /// A porta que instala passa sem instalação; `/mustard:upsertish` é outro

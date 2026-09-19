@@ -615,7 +615,8 @@ mod tests {
     /// trecho antes da primeira pontuação que fecha o erro. As linhas vêm do
     /// próprio catálogo, lidas por `ClarityReport::defects`, não de cópias
     /// escritas à mão: se o catálogo mudar a pontuação de uma linha, o
-    /// recorte muda e este teste cai.
+    /// recorte muda e este teste cai. Longa e difícil de ler ao mesmo tempo
+    /// vira uma linha só, a junta; cada uma sozinha continua como sempre.
     #[test]
     fn every_catalog_defect_line_yields_its_error_name() {
         let full_report = |found: Locale, expected: Locale| ClarityReport {
@@ -635,34 +636,71 @@ mod tests {
             (
                 Locale::PtBr,
                 full_report(Locale::EnUs, Locale::PtBr),
-                [
+                vec![
                     "frase com 29 palavras",
                     "CI é uma sigla sem explicação",
                     "MSTD-RULE-0008 é um código interno",
-                    "resposta com 16 linhas, e o limite é 15",
-                    "texto difícil de ler",
+                    "resposta com 16 linhas (o limite é 15) e difícil de ler",
                     "resposta em en-US",
                 ],
             ),
             (
                 Locale::EnUs,
                 full_report(Locale::PtBr, Locale::EnUs),
-                [
+                vec![
                     "sentence with 29 words",
                     "CI is an unexplained acronym",
                     "MSTD-RULE-0008 is an internal code",
-                    "reply with 16 lines, and the limit is 15",
-                    "hard to read",
+                    "reply with 16 lines (the limit is 15) and hard to read",
                     "reply in pt-BR",
                 ],
             ),
         ] {
             let lines = report.defects(lang);
             assert_eq!(lines.len(), errors.len(), "{lang:?}: {lines:?}");
-            for (line, error) in lines.iter().zip(errors) {
-                assert_eq!(error_of(line), error, "{lang:?}: {line}");
+            for (line, error) in lines.iter().zip(&errors) {
+                assert_eq!(&error_of(line), error, "{lang:?}: {line}");
             }
         }
+
+        // Só a resposta longa, sem ser difícil de ler: a linha própria dela,
+        // sem juntar com nada.
+        let only_too_long = ClarityReport {
+            long_sentences: Vec::new(),
+            unexpanded_acronyms: Vec::new(),
+            internal_codes: Vec::new(),
+            prose_lines: 16,
+            lines: 16,
+            too_long: true,
+            reading_ease: None,
+            hard_to_read: false,
+            wrong_language: None,
+            passed: false,
+            explained: Vec::new(),
+        };
+        let lines = only_too_long.defects(Locale::PtBr);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(error_of(&lines[0]), "resposta com 16 linhas, e o limite é 15");
+
+        // Só difícil de ler, sem ser longa: a linha própria dela, sem juntar
+        // com nada.
+        let only_hard_to_read = ClarityReport {
+            long_sentences: Vec::new(),
+            unexpanded_acronyms: Vec::new(),
+            internal_codes: Vec::new(),
+            prose_lines: 8,
+            lines: 8,
+            too_long: false,
+            reading_ease: Some(12),
+            hard_to_read: true,
+            wrong_language: None,
+            passed: false,
+            explained: Vec::new(),
+        };
+        let lines = only_hard_to_read.defects(Locale::PtBr);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(error_of(&lines[0]), "texto difícil de ler");
+
         let dir = project();
         let reply = "A regra MSTD-RULE-0008 ficou pronta.";
         assert_eq!(check(dir.path(), &stop("s1", reply)), Verdict::Allow);

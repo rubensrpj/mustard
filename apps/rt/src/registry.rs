@@ -84,8 +84,9 @@ impl Registry {
     #[must_use]
     pub fn new() -> Self {
         let modules = vec![
-            // A trava de comandos: recusa o comando que destrói trabalho e o
-            // redirecionamento para um caminho do Windows.
+            // A trava de comandos: recusa o comando que destrói trabalho e
+            // corrige, sem recusar, o redirecionamento para um caminho do
+            // Windows.
             Module {
                 id: "command_guard",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Bash"))],

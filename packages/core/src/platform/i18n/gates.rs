@@ -1,6 +1,7 @@
 //! Os portões: o de escrita, a testemunha da aprovação e da mudança, a branch
-//! de trabalho e a base, a trava de comandos, os defeitos de clareza do fim da
-//! resposta e os rótulos do antigo portão de regressão.
+//! de trabalho e a base, a trava de comandos, a trava de instalação, os
+//! defeitos de clareza do fim da resposta e os rótulos do antigo portão de
+//! regressão.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -10,7 +11,8 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["write_gate", "approval", "change", "workbranch", "base", "command_guard", "clarity", "gate"];
+pub(super) const PREFIXES: &[&str] =
+    &["write_gate", "approval", "change", "workbranch", "base", "command_guard", "install_lock", "clarity", "gate"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -359,19 +361,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.restore_all", Locale::EnUs) => "discarding every change with `git restore .`",
         ("command_guard.delete_base", Locale::PtBr) => "apagar a branch de integração `{branch}`",
         ("command_guard.delete_base", Locale::EnUs) => "deleting the integration branch `{branch}`",
-        ("command_guard.windows_path", Locale::PtBr) => {
-            "Comando barrado: o destino `{target}` é um caminho do Windows, e o terminal do Bash não \
-             entende esse formato (no Windows vira um arquivo de nome estranho na pasta atual; no \
-             Linux e no macOS, um arquivo chamado `{target}`).\nNo Windows, use a forma \
-             `/c/pasta/arquivo`; no Linux e no macOS, um caminho absoluto de verdade. Caminho \
-             relativo funciona em todos.\nComando: {command}"
+        ("command_guard.windows_path_rewritten", Locale::PtBr) => {
+            "O destino `{original}` é um caminho do Windows, e o terminal do Bash não entende esse \
+             formato; o comando segue com `{posix}`, a forma que o shell entende."
         }
-        ("command_guard.windows_path", Locale::EnUs) => {
-            "Command blocked: the target `{target}` is a Windows path, and the Bash terminal does not \
-             understand that form (on Windows it becomes an oddly named file in the current folder; \
-             on Linux and macOS, a file named `{target}`).\nOn Windows, use the `/c/folder/file` \
-             form; on Linux and macOS, a real absolute path. A relative path works everywhere.\n\
-             Command: {command}"
+        ("command_guard.windows_path_rewritten", Locale::EnUs) => {
+            "The target `{original}` is a Windows path, and the Bash terminal does not understand \
+             that form; the command continues with `{posix}`, the form the shell understands."
         }
         ("command_guard.waiting_loop", Locale::PtBr) => {
             "Comando barrado: espera outro processo num laço, checando com `pgrep`, `pidof` ou `ps`. \
@@ -384,6 +380,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              or `ps`. The loop and the process it waits for can name each other's own search text and \
              never end.\nCommand: {command}\nRun the command in the foreground, with its own time \
              limit, and read the result before moving on."
+        }
+        // A trava de instalação (`apps/rt/src/hooks/session/prompt_entry.rs`):
+        // um comando `/mustard:` num projeto sem `mustard.json` na raiz. Sem
+        // esse arquivo o idioma do projeto ainda não é conhecido, então o
+        // chamador imprime este texto UMA VEZ EM CADA IDIOMA, um por linha.
+        ("install_lock.not_installed", Locale::PtBr) => {
+            "O Mustard não está instalado neste projeto: não há `mustard.json` na raiz. Rode \
+             `/mustard:upsert` para instalar; o resto fica desligado até lá."
+        }
+        ("install_lock.not_installed", Locale::EnUs) => {
+            "Mustard is not installed in this project: there is no `mustard.json` at the root. Run \
+             `/mustard:upsert` to install it; everything else stays off until then."
         }
         ("base.unmeasured", Locale::PtBr) => {
             "Não dá para saber de qual branch cortar: este projeto não declara base nenhuma em \
@@ -495,8 +503,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            65,
-            0xd62b_a498_030f_5113,
+            66,
+            0xde1f_3976_85dc_e39f,
         );
     }
 
@@ -577,7 +585,7 @@ mod tests {
             ("command_guard.checkout_all", &[][..]),
             ("command_guard.restore_all", &[][..]),
             ("command_guard.delete_base", &["{branch}"][..]),
-            ("command_guard.windows_path", &["{target}", "{command}"][..]),
+            ("command_guard.windows_path_rewritten", &["{original}", "{posix}"][..]),
             ("command_guard.waiting_loop", &["{command}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
@@ -587,6 +595,21 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+    }
+
+    /// A recusa da trava de instalação sai do catálogo nos dois idiomas, cada
+    /// um citando o `mustard.json` que falta e a porta que instala.
+    #[test]
+    fn i18n_translates_install_lock_key() {
+        let (pt, en) =
+            (translate("install_lock.not_installed", Locale::PtBr), translate("install_lock.not_installed", Locale::EnUs));
+        assert_ne!(pt, "<missing-key>");
+        assert_ne!(en, "<missing-key>");
+        assert_ne!(pt, en);
+        for text in [&pt, &en] {
+            assert!(text.contains("mustard.json"), "{text}");
+            assert!(text.contains("/mustard:upsert"), "{text}");
         }
     }
 
