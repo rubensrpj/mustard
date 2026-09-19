@@ -18,6 +18,7 @@ pub mod reopen;
 pub mod resume;
 pub mod round;
 pub(crate) mod skill_search;
+pub(crate) mod stuck;
 
 use std::path::Path;
 use std::time::Instant;

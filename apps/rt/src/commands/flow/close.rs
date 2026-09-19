@@ -170,6 +170,12 @@ fn run_close(
         return Err(CloseRefusal::NotRunning { phase });
     }
 
+    // Nada fica preso: todo processo que um agente deixou rodando — um laço
+    // de espera, ou um comando na cópia de uma onda já apagada — é encerrado
+    // no fechamento, e a resposta diz qual.
+    let stuck_hint =
+        crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(root), lang);
+
     // O que voltou da última rodada entra antes das conferências, pela mesma
     // porta da rodada, com o commit: é ele que fecha a última onda.
     let mut recorded: Vec<Value> = Vec::new();
@@ -191,7 +197,7 @@ fn run_close(
     if !final_approved(&log) {
         let prompt = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
         let next = translate("close.final_review", lang).replace("{spec}", &spec);
-        return Ok(json!({
+        let mut out = json!({
             "ok": true,
             "spec": spec,
             "phase": "running",
@@ -199,7 +205,11 @@ fn run_close(
             "criteria": runs,
             "review": { "final": true, "prompt": prompt },
             "next": next,
-        }));
+        });
+        if let Some(hint) = &stuck_hint {
+            spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
+        }
+        return Ok(out);
     }
 
     // A fase `closed` sai só por aqui, e é a mesma porta que arma a cobrança
@@ -224,6 +234,9 @@ fn run_close(
         "recorded": recorded,
         "criteria": runs,
     });
+    if let Some(hint) = &stuck_hint {
+        spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
+    }
     // O fechamento manda copiar, menos com a cópia que não pôde ser
     // preparada, que fica para a próxima — e o pull request vem depois.
     let then = match command.as_str() {

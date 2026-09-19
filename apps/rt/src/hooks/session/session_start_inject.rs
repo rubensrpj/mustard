@@ -30,6 +30,9 @@
 //! 8. **O disco** — as cópias descartáveis antigas acima de 5 GB.
 //! 9. **A versão velha do Mustard** — a gravada no projeto, a do plugin
 //!    carregado ou a do plugin instalado, quando uma delas ficou para trás.
+//! 10. **Os processos presos** — o que um agente deixou rodando (um laço de
+//!     espera, ou um comando na cópia de uma onda já apagada) é encerrado
+//!     aqui também, não só a cada rodada e no fechamento, e o aviso diz qual.
 //!
 //! ## Até 3 kB
 //!
@@ -111,6 +114,7 @@ const NOTICES: &[Notice] = &[
     Notice { name: "merged", text: merged_notice, cedes: Some(3) },
     Notice { name: "disk", text: disk_notice, cedes: Some(2) },
     Notice { name: "version", text: version_notice, cedes: Some(1) },
+    Notice { name: "stuck", text: stuck_notice, cedes: Some(0) },
 ];
 
 impl Check for SessionStartInject {
@@ -387,6 +391,13 @@ fn version_notice(probe: &Probe<'_>) -> Option<String> {
         .or_else(|| plugin_behind(&running, probe.installed, probe.lang))
 }
 
+/// Nada fica preso: os processos que um agente deixou rodando — um laço de
+/// espera, ou um comando na cópia de uma onda já apagada — são encerrados
+/// também aqui, não só a cada rodada e no fechamento.
+fn stuck_notice(probe: &Probe<'_>) -> Option<String> {
+    crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(probe.root), probe.lang)
+}
+
 /// A versão gravada no `mustard.json` não é a que roda. Sem `mustard.json`,
 /// nada: o projeto não tem o Mustard.
 fn stamp_drift(root: &Path, running: &str, lang: Locale) -> Option<String> {
@@ -518,12 +529,12 @@ mod tests {
         let names: Vec<&str> = NOTICES.iter().map(|n| n.name).collect();
         assert_eq!(
             names,
-            ["terrain", "declared", "resume", "project_page", "pending", "landed", "merged", "disk", "version"]
+            ["terrain", "declared", "resume", "project_page", "pending", "landed", "merged", "disk", "version", "stuck"]
         );
         let mut ceding: Vec<(u8, &str)> = NOTICES.iter().filter_map(|n| n.cedes.map(|turn| (turn, n.name))).collect();
         ceding.sort_unstable();
         let order: Vec<&str> = ceding.into_iter().map(|(_, name)| name).collect();
-        assert_eq!(order, ["terrain", "version", "disk", "merged", "pending", "project_page", "declared"]);
+        assert_eq!(order, ["stuck", "terrain", "version", "disk", "merged", "pending", "project_page", "declared"]);
         let kept: Vec<&str> = NOTICES.iter().filter(|n| n.cedes.is_none()).map(|n| n.name).collect();
         assert_eq!(kept, ["resume", "landed"]);
     }

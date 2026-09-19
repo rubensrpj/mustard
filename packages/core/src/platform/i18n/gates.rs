@@ -373,6 +373,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              form; on Linux and macOS, a real absolute path. A relative path works everywhere.\n\
              Command: {command}"
         }
+        ("command_guard.waiting_loop", Locale::PtBr) => {
+            "Comando barrado: espera outro processo num laço, checando com `pgrep`, `pidof` ou `ps`. \
+             O laço e o processo que ele espera podem citar o texto de busca um do outro e nunca \
+             terminar.\nComando: {command}\nRode o comando em primeiro plano, com o teto de tempo \
+             dele, e leia o resultado antes de seguir."
+        }
+        ("command_guard.waiting_loop", Locale::EnUs) => {
+            "Command blocked: it waits for another process in a loop, checking with `pgrep`, `pidof` \
+             or `ps`. The loop and the process it waits for can name each other's own search text and \
+             never end.\nCommand: {command}\nRun the command in the foreground, with its own time \
+             limit, and read the result before moving on."
+        }
         ("base.unmeasured", Locale::PtBr) => {
             "Não dá para saber de qual branch cortar: este projeto não declara base nenhuma em \
              `mustard.json#git.flow`, o remoto não respondeu qual é a branch padrão dele e o \
@@ -468,8 +480,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            63,
-            0xee29_201d_bc3d_b189,
+            64,
+            0x3f2d_a60b_0375_2d55,
         );
     }
 
@@ -551,6 +563,7 @@ mod tests {
             ("command_guard.restore_all", &[][..]),
             ("command_guard.delete_base", &["{branch}"][..]),
             ("command_guard.windows_path", &["{target}", "{command}"][..]),
+            ("command_guard.waiting_loop", &["{command}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

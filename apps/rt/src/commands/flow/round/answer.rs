@@ -196,6 +196,14 @@ pub(super) fn run_round_with_mine(
     let (given, unread) = analysis_lines(raw, lang);
     warnings.extend(unread);
 
+    // Nada fica preso: todo processo que um agente deixou rodando — um laço
+    // de espera, ou um comando na cópia de uma onda que o commit anterior já
+    // apagou — é encerrado a cada rodada, e a resposta diz qual.
+    let stuck_ended = crate::commands::flow::stuck::end_stuck_processes(root);
+    if let Some(hint) = crate::commands::flow::stuck::report_line(&stuck_ended, lang) {
+        warnings.push(json!({ "reason": "stuck-ended", "hint": hint }));
+    }
+
     // O despacho — a entrada na execução, a leitura da spec, a escolha das
     // ondas, a criação das cópias e a gravação dos envios — roda inteiro com a
     // trava do passo do git presa: a rodada que chega ao mesmo tempo só lê a
@@ -661,5 +669,34 @@ mod tests {
         }
         let entered = visible.iter().filter(|e| e.event_type == "state" && e.str_field("phase") == Some("running"));
         assert_eq!(entered.count(), 1, "the spec enters the run once: {outs:?}");
+    }
+
+    /// Cada rodada encerra o que um agente deixou preso: um comando cuja
+    /// cópia de onda já foi apagada é achado e citado nos avisos.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_round_ends_a_stuck_process_and_reports_it_in_warnings() {
+        use std::process::{Command, Stdio};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let copy = mustard_core::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join("mustard-x-99");
+        std::fs::create_dir_all(&copy).unwrap();
+        let mut orphaned = Command::new("sleep")
+            .arg("30")
+            .current_dir(&copy)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a process in the wave's copy");
+        std::fs::remove_dir_all(&copy).unwrap();
+
+        let out = round(root, "x", None);
+        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+        let pid = orphaned.id().to_string();
+        assert!(warned.iter().any(|w| w["reason"] == json!("stuck-ended") && w["hint"].as_str().unwrap_or_default().contains(&pid)), "{out}");
+        let _ = orphaned.wait();
     }
 }

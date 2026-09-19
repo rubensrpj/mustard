@@ -1,20 +1,25 @@
 //! `command_guard` — a trava de comandos, no `PreToolUse` do Bash.
 //!
 //! O comando é lido uma vez, como o terminal o parte ([`lex`]), e passa por
-//! duas conferências, nesta ordem:
+//! três conferências, nesta ordem:
 //!
 //! - [`safety`] — recusa os comandos que destroem trabalho;
 //! - [`windows_redirect`] — recusa o redirecionamento para um caminho do
 //!   Windows (`> C:\...`), que o shell POSIX transformaria num arquivo com
-//!   nome estranho na pasta atual.
+//!   nome estranho na pasta atual;
+//! - [`waiting`] — recusa o laço que espera outro processo (`while`/`until`
+//!   com `pgrep`, `pidof` ou `ps`) e corrige, sem recusar, a compilação ou o
+//!   teste do `cargo` mandados para segundo plano ou chamados pelo caminho
+//!   completo.
 //!
-//! A primeira que decide vence. Trocar um comando por `rtk` não é feito aqui:
-//! o gancho do próprio rtk faz isso.
+//! A primeira que decide vence. Trocar o `cargo` da linha de comando por
+//! `rtk` não é feito aqui: o gancho do próprio rtk faz isso; `waiting` só
+//! cobre o caminho completo, que esse gancho não alcança.
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
 
-use super::{lex, safety, windows_redirect};
+use super::{lex, safety, waiting, windows_redirect};
 
 /// A trava de comandos do Bash.
 pub struct CommandGuard;
@@ -48,6 +53,9 @@ impl Check for CommandGuard {
         }
         let lang = ctx.config.language().text_or_default();
         if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, lang) {
+            return Ok(verdict);
+        }
+        if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang) {
             return Ok(verdict);
         }
         Ok(Verdict::Allow)
@@ -110,12 +118,32 @@ mod tests {
         }
     }
 
-    /// Comando comum passa: a trava só tem as duas conferências, e ler ou
+    /// Comando comum passa: a trava tem só as três conferências, e ler ou
     /// buscar pelo terminal não é uma delas.
     #[test]
     fn ordinary_commands_pass_the_chain() {
         for cmd in ["git status", "npm run build", "grep -r pattern src/", "cat README.md", "git commit -m x"] {
             assert!(!verdict_for(cmd).is_blocking(), "{cmd}");
+        }
+    }
+
+    /// O laço que espera outro processo é recusado pela trava inteira, o
+    /// mesmo veredito que a conferência sozinha (`waiting::bash_waiting`) dá;
+    /// e o `cargo` mandado para segundo plano, que não é recusado, chega
+    /// reescrito com o campo `run_in_background` fora e o teto de tempo.
+    #[test]
+    fn the_waiting_check_runs_inside_the_full_chain() {
+        assert!(verdict_for("while pgrep -f x >/dev/null; do sleep 1; done").is_blocking());
+
+        let (mut input, ctx) = pre_bash("cargo test -p mustard-rt");
+        input.tool_input["run_in_background"] = json!(true);
+        match CommandGuard.evaluate(&input, &ctx).expect("check never errors") {
+            Verdict::Rewrite { tool_input, .. } => {
+                assert_eq!(tool_input["command"], "cargo test -p mustard-rt");
+                assert_eq!(tool_input["timeout"], 600_000);
+                assert!(tool_input.get("run_in_background").is_none(), "{tool_input}");
+            }
+            other => panic!("expected a rewrite, got {other:?}"),
         }
     }
 

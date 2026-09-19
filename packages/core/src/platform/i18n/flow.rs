@@ -10,7 +10,8 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["open", "plan", "round", "close", "resume", "reopen", "discard", "request", "message", "pr", "approve_spec", "retired", "banner"];
+pub(super) const PREFIXES: &[&str] =
+    &["open", "plan", "round", "close", "resume", "reopen", "discard", "request", "message", "pr", "approve_spec", "retired", "banner", "stuck"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -418,6 +419,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              delivery. Bring what is useful to the main repository and delete the copy with \
              `git worktree remove --force {copy}`."
         }
+        // O que um agente deixou preso, encerrado no início da sessão, em
+        // cada rodada e no fechamento (`apps/rt/src/commands/flow/stuck.rs`).
+        ("stuck.ended", Locale::PtBr) => "Processo(s) preso(s) encerrado(s): {list}.",
+        ("stuck.ended", Locale::EnUs) => "Stuck process(es) ended: {list}.",
+        ("stuck.reason.waiting_loop", Locale::PtBr) => "laço de espera",
+        ("stuck.reason.waiting_loop", Locale::EnUs) => "waiting loop",
+        ("stuck.reason.deleted_copy", Locale::PtBr) => "cópia de onda apagada",
+        ("stuck.reason.deleted_copy", Locale::EnUs) => "deleted wave copy",
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
              levar. Peça ao agente o caminho certo. Nada foi gravado."
@@ -917,8 +926,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            119,
-            0xc922_d845_d748_5254,
+            122,
+            0x3b45_3a14_4431_b4f9,
         );
     }
 
@@ -1055,6 +1064,9 @@ mod tests {
             ("pr.submodules.stuck", &["{pr}", "{reason}"][..]),
             ("pr.pointer_commit", &[][..]),
             ("round.copy_kept", &["{wave}", "{copy}", "{files}"][..]),
+            ("stuck.ended", &["{list}"][..]),
+            ("stuck.reason.waiting_loop", &[][..]),
+            ("stuck.reason.deleted_copy", &[][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
