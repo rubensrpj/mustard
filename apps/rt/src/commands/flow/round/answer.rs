@@ -203,19 +203,26 @@ fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
 /// Os arquivos mudados na cópia da onda `wave`, pelo `git status` curto dela.
 /// `None` sem cópia gravada, ou sem git.
 ///
-/// A saída do `git status --porcelain` chega inteira e depois trimada
-/// (`GitRun::out`), o que apaga o espaço à esquerda da primeira linha quando
-/// o código de estado dela começa com espaço (ex.: `" M arquivo"` vira
-/// `"M arquivo"`). Por isso a linha não é lida por uma posição fixa: o nome
-/// do arquivo começa depois do primeiro espaço da linha, seja qual for a
-/// posição dele.
+/// Cada linha do `git status --porcelain` traz dois caracteres de estado, um
+/// espaço separador e o caminho — sempre na posição 3. A saída inteira chega
+/// trimada (`GitRun::out`), o que só afeta a primeira linha: quando o
+/// primeiro caractere de estado dela é espaço (ex.: `" M arquivo"`), o trim
+/// da string inteira apaga só esse espaço, e o separador cai uma posição
+/// antes. Por isso só a linha de índice 0 é conferida: as outras sempre
+/// mantêm a posição 3. O arquivo renomeado (`"velho -> novo"`) dá o caminho
+/// novo.
 fn copy_files_changed(log: &SpecLog, wave: u64) -> Option<Vec<String>> {
     let copy = recorded_copy(log, wave)?;
     let out = mustard_core::platform::git::run(Path::new(&copy.path), &["status", "--porcelain", "--untracked-files=all"])
         .out()?;
     Some(
         out.lines()
-            .filter_map(|line| line.find(' ').map(|i| line[i + 1..].trim()))
+            .enumerate()
+            .filter_map(|(i, line)| {
+                let offset = if i == 0 && line.as_bytes().get(2) != Some(&b' ') { 2 } else { 3 };
+                line.get(offset..)
+            })
+            .map(|path| path.rsplit(" -> ").next().unwrap_or(path).trim())
             .filter(|p| !p.is_empty())
             .map(str::to_string)
             .collect(),
@@ -1084,6 +1091,56 @@ mod tests {
         }
         let entered = visible.iter().filter(|e| e.event_type == "state" && e.str_field("phase") == Some("running"));
         assert_eq!(entered.count(), 1, "the spec enters the run once: {outs:?}");
+    }
+
+    /// A rodada lista os arquivos que a cópia de uma onda em andamento já
+    /// mudou pelo caminho certo, sem a letra de estado do `git status
+    /// --porcelain` na frente — inclusive na primeira linha, cujo espaço
+    /// inicial o trim da saída inteira apaga —, e o arquivo renomeado sai
+    /// com o caminho novo (`MSTD-TASK-0090`).
+    #[test]
+    fn the_running_wave_lists_each_changed_file_by_its_path() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs", "src/b.rs", "src/c.rs", "src/e.rs"], &[])]);
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = recorded_copy(&log, 1).expect("a onda ganhou cópia");
+        let copy_path = Path::new(&copy.path);
+
+        // Três arquivos mudam sem entrar no índice: "src/a.rs" abre a lista
+        // do git em ordem alfabética, e o estado dela (" M") começa com
+        // espaço — a linha que o trim da saída inteira encurta, perdendo o
+        // espaço inicial. "src/d.rs" é novo, e "src/e.rs" vira "src/f.rs".
+        std::fs::write(copy_path.join("src/a.rs"), "fn dois() {}\n").unwrap();
+        std::fs::write(copy_path.join("src/b.rs"), "fn tres() {}\n").unwrap();
+        std::fs::write(copy_path.join("src/c.rs"), "fn quatro() {}\n").unwrap();
+        std::fs::write(copy_path.join("src/d.rs"), "fn novo() {}\n").unwrap();
+        git_at(copy_path, &["mv", "src/e.rs", "src/f.rs"]);
+
+        let running = round(root, "x", None);
+        let files: Vec<String> = running["running"][0]["files"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|f| f.as_str().map(str::to_string))
+            .collect();
+
+        assert_eq!(
+            files,
+            vec![
+                "src/a.rs".to_string(),
+                "src/b.rs".to_string(),
+                "src/c.rs".to_string(),
+                "src/f.rs".to_string(),
+                "src/d.rs".to_string(),
+            ],
+            "{running}"
+        );
     }
 
     /// Cada rodada encerra o que um agente deixou preso: um comando cuja

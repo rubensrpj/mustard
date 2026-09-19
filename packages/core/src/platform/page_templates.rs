@@ -91,7 +91,7 @@ pub const SPECS: &str = "specs";
 /// O que a página da spec declara ao ser publicada: o banco de dados, que só
 /// quem edita a página grava, e o salvar arquivo do botão de baixar o `.md`.
 pub const SPEC_CAPABILITIES: &str =
-    r#"{"db":{"rules":[{"path":"","read":"view","write":"admin"}]},"downloads":{}}"#;
+    r#"{"db":{"rules":[{"path":"","read":"view","write":"admin"}]},"downloads":true}"#;
 
 /// O que a página do projeto declara ao ser publicada: o banco de dados, que
 /// só quem edita a página grava.
@@ -334,9 +334,17 @@ mod tests {
         })
     }
 
-    /// Roda `html` no Node com o banco `db` e os passos `steps`, e devolve o
-    /// que a página mostrou em cada passo.
+    /// Roda `html` no Node com o banco `db` e os passos `steps`, com o
+    /// salvar arquivo do claude.ai (`downloads`) disponível, e devolve o que
+    /// a página mostrou em cada passo.
     fn run(page: &str, html: &str, db: Option<Value>, steps: Value) -> Value {
+        run_with_downloads(page, html, db, steps, true)
+    }
+
+    /// [`run`] com controle sobre o salvar arquivo do claude.ai
+    /// (`downloads`): sem ele, o botão de baixar não pode nem tentar o
+    /// navegador direto, porque isso não funciona dentro do claude.ai.
+    fn run_with_downloads(page: &str, html: &str, db: Option<Value>, steps: Value, downloads: bool) -> Value {
         let mut child = Command::new("node")
             .arg(HARNESS)
             .stdin(Stdio::piped())
@@ -344,7 +352,7 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("the page templates run in Node.js during the test: install Node and put `node` on the PATH");
-        let input = json!({"page": page, "html": html, "db": db, "steps": steps}).to_string();
+        let input = json!({"page": page, "html": html, "db": db, "steps": steps, "downloads": downloads}).to_string();
         child.stdin.take().expect("stdin").write_all(input.as_bytes()).expect("the harness reads its input");
         let out = child.wait_with_output().expect("the harness ends");
         assert!(out.status.success(), "the harness failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -401,6 +409,34 @@ mod tests {
             }
         }
         out
+    }
+
+    /// O `.md` baixado confere, item por item e campo por campo, contra
+    /// `page` — a mesma tela que o passo `scrape` já leu —, em vez de a
+    /// amostra de poucas linhas escolhidas à mão que a revisão de 18/09
+    /// achou fraca. Nenhum dos dois lados normaliza a marcação: o código de
+    /// cada item é procurado ainda em negrito (`**código**`, como o `.md`
+    /// sempre escreve), e o rótulo de cada campo é procurado como
+    /// `- rótulo:`, sem tirar `**` nem crase do valor — a comparação que
+    /// apagava essas marcas do lado do binário dava linhas falsas numa spec
+    /// real (achado da revisão de 18/09, onda 7).
+    fn assert_md_matches_the_whole_page(md: &str, page: &Value) {
+        for section in page["sections"].as_array().expect("sections") {
+            let heading = section["heading"].as_str().unwrap_or_default();
+            assert!(md.contains(&format!("## {heading}")), "{heading:?} section heading missing from the .md:\n{md}");
+            for group in section["groups"].as_array().expect("groups") {
+                for item in group["items"].as_array().expect("items") {
+                    let code = item["code"].as_str().unwrap_or_default();
+                    let bold_code = format!("**{code}**");
+                    assert!(md.contains(&bold_code), "{code} (still bold) missing from the .md:\n{md}");
+                    for field in item["fields"].as_array().expect("fields") {
+                        let label = field[0].as_str().unwrap_or_default();
+                        let line = format!("- {label}: ");
+                        assert!(md.contains(&line), "field {label:?} of {code} missing from the .md:\n{md}");
+                    }
+                }
+            }
+        }
     }
 
     fn prompt_of<'a>(seen: &'a Value, group: &str) -> &'a Value {
@@ -559,6 +595,12 @@ mod tests {
         }
         assert!(!md.contains("`specification`: MSTD-CTX-0001"), "the .md shows the full prompt too");
 
+        // O .md inteiro, contra o modelo que a própria tela leu: cada
+        // cabeçalho de seção, cada código de item (ainda em negrito, prova
+        // de que a marcação não se apaga) e cada rótulo de campo — numa spec
+        // real, não numa amostra escolhida à mão.
+        assert_md_matches_the_whole_page(md, page);
+
         // A busca e o filtro por tipo.
         assert_eq!(visible_codes(&got["search"]), ["MSTD-RULE-0001"]);
         assert_eq!(got["search"]["hits"], json!("1 item"));
@@ -634,6 +676,31 @@ mod tests {
             json!(translate("page.value.closed", Locale::PtBr)),
             "an answered point shows the closed mark, not the open one: {open_point}"
         );
+    }
+
+    /// O botão de baixar o `.md` só aparece com o salvar arquivo do
+    /// claude.ai (`downloads`) disponível: sem ele, baixar pelo navegador
+    /// direto não funciona dentro do claude.ai, então o botão some em vez de
+    /// tentar; com a capacidade, o clique salva o `.md`. A página declara a
+    /// capacidade como `true`, o que o contrato da plataforma pede.
+    #[test]
+    fn the_download_button_hides_without_the_save_capability() {
+        assert_eq!(
+            serde_json::from_str::<Value>(SPEC_CAPABILITIES).unwrap()["downloads"],
+            json!(true),
+            "{SPEC_CAPABILITIES}"
+        );
+
+        let lines = vec![json!({"v":1,"id":1,"at":"2026-09-19T09:00:00-03:00","type":"message","author":"user","text":"o objetivo","origin":1})];
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"}]);
+
+        let without = run_with_downloads("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps.clone(), false);
+        assert_eq!(without["page"]["downloadHidden"], json!(true), "sem a capacidade, o botão some: {without}");
+        assert_eq!(without["md"], Value::Null, "sem a capacidade, o clique não salva nada: {without}");
+
+        let with = run_with_downloads("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps, true);
+        assert_eq!(with["page"]["downloadHidden"], json!(false), "com a capacidade, o botão aparece: {with}");
+        assert_eq!(with["md"]["filename"], json!("demo.md"), "{with}");
     }
 
     /// No fim da página da spec, a seção Removidos mostra cada item que saiu:
@@ -872,6 +939,33 @@ mod tests {
         assert_eq!(notes(&got["after_fail"]), notes(&got["after"]), "the failed listener does not lose what the page already had");
 
         assert_eq!(got["recovered"]["statusHidden"], json!(true), "the next copy that succeeds clears the warning");
+    }
+
+    /// Uma cópia que só muda o documento das coisas calculadas — nenhum item
+    /// novo, nenhum apagado, nenhum tocado — sozinha faz a página aberta
+    /// reler: a escuta de `computed/current` não depende de nada acontecer
+    /// na coleção dos itens. As outras provas de recarga sempre mudavam as
+    /// duas coisas juntas (um item novo ou apagado ao lado da mudança no
+    /// documento calculado), então cortar só a escuta do documento calculado
+    /// não derrubava nenhuma delas — a prova isolada que a revisão de 18/09
+    /// pediu (onda 7).
+    #[test]
+    fn a_change_only_in_the_computed_document_alone_reloads_the_page() {
+        let lines = spec_lines();
+        let db = spec_database(&lines);
+        let mut moved = db.clone();
+        moved["computed"][0]["data"]["waves"]["3"] = json!("approved");
+        let steps = json!([
+            {"do": "wait"}, {"do": "scrape", "as": "before"},
+            {"do": "copy", "set": {"computed": moved["computed"].clone()}},
+            {"do": "scrape", "as": "after"},
+        ]);
+        // `run` já derruba o teste se a escuta não recarregar: o passo
+        // `copy` espera `data-renders` crescer e, sem isso, o harness
+        // registra o erro que `run` confere.
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        let legend_of = |seen: &Value| seen["sections"][0]["overview"]["legend"].clone();
+        assert_ne!(legend_of(&got["before"]), legend_of(&got["after"]), "the reload read the new wave state: {got}");
     }
 
     /// Uma spec longa é lida inteira, em páginas de 500 itens, em ordem de

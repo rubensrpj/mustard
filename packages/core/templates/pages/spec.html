@@ -1036,7 +1036,7 @@ tr:last-child td{border-bottom:0}
   var q = h('input', { type: 'search', id: 'q', placeholder: t('page.search.placeholder'), 'aria-label': t('page.search.label'), autocomplete: 'off' });
   var hits = h('span', { class: 'hits' });
   var kind = h('select', { id: 'type', 'aria-label': t('page.filter.label'), title: t('page.filter.label') });
-  var download = h('button', { id: 'download', class: 'btn main', type: 'button', text: t('page.download') });
+  var download = h('button', { id: 'download', class: 'btn main', type: 'button', text: t('page.download'), hidden: true });
   var openAll = h('button', { id: 'openAll', type: 'button', text: t('page.open_all') });
   var closeAll = h('button', { id: 'closeAll', type: 'button', text: t('page.close_all') });
   var menu = h('button', { class: 'btn menu-btn', type: 'button', 'aria-label': t('page.sections'), text: '☰' });
@@ -1219,17 +1219,17 @@ tr:last-child td{border-bottom:0}
     if (el.scrollIntoView) el.scrollIntoView({ block: 'start' });
     D.body.classList.remove('nav-open');
   });
+  // O botão só aparece com o salvar arquivo do claude.ai (`downloads`)
+  // disponível: sem ele, baixar direto pelo navegador não funciona dentro
+  // do claude.ai, então o botão some em vez de tentar.
+  var hasDownloads = W.claude && typeof W.claude.use === 'function' ? W.claude.use('downloads') : Promise.resolve(null);
+  Promise.resolve(hasDownloads).then(function (dl) { download.hidden = !dl; }, function () { download.hidden = true; });
   download.addEventListener('click', function () {
     if (!MODEL) return Promise.resolve();
     var text = toMarkdown(MODEL), name = (MODEL.spec || 'spec') + '.md';
     var ask = W.claude && typeof W.claude.use === 'function' ? W.claude.use('downloads') : Promise.resolve(null);
     return Promise.resolve(ask).then(function (dl) {
       if (dl) return dl.save({ filename: name, data: text }).catch(function () { return null; });
-      // Fora do claude.ai, o navegador baixa o arquivo direto.
-      var a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/markdown' })), download: name });
-      D.body.appendChild(a);
-      a.click();
-      a.remove();
       return null;
     }, function () { return null; });
   });

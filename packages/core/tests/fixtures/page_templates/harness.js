@@ -199,8 +199,12 @@ function makeDb(state) {
 }
 const store = input.db ? makeDb(input.db) : null;
 const saves = [];
+// `input.downloads === false` imita o claude.ai sem o salvar arquivo; sem o
+// campo (a maioria dos testes), a capacidade vem, como no claude.ai de
+// verdade.
+const hasDownloads = input.downloads !== false;
 const downloads = { save: async (req) => { saves.push({ filename: req.filename, data: String(req.data) }); return { status: 'saved' }; } };
-const claude = { use: async (name) => (name === 'db' ? (store ? store.db : null) : name === 'downloads' ? downloads : null) };
+const claude = { use: async (name) => (name === 'db' ? (store ? store.db : null) : name === 'downloads' ? (hasDownloads ? downloads : null) : null) };
 
 const sandbox = { document, console, setTimeout, clearTimeout, URL, Blob, claude };
 sandbox.window = sandbox;
@@ -260,6 +264,7 @@ function scrapeSpec() {
     search: document.getElementById('q') ? document.getElementById('q').getAttribute('placeholder') : null,
     filter: select ? select.childNodes.map((o) => [o.getAttribute('value'), o.textContent]) : null,
     download: text(document.getElementById('download')),
+    downloadHidden: document.getElementById('download') ? document.getElementById('download').hidden : null,
     hits: text(byClass(appEl, 'hits')), notFound: document.getElementById('notFound') ? !document.getElementById('notFound').hidden : null,
     nav: walk(byClass(appEl, 'nav') || appEl, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.hidden || a.parentNode.hidden]),
     sections,
