@@ -6,7 +6,8 @@
 //
 // A página roda com uma imitação pequena do DOM (só o que os templates usam)
 // e das capacidades do claude.ai: o banco de dados (`db`), com a leitura em
-// páginas e o aviso de mudança, e o salvar arquivo (`downloads`).
+// páginas, o aviso de mudança e o aviso de falha da escuta (o passo `fail`),
+// e o salvar arquivo (`downloads`).
 'use strict';
 const fs = require('fs');
 const vm = require('vm');
@@ -173,7 +174,7 @@ function makeDb(state) {
         return query(path, filters, order, n);
       },
       get: async () => { const r = run(); reads.push({ path, filters, order, limit: lim, size: r.size }); return r; },
-      onSnapshot: (next) => { const l = () => next(run()); listeners.push(l); setTimeout(l, 0); return () => {}; },
+      onSnapshot: (next, onError) => { const l = () => next(run()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {}; },
       doc: (id) => docRef(path + '/' + id),
     };
   }
@@ -184,10 +185,17 @@ function makeDb(state) {
     return {
       id, path,
       get: async () => { reads.push({ path }); return find(); },
-      onSnapshot: (next) => { const l = () => next(find()); listeners.push(l); setTimeout(l, 0); return () => {}; },
+      onSnapshot: (next, onError) => { const l = () => next(find()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {}; },
     };
   }
-  return { db: { collection: (p) => query(p, [], null, 0), doc: docRef }, notify: () => listeners.forEach((l) => l()) };
+  // notify() reencena toda escuta, como um documento ou uma coleção mudando
+  // de verdade; notifyError(path) chama o erro da escuta daquele caminho,
+  // como a conexão com o banco caindo no meio da leitura.
+  return {
+    db: { collection: (p) => query(p, [], null, 0), doc: docRef },
+    notify: () => listeners.forEach((x) => x.run()),
+    notifyError: (path) => listeners.filter((x) => x.path === path).forEach((x) => x.err && x.err(new Error('a leitura falhou'))),
+  };
 }
 const store = input.db ? makeDb(input.db) : null;
 const saves = [];
@@ -318,6 +326,8 @@ async function until(check) {
       if (!(await until(() => renders() > before))) errors.push('the page did not read the new copy');
     } else if (step.do === 'reads') {
       results[step.as] = reads.slice();
+    } else if (step.do === 'fail') {
+      store.notifyError(step.path);
     }
   }
   results.errors = errors;

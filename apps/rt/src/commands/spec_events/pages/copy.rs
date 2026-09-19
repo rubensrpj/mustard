@@ -394,8 +394,11 @@ fn redacted(value: Value) -> Value {
     }
 }
 
-/// O documento das coisas calculadas: o nome da spec, o estado de cada onda,
-/// o pedido de cada onda que ainda não saiu e a economia do rtk.
+/// O documento das coisas calculadas: o nome da spec, o número do último item
+/// copiado, o estado de cada onda, o pedido de cada onda que ainda não saiu e
+/// a economia do rtk. O número do último item muda a cada cópia, mesmo numa
+/// cópia que só apaga um item do meio sem tocar onda, pedido ou rtk: é por
+/// ele que a escuta da página aberta sabe que há algo novo para ler.
 fn computed(place: &Place, log: &SpecLog, rtk: &[RtkDay], lang: Locale) -> Value {
     let running = crate::commands::flow::round::waves_in_progress(log).into_keys().collect();
     let flight = mustard_core::io::wave_prompt::Flight { running, ..Default::default() };
@@ -414,7 +417,7 @@ fn computed(place: &Place, log: &SpecLog, rtk: &[RtkDay], lang: Locale) -> Value
         .iter()
         .map(|day| json!({ "date": day.date, "commands": day.commands, "input": day.input, "saved": day.saved }))
         .collect();
-    redacted(json!({ "spec": place.spec, "waves": waves, "prompts": prompts, "rtk": rtk }))
+    redacted(json!({ "spec": place.spec, "last": log.max_id(), "waves": waves, "prompts": prompts, "rtk": rtk }))
 }
 
 /// O nome do estado de uma onda no documento das coisas calculadas.
@@ -954,6 +957,35 @@ mod tests {
         let out = of(held).expect("the item with a secret left leaves the database");
         assert_eq!(out["op"], json!("delete"), "{out}");
         assert!(!writes.iter().any(|w| w.to_string().contains("azul-marinho")), "{writes:?}");
+    }
+
+    /// Uma cópia que só tira um item do meio (um expurgo, sem onda, pedido
+    /// nem rtk mudando) muda mesmo assim o `last` do documento calculado: é
+    /// por ele que a página aberta nota que há algo novo, mesmo sem item novo
+    /// nem mudança de onda para a escuta pegar.
+    #[test]
+    fn a_middle_only_purge_still_moves_the_last_copied_item() {
+        let dir = approved_project();
+        let root = dir.path();
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        let clean = id_of(&write(root, "note",
+            json!({"text": "O código do cofre é azul-marinho-42.", "keys": ["cofre"], "origin": said})));
+        let held = id_of(&write(root, "note",
+            json!({"text": "Cofre azul-marinho-42, e a senha: S3nh4F0rte2024.", "keys": ["cofre"], "origin": said})));
+
+        let first = round(root);
+        follow(root, &first);
+        let first_last = first["copy"]["spec"]["record"]["last"].as_u64().expect("the first last");
+
+        write(root, "purge", json!({"targets": [clean, held], "reason": "client_data",
+            "excerpt": "azul-marinho-42", "origin": said}));
+
+        let second = round(root);
+        let writes = sent(root, &second, "spec");
+        let computed = writes.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
+        let second_last = computed["body"]["last"].as_u64().expect("the last copied item");
+        assert!(second_last > first_last, "a copy with only a purge still moves `last`: {first_last} -> {second_last}");
+        assert_eq!(computed["body"]["waves"], json!({"1": "running"}), "no wave changed: {computed}");
     }
 
     /// A linha da spec vai para o banco da página do projeto só quando a fase

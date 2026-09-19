@@ -155,6 +155,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Ainda não há dados: o Mustard ainda não copiou nada para o banco de dados desta página."
         }
         ("page.no_data", Locale::EnUs) => "No data yet: Mustard has not copied anything to this page's database.",
+        ("page.watch_failed", Locale::PtBr) => "Não deu para conferir se há dados novos. Recarregue a página.",
+        ("page.watch_failed", Locale::EnUs) => "Could not check for new data. Reload the page.",
         ("page.filter.label", Locale::PtBr) => "Filtrar por tipo",
         ("page.filter.label", Locale::EnUs) => "Filter by type",
         ("page.filter.all", Locale::PtBr) => "Todos os tipos",
@@ -888,8 +890,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            342,
-            0x3391_e7cb_abd1_34d0,
+            343,
+            0xbb8f_733f_c292_fa39,
         );
     }
 }

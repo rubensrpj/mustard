@@ -31,10 +31,12 @@
 //!   tipo). O template lê os itens em ordem de número, em páginas.
 //! - O documento [`COMPUTED`] guarda o que o binário calcula e o
 //!   `spec.ndjson` não tem, trocado a cada cópia: `spec` (o nome da spec),
-//!   `waves` (o estado de cada onda pelo número dela: `todo`, `running`,
-//!   `delivered`, `approved` ou `rejected`), `prompts` (o pedido de cada onda
-//!   que ainda não saiu, pelo número dela) e `rtk` (a economia do rtk, um dia
-//!   por linha, com `date`, `commands`, `input` e `saved`).
+//!   `last` (o número do último item copiado, que muda em toda cópia, para a
+//!   página aberta sempre notar algo novo, mesmo quando só um item do meio
+//!   saiu), `waves` (o estado de cada onda pelo número dela: `todo`,
+//!   `running`, `delivered`, `approved` ou `rejected`), `prompts` (o pedido de
+//!   cada onda que ainda não saiu, pelo número dela) e `rtk` (a economia do
+//!   rtk, um dia por linha, com `date`, `commands`, `input` e `saved`).
 //!
 //! O template mostra a versão mais nova de cada item, esconde o item
 //! retirado, marca o que entrou depois da aprovação e mostra o pedido de cada
@@ -603,6 +605,37 @@ mod tests {
         assert_eq!(link[2], json!(r#"<a href="https://claude.ai/code/artifact/busca" target="_blank" rel="noopener">busca</a>"#));
     }
 
+    /// O ponto do levantamento respondido ganha a marca de fechado. `byType`
+    /// já mostrava a linha "Fechado por" quando `surveyPoints` achava o par,
+    /// mas a marca ao lado do ponto continuava de aberta, porque `statusOf`
+    /// lê só o status do próprio ponto, sem olhar se ele foi fechado.
+    #[test]
+    fn an_answered_question_shows_as_closed() {
+        let lines = vec![
+            json!({"v":1,"id":1,"at":"2026-09-19T09:00:00-03:00","type":"point","author":"assistant",
+                "block":"limits","gap":"Tamanho do pedido de cada onda","from":"gap","status":"open","origin":1,
+                "facts":[{"text":"A montagem do pedido não tem teto de tamanho.","source":"apps/rt/src/commands/agent/render/mod.rs:798"}]}),
+            json!({"v":1,"id":2,"at":"2026-09-19T09:01:00-03:00","type":"point","author":"assistant",
+                "block":"limits","gap":"g","from":"gap","status":"closed","closes":1,"result":[1],"origin":1}),
+        ];
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let page = &got["page"];
+        let agreed = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("agreed")).expect("agreed section");
+        let points = agreed["groups"].as_array().expect("groups").iter().find(|g| g["id"] == json!("agreed-point")).expect("the points group");
+        let items = points["items"].as_array().expect("items");
+        assert_eq!(items.len(), 2, "the open point and the one that closes it: {items:?}");
+        let open_point = items
+            .iter()
+            .find(|i| i["fields"].as_array().expect("fields").iter().any(|f| f[1] == json!("Tamanho do pedido de cada onda")))
+            .expect("the open point");
+        assert_eq!(
+            open_point["status"],
+            json!(translate("page.value.closed", Locale::PtBr)),
+            "an answered point shows the closed mark, not the open one: {open_point}"
+        );
+    }
+
     /// No fim da página da spec, a seção Removidos mostra cada item que saiu:
     /// o removido com o código, o texto, quem o removeu, quando e por quê; o
     /// expurgado por segredo só com a marca no lugar do texto. Vale para a
@@ -690,6 +723,53 @@ mod tests {
         assert_eq!(removed.matches(&format!("**{}**", code(42))).count(), 1, "the removed rule shows once:\n{removed}");
     }
 
+    /// Por decisão da onda 13, o item que continua à mostra numa versão nova
+    /// não entra na seção Removidos quando só a versão antiga dele foi
+    /// removida: a regra revista some da conversa, mas a regra em si segue de
+    /// pé pela versão nova, com o mesmo código.
+    #[test]
+    fn the_removed_section_handles_an_item_still_shown() {
+        let lines = vec![
+            json!({"v":1,"id":1,"at":"2026-09-19T09:00:00-03:00","type":"rule","author":"assistant",
+                "text":"A trava confere o programa.","keys":["trava"],"example":"`rm -rf`.","origin":1}),
+            json!({"v":1,"id":2,"at":"2026-09-19T09:01:00-03:00","type":"rule","author":"assistant",
+                "text":"A trava confere o programa e as opções.","keys":["trava"],"example":"`rm -rf pasta`.",
+                "origin":1,"replaces":1}),
+            json!({"v":1,"id":3,"at":"2026-09-19T09:02:00-03:00","type":"remove","author":"user","targets":[1],
+                "reason":"A versão antiga saiu.","origin":1}),
+        ];
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let sections = got["page"]["sections"].as_array().expect("sections");
+        assert!(
+            sections.iter().all(|s| s["id"] != json!("removed")),
+            "the rule stays shown through the newer version, so the removed section covers nothing: {sections:?}"
+        );
+    }
+
+    /// O expurgo do formato antigo, cujo item nunca chegou ao banco da página
+    /// (a linha dele no `spec.ndjson` já nasceu esvaziada), aparece na seção
+    /// Removidos com o número no lugar do código: sem o item no banco, não há
+    /// como montar o código dele.
+    #[test]
+    fn an_old_format_purge_shows_the_number_in_place_of_the_code() {
+        let lines = vec![json!({"v":1,"id":2,"at":"2026-09-19T09:01:00-03:00","type":"purge","author":"user",
+            "targets":[1],"reason":"secret","origin":1})];
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let sections = got["page"]["sections"].as_array().expect("sections");
+        let removed = sections.iter().find(|s| s["id"] == json!("removed")).expect("the removed section");
+        let entries = removed["groups"][0]["items"].as_array().expect("items");
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(
+            entries[0]["code"],
+            json!("1"),
+            "an item that never reached the database shows its number in place of the code: {}",
+            entries[0]
+        );
+        assert_eq!(entries[0]["mark"], json!(translate("page.removed.purged", Locale::PtBr)));
+    }
+
     fn project_row(name: &str, phase: Option<&str>, url: Option<&str>) -> ProjectRow {
         ProjectRow {
             name: name.to_string(),
@@ -749,6 +829,49 @@ mod tests {
         );
         let legend = &got["after"]["sections"][0]["overview"]["legend"];
         assert_eq!(legend, &json!("2 a fazer · 1 aprovada · 1 entregue"));
+    }
+
+    /// Uma cópia que só apaga um item do meio, como a saída de um item com
+    /// trecho de segredo, não traz item novo nem muda onda, pedido ou rtk:
+    /// sem o `last` do documento calculado mudando, nem ele nem o item de
+    /// maior número mudam, e a página aberta fica velha. Com o `last` sempre
+    /// mudando a cada cópia, a escuta relê a página. Quando uma escuta falha,
+    /// a página mostra um aviso curto sem perder o que já tinha, e a próxima
+    /// cópia que der certo tira o aviso.
+    #[test]
+    fn the_open_page_reloads_when_a_middle_item_leaves() {
+        let lines = spec_lines();
+        let items: Vec<Value> = lines.iter().map(|line| json!({"id": line["id"].to_string(), "data": line})).collect();
+        let waves = json!({"2": "approved", "3": "running"});
+        let computed_with_last = |last: u64| json!({"spec": "demo", "last": last, "waves": waves, "prompts": {}, "rtk": []});
+        let db = json!({"items": items, "computed": [{"id": "current", "data": computed_with_last(44)}]});
+        let steps = json!([
+            {"do": "wait"}, {"do": "scrape", "as": "before"},
+            {"do": "copy", "set": {"computed": [{"id": "current", "data": computed_with_last(53)}]}, "delete": {"items": ["35"]}},
+            {"do": "scrape", "as": "after"},
+            {"do": "fail", "path": "computed/current"},
+            {"do": "scrape", "as": "after_fail"},
+            {"do": "copy", "set": {"computed": [{"id": "current", "data": computed_with_last(60)}]}, "delete": {}},
+            {"do": "scrape", "as": "recovered"},
+        ]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        let notes = |seen: &Value| -> Vec<String> {
+            let section = seen["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("notes")).expect("notes");
+            section["groups"][0]["items"].as_array().expect("items").iter().map(|i| i["title"].as_str().unwrap_or_default().to_string()).collect()
+        };
+        assert!(notes(&got["before"]).iter().any(|t| t.starts_with("O pull request 276")), "the note is there before the copy");
+        assert!(
+            !notes(&got["after"]).iter().any(|t| t.starts_with("O pull request 276")),
+            "a copy that only removes a middle item still changes `last`, so the open page reloads: {:?}",
+            notes(&got["after"])
+        );
+        assert_eq!(got["after"]["statusHidden"], json!(true), "the page shows normally after the reload");
+
+        assert_eq!(got["after_fail"]["status"], json!(translate("page.watch_failed", Locale::PtBr)));
+        assert_eq!(got["after_fail"]["statusHidden"], json!(false), "a failed listener shows the warning: {}", got["after_fail"]["status"]);
+        assert_eq!(notes(&got["after_fail"]), notes(&got["after"]), "the failed listener does not lose what the page already had");
+
+        assert_eq!(got["recovered"]["statusHidden"], json!(true), "the next copy that succeeds clears the warning");
     }
 
     /// Uma spec longa é lida inteira, em páginas de 500 itens, em ordem de

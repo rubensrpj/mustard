@@ -638,7 +638,11 @@ tr:last-child td{border-bottom:0}
       var body = TYPE_LIST.filter(function (ty) { return ty.block === block; }).map(function (ty) {
         var g = tallied(block + '-' + ty.name, t('page.group.' + ty.name), ofType(ty.name));
         if (g && ty.name === 'point') {
-          g.body.forEach(function (it) { if (closedBy.has(it.code)) it.fields.push([t('page.field.closed_by'), closedBy.get(it.code)]); });
+          g.body.forEach(function (it) {
+            if (!closedBy.has(it.code)) return;
+            it.fields.push([t('page.field.closed_by'), closedBy.get(it.code)]);
+            it.status = { label: t('page.value.closed'), tone: 'ok' };
+          });
         }
         return g;
       }).filter(Boolean);
@@ -1263,13 +1267,14 @@ tr:last-child td{border-bottom:0}
   function watch(db) {
     var timer = 0;
     function later() { clearTimeout(timer); timer = setTimeout(function () { reload(db); }, 600); }
+    function failed() { statusEl.textContent = t('page.watch_failed'); statusEl.hidden = false; }
     db.doc(DBP.computed).onSnapshot(function (s) {
       if (JSON.stringify((s && s.exists && s.data()) || {}) !== SEEN.computed) later();
-    }, function () {});
+    }, failed);
     db.collection(DBP.items).orderBy('id', 'desc').limit(1).onSnapshot(function (s) {
       var d = s.docs[0], b = d && d.data();
       if ((b && isInt(b.id) ? b.id : null) !== SEEN.top) later();
-    }, function () {});
+    }, failed);
   }
   var ready = W.claude && typeof W.claude.use === 'function' ? W.claude.use('db') : Promise.resolve(null);
   Promise.resolve(ready).then(function (db) {
