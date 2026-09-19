@@ -219,6 +219,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.block.waves", Locale::EnUs) => "Waves",
         ("page.block.review", Locale::PtBr) => "Revisão e QA",
         ("page.block.review", Locale::EnUs) => "Review and QA",
+        ("page.review.final", Locale::PtBr) => "Veredito final",
+        ("page.review.final", Locale::EnUs) => "Final verdict",
         ("page.block.progress", Locale::PtBr) => "Andamento",
         ("page.block.progress", Locale::EnUs) => "Progress",
         ("page.block.notes", Locale::PtBr) => "Anotações",
@@ -560,6 +562,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.build_dir", Locale::EnUs) => "Build folder",
         ("page.field.analysis", Locale::PtBr) => "Análise antes do envio",
         ("page.field.analysis", Locale::EnUs) => "Analysis before sending",
+        ("page.analysis.removed", Locale::PtBr) => "Tirou do pedido",
+        ("page.analysis.removed", Locale::EnUs) => "Removed from the request",
+        ("page.analysis.added", Locale::PtBr) => "Pôs no pedido",
+        ("page.analysis.added", Locale::EnUs) => "Added to the request",
         ("page.field.title", Locale::PtBr) => "Título",
         ("page.field.title", Locale::EnUs) => "Title",
         ("page.field.waves", Locale::PtBr) => "Ondas",
@@ -882,8 +888,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            339,
-            0x9f76_c8d5_521b_ee80,
+            342,
+            0x3391_e7cb_abd1_34d0,
         );
     }
 }

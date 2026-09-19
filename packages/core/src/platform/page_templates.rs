@@ -268,8 +268,17 @@ mod tests {
             json!({"v":1,"id":40,"at":"2026-09-12T12:00:00-03:00","type":"wave","author":"assistant","n":3,"text":"Os templates leem o banco.","criteria":[19],"done_when":"A suíte passa.","origin":2}),
             json!({"v":1,"id":41,"at":"2026-09-12T12:01:00-03:00","type":"task","author":"assistant","wave":3,"text":"Template da página da spec.","files":[{"path":"packages/core/templates/pages/spec.html","new":true}],"points":8,"origin":2}),
             json!({"v":1,"id":42,"at":"2026-09-12T12:02:00-03:00","type":"rule","author":"assistant","text":"A trava de comandos confere o programa, as opções e o caminho.\n\n- vale para o Bash;\n- vale para o PowerShell.","example":"`rm -rf pasta` é barrado.","keys":["trava"],"origin":2,"replaces":9}),
-            json!({"v":1,"id":43,"at":"2026-09-12T12:03:00-03:00","type":"send","author":"binary","wave":3,"role":"wave","text":WAVE_3_PROMPT,"lines":13,"chars":220,"items":[17,18,42,16,19],"mustard":"0.2.1"}),
+            json!({"v":1,"id":43,"at":"2026-09-12T12:03:00-03:00","type":"send","author":"binary","wave":3,"role":"wave","text":WAVE_3_PROMPT,"lines":13,"chars":220,"items":[17,18,42,16,19],"mustard":"0.2.1",
+                "analysis":{"judged":[17,42],
+                    "removed":[{"item":42,"why":"A regra fala da trava, não da tabela desta onda."}],
+                    "added":[{"item":17,"why":"O contexto explica por que a tabela nasce vazia."}],
+                    "judged_lessons":[],
+                    "removed_lessons":[{"lesson":12,"why":"A lição é de outra onda."}],
+                    "tasks":[]}}),
             json!({"v":1,"id":44,"at":"2026-09-12T12:04:00-03:00","type":"wave","author":"assistant","n":4,"text":"A instalação.","criteria":[19],"done_when":"O instalador passa.","origin":2}),
+            // O veredito final do agente de teste dedicado, separado dos
+            // vereditos de onda mesmo apontando a mesma onda 2.
+            json!({"v":1,"id":46,"at":"2026-09-12T12:05:00-03:00","type":"verdict","author":"review","wave":2,"result":"approved","final":true,"text":"As ondas se encaixam sem prova perdida."}),
         ];
         FIXTURE
             .lines()
@@ -481,6 +490,57 @@ mod tests {
         assert!(!full.contains("`specification`: MSTD-CTX-0001"), "no line keeps only the codes:\n{full}");
         assert!(sent["html"].as_str().unwrap_or_default().contains("<li>vale para o PowerShell.</li>"), "{}", sent["html"]);
         assert!(prompt_of(page, "waves-4")["text"].as_str().unwrap_or_default().contains("MSTD-RULE-0001 — A trava de comandos"));
+
+        // A escolha do orquestrador gravada no envio: o item e a lição que
+        // saíram do pedido, e o item que entrou, cada um com o motivo.
+        let send_item = page["sections"][4]["groups"][2]["items"][2].clone();
+        assert_eq!(send_item["code"], json!("MSTD-SEND-0002"));
+        let analysis_field = send_item["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .find(|f| f[0] == json!("Análise antes do envio"))
+            .unwrap_or_else(|| panic!("no analysis field: {send_item}"));
+        assert_eq!(
+            analysis_field[1],
+            json!(
+                "Tirou do pedido: MSTD-RULE-0001 (A regra fala da trava, não da tabela desta onda.); \
+                 lição 12 (A lição é de outra onda.) · Pôs no pedido: MSTD-CTX-0001 (O contexto explica \
+                 por que a tabela nasce vazia.)"
+            ),
+            "{send_item}"
+        );
+
+        // O veredito final do agente de teste dedicado ganha grupo próprio no
+        // bloco de revisão, mesmo apontando a mesma onda 2 do outro veredito:
+        // o grupo da onda 2 continua só com o veredito dela.
+        let review = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("review")).expect("review");
+        let review_groups: Vec<&str> =
+            review["groups"].as_array().expect("groups").iter().map(|g| g["id"].as_str().unwrap_or_default()).collect();
+        assert_eq!(review_groups, ["review-2", "review-final"], "{review}");
+        let wave_2_group = &review["groups"][0];
+        assert_eq!(wave_2_group["items"].as_array().map(Vec::len), Some(1), "the final verdict stays out: {wave_2_group}");
+        let final_group = &review["groups"][1];
+        assert_eq!(final_group["title"], json!("Veredito final"));
+        assert_eq!(final_group["summary"], json!("1 aprovada"));
+        let final_item = &final_group["items"][0];
+        let final_fields: Vec<Value> =
+            final_item["fields"].as_array().expect("fields").iter().map(|f| json!([f[0], f[1]])).collect();
+        assert_eq!(
+            (
+                final_item["code"].clone(),
+                final_item["title"].clone(),
+                final_item["status"].clone(),
+                final_fields,
+            ),
+            (
+                json!("MSTD-VERD-0002"),
+                json!("As ondas se encaixam sem prova perdida."),
+                json!("aprovada"),
+                vec![json!(["Onda", "2"]), json!(["Resultado", "aprovada"]), json!(["Revisão final", "sim"])],
+            ),
+            "{final_item}"
+        );
 
         // O .md baixado tem o mesmo conteúdo, com o pedido completo.
         let md = got["md"]["data"].as_str().expect("the downloaded .md");

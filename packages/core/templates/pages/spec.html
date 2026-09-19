@@ -374,6 +374,16 @@ tr:last-child td{border-bottom:0}
       var path = str(f) !== null ? f : (str(get(f, 'path')) || '');
       return get(f, 'new') === true ? codeSpan(path) + ' (' + t('page.value.new') + ')' : codeSpan(path);
     }
+    // Uma entrada da escolha do orquestrador (`{"item": <número>, "why": ...}`
+    // ou `{"lesson": <número>, "why": ...}`): o item vira o código dele, a
+    // lição fica com o número, do jeito que o banco de lições a numera.
+    function analysisEntry(entry) {
+      var label = isInt(get(entry, 'item')) ? code(entry.item)
+        : isInt(get(entry, 'lesson')) ? t('page.value.lesson') + ' ' + entry.lesson : '';
+      if (!label) return '';
+      var why = oneLine(str(get(entry, 'why')) || '');
+      return why ? label + ' (' + why + ')' : label;
+    }
     function value(name, kind, v) {
       if (EVENT_REF.indexOf(name) >= 0 && isInt(v)) return code(v);
       if (EVENT_REFS.indexOf(name) >= 0 && (kind === 'ints' || kind === 'refs')) {
@@ -411,6 +421,14 @@ tr:last-child td{border-bottom:0}
             }));
           }
           break;
+        case 'analysis': {
+          var removedList = arr(get(v, 'removed')).concat(arr(get(v, 'removed_lessons'))).map(analysisEntry).filter(Boolean);
+          var addedList = arr(get(v, 'added')).map(analysisEntry).filter(Boolean);
+          var parts = [];
+          if (removedList.length) parts.push(t('page.analysis.removed') + ': ' + removedList.join('; '));
+          if (addedList.length) parts.push(t('page.analysis.added') + ': ' + addedList.join('; '));
+          return parts.join(' · ');
+        }
         case 'witness':
           return oneLine(str(get(v, 'question')) || '') + ' → ' + oneLine(str(get(v, 'answer')) || '');
         case 'filter':
@@ -721,14 +739,22 @@ tr:last-child td{border-bottom:0}
       return section('waves', t('page.block.waves'), groups);
     }
     function review() {
-      var events = ofBlock('review'), numbers = [];
-      events.forEach(function (e) { var n = waveOf(e); if (numbers.indexOf(n) < 0) numbers.push(n); });
+      // O veredito final do agente de teste dedicado (`final: true`) nunca
+      // entra no grupo da onda que ele aponta: ele ganha um grupo só dele, no
+      // fim da seção, mesmo quando aponta a mesma onda de um veredito comum.
+      var events = ofBlock('review');
+      var finals = events.filter(function (e) { return e.final === true; });
+      var waveEvents = events.filter(function (e) { return e.final !== true; });
+      var numbers = [];
+      waveEvents.forEach(function (e) { var n = waveOf(e); if (numbers.indexOf(n) < 0) numbers.push(n); });
       numbers.sort(function (a, b) { return a === null ? -1 : b === null ? 1 : a - b; });
       var body = numbers.map(function (n) {
-        var of = events.filter(function (e) { return waveOf(e) === n; });
+        var of = waveEvents.filter(function (e) { return waveOf(e) === n; });
         return n === null ? tallied('review-others', t('page.findings.others'), of)
           : tallied('review-' + n, say('page.wave.heading', { n: n }), of);
       }).filter(Boolean);
+      var finalGroup = tallied('review-final', t('page.review.final'), finals);
+      if (finalGroup) body.push(finalGroup);
       return section('review', t('page.block.review'), body);
     }
     function subjectOf(e) {

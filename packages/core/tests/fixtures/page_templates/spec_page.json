@@ -783,6 +783,10 @@
               [
                 "Versão do Mustard",
                 "0.2.1"
+              ],
+              [
+                "Análise antes do envio",
+                "Tirou do pedido: MSTD-RULE-0001 (A regra fala da trava, não da tabela desta onda.); lição 12 (A lição é de outra onda.) · Pôs no pedido: MSTD-CTX-0001 (O contexto explica por que a tabela nasce vazia.)"
               ]
             ]
           }
@@ -895,6 +899,36 @@
               [
                 "Lições",
                 "7 (não repetiu)"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "review-final",
+        "title": "Veredito final",
+        "summary": "1 aprovada",
+        "items": [
+          {
+            "code": "MSTD-VERD-0002",
+            "anchored": true,
+            "title": "As ondas se encaixam sem prova perdida.",
+            "who": null,
+            "mark": null,
+            "status": "aprovada",
+            "date": "2026-09-12 12:05",
+            "fields": [
+              [
+                "Onda",
+                "2"
+              ],
+              [
+                "Resultado",
+                "aprovada"
+              ],
+              [
+                "Revisão final",
+                "sim"
               ]
             ]
           }
