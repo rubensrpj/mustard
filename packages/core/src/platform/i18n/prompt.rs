@@ -200,6 +200,47 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("prompt.execution.wave", Locale::PtBr) => "Onda {n}",
         ("prompt.execution.wave", Locale::EnUs) => "Wave {n}",
+        // O consumo do agente: achar a função pela ferramenta de código antes
+        // de abrir o arquivo, ler por trecho, não reler depois de editar,
+        // rodar só os testes do que mudou e a suíte inteira uma vez no fim,
+        // em primeiro plano. Uma linha por regra.
+        ("prompt.execution.lsp", Locale::PtBr) => {
+            "Ache a função pela ferramenta de código (LSP), quando ela existe no projeto, antes de abrir o arquivo."
+        }
+        ("prompt.execution.lsp", Locale::EnUs) => {
+            "Find the function with the code tool (LSP), when it exists in the project, before opening the file."
+        }
+        ("prompt.execution.excerpt", Locale::PtBr) => {
+            "Leia por trecho: ache a função com a busca e leia só ela; o arquivo inteiro, só quando for mudar boa parte dele."
+        }
+        ("prompt.execution.excerpt", Locale::EnUs) => {
+            "Read by excerpt: find the function with search and read only it; the whole file only when you are going to change a large part of it."
+        }
+        ("prompt.execution.no_reread", Locale::PtBr) => {
+            "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado."
+        }
+        ("prompt.execution.no_reread", Locale::EnUs) => {
+            "Do not reread the file after editing: the edit already shows the changed excerpt."
+        }
+        ("prompt.execution.changed_tests", Locale::PtBr) => "Durante o trabalho, rode só os testes do que mudou.",
+        ("prompt.execution.changed_tests", Locale::EnUs) => "During the work, run only the tests of what changed.",
+        ("prompt.execution.suite_once", Locale::PtBr) => {
+            "A suíte inteira roda uma vez no fim, em primeiro plano, com o teto de tempo do comando e pelo `rtk`, que mostra só as falhas."
+        }
+        ("prompt.execution.suite_once", Locale::EnUs) => {
+            "The whole suite runs once at the end, in the foreground, with the command's time limit and through `rtk`, which shows only the failures."
+        }
+        ("prompt.execution.no_background", Locale::PtBr) => {
+            "Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço."
+        }
+        ("prompt.execution.no_background", Locale::EnUs) => {
+            "Never send a build or test to the background, and never wait on another process in a loop."
+        }
+        // A leitura obrigatória de uma tarefa, quando ela aponta uma função
+        // (`caminho#função`): o pedido manda ler só aquela função, não o
+        // arquivo inteiro.
+        ("prompt.task_read.function", Locale::PtBr) => "leia só a função `{function}` em `{path}`",
+        ("prompt.task_read.function", Locale::EnUs) => "read only the function `{function}` in `{path}`",
         ("prompt.execution.copy", Locale::PtBr) => {
             "Trabalhe só na cópia separada `{copy}`, que a rodada criou no commit atual, e rode cada \
              comando de dentro dela; nunca crie outra. Nada se edita no repositório principal \
@@ -256,8 +297,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            41,
-            0x6ec6_43c3_bf76_3257,
+            48,
+            0xd8c3_5e6c_b5fc_8cfa,
         );
     }
 }

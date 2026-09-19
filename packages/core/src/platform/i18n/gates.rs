@@ -220,6 +220,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("write_gate.other_branch", Locale::EnUs) => {
             "[Mustard] The spec {spec} lives on the branch {branch}, and this edit is on {current}."
         }
+        // A leitura inteira de um arquivo de código com os testes dentro dele
+        // para antes deles ([`ReadCutRule`]): o aviso diz a linha e como
+        // pedir o trecho que ficou de fora.
+        ("write_gate.read_cut", Locale::PtBr) => {
+            "[Mustard] A leitura parou antes dos testes: eles começam na linha {line}. Para lê-los, \
+             peça esse trecho com `offset: {line}`."
+        }
+        ("write_gate.read_cut", Locale::EnUs) => {
+            "[Mustard] The read stopped before the tests: they start on line {line}. To read them, \
+             ask for that excerpt with `offset: {line}`."
+        }
 
         // The approval witness: what it tells the assistant after recording
         // the approval, or when nothing was recorded.
@@ -457,8 +468,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            62,
-            0x4097_d153_44e2_f38a,
+            63,
+            0xee29_201d_bc3d_b189,
         );
     }
 
@@ -473,6 +484,7 @@ mod tests {
             ("write_gate.on_base", &["{branch}"][..]),
             ("write_gate.unreadable_config", &["{file}"][..]),
             ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
+            ("write_gate.read_cut", &["{line}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
             ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),
             ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),

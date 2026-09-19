@@ -300,15 +300,37 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         }
     }
     named.sort();
-    // Os arquivos de leitura que a escolha confirmou, por código da tarefa;
-    // a tarefa sem nenhum não entra.
+    // Os arquivos de leitura de cada tarefa: os que ela já declara em
+    // `must_read` — obrigatórios, sem passar pela escolha do orquestrador,
+    // como os itens que a onda já faz — e os que a escolha antes do envio
+    // confirmou. Um caminho que não existe no projeto (a parte antes do `#`,
+    // quando ele aponta uma função) fica de fora; a tarefa sem nenhum arquivo
+    // não entra.
     let codes = log.codes();
-    let task_reads: Vec<(String, Vec<String>)> = choice
-        .as_ref()
+    let mut task_reads: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    for task in of_type("task") {
+        let must_read = task
+            .fields
+            .get("must_read")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|file| cited_exists(root, file));
+        task_reads.entry(task.id).or_default().extend(must_read.map(str::to_string));
+    }
+    for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).filter(|t| !t.files.is_empty()) {
+        task_reads.entry(chosen.task).or_default().extend(chosen.files.iter().cloned());
+    }
+    let task_reads: Vec<(String, Vec<String>)> = task_reads
         .into_iter()
-        .flat_map(|c| c.tasks.iter())
-        .filter(|t| !t.files.is_empty())
-        .map(|t| (codes.get(&t.task).cloned().unwrap_or_else(|| t.task.to_string()), t.files.clone()))
+        .filter(|(_, files)| !files.is_empty())
+        .map(|(task, mut files)| {
+            files.sort();
+            files.dedup();
+            (codes.get(&task).cloned().unwrap_or_else(|| task.to_string()), files)
+        })
         .collect();
     // As lições que casam com a onda, menos as que a escolha do orquestrador
     // tirou. O pedido da revisão leva as mesmas.
@@ -477,9 +499,12 @@ fn when_to_use(text: &str) -> String {
     front.description.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Um caminho citado pela skill existe? A skill pode citar só o fim do
-/// caminho, então a busca é pelo que o projeto tem.
+/// Um caminho citado (pela skill, ou pela leitura obrigatória de uma tarefa)
+/// existe? A conferência olha só a parte antes do `#`: a leitura obrigatória
+/// aceita `caminho#função`, e a função não é um arquivo. Pode citar só o fim
+/// do caminho, então a busca é pelo que o projeto tem.
 fn cited_exists(root: &Path, cited: &str) -> bool {
+    let cited = cited.split('#').next().unwrap_or(cited);
     if root.join(cited).exists() {
         return true;
     }
@@ -649,6 +674,52 @@ mod tests {
         assert_eq!(agreed, ["`agreed`: MSTD-LIMIT-0001"], "{}", built[0].text);
         assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 1, "{}", built[0].text);
         assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
+    }
+
+    /// A leitura obrigatória de uma tarefa que aponta uma função
+    /// (`caminho#função`) manda ler só aquela função, não o arquivo inteiro;
+    /// e as regras de execução do pedido mandam ler por trecho, rodar só os
+    /// testes do que mudou e a suíte inteira uma vez no fim, em primeiro
+    /// plano.
+    #[test]
+    fn the_wave_request_asks_to_read_by_excerpt() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "fn soma() {}\n").unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["apps/rt/src/a.rs#soma"]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(
+            built[0].text.contains("leia só a função `soma` em `apps/rt/src/a.rs`"),
+            "{}",
+            built[0].text
+        );
+        assert!(!built[0].text.contains("`apps/rt/src/a.rs#soma`"), "{}", built[0].text);
+        for phrase in ["Leia por trecho", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
+            assert!(built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
+        }
+    }
+
+    /// A leitura obrigatória de uma tarefa que aponta um arquivo que não
+    /// existe no projeto fica de fora do pedido — a conferência olha só a
+    /// parte antes do `#`, então um caminho de verdade seguido de uma função
+    /// inventada continua entrando.
+    #[test]
+    fn a_missing_must_read_path_is_left_out_of_the_request() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["apps/rt/src/nao-existe.rs"]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let part = crate::platform::i18n::translate("prompt.part.task_reads", Locale::PtBr);
+        assert!(!built[0].text.contains(part), "{}", built[0].text);
     }
 
     /// O pedido de uma onda e o da revisão dela, montados como a rodada os

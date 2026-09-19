@@ -1146,6 +1146,7 @@ impl Writer<'_> {
             self.build_dir(out, copy);
         }
         self.commands(out);
+        self.consumption(out);
         let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
         if !running.is_empty() {
             let _ = writeln!(out, "- {}", self.t("prompt.execution.running"));
@@ -1175,6 +1176,7 @@ impl Writer<'_> {
         let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
         self.build_dir(out, copy);
         self.commands(out);
+        self.consumption(out);
         let _ = writeln!(out, "- {}", self.t("prompt.review.jobs"));
         let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
         let _ = writeln!(out, "- {}", self.t("prompt.review.cleanup").replace("{copy}", &copy.path));
@@ -1189,6 +1191,24 @@ impl Writer<'_> {
         }
         if let Some(dir) = &copy.build_dir {
             let _ = writeln!(out, "- {}", self.t("prompt.execution.build_dir").replace("{dir}", dir));
+        }
+    }
+
+    /// Como o agente gasta menos: acha a função pela ferramenta de código
+    /// antes de abrir o arquivo, lê por trecho, não relê depois de editar,
+    /// roda só os testes do que mudou e a suíte inteira uma vez no fim, em
+    /// primeiro plano, pelo `rtk`. Uma linha por regra, para a onda e para a
+    /// revisão.
+    fn consumption(&self, out: &mut String) {
+        for key in [
+            "prompt.execution.lsp",
+            "prompt.execution.excerpt",
+            "prompt.execution.no_reread",
+            "prompt.execution.changed_tests",
+            "prompt.execution.suite_once",
+            "prompt.execution.no_background",
+        ] {
+            let _ = writeln!(out, "- {}", self.t(key));
         }
     }
 
@@ -1263,10 +1283,23 @@ impl Writer<'_> {
         }
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.task_reads"));
         for (task, files) in &self.material.task_reads {
-            let paths: Vec<String> = files.iter().map(|file| format!("`{file}`")).collect();
-            let _ = writeln!(out, "- `{task}`: {}", paths.join(", "));
+            let parts: Vec<String> = files.iter().map(|file| self.read_hint(file)).collect();
+            let _ = writeln!(out, "- `{task}`: {}", parts.join(", "));
         }
         out.push('\n');
+    }
+
+    /// Um arquivo da leitura por tarefa: `caminho#função` manda ler só
+    /// aquela função; um caminho sozinho é o arquivo, entre crases, como
+    /// antes.
+    fn read_hint(&self, file: &str) -> String {
+        match file.split_once('#') {
+            Some((path, function)) if !path.is_empty() && !function.is_empty() => self
+                .t("prompt.task_read.function")
+                .replace("{function}", function)
+                .replace("{path}", path),
+            _ => format!("`{file}`"),
+        }
     }
 }
 
