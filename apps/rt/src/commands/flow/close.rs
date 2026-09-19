@@ -237,6 +237,23 @@ fn run_close(
     if let Some(hint) = &stuck_hint {
         spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
     }
+    // As pendências abertas nascidas nesta spec vão ao usuário na hora, para
+    // ele decidir o destino de cada uma; é aviso, nunca recusa — o fechamento
+    // segue mesmo sem resposta.
+    let born_open = crate::commands::event::pending::open_pending_born_in(root, &spec);
+    if !born_open.is_empty() {
+        let items: Vec<Value> = born_open
+            .iter()
+            .map(|item| {
+                json!({
+                    "id": item.id,
+                    "title": item.title,
+                    "question": crate::commands::event::pending::destination_question(&item.id, &item.title, &spec, lang),
+                })
+            })
+            .collect();
+        out["pending"] = json!(items);
+    }
     // O fechamento manda copiar, menos com a cópia que não pôde ser
     // preparada, que fica para a próxima — e o pull request vem depois.
     let then = match command.as_str() {
@@ -559,6 +576,53 @@ mod tests {
         names.sort();
         assert_eq!(names, ["copy", "spec.ndjson"], "a pasta fechada tem o arquivo de eventos e a cópia, e nenhuma página");
         assert!(!root.join(".claude/spec/project.html").exists(), "nem a página do projeto");
+    }
+
+    /// A pendência aberta que nasceu na spec fechada aparece na resposta do
+    /// fechamento, com a pergunta de destino — a mesma linha que a gravação
+    /// da pendência devolveria; é aviso, não recusa: o fechamento segue
+    /// mesmo sem ela ser citada. Sem pendência nascida na spec, a resposta
+    /// não traz o campo — o caso de antes de a pendência nascer.
+    #[test]
+    fn closing_lists_the_pending_items_born_in_the_spec_with_the_destination_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+
+        // Antes de qualquer pendência nascer na spec: nenhum campo `pending`.
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert!(asked.get("pending").is_none(), "{asked}");
+
+        // Uma pendência nasce e fica ligada à spec pelo registro `deferred`.
+        let added = crate::commands::event::pending::pending_at(&crate::commands::event::pending::PendingOpts {
+            root: root.to_path_buf(),
+            add: true,
+            title: Some("Medir o antivírus".into()),
+            detail: Some("achado durante a spec x".into()),
+            ..Default::default()
+        });
+        assert_eq!(added["ok"], json!(true), "{added}");
+        // O `deferred` liga a pendência pela porta do binário, direto — a
+        // mesma que `link_to_active_spec` usa; o `run write` da CLI recusa o
+        // autor `binary`, que é só de gravações de dentro do binário.
+        let mut draft = Map::new();
+        draft.insert("text".to_string(), json!("pedido"));
+        draft.insert("keys".to_string(), json!(["pedido"]));
+        draft.insert("pending".to_string(), json!(1));
+        draft.insert("author".to_string(), json!("binary"));
+        record(root, "x", "deferred", draft, PhaseWriter::Binary).expect("deferred recorded");
+
+        let out = close(root, "x");
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+        let question =
+            crate::commands::event::pending::destination_question("P-1", "Medir o antivírus", "x", Locale::PtBr);
+        assert_eq!(
+            out["pending"],
+            json!([{"id": "P-1", "title": "Medir o antivírus", "question": question}]),
+            "{out}",
+        );
     }
 
     /// O fechamento com um `mustard.json` que declara o lint.

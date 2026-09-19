@@ -367,6 +367,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
+        // A pergunta de destino de uma pendência ligada à spec `{spec}`: a
+        // mesma linha que a gravação de uma pendência devolve na hora, e que
+        // o fechamento repete para cada uma que a spec ainda deixa aberta.
+        ("close.pending_destination", Locale::PtBr) => {
+            "A pendência {id} ({title}) está ligada à spec {spec}: ela entra nesta obra, fica para \
+             depois com o motivo, ou sai?"
+        }
+        ("close.pending_destination", Locale::EnUs) => {
+            "The pending item {id} ({title}) is linked to the spec {spec}: does it enter this work, \
+             stay for later with a reason, or go?"
+        }
 
         // A rodada de ondas (`commands/flow/round.rs`).
         ("round.bad_report", Locale::PtBr) => {
@@ -965,8 +976,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            128,
-            0xef49_c76e_b6bf_4b93,
+            129,
+            0x7427_96b8_9c35_c4b3,
         );
     }
 
@@ -1093,6 +1104,7 @@ mod tests {
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
+            ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
             ("round.bad_report", &["{detail}"][..]),
             ("round.line_missing", &[][..]),
             ("round.line_field", &["{line}", "{field}"][..]),

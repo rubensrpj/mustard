@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::search::{query_terms, SearchIndex};
 use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, SpecLog};
-use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
 use mustard_core::domain::text;
 use mustard_core::platform::i18n::Locale;
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,7 @@ use mustard_core::io::fs::lock::{read_shared, LockedFile};
 
 use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::git_settle::main_checkout_root;
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run pending`.
 #[derive(Debug, Clone, Default)]
@@ -610,6 +610,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 return duplicate(open, lang);
             }
             let id = next_id(&ledger);
+            let title_for_link = title.clone();
             ledger.items.push(PendingItem {
                 id: id.clone(),
                 title,
@@ -625,6 +626,13 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             }
             extra.insert("id".into(), json!(id));
             extra.insert("added".into(), json!(true));
+            // Com uma spec ativa no checkout, a pendência fica ligada a ela na
+            // hora, pelo mesmo caminho do `run write`: sem spec ativa, ou numa
+            // spec que a gravação recuse (formato antigo, por exemplo), nada
+            // muda — a pendência já entrou na lista, como hoje.
+            if let Some(question) = link_to_active_spec(&opts.root, &id, &title_for_link, lang) {
+                extra.insert("pending_question".into(), json!(question));
+            }
         }
         Action::Close { id, reason } => {
             let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) else {
@@ -895,6 +903,38 @@ pub(crate) fn open_pending_born_in(root: &Path, spec: &str) -> Vec<OpenPending> 
     DiskSpecState::new(root).log(spec).map(|log| open_born_in(root, &log)).unwrap_or_default()
 }
 
+/// A pendência `id`/`title`, recém-gravada, fica ligada à spec ativa do
+/// checkout em `start`, pela mesma gravação do `run write`: o registro
+/// `deferred` que aponta o número dela, gravado pelo binário (sem `origin`,
+/// porque não há mensagem de onde a pendência veio). Devolve a linha, no
+/// idioma `lang`, que o assistente mostra ao usuário na hora. Sem spec ativa,
+/// ou quando a gravação é recusada (a spec no formato antigo, por exemplo),
+/// `None`: a pendência já entrou na lista, e nada mais muda.
+fn link_to_active_spec(start: &Path, id: &str, title: &str, lang: Locale) -> Option<String> {
+    let number = id.strip_prefix("P-").and_then(|n| n.parse::<u64>().ok())?;
+    let checkout_root = crate::commands::spec_events::read::checkout(start);
+    let spec = DiskSpecState::new(&checkout_root).active(session_from_env().as_deref())?;
+    let mut draft = Map::new();
+    draft.insert("text".to_string(), json!(format!("Pendência {id}: {title}")));
+    draft.insert("keys".to_string(), json!(["pendencia"]));
+    draft.insert("pending".to_string(), json!(number));
+    draft.insert("author".to_string(), json!("binary"));
+    crate::commands::spec_events::write::record(&checkout_root, &spec, "deferred", draft, PhaseWriter::Binary).ok()?;
+    Some(destination_question(id, title, &spec, lang))
+}
+
+/// A pergunta de destino de uma pendência ligada à spec `spec`: o título dela
+/// e as três saídas honestas — entra nesta obra, fica para depois com o
+/// motivo, ou sai. O texto sai do catálogo, no idioma do projeto; a gravação
+/// e o fechamento fazem a mesma pergunta, com a mesma linha.
+#[must_use]
+pub(crate) fn destination_question(id: &str, title: &str, spec: &str, lang: Locale) -> String {
+    mustard_core::translate("close.pending_destination", lang)
+        .replace("{id}", id)
+        .replace("{title}", title)
+        .replace("{spec}", spec)
+}
+
 /// Grava na pendência aberta `id` a nota "virou a spec `spec`": a unidade que
 /// nasceu dela se chama `spec`, e o merge dessa spec fecha a pendência.
 /// `true` quando a nota está gravada.
@@ -1151,6 +1191,42 @@ mod tests {
             !wt.join(".claude/pending/ledger.json").exists(),
             "the ledger lives in the main checkout, never in the worktree",
         );
+    }
+
+    /// Com uma spec ativa no checkout (a branch de trabalho dela), a
+    /// pendência gravada por `run pending --add` fica ligada a ela na hora —
+    /// um registro `deferred`, no arquivo da spec, apontando o número dela —
+    /// e a resposta traz a pergunta de destino, pronta para o assistente
+    /// mostrar ao usuário. Sem spec ativa, nada muda: a pendência só entra
+    /// na lista, como antes.
+    #[test]
+    fn the_pending_born_in_a_spec_is_linked_and_shown() {
+        let dir = repo();
+        let root = dir.path();
+        git(root, &["checkout", "-b", "feature/quero"]);
+        assert_eq!(
+            crate::commands::spec_events::write::record_open(root, "quero", "feature/quero", "dev"),
+            Ok(true),
+            "the spec is open on the branch the pending item is added from",
+        );
+
+        let wrote = add(root, "Medir o antivírus do Windows", "achado durante a spec quero");
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        assert_eq!(wrote["id"], json!("P-1"));
+        let expected = destination_question("P-1", "Medir o antivírus do Windows", "quero", Locale::PtBr);
+        assert_eq!(wrote["pending_question"], json!(expected), "{wrote}");
+
+        let log = DiskSpecState::new(root).log("quero").expect("the spec file exists");
+        assert_eq!(born_in(&log), ["P-1"], "a deferred event links the pending item to the spec");
+        let open: Vec<String> = open_born_in(root, &log).into_iter().map(|item| item.id).collect();
+        assert_eq!(open, ["P-1"], "the closing asks about it");
+
+        // Sem spec ativa (outro branch, sem spec aberta nele), a pendência
+        // entra só na lista: nada é ligado, e a resposta não traz a pergunta.
+        git(root, &["checkout", "dev"]);
+        let plain = add(root, "Outra pendência", "sem spec ativa");
+        assert_eq!(plain["ok"], json!(true), "{plain}");
+        assert!(plain.get("pending_question").is_none(), "{plain}");
     }
 
     /// Fechar ou descartar sem motivo (ausente ou em branco) recusa, e o
