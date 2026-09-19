@@ -103,6 +103,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             // the caller can tell the two apart.
             if outcome == init::InitOutcome::Installed {
                 init::ensure_ripgrep();
+                let model_path = mustard_core::io::project_map::model_path(&cwd);
+                let path_env = std::env::var("PATH").unwrap_or_default();
+                init::ensure_code_tools(&cwd, &model_path, &path_env);
             }
             Ok(())
         }

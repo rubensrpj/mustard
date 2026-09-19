@@ -73,7 +73,7 @@ mod questions;
 mod seeding;
 mod tools;
 
-pub(crate) use tools::{ensure_ripgrep, probe_rtk};
+pub(crate) use tools::{ensure_code_tools, ensure_ripgrep, probe_rtk};
 
 use questions::ExistingAction;
 

@@ -1,3 +1,4 @@
+pub mod code_tools;
 pub mod error;
 pub mod git;
 pub mod git_branches;
