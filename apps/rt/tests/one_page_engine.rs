@@ -1,11 +1,10 @@
 //! Um motor de página só.
 //!
-//! Uma página avulsa escrita em markdown e a lista dos itens sem dono de uma
-//! spec, os dois que o binário ainda escreve em HTML, saem do mesmo motor: o
-//! mesmo estilo, as fontes do Google Fonts por um link, e nenhuma fonte
-//! gravada dentro da página. A página da spec e a do projeto saem hoje de um
-//! template mais banco de dados, fora deste motor: o comando que as refazia
-//! saiu com esta obra.
+//! A página avulsa escrita em markdown, a única que o binário ainda escreve
+//! em HTML, sai deste motor: o mesmo estilo, as fontes do Google Fonts por
+//! um link, e nenhuma fonte gravada dentro da página. A página da spec e a
+//! do projeto saem hoje de um template mais banco de dados, fora deste
+//! motor: o comando que as refazia saiu com esta obra.
 //!
 //! Fora de `apps/rt/src/report/`, nenhum arquivo de código do Mustard escreve
 //! o começo de uma página HTML (`<!doctype html>`) ou uma folha de estilo
@@ -127,51 +126,24 @@ fn style(html: &str) -> &str {
         .map_or("", |(css, _)| css)
 }
 
-/// As páginas que o binário ainda escreve em HTML: a avulsa e a lista dos
-/// itens sem dono da spec.
-fn the_pages(root: &Path) -> [String; 2] {
-    fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
-    let spec = root.join(".claude").join("spec").join("demo");
-    fs::create_dir_all(&spec).expect("spec dir");
-    fs::write(
-        spec.join("spec.ndjson"),
-        concat!(
-            r#"{"v":1,"id":1,"at":"2026-09-11T08:40:00-03:00","type":"state","author":"binary","phase":"survey"}"#,
-            "\n",
-            r#"{"v":1,"id":2,"at":"2026-09-11T08:41:00-03:00","type":"message","author":"user","text":"Revise `tudo`."}"#,
-            "\n",
-        ),
-    )
-    .expect("events");
+/// A página avulsa que o binário ainda escreve em HTML.
+fn the_page(root: &Path) -> String {
     fs::write(root.join("corpo.md"), "# Avulsa\n\n## Seção\n\nTexto com **negrito**.\n").expect("body");
     page(root, &["--body", "corpo.md", "--out", "avulsa.html"]);
-    let owners = page(root, &["--spec", "demo", "--owners"]);
-    // O arquivo de donos chega ao comando: a linha de um item que não existe
-    // é recusada.
-    fs::write(root.join("donos.json"), r#"[{"code": "MSTD-DEC-0009", "waves": [1], "why": "w"}]"#).expect("owners");
-    let (ok, refused) = page_run(root, &["--spec", "demo", "--owners", "donos.json"]);
-    assert!(!ok && refused["reason"] == "bad-owner-line", "{refused}");
-    let read = |relative: &str| fs::read_to_string(root.join(relative)).unwrap_or_else(|_| panic!("{relative}"));
-    let owners = owners["html"].as_str().expect("the owners list says where it went");
-    [read("avulsa.html"), read(owners)]
+    fs::read_to_string(root.join("avulsa.html")).unwrap_or_else(|_| panic!("avulsa.html"))
 }
 
 #[test]
 fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
-    // As duas páginas saem do mesmo motor: o mesmo estilo e as mesmas fontes.
     let project = tempfile::tempdir().expect("tempdir");
-    let pages = the_pages(project.path());
+    let html = the_page(project.path());
     let fonts = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Geist";
-    for (name, html) in ["loose", "owners"].iter().zip(&pages) {
-        assert!(html.starts_with("<!doctype html>"), "{name}: {html}");
-        assert!(!style(html).is_empty(), "{name} has no style");
-        assert_eq!(style(html), style(&pages[0]), "{name} has another style");
-        assert!(html.contains(fonts), "{name} does not link the Geist fonts");
-        assert!(!html.contains("@font-face") && !html.contains("data:font"), "{name} carries a font");
-        assert_eq!(html.matches("<style>").count(), 1, "{name} carries a second style");
-    }
-    assert!(pages[0].contains("<strong>negrito</strong>"), "the loose page did not convert markdown");
-    assert!(pages[1].contains("Todo item combinado já tem dono."), "the owners list is not the one asked for");
+    assert!(html.starts_with("<!doctype html>"), "{html}");
+    assert!(!style(&html).is_empty(), "the page has no style");
+    assert!(html.contains(fonts), "the page does not link the Geist fonts");
+    assert!(!html.contains("@font-face") && !html.contains("data:font"), "the page carries a font");
+    assert_eq!(html.matches("<style>").count(), 1, "the page carries a second style");
+    assert!(html.contains("<strong>negrito</strong>"), "the loose page did not convert markdown");
 
     let root = repo_root();
     let mut files = Vec::new();

@@ -26,19 +26,11 @@ pub enum SpecCmd {
     ///
     /// Com `--body` e `--out`, gera uma página avulsa (análise, relatório,
     /// plano) a partir de um arquivo markdown: escreve-se markdown, nunca
-    /// HTML. Sem `--title`, o título é a primeira linha `# Título`. Com
-    /// `--spec` e `--owners`, grava a lista dos itens sem dono, com a
-    /// proposta de dono de cada um, para conferir antes de gravar; as páginas
-    /// da spec e do projeto são templates que leem um banco de dados, e este
-    /// comando não as refaz mais.
-    /// Devolve `{ok, path}` ou
-    /// `{ok, spec, html, unowned, proposed, given, left, items}`.
+    /// HTML. Sem `--title`, o título é a primeira linha `# Título`.
+    /// Devolve `{ok, path}`.
     #[command(name = "page")]
     #[command(display_order = 17)]
     Page {
-        /// A spec da lista dos itens sem dono; só vale junto de `--owners`.
-        #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"], requires = "owners")]
-        spec: Option<String>,
         /// O arquivo markdown da página avulsa.
         #[arg(long)]
         body: Option<PathBuf>,
@@ -55,15 +47,6 @@ pub enum SpecCmd {
         /// O que vem depois de `Mustard · ` na faixa do cabeçalho.
         #[arg(long)]
         kind: Option<String>,
-        /// Com `--spec`, grava a lista dos itens combinados sem dono
-        /// (`owners.html`) no lugar da página da spec. O arquivo, quando vem,
-        /// é uma lista de linhas `{code, waves | applies_to, why}` com o dono
-        /// que o orquestrador dá aos itens.
-        #[arg(long, requires = "spec", value_name = "DONOS_JSON")]
-        // O jeito do clap de dizer "opção com valor opcional": ausente,
-        // sozinha ou com o arquivo.
-        #[allow(clippy::option_option)]
-        owners: Option<Option<PathBuf>>,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -73,18 +56,8 @@ pub enum SpecCmd {
 /// Dispatch one `spec`-family `run` subcommand.
 pub fn dispatch(cmd: SpecCmd) {
     match cmd {
-        SpecCmd::Page { spec: slug, body, out, title, subtitle, kind, owners, root } => {
-            spec::page::run(&spec::page::PageOpts {
-                root,
-                spec: slug,
-                body,
-                out,
-                title,
-                subtitle,
-                kind,
-                owners: owners.is_some(),
-                given: owners.flatten(),
-            });
+        SpecCmd::Page { body, out, title, subtitle, kind, root } => {
+            spec::page::run(&spec::page::PageOpts { root, body, out, title, subtitle, kind });
         }
     }
 }
@@ -102,29 +75,16 @@ mod tests {
         cmd: SpecCmd,
     }
 
-    /// `--owners` vem sozinho ou com o arquivo de donos, e só junto de
-    /// `--spec`; `--spec` só vem junto de `--owners`, porque o comando que
-    /// refazia o `spec.md` e o `spec.html` sozinho saiu.
+    /// A lista dos itens combinados sem dono saiu: `--spec` e `--owners`, que
+    /// só ela usava, não existem mais no comando de página. Pedi-los é
+    /// recusado na linha de comando, como qualquer opção que não existe,
+    /// antes de qualquer leitura de disco.
     #[test]
-    fn owners_comes_alone_or_with_the_file_and_only_with_a_spec() {
-        let owners = |args: &[&str]| match Probe::try_parse_from(args).map(|probe| probe.cmd) {
-            Ok(SpecCmd::Page { owners, .. }) => Ok(owners),
-            Err(e) => Err(e.kind()),
-        };
-        assert_eq!(owners(&["t", "page", "--spec", "x", "--owners"]), Ok(Some(None)));
-        assert_eq!(
-            owners(&["t", "page", "--spec", "x", "--owners", "donos.json"]),
-            Ok(Some(Some("donos.json".into())))
-        );
-        assert_eq!(owners(&["t", "page", "--owners"]), Err(clap::error::ErrorKind::MissingRequiredArgument));
-    }
-
-    /// O comando antigo que refazia o `spec.md` e o `spec.html` saiu: `--spec`
-    /// sozinho, sem `--owners`, é recusado na linha de comando, antes de
-    /// qualquer leitura de disco.
-    #[test]
-    fn the_old_page_command_is_gone() {
-        let refused = Probe::try_parse_from(["t", "page", "--spec", "x"]).map(|probe| probe.cmd).err().map(|e| e.kind());
-        assert_eq!(refused, Some(clap::error::ErrorKind::MissingRequiredArgument));
+    fn the_owners_page_is_gone() {
+        let cases: [&[&str]; 2] = [&["t", "page", "--spec", "x", "--owners"], &["t", "page", "--owners", "x"]];
+        for args in cases {
+            let refused = Probe::try_parse_from(args).map(|probe| probe.cmd).err().map(|e| e.kind());
+            assert_eq!(refused, Some(clap::error::ErrorKind::UnknownArgument), "{args:?}");
+        }
     }
 }

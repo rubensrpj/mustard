@@ -1856,10 +1856,13 @@ mod tests {
     }
 
     /// O `search` é gravado no arquivo de eventos para a busca no banco da
-    /// página, mas nunca aparece na lista dos itens sem dono: o campo não faz
-    /// parte do tipo do evento, então nenhum item o mostra.
+    /// página, mas `shown()` — o que qualquer leitura do evento mostra —
+    /// nunca o traz: é um campo binário (`BINARY_FIELDS`), fora do tipo do
+    /// evento. A lista dos itens sem dono, que exercitava essa garantia pela
+    /// própria renderização, saiu com esta obra: a garantia agora é só a de
+    /// `shown()`, já provada em `domain::spec_events` e em `domain::lessons`.
     #[test]
-    fn the_owners_list_never_shows_the_search_field() {
+    fn the_search_field_never_shows_in_what_shown_returns() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"combine"}"#);
@@ -1871,22 +1874,11 @@ mod tests {
         let search = serde_json::from_str::<Value>(line).unwrap()["search"].as_str().unwrap().to_string();
         assert!(search.contains(' '), "{search}");
 
-        use crate::commands::spec::page::{build, PageOpts};
-        let owners = build(&PageOpts {
-            root: root.to_path_buf(),
-            spec: Some("teste".into()),
-            body: None,
-            out: None,
-            title: None,
-            subtitle: None,
-            kind: None,
-            owners: true,
-            given: None,
-        });
-        assert_eq!(owners["ok"], json!(true), "{owners}");
-        let html = std::fs::read_to_string(spec.join("owners.html")).unwrap();
-        assert!(html.contains("Apagando a pasta, a trava barra o comando."), "{html}");
-        assert!(!html.contains(&search) && !html.contains("\"search\":"), "the owners list shows the search field: {html}");
+        let log = store::read(&spec.join("spec.ndjson")).unwrap().unwrap();
+        let rule_event = log.visible().into_iter().rev().find(|e| e.event_type == "rule").unwrap();
+        let shown = rule_event.shown();
+        assert!(shown.contains("Apagando a pasta, a trava barra o comando."), "{shown}");
+        assert!(!shown.contains(&search) && !shown.contains("\"search\""), "shown() carries the search field: {shown}");
     }
 
     /// Uma spec nascida em plano, com uma mensagem, um critério e as ondas

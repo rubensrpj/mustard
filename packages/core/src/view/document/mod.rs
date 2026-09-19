@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 
 mod spec;
 
-pub use spec::{conversation_len, cut_oldest_conversation, owner_label, owner_rule_key, owners_page, RtkDay, WaveState, WaveStates};
+pub use spec::{conversation_len, cut_oldest_conversation, RtkDay, WaveState, WaveStates};
 
 /// Uma página inteira.
 #[derive(Debug, Clone, PartialEq, Eq)]

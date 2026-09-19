@@ -21,45 +21,17 @@
 //! O comando que refazia o `spec.md`, o `spec.html` e o `project.html` a
 //! partir do arquivo de eventos saiu, com o motor que só ele usava: a página
 //! de uma spec e a do projeto só existem como template mais banco de dados.
-//! O que fica é a conferência antes de publicar, comum a toda página: todo
-//! trecho com cara de segredo sai dela como "…" ([`publishable`]), e a página
-//! que passaria de [`PAGE_MAX_BYTES`] perde os registros mais antigos da
-//! conversa.
-//!
-//! A lista dos itens sem dono (`owners.html`, ao lado da página da spec) sai
-//! só quando alguém pede, pelo `page --spec <nome> --owners`, por
-//! [`write_owners`].
 
 pub(crate) mod copy;
 pub(crate) mod secret;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use mustard_core::domain::spec_events::{Refusal, SpecLog};
-use mustard_core::domain::wave_prompt::OwnerLine;
+use mustard_core::domain::spec_events::Refusal;
 use mustard_core::platform::i18n::{translate, Locale};
-use mustard_core::view::document::{conversation_len, cut_oldest_conversation, owners_page, Document};
 use mustard_core::ClaudePaths;
 
 use serde_json::{json, Value};
-
-use crate::report::Render;
-
-/// O tamanho máximo, em bytes, de uma página que vai ser publicada: o
-/// claude.ai aceita até 16 MB.
-pub(crate) const PAGE_MAX_BYTES: usize = 16_000_000;
-
-/// O nome da lista dos itens sem dono, ao lado da página da spec.
-const OWNERS_PAGE: &str = "owners.html";
-
-/// A página pronta para publicar e o que a conferência trocou nela.
-struct Publishable {
-    html: String,
-    withheld: Vec<String>,
-    loose: usize,
-    trimmed: usize,
-    too_big: bool,
-}
 
 /// A pasta é de uma spec do formato antigo, cujo `spec.md` é o documento e não
 /// a página refeita do arquivo de eventos. Dois sinais, e a diferença entre
@@ -91,108 +63,6 @@ pub(crate) fn rtk_days(root: &Path) -> Vec<mustard_core::view::document::RtkDay>
     let universal = mustard_core::time::now_iso8601();
     let before = universal.get(..10).map_or(local.as_str(), |utc| utc.min(local.as_str()));
     crate::shared::rtk_gain::project_days(root, before)
-}
-
-/// O caminho do `spec.html` da spec `spec` do projeto `root`: a lista dos
-/// itens sem dono é gravada ao lado dele.
-fn spec_html_path(root: &Path, spec: &str) -> Result<PathBuf, Refusal> {
-    let paths = ClaudePaths::for_project(root)
-        .map_err(|e| Refusal::Io { detail: e.to_string() })?
-        .for_spec(spec.trim())
-        .map_err(|_| Refusal::BadSpecName { spec: spec.to_string() })?;
-    Ok(paths.spec_html_path())
-}
-
-/// A lista dos itens sem dono gravada, e o que a conferência antes de
-/// publicar fez nela.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OwnersPage {
-    /// Onde ela foi gravada, relativo ao projeto: ao lado da página da spec.
-    pub html: String,
-    pub withheld: Vec<String>,
-    pub warnings: Vec<String>,
-}
-
-/// Grava a lista dos itens sem dono da spec `spec` (`owners.html`, ao lado da
-/// página da spec), conferida para publicar como as outras páginas. O arquivo
-/// de eventos não muda.
-pub(crate) fn write_owners(
-    root: &Path,
-    spec: &str,
-    log: &SpecLog,
-    lines: &[OwnerLine],
-    lang: Locale,
-) -> Result<OwnersPage, Refusal> {
-    let path = spec_html_path(root, spec)?.with_file_name(OWNERS_PAGE);
-    let checked = publishable(owners_page(spec.trim(), log, lines, lang), lang, PAGE_MAX_BYTES);
-    write(&path, &checked.html)?;
-    Ok(OwnersPage { html: relative(root, &path), warnings: warnings(&checked, lang), withheld: checked.withheld })
-}
-
-fn write(path: &Path, text: &str) -> Result<(), Refusal> {
-    mustard_core::io::fs::write_atomic(path, text.as_bytes()).map_err(|e| Refusal::Io { detail: e.to_string() })
-}
-
-/// A página `doc` pronta para publicar: com cada trecho com cara de segredo
-/// trocado por "…" e, se passaria de `max` bytes, sem os registros mais
-/// antigos da conversa que forem precisos para caber.
-fn publishable(mut doc: Document, lang: Locale, max: usize) -> Publishable {
-    let (withheld, loose) = doc.redact(&secret::secret_excerpts, mustard_core::domain::spec_events::PURGED_MARK);
-    let html = Render::Html.render(&doc);
-    if html.len() <= max {
-        return Publishable { html, withheld, loose, trimmed: 0, too_big: false };
-    }
-    // Cortar um registro a mais nunca deixa a página maior: a menor quantidade
-    // que cabe é achada pela metade do intervalo a cada volta.
-    let cut = |count: usize| {
-        let mut shorter = doc.clone();
-        let trimmed = cut_oldest_conversation(&mut shorter, count, lang);
-        (Render::Html.render(&shorter), trimmed)
-    };
-    let (mut low, mut high) = (1, conversation_len(&doc));
-    let (mut best, mut trimmed) = cut(high);
-    if high == 0 || best.len() > max {
-        let too_big = best.len() > max;
-        return Publishable { html: best, withheld, loose, trimmed, too_big };
-    }
-    while low < high {
-        let mid = low + (high - low) / 2;
-        let (html, count) = cut(mid);
-        if html.len() <= max {
-            (best, trimmed, high) = (html, count, mid);
-        } else {
-            low = mid + 1;
-        }
-    }
-    Publishable { html: best, withheld, loose, trimmed, too_big: false }
-}
-
-/// O que a conferência antes de publicar precisa dizer.
-fn warnings(checked: &Publishable, lang: Locale) -> Vec<String> {
-    let mut out = Vec::new();
-    let count = checked.withheld.len() + checked.loose;
-    if count > 0 {
-        let mut places = checked.withheld.clone();
-        if checked.loose > 0 {
-            places.push(format!("+{}", checked.loose));
-        }
-        out.push(
-            translate("page.withheld_found", lang)
-                .replace("{count}", &count.to_string())
-                .replace("{codes}", &places.join(", ")),
-        );
-    }
-    if checked.trimmed > 0 {
-        out.push(translate("page.conversation.cut", lang).replace("{count}", &checked.trimmed.to_string()));
-    }
-    if checked.too_big {
-        out.push(
-            translate("page.too_big", lang)
-                .replace("{bytes}", &checked.html.len().to_string())
-                .replace("{max}", &PAGE_MAX_BYTES.to_string()),
-        );
-    }
-    out
 }
 
 /// Um aviso a mais na lista `warnings` da resposta de um passo, que nasce
@@ -316,7 +186,6 @@ pub(crate) fn relative(root: &Path, path: &Path) -> String {
 mod tests {
     use super::*;
     use mustard_core::io::spec_events as store;
-    use mustard_core::view::document::{Group, Item, Node, Section};
     use tempfile::tempdir;
 
     /// Os dois sinais de uma spec do formato antigo: a pasta só com o
@@ -371,78 +240,6 @@ mod tests {
         std::fs::read_to_string(root.join(relative)).unwrap()
     }
 
-    /// Um item de teste, sem título nem campo, só com o código e o texto que a
-    /// conferência antes de publicar vai examinar.
-    fn item(code: &str, text: &str) -> Node {
-        Node::Item(Item {
-            code: code.to_string(),
-            anchored: true,
-            title: String::new(),
-            status: None,
-            who: None,
-            mark: None,
-            date: None,
-            text: text.to_string(),
-            fields: Vec::new(),
-        })
-    }
-
-    /// Uma página de teste com uma seção "conversation" só, com um grupo
-    /// único (um "dia"), para exercitar [`publishable`] e o corte da
-    /// conversa sem passar pelo motor antigo (`spec_page`), que saiu.
-    fn doc_with(items: Vec<Node>) -> Document {
-        Document {
-            lang: "pt-BR".into(),
-            kind: None,
-            title: "t".into(),
-            meta: Vec::new(),
-            footer: None,
-            body: vec![Node::Section(Section {
-                anchor: Some("conversation".into()),
-                heading: "Conversa".into(),
-                body: vec![Node::Group(Group {
-                    anchor: "conversation-1".into(),
-                    title: "Dia".into(),
-                    status: None,
-                    summary: String::new(),
-                    open: false,
-                    body: items,
-                })],
-            })],
-        }
-    }
-
-    /// A página que passaria de 16 MB perde os itens mais antigos da
-    /// conversa, só os precisos para caber; uma a menos não bastaria.
-    #[test]
-    fn publishable_drops_the_oldest_conversation_entries_to_fit_the_byte_cap() {
-        let megabyte = |n: usize| format!("mensagem {n:02} {}", "palavra ".repeat(125_000));
-        let items: Vec<Node> = (1..=18).map(|n| item(&format!("MSTD-MSG-{n:04}"), &megabyte(n))).collect();
-        let doc = doc_with(items);
-
-        let checked = publishable(doc.clone(), Locale::PtBr, PAGE_MAX_BYTES);
-        assert!(checked.html.len() <= PAGE_MAX_BYTES, "the page has {} bytes", checked.html.len());
-        assert!(checked.trimmed > 0, "{:?}", checked.trimmed);
-        for n in 1..=checked.trimmed {
-            assert!(!checked.html.contains(&format!("mensagem {n:02} ")), "message {n} is still on the page");
-        }
-        let kept = checked.trimmed + 1;
-        assert!(checked.html.contains(&format!("mensagem {kept:02} ")), "message {kept} was cut without need");
-
-        // Com um item a menos cortado, a página não cabia.
-        let mut fewer = doc;
-        cut_oldest_conversation(&mut fewer, checked.trimmed - 1, Locale::PtBr);
-        assert!(Render::Html.render(&fewer).len() > PAGE_MAX_BYTES, "one entry fewer would not fit");
-    }
-
-    /// Uma página pequena sai inteira, sem cortar nada.
-    #[test]
-    fn a_small_page_keeps_the_whole_conversation() {
-        let checked = publishable(doc_with(vec![item("MSTD-MSG-0001", "oi")]), Locale::PtBr, PAGE_MAX_BYTES);
-        assert_eq!((checked.trimmed, checked.withheld.len()), (0, 0));
-        assert!(checked.html.contains("oi") && !checked.html.contains("ficaram só no"));
-    }
-
     /// A publicação da página do projeto, gravada pelo `run write` na spec em
     /// que o passo corre, leva o endereço para a linha do projeto do índice,
     /// de onde a barra de status o lê; o link da página da spec não muda.
@@ -475,72 +272,6 @@ mod tests {
         );
         let rows = mustard_core::io::spec_index::read_rows(root);
         assert_eq!(rows[0].url.as_deref(), Some("https://claude.ai/code/artifact/busca"), "{rows:?}");
-    }
-
-    /// Cada forma comum de escrever um segredo sai da página como "…", com o
-    /// resto do texto legível e o código do item em `withheld`; o que tem
-    /// letra e número sem ser segredo — código de item, data, caminho com
-    /// linha, leitura de variável de ambiente — continua na página. A mesma
-    /// proteção que a lista dos itens sem dono já exercita
-    /// (`page_owners_lists_each_unowned_item_with_its_owner_and_where_it_came_from`,
-    /// em `spec/page.rs`), aqui pelas formas de segredo, não pelo comando.
-    #[test]
-    fn publishable_withholds_every_common_secret_form_and_keeps_the_rest() {
-        let npm = format!("npm_{}", "a1B2c3".repeat(6));
-        let project_key = format!("sk-proj-{}", "Ab_3-".repeat(8));
-        let secrets = [
-            "DB_PASSWORD=S3nh4F0rte2024",
-            "GITHUB_TOKEN=a1b2c3d4e5f6g7h8i9j0",
-            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-            r#"{"password": "Hunt3rDois"}"#,
-            "client_secret=9f8e7d6c5b4a3210",
-            "postgres://loja:Banc0Loja@db.interno:5432/loja",
-            "Authorization: Bearer 8f14e45fceea167a5a36dedd4bea2543",
-            &project_key,
-            &npm,
-            "a senha do banco: Pr0dSenha",
-            "SECRET_KEY=Ch4veDoSite",
-            r#""Jwt": {"Key": "Ch4veDoJwt"}"#,
-            "AccountKey=Ch4veDoAzure==;EndpointSuffix=core.windows.net",
-            "a chave é Ch4veDaFrase",
-            "postgres://app:senhadobanco@db",
-            "redis://:senhadocache@cache",
-        ];
-        let ordinary = [
-            "token: MSTD-TASK-0101",
-            "token: 2026-09-17T02:35:53-03:00",
-            "secret: apps/rt/src/shared/rtk_gain.rs:120",
-            "token: process.env.GITHUB_TOKEN2",
-            "chave: MSTD-DEC-0138",
-            "SECRET_KEY=process.env.SECRET_KEY2",
-            "a forma é postgres://usuário:senha@host",
-            "redis://:${REDIS_PASSWORD}@cache",
-        ];
-        let mut codes = Vec::new();
-        let mut items = Vec::new();
-        for (n, secret) in secrets.iter().enumerate() {
-            let code = format!("MSTD-MSG-{:04}", n + 1);
-            items.push(item(&code, &format!("o valor é {secret} e pronto")));
-            codes.push(code);
-        }
-        for (n, text) in ordinary.iter().enumerate() {
-            items.push(item(&format!("MSTD-MSG-{:04}", secrets.len() + n + 1), text));
-        }
-
-        let checked = publishable(doc_with(items), Locale::PtBr, PAGE_MAX_BYTES);
-        assert_eq!(checked.withheld, codes, "{:?}", checked.withheld);
-        for value in ["S3nh4F0rte2024", "a1b2c3d4e5f6g7h8i9j0", "bPxRfiCYEXAMPLEKEY", "Hunt3rDois", "9f8e7d6c5b4a3210",
-            "Banc0Loja", "8f14e45fceea167a5a36dedd4bea2543", &project_key, &npm, "Pr0dSenha", "Ch4veDoSite",
-            "Ch4veDoJwt", "Ch4veDoAzure", "Ch4veDaFrase", "senhadobanco", "senhadocache"]
-        {
-            assert!(!checked.html.contains(value), "{value} reached the page");
-        }
-        for text in ["MSTD-TASK-0101", "2026-09-17T02:35:53-03:00", "rtk_gain.rs:120", "process.env.GITHUB_TOKEN2",
-            "MSTD-DEC-0138", "process.env.SECRET_KEY2", "postgres://usuário:senha@host", "REDIS_PASSWORD"]
-        {
-            assert!(checked.html.contains(text), "{text} was withheld without being a secret");
-        }
-        assert!(checked.html.contains("o valor é DB_PASSWORD=… e pronto"), "only the excerpt leaves the page");
     }
 
     /// Mais de uma ordem sai numa lista numerada, uma por linha, na ordem de
