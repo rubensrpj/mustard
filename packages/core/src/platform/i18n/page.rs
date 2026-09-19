@@ -172,6 +172,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.download", Locale::EnUs) => "Download .md",
         ("page.wave.full", Locale::PtBr) => "com o texto de cada item no lugar do código",
         ("page.wave.full", Locale::EnUs) => "with each item's text in place of its code",
+        // A seção do fim da página da spec com cada item que saiu: o nome
+        // dela, a marca de cada item (removido ou expurgado) e os campos de
+        // quem o tirou, quando e o registro que o tirou.
+        ("page.removed.heading", Locale::PtBr) => "Removidos",
+        ("page.removed.heading", Locale::EnUs) => "Removed",
+        ("page.removed.removed", Locale::PtBr) => "removido",
+        ("page.removed.removed", Locale::EnUs) => "removed",
+        ("page.removed.purged", Locale::PtBr) => "expurgado",
+        ("page.removed.purged", Locale::EnUs) => "purged",
+        ("page.removed.removed_by", Locale::PtBr) => "Removido por",
+        ("page.removed.removed_by", Locale::EnUs) => "Removed by",
+        ("page.removed.removed_at", Locale::PtBr) => "Removido em",
+        ("page.removed.removed_at", Locale::EnUs) => "Removed on",
+        ("page.removed.purged_by", Locale::PtBr) => "Expurgado por",
+        ("page.removed.purged_by", Locale::EnUs) => "Purged by",
+        ("page.removed.purged_at", Locale::PtBr) => "Expurgado em",
+        ("page.removed.purged_at", Locale::EnUs) => "Purged on",
+        ("page.removed.record", Locale::PtBr) => "Registro",
+        ("page.removed.record", Locale::EnUs) => "Record",
 
         // A página e o `.md` de uma spec (`view::document`): os títulos das
         // seções e dos grupos, os nomes dos tipos, os rótulos dos campos e
@@ -872,8 +891,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            332,
-            0x47a2_d70d_4276_d924,
+            340,
+            0x8e7f_472e_0be3_e9e1,
         );
     }
 }

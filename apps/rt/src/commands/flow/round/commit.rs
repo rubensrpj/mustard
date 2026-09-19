@@ -704,6 +704,39 @@ mod tests {
         }
     }
 
+    /// O texto do agente de onda diz, nos dois idiomas, o limite do resumo do
+    /// commit, e o limite é o que a rodada aceita: com o começo que ela põe na
+    /// frente (o tipo e o número de uma onda de dois dígitos), um resumo de 45
+    /// caracteres fecha o título em 60 e passa, e um de 46 passa de 60 e é
+    /// recusado.
+    #[test]
+    fn the_wave_agent_text_states_the_commit_summary_limit_the_round_accepts() {
+        let limit = 45;
+        for (lang, said) in [(Locale::PtBr, "até 45 caracteres"), (Locale::EnUs, "at most 45 characters")] {
+            let (_, agent) = mustard_core::agent_texts(lang)[0];
+            let line = agent.lines().find(|l| l.starts_with("- `commit`")).expect("the commit line of the wave agent");
+            assert!(line.contains(said), "{lang:?}: {line}");
+            assert!(line.contains(&MESSAGE_TITLE_MAX.to_string()), "{lang:?}: {line}");
+            let report = |summary: String| WaveReport {
+                wave: 13,
+                delivered: "A onda saiu.".into(),
+                files: vec!["src/a.rs".into()],
+                commit: Some(summary),
+                proofs: Vec::new(),
+                fixes: Vec::new(),
+                replan: None,
+            };
+            let (title, _) = commit_message(&[report("a".repeat(limit))], lang)
+                .unwrap_or_else(|_| panic!("{lang:?}: a {limit}-character summary fits"))
+                .expect("a message");
+            assert_eq!(title.chars().count(), MESSAGE_TITLE_MAX, "{lang:?}: {title}");
+            let Err(over) = commit_message(&[report("a".repeat(limit + 1))], lang) else {
+                panic!("{lang:?}: a summary over {limit} characters is refused");
+            };
+            assert_eq!(over.reason(), "commit-too-long", "{lang:?}");
+        }
+    }
+
     /// A mensagem do commit é conferida antes de qualquer gravação: o
     /// relatório com e-mail no corpo é recusado sem gravar o entregou, e a
     /// chamada seguinte, com a mensagem limpa, grava uma vez só.

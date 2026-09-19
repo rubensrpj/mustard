@@ -150,7 +150,8 @@ tr:last-child td{border-bottom:0}
 // O script da página da spec. Ele lê o banco de dados que o claude.ai guarda
 // junto da página (os itens copiados do spec.ndjson e o documento das coisas
 // calculadas), monta as seções com as mesmas regras da página que o binário
-// montava e se atualiza sozinho quando uma cópia nova chega. Os textos, os
+// montava, mais a seção dos removidos no fim, e se atualiza sozinho quando uma
+// cópia nova chega. Os textos, os
 // tipos de evento e as fases vêm do catálogo que o binário põe na tag
 // mustard-catalog, no idioma do projeto. Sem banco, ou com o banco vazio, a
 // página diz que ainda não há dados.
@@ -171,6 +172,7 @@ tr:last-child td{border-bottom:0}
   TYPE_LIST.forEach(function (ty) { TYPES[ty.name] = ty; });
   var BLOCKS = CAT.blocks || [], PHASES = CAT.phases || [], APPROVED = CAT.approvedPhases || [];
   var FINDING = CAT.findingLabels || [];
+  var MARK = typeof CAT.purgedMark === 'string' ? CAT.purgedMark : '';
   var PAGE = 500;
   if (CAT.lang) D.documentElement.setAttribute('lang', CAT.lang);
 
@@ -243,20 +245,41 @@ tr:last-child td{border-bottom:0}
   // A leitura dos itens: o que está à mostra, o código de cada um e a
   // aprovação que vale
   // ---------------------------------------------------------------------
+  // Os números que uma remoção tira da leitura: os alvos dela e, com o
+  // filtro, cada item do tipo e do intervalo gravado antes dela.
+  function removeTargets(e, all) {
+    var targets = ints(e.targets), f = e.filter;
+    if (f && str(f.type) !== null && str(f.from) !== null && str(f.to) !== null) {
+      all.forEach(function (o) { if (o.id < e.id && filterMatches(f, o)) targets.push(o.id); });
+    }
+    return targets;
+  }
   function hiddenOf(all) {
     var hidden = new Map();
     all.forEach(function (e) {
       if (isInt(e.purged)) hidden.set(e.id, 'purged');
       if (e.type === 'remove') {
-        var targets = ints(e.targets), f = e.filter;
-        if (f && str(f.type) !== null && str(f.from) !== null && str(f.to) !== null) {
-          all.forEach(function (o) { if (o.id < e.id && filterMatches(f, o)) targets.push(o.id); });
-        }
-        targets.forEach(function (id) { if (!hidden.has(id)) hidden.set(id, 'removed'); });
+        removeTargets(e, all).forEach(function (id) { if (!hidden.has(id)) hidden.set(id, 'removed'); });
       }
       replacedBy(e).forEach(function (old) { if (!hidden.has(old)) hidden.set(old, 'replaced'); });
     });
     return hidden;
+  }
+  // O que saiu da spec, pelo número de cada item: o item que uma remoção
+  // tirou da leitura e o item de que um expurgo tirou um trecho, cada um com
+  // o registro que o tirou. O expurgo vence a remoção, porque o texto do item
+  // expurgado nunca aparece; a linha que o formato antigo do expurgo
+  // esvaziou aponta o expurgo pelo campo `purged`.
+  function takenOutOf(all, byId) {
+    var out = new Map();
+    all.forEach(function (e) {
+      if (isInt(e.purged)) out.set(e.id, { by: byId.get(e.purged) || null, purged: true });
+      if (e.type === 'remove') {
+        removeTargets(e, all).forEach(function (id) { if (!out.has(id)) out.set(id, { by: e, purged: false }); });
+      }
+      if (e.type === 'purge') ints(e.targets).forEach(function (id) { out.set(id, { by: e, purged: true }); });
+    });
+    return out;
   }
   function filterMatches(f, e) {
     if (e.type !== f.type) return false;
@@ -762,6 +785,42 @@ tr:last-child td{border-bottom:0}
       });
       return section('conversation', t('page.block.conversation'), body);
     }
+    // Os removidos, no fim da página: cada item que saiu, com o código, o
+    // texto, quem o tirou, quando e por quê. O item expurgado aparece só com
+    // a marca no lugar do texto. Um item aparece uma vez, pela versão mais
+    // nova; a remoção de uma versão antiga de um item que continua à mostra
+    // não tirou o item, e fica de fora.
+    function removedItem(id, taken) {
+      var e = byId.get(id), by = taken.by, purged = taken.purged;
+      var it = e ? item(e, false) : { kind: 'item', id: id, type: '', code: code(id), anchored: false, title: '',
+        status: null, who: null, mark: null, date: null, text: '', fields: [] };
+      if (e) it.who = kindAnd(e, null);
+      it.mark = t(purged ? 'page.removed.purged' : 'page.removed.removed');
+      if (purged) { it.title = MARK; it.text = MARK; } else if (!it.text) it.text = it.title;
+      it.fields = [];
+      if (!by) return it;
+      if (str(by.author) !== null) {
+        it.fields.push([t(purged ? 'page.removed.purged_by' : 'page.removed.removed_by'), t('page.author.' + by.author)]);
+      }
+      if (when(by)) it.fields.push([t(purged ? 'page.removed.purged_at' : 'page.removed.removed_at'), when(by)]);
+      if (str(by.reason) !== null) {
+        it.fields.push([t('page.field.reason'), purged ? t('page.value.' + by.reason) : oneLine(by.reason)]);
+      }
+      it.fields.push([t('page.removed.record'), code(by.id)]);
+      return it;
+    }
+    function removed() {
+      var latest = new Map();
+      takenOutOf(all, byId).forEach(function (taken, id) {
+        var c = code(id), seen = latest.get(c);
+        if (!taken.purged && byCode.has(c)) return;
+        if (!seen || id > seen.id) latest.set(c, { id: id, taken: taken });
+      });
+      var entries = Array.from(latest.values()).sort(function (a, b) { return a.id - b.id; })
+        .map(function (x) { return removedItem(x.id, x.taken); });
+      if (!entries.length) return null;
+      return section('removed', t('page.removed.heading'), [group('removed-all', t('page.removed.heading'), entries)]);
+    }
 
     var meta = [], states = ofType('state');
     if (str(computed && computed.spec)) meta.push([t('page.meta.spec'), computed.spec]);
@@ -775,6 +834,8 @@ tr:last-child td{border-bottom:0}
     var found = findings();
     if (found) sections.push(found);
     sections.push(notes(), conversation());
+    var gone = removed();
+    if (gone) sections.push(gone);
     return { spec: str(computed && computed.spec) || '', title: str(computed && computed.spec) || t('page.kind.spec'),
       kind: t('page.kind.spec'), meta: meta, sections: sections, known: new Set(byCode.keys()),
       top: all.length ? all[all.length - 1].id : null };

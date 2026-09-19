@@ -17,7 +17,8 @@
 //! binário sabe e o banco não traz: os textos da página no idioma do projeto,
 //! lidos do catálogo de textos, e, na página da spec, os tipos de evento
 //! (sigla do código, bloco e campos de cada um), os nomes dos blocos e das
-//! fases. Assim o template não guarda uma segunda cópia dessas regras. Os
+//! fases e a marca do expurgo. Assim o template não guarda uma segunda cópia
+//! dessas regras. Os
 //! textos que o catálogo leva são os que o próprio template cita entre aspas
 //! simples (`'page.loading'`), mais os nomes dos tipos, dos campos, dos
 //! valores, das fases, dos autores e dos blocos.
@@ -37,7 +38,11 @@
 //!
 //! O template mostra a versão mais nova de cada item, esconde o item
 //! retirado, marca o que entrou depois da aprovação e mostra o pedido de cada
-//! onda com o texto de cada item no lugar do código. Ele se atualiza sozinho
+//! onda com o texto de cada item no lugar do código. No fim, a seção
+//! Removidos lista cada item que saiu, com o código, o texto, quem o tirou,
+//! quando e por quê; o item expurgado aparece só com a marca do expurgo
+//! ([`PURGED_MARK`], que o catálogo leva) no lugar do texto, na tela e no
+//! `.md` baixado. Ele se atualiza sozinho
 //! quando o documento das coisas calculadas ou o item mais novo mudam. Sem
 //! banco, ou com o banco vazio, ele diz que ainda não há dados.
 //!
@@ -59,7 +64,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 
-use crate::domain::spec_events::{Block, Kind, AUTHORS, PHASES, TYPES};
+use crate::domain::spec_events::{Block, Kind, AUTHORS, PHASES, PURGED_MARK, TYPES};
 use crate::domain::spec_state::is_approved_phase;
 use crate::platform::i18n::{translate, Locale};
 
@@ -102,6 +107,7 @@ pub fn spec_page_template(lang: Locale) -> String {
         "phases": PHASES,
         "approvedPhases": PHASES.iter().filter(|p| is_approved_phase(p)).collect::<Vec<_>>(),
         "findingLabels": finding_labels,
+        "purgedMark": PURGED_MARK,
         "labels": labels(SPEC_PAGE, lang),
     });
     fill(SPEC_PAGE, &catalog)
@@ -381,12 +387,14 @@ mod tests {
         json!(sections)
     }
 
-    /// A mesma forma, lida da página do template.
+    /// A mesma forma, lida da página do template. A seção dos removidos fica
+    /// de fora: a página que o binário montava não a tinha.
     fn page_seen(seen: &Value) -> Value {
         let sections: Vec<Value> = seen["sections"]
             .as_array()
             .expect("sections")
             .iter()
+            .filter(|s| s["id"] != json!("removed"))
             .map(|s| {
                 let groups: Vec<Value> = s["groups"]
                     .as_array()
@@ -468,11 +476,13 @@ mod tests {
         assert_eq!(page["meta"], json!(["spec demo", "fase aprovada", "branch feature/demo", "sai de dev"]));
         assert_eq!(page_seen(page), page_of(&doc), "the same sections, groups and items as today's page");
         // A versão mais nova de cada item, sem o item retirado, com a marca do
-        // que entrou depois da aprovação; a versão antiga fica na conversa.
+        // que entrou depois da aprovação; a versão antiga fica na conversa. O
+        // item retirado só aparece na seção dos removidos.
         let codes: Vec<String> = page["sections"]
             .as_array()
             .expect("sections")
             .iter()
+            .filter(|s| s["id"] != json!("removed"))
             .flat_map(|s| s["groups"].as_array().expect("groups").iter())
             .flat_map(|g| g["items"].as_array().expect("items").iter())
             .map(|i| i["code"].as_str().unwrap_or_default().to_string())
@@ -495,7 +505,7 @@ mod tests {
             page["sections"].as_array().expect("sections").iter().map(|s| s["id"].as_str().unwrap_or_default()).collect();
         assert_eq!(
             headings,
-            ["progress", "specification", "agreed", "criteria", "waves", "review", "findings", "notes", "conversation"]
+            ["progress", "specification", "agreed", "criteria", "waves", "review", "findings", "notes", "conversation", "removed"]
         );
         let overview = &page["sections"][0]["overview"];
         assert_eq!(overview["legend"], json!("2 a fazer · 1 aprovada · 1 em andamento"), "the wave states come from the database");
@@ -590,6 +600,93 @@ mod tests {
         assert_eq!(seen, expected, "the same groups and rows as today's project page");
         let link = &page["groups"][1]["rows"][0]["fields"][4];
         assert_eq!(link[2], json!(r#"<a href="https://claude.ai/code/artifact/busca" target="_blank" rel="noopener">busca</a>"#));
+    }
+
+    /// No fim da página da spec, a seção Removidos mostra cada item que saiu:
+    /// o removido com o código, o texto, quem o removeu, quando e por quê; o
+    /// expurgado por segredo só com a marca no lugar do texto. Vale para a
+    /// tela e para o `.md` baixado. O item removido com as duas versões
+    /// aparece uma vez, pela mais nova, e o item expurgado pelo formato de hoje
+    /// continua à mostra na seção dele, com o resto do texto.
+    #[test]
+    fn the_removed_section_lists_what_left() {
+        let mut lines = spec_lines();
+        lines.extend([
+            // O expurgo de hoje: o trecho já virou a marca na própria linha.
+            json!({"v":1,"id":50,"at":"2026-09-12T14:00:00-03:00","type":"note","author":"assistant","text":"A chave … fica no cofre do time.","keys":["chave"],"origin":2}),
+            json!({"v":1,"id":51,"at":"2026-09-12T14:01:00-03:00","type":"purge","author":"user","targets":[50],"reason":"secret","origin":2}),
+            // A regra revista sai inteira: as duas versões.
+            json!({"v":1,"id":52,"at":"2026-09-12T14:02:00-03:00","type":"remove","author":"user","targets":[9, 42],"reason":"A trava mudou de lugar.","origin":2}),
+        ]);
+        let content = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        let codes = parse_log(&content).codes();
+        let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| panic!("no code for {id}"));
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let sections = got["page"]["sections"].as_array().expect("sections");
+
+        // A seção é a última da página.
+        let last = sections.last().expect("a last section");
+        assert_eq!((&last["id"], &last["heading"]), (&json!("removed"), &json!("Removidos")));
+        let entries: Vec<Value> = last["groups"][0]["items"]
+            .as_array()
+            .expect("the removed items")
+            .iter()
+            .map(|i| {
+                let fields: Vec<Value> =
+                    i["fields"].as_array().expect("fields").iter().map(|f| json!([f[0], f[1]])).collect();
+                json!({"code": i["code"], "who": i["who"], "mark": i["mark"], "title": i["title"], "text": i["text"], "fields": fields})
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                json!({"code": code(34), "who": "anotação", "mark": "removido",
+                    "title": "Anotação colada por engano.", "text": "Anotação colada por engano.",
+                    "fields": [["Removido por", "assistente"], ["Removido em", "2026-09-12 11:10"],
+                        ["Motivo", "Colada por engano."], ["Registro", code(36)]]}),
+                json!({"code": code(37), "who": "mensagem", "mark": "expurgado", "title": "…", "text": "…",
+                    "fields": [["Expurgado por", "assistente"], ["Expurgado em", "2026-09-12 11:12"],
+                        ["Motivo", "segredo"], ["Registro", code(38)]]}),
+                json!({"code": code(42), "who": "regra", "mark": "removido",
+                    "title": "A trava de comandos confere o programa, as opções e o caminho.",
+                    "text": "A trava de comandos confere o programa, as opções e o caminho.vale para o Bash;vale para o PowerShell.",
+                    "fields": [["Removido por", "usuário"], ["Removido em", "2026-09-12 14:02"],
+                        ["Motivo", "A trava mudou de lugar."], ["Registro", code(52)]]}),
+                json!({"code": code(50), "who": "anotação", "mark": "expurgado", "title": "…", "text": "…",
+                    "fields": [["Expurgado por", "usuário"], ["Expurgado em", "2026-09-12 14:01"],
+                        ["Motivo", "segredo"], ["Registro", code(51)]]}),
+            ],
+            "each item that left, the purged ones only with the mark"
+        );
+        assert_eq!(code(9), code(42), "the two versions of the rule are one item");
+        // O expurgo de hoje não tira o item da leitura: ele segue nas
+        // anotações com o resto do texto, e a seção dos removidos não o repete.
+        let notes = sections.iter().find(|s| s["id"] == json!("notes")).expect("notes");
+        let kept = notes["groups"][0]["items"].as_array().expect("notes").iter().find(|i| i["code"] == json!(code(50)));
+        assert_eq!(kept.map(|i| i["text"].clone()), Some(json!("A chave … fica no cofre do time.")));
+        assert!(!last.to_string().contains("cofre"), "the purged text stays out of the removed section: {last}");
+
+        // O .md baixado tem a mesma seção, no fim.
+        let md = got["md"]["data"].as_str().expect("the downloaded .md");
+        let (before, removed) = md.split_once("\n## Removidos\n").unwrap_or_else(|| panic!("no removed section:\n{md}"));
+        assert!(before.contains("\n## Conversa\n") && !removed.contains("\n## "), "the removed section is the last:\n{md}");
+        for expected in [
+            "- **MSTD-NOTE-0001** · anotação · removido · 2026-09-12 11:08 — Anotação colada por engano.",
+            "  - Removido por: assistente",
+            "  - Removido em: 2026-09-12 11:10",
+            "  - Motivo: Colada por engano.",
+            &format!("  - Registro: {}", code(36)),
+            &format!("- **{}** · mensagem · expurgado · 2026-09-12 11:11 — …", code(37)),
+            "  - Expurgado em: 2026-09-12 11:12",
+            &format!("- **{}** · anotação · expurgado · 2026-09-12 14:00 — …", code(50)),
+            "  - Expurgado por: usuário",
+            "  - Motivo: segredo",
+        ] {
+            assert!(removed.contains(expected), "{expected:?} is not in the removed section of the .md:\n{removed}");
+        }
+        assert!(!removed.contains("cofre"), "the purged text stays out of the .md's removed section:\n{removed}");
+        assert_eq!(removed.matches(&format!("**{}**", code(42))).count(), 1, "the removed rule shows once:\n{removed}");
     }
 
     fn project_row(name: &str, phase: Option<&str>, url: Option<&str>) -> ProjectRow {

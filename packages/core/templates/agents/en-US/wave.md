@@ -28,7 +28,7 @@ End with one line, with valid JSON. The round reads only that line:
 
 - `wave`: the request's wave.
 - `text`: in the project's text language, at most 8,000 characters: each changed file in one sentence; for each criterion, the test and its red proof (what was cut and what the test said when it failed); what you decided outside the request; what is left open, and why.
-- `commit`: what the wave did, in one short sentence, with no spec code.
+- `commit`: what the wave did, with no spec code, in at most 45 characters; the round adds the prefix and refuses over 60.
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the new command>"}]`.
 - In a fix: `"fixes":[<the waves it closes>]`.
 - The plan does not work: `"replan":"<the change, in one sentence>"`.

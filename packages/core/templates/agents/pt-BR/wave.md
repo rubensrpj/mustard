@@ -1,6 +1,6 @@
 ---
 name: mustard-wave
-description: Implementa uma onda de uma spec do Mustard a partir do pedido montado pelo binário.
+description: Implementa uma onda de uma spec do Mustard pelo pedido do binário.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: inherit
 ---
@@ -28,7 +28,7 @@ Termine com uma linha só, com JSON válido. A rodada lê só ela:
 
 - `wave`: a onda do pedido.
 - `text`: no idioma do texto do projeto, até 8.000 caracteres: cada arquivo mudado numa frase; de cada critério, o teste e a prova do vermelho (o que foi cortado e o que o teste disse ao cair); o que você decidiu fora do pedido; o que ficou aberto, e por quê.
-- `commit`: o que a onda fez, numa frase curta, sem código de spec.
+- `commit`: o que a onda fez, sem código de spec, em até 45 caracteres; a rodada soma o começo e recusa acima de 60.
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando novo>"}]`.
 - Num conserto: `"fixes":[<as ondas que ele fecha>]`.
 - O plano não funciona: `"replan":"<a mudança, numa frase>"`.
