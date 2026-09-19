@@ -25,10 +25,14 @@
 //!
 //! ## O banco de dados da página da spec
 //!
-//! - A coleção [`ITEMS`] tem um documento por item do `spec.ndjson`, com o
-//!   número do item como nome do documento e a linha do item, como está no
-//!   arquivo, como corpo (`id`, `code`, `at`, `type`, `author` e os campos do
-//!   tipo). O template lê os itens em ordem de número, em páginas.
+//! - A coleção [`RANGES`] tem um documento por faixa fixa de [`RANGE_WIDTH`]
+//!   números (os itens de 2000 a 2099 vão no documento `2000`, por exemplo),
+//!   com `seq` (a ordem da faixa, e do pedaço dela) e `items` (a lista dos
+//!   itens da faixa, cada um como a linha do arquivo, com `id`, `code`,
+//!   `at`, `type`, `author` e os campos do tipo). A faixa que passar de
+//!   [`RANGE_MAX_BYTES`] se parte em pedaços, dentro dela mesma, cada um com
+//!   o próprio documento. O template lê as faixas em ordem, abre a lista de
+//!   itens de cada documento e monta a lista de itens em páginas.
 //! - O documento [`COMPUTED`] guarda o que o binário calcula e o
 //!   `spec.ndjson` não tem, trocado a cada cópia: `spec` (o nome da spec),
 //!   `last` (o número do último item copiado, que muda em toda cópia, para a
@@ -79,8 +83,16 @@ const PROJECT_PAGE: &str = include_str!("../../templates/pages/project.html");
 /// O lugar do catálogo em cada template, vazio até o binário preenchê-lo.
 const CATALOG_SLOT: &str = r#"<script type="application/json" id="mustard-catalog">{}</script>"#;
 
-/// A coleção dos itens da spec no banco da página dela.
-pub const ITEMS: &str = "items";
+/// A coleção das faixas de itens da spec no banco da página dela.
+pub const RANGES: &str = "ranges";
+
+/// Quantos números cabem numa faixa da coleção [`RANGES`]: os itens de 2000
+/// a 2099 vão no documento `2000`, por exemplo.
+pub const RANGE_WIDTH: u64 = 100;
+
+/// O tamanho, em bytes do JSON, que faz uma faixa se partir em pedaços, cada
+/// um com o nome do início seguido do número do pedaço (`2000-2`, `2000-3`…).
+pub const RANGE_MAX_BYTES: usize = 200 * 1024;
 
 /// O documento das coisas calculadas no banco da página da spec.
 pub const COMPUTED: &str = "computed/current";
@@ -103,7 +115,7 @@ pub fn spec_page_template(lang: Locale) -> String {
     let finding_labels = [Locale::PtBr, Locale::EnUs].map(|l| translate("plan.finding.label", l));
     let catalog = json!({
         "lang": lang.as_str(),
-        "db": { "items": ITEMS, "computed": COMPUTED },
+        "db": { "ranges": RANGES, "computed": COMPUTED },
         "types": types(),
         "blocks": Block::ALL.iter().map(|b| b.name()).collect::<Vec<_>>(),
         "phases": PHASES,
@@ -316,10 +328,25 @@ mod tests {
         }
     }
 
+    /// Os documentos da coleção das faixas, como a cópia os deixa: um por
+    /// faixa de [`RANGE_WIDTH`] números, com o início dela como nome e a
+    /// lista dos itens da faixa, na ordem, em `items`.
+    fn range_docs(lines: &[Value]) -> Vec<Value> {
+        let mut by_start: BTreeMap<u64, Vec<Value>> = BTreeMap::new();
+        for line in lines {
+            let start = (line["id"].as_u64().unwrap_or(0) / RANGE_WIDTH) * RANGE_WIDTH;
+            by_start.entry(start).or_default().push(line.clone());
+        }
+        by_start
+            .into_iter()
+            .map(|(start, items)| json!({"id": start.to_string(), "data": {"seq": start * 1000, "items": items}}))
+            .collect()
+    }
+
     /// O banco da página da spec, como a cópia o deixa: um documento por
-    /// item, com o número como nome, e o documento das coisas calculadas.
+    /// faixa de itens, com o início dela como nome, e o documento das
+    /// coisas calculadas.
     fn spec_database(lines: &[Value]) -> Value {
-        let items: Vec<Value> = lines.iter().map(|line| json!({"id": line["id"].to_string(), "data": line})).collect();
         let waves: serde_json::Map<String, Value> =
             wave_states().into_iter().map(|(n, s)| (n.to_string(), json!(state_name(s)))).collect();
         let prompts: serde_json::Map<String, Value> =
@@ -329,7 +356,7 @@ mod tests {
             .map(|d| json!({"date": d.date, "commands": d.commands, "input": d.input, "saved": d.saved}))
             .collect();
         json!({
-            "items": items,
+            "ranges": range_docs(lines),
             "computed": [{"id": "current", "data": {"spec": "demo", "waves": waves, "prompts": prompts, "rtk": rtk}}],
         })
     }
@@ -868,15 +895,19 @@ mod tests {
 
     /// Uma cópia nova chega com a página aberta: o item novo aparece, o item
     /// que saiu do banco some e o estado novo da onda vale, sem recarregar.
+    /// A faixa tocada vai inteira, com o item novo dentro e o que saiu fora
+    /// — não um `set` e um `delete` avulsos.
     #[test]
     fn a_new_copy_updates_the_open_page() {
         let lines = spec_lines();
         let note = json!({"v":1,"id":45,"at":"2026-09-12T13:00:00-03:00","type":"note","author":"assistant","code":"MSTD-NOTE-0009","text":"Nota que chegou depois.","keys":["nota"],"origin":2});
+        let mut range0: Vec<Value> = lines.iter().filter(|l| l["id"].as_u64() != Some(35)).cloned().collect();
+        range0.push(note.clone());
+        range0.sort_by_key(|l| l["id"].as_u64().unwrap_or(0));
         let steps = json!([
             {"do": "wait"}, {"do": "scrape", "as": "before"},
-            {"do": "copy", "set": {"items": [{"id": "45", "data": note}],
-                "computed": [{"id": "current", "data": {"spec": "demo", "waves": {"2": "approved", "3": "delivered"}}}]},
-                "delete": {"items": ["35"]}},
+            {"do": "copy", "set": {"ranges": [{"id": "0", "data": {"seq": 0, "items": range0}}],
+                "computed": [{"id": "current", "data": {"spec": "demo", "waves": {"2": "approved", "3": "delivered"}}}]}},
             {"do": "scrape", "as": "after"},
         ]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
@@ -898,23 +929,24 @@ mod tests {
         assert_eq!(legend, &json!("2 a fazer · 1 aprovada · 1 entregue"));
     }
 
-    /// Uma cópia que só apaga um item do meio, como a saída de um item com
-    /// trecho de segredo, não traz item novo nem muda onda, pedido ou rtk:
-    /// sem o `last` do documento calculado mudando, nem ele nem o item de
-    /// maior número mudam, e a página aberta fica velha. Com o `last` sempre
-    /// mudando a cada cópia, a escuta relê a página. Quando uma escuta falha,
-    /// a página mostra um aviso curto sem perder o que já tinha, e a próxima
-    /// cópia que der certo tira o aviso.
+    /// Uma cópia que só troca a faixa do meio sem o item que saiu, como a
+    /// saída de um item com trecho de segredo, não traz item novo nem muda
+    /// onda, pedido ou rtk: sem o `last` do documento calculado mudando, nem
+    /// ele nem o item de maior número mudam, e a página aberta fica velha.
+    /// Com o `last` sempre mudando a cada cópia, a escuta relê a página.
+    /// Quando uma escuta falha, a página mostra um aviso curto sem perder o
+    /// que já tinha, e a próxima cópia que der certo tira o aviso.
     #[test]
     fn the_open_page_reloads_when_a_middle_item_leaves() {
         let lines = spec_lines();
-        let items: Vec<Value> = lines.iter().map(|line| json!({"id": line["id"].to_string(), "data": line})).collect();
+        let without_35: Vec<Value> = lines.iter().filter(|l| l["id"].as_u64() != Some(35)).cloned().collect();
         let waves = json!({"2": "approved", "3": "running"});
         let computed_with_last = |last: u64| json!({"spec": "demo", "last": last, "waves": waves, "prompts": {}, "rtk": []});
-        let db = json!({"items": items, "computed": [{"id": "current", "data": computed_with_last(44)}]});
+        let db = json!({"ranges": range_docs(&lines), "computed": [{"id": "current", "data": computed_with_last(44)}]});
         let steps = json!([
             {"do": "wait"}, {"do": "scrape", "as": "before"},
-            {"do": "copy", "set": {"computed": [{"id": "current", "data": computed_with_last(53)}]}, "delete": {"items": ["35"]}},
+            {"do": "copy", "set": {"computed": [{"id": "current", "data": computed_with_last(53)}],
+                "ranges": [{"id": "0", "data": {"seq": 0, "items": without_35}}]}},
             {"do": "scrape", "as": "after"},
             {"do": "fail", "path": "computed/current"},
             {"do": "scrape", "as": "after_fail"},
@@ -968,8 +1000,12 @@ mod tests {
         assert_ne!(legend_of(&got["before"]), legend_of(&got["after"]), "the reload read the new wave state: {got}");
     }
 
-    /// Uma spec longa é lida inteira, em páginas de 500 itens, em ordem de
-    /// número: 1.200 itens pedem três leituras.
+    /// Uma spec longa é lida inteira, em páginas de até 500 documentos da
+    /// coleção das faixas, seguindo o cursor da mais velha para a mais nova:
+    /// aqui, cada item na própria faixa (só para este teste — a faixa de
+    /// verdade tem [`RANGE_WIDTH`] itens, e só passa de 500 documentos com
+    /// mais de 50 mil itens), 1.200 itens somados aos da spec de exemplo
+    /// pedem três idas ao banco.
     #[test]
     fn a_long_spec_is_read_in_pages() {
         let mut lines = spec_lines();
@@ -977,15 +1013,28 @@ mod tests {
         lines.extend((0..1_200).map(|i| {
             json!({"v":1,"id":first + i,"at":"2026-09-13T10:00:00-03:00","type":"note","author":"assistant","text":format!("Nota {i}."),"keys":["k"],"origin":2})
         }));
+        let ranges: Vec<Value> = lines
+            .iter()
+            .map(|l| {
+                let id = l["id"].as_u64().unwrap_or(0);
+                json!({"id": id.to_string(), "data": {"seq": id, "items": [l.clone()]}})
+            })
+            .collect();
+        let waves: serde_json::Map<String, Value> =
+            wave_states().into_iter().map(|(n, s)| (n.to_string(), json!(state_name(s)))).collect();
+        let db = json!({
+            "ranges": ranges,
+            "computed": [{"id": "current", "data": {"spec": "demo", "waves": waves, "prompts": {}, "rtk": []}}],
+        });
         let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "reads", "as": "reads"}]);
-        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
         let notes = got["page"]["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("notes")).expect("notes");
         assert_eq!(notes["groups"][0]["items"].as_array().map(Vec::len), Some(1_203), "every note of the long spec");
         let pages: Vec<(Value, Value)> = got["reads"]
             .as_array()
             .expect("reads")
             .iter()
-            .filter(|r| r["path"] == json!(ITEMS))
+            .filter(|r| r["path"] == json!(RANGES))
             .map(|r| (r["filters"][0][2].clone(), r["size"].clone()))
             .collect();
         let last_of_first_page = lines.iter().map(|l| l["id"].as_u64().unwrap_or(0)).collect::<Vec<_>>()[499];

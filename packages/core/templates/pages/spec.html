@@ -167,7 +167,7 @@ tr:last-child td{border-bottom:0}
     Object.keys(vars).forEach(function (k) { s = s.split('{' + k + '}').join(String(vars[k])); });
     return s;
   }
-  var DBP = CAT.db || { items: 'items', computed: 'computed/current' };
+  var DBP = CAT.db || { ranges: 'ranges', computed: 'computed/current' };
   var TYPES = {}, TYPE_LIST = CAT.types || [];
   TYPE_LIST.forEach(function (ty) { TYPES[ty.name] = ty; });
   var BLOCKS = CAT.blocks || [], PHASES = CAT.phases || [], APPROVED = CAT.approvedPhases || [];
@@ -1235,19 +1235,25 @@ tr:last-child td{border-bottom:0}
   });
 
   // ---------------------------------------------------------------------
-  // O banco: os itens em páginas, em ordem de número, e o documento das
-  // coisas calculadas. Uma cópia nova (o item mais novo ou o documento das
-  // coisas calculadas mudam) faz a página ler de novo.
+  // O banco: as faixas de itens em páginas, em ordem de início (e de
+  // pedaço, dentro da mesma faixa), e o documento das coisas calculadas.
+  // Uma cópia nova (uma faixa nova ou trocada, ou o documento das coisas
+  // calculadas) faz a página ler de novo.
   // ---------------------------------------------------------------------
   var SEEN = { top: null, computed: null };
   function readItems(db) {
     var out = [];
     function page(after) {
-      return db.collection(DBP.items).where('id', '>', after).orderBy('id').limit(PAGE).get().then(function (snap) {
+      return db.collection(DBP.ranges).where('seq', '>', after).orderBy('seq').limit(PAGE).get().then(function (snap) {
         var last = null;
-        snap.docs.forEach(function (d) { var b = d.data(); if (b) { out.push(b); last = b; } });
-        if (snap.docs.length < PAGE || !last || !isInt(last.id) || last.id <= after) return out;
-        return page(last.id);
+        snap.docs.forEach(function (d) {
+          var b = d.data();
+          if (!b) return;
+          (b.items || []).forEach(function (item) { out.push(item); });
+          last = b;
+        });
+        if (snap.docs.length < PAGE || !last || !isInt(last.seq) || last.seq <= after) return out;
+        return page(last.seq);
       });
     }
     return page(-1);
@@ -1271,9 +1277,11 @@ tr:last-child td{border-bottom:0}
     db.doc(DBP.computed).onSnapshot(function (s) {
       if (JSON.stringify((s && s.exists && s.data()) || {}) !== SEEN.computed) later();
     }, failed);
-    db.collection(DBP.items).orderBy('id', 'desc').limit(1).onSnapshot(function (s) {
+    db.collection(DBP.ranges).orderBy('seq', 'desc').limit(1).onSnapshot(function (s) {
       var d = s.docs[0], b = d && d.data();
-      if ((b && isInt(b.id) ? b.id : null) !== SEEN.top) later();
+      var items = (b && b.items) || [];
+      var top = items.length ? items[items.length - 1] : null;
+      if ((top && isInt(top.id) ? top.id : null) !== SEEN.top) later();
     }, failed);
   }
   var ready = W.claude && typeof W.claude.use === 'function' ? W.claude.use('db') : Promise.resolve(null);

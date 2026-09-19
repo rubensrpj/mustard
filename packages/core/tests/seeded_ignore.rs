@@ -64,7 +64,7 @@ const WRITER_PATHS: &[&str] = &[
     // The copy of a spec for its published page's database, rebuilt at each
     // milestone. apps/rt/src/commands/spec_events/pages/copy.rs (`FOLDER`)
     "spec/demo/copy/spec-1.json",
-    "spec/demo/copy/items/12.json",
+    "spec/demo/copy/ranges/0.json",
     // Sanctioned scratch evidence: the write gate lets a diagnosis land here on
     // a protected base, so it has to be ignored by construction.
     // apps/rt/src/shared/paths.rs (`.claude/scratch/` carve-out)

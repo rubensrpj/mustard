@@ -10,20 +10,26 @@
 //!
 //! ## O que a cópia leva
 //!
-//! - cada item com número maior que o do último copiado. O último copiado é o
-//!   maior `last` das cópias da página da spec gravadas depois da última
-//!   publicação do template dela que deu certo; sem cópia depois dela, a
-//!   página acabou de nascer, e a cópia leva a spec inteira. O número decide,
-//!   não o horário: vários itens caem no mesmo segundo;
+//! - cada faixa de [`RANGE_WIDTH`] números tocada por um item com número
+//!   maior que o do último copiado, ou por um expurgo gravado depois dele: a
+//!   faixa vai inteira, montada do arquivo de eventos, não só o que é novo
+//!   nela. O último copiado é o maior `last` das cópias da página da spec
+//!   gravadas depois da última publicação do template dela que deu certo;
+//!   sem cópia depois dela, a página acabou de nascer, e a cópia leva a spec
+//!   inteira (toda faixa que tem item). O número decide, não o horário:
+//!   vários itens caem no mesmo segundo;
 //! - sem os registros internos ([`LEFT_OUT`]): o texto que um gancho colocou
 //!   na conversa, a chamada de um comando e o aviso de um gancho;
 //! - sem o item que guarda um trecho com cara de segredo: ele fica fora até
 //!   ser expurgado, e o marco diz o código dele;
-//! - o item anterior que um expurgo gravado depois da última cópia tocou: a
-//!   versão limpa substitui a do banco, e a que ainda guarda um trecho com
-//!   cara de segredo sai do banco;
+//! - a faixa que ficou sem nenhum item sai do banco (`delete`);
 //! - o documento das coisas calculadas, trocado a cada cópia: o estado de cada
 //!   onda, o pedido de cada onda que ainda não saiu e a economia do rtk.
+//!
+//! A faixa que passar de [`RANGE_MAX_BYTES`] se parte em pedaços, em ordem,
+//! dentro dela mesma: o primeiro pedaço leva o nome do início da faixa, e os
+//! seguintes o nome do início com o número do pedaço (`2000`, `2000-2`,
+//! `2000-3`…).
 //!
 //! Cada documento vai num arquivo JSON próprio, dentro de `copy/` na pasta da
 //! spec, e cada lote (`spec-<n>.json`) é a lista `writes` de uma chamada da
@@ -78,7 +84,8 @@ use mustard_core::domain::spec_index::{is_template, project_page, published_to, 
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::platform::page_templates::{
-    project_page_template, spec_page_template, COMPUTED, ITEMS, PROJECT_CAPABILITIES, SPECS, SPEC_CAPABILITIES,
+    project_page_template, spec_page_template, COMPUTED, PROJECT_CAPABILITIES, RANGES, RANGE_MAX_BYTES, RANGE_WIDTH,
+    SPECS, SPEC_CAPABILITIES,
 };
 use mustard_core::view::document::{RtkDay, WaveState};
 use mustard_core::ClaudePaths;
@@ -234,14 +241,8 @@ fn build(
     }
     clear(&place.folder)?;
     let mut writes: Vec<Value> = Vec::new();
-    for (id, body) in items_after(log, since) {
-        writes.push(set(place, ITEMS, &id.to_string(), &body)?);
-    }
-    for (id, body) in purged_since(log, since) {
-        match body {
-            Some(body) => writes.push(set(place, ITEMS, &id.to_string(), &body)?),
-            None => writes.push(json!({ "op": "delete", "collection": ITEMS, "doc_id": id.to_string() })),
-        }
+    for start in dirty_ranges(log, since) {
+        writes.extend(range_writes(place, log, start)?);
     }
     let (collection, doc) = COMPUTED.split_once('/').unwrap_or((COMPUTED, "current"));
     writes.push(set(place, collection, doc, &computed(place, log, rtk, lang))?);
@@ -379,6 +380,73 @@ fn purged_since(log: &SpecLog, since: u64) -> Vec<(u64, Option<Value>)> {
         .filter(|e| !never_copied(e, &hidden))
         .map(|e| (e.id, body_of(e)))
         .collect()
+}
+
+/// O início da faixa de [`RANGE_WIDTH`] números que leva o item `id`.
+fn range_start(id: u64) -> u64 {
+    (id / RANGE_WIDTH) * RANGE_WIDTH
+}
+
+/// O início de cada faixa tocada por um item novo depois de `since` ou por um
+/// expurgo gravado depois dele, em ordem de número.
+fn dirty_ranges(log: &SpecLog, since: u64) -> BTreeSet<u64> {
+    items_after(log, since)
+        .into_iter()
+        .map(|(id, _)| range_start(id))
+        .chain(purged_since(log, since).into_iter().map(|(id, _)| range_start(id)))
+        .collect()
+}
+
+/// Os itens da faixa que começa em `start`, em ordem de número, lidos do
+/// arquivo inteiro — não só o que é novo: a faixa trocada vai inteira.
+fn range_items(log: &SpecLog, start: u64) -> Vec<(u64, Value)> {
+    let hidden = log.hidden();
+    let end = start + RANGE_WIDTH;
+    log.events
+        .iter()
+        .filter(|e| e.id >= start && e.id < end && !never_copied(e, &hidden))
+        .filter_map(|e| body_of(e).map(|body| (e.id, body)))
+        .collect()
+}
+
+/// Os itens de uma faixa em pedaços de até [`RANGE_MAX_BYTES`], em ordem,
+/// dentro da faixa; vazio quando ela ficou sem item.
+fn range_chunks(items: &[(u64, Value)]) -> Vec<Vec<Value>> {
+    let mut chunks: Vec<Vec<Value>> = Vec::new();
+    let mut current: Vec<Value> = Vec::new();
+    let mut current_len = 0usize;
+    for (_, body) in items {
+        let len = body.to_string().len();
+        if !current.is_empty() && current_len + len > RANGE_MAX_BYTES {
+            chunks.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+        current_len += len;
+        current.push(body.clone());
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+/// As escritas da faixa que começa em `start`: um documento por pedaço, o
+/// primeiro com o nome do início e os seguintes com o início e o número do
+/// pedaço, ou o apagamento do documento do início quando a faixa ficou sem
+/// item.
+fn range_writes(place: &Place, log: &SpecLog, start: u64) -> Result<Vec<Value>, Refusal> {
+    let items = range_items(log, start);
+    let chunks = range_chunks(&items);
+    if chunks.is_empty() {
+        return Ok(vec![json!({ "op": "delete", "collection": RANGES, "doc_id": start.to_string() })]);
+    }
+    let mut writes = Vec::new();
+    for (n, chunk) in chunks.iter().enumerate() {
+        let doc_id = if n == 0 { start.to_string() } else { format!("{start}-{}", n + 1) };
+        let body = json!({ "seq": start * 1000 + n as u64, "items": chunk });
+        writes.push(set(place, RANGES, &doc_id, &body)?);
+    }
+    Ok(writes)
 }
 
 /// O código de cada item que guarda um trecho com cara de segredo e por isso
@@ -678,13 +746,15 @@ pub(crate) fn sent(root: &Path, report: &Value, page: &str) -> Vec<Value> {
 }
 
 /// Para os testes: os números dos itens que os lotes da página da spec, na
-/// resposta `report`, mandam gravar (`set`) no banco, na ordem.
+/// resposta `report`, mandam gravar (`set`), juntando os itens de cada faixa
+/// escrita, na ordem em que aparecem nela.
 #[cfg(test)]
 pub(crate) fn sent_items(root: &Path, report: &Value) -> Vec<u64> {
     sent(root, report, SPEC_PAGE)
         .iter()
-        .filter(|w| w["collection"] == json!(ITEMS) && w["op"] == json!("set"))
-        .filter_map(|w| w["doc_id"].as_str().and_then(|id| id.parse().ok()))
+        .filter(|w| w["collection"] == json!(RANGES) && w["op"] == json!("set"))
+        .flat_map(|w| w["body"]["items"].as_array().cloned().unwrap_or_default())
+        .filter_map(|item| item["id"].as_u64())
         .collect()
 }
 
@@ -869,10 +939,11 @@ mod tests {
     /// Um marco chega depois de itens novos no `spec.ndjson`, gravados pelos
     /// ganchos e pelos comandos de verdade: a fala do usuário e o texto que
     /// os ganchos colocam, um comando que a trava barra, a resposta, uma
-    /// decisão, uma anotação com uma senha e a chamada de um passo do fluxo. A
-    /// cópia leva só os itens com número maior que o do último copiado: na
-    /// divisa, o último copiado fica fora e o seguinte entra. Ficam fora os
-    /// registros internos e a anotação com a senha, que o marco manda
+    /// decisão, uma anotação com uma senha e a chamada de um passo do fluxo.
+    /// Os itens desta spec pequena cabem todos na mesma faixa (0-99), então a
+    /// cópia do segundo marco reenvia a faixa inteira, com os itens de antes
+    /// e os novos juntos — é a faixa que muda, não cada item. Ficam fora dela
+    /// os registros internos e a anotação com a senha, que o marco manda
     /// expurgar. A cópia grava o número até onde foi, e a cópia seguinte
     /// começa dele. Nenhum marco escreve `spec.md`, `spec.html` nem
     /// `project.html`.
@@ -910,15 +981,16 @@ mod tests {
         for internal in LEFT_OUT {
             assert!(new.iter().any(|e| e.event_type == *internal), "{internal} was recorded after the copy");
         }
-        let expected: Vec<u64> = new
-            .iter()
-            .filter(|e| !LEFT_OUT.contains(&e.event_type.as_str()) && e.id != id_of(&secret))
-            .map(|e| e.id)
-            .collect();
         let items = sent_items(root, &second);
-        assert_eq!(items, expected, "only the items after {last}, without the internal records and the secret");
-        assert!(!items.contains(&last) && items.first() == Some(&(last + 1)), "the boundary: {items:?}");
-        assert!(items.contains(&decision));
+        // A faixa trocada vai inteira: o item já copiado no primeiro marco
+        // volta junto com os novos.
+        assert!(items.contains(&last), "the touched range resends the earlier items too: {items:?}");
+        assert!(items.contains(&decision), "{items:?}");
+        // Os registros internos e o item com segredo nunca entram na faixa.
+        for internal in new.iter().filter(|e| LEFT_OUT.contains(&e.event_type.as_str())) {
+            assert!(!items.contains(&internal.id), "{} was copied: {items:?}", internal.id);
+        }
+        assert!(!items.contains(&id_of(&secret)), "the secret item stays out of the range: {items:?}");
         let bodies = sent(root, &second, "spec");
         assert!(bodies.iter().all(|w| !w.to_string().contains("S3nh4F0rte2024")), "the secret never goes");
         let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
@@ -929,11 +1001,12 @@ mod tests {
         assert!(second.get("publish").is_none(), "both pages have their address: {second}");
         assert!(second["copy"].get("project").is_none(), "the phase did not change: {second}");
 
-        // A cópia feita grava o número, e a seguinte começa dele.
+        // A cópia feita grava o número, e a seguinte começa dele: o registro
+        // da cópia vira item na mesma faixa, e é o mais novo dela.
         let recorded = id_of(&write(root, "copy", second["copy"]["spec"]["record"].clone()));
         flow_step(root);
         let third = round(root);
-        assert_eq!(sent_items(root, &third), [recorded], "only what came after the recorded number");
+        assert_eq!(sent_items(root, &third).last(), Some(&recorded), "the newest item in the touched range");
 
         for page in [".claude/spec/x/spec.md", ".claude/spec/x/spec.html", ".claude/spec/project.html"] {
             assert!(!root.join(page).exists(), "{page} is no longer written");
@@ -1006,17 +1079,16 @@ mod tests {
         assert!(next.starts_with(translate("request.new_waves", Locale::PtBr)), "{next}");
         assert!(next.contains("write copy") && next.contains(SPEC_URL), "{next}");
         assert!(!next.contains("write publish"), "the page already has its address: {next}");
-        let last = first["copy"]["spec"]["record"]["last"].as_u64().unwrap_or_default();
         let items = sent_items(root, &asked);
+        // A faixa do pedido vai inteira: ele é o item mais novo dela.
         assert_eq!(items.last(), Some(&id_of(&asked)), "the request goes right after it: {items:?}");
-        assert!(items.iter().all(|id| *id > last), "only what came after the last copy: {items:?}");
         assert!(asked["copy"].get("project").is_none(), "{asked}");
     }
 
-    /// Um expurgo gravado depois da última cópia manda de novo o item
-    /// anterior que ele tocou: a versão limpa substitui a do banco. O item que
-    /// ainda guarda um trecho com cara de segredo depois do expurgo sai do
-    /// banco.
+    /// Um expurgo gravado depois da última cópia troca de novo a faixa que
+    /// ele tocou: a versão limpa do item substitui a do banco, dentro da
+    /// faixa reenviada. O item que ainda guarda um trecho com cara de segredo
+    /// depois do expurgo some da lista de itens da faixa.
     #[test]
     fn a_purge_after_the_copy_sends_the_clean_item_again_or_takes_it_out() {
         let dir = approved_project();
@@ -1037,11 +1109,12 @@ mod tests {
 
         let second = round(root);
         let writes = sent(root, &second, "spec");
-        let of = |id: u64| writes.iter().find(|w| w["doc_id"] == json!(id.to_string())).cloned();
-        let again = of(clean).expect("the purged item goes again");
-        assert_eq!((&again["op"], &again["body"]["text"]), (&json!("set"), &json!("O código do cofre é ….")));
-        let out = of(held).expect("the item with a secret left leaves the database");
-        assert_eq!(out["op"], json!("delete"), "{out}");
+        let range = writes.iter().find(|w| w["collection"] == json!(RANGES)).expect("the touched range");
+        assert_eq!(range["op"], json!("set"), "{range}");
+        let items = range["body"]["items"].as_array().cloned().unwrap_or_default();
+        let again = items.iter().find(|i| i["id"].as_u64() == Some(clean)).expect("the purged item goes again");
+        assert_eq!(again["text"], json!("O código do cofre é …."), "{again}");
+        assert!(!items.iter().any(|i| i["id"].as_u64() == Some(held)), "the item with a secret left leaves the range");
         assert!(!writes.iter().any(|w| w.to_string().contains("azul-marinho")), "{writes:?}");
     }
 
@@ -1101,7 +1174,9 @@ mod tests {
     }
 
     /// A cópia de uma spec longa vai em lotes de até 50 escritas, na ordem
-    /// dos itens, e o documento das coisas calculadas vai no último.
+    /// das faixas, e o documento das coisas calculadas vai no último; ver
+    /// [`a_long_spec_fits_the_page_database`], que já precisa de uma spec
+    /// grande o bastante para tocar mais de 50 faixas.
     #[test]
     fn a_long_copy_goes_in_batches_of_fifty() {
         let dir = approved_project();
@@ -1111,12 +1186,12 @@ mod tests {
             write(root, "note", json!({"text": format!("Nota {n}."), "keys": ["nota"], "origin": said}));
         }
         let first = round(root);
+        // 60 notas cabem numa faixa só: um lote, com a faixa e o documento
+        // das coisas calculadas.
         let batches = first["copy"]["spec"]["batches"].as_array().cloned().unwrap_or_default();
-        assert_eq!(batches, [json!(".claude/spec/x/copy/spec-1.json"), json!(".claude/spec/x/copy/spec-2.json")]);
+        assert_eq!(batches, [json!(".claude/spec/x/copy/spec-1.json")], "{batches:?}");
         let writes = sent(root, &first, "spec");
-        let items: Vec<u64> = sent_items(root, &first);
-        assert_eq!(items, (1..=log(root).max_id()).filter(|id| items.contains(id)).collect::<Vec<_>>(), "in order");
-        assert_eq!(writes.len(), items.len() + 1, "the items and the computed document");
+        assert_eq!(writes.len(), 2, "the range and the computed document: {writes:?}");
         assert_eq!(writes.last().map(|w| w["collection"].clone()), Some(json!("computed")));
     }
 
@@ -1301,16 +1376,133 @@ mod tests {
         let rows = mustard_core::io::spec_index::read_rows(root);
         assert_eq!(rows[0].url.as_deref(), Some(SPEC_URL), "the status line shows the new link: {rows:?}");
 
-        // O agente grava a cópia: a seguinte leva só o que veio depois e fica
-        // na conversa.
-        let last = second["copy"]["spec"]["record"]["last"].as_u64().unwrap_or_default();
-        write(root, "copy", second["copy"]["spec"]["record"].clone());
+        // O agente grava a cópia: a seguinte já não é a primeira e fica na
+        // conversa; a faixa tocada leva o registro da cópia como item mais
+        // novo.
+        let recorded = id_of(&write(root, "copy", second["copy"]["spec"]["record"].clone()));
         let third = round(root);
         let next = full_next(root, &third);
         assert!(third["copy"]["spec"].get("first").is_none(), "{third}");
         let agent = translate("page.copy.agent", lang).split('{').next().unwrap_or_default();
         assert!(!next.contains(agent), "{next}");
         assert!(next.contains(&batches_order(&third, "x", SPEC_URL, lang)), "{next}");
-        assert!(sent_items(root, &third).iter().all(|id| *id > last), "{third}");
+        assert_eq!(sent_items(root, &third).last(), Some(&recorded), "{third}");
+    }
+
+    /// Acrescenta `count` notas cruas ao arquivo de eventos da spec `x`, a
+    /// partir do número seguinte ao último, direto no arquivo — não pelo
+    /// gravador, que releria o arquivo inteiro a cada nota e custaria caro
+    /// numa spec de milhares de itens. Devolve o número da nota de índice
+    /// `mark_index` (a partir de 0), para o teste tocar um item no meio.
+    fn append_notes(root: &Path, count: u64, mark_index: u64) -> u64 {
+        let path = root.join(".claude/spec/x/spec.ndjson");
+        let start = log(root).max_id() + 1;
+        let mut content = std::fs::read_to_string(&path).unwrap_or_default();
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        let mut marked = 0;
+        for i in 0..count {
+            let id = start + i;
+            if i == mark_index {
+                marked = id;
+            }
+            let line = json!({"v": 1, "id": id, "at": "2026-09-19T00:00:00-03:00", "type": "note",
+                "author": "assistant", "code": format!("MSTD-NOTE-{id:04}"), "keys": ["k"],
+                "text": format!("Nota {i}.")});
+            content.push_str(&line.to_string());
+            content.push('\n');
+        }
+        mustard_core::io::fs::write_atomic(&path, content.as_bytes()).expect("bulk append");
+        marked
+    }
+
+    /// Uma spec longa — mais de 5.000 itens, o bastante para estourar o teto
+    /// de um documento por item — cabe no banco: os itens vão em documentos
+    /// por faixa de números, bem abaixo do teto de 5.000 documentos, e
+    /// nenhum passa do tamanho que faz uma faixa se partir. Um item novo
+    /// troca só a faixa dele; um expurgo no meio troca só a faixa do item
+    /// expurgado. Juntando as três cópias, a página mostra todos os itens, na
+    /// ordem, como antes — sem um documento por item.
+    #[test]
+    fn a_long_spec_fits_the_page_database() {
+        let dir = approved_project();
+        let root = dir.path();
+        let middle = append_notes(root, 5_200, 2_500);
+
+        let first = round(root);
+        let writes1 = sent(root, &first, "spec");
+        let range_docs1: Vec<&Value> =
+            writes1.iter().filter(|w| w["collection"] == json!(RANGES) && w["op"] == json!("set")).collect();
+        assert!(range_docs1.len() < 5_000, "{} documents for 5.200+ items", range_docs1.len());
+        for doc in &range_docs1 {
+            let size = doc["body"].to_string().len();
+            assert!(size <= RANGE_MAX_BYTES, "{}: {size} bytes", doc["doc_id"]);
+        }
+        let batch_files = first["copy"]["spec"]["batches"].as_array().cloned().unwrap_or_default();
+        assert!(batch_files.len() >= 2, "more than 50 writes split into several batch files: {batch_files:?}");
+        follow(root, &first);
+
+        // Um item novo troca só a faixa dele.
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        let added = id_of(&write(root, "note", json!({"text": "Nota nova.", "keys": ["k"], "origin": said})));
+        let second = round(root);
+        let writes2 = sent(root, &second, "spec");
+        let range_docs2: Vec<&Value> = writes2.iter().filter(|w| w["collection"] == json!(RANGES)).collect();
+        assert_eq!(range_docs2.len(), 1, "{range_docs2:?}");
+        assert_eq!(range_docs2[0]["doc_id"], json!(range_start(added).to_string()));
+        follow(root, &second);
+
+        // O expurgo no meio troca a faixa do item expurgado, e o próprio
+        // registro do expurgo é um item novo, que troca a faixa dele — a
+        // mais nova, distante da do item no meio de uma spec deste tamanho.
+        let purged = id_of(&write(
+            root,
+            "purge",
+            json!({"targets": [middle], "reason": "client_data", "excerpt": "2500", "origin": said}),
+        ));
+        let third = round(root);
+        let writes3 = sent(root, &third, "spec");
+        let range_docs3: Vec<&Value> = writes3.iter().filter(|w| w["collection"] == json!(RANGES)).collect();
+        assert_eq!(range_docs3.len(), 2, "{range_docs3:?}");
+        let target_range =
+            range_docs3.iter().find(|w| w["doc_id"] == json!(range_start(middle).to_string())).expect("{range_docs3:?}");
+        assert!(
+            range_docs3.iter().any(|w| w["doc_id"] == json!(range_start(purged).to_string())),
+            "the purge record's own range: {range_docs3:?}"
+        );
+        let purged_item = target_range["body"]["items"]
+            .as_array()
+            .and_then(|items| items.iter().find(|i| i["id"].as_u64() == Some(middle)))
+            .expect("the purged item stays, redacted");
+        assert!(purged_item["text"].as_str().unwrap_or_default().contains('…'), "{purged_item}");
+
+        // Juntando as três cópias, o banco mostra todos os itens, na ordem,
+        // como uma leitura fresca do arquivo mostraria.
+        let mut database: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+        for writes in [&writes1, &writes2, &writes3] {
+            for w in writes.iter().filter(|w| w["collection"] == json!(RANGES)) {
+                let doc_id = w["doc_id"].as_str().unwrap_or_default().to_string();
+                match w["op"].as_str() {
+                    Some("set") => {
+                        database.insert(doc_id, w["body"].clone());
+                    }
+                    Some("delete") => {
+                        database.remove(&doc_id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut got: Vec<u64> = database
+            .values()
+            .flat_map(|doc| doc["items"].as_array().cloned().unwrap_or_default())
+            .filter_map(|item| item["id"].as_u64())
+            .collect();
+        got.sort_unstable();
+        let final_log = log(root);
+        let starts: BTreeSet<u64> = final_log.events.iter().map(|e| range_start(e.id)).collect();
+        let expected: Vec<u64> = starts.iter().flat_map(|&s| range_items(&final_log, s)).map(|(id, _)| id).collect();
+        assert_eq!(got, expected, "the page shows every item, in order, as before");
     }
 }

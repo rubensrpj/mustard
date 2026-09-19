@@ -1629,7 +1629,7 @@ mod tests {
             && w["hint"].as_str().unwrap_or_default().contains(&code)), "{held}");
         let note_id = note["id"].as_u64().unwrap_or_default();
         assert!(!sent_items(root, &held).contains(&note_id), "the item stays out of the copy");
-        let folder = std::fs::read_dir(root.join(".claude/spec/x/copy/items")).unwrap();
+        let folder = std::fs::read_dir(root.join(".claude/spec/x/copy/ranges")).unwrap();
         for file in folder.flatten() {
             let body = std::fs::read_to_string(file.path()).unwrap();
             assert!(!body.contains("S3nh4F0rte"), "{}", file.path().display());
@@ -1640,8 +1640,13 @@ mod tests {
         let free = plan(root, "x");
         assert_eq!(free["publish"], json!(["spec", "project"]), "{free}");
         assert!(free.get("withheld").is_none(), "{free}");
-        let copied = sent(root, &free, "spec").into_iter().find(|w| w["doc_id"] == json!(note_id.to_string())).unwrap();
-        assert_eq!(copied["body"]["text"], json!("A senha do banco: …"), "the purged item goes, with the excerpt hidden");
+        let writes = sent(root, &free, "spec");
+        let range = writes
+            .iter()
+            .find(|w| w["body"]["items"].as_array().is_some_and(|items| items.iter().any(|i| i["id"].as_u64() == Some(note_id))))
+            .expect("the range with the purged item goes again");
+        let copied = range["body"]["items"].as_array().unwrap().iter().find(|i| i["id"].as_u64() == Some(note_id)).unwrap();
+        assert_eq!(copied["text"], json!("A senha do banco: …"), "the purged item goes, with the excerpt hidden");
     }
 
     /// A dica de aprovar do plano lê a opção de aprovar do catálogo, a mesma

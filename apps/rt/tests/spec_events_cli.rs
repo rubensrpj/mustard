@@ -182,8 +182,9 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
 
 /// Os itens que a cópia em `folder` manda para o banco, lidos como a
 /// ferramenta do banco os lê: de cada lote `spec-<n>.json`, cada escrita da
-/// coleção dos itens pelo arquivo dela. Cada arquivo apontado existe, e cada
-/// arquivo de item da pasta é apontado por um lote: a pasta é de uma cópia só.
+/// coleção das faixas pelo arquivo dela, com os itens dela abertos. Cada
+/// arquivo apontado existe, e cada arquivo de faixa da pasta é apontado por
+/// um lote: a pasta é de uma cópia só.
 fn copied_items(root: &std::path::Path, folder: &std::path::Path) -> Vec<Value> {
     let mut batches: Vec<std::path::PathBuf> = std::fs::read_dir(folder)
         .expect("the copy folder")
@@ -201,13 +202,14 @@ fn copied_items(root: &std::path::Path, folder: &std::path::Path) -> Vec<Value> 
         for write in writes.iter().filter(|w| w["op"] == json!("set")) {
             let file = root.join(write["file_path"].as_str().expect("file_path"));
             let body = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
-            if write["collection"] == json!("items") {
-                items.push(serde_json::from_str::<Value>(&body).expect("item json"));
+            if write["collection"] == json!("ranges") {
+                let range: Value = serde_json::from_str(&body).expect("range json");
+                items.extend(range["items"].as_array().cloned().unwrap_or_default());
             }
             pointed.push(file);
         }
     }
-    for entry in std::fs::read_dir(folder.join("items")).expect("items").flatten() {
+    for entry in std::fs::read_dir(folder.join("ranges")).expect("ranges").flatten() {
         assert!(pointed.contains(&entry.path()), "{} is left over from another copy", entry.path().display());
     }
     items
