@@ -1226,6 +1226,26 @@ mod tests {
         }
     }
 
+    /// O agente de onda grava um passo ao terminar uma tarefa ou provar um
+    /// critério, pelo `run write step`: o tipo não está em `BINARY_ONLY`, então
+    /// a gravação segue e não vira a entrega do fim.
+    #[test]
+    fn the_agent_writes_a_step_by_hand() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "message", r#"{"author":"user","text":"o plano"}"#);
+
+        let step = write(root, "step", r#"{"wave":23,"item":"MSTD-TASK-0041","text":"O tipo passo ficou gravado."}"#);
+        assert_eq!(step["ok"], json!(true), "{step}");
+        assert_eq!(step["type"], json!("step"), "{step}");
+        assert!(step["code"].as_str().unwrap().starts_with("MSTD-STEP-"), "{step}");
+
+        let spec = root.join(".claude").join("spec").join("teste");
+        for page in ["spec.html", "spec.md"] {
+            assert!(!spec.join(page).exists(), "{page}: the step is not the end of a wave");
+        }
+    }
+
     /// O que cada onda entregou, o commit, o clique e a fala digitada do
     /// usuário não são gravados à mão: o `run write` recusa os quatro, e recusa
     /// tirar ou rever uma entrega, um clique ou uma fala do usuário, sem gravar

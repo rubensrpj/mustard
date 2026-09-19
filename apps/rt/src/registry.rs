@@ -5,13 +5,14 @@
 //! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
 //! roda, e uma chamada que não casa com nenhum deles nem o executa.
 //!
-//! São nove, e só eles: a trava de comandos, o portão de escrita, o pedido do
+//! São dez, e só eles: a trava de comandos, o portão de escrita, o pedido do
 //! subagente, a testemunha da aprovação, a entrada da mensagem, o início da
-//! sessão, o conserto da barra de status, a faxina do fim da sessão e a
-//! conferência do fim da resposta.
+//! sessão, o conserto da barra de status, o sinal de vida da onda, a faxina
+//! do fim da sessão e a conferência do fim da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
+use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
 use crate::hooks::session::prompt_entry::PromptEntry;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
@@ -140,6 +141,15 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(StatuslineHealObserver)),
             },
+            // O sinal de vida da onda: depois de cada ferramenta, grava a
+            // hora da última ação quando a pasta de trabalho é a cópia de uma
+            // onda. Nunca barra.
+            Module {
+                id: "wave_alive_observer",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(WaveAliveObserver)),
+            },
             // A faxina do fim da sessão.
             Module {
                 id: "session_cleanup_observer",
@@ -210,9 +220,9 @@ mod tests {
         registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
-    /// O registro tem os nove ganchos que ficam, e só eles.
+    /// O registro tem os dez ganchos que ficam, e só eles.
     #[test]
-    fn the_registry_holds_exactly_the_nine_hooks() {
+    fn the_registry_holds_exactly_the_ten_hooks() {
         let registry = Registry::new();
         let mut ids = registry.ids();
         ids.sort_unstable();
@@ -227,6 +237,7 @@ mod tests {
                 "session_start_inject",
                 "statusline_heal_observer",
                 "subagent_inject",
+                "wave_alive_observer",
                 "write_gate",
             ]
         );
@@ -246,23 +257,24 @@ mod tests {
         assert!(!ToolMatch::Named("Bash").matches(Some("bash")));
     }
 
-    /// A trava de comandos roda só no `PreToolUse` do Bash.
+    /// A trava de comandos roda só no `PreToolUse` do Bash; o sinal de vida
+    /// da onda, que roda depois de toda ferramenta, continua no `PostToolUse`.
     #[test]
     fn the_command_guard_runs_before_bash_only() {
         let registry = Registry::new();
         assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard"]);
-        assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")).is_empty());
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer"]);
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
     /// O portão de escrita roda antes das cinco ferramentas de arquivo, e só
-    /// delas.
+    /// delas; o sinal de vida da onda segue rodando depois de cada uma.
     #[test]
     fn the_write_gate_runs_on_the_five_file_tools() {
         let registry = Registry::new();
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
-            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).is_empty(), "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
         }
         for tool in ["Bash", "Task", "Agent", "Skill"] {
             assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
@@ -278,7 +290,7 @@ mod tests {
         let registry = Registry::new();
         for tool in ["Task", "Agent"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject"], "{tool}");
-            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).is_empty(), "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
         }
         assert!(applicable_ids(&registry, Trigger::SubagentStart, None).is_empty());
         assert!(applicable_ids(&registry, Trigger::SubagentStop, None).is_empty());
@@ -286,15 +298,32 @@ mod tests {
     }
 
     /// A testemunha roda só depois da pergunta com opções, e é uma trava que
-    /// devolve veredito, não um observador.
+    /// devolve veredito, não um observador; o sinal de vida da onda, que roda
+    /// depois de toda ferramenta, roda ali também.
     #[test]
     fn ask_user_question_post_tool_use_runs_approval_witness() {
         let registry = Registry::new();
-        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion")), ["approval_witness"]);
+        assert_eq!(
+            applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion")),
+            ["approval_witness", "wave_alive_observer"]
+        );
         assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")).is_empty());
-        assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")).is_empty());
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")), ["wave_alive_observer"]);
         let module = registry.by_id("approval_witness").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());
+    }
+
+    /// O sinal de vida roda depois de qualquer ferramenta, e só depois: nunca
+    /// antes, e é um observador puro, sem veredito.
+    #[test]
+    fn wave_alive_observer_runs_after_every_tool_only() {
+        let registry = Registry::new();
+        for tool in ["Bash", "Write", "Task", "AskUserQuestion"] {
+            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"wave_alive_observer"), "{tool}");
+            assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"wave_alive_observer"), "{tool}");
+        }
+        let module = registry.by_id("wave_alive_observer").expect("registered");
+        assert!(module.check.is_none() && module.observer.is_some());
     }
 
     /// O fim da resposta é uma conferência só, um `Check` puro.

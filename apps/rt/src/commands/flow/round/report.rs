@@ -25,6 +25,8 @@ use crate::commands::spec_events::write::{record, RecordCheck};
 const DELIVERED_LINE: &str = "DELIVERED";
 /// A linha do veredito, como o agente de teste dedicado a devolve.
 const VERDICT_LINE: &str = "VERDICT";
+/// A linha da pausa, do agente de onda ou do orquestrador em nome dele.
+const PAUSED_LINE: &str = "PAUSED";
 
 /// O que a linha `DELIVERED` de uma onda trouxe.
 pub(crate) struct WaveReport {
@@ -53,6 +55,9 @@ pub(crate) struct VerdictReport {
 pub(crate) struct Report {
     pub waves: Vec<WaveReport>,
     pub verdicts: Vec<VerdictReport>,
+    /// As ondas que pausaram, pela linha `PAUSED`: a rodada as reenvia com o
+    /// mesmo pedido de antes, sem gravar entrega nem veredito nenhum.
+    pub paused: Vec<u64>,
 }
 
 /// O que a rodada fez com um relatório.
@@ -66,6 +71,8 @@ pub(crate) struct Taken {
     pub warnings: Vec<Value>,
     /// O commit feito, quando houve arquivo entregue.
     pub commit: Option<Value>,
+    /// As ondas que pausaram, pela linha `PAUSED`.
+    pub paused: Vec<u64>,
 }
 
 /// Fecha o que voltou de uma rodada, a partir do texto `raw` com as linhas
@@ -103,6 +110,18 @@ pub(crate) fn take_report_with_mine(
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
 ) -> Result<Taken, RoundRefusal> {
     let mut report = parse_report(raw)?;
+    // Um relatório só de pausa não junta cópia nem comita nada: a rodada
+    // reenvia essas ondas com o pedido de antes, mais adiante, em
+    // [`super::answer::run_round_with_mine`].
+    if report.waves.is_empty() && report.verdicts.is_empty() {
+        return Ok(Taken {
+            recorded: Vec::new(),
+            formatted: Vec::new(),
+            warnings: Vec::new(),
+            commit: None,
+            paused: report.paused,
+        });
+    }
     // O agente que diz que o plano da onda não funciona para a rodada: a
     // mudança proposta é mostrada, e só o clique do usuário em "Aceitar",
     // gravado pela testemunha, a deixa seguir.
@@ -227,7 +246,7 @@ pub(crate) fn take_report_with_mine(
             }));
         }
     }
-    Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit })
+    Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit, paused: report.paused })
 }
 
 /// `true` quando o texto traz uma linha de entrega ou de veredito: sem
@@ -317,10 +336,16 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         fields.remove("wave");
         verdicts.push(VerdictReport { wave, fields });
     }
-    if waves.is_empty() && verdicts.is_empty() {
+    let mut paused = Vec::new();
+    for body in tagged(raw, PAUSED_LINE) {
+        let (wave, _) = line_object(body, PAUSED_LINE)?;
+        let wave = wave.ok_or(RoundRefusal::LineField { line: PAUSED_LINE, field: "wave" })?;
+        paused.push(wave);
+    }
+    if waves.is_empty() && verdicts.is_empty() && paused.is_empty() {
         return Err(RoundRefusal::LineMissing);
     }
-    Ok(Report { waves, verdicts })
+    Ok(Report { waves, verdicts, paused })
 }
 
 /// O número do critério `reference`, dado pelo código que a página mostra ou

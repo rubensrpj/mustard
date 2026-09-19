@@ -500,13 +500,16 @@ fn copy_submodule(root: &Path, copy: &Path, sub: &str, unit: &str) -> Result<(),
     git::run(&repo, &["worktree", "add", "--detach", &target, "HEAD"]).result().map(|_| ())
 }
 
-/// As ondas em andamento, cada uma com o número do pedido dela: a onda tem
-/// pedido e nenhuma entrega depois dele. O pedido mais antigo que a versão
-/// mais nova da onda ou de uma tarefa dela descreve um plano que já mudou, e
-/// não conta. Uma onda que já entregou só volta a sair por uma reprovação: o
-/// pedido que veio depois de uma entrega, sem reprovação entre as duas, não é
-/// trabalho em curso, nem o pedido de uma onda que saiu do plano.
-pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
+/// As ondas com pedido aberto, cada uma com o número do pedido dela: a onda
+/// tem pedido e nenhuma entrega depois dele. O pedido mais antigo que a
+/// versão mais nova da onda ou de uma tarefa dela descreve um plano que já
+/// mudou, e não conta. Uma onda que já entregou só volta a sair por uma
+/// reprovação: o pedido que veio depois de uma entrega, sem reprovação entre
+/// as duas, não é trabalho em curso, nem o pedido de uma onda que saiu do
+/// plano. Não olha se o Claude Code que mandou o pedido segue aberto — é
+/// [`waves_in_progress`] e [`orphaned_waves`] que decidem isso, cada uma para
+/// o seu lado.
+pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     let planned = log.planned_waves();
     let replanned = waves_replanned(log);
     let verdicts = log.verdicts_by_wave();
@@ -531,6 +534,46 @@ pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
             !ids.iter().any(|id| id < sent) || judged_before == Some("rejected")
         })
         .collect()
+}
+
+/// `true` quando o processo do Claude Code que mandou o envio `sent` ainda
+/// está aberto: o par gravado (`claude_pid`, `claude_started`) segue vivo. Um
+/// envio sem o par — de versão antiga, ou gravado fora do Linux — conta como
+/// fechado; fora do Linux, onde nada é dado como órfão, conta como aberto:
+/// quem decide aí é a pausa que o orquestrador manda.
+fn claude_still_here(log: &SpecLog, sent: u64) -> bool {
+    let Some(event) = log.get(sent) else { return false };
+    match (event.int("claude_pid"), event.int("claude_started")) {
+        #[allow(clippy::cast_possible_truncation)]
+        (Some(pid), Some(started)) => crate::commands::flow::stuck::process_alive(pid as u32, started),
+        _ => cfg!(not(target_os = "linux")),
+    }
+}
+
+/// As ondas em andamento, cada uma com o número do pedido dela: as com pedido
+/// aberto ([`open_sends`]) cujo Claude Code ainda está aberto.
+pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
+    open_sends(log).into_iter().filter(|(_, sent)| claude_still_here(log, *sent)).collect()
+}
+
+/// As ondas órfãs, cada uma com o número do pedido dela: as com pedido aberto
+/// ([`open_sends`]) cujo Claude Code já fechou. A rodada as reenvia com o
+/// mesmo pedido de antes.
+pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
+    open_sends(log).into_iter().filter(|(_, sent)| !claude_still_here(log, *sent)).collect()
+}
+
+/// Minutos desde a última ação da onda `wave`: a hora do arquivo de sinal de
+/// vida que [`crate::hooks::observe::wave_alive_observer`] grava, ou, sem
+/// ele, a hora do envio `sent`. `None` sem nenhuma hora legível — a rodada
+/// não avisa sem saber.
+pub(crate) fn silent_minutes(root: &Path, spec: &str, wave: u64, log: &SpecLog, sent: u64) -> Option<i64> {
+    let path = crate::hooks::observe::wave_alive_observer::alive_path(root, spec, wave);
+    let from_file = std::fs::read_to_string(&path).ok().filter(|s| !s.trim().is_empty());
+    let raw = from_file.or_else(|| log.get(sent).map(|e| e.at().to_string()))?;
+    let at = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
+    let now = chrono::Local::now().with_timezone(at.offset());
+    Some((now - at).num_minutes())
 }
 
 /// As ondas do plano com o conserto pendente: a última revisão delas

@@ -621,6 +621,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "An `<ANALYSIS>` line could not be read and was left out ({detail}): its wave asks for \
              the choice again."
         }
+        // A retomada: a onda pausada ou órfã sai de novo com o pedido
+        // anterior, mais os passos gravados e o aviso de ver o que mudou na
+        // cópia; e a onda viva sem sinal por 40 minutos vira aviso.
+        ("round.resume.steps", Locale::PtBr) => "Passos já gravados desta onda:",
+        ("round.resume.steps", Locale::EnUs) => "Steps already recorded for this wave:",
+        ("round.resume.notice", Locale::PtBr) => "Comece vendo o que mudou na cópia.",
+        ("round.resume.notice", Locale::EnUs) => "Start by seeing what changed in the copy.",
+        ("round.resume.silent", Locale::PtBr) => {
+            "A onda {wave} está sem sinal de vida há mais de 40 minutos. Pare o agente dela e mande \
+             `<PAUSED>{\"wave\":{wave}}</PAUSED>` na próxima rodada, para reenviá-la."
+        }
+        ("round.resume.silent", Locale::EnUs) => {
+            "Wave {wave} has had no sign of life for more than 40 minutes. Stop its agent and send \
+             `<PAUSED>{\"wave\":{wave}}</PAUSED>` on the next round, to resend it."
+        }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
         ("approve_spec.open_points", Locale::PtBr) => "Pontos do levantamento ainda abertos ({count}): {points}",
@@ -926,8 +941,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            122,
-            0x3b45_3a14_4431_b4f9,
+            125,
+            0xe5c8_1b9c_adc4_8317,
         );
     }
 
@@ -1091,6 +1106,9 @@ mod tests {
             ("round.analysis", &["{waves}"][..]),
             ("round.analysis_ignored", &["{wave}", "{item}"][..]),
             ("round.analysis_unreadable", &["{detail}"][..]),
+            ("round.resume.steps", &[][..]),
+            ("round.resume.notice", &[][..]),
+            ("round.resume.silent", &["{wave}"][..]),
             ("page.findings.heading", &[][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
             ("prompt.fixed", &[][..]),

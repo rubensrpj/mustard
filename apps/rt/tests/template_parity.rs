@@ -456,6 +456,7 @@ const KEPT_HOOKS: &[&str] = &[
     "session_start_inject",
     "statusline_heal_observer",
     "subagent_inject",
+    "wave_alive_observer",
     "write_gate",
 ];
 

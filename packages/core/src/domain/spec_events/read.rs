@@ -102,7 +102,7 @@ pub(super) fn ints(value: Option<&Value>) -> Vec<u64> {
 pub(super) fn wave_of(event_type: &str, field: impl Fn(&str) -> Option<u64>) -> Option<u64> {
     match event_type {
         "wave" => field("n"),
-        "task" | "send" | "delivered" | "verdict" => field("wave"),
+        "task" | "send" | "delivered" | "verdict" | "step" => field("wave"),
         _ => None,
     }
 }

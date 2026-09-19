@@ -1,7 +1,7 @@
 //! `spec_events` — o arquivo de eventos de uma spec (`spec.ndjson`).
 //!
 //! Uma spec é um arquivo só, com um evento por linha. Este módulo guarda o que
-//! vale para toda linha: os 34 tipos, o envelope, os campos obrigatórios de
+//! vale para toda linha: os 35 tipos, o envelope, os campos obrigatórios de
 //! cada tipo, o bloco de cada tipo e a leitura por bloco e por passo.
 //!
 //! Funciona porque os tipos são fixos: o tipo mora sempre no campo `type`,

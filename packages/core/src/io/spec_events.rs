@@ -448,7 +448,7 @@ mod tests {
         put(path, &[], "message", &at("09:00"), json!({"author": "user", "text": "o pedido"}));
     }
 
-    /// Uma spec de teste com os 34 tipos, em três ondas, com uma remoção por
+    /// Uma spec de teste com os 35 tipos, em três ondas, com uma remoção por
     /// horário, um expurgo e um limite revisto.
     struct Spec {
         _dir: tempfile::TempDir,
@@ -497,7 +497,8 @@ mod tests {
         let c1 = add("criterion_1", "criterion", "08:53", json!({"when": "a", "then": "b", "proof": "cargo test a", "origin": msg}));
         let c2 = add("criterion_2", "criterion", "08:54", json!({"when": "c", "then": "d", "proof": "cargo test c", "origin": msg}));
         add("wave_1", "wave", "08:55", json!({"n": 1, "text": "Preparo.", "criteria": [c1], "done_when": "A suíte passa.", "origin": msg}));
-        add("task_1", "task", "08:56", json!({"wave": 1, "text": "Juntar o texto.", "files": [{"path": "src/render.rs"}], "origin": msg}));
+        let task1 = add("task_1", "task", "08:56", json!({"wave": 1, "text": "Juntar o texto.", "files": [{"path": "src/render.rs"}], "origin": msg}));
+        add("step", "step", "08:56", json!({"wave": 1, "item": task1, "text": "A tarefa 1 ficou pronta."}));
         add("delivered_1", "delivered", "08:57", json!({"author": "wave", "wave": 1, "text": "Texto junto.", "files": ["src/render.rs"]}));
         add("wave_2", "wave", "08:58", json!({"n": 2, "text": "A aprovação lê o estado.", "criteria": [c2], "done_when": "A trava passa.", "depends_on": [1], "origin": msg}));
         add("task_2", "task", "08:59", json!({"wave": 2, "text": "O portão lê a aprovação.", "files": [{"path": "src/gate.rs", "new": true}], "skill": "add-hook-rule", "covers": [rule], "origin": msg}));
@@ -556,7 +557,7 @@ mod tests {
         );
         assert_eq!(
             ids_of(&log.block(BlockQuery::Wave(1))),
-            spec.ids(&["wave_1", "task_1", "delivered_1"])
+            spec.ids(&["wave_1", "task_1", "step", "delivered_1"])
         );
         assert!(log.block(BlockQuery::Wave(3)).is_empty());
     }

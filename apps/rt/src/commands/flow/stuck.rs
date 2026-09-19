@@ -153,6 +153,68 @@ pub(crate) fn system_processes() -> Vec<Snapshot> {
     Vec::new()
 }
 
+/// O pai (`ppid`) e a hora de início (`starttime`, em tiques de relógio desde
+/// o boot, campo 22 de `/proc/<pid>/stat`) de `pid`. A hora de início é o que
+/// faz um número de processo reaproveitado pelo kernel não enganar: dois
+/// processos diferentes têm o mesmo `pid` só em momentos diferentes, nunca a
+/// mesma hora de início. `None` quando `pid` já sumiu ou o arquivo não bate
+/// com o formato esperado.
+#[cfg(target_os = "linux")]
+fn stat_of(pid: u32) -> Option<(u32, u64)> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // O nome do comando, entre parênteses, pode ter espaço ou parêntese
+    // dentro; os campos de verdade só começam depois do último `)`, com o
+    // estado (`state`) primeiro, então o pai.
+    let after = raw.rsplit_once(')')?.1;
+    let fields: Vec<&str> = after.split_whitespace().collect();
+    let ppid: u32 = fields.get(1)?.parse().ok()?;
+    let starttime: u64 = fields.get(19)?.parse().ok()?;
+    Some((ppid, starttime))
+}
+
+/// O processo Claude Code que está por trás do processo atual: sobe pelos
+/// pais em `/proc` até achar um de nome `claude`, e devolve o número dele e a
+/// hora de início — o par que [`process_alive`] confere depois. `None` sem
+/// achar nenhum, com um limite de 64 subidas para nunca entrar em laço.
+#[cfg(target_os = "linux")]
+pub(crate) fn claude_ancestor() -> Option<(u32, u64)> {
+    let mut pid = std::process::id();
+    for _ in 0..64 {
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+        let (ppid, starttime) = stat_of(pid)?;
+        if comm.trim() == "claude" {
+            return Some((pid, starttime));
+        }
+        if ppid == 0 || ppid == pid {
+            return None;
+        }
+        pid = ppid;
+    }
+    None
+}
+
+/// Fora do Linux não há `/proc`: nenhum processo Claude Code é achado.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn claude_ancestor() -> Option<(u32, u64)> {
+    None
+}
+
+/// `true` quando o processo `pid`, nascido em `started` (a mesma hora de
+/// início que `/proc` contava então), ainda está vivo: um `pid` que o kernel
+/// deu a outro processo depois mostra outra hora de início, e conta como
+/// morto.
+#[cfg(target_os = "linux")]
+pub(crate) fn process_alive(pid: u32, started: u64) -> bool {
+    stat_of(pid).is_some_and(|(_, starttime)| starttime == started)
+}
+
+/// Fora do Linux, sem `/proc`, nada é dado como morto: quem decide é a pausa
+/// que o orquestrador manda, não uma leitura que este sistema não tem.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn process_alive(_pid: u32, _started: u64) -> bool {
+    true
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -263,5 +325,44 @@ mod tests {
     #[test]
     fn no_ended_process_means_no_report_line() {
         assert!(report_line(&[], Locale::PtBr).is_none());
+    }
+
+    /// Um processo vivo, com a própria hora de início, está vivo; o mesmo
+    /// número depois que o processo sai — a hora de início já não bate com
+    /// nenhuma, porque `/proc/<pid>` sumiu — conta como morto, mesmo com a
+    /// hora antiga.
+    #[test]
+    fn a_live_process_is_alive_and_a_gone_one_with_its_old_start_time_is_not() {
+        let (ppid, started) = stat_of(std::process::id()).expect("read our own /proc/self/stat");
+        assert!(process_alive(std::process::id(), started), "the running test process is alive");
+        assert_ne!(ppid, 0, "the test process has a parent");
+
+        let mut child = spawn(&mut Command::new("true"));
+        let pid = child.id();
+        let (_, child_started) = stat_of(pid).expect("read the child's stat before it exits");
+        assert!(gone(&mut child), "the fixture child must exit");
+        let _ = child.wait();
+        assert!(!process_alive(pid, child_started), "an exited process is never alive again");
+    }
+
+    /// Subindo dos pais do processo atual, o achado é o mesmo dono do
+    /// processo atual: a hora de início de um processo que ainda está vivo
+    /// não muda entre duas leituras.
+    #[test]
+    fn stat_of_reports_a_stable_start_time_for_the_running_process() {
+        let pid = std::process::id();
+        let (_, first) = stat_of(pid).expect("first read");
+        let (_, second) = stat_of(pid).expect("second read");
+        assert_eq!(first, second, "the same live process keeps the same start time");
+    }
+
+    /// Sem achar nenhum pai de nome `claude`, ou achando um, nunca entra em
+    /// laço nem devolve um número que já não está vivo: o achado, quando há
+    /// um, sempre bate com [`process_alive`].
+    #[test]
+    fn claude_ancestor_never_loops_and_is_alive_when_found() {
+        if let Some((pid, started)) = claude_ancestor() {
+            assert!(process_alive(pid, started), "the ancestor found must still be running");
+        }
     }
 }
