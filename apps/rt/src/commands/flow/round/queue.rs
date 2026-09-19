@@ -475,10 +475,18 @@ pub(super) fn touches_a_submodule(root: &Path, log: &SpecLog, waves: &[u64]) -> 
 }
 
 /// A cópia em `path`, criada no commit `head` do checkout `root`. A pasta que
-/// já é uma cópia ligada ao repositório fica como está: é a de um envio
-/// anterior da mesma onda.
+/// já é uma cópia ligada ao repositório, de um envio anterior da mesma onda, e
+/// está limpa vai para o commit `head`, porque um commit fora da rodada pode
+/// ter avançado o checkout principal desde a criação dela. A que tem mudança,
+/// como a de uma retomada em andamento, fica como está.
 fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), String> {
     if path.join(".git").is_file() {
+        let clean = git::run(path, &["status", "--porcelain", "--untracked-files=all"])
+            .out()
+            .is_some_and(|status| status.is_empty());
+        if clean {
+            git::run(path, &["checkout", "--detach", head]).result().map(|_| ())?;
+        }
         return Ok(());
     }
     let target = path.to_string_lossy();
@@ -850,6 +858,60 @@ mod tests {
         let quiet = round(root, "x", None);
         assert_eq!(waves_in(&quiet, "dispatch"), Vec::<u64>::new(), "{quiet}");
         assert_eq!(waves_in(&quiet, "running"), vec![1], "{quiet}");
+    }
+
+    /// O reenvio de uma onda replanejada usa a cópia que já existe, de um
+    /// envio anterior: limpa, ela vai para o commit atual do checkout
+    /// principal, mesmo que um commit alheio à rodada tenha avançado o
+    /// checkout desde a criação dela; com mudança sem commitar, como a de uma
+    /// retomada em andamento, ela fica no commit que estava.
+    #[test]
+    fn a_clean_copy_moves_to_the_current_commit_before_a_send() {
+        for dirty in [false, true] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+            let first = round(root, "x", None);
+            assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+            let (copy_path, _) = sent_copy(root, 1);
+            let copy = Path::new(&copy_path);
+            let old_head = git_text(copy, &["rev-parse", "HEAD"]);
+
+            // Um commit alheio à rodada, de outro trabalho no checkout
+            // principal, avança o HEAD sem tocar a onda 1, que segue sem
+            // entrega e com a cópia dela ainda no disco.
+            std::fs::write(root.join("src/b.rs"), "fn dois() {}\n").unwrap();
+            git_at(root, &["add", "-A"]);
+            git_at(root, &["commit", "-q", "-m", "outro trabalho"]);
+            let new_head = git_text(root, &["rev-parse", "HEAD"]);
+            assert_ne!(old_head, new_head, "o commit alheio precisa mudar o HEAD");
+
+            if dirty {
+                std::fs::write(copy.join("src/a.rs"), "fn retomada() {}\n").unwrap();
+            }
+
+            // A onda 1 ganha versão nova e volta para a fila com a cópia que
+            // já existe, sem entrega nem reprovação nenhuma antes disso.
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let planned = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).unwrap();
+            let mut fields = planned.fields.clone();
+            for key in ["v", "id", "code", "at", "search", "type", "author"] {
+                fields.remove(key);
+            }
+            let mut wave = Value::Object(fields);
+            wave["done_when"] = json!("A suíte passa e o teste novo também.");
+            wave["replaces"] = json!(planned.id);
+            write(root, "x", "wave", wave);
+
+            let again = round(root, "x", None);
+            assert_eq!(waves_in(&again, "dispatch"), vec![1], "a onda replanejada volta a sair: {again}");
+            let copy_head = git_text(copy, &["rev-parse", "HEAD"]);
+            if dirty {
+                assert_eq!(copy_head, old_head, "a cópia com mudança fica como está: {copy_head}");
+            } else {
+                assert_eq!(copy_head, new_head, "a cópia limpa vai para o commit atual: {copy_head}");
+            }
+        }
     }
 
     /// O estado de cada onda que a página mostra acompanha a rodada: em
