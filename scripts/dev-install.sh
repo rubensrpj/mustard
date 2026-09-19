@@ -168,6 +168,39 @@ swap_tree() {
   cp -pR "$fonte_dir" "$destino_dir"
 }
 
+# --- troca um binário dentro da cópia do sistema, deixando-o de root:root,
+#     modo 755 — cp -p herdaria o dono e o modo de quem compilou (o usuário,
+#     às vezes com escrita para o grupo), que não é o que a cópia do sistema,
+#     feita como root, deve deixar para trás.
+swap_file_root_owned() {
+  fonte=$1
+  destino=$2
+  backup=$3
+  if [ -f "$destino" ]; then
+    mkdir -p "$(dirname -- "$backup")"
+    cp -p "$destino" "$backup"
+  fi
+  mkdir -p "$(dirname -- "$destino")"
+  cp "$fonte" "$destino"
+  chown root:root "$destino"
+  chmod 755 "$destino"
+}
+
+# --- o mesmo, para uma pasta inteira (os moldes da cópia do sistema) --------
+swap_tree_root_owned() {
+  fonte_dir=$1
+  destino_dir=$2
+  backup_dir=$3
+  if [ -d "$destino_dir" ]; then
+    mkdir -p "$(dirname -- "$backup_dir")"
+    cp -pR "$destino_dir" "$backup_dir"
+  fi
+  rm -rf "$destino_dir"
+  mkdir -p "$(dirname -- "$destino_dir")"
+  cp -R "$fonte_dir" "$destino_dir"
+  chown -R root:root "$destino_dir"
+}
+
 # --- o oposto de cada uma, para o --restore ----------------------------------
 restore_file() {
   backup=$1
@@ -203,9 +236,20 @@ if [ -n "$SYSTEM_ONLY_RELEASE_DIR" ]; then
   mkdir "$SYSTEM_ONLY_BACKUP_DIR"
   echo "==> Trocando a cópia do sistema ($SYSTEM_DIR)…"
   for b in mustard mustard-rt scan; do
-    swap_file "$SYSTEM_ONLY_RELEASE_DIR/$b" "$SYSTEM_DIR/bin/$b" "$SYSTEM_ONLY_BACKUP_DIR/bin/$b"
+    swap_file_root_owned "$SYSTEM_ONLY_RELEASE_DIR/$b" "$SYSTEM_DIR/bin/$b" "$SYSTEM_ONLY_BACKUP_DIR/bin/$b"
   done
-  swap_tree "$REPO_ROOT/apps/cli/templates" "$SYSTEM_DIR/templates" "$SYSTEM_ONLY_BACKUP_DIR/templates"
+  swap_tree_root_owned "$REPO_ROOT/apps/cli/templates" "$SYSTEM_DIR/templates" "$SYSTEM_ONLY_BACKUP_DIR/templates"
+  # A pasta datada nasce de root (este modo só roda assim, via sudo) dentro da
+  # pasta pessoal de quem chamou — sem devolver o DONO DAS PASTAS a essa
+  # pessoa, ela não apaga o próprio backup depois sem sudo de novo. Só as
+  # pastas trocam de dono, nunca os arquivos: apagar um arquivo pede escrita
+  # na pasta que o contém, não posse do arquivo — e os binários dentro
+  # continuam de root:root, do jeito que um --restore-system-only posterior
+  # (cp -p, como root) precisa achá-los para devolver a cópia do sistema como
+  # estava.
+  if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
+    find "$SYSTEM_ONLY_BACKUP_DIR" -type d -exec chown "$SUDO_UID:$SUDO_GID" {} +
+  fi
   echo "==> Originais preservados em: $SYSTEM_ONLY_BACKUP_DIR"
   exit 0
 fi

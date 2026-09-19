@@ -38,6 +38,20 @@ CARGO_TARGET=/tmp/cli-target
 
 CLI_BINS="scan mustard-rt mustard"
 
+# O commit, a marca de mudança (dirty) e a data do commit — lidos no
+# repositório ORIGINAL, ANTES da cópia abaixo deixar a pasta .git para trás.
+# Sem .git na área de build, o `git_describe` de cada build.rs (apps/rt,
+# apps/cli) não acha o commit ali; estas três variáveis, lidas aqui e
+# entregues ao `cargo build` mais abaixo, são o que ele lê antes de tentar o
+# git — sem elas, cada build.rs segue como hoje (versão só com o número).
+MUSTARD_GIT_HASH=$(git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null || echo "")
+MUSTARD_GIT_DIRTY=""
+MUSTARD_GIT_DATE=""
+if [ -n "$MUSTARD_GIT_HASH" ]; then
+  git -C "$REPO" diff --quiet HEAD 2>/dev/null || MUSTARD_GIT_DIRTY="1"
+  MUSTARD_GIT_DATE=$(git -C "$REPO" log -1 --format=%cs 2>/dev/null || echo "")
+fi
+
 echo "==> [1/5] copiando o repo para área de build isolada ($BUILD)"
 mkdir -p "$BUILD"
 rsync -a --delete \
@@ -63,6 +77,7 @@ echo "    versão: $VERSION"
 # --- 2. binários (workspace) ------------------------------------------------
 echo "==> [2/5] cargo build --release (CLI)"
 ( cd "$BUILD" && CARGO_TARGET_DIR="$CARGO_TARGET" MUSTARD_RELEASE_VERSION="$VERSION" \
+    MUSTARD_GIT_HASH="$MUSTARD_GIT_HASH" MUSTARD_GIT_DIRTY="$MUSTARD_GIT_DIRTY" MUSTARD_GIT_DATE="$MUSTARD_GIT_DATE" \
     cargo build --release --locked \
       --bin scan --bin mustard-rt --bin mustard )
 

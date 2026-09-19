@@ -170,6 +170,21 @@ fn seed_system_copy(system_dir: &Path) {
     write(&system_dir.join("templates/OLD.txt"), "old system templates");
 }
 
+/// Um `chown` de mentira: em vez de trocar o dono de verdade (a máquina de
+/// teste não é root), grava cada chamada — argumentos inclusive — numa linha
+/// do arquivo de log. É contra esse log que os testes de dono conferem QUEM
+/// o script tentou tornar dono de quê, sem precisar de privilégio real.
+fn shim_logging_chown(dir: &Path, log: &Path) {
+    let script = format!("#!/bin/sh\necho \"$*\" >> \"{}\"\n", log.display());
+    let path = dir.join("chown");
+    write(&path, &script);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+    }
+}
+
 /// `id -u` de verdade — decide qual dos dois ramos da cópia do sistema o
 /// script toma: a máquina de teste normalmente não é root.
 fn running_as_root() -> bool {
@@ -342,8 +357,10 @@ fn a_second_run_in_the_same_second_refuses_and_keeps_the_first_backup() {
 /// O comando com `sudo` que o script imprime, sem root, tem de funcionar de
 /// verdade: sem HOME real (o `sudo` do Ubuntu troca o HOME para `/root`),
 /// sem `cargo` no PATH (não compila nada — só troca a cópia do sistema com o
-/// que a rodada sem root já compilou) e só quando quem roda é root (aqui,
-/// forjado por um `id` de mentira que responde 0).
+/// que a rodada sem root já compilou), só quando quem roda é root (aqui,
+/// forjado por um `id` de mentira que responde 0) e sem o privilégio de
+/// verdade que só um root de verdade tem para o `chown` que deixa a cópia do
+/// sistema de root:root (aqui, um `chown` de mentira que sempre dá certo).
 #[test]
 #[cfg_attr(not(unix), ignore = "o script é sh")]
 fn the_printed_sudo_command_swaps_the_system_copy_without_cargo_or_the_real_home() {
@@ -385,6 +402,7 @@ fn the_printed_sudo_command_swaps_the_system_copy_without_cargo_or_the_real_home
     let id_shim = tmp.path().join("id-shim");
     fs::create_dir_all(&id_shim).expect("mkdir id shim");
     shim_fixed_output(&id_shim, "id", "0");
+    shim_logging_chown(&id_shim, &tmp.path().join("chown.log"));
 
     let result = Command::new("sh")
         .arg("-c")
@@ -701,4 +719,139 @@ fn a_plugin_copy_without_a_version_seal_stays_without_one() {
     assert!(!plugin_copy.join("bin/.version").exists(), "sem selo antes, o script não pode criar um");
     let backup_dir = the_dated_backup(&backup_root);
     assert!(!backup_dir.join("plugin/bin/.version").exists(), "e não deveria ir para o backup, já que nunca existiu");
+}
+
+/// `--system-copy-only` deixa os binários da cópia do sistema de root:root,
+/// modo 755, sem escrita para o grupo — mesmo quando o `cargo build` que os
+/// gerou deixou o dono de quem compilou e escrita para o grupo (o defeito
+/// real: os binários chegam de `cp -p`, que herda dono e modo da origem). O
+/// modo é conferido de verdade (qualquer dono troca o próprio modo, sem
+/// precisar de root); o dono root:root é conferido pela chamada que o script
+/// faz a um `chown` de mentira, já que a máquina de teste não é root de
+/// verdade.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn the_system_copy_is_owned_by_root() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_dir = tmp.path().join("backups/system-only");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_fixed_output(&shim, "id", "0");
+    let chown_log = tmp.path().join("chown.log");
+    shim_logging_chown(&shim, &chown_log);
+
+    let release_dir = tmp.path().join("release");
+    fs::create_dir_all(&release_dir).expect("mkdir release dir");
+    for b in ["mustard", "mustard-rt", "scan"] {
+        let path = release_dir.join(b);
+        write(&path, "built");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            // O dono de quem compilou, com escrita para o grupo — exatamente
+            // o defeito que este teste prova que o script corrige.
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o775)).expect("chmod release bin");
+        }
+    }
+    seed_system_copy(&system_dir);
+
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    let out = Command::new("sh")
+        .arg(repo_root().join("scripts/dev-install.sh"))
+        .args(["--system-copy-only", release_dir.to_str().expect("utf8 path"), backup_dir.to_str().expect("utf8 path")])
+        .env_clear()
+        .env("PATH", format!("{}:{real_path}", shim.display()))
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("CARGO_TARGET_DIR", &cargo_target)
+        .env("MUSTARD_DEV_INSTALL_SYSTEM_DIR", &system_dir)
+        .output()
+        .expect("the script runs");
+    assert!(out.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+
+    // O modo — prova real, sem simulação: qualquer dono troca o modo do
+    // próprio arquivo, sem precisar de root.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        for b in ["mustard", "mustard-rt", "scan"] {
+            let path = system_dir.join("bin").join(b);
+            let mode = fs::metadata(&path).unwrap_or_else(|e| panic!("stat {}: {e}", path.display())).permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755, "{b} tem de ficar 755, sem escrita para o grupo (ficou {mode:o})");
+        }
+    }
+
+    // O dono — a máquina de teste não é root de verdade, então a prova é a
+    // chamada que o script fez ao `chown` de mentira: ele tem de pedir
+    // root:root para os três binários e para os moldes.
+    let log = read(&chown_log);
+    for b in ["mustard", "mustard-rt", "scan"] {
+        let expected = format!("root:root {}", system_dir.join("bin").join(b).display());
+        assert!(log.contains(&expected), "o script tem de deixar {b} de root:root: log={log}");
+    }
+    let templates_line = format!("-R root:root {}", system_dir.join("templates").display());
+    assert!(log.contains(&templates_line), "os moldes da cópia do sistema também têm de ficar de root:root: log={log}");
+}
+
+/// A pasta datada do `--system-copy-only` nasce de root (só roda com sudo)
+/// dentro da pasta pessoal de quem chamou; sem devolver o dono das PASTAS a
+/// essa pessoa, ela não apaga o próprio backup depois sem sudo de novo. A
+/// prova é a chamada que o script faz ao `chown` de mentira, com o par
+/// `SUDO_UID:SUDO_GID` que o `sudo` real preenche — a máquina de teste não é
+/// root, então não há como conferir a posse de verdade.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn the_system_backup_belongs_to_the_caller() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_dir = tmp.path().join("backups/system-only");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_fixed_output(&shim, "id", "0");
+    let chown_log = tmp.path().join("chown.log");
+    shim_logging_chown(&shim, &chown_log);
+
+    let release_dir = tmp.path().join("release");
+    fs::create_dir_all(&release_dir).expect("mkdir release dir");
+    for b in ["mustard", "mustard-rt", "scan"] {
+        let path = release_dir.join(b);
+        write(&path, "built");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod release bin");
+        }
+    }
+    seed_system_copy(&system_dir);
+
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    let out = Command::new("sh")
+        .arg(repo_root().join("scripts/dev-install.sh"))
+        .args(["--system-copy-only", release_dir.to_str().expect("utf8 path"), backup_dir.to_str().expect("utf8 path")])
+        .env_clear()
+        .env("PATH", format!("{}:{real_path}", shim.display()))
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("CARGO_TARGET_DIR", &cargo_target)
+        .env("MUSTARD_DEV_INSTALL_SYSTEM_DIR", &system_dir)
+        // o `sudo` real preenche estas duas ao rodar como root em nome de
+        // outra conta — é delas que o script tem de ler quem chamou.
+        .env("SUDO_UID", "4242")
+        .env("SUDO_GID", "4343")
+        .output()
+        .expect("the script runs");
+    assert!(out.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+
+    let log = read(&chown_log);
+    assert!(
+        log.contains("4242:4343") && log.contains(backup_dir.to_str().expect("utf8 path")),
+        "o script tem de devolver as pastas do backup a quem chamou o sudo (SUDO_UID:SUDO_GID): log={log}"
+    );
 }

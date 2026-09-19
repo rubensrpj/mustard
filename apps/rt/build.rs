@@ -37,13 +37,29 @@ fn emit_version_full() {
 
     // Re-stamp when the build number changes or the checked-out commit moves.
     println!("cargo:rerun-if-env-changed=MUSTARD_BUILD_NUMBER");
+    println!("cargo:rerun-if-env-changed=MUSTARD_GIT_HASH");
+    println!("cargo:rerun-if-env-changed=MUSTARD_GIT_DIRTY");
+    println!("cargo:rerun-if-env-changed=MUSTARD_GIT_DATE");
     rerun_if_git_head_changed();
 }
 
 /// `(short_hash, dirty, commit_date)` from git, or `None` if git is
 /// unavailable / this is not a repo. `commit_date` falls back to the build date
 /// when the commit date can't be read but the hash can.
+///
+/// The Linux package (`packaging/linux/build-deb.sh`) copies the source tree
+/// into a build area WITHOUT `.git` before compiling, so the `git` calls below
+/// would find nothing there. That script reads the commit, the dirty flag and
+/// the date from the ORIGINAL repo, before the copy, and hands them over as
+/// `MUSTARD_GIT_HASH` / `MUSTARD_GIT_DIRTY` / `MUSTARD_GIT_DATE` — read first,
+/// here; without them, this falls back to `git` like before.
 fn git_describe() -> Option<(String, bool, String)> {
+    if let Some(hash) = env_var("MUSTARD_GIT_HASH") {
+        let dirty = env_var("MUSTARD_GIT_DIRTY").is_some();
+        let date = env_var("MUSTARD_GIT_DATE").unwrap_or_else(build_date);
+        return Some((hash, dirty, date));
+    }
+
     let hash = git(&["rev-parse", "--short=12", "HEAD"])?;
     // `--quiet` makes a clean tree exit 0 and a dirty tree exit 1; any other
     // failure (no git) also leaves us treating the tree as not-dirty.
