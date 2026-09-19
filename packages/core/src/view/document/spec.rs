@@ -1,17 +1,12 @@
-//! O que a página de uma spec carrega: o estado de uma onda, o pedido
-//! montado para ela, um dia da economia do rtk, e o corte da conversa grande
-//! demais (`conversation`).
+//! O que a página de uma spec carrega: o estado de uma onda e um dia da
+//! economia do rtk.
 //!
 //! O motor que montava a página inteira da spec e a do projeto a partir do
 //! arquivo de eventos, item por item, saiu com o comando que só ele servia:
 //! a página de uma spec e a do projeto só existem hoje como template mais
 //! banco de dados.
 
-mod conversation;
-
 use std::collections::BTreeMap;
-
-pub use conversation::{conversation_len, cut_oldest_conversation};
 
 /// Um dia da economia do rtk neste projeto, como o próprio rtk a conta.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -49,11 +44,15 @@ pub type WaveStates = BTreeMap<u64, WaveState>;
 mod tests {
     use std::path::Path;
 
-    /// Nenhum arquivo da página da spec passa do teto de linhas de código: a
-    /// porta e cada parte da pasta dela, pela medida única do núcleo.
+    use crate::domain::text::{code_lines, CODE_LINE_CAP};
+
+    /// Este arquivo não tem mais partes: o motor que montava a página inteira
+    /// da spec saiu, e o que ficou não passa do teto de linhas de código, pela
+    /// medida única do núcleo.
     #[test]
-    fn no_file_of_the_spec_page_goes_over_the_code_line_cap() {
+    fn the_file_does_not_go_over_the_code_line_cap() {
         let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("view").join("document").join("spec.rs");
-        assert_eq!(crate::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
+        let source = std::fs::read_to_string(&gate).unwrap_or_default();
+        assert!(code_lines(&source) <= CODE_LINE_CAP, "{}", gate.display());
     }
 }

@@ -171,6 +171,28 @@ mod tests {
         crate::report::assert_only_the_fonts_are_external(&html);
     }
 
+    /// Depois que o motor da página inteira da spec saiu (junto com os nós
+    /// que só ele usava), a página avulsa continua saindo igual: título,
+    /// lista, tabela e bloco de código no mesmo HTML de antes.
+    #[test]
+    fn the_standalone_page_still_renders_after_the_old_engine_left() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let body = "# Plano\n\nAbertura.\n\n- um\n- dois\n\n\
+                    | A | B |\n|---|---|\n| 1 | 2 |\n\n```\nlet a = 1;\n```\n";
+        fs::write(root.join("corpo.md"), body).unwrap();
+
+        let report = build(&opts(root, None));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let html = fs::read_to_string(root.join("paginas/plano.html")).unwrap();
+
+        assert!(html.contains("<h1>Plano</h1>"), "{html}");
+        assert!(html.contains("<p>Abertura.</p>"), "{html}");
+        assert!(html.contains("<ul><li>um</li><li>dois</li></ul>"), "{html}");
+        assert!(html.contains("<div class=\"table\"><table>"), "{html}");
+        assert!(html.contains("<pre>let a = 1;</pre>"), "{html}");
+    }
+
     /// Com `--title`, o markdown fica inteiro no corpo.
     #[test]
     fn a_given_title_keeps_the_markdown_whole() {
