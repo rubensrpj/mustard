@@ -1241,15 +1241,26 @@ tr:last-child td{border-bottom:0}
   // calculadas) faz a página ler de novo.
   // ---------------------------------------------------------------------
   var SEEN = { top: null, computed: null };
+  // O primeiro pedaço de cada faixa (seq = início * 1000) leva `chunks`,
+  // quantos pedaços ela tem agora. Um pedaço velho, que sobrou depois de a
+  // faixa encolher (um expurgo, por exemplo), continua no banco sem ninguém
+  // apagar; esta conta é por onde a leitura sabe até qual pedaço ler,
+  // ignorando o que sobrou, sem repetir item.
   function readItems(db) {
     var out = [];
+    var expect = {};
     function page(after) {
       return db.collection(DBP.ranges).where('seq', '>', after).orderBy('seq').limit(PAGE).get().then(function (snap) {
         var last = null;
         snap.docs.forEach(function (d) {
           var b = d.data();
-          if (!b) return;
-          (b.items || []).forEach(function (item) { out.push(item); });
+          if (!b || !isInt(b.seq)) return;
+          var start = Math.floor(b.seq / 1000);
+          var n = b.seq - start * 1000;
+          if (n === 0) expect[start] = isInt(b.chunks) ? b.chunks : 1;
+          if (n < (expect[start] === undefined ? 1 : expect[start])) {
+            (b.items || []).forEach(function (item) { out.push(item); });
+          }
           last = b;
         });
         if (snap.docs.length < PAGE || !last || !isInt(last.seq) || last.seq <= after) return out;

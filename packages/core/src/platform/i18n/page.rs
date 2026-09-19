@@ -88,6 +88,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the `writes` list of one `ArtifactData` call with `action` `batch`, and each document goes \
              by its `file_path`, without reading the items."
         }
+        // Só entra depois de `page.copy.batches`, quando algum documento do
+        // lote já existe no banco de uma cópia anterior: o banco recusa a
+        // troca de um documento assim sem a versão dele.
+        ("page.copy.existing", Locale::PtBr) => {
+            "Os documentos {docs} já existem no banco: leia a versão de cada um com a ação `get` da \
+             ferramenta `ArtifactData` e ponha cada uma em `if_version` na escrita dele antes de mandar o \
+             lote; os outros documentos vão sem versão."
+        }
+        ("page.copy.existing", Locale::EnUs) => {
+            "The documents {docs} already exist in the database: read each one's version with the `get` \
+             action of the `ArtifactData` tool and put it in `if_version` on that write before sending the \
+             batch; the other documents go without a version."
+        }
         // Só entra depois de `page.copy.batches`, e só fora do descarte: a
         // spec descartada é terminal, sem cópia seguinte para continuar dela.
         ("page.copy.record", Locale::PtBr) => {
@@ -900,8 +913,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            344,
-            0x9fc2_c658_ccac_2eed,
+            345,
+            0x3c5b_f8a9_99ac_c360,
         );
     }
 

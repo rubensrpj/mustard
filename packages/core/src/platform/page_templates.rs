@@ -1013,11 +1013,16 @@ mod tests {
         lines.extend((0..1_200).map(|i| {
             json!({"v":1,"id":first + i,"at":"2026-09-13T10:00:00-03:00","type":"note","author":"assistant","text":format!("Nota {i}."),"keys":["k"],"origin":2})
         }));
+        // Cada item na própria faixa (comentário do teste acima), mas `seq`
+        // segue o formato real: início da faixa vezes mil mais o número do
+        // pedaço. Aqui o item é o único pedaço da própria faixa, então o
+        // número do pedaço é sempre 0 e `seq` é o id vezes mil; sem `chunks`,
+        // a leitura assume 1 pedaço, o que já é o caso.
         let ranges: Vec<Value> = lines
             .iter()
             .map(|l| {
                 let id = l["id"].as_u64().unwrap_or(0);
-                json!({"id": id.to_string(), "data": {"seq": id, "items": [l.clone()]}})
+                json!({"id": id.to_string(), "data": {"seq": id * 1_000, "items": [l.clone()]}})
             })
             .collect();
         let waves: serde_json::Map<String, Value> =
@@ -1037,11 +1042,46 @@ mod tests {
             .filter(|r| r["path"] == json!(RANGES))
             .map(|r| (r["filters"][0][2].clone(), r["size"].clone()))
             .collect();
-        let last_of_first_page = lines.iter().map(|l| l["id"].as_u64().unwrap_or(0)).collect::<Vec<_>>()[499];
+        let last_of_first_page = lines.iter().map(|l| l["id"].as_u64().unwrap_or(0) * 1_000).collect::<Vec<_>>()[499];
         assert_eq!(pages.len(), 3, "{pages:?}");
         assert_eq!(pages[0], (json!(-1), json!(500)));
         assert_eq!(pages[1], (json!(last_of_first_page), json!(500)));
         assert_eq!(pages[2].1, json!(lines.len() - 1_000));
+    }
+
+    /// O primeiro pedaço de uma faixa leva `chunks`, quantos pedaços ela tem
+    /// agora. Um pedaço velho, que sobrou de antes de a faixa encolher — um
+    /// item que um expurgo tirou de vez do jeito novo da faixa, por exemplo
+    /// — fica no banco sem ninguém apagar; a leitura só lê os pedaços que a
+    /// contagem do primeiro cobre, e o item do pedaço que sobrou não volta a
+    /// aparecer na página. Sem a contagem, ele reaparece: a página não tem
+    /// nenhum outro jeito de saber que aquele pedaço já não vale.
+    #[test]
+    fn a_stale_chunk_left_behind_by_a_shrunk_range_is_not_read_twice() {
+        let lines = spec_lines();
+        let mut db = spec_database(&lines);
+        let ranges = db["ranges"].as_array_mut().expect("ranges");
+        assert_eq!(ranges.len(), 1, "the fixture fits one range: {ranges:?}");
+        ranges[0]["data"]["chunks"] = json!(1);
+        // Um item que só existe no pedaço velho — nenhum item de hoje tem
+        // este número —, do jeito que um item expurgado de vez ficaria: o
+        // pedaço novo da faixa já não o leva.
+        let stale_item = json!({"v": 1, "id": 90, "at": "2026-09-12T11:10:00-03:00", "type": "note",
+            "author": "assistant", "code": "MSTD-NOTE-0099", "text": "Anotação que devia ter saído da faixa.",
+            "keys": ["k"], "origin": 2});
+        ranges.push(json!({"id": "0-2", "data": {"seq": 1, "items": [stale_item]}}));
+
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let baseline =
+            run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps.clone());
+        let with_stale = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        assert_eq!(with_stale["page"]["state"], json!("ready"), "the page read the database");
+        assert_eq!(
+            page_seen(&with_stale["page"]),
+            page_seen(&baseline["page"]),
+            "the item left behind in the stale chunk does not come back: {}",
+            visible_codes(&with_stale["page"]).join(", "),
+        );
     }
 
     /// Todo texto que os templates citam existe nos dois idiomas, e o

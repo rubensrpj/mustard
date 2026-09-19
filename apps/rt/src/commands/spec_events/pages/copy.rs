@@ -153,6 +153,10 @@ pub(crate) struct Target {
     /// A página já foi publicada inteira por uma versão antiga, sem banco: o
     /// template sai num link novo, e a antiga fica parada.
     pub old: bool,
+    /// `{coleção}/{doc_id}` de cada documento que já existe no banco antes
+    /// desta cópia: o banco recusa a troca de um documento assim sem a
+    /// versão dele. Vazio na primeira cópia, quando nada existe ainda.
+    pub existing: Vec<String>,
 }
 
 /// Prepara a cópia da spec `spec` do projeto `root` para o banco da página
@@ -241,11 +245,25 @@ fn build(
     }
     clear(&place.folder)?;
     let mut writes: Vec<Value> = Vec::new();
-    for start in dirty_ranges(log, since) {
-        writes.extend(range_writes(place, log, start)?);
+    let ranges = dirty_ranges(log, since);
+    // O documento de uma faixa que começa até `since` já está no banco desde
+    // uma cópia anterior; o mesmo vale para o documento calculado, fora da
+    // primeira cópia. Na primeira cópia (`since == 0`) nada existe ainda,
+    // nem a faixa que começa em zero. A ordem lê a versão de cada um antes
+    // de trocar.
+    let mut existing: Vec<String> = ranges
+        .iter()
+        .filter(|&&start| since != 0 && start <= since)
+        .map(|&start| format!("{RANGES}/{start}"))
+        .collect();
+    for start in &ranges {
+        writes.extend(range_writes(place, log, *start)?);
     }
     let (collection, doc) = COMPUTED.split_once('/').unwrap_or((COMPUTED, "current"));
     writes.push(set(place, collection, doc, &computed(place, log, rtk, lang))?);
+    if since != 0 {
+        existing.push(COMPUTED.to_string());
+    }
     if url.is_none() {
         ensure_template(place.root, SPEC_TEMPLATE, || spec_page_template(lang))?;
     }
@@ -259,6 +277,7 @@ fn build(
         record: json!({ "page": SPEC_PAGE, "last": log.max_id() }),
         first: since == 0,
         old,
+        existing,
     };
     let project = match moment {
         Moment::Milestone => project_rows(place, log, lang)?,
@@ -433,7 +452,10 @@ fn range_chunks(items: &[(u64, Value)]) -> Vec<Vec<Value>> {
 /// As escritas da faixa que começa em `start`: um documento por pedaço, o
 /// primeiro com o nome do início e os seguintes com o início e o número do
 /// pedaço, ou o apagamento do documento do início quando a faixa ficou sem
-/// item.
+/// item. O primeiro pedaço leva também `chunks`, quantos pedaços a faixa tem
+/// agora: se ela encolher depois, um pedaço velho pode sobrar no banco sem
+/// ninguém apagar, e é por essa contagem que a leitura da página sabe até
+/// onde ler, sem repetir os itens do pedaço que sobrou.
 fn range_writes(place: &Place, log: &SpecLog, start: u64) -> Result<Vec<Value>, Refusal> {
     let items = range_items(log, start);
     let chunks = range_chunks(&items);
@@ -443,7 +465,10 @@ fn range_writes(place: &Place, log: &SpecLog, start: u64) -> Result<Vec<Value>, 
     let mut writes = Vec::new();
     for (n, chunk) in chunks.iter().enumerate() {
         let doc_id = if n == 0 { start.to_string() } else { format!("{start}-{}", n + 1) };
-        let body = json!({ "seq": start * 1000 + n as u64, "items": chunk });
+        let mut body = json!({ "seq": start * 1000 + n as u64, "items": chunk });
+        if n == 0 {
+            body["chunks"] = json!(chunks.len());
+        }
         writes.push(set(place, RANGES, &doc_id, &body)?);
     }
     Ok(writes)
@@ -573,7 +598,7 @@ fn project_rows(place: &Place, log: &SpecLog, lang: Locale) -> Result<Option<Tar
     if let Some(phase) = &own.phase {
         record["phase"] = json!(phase);
     }
-    Ok(Some(Target { url, batches: batches(place, "project", &writes)?, record, first: false, old }))
+    Ok(Some(Target { url, batches: batches(place, "project", &writes)?, record, first: false, old, existing: Vec::new() }))
 }
 
 /// A linha de uma spec como vai para o banco da página do projeto.
@@ -659,11 +684,13 @@ impl Prepared {
     /// A ordem da cópia, uma frase por passo: publicar a página que ainda não
     /// tem endereço, no marco `milestone`, num link novo quando ela ainda é a
     /// página inteira de uma versão antiga; copiar os lotes de cada
-    /// página e, fora do descarte, gravar cada cópia feita, com a primeira
-    /// cópia da spec entregue a um agente separado; no fim, não levar os
-    /// endereços para a resposta. Sem marco, a página sem endereço fica para
-    /// o próximo. No descarte a spec já é terminal, sem cópia seguinte para
-    /// continuar dela, então a ordem não pede o registro da cópia.
+    /// página, nomeando os documentos que já existem no banco para ler a
+    /// versão de cada um antes de trocar, e, fora do descarte, gravar cada
+    /// cópia feita, com a primeira cópia da spec entregue a um agente
+    /// separado; no fim, não levar os endereços para a resposta. Sem marco, a
+    /// página sem endereço fica para o próximo. No descarte a spec já é
+    /// terminal, sem cópia seguinte para continuar dela, então a ordem não
+    /// pede o registro da cópia.
     pub(crate) fn order(&self, spec: &str, milestone: Option<&str>, lang: Locale) -> Vec<String> {
         let mut out = Vec::new();
         let record_next = milestone != Some("discard");
@@ -690,6 +717,11 @@ impl Prepared {
                 .replace("{page}", page)
                 .replace("{url}", &url)
                 .replace("{files}", &files.join(", "));
+            if !target.existing.is_empty() {
+                let docs: Vec<String> = target.existing.iter().map(|d| format!("`{d}`")).collect();
+                let existing = translate("page.copy.existing", lang).replace("{docs}", &docs.join(", "));
+                copy = format!("{copy} {existing}");
+            }
             if record_next {
                 let record = translate("page.copy.record", lang)
                     .replace("{spec}", spec)
@@ -760,15 +792,30 @@ pub(crate) fn sent_items(root: &Path, report: &Value) -> Vec<u64> {
 
 /// Para os testes: a frase da ordem que copia os lotes da página da spec
 /// `spec`, que a resposta `report` de um passo preparou, para o banco no
-/// endereço `url`, como o catálogo em `lang` a monta.
+/// endereço `url`, como o catálogo em `lang` a monta. Sem documento já
+/// existente no banco: ver [`batches_order_with`] para nomear os que já
+/// existem.
 #[cfg(test)]
 pub(crate) fn batches_order(report: &Value, spec: &str, url: &str, lang: Locale) -> String {
+    batches_order_with(report, spec, url, &[], lang)
+}
+
+/// Como [`batches_order`], nomeando em `existing` (`{coleção}/{doc_id}`) os
+/// documentos que a ordem diz já existirem no banco, a pedir a versão de
+/// cada um antes de trocar.
+#[cfg(test)]
+pub(crate) fn batches_order_with(report: &Value, spec: &str, url: &str, existing: &[&str], lang: Locale) -> String {
     let batches = report["copy"][SPEC_PAGE]["batches"].as_array().cloned().unwrap_or_default();
     let files: Vec<String> = batches.iter().map(|b| format!("`{}`", b.as_str().unwrap_or_default())).collect();
-    let copy = translate("page.copy.batches", lang)
+    let mut copy = translate("page.copy.batches", lang)
         .replace("{page}", translate("page.name.spec", lang))
         .replace("{url}", url)
         .replace("{files}", &files.join(", "));
+    if !existing.is_empty() {
+        let docs: Vec<String> = existing.iter().map(|d| format!("`{d}`")).collect();
+        let existing = translate("page.copy.existing", lang).replace("{docs}", &docs.join(", "));
+        copy = format!("{copy} {existing}");
+    }
     let record = translate("page.copy.record", lang)
         .replace("{spec}", spec)
         .replace("{record}", &report["copy"][SPEC_PAGE]["record"].to_string());
@@ -1147,6 +1194,46 @@ mod tests {
         assert_eq!(computed["body"]["waves"], json!({"1": "running"}), "no wave changed: {computed}");
     }
 
+    /// O banco recusa a troca de um documento já existente sem a versão
+    /// dele: a partir da segunda cópia, a ordem nomeia os documentos que já
+    /// estão lá — a faixa tocada e o documento calculado — para ler a versão
+    /// de cada um antes de trocar. Na primeira cópia nada existe ainda, e a
+    /// ordem não fala em versão; um expurgo que troca de novo a faixa de um
+    /// item já copiado também pede a versão dela.
+    #[test]
+    fn the_copy_order_pins_the_documents_it_overwrites() {
+        let dir = approved_project();
+        let root = dir.path();
+        let lang = Locale::PtBr;
+
+        // Primeira cópia: nada existe ainda no banco.
+        let first = round(root);
+        let next1 = full_next(root, &first);
+        assert_eq!(first["copy"]["spec"]["first"], json!(true), "{first}");
+        assert!(!next1.contains("if_version"), "the first copy has nothing to overwrite: {next1}");
+        follow(root, &first);
+
+        // Segunda cópia: um item novo troca de novo a mesma faixa, e o
+        // documento calculado já existe desde a primeira cópia.
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        let added = id_of(&write(root, "note", json!({"text": "Nota nova.", "keys": ["k"], "origin": said})));
+        let second = round(root);
+        let next2 = full_next(root, &second);
+        let touched = format!("{RANGES}/{}", range_start(added));
+        let expected2 = batches_order_with(&second, "x", SPEC_URL, &[touched.as_str(), COMPUTED], lang);
+        assert!(next2.contains(&expected2), "the touched range and the computed document are pinned: {next2}");
+        follow(root, &second);
+
+        // Um expurgo troca de novo a faixa de um item que já estava no
+        // banco.
+        let purge = json!({"targets": [added], "reason": "client_data", "excerpt": "nova", "origin": said});
+        write(root, "purge", purge);
+        let third = round(root);
+        let next3 = full_next(root, &third);
+        let expected3 = batches_order_with(&third, "x", SPEC_URL, &[touched.as_str(), COMPUTED], lang);
+        assert!(next3.contains(&expected3), "the range a purge trades again is pinned too: {next3}");
+    }
+
     /// A linha da spec vai para o banco da página do projeto só quando a fase
     /// dela muda: a primeira rodada leva a spec de aprovada para em execução,
     /// e a linha vai; a rodada seguinte não muda a fase, e a linha não vai.
@@ -1385,7 +1472,11 @@ mod tests {
         assert!(third["copy"]["spec"].get("first").is_none(), "{third}");
         let agent = translate("page.copy.agent", lang).split('{').next().unwrap_or_default();
         assert!(!next.contains(agent), "{next}");
-        assert!(next.contains(&batches_order(&third, "x", SPEC_URL, lang)), "{next}");
+        // A faixa do registro da cópia e o documento calculado já existem no
+        // banco desde a primeira cópia, que o agente gravou.
+        let touched = format!("{RANGES}/{}", range_start(recorded));
+        let expected = batches_order_with(&third, "x", SPEC_URL, &[touched.as_str(), COMPUTED], lang);
+        assert!(next.contains(&expected), "{next}");
         assert_eq!(sent_items(root, &third).last(), Some(&recorded), "{third}");
     }
 
