@@ -12,7 +12,9 @@
 //!   do corpo.
 //! - `page --spec <nome>` refaz o `spec.md` e o `spec.html` da spec a partir
 //!   do `spec.ndjson`, e a página do projeto a partir do índice, sem gravar
-//!   nada no arquivo de eventos.
+//!   nada no arquivo de eventos. Está descontinuado: o primeiro aviso da
+//!   resposta diz que as páginas agora são templates que leem um banco de
+//!   dados.
 //! - `page --spec <nome> --owners [<donos.json>]` grava a lista dos itens
 //!   combinados sem dono (`owners.html`, ao lado da página da spec), para o
 //!   usuário conferir antes de os donos serem gravados: cada item com o dono

@@ -12,9 +12,9 @@
 //!
 //! - cada item com número maior que o do último copiado. O último copiado é o
 //!   maior `last` das cópias da página da spec gravadas depois da última
-//!   publicação dela que deu certo; sem cópia depois dela, a página acabou de
-//!   nascer, e a cópia leva a spec inteira. O número decide, não o horário:
-//!   vários itens caem no mesmo segundo;
+//!   publicação do template dela que deu certo; sem cópia depois dela, a
+//!   página acabou de nascer, e a cópia leva a spec inteira. O número decide,
+//!   não o horário: vários itens caem no mesmo segundo;
 //! - sem os registros internos ([`LEFT_OUT`]): o texto que um gancho colocou
 //!   na conversa, a chamada de um comando e o aviso de um gancho;
 //! - sem o item que guarda um trecho com cara de segredo: ele fica fora até
@@ -30,6 +30,25 @@
 //! ferramenta do banco, com até [`BATCH_MAX`] escritas. A cópia feita vira um
 //! registro `copy` na spec, gravado pela conversa, com o número até onde a
 //! cópia foi: é por ele que a cópia seguinte começa.
+//!
+//! ## A primeira cópia e a spec antiga
+//!
+//! A página da spec é o template do Mustard, publicado com `template: true`.
+//! A publicação sem essa marca é a página inteira que uma versão antiga
+//! publicou: ela não tem banco de dados e fica parada, como um retrato. Por
+//! isso a spec sem template, antiga ou nova, ganha o template no primeiro
+//! marco, num link novo, e a barra de status passa a mostrar esse link.
+//!
+//! A primeira cópia leva a spec inteira, e a ordem a entrega a um agente
+//! separado, para a conversa principal continuar leve. A ordem manda esperar
+//! a volta do agente antes de seguir: assim o marco seguinte não apaga os
+//! lotes que ele ainda está copiando, e a página já tem os itens quando a
+//! pergunta de aprovação é feita. Se a cópia não foi gravada, o marco seguinte
+//! manda de novo a spec inteira para um agente, no mesmo link.
+//!
+//! Quando o template nasce num marco que não é a aprovação — a spec foi
+//! aprovada por uma versão antiga —, a ordem leva também a nota de trabalho
+//! das tarefas das ondas que ainda não saíram (`flow::plan::migration_points`).
 //!
 //! ## A linha da spec na página do projeto
 //!
@@ -59,6 +78,7 @@ use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
 use super::relative;
+use crate::commands::flow::plan::WavePoints;
 
 /// A pasta da cópia, dentro da pasta da spec.
 pub(crate) const FOLDER: &str = "copy";
@@ -99,6 +119,12 @@ pub(crate) struct Prepared {
     /// O código de cada item que guarda um trecho com cara de segredo e por
     /// isso fica fora da cópia, na ordem do arquivo.
     pub withheld: Vec<String>,
+    /// A página da spec já foi publicada inteira por uma versão antiga: o
+    /// template sai num link novo, e a antiga fica parada.
+    pub old_page: bool,
+    /// As notas de trabalho das tarefas das ondas que ainda não saíram,
+    /// lidas quando o template da página da spec nasce neste marco.
+    pub points: Option<WavePoints>,
 }
 
 /// O que vai para o banco de uma página.
@@ -110,6 +136,9 @@ pub(crate) struct Target {
     pub batches: Vec<String>,
     /// O `--json` do `run write copy` que grava a cópia feita.
     pub record: Value,
+    /// A primeira cópia da página, que leva a spec inteira e fica com um
+    /// agente separado.
+    pub first: bool,
 }
 
 /// Prepara a cópia da spec `spec` do projeto `root` para o banco da página
@@ -158,7 +187,7 @@ fn build(
     moment: Moment,
     lang: Locale,
 ) -> Result<Option<Prepared>, Refusal> {
-    let (url, since) = spec_page(log);
+    let SpecPage { url, since, old } = spec_page(log);
     if moment == Moment::Request && url.is_none() {
         return Ok(None);
     }
@@ -178,34 +207,65 @@ fn build(
     if url.is_none() {
         ensure_template(place.root, SPEC_TEMPLATE, || spec_page_template(lang))?;
     }
+    // O template que nasce neste marco lê, na mesma leitura da cópia, as
+    // notas das tarefas das ondas que ainda não saíram.
+    let points = (moment == Moment::Milestone && url.is_none())
+        .then(|| crate::commands::flow::plan::migration_points(log));
     let spec = Target {
         url,
         batches: batches(place, "spec", &writes)?,
         record: json!({ "page": SPEC_PAGE, "last": log.max_id() }),
+        first: since == 0,
     };
     let project = match moment {
         Moment::Milestone => project_rows(place, log, lang)?,
         Moment::Request => None,
     };
-    Ok(Some(Prepared { folder: relative(place.root, &place.folder), spec, project, withheld: withheld(log) }))
+    Ok(Some(Prepared {
+        folder: relative(place.root, &place.folder),
+        spec,
+        project,
+        withheld: withheld(log),
+        old_page: old,
+        points,
+    }))
 }
 
-/// O endereço da página da spec, da última publicação dela que deu certo, e
-/// o número do último item copiado para o banco dela: o maior `last` das
-/// cópias gravadas depois dessa publicação, ou zero.
-fn spec_page(log: &SpecLog) -> (Option<String>, u64) {
+/// A página da spec, como o arquivo de eventos a conta.
+struct SpecPage {
+    /// O endereço da última publicação do template que deu certo.
+    url: Option<String>,
+    /// O número do último item copiado para o banco dela: o maior `last` das
+    /// cópias gravadas depois dessa publicação, ou zero.
+    since: u64,
+    /// Uma versão antiga publicou a página inteira, sem template.
+    old: bool,
+}
+
+/// A página da spec do arquivo `log`. Só a publicação do template conta: a
+/// página inteira de uma versão antiga não tem banco de dados.
+fn spec_page(log: &SpecLog) -> SpecPage {
     let visible = log.visible();
-    let mut publications = visible.iter().filter_map(|e| published_to(e, SPEC_PAGE).map(|url| (e.id, url)));
-    let Some((published, url)) = publications.next_back() else {
-        return (None, 0);
+    let published: Vec<(u64, &str, bool)> = visible
+        .iter()
+        .filter_map(|e| published_to(e, SPEC_PAGE).map(|url| (e.id, url, is_template(e))))
+        .collect();
+    let old = published.iter().any(|(_, _, template)| !template);
+    let Some((at, url, _)) = published.into_iter().rfind(|(_, _, template)| *template) else {
+        return SpecPage { url: None, since: 0, old };
     };
     let since = visible
         .iter()
-        .filter(|e| e.id > published && copy_of(e) == Some(SPEC_PAGE))
+        .filter(|e| e.id > at && copy_of(e) == Some(SPEC_PAGE))
         .filter_map(|e| e.int("last"))
         .max()
         .unwrap_or(0);
-    (Some(url.to_string()), since)
+    SpecPage { url: Some(url.to_string()), since, old }
+}
+
+/// A publicação `event` é a do template do Mustard.
+fn is_template(event: &SpecEvent) -> bool {
+    event.fields.get("template").and_then(Value::as_bool) == Some(true)
 }
 
 /// A página de um registro de cópia.
@@ -403,7 +463,7 @@ fn project_rows(place: &Place, log: &SpecLog, lang: Locale) -> Result<Option<Tar
     if let Some(phase) = &own.phase {
         record["phase"] = json!(phase);
     }
-    Ok(Some(Target { url, batches: batches(place, "project", &writes)?, record }))
+    Ok(Some(Target { url, batches: batches(place, "project", &writes)?, record, first: false }))
 }
 
 /// A linha de uma spec como vai para o banco da página do projeto.
@@ -459,7 +519,13 @@ fn write(path: &Path, text: &str) -> Result<(), Refusal> {
 impl Prepared {
     /// A cópia como a resposta de um passo a mostra.
     pub(crate) fn to_value(&self) -> Value {
-        let target = |t: &Target| json!({ "published": t.url.is_some(), "batches": t.batches, "record": t.record });
+        let target = |t: &Target| {
+            let mut out = json!({ "published": t.url.is_some(), "batches": t.batches, "record": t.record });
+            if t.first {
+                out["first"] = json!(true);
+            }
+            out
+        };
         let mut out = json!({ "folder": self.folder, "spec": target(&self.spec) });
         if let Some(project) = &self.project {
             out["project"] = target(project);
@@ -481,8 +547,10 @@ impl Prepared {
     }
 
     /// A ordem da cópia, uma frase por passo: publicar a página que ainda não
-    /// tem endereço, no marco `milestone`, copiar os lotes de cada página e
-    /// gravar cada cópia feita; no fim, não levar os endereços para a
+    /// tem endereço, no marco `milestone`, num link novo quando a da spec
+    /// ainda é a página inteira de uma versão antiga; copiar os lotes de cada
+    /// página e gravar cada cópia feita, com a primeira cópia da spec
+    /// entregue a um agente separado; no fim, não levar os endereços para a
     /// resposta. Sem marco, a página sem endereço fica para o próximo.
     pub(crate) fn order(&self, spec: &str, milestone: Option<&str>, lang: Locale) -> Vec<String> {
         let mut out = Vec::new();
@@ -499,17 +567,25 @@ impl Prepared {
                         .replace("{key}", key)
                         .replace("{milestone}", milestone),
                 );
+                if key == SPEC_PAGE && self.old_page {
+                    out.push(translate("page.copy.old_page", lang).to_string());
+                }
             }
             let url = target.url.clone().unwrap_or_else(|| translate("page.copy.new_address", lang).to_string());
             let files: Vec<String> = target.batches.iter().map(|b| format!("`{b}`")).collect();
-            out.push(
-                translate("page.copy.batches", lang)
-                    .replace("{page}", page)
-                    .replace("{url}", &url)
-                    .replace("{files}", &files.join(", "))
-                    .replace("{spec}", spec)
-                    .replace("{record}", &target.record.to_string()),
-            );
+            let copy = translate("page.copy.batches", lang)
+                .replace("{page}", page)
+                .replace("{url}", &url)
+                .replace("{files}", &files.join(", "))
+                .replace("{spec}", spec)
+                .replace("{record}", &target.record.to_string());
+            if target.first {
+                out.push(
+                    translate("page.copy.agent", lang).replace("{page}", page).replace("{order}", &copy),
+                );
+            } else {
+                out.push(copy);
+            }
         }
         if !out.is_empty() {
             out.push(translate("page.copy.no_links", lang).to_string());
@@ -561,6 +637,28 @@ pub(crate) fn sent_items(root: &Path, report: &Value) -> Vec<u64> {
         .filter(|w| w["collection"] == json!(ITEMS) && w["op"] == json!("set"))
         .filter_map(|w| w["doc_id"].as_str().and_then(|id| id.parse().ok()))
         .collect()
+}
+
+/// Para os testes: a frase da ordem que copia os lotes da página da spec
+/// `spec`, que a resposta `report` de um passo preparou, para o banco no
+/// endereço `url`, como o catálogo em `lang` a monta.
+#[cfg(test)]
+pub(crate) fn batches_order(report: &Value, spec: &str, url: &str, lang: Locale) -> String {
+    let batches = report["copy"][SPEC_PAGE]["batches"].as_array().cloned().unwrap_or_default();
+    let files: Vec<String> = batches.iter().map(|b| format!("`{}`", b.as_str().unwrap_or_default())).collect();
+    translate("page.copy.batches", lang)
+        .replace("{page}", translate("page.name.spec", lang))
+        .replace("{url}", url)
+        .replace("{files}", &files.join(", "))
+        .replace("{spec}", spec)
+        .replace("{record}", &report["copy"][SPEC_PAGE]["record"].to_string())
+}
+
+/// Para os testes: a frase que entrega a um agente separado a primeira cópia
+/// da página da spec, com a ordem `order` dos lotes.
+#[cfg(test)]
+pub(crate) fn agent_order(order: &str, lang: Locale) -> String {
+    translate("page.copy.agent", lang).replace("{page}", translate("page.name.spec", lang)).replace("{order}", order)
 }
 
 #[cfg(test)]
@@ -642,14 +740,17 @@ mod tests {
         DiskSpecState::new(root).log("x").expect("the spec")
     }
 
-    /// Um projeto no git, na branch da spec `x`, com a spec aprovada: uma
-    /// onda com uma tarefa num arquivo que o git conhece.
-    fn approved_project() -> tempfile::TempDir {
+    /// Um projeto no git, com os arquivos `files`, na branch da spec `x`
+    /// aberta, com a fala do usuário e um critério gravados: devolve os
+    /// números dos dois.
+    fn project_with(files: &[&str]) -> (tempfile::TempDir, u64, u64) {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\n").unwrap();
+        for file in files {
+            std::fs::write(root.join(file), "fn um() {}\n").unwrap();
+        }
         git(root, &["init", "-q"]);
         git(root, &["config", "core.autocrlf", "false"]);
         git(root, &["add", "-A"]);
@@ -662,6 +763,14 @@ mod tests {
         let said = id_of(&write(root, "message", json!({"author": "user", "text": "o objetivo"})));
         let crit = id_of(&write(root, "criterion",
             json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "origin": said})));
+        (dir, said, crit)
+    }
+
+    /// Um projeto no git, na branch da spec `x`, com a spec aprovada: uma
+    /// onda com uma tarefa num arquivo que o git conhece.
+    fn approved_project() -> tempfile::TempDir {
+        let (dir, said, crit) = project_with(&["src/a.rs"]);
+        let root = dir.path();
         write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "A suíte passa.",
             "origin": said}));
         write(root, "task", json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/a.rs"}],
@@ -677,7 +786,8 @@ mod tests {
         let milestone = "round";
         for page in report["publish"].as_array().cloned().unwrap_or_default() {
             let url = if page == json!("spec") { SPEC_URL } else { PROJECT_URL };
-            write(root, "publish", json!({"page": page, "milestone": milestone, "ok": true, "url": url}));
+            write(root, "publish",
+                json!({"page": page, "milestone": milestone, "ok": true, "template": true, "url": url}));
         }
         for page in ["spec", "project"] {
             if !report["copy"][page].is_null() {
@@ -830,7 +940,8 @@ mod tests {
         let dir = approved_project();
         let root = dir.path();
         // O marco da aprovação copiou a linha na fase de então.
-        write(root, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "url": PROJECT_URL}));
+        write(root, "publish",
+            json!({"page": "project", "milestone": "approval", "ok": true, "template": true, "url": PROJECT_URL}));
         write(root, "copy", json!({"page": "project", "phase": "approved"}));
 
         let first = round(root);
@@ -865,5 +976,123 @@ mod tests {
         assert_eq!(items, (1..=log(root).max_id()).filter(|id| items.contains(id)).collect::<Vec<_>>(), "in order");
         assert_eq!(writes.len(), items.len() + 1, "the items and the computed document");
         assert_eq!(writes.last().map(|w| w["collection"].clone()), Some(json!("computed")));
+    }
+
+    const OLD_URL: &str = "https://claude.ai/code/artifact/pagina-antiga";
+
+    /// Uma spec aprovada por uma versão antiga do Mustard, que publicou a
+    /// página inteira dela e não pedia nota às tarefas, chega ao primeiro
+    /// marco desta versão, uma rodada. A ordem manda publicar o template num
+    /// link novo, deixando a página antiga parada, e entregar a primeira
+    /// cópia, a spec inteira, a um agente separado. As tarefas das ondas que
+    /// ainda não saíram ganham nota: a da onda que a própria rodada soltou
+    /// fica de fora, e a onda acima de 13 pontos volta para o usuário — na
+    /// divisa, 13 fica e 14 volta. Publicado o template, sem a cópia gravada,
+    /// o marco seguinte não publica de novo, e a spec inteira vai outra vez a
+    /// um agente, no mesmo link; gravada a cópia, a seguinte já não é
+    /// primeira e fica na conversa.
+    #[test]
+    fn the_first_copy_goes_to_an_agent_in_an_old_spec() {
+        let (dir, said, crit) = project_with(&["src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs"]);
+        let root = dir.path();
+        let wave = |n: u64, depends: Option<u64>| {
+            let mut draft = json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+                "done_when": "A suíte passa.", "origin": said});
+            if let Some(on) = depends {
+                draft["depends_on"] = json!([on]);
+            }
+            write(root, "wave", draft);
+        };
+        let task = |n: u64, k: u64, file: &str, points: Option<u64>| {
+            let mut draft = json!({"wave": n, "text": format!("Tarefa {k} da onda {n}."),
+                "files": [{"path": file}], "origin": said});
+            if let Some(points) = points {
+                draft["points"] = json!(points);
+            }
+            write(root, "task", draft)
+        };
+        let code = |written: &Value| written["code"].as_str().unwrap_or_default().to_string();
+        wave(1, None);
+        let gone = code(&task(1, 1, "src/a.rs", None));
+        wave(2, Some(1));
+        let unrated = [task(2, 1, "src/b.rs", None), task(2, 2, "src/b.rs", None)];
+        wave(3, Some(1));
+        task(3, 1, "src/c.rs", Some(8));
+        task(3, 2, "src/c.rs", Some(5));
+        task(3, 3, "src/c.rs", Some(1));
+        wave(4, Some(1));
+        task(4, 1, "src/d.rs", Some(8));
+        task(4, 2, "src/d.rs", Some(5));
+        crate::shared::spec_state::approve_in(&root.join(".claude/spec/x"));
+        // A versão antiga publicou a página inteira na aprovação.
+        write(root, "publish", json!({"page": "spec", "milestone": "approval", "ok": true, "url": OLD_URL}));
+        let lang = Locale::PtBr;
+
+        let first = round(root);
+        let dispatched: Vec<u64> =
+            first["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
+        assert_eq!(dispatched, [1], "{first}");
+        let next = first["next"].as_str().unwrap_or_default();
+        // O template nasce num link novo, e a página antiga fica parada.
+        assert_eq!(first["publish"], json!(["spec", "project"]), "the old page is not the template: {first}");
+        let record = r#"'{"page":"spec","milestone":"round","ok":true,"template":true,"url":"…"}'"#;
+        assert!(next.contains(record), "{next}");
+        assert!(next.contains(translate("page.copy.old_page", lang)), "{next}");
+        assert!(!first.to_string().contains(OLD_URL), "the old page is never touched: {first}");
+        // A primeira cópia leva a spec inteira e fica com um agente separado.
+        assert_eq!(first["copy"]["spec"]["first"], json!(true), "{first}");
+        assert_eq!(sent_items(root, &first).first(), Some(&1), "the whole spec: {first}");
+        let copy = batches_order(&first, "x", translate("page.copy.new_address", lang), lang);
+        assert!(next.contains(&agent_order(&copy, lang)), "the first copy goes to an agent: {next}");
+        assert_eq!(next.matches(copy.as_str()).count(), 1, "the conversation never copies it itself: {next}");
+        // As tarefas das ondas que ainda não saíram ganham nota, e a onda
+        // acima do teto volta para o usuário.
+        let codes: Vec<String> = unrated.iter().map(code).collect();
+        assert_eq!(first["migration"], json!({"unrated": codes, "over_cap": [{"wave": 3, "points": 14}]}), "{first}");
+        let rate = translate("page.migration.unrated", lang)
+            .replace("{tasks}", &codes.join(", "))
+            .replace("{scale}", translate("plan.points_scale", lang))
+            .replace("{cap}", "13");
+        assert!(next.contains(&rate), "{next}");
+        let over = |wave: u64, points: u64| {
+            translate("page.migration.over_cap", lang)
+                .replace("{wave}", &wave.to_string())
+                .replace("{points}", &points.to_string())
+                .replace("{cap}", "13")
+        };
+        assert!(next.contains(&over(3, 14)), "{next}");
+        assert!(!next.contains(&over(4, 13)), "13 points is within the cap: {next}");
+        assert!(!next.contains(&gone), "the wave that went out gets no note: {next}");
+
+        // A conversa publica o template e dá as notas; o agente não grava a
+        // cópia.
+        write(root, "publish", json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "url": SPEC_URL}));
+        write(root, "publish",
+            json!({"page": "project", "milestone": "round", "ok": true, "template": true, "url": PROJECT_URL}));
+        for (k, written) in unrated.iter().enumerate() {
+            write(root, "task", json!({"wave": 2, "text": format!("Tarefa {} da onda 2.", k + 1),
+                "files": [{"path": "src/b.rs"}], "points": 3, "replaces": id_of(written), "origin": said}));
+        }
+        let second = round(root);
+        let next = second["next"].as_str().unwrap_or_default();
+        assert!(second.get("publish").is_none(), "the link does not change: {second}");
+        assert_eq!(second["copy"]["spec"]["first"], json!(true), "{second}");
+        assert_eq!(sent_items(root, &second).first(), Some(&1), "the whole spec again: {second}");
+        assert!(next.contains(&agent_order(&batches_order(&second, "x", SPEC_URL, lang), lang)), "{next}");
+        assert!(second.get("migration").is_none(), "the notes are asked when the template is born: {second}");
+        let rows = mustard_core::io::spec_index::read_rows(root);
+        assert_eq!(rows[0].url.as_deref(), Some(SPEC_URL), "the status line shows the new link: {rows:?}");
+
+        // O agente grava a cópia: a seguinte leva só o que veio depois e fica
+        // na conversa.
+        let last = second["copy"]["spec"]["record"]["last"].as_u64().unwrap_or_default();
+        write(root, "copy", second["copy"]["spec"]["record"].clone());
+        let third = round(root);
+        let next = third["next"].as_str().unwrap_or_default();
+        assert!(third["copy"]["spec"].get("first").is_none(), "{third}");
+        let agent = translate("page.copy.agent", lang).split('{').next().unwrap_or_default();
+        assert!(!next.contains(agent), "{next}");
+        assert!(next.contains(&batches_order(&third, "x", SPEC_URL, lang)), "{next}");
+        assert!(sent_items(root, &third).iter().all(|id| *id > last), "{third}");
     }
 }

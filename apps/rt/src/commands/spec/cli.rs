@@ -35,7 +35,8 @@ pub enum SpecCmd {
     #[command(name = "page")]
     #[command(display_order = 17)]
     Page {
-        /// A spec cuja página e cujo `.md` são refeitos.
+        /// A spec cuja página e cujo `.md` são refeitos. Descontinuado: as
+        /// páginas agora são templates que leem um banco de dados.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
         spec: Option<String>,
         /// O arquivo markdown da página avulsa.

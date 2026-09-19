@@ -8,7 +8,10 @@
 //! fechamento) e logo depois de um pedido que muda o plano, ele prepara a
 //! cópia para o banco ([`copy`]), e o marco manda copiá-la, pela mesma porta,
 //! [`end_milestone`]. A primeira vez de cada página, o marco manda antes
-//! publicar o template dela e gravar o endereço.
+//! publicar o template dela e gravar o endereço, e a primeira cópia da spec,
+//! que a leva inteira, fica com um agente separado. A spec antiga, cuja
+//! página uma versão antiga publicou inteira, ganha o template num link novo,
+//! e as tarefas das ondas dela que ainda não saíram ganham nota.
 //!
 //! O item que guarda um trecho com cara de segredo não vai para o banco, e
 //! nem segura o marco: o marco diz o código dele para ser expurgado. A cópia
@@ -16,7 +19,8 @@
 //! nada: a cópia seguinte leva os mesmos itens.
 //!
 //! O motor que monta a página e o `.md` (`view::document`) continua no
-//! código, e só o comando `page --spec` o chama, por [`refresh`]: ele refaz os
+//! código, e só o comando `page --spec`, descontinuado, o chama, por
+//! [`refresh`], com o aviso de que as páginas agora são templates: ele refaz os
 //! dois a partir do `spec.ndjson`, com a trava do arquivo de eventos presa, e
 //! a página do projeto a partir do índice. O `.html` sai conferido como
 //! antes: todo trecho com cara de segredo sai dele como "…", e a página que
@@ -114,7 +118,8 @@ pub(crate) fn old_format_spec(root: &Path, spec: &str) -> bool {
 /// O comando de página: refaz o `spec.md` e o `spec.html` da spec `spec` do
 /// projeto `root`, com os rótulos no idioma `lang`, lendo o arquivo de eventos
 /// com a trava presa, e a página do projeto a partir do índice. Nenhum passo
-/// do fluxo chama esta função. Recusa um nome que não é de spec, uma spec sem
+/// do fluxo chama esta função, e o primeiro aviso da resposta diz que o
+/// comando foi descontinuado. Recusa um nome que não é de spec, uma spec sem
 /// arquivo de eventos e uma spec do formato antigo.
 pub(crate) fn refresh(root: &Path, spec: &str, lang: Locale) -> Result<SpecPages, Refusal> {
     if old_format_spec(root, spec) {
@@ -125,6 +130,9 @@ pub(crate) fn refresh(root: &Path, spec: &str, lang: Locale) -> Result<SpecPages
     let rtk = rtk_days(root);
     let mut pages = store::with_locked_log(&files.events, |log| {
         let mut pages = write_pages(root, spec, &files, log, &rtk, lang)?;
+        // O comando segue gerando os dois arquivos, e a resposta diz que ele
+        // foi descontinuado: as páginas agora são templates com banco.
+        pages.warnings.insert(0, translate("page.deprecated", lang).to_string());
         // A página do projeto sai do índice: a linha desta spec fica igual ao
         // arquivo que acabou de dar a página, mesmo que ele tenha sido
         // editado à mão.
@@ -359,11 +367,44 @@ pub(crate) fn end_milestone(
     }
     report["copy"] = prepared.to_value();
     let mut next = prepared.order(spec.trim(), Some(milestone), lang);
+    // O template que nasce num marco que não é a aprovação é o de uma spec
+    // aprovada por uma versão antiga, que não pedia nota: as tarefas das
+    // ondas que ainda não saíram ganham a nota, e a onda acima do teto volta
+    // para o usuário. Na aprovação, a conferência do plano já cobra as duas.
+    if let Some(points) = prepared.points.as_ref().filter(|p| milestone != "approval" && !p.is_clear()) {
+        let over: Vec<Value> = points.over_cap().iter().map(|(wave, sum)| json!({ "wave": wave, "points": sum })).collect();
+        report["migration"] = json!({ "unrated": points.unrated, "over_cap": over });
+        next.extend(migration_order(points, lang));
+    }
     if !prepared.withheld.is_empty() {
         next.push(purge_pending(spec, &prepared.withheld, lang));
     }
     next.push(then.to_string());
     report["next"] = json!(next.join(" "));
+}
+
+/// A ordem da migração das notas: dar nota às tarefas `points.unrated` e
+/// levar ao usuário cada onda acima do teto.
+fn migration_order(points: &crate::commands::flow::plan::WavePoints, lang: Locale) -> Vec<String> {
+    let cap = crate::commands::flow::plan::WAVE_POINTS_CAP.to_string();
+    let mut out = Vec::new();
+    if !points.unrated.is_empty() {
+        out.push(
+            translate("page.migration.unrated", lang)
+                .replace("{tasks}", &points.unrated.join(", "))
+                .replace("{scale}", translate("plan.points_scale", lang))
+                .replace("{cap}", &cap),
+        );
+    }
+    for (wave, sum) in points.over_cap() {
+        out.push(
+            translate("page.migration.over_cap", lang)
+                .replace("{wave}", &wave.to_string())
+                .replace("{points}", &sum.to_string())
+                .replace("{cap}", &cap),
+        );
+    }
+    out
 }
 
 /// O caminho relativo ao projeto, com barras normais: a saída não traz o
@@ -464,7 +505,8 @@ mod tests {
         put(root, "pequena", "state", serde_json::json!({"phase": "survey"}));
         put(root, "pequena", "message", serde_json::json!({"author": "user", "text": "oi"}));
         let pages = refresh(root, "pequena", Locale::PtBr).unwrap();
-        assert_eq!((pages.trimmed, pages.withheld.len(), pages.warnings.len()), (0, 0, 0), "{pages:?}");
+        assert_eq!((pages.trimmed, pages.withheld.len()), (0, 0), "{pages:?}");
+        assert_eq!(pages.warnings, [translate("page.deprecated", Locale::PtBr)], "only the deprecation: {pages:?}");
         assert!(!read(root, &pages.html).contains("ficaram só no"));
     }
 
@@ -639,7 +681,8 @@ mod tests {
             assert_eq!(purged["ok"], serde_json::json!(true), "{code}: {purged}");
         }
         let pages = refresh(root, "s", Locale::PtBr).unwrap();
-        assert!(pages.withheld.is_empty() && pages.warnings.is_empty(), "{pages:?}");
+        assert!(pages.withheld.is_empty(), "{pages:?}");
+        assert_eq!(pages.warnings, [translate("page.deprecated", Locale::PtBr)], "only the deprecation: {pages:?}");
         let html = read(root, &pages.html);
         for kept in ["a senha é …", "o banco usa DB_PASSWORD=…", "O log mostra o token …."] {
             assert!(html.contains(kept), "{kept} left the page after the purge");
@@ -688,6 +731,45 @@ mod tests {
         let pages = refresh(root, "nova", Locale::PtBr).expect("the page is rebuilt");
         assert!(pages.html.ends_with("spec.html"), "{pages:?}");
         assert!(spec_dir.join("spec.html").is_file());
+    }
+
+    /// Quem chama o comando que gera o `.md` e o `.html` da spec e a página do
+    /// projeto recebe, na resposta, em primeiro lugar e no idioma do projeto,
+    /// o aviso de que ele foi descontinuado, e os três arquivos continuam
+    /// saindo. A lista dos itens sem dono, que é outro comando, não leva o
+    /// aviso.
+    #[test]
+    fn the_page_command_says_it_is_deprecated_and_still_writes_the_pages() {
+        use crate::commands::spec::page::{build, PageOpts};
+        for (lang, config) in [(Locale::PtBr, "{}"), (Locale::EnUs, r#"{"language":{"text":"en-US"}}"#)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), config).unwrap();
+            put(root, "velha", "state", serde_json::json!({"phase": "survey"}));
+            put(root, "velha", "message", serde_json::json!({"author": "user", "text": "oi"}));
+            let opts = |owners: bool| PageOpts {
+                root: root.to_path_buf(),
+                spec: Some("velha".into()),
+                body: None,
+                out: None,
+                title: None,
+                subtitle: None,
+                kind: None,
+                owners,
+                given: None,
+            };
+
+            let report = build(&opts(false));
+            assert_eq!(report["ok"], serde_json::json!(true), "{report}");
+            let deprecated = translate("page.deprecated", lang);
+            assert_eq!(report["warnings"], serde_json::json!([deprecated]), "{lang:?}: {report}");
+            for file in [".claude/spec/velha/spec.md", ".claude/spec/velha/spec.html", ".claude/spec/project.html"] {
+                assert!(root.join(file).is_file(), "{lang:?}: {file} is still written");
+            }
+            let owners = build(&opts(true));
+            assert_eq!(owners["ok"], serde_json::json!(true), "{owners}");
+            assert!(!owners.to_string().contains(deprecated), "{lang:?}: {owners}");
+        }
     }
 }
 

@@ -343,6 +343,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("reason", Kind::Text),
         ],
     ),
+    // A publicação de uma página. A do template do Mustard, que lê o banco de
+    // dados guardado junto da página, traz `template: true`; a que não traz é
+    // a página inteira de uma versão antiga, que fica parada como está.
     ty(
         "publish",
         "PUB",
@@ -354,6 +357,7 @@ pub const TYPES: &[TypeSpec] = &[
             req("ok", Kind::Bool),
             opt("url", Kind::Text),
             opt("reason", Kind::Text),
+            opt("template", Kind::Bool),
         ],
     ),
     // A cópia dos itens para o banco de dados de uma página publicada, gravada

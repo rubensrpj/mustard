@@ -22,14 +22,70 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.copy.publish", Locale::PtBr) => {
             "A {page} ainda não foi publicada: publique o template `{template}` com a ferramenta \
              `Artifact`, passando em `capabilities` o valor `{capabilities}`, e grave o endereço com \
-             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
              com `\"ok\":false` e `\"reason\"` quando falhar."
         }
         ("page.copy.publish", Locale::EnUs) => {
             "The {page} is not published yet: publish the template `{template}` with the `Artifact` \
              tool, passing `{capabilities}` as `capabilities`, and record the address with \
-             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
+        }
+        // A spec que já tinha a página inteira publicada por uma versão
+        // antiga ganha o template num link novo; a antiga fica parada.
+        ("page.copy.old_page", Locale::PtBr) => {
+            "A página que uma versão antiga do Mustard publicou para esta spec fica parada como está, \
+             como um retrato: publique o template como página nova, com link novo, sem mexer na \
+             antiga, e a barra de status passa a mostrar o link novo."
+        }
+        ("page.copy.old_page", Locale::EnUs) => {
+            "The page an older Mustard version published for this spec stays still as it is, like a \
+             snapshot: publish the template as a new page, with a new link, without touching the old \
+             one, and the status line starts showing the new link."
+        }
+        // A primeira cópia leva a spec inteira e fica com um agente separado.
+        ("page.copy.agent", Locale::PtBr) => {
+            "A primeira cópia para o banco da {page} leva a spec inteira e fica com um agente \
+             separado, para esta conversa continuar leve: despache um agente com o texto entre « e », \
+             com o endereço da página escrito nele, e espere a volta dele antes de seguir. «{order}»"
+        }
+        ("page.copy.agent", Locale::EnUs) => {
+            "The first copy into the {page}'s database carries the whole spec and goes to a separate \
+             agent, so this conversation stays light: dispatch an agent with the text between « and », \
+             with the page's address written in it, and wait for it to come back before going on. \
+             «{order}»"
+        }
+        // A migração de uma spec antiga: as notas de trabalho das tarefas das
+        // ondas que ainda não saíram.
+        ("page.migration.unrated", Locale::PtBr) => {
+            "Esta spec veio de uma versão do Mustard sem a nota de trabalho das tarefas: grave uma \
+             versão nova de cada tarefa das ondas que ainda não saíram, {tasks}, com a nota dela. \
+             {scale} Depois some as notas de cada onda: a que passar de {cap} pontos volta para o \
+             usuário aprovar a divisão dela antes de sair."
+        }
+        ("page.migration.unrated", Locale::EnUs) => {
+            "This spec came from a Mustard version without the tasks' points: record a new version of \
+             each task of the waves that have not gone out yet, {tasks}, with its points. {scale} \
+             Then add up the points of each wave: the one over {cap} points goes back to the user to \
+             approve its split before it goes out."
+        }
+        ("page.migration.over_cap", Locale::PtBr) => {
+            "A onda {wave} ainda não saiu e soma {points} pontos, acima do teto de {cap}: ela volta \
+             para o usuário aprovar a divisão dela antes de sair."
+        }
+        ("page.migration.over_cap", Locale::EnUs) => {
+            "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}: \
+             it goes back to the user to approve its split before it goes out."
+        }
+        // O comando que ainda gera o `.md` e o `.html` da spec e da página do
+        // projeto.
+        ("page.deprecated", Locale::PtBr) => {
+            "O `page --spec` foi descontinuado: as páginas da spec e do projeto agora são templates \
+             que leem um banco de dados, e o `.md` e o `.html` gravados aqui não são mais publicados."
+        }
+        ("page.deprecated", Locale::EnUs) => {
+            "`page --spec` is deprecated: the spec and project pages are now templates that read a \
+             database, and the `.md` and `.html` written here are no longer published."
         }
         ("page.copy.batches", Locale::PtBr) => {
             "Copie para o banco de dados da {page}, no endereço {url}, os lotes {files}, nessa ordem: \
@@ -400,6 +456,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.ok", Locale::EnUs) => "Succeeded",
         ("page.field.url", Locale::PtBr) => "Endereço",
         ("page.field.url", Locale::EnUs) => "Address",
+        ("page.field.template", Locale::PtBr) => "Template do Mustard",
+        ("page.field.template", Locale::EnUs) => "Mustard template",
         ("page.field.last", Locale::PtBr) => "Último item copiado",
         ("page.field.last", Locale::EnUs) => "Last item copied",
         ("page.field.kinds", Locale::PtBr) => "Tipos",
@@ -814,8 +872,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            326,
-            0x84cb_4110_dd58_f346,
+            332,
+            0x47a2_d70d_4276_d924,
         );
     }
 }

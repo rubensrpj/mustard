@@ -41,6 +41,11 @@
 //! está provado pelo código que entrou, pelo commit que a carrega e pela
 //! revisão que a aprovou, e não pelo texto que a descreveu.
 //!
+//! A leitura das notas ([`wave_points`]) é uma só: serve à conferência e à
+//! migração de uma spec aprovada por uma versão antiga, que não pedia nota —
+//! no marco em que o template da página dela nasce, a ordem manda dar nota às
+//! tarefas das ondas que ainda não saíram ([`migration_points`]).
+//!
 //! Cada achado, dos que travam e dos que só avisam, é gravado como anotação
 //! no arquivo de eventos quando este comando roda, com o rótulo do achado do
 //! plano, e a página o mostra de lá, na seção própria que vem antes das
@@ -475,25 +480,12 @@ fn check(
     // sem nota numa onda que ainda não saiu segura a pergunta, como a tarefa
     // sem arquivo, e a onda cuja soma passa do teto só avisa — o aviso nunca
     // recusa nem divide a onda. A onda já entregue fica de fora das duas.
-    let mut unrated: Vec<String> = Vec::new();
-    let mut sums: BTreeMap<u64, u64> = BTreeMap::new();
-    for task in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task") {
-        let Some(wave) = task.wave() else { continue };
-        if delivered.contains(&wave) {
-            continue;
-        }
-        match task.int("points") {
-            Some(points) => *sums.entry(wave).or_default() += points,
-            None => unrated.push(code_of(task)),
-        }
+    let points = wave_points(log, &delivered);
+    if !points.unrated.is_empty() {
+        out.push(PlanFinding::TasksWithoutPoints { tasks: points.unrated.join(", ") });
     }
-    if !unrated.is_empty() {
-        out.push(PlanFinding::TasksWithoutPoints { tasks: unrated.join(", ") });
-    }
-    for (wave, points) in sums {
-        if points > WAVE_POINTS_CAP {
-            out.push(PlanFinding::WavePointsOverCap { wave, points });
-        }
+    for (wave, points) in points.over_cap() {
+        out.push(PlanFinding::WavePointsOverCap { wave, points });
     }
 
     // Cada pedido cabe no teto de linhas, e cada skill nomeada passa.
@@ -647,6 +639,58 @@ fn check(
     out
 }
 
+/// As notas de trabalho das tarefas de um plano: as tarefas sem nota, pelos
+/// códigos, na ordem do arquivo, e a soma das notas de cada onda.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WavePoints {
+    pub unrated: Vec<String>,
+    pub sums: BTreeMap<u64, u64>,
+}
+
+impl WavePoints {
+    /// Cada onda cuja soma passa do teto de [`WAVE_POINTS_CAP`], com a soma.
+    pub(crate) fn over_cap(&self) -> Vec<(u64, u64)> {
+        self.sums.iter().filter(|(_, points)| **points > WAVE_POINTS_CAP).map(|(wave, points)| (*wave, *points)).collect()
+    }
+
+    /// Nenhuma tarefa sem nota e nenhuma onda acima do teto.
+    pub(crate) fn is_clear(&self) -> bool {
+        self.unrated.is_empty() && self.over_cap().is_empty()
+    }
+}
+
+/// A leitura das notas das tarefas do plano, a mesma da conferência do plano
+/// e da migração de uma spec antiga: a tarefa de uma onda em `skip` não conta.
+pub(crate) fn wave_points(log: &SpecLog, skip: &BTreeSet<u64>) -> WavePoints {
+    let codes = log.codes();
+    let mut out = WavePoints::default();
+    for task in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task") {
+        let Some(wave) = task.wave() else { continue };
+        if skip.contains(&wave) {
+            continue;
+        }
+        match task.int("points") {
+            Some(points) => *out.sums.entry(wave).or_default() += points,
+            None => out.unrated.push(codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string())),
+        }
+    }
+    out
+}
+
+/// As notas das tarefas das ondas que ainda não saíram, lidas na migração de
+/// uma spec aprovada por uma versão antiga, que não pedia nota: a onda com
+/// pedido de onda gravado já saiu, e a entregue também, e nenhuma delas conta.
+pub(crate) fn migration_points(log: &SpecLog) -> WavePoints {
+    let gone: BTreeSet<u64> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("wave"))
+        .filter_map(SpecEvent::wave)
+        .chain(log.delivered_waves())
+        .collect();
+    wave_points(log, &gone)
+}
+
 /// As skills que existem no disco, pelo nome e pelas raízes do "quando usar"
 /// da descrição delas, prontas para a busca. Procuradas onde o pedido da onda
 /// as procura: nas pastas dos arquivos que as tarefas declaram, subindo até a
@@ -708,7 +752,7 @@ const MAP_SUGGESTIONS: usize = 3;
 
 /// O teto da soma das notas de uma onda: acima dele, o plano avisa, sem
 /// segurar a aprovação. Fica no código, sem chave de configuração.
-const WAVE_POINTS_CAP: u64 = 13;
+pub(crate) const WAVE_POINTS_CAP: u64 = 13;
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
 /// nenhum — a de prosa, a de decisão, a de medida e a que só escreve na spec.
@@ -1790,6 +1834,50 @@ mod tests {
         }
         for on in [3, 5, 13] {
             assert_eq!(task(json!(on))["ok"], json!(true), "{on} está na escala");
+        }
+    }
+
+    /// A aprovação é o primeiro marco de uma spec nova, que ainda não tem
+    /// template: a ordem manda publicar o template, sem falar de página
+    /// antiga, e entregar a primeira cópia, a spec inteira, a um agente
+    /// separado, antes da pergunta. A onda acima do teto fica no aviso da
+    /// conferência, como sempre, e a ordem da migração não se repete. Uma spec
+    /// que uma versão antiga publicou inteira, ainda no plano, ganha o
+    /// template num link novo na aprovação.
+    #[test]
+    fn the_first_copy_goes_to_an_agent_at_the_approval_of_a_new_spec() {
+        use crate::commands::spec_events::pages::copy::{agent_order, batches_order};
+        let lang = Locale::PtBr;
+        for old in [false, true] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            waves_of_code(root, said, 1);
+            rated(root, said, 1, "src/a1.rs", Some(8));
+            rated(root, said, 1, "src/b1.rs", Some(5));
+            rated(root, said, 1, "src/c1.rs", Some(1));
+            if old {
+                let page = json!({"page": "spec", "milestone": "approval", "ok": true,
+                    "url": "https://claude.ai/code/artifact/pagina-antiga"});
+                assert_eq!(write(root, Some("x"), "publish", page)["ok"], json!(true));
+            }
+
+            let report = plan(root, "x");
+            assert_eq!(report["ok"], json!(true), "{old}: {report}");
+            let next = report["next"].as_str().unwrap_or_default();
+            assert_eq!(report["publish"], json!(["spec", "project"]), "{old}: {report}");
+            let record = r#"'{"page":"spec","milestone":"approval","ok":true,"template":true,"url":"…"}'"#;
+            assert!(next.contains(record), "{old}: {next}");
+            assert_eq!(next.contains(translate("page.copy.old_page", lang)), old, "{old}: {next}");
+            assert_eq!(report["copy"]["spec"]["first"], json!(true), "{old}: {report}");
+            assert_eq!(sent_items(root, &report).first(), Some(&1), "{old}: the whole spec");
+            let copy = batches_order(&report, "x", translate("page.copy.new_address", lang), lang);
+            let agent = agent_order(&copy, lang);
+            assert!(next.contains(&agent), "{old}: the first copy goes to an agent: {next}");
+            let ask = translate("plan.next", lang).replace("{question}", translate("approval.question", lang));
+            assert!(next.find(&agent) < next.find(&ask) && next.ends_with(&ask), "{old}: {next}");
+            assert!(report.get("migration").is_none(), "{old}: the plan check already asks for the points: {report}");
+            assert_eq!(hints_of(&report, "warnings", "wave-points-over-cap").len(), 1, "{old}: {report}");
         }
     }
 }
