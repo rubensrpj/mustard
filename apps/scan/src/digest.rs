@@ -1066,7 +1066,13 @@ mod tests {
 
     /// One class declaration implementing the given contracts (supertypes).
     fn decl(name: &str, supertypes: &[&str]) -> Decl {
-        Decl { kind: "class".to_string(), name: name.to_string(), line: 1, supertypes: supertypes.iter().map(|s| s.to_string()).collect() }
+        Decl {
+            kind: "class".to_string(),
+            name: name.to_string(),
+            line: 1,
+            supertypes: supertypes.iter().map(|s| s.to_string()).collect(),
+            ..Decl::default()
+        }
     }
 
     /// One hand-written module (empty `file_class` → indexed and anchor-eligible).

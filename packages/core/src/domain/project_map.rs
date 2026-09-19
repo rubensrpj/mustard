@@ -280,6 +280,10 @@ pub struct MapDecl {
     pub name: String,
     /// A linha em que a declaração começa.
     pub line: u64,
+    /// A linha em que a declaração termina. `0` num mapa antigo, sem o
+    /// campo, ou quando o scan não resolveu — nesses casos a leitura
+    /// obrigatória de uma tarefa cita só o nome, sem linha.
+    pub end_line: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

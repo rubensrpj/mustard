@@ -329,6 +329,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         .map(|(task, mut files)| {
             files.sort();
             files.dedup();
+            let files = files.into_iter().map(|file| with_current_lines(map, file)).collect();
             (codes.get(&task).cloned().unwrap_or_else(|| task.to_string()), files)
         })
         .collect();
@@ -510,6 +511,35 @@ fn cited_exists(root: &Path, cited: &str) -> bool {
     }
     crate::io::project_map::read(root)
         .is_ok_and(|map| map.modules.iter().any(|m| m.path.ends_with(cited)))
+}
+
+/// Um arquivo de leitura obrigatória `caminho#função`, com as linhas atuais
+/// da declaração anexadas ao fim (`@início-fim`, uma faixa por trecho,
+/// separadas por vírgula, para o nome que se repete no arquivo), achadas no
+/// mapa do projeto pelo caminho do módulo e pelo nome da declaração. Sem
+/// mapa, sem a função nele ou sem a linha final dela, o arquivo volta sem
+/// mudança: [`wave_prompt::WavePrompt::text`] então só manda ler a função
+/// pelo nome, como antes. Um caminho sozinho (sem `#`) também volta sem
+/// mudança.
+fn with_current_lines(map: Option<&ProjectMap>, file: String) -> String {
+    let Some((path, name)) = file.split_once('#') else { return file };
+    if path.is_empty() || name.is_empty() {
+        return file;
+    }
+    let Some(ranges) = decl_lines(map, path, name) else { return file };
+    let lines = ranges.iter().map(|(start, end)| format!("{start}-{end}")).collect::<Vec<_>>().join(", ");
+    format!("{file}@{lines}")
+}
+
+/// As faixas de linha (começo, fim) de cada declaração de nome `name` no
+/// módulo `path` — mais de uma quando o nome se repete no arquivo. `None`
+/// quando o mapa não tem o módulo, ou quando nenhuma ocorrência tem a linha
+/// final resolvida.
+fn decl_lines(map: Option<&ProjectMap>, path: &str, name: &str) -> Option<Vec<(u64, u64)>> {
+    let module = map?.modules.iter().find(|m| m.path == path || m.path.ends_with(path))?;
+    let ranges: Vec<(u64, u64)> =
+        module.declarations.iter().filter(|d| d.name == name && d.end_line > 0).map(|d| (d.line, d.end_line)).collect();
+    (!ranges.is_empty()).then_some(ranges)
 }
 
 /// Algum exemplo que a skill usou mudou no git depois de ela ter sido
@@ -702,6 +732,61 @@ mod tests {
         for phrase in ["Leia por trecho", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
             assert!(built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
         }
+    }
+
+    /// A leitura obrigatória de uma tarefa que aponta uma função
+    /// (`caminho#função`) que o mapa do projeto conhece manda ler só as
+    /// linhas atuais dela, do começo ao fim — sem número que envelhece no
+    /// plano. Depois de um commit que desloca a função (linhas somadas
+    /// acima dela, entre uma montagem e a seguinte), o pedido novo traz as
+    /// linhas novas, lidas de novo do mapa a cada montagem.
+    #[test]
+    fn the_wave_request_reads_the_current_lines_of_each_function() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "fn antes() {}\n\nfn soma() {\n    1 + 1;\n}\n").unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["apps/rt/src/a.rs#soma"]})),
+        ]);
+        let write_model = |line: u64, end_line: u64| {
+            std::fs::create_dir_all(root.join(".claude")).unwrap();
+            let model = json!({
+                "modules": [{
+                    "path": "apps/rt/src/a.rs",
+                    "declarations": [{"kind": "function", "name": "soma", "line": line, "end_line": end_line}],
+                }]
+            })
+            .to_string();
+            std::fs::write(crate::io::project_map::model_path(root), model).unwrap();
+        };
+
+        write_model(3, 5);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(
+            built[0].text.contains("leia só as linhas 3-5 da função `soma` em `apps/rt/src/a.rs`"),
+            "{}",
+            built[0].text
+        );
+        assert!(
+            !built[0].text.contains("leia só a função `soma` em `apps/rt/src/a.rs`"),
+            "o texto sem linha não deve sobrar: {}",
+            built[0].text
+        );
+
+        // Um commit soma dez linhas antes da função: ela se desloca, e o
+        // mapa gravou as posições novas. O pedido seguinte traz as linhas
+        // novas, lidas de novo do disco — não as da montagem anterior.
+        write_model(13, 15);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(
+            built[0].text.contains("leia só as linhas 13-15 da função `soma` em `apps/rt/src/a.rs`"),
+            "{}",
+            built[0].text
+        );
+        assert!(!built[0].text.contains("3-5"), "{}", built[0].text);
     }
 
     /// A leitura obrigatória de uma tarefa que aponta um arquivo que não

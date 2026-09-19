@@ -200,16 +200,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("prompt.execution.wave", Locale::PtBr) => "Onda {n}",
         ("prompt.execution.wave", Locale::EnUs) => "Wave {n}",
-        // O consumo do agente: achar a função pela ferramenta de código antes
-        // de abrir o arquivo, ler por trecho, não reler depois de editar,
+        // O consumo do agente: ler por trecho, não reler depois de editar,
         // rodar só os testes do que mudou e a suíte inteira uma vez no fim,
         // em primeiro plano. Uma linha por regra.
-        ("prompt.execution.lsp", Locale::PtBr) => {
-            "Ache a função pela ferramenta de código (LSP), quando ela existe no projeto, antes de abrir o arquivo."
-        }
-        ("prompt.execution.lsp", Locale::EnUs) => {
-            "Find the function with the code tool (LSP), when it exists in the project, before opening the file."
-        }
         ("prompt.execution.excerpt", Locale::PtBr) => {
             "Leia por trecho: ache a função com a busca e leia só ela; o arquivo inteiro, só quando for mudar boa parte dele."
         }
@@ -241,6 +234,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // arquivo inteiro.
         ("prompt.task_read.function", Locale::PtBr) => "leia só a função `{function}` em `{path}`",
         ("prompt.task_read.function", Locale::EnUs) => "read only the function `{function}` in `{path}`",
+        // A mesma leitura obrigatória, quando o mapa do projeto conhece a
+        // função e a linha em que ela termina: o pedido já manda ler só as
+        // linhas atuais dela, sem número que envelhece no plano.
+        ("prompt.task_read.function_lines", Locale::PtBr) => {
+            "leia só as linhas {lines} da função `{function}` em `{path}`"
+        }
+        ("prompt.task_read.function_lines", Locale::EnUs) => {
+            "read only lines {lines} of the function `{function}` in `{path}`"
+        }
         ("prompt.execution.copy", Locale::PtBr) => {
             "Trabalhe só na cópia separada `{copy}`, que a rodada criou no commit atual, e rode cada \
              comando de dentro dela; nunca crie outra. Nada se edita no repositório principal \
@@ -298,7 +300,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             48,
-            0xd8c3_5e6c_b5fc_8cfa,
+            0xa365_9d5d_947e_dac0,
         );
     }
 }

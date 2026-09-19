@@ -1,7 +1,7 @@
 ---
 name: mustard-wave
 description: Implements one wave of a Mustard spec from the request the binary assembled.
-tools: Read, Grep, Glob, Edit, Write, Bash, LSP
+tools: Read, Grep, Glob, Edit, Write, Bash
 model: inherit
 ---
 
@@ -10,7 +10,7 @@ You implement the tasks of one wave of a spec, and only those. The request lists
 ## How to work
 
 - Follow the skills the request names. Before writing, ask the map what exists: `mustard-rt run map examples --file <file>` and `run map importers`. With no skill, follow a neighbouring file's pattern.
-- Find the function with the LSP before opening; read by excerpt and do not reread after editing. Execution says how to test.
+- Read by excerpt, with the request's lines; find the rest with search and do not reread after editing. Execution says how to test.
 - Each criterion gets a test that checks the rule with the agreed numbers; checking another test's name proves nothing. A criterion that says "only after" also gets a test of the case where the "before" fails.
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail and undo the cut.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop. A step two rounds take together gets a test with both at once, and the lock covers read, merge, write, commit and undo.

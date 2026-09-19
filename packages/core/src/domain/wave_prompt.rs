@@ -1194,14 +1194,12 @@ impl Writer<'_> {
         }
     }
 
-    /// Como o agente gasta menos: acha a função pela ferramenta de código
-    /// antes de abrir o arquivo, lê por trecho, não relê depois de editar,
+    /// Como o agente gasta menos: lê por trecho, não relê depois de editar,
     /// roda só os testes do que mudou e a suíte inteira uma vez no fim, em
     /// primeiro plano, pelo `rtk`. Uma linha por regra, para a onda e para a
     /// revisão.
     fn consumption(&self, out: &mut String) {
         for key in [
-            "prompt.execution.lsp",
             "prompt.execution.excerpt",
             "prompt.execution.no_reread",
             "prompt.execution.changed_tests",
@@ -1290,15 +1288,23 @@ impl Writer<'_> {
     }
 
     /// Um arquivo da leitura por tarefa: `caminho#função` manda ler só
-    /// aquela função; um caminho sozinho é o arquivo, entre crases, como
-    /// antes.
+    /// aquela função; `caminho#função@início-fim[,início-fim…]` — que
+    /// [`crate::io::wave_prompt`] monta quando o mapa do projeto conhece a
+    /// função e a linha em que ela termina — manda ler só essas linhas, uma
+    /// faixa por trecho, para o nome que se repete no arquivo; um caminho
+    /// sozinho é o arquivo, entre crases, como antes.
     fn read_hint(&self, file: &str) -> String {
-        match file.split_once('#') {
-            Some((path, function)) if !path.is_empty() && !function.is_empty() => self
-                .t("prompt.task_read.function")
+        let Some((path, rest)) = file.split_once('#') else { return format!("`{file}`") };
+        if path.is_empty() || rest.is_empty() {
+            return format!("`{file}`");
+        }
+        match rest.split_once('@') {
+            Some((function, lines)) if !function.is_empty() && !lines.is_empty() => self
+                .t("prompt.task_read.function_lines")
                 .replace("{function}", function)
-                .replace("{path}", path),
-            _ => format!("`{file}`"),
+                .replace("{path}", path)
+                .replace("{lines}", lines),
+            _ => self.t("prompt.task_read.function").replace("{function}", rest).replace("{path}", path),
         }
     }
 }
