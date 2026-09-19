@@ -886,7 +886,9 @@ pub(crate) fn branch_of_spec(start: &Path, spec: &str) -> Option<String> {
 /// gravação da publicação feita numa spec, com a trava do índice presa da
 /// leitura à escrita. Só a publicação que deu certo tem o que gravar: a que
 /// falhou é recusada pedindo a spec, e a que deu certo sem endereço, pelo
-/// campo que falta.
+/// campo que falta. A publicação fora de uma spec só nasce do aviso do início
+/// da sessão, que publica o template da página do projeto: o endereço vai
+/// sempre com a marca do template.
 fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> Value {
     let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
     if draft.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -899,7 +901,7 @@ fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> 
         Ok(paths) => paths.spec_index_path(),
         Err(e) => return refuse(Refusal::Io { detail: e.to_string() }),
     };
-    match mustard_core::io::spec_index::set_project_url(&index, url) {
+    match mustard_core::io::spec_index::set_project_url(&index, url, true) {
         Ok(()) => json!({ "ok": true, "type": "publish", "page": spec_index::PROJECT_PAGE, "url": url }),
         Err(refusal) => refuse(refusal),
     }
@@ -3518,6 +3520,8 @@ mod tests {
 
         let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
         assert_eq!(spec_index::project_url(&index), Some(last), "{index}");
+        // Sem spec, só o início da sessão publica, e ele publica o template.
+        assert_eq!(spec_index::project_page(&index).map(|page| page.template), Some(true), "{index}");
         let log = mustard_core::domain::spec_events::parse_log(
             &std::fs::read_to_string(root.join(".claude/spec/um/spec.ndjson")).unwrap(),
         );

@@ -49,34 +49,64 @@ pub const SPEC_PAGE: &str = "spec";
 /// em que o passo corre, e o endereço vai para a linha do projeto.
 pub const PROJECT_PAGE: &str = "project";
 
-/// A linha do projeto, com o endereço da página dele quando há.
+/// A linha do projeto, com o endereço da página dele quando há, como uma
+/// versão antiga a gravava: sem a marca do template.
 #[must_use]
 pub fn project_line(url: Option<&str>) -> String {
+    page_line(url, false)
+}
+
+/// A linha do projeto com o endereço `url` e, quando a página nesse endereço
+/// é o template do Mustard, a marca `"template":true`.
+fn page_line(url: Option<&str>, template: bool) -> String {
     let mut line = Map::new();
     line.insert("v".into(), Value::from(FORMAT_VERSION));
     line.insert("type".into(), Value::from(PROJECT_TYPE));
     if let Some(url) = url.map(str::trim).filter(|u| !u.is_empty()) {
         line.insert("url".into(), Value::from(url));
+        if template {
+            line.insert("template".into(), Value::Bool(true));
+        }
     }
     render_line(&line)
 }
 
-/// O endereço da página do projeto, lido da linha do projeto do índice
-/// `content`, pelo mesmo leitor da gravação. `None` sem linha do projeto ou
-/// sem endereço nela.
-#[must_use]
-pub fn project_url(content: &str) -> Option<String> {
-    let line = read_lines(content).project?;
-    let parsed = serde_json::from_str::<Value>(line).ok()?;
-    parsed.get("url").and_then(Value::as_str).map(str::trim).filter(|url| !url.is_empty()).map(str::to_string)
+/// A página do projeto como a linha do projeto do índice a guarda.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectPage {
+    pub url: String,
+    /// A página nesse endereço é o template do Mustard, que lê o banco de
+    /// dados. Sem a marca, é a página inteira que uma versão antiga publicou:
+    /// ela não tem banco e fica parada, como um retrato.
+    pub template: bool,
 }
 
-/// O índice `content` com a linha do projeto trocada pela que leva `url`; as
-/// linhas das specs e as que não se entendem ficam como estão.
+/// A página do projeto, lida da linha do projeto do índice `content`, pelo
+/// mesmo leitor da gravação. `None` sem linha do projeto ou sem endereço nela.
 #[must_use]
-pub fn with_project_url(content: &str, url: &str) -> String {
+pub fn project_page(content: &str) -> Option<ProjectPage> {
+    let line = read_lines(content).project?;
+    let parsed = serde_json::from_str::<Value>(line).ok()?;
+    let url = parsed.get("url").and_then(Value::as_str).map(str::trim).filter(|url| !url.is_empty())?;
+    let template = parsed.get("template").and_then(Value::as_bool) == Some(true);
+    Some(ProjectPage { url: url.to_string(), template })
+}
+
+/// O endereço da página do projeto, lido por [`project_page`], seja ela o
+/// template ou a página antiga: a barra de status mostra o link da antiga até
+/// o template nascer.
+#[must_use]
+pub fn project_url(content: &str) -> Option<String> {
+    project_page(content).map(|page| page.url)
+}
+
+/// O índice `content` com a linha do projeto trocada pela que leva `url`,
+/// com a marca do template quando `template`; as linhas das specs e as que
+/// não se entendem ficam como estão.
+#[must_use]
+pub fn with_project_url(content: &str, url: &str, template: bool) -> String {
     let lines = read_lines(content);
-    let project = project_line(Some(url));
+    let project = page_line(Some(url), template);
     let specs: Vec<&str> = lines.specs.values().copied().collect();
     let other: Vec<&str> = lines.other.iter().map(|(_, l)| *l).collect();
     assemble(Some(&project), &specs, &other)
@@ -92,11 +122,21 @@ pub fn published_to<'a>(event: &'a SpecEvent, page: &str) -> Option<&'a str> {
     event.str_field("url").map(str::trim).filter(|url| published && !url.is_empty())
 }
 
-/// A última publicação da página do projeto que deu certo nesta spec: a hora
-/// e o endereço.
+/// A publicação `event` é a do template do Mustard (`"template":true`). A
+/// publicação sem a marca é a página inteira que uma versão antiga publicou.
 #[must_use]
-pub fn project_publish(log: &SpecLog) -> Option<(&str, &str)> {
-    log.visible().into_iter().filter_map(|e| published_to(e, PROJECT_PAGE).map(|url| (e.at(), url))).next_back()
+pub fn is_template(event: &SpecEvent) -> bool {
+    event.fields.get("template").and_then(Value::as_bool) == Some(true)
+}
+
+/// A última publicação da página do projeto que deu certo nesta spec: a hora,
+/// o endereço e se ela é a do template.
+#[must_use]
+pub fn project_publish(log: &SpecLog) -> Option<(&str, &str, bool)> {
+    log.visible()
+        .into_iter()
+        .filter_map(|e| published_to(e, PROJECT_PAGE).map(|url| (e.at(), url, is_template(e))))
+        .next_back()
 }
 
 /// A linha da spec `name`, montada do arquivo de eventos dela. `None` quando
@@ -623,18 +663,31 @@ mod tests {
         let line = spec_line("teste", &log).unwrap();
         assert_eq!(parsed(&line)["url"], json!("https://claude.ai/spec"));
         let when = at("09:02");
-        assert_eq!(project_publish(&log), Some((when.as_str(), "https://claude.ai/p1")), "the last one that worked");
+        assert_eq!(project_publish(&log), Some((when.as_str(), "https://claude.ai/p1", false)), "the last one that worked");
 
         let index = format!("{}
 {line}
 lixo
 ", project_line(None));
-        let moved = with_project_url(&index, "https://claude.ai/p1");
+        let moved = with_project_url(&index, "https://claude.ai/p1", false);
         assert_eq!(moved, format!("{}
 {line}
 lixo
 ", project_line(Some("https://claude.ai/p1"))));
         assert_eq!(project_url(&moved).as_deref(), Some("https://claude.ai/p1"));
+        let old = ProjectPage { url: "https://claude.ai/p1".into(), template: false };
+        assert_eq!(project_page(&moved), Some(old), "a publish without the template mark is the old page");
+
+        // A publicação do template leva a marca para a linha do projeto.
+        let template = ev(11, "09:04", "publish", json!({"page": "project", "milestone": "round", "ok": true,
+            "template": true, "url": "https://claude.ai/p2"}));
+        let log = parse_log(&[content, template].concat());
+        let when = at("09:04");
+        assert_eq!(project_publish(&log), Some((when.as_str(), "https://claude.ai/p2", true)));
+        let marked = with_project_url(&moved, "https://claude.ai/p2", true);
+        assert!(marked.starts_with(r#"{"v":1,"type":"project","template":true,"url":"https://claude.ai/p2"}"#), "{marked}");
+        assert_eq!(project_page(&marked), Some(ProjectPage { url: "https://claude.ai/p2".into(), template: true }));
+        assert_eq!(project_url(&marked).as_deref(), Some("https://claude.ai/p2"));
     }
 
     /// O objetivo de uma spec cujo primeiro contexto tem `text`.

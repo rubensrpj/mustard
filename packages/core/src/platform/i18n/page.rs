@@ -31,17 +31,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
-        // A spec que já tinha a página inteira publicada por uma versão
-        // antiga ganha o template num link novo; a antiga fica parada.
+        // A página da spec, ou a do projeto, que uma versão antiga publicou
+        // inteira ganha o template num link novo; a antiga fica parada.
+        // `{page}` é o nome da página (`page.name.*`).
         ("page.copy.old_page", Locale::PtBr) => {
-            "A página que uma versão antiga do Mustard publicou para esta spec fica parada como está, \
-             como um retrato: publique o template como página nova, com link novo, sem mexer na \
-             antiga, e a barra de status passa a mostrar o link novo."
+            "A {page} que uma versão antiga do Mustard publicou fica parada como está, como um \
+             retrato: publique o template como página nova, com link novo, sem mexer na antiga e sem \
+             copiar nada para ela, e a barra de status passa a mostrar o link novo."
         }
         ("page.copy.old_page", Locale::EnUs) => {
-            "The page an older Mustard version published for this spec stays still as it is, like a \
-             snapshot: publish the template as a new page, with a new link, without touching the old \
-             one, and the status line starts showing the new link."
+            "The {page} an older Mustard version published stays still as it is, like a snapshot: \
+             publish the template as a new page, with a new link, without touching the old one or \
+             copying anything into it, and the status line starts showing the new link."
         }
         // A primeira cópia leva a spec inteira e fica com um agente separado.
         ("page.copy.agent", Locale::PtBr) => {
@@ -892,7 +893,7 @@ mod tests {
             include_str!("page.rs"),
             super::PREFIXES,
             340,
-            0x8e7f_472e_0be3_e9e1,
+            0x0670_1bdc_f257_9fc6,
         );
     }
 }

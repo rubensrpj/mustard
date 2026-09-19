@@ -58,6 +58,13 @@
 //! publicada de novo nesta spec depois da última cópia, vão todas as linhas do
 //! índice. Os lotes dela são `project-<n>.json`.
 //!
+//! A página do projeto que uma versão antiga publicou inteira não tem banco:
+//! a linha do projeto do índice guarda o endereço dela sem a marca do
+//! template (`domain::spec_index::project_page`). O primeiro marco a trata
+//! como a página ainda sem endereço: manda publicar o template num link novo
+//! e copiar todas as linhas para ele. A antiga fica parada, e nenhum lote vai
+//! para ela.
+//!
 //! A preparação inteira — ler o arquivo de eventos, apagar a cópia anterior e
 //! gravar os arquivos novos — acontece com a trava do arquivo de eventos
 //! presa: duas rodadas ao mesmo tempo nunca misturam os arquivos de uma com os
@@ -67,7 +74,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Hidden, Refusal, SpecEvent, SpecLog, PURGED_MARK};
-use mustard_core::domain::spec_index::{project_url, published_to, ProjectRow, PROJECT_PAGE, SPEC_PAGE};
+use mustard_core::domain::spec_index::{is_template, project_page, published_to, ProjectRow, PROJECT_PAGE, SPEC_PAGE};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::platform::page_templates::{
@@ -119,9 +126,6 @@ pub(crate) struct Prepared {
     /// O código de cada item que guarda um trecho com cara de segredo e por
     /// isso fica fora da cópia, na ordem do arquivo.
     pub withheld: Vec<String>,
-    /// A página da spec já foi publicada inteira por uma versão antiga: o
-    /// template sai num link novo, e a antiga fica parada.
-    pub old_page: bool,
     /// As notas de trabalho das tarefas das ondas que ainda não saíram,
     /// lidas quando o template da página da spec nasce neste marco.
     pub points: Option<WavePoints>,
@@ -139,6 +143,9 @@ pub(crate) struct Target {
     /// A primeira cópia da página, que leva a spec inteira e fica com um
     /// agente separado.
     pub first: bool,
+    /// A página já foi publicada inteira por uma versão antiga, sem banco: o
+    /// template sai num link novo, e a antiga fica parada.
+    pub old: bool,
 }
 
 /// Prepara a cópia da spec `spec` do projeto `root` para o banco da página
@@ -216,6 +223,7 @@ fn build(
         batches: batches(place, "spec", &writes)?,
         record: json!({ "page": SPEC_PAGE, "last": log.max_id() }),
         first: since == 0,
+        old,
     };
     let project = match moment {
         Moment::Milestone => project_rows(place, log, lang)?,
@@ -226,7 +234,6 @@ fn build(
         spec,
         project,
         withheld: withheld(log),
-        old_page: old,
         points,
     }))
 }
@@ -261,11 +268,6 @@ fn spec_page(log: &SpecLog) -> SpecPage {
         .max()
         .unwrap_or(0);
     SpecPage { url: Some(url.to_string()), since, old }
-}
-
-/// A publicação `event` é a do template do Mustard.
-fn is_template(event: &SpecEvent) -> bool {
-    event.fields.get("template").and_then(Value::as_bool) == Some(true)
 }
 
 /// A página de um registro de cópia.
@@ -429,9 +431,13 @@ fn state_name(state: WaveState) -> &'static str {
 /// As linhas do índice que vão para o banco da página do projeto: todas,
 /// quando ela ainda não tem endereço ou foi publicada de novo nesta spec
 /// depois da última cópia; senão, a linha desta spec, quando a fase dela
-/// mudou desde a última cópia; senão, nenhuma.
+/// mudou desde a última cópia; senão, nenhuma. A página antiga, publicada
+/// inteira por uma versão antiga, conta como a que ainda não tem endereço: o
+/// endereço dela nunca recebe lote.
 fn project_rows(place: &Place, log: &SpecLog, lang: Locale) -> Result<Option<Target>, Refusal> {
-    let url = mustard_core::io::fs::lock::read_shared(&place.index).ok().and_then(|content| project_url(&content));
+    let page = mustard_core::io::fs::lock::read_shared(&place.index).ok().and_then(|content| project_page(&content));
+    let old = page.as_ref().is_some_and(|page| !page.template);
+    let url = page.filter(|page| page.template).map(|page| page.url);
     let rows = mustard_core::io::spec_index::read_rows(place.root);
     let Some(own) = rows.iter().find(|row| row.name == place.spec) else {
         return Ok(None);
@@ -463,7 +469,7 @@ fn project_rows(place: &Place, log: &SpecLog, lang: Locale) -> Result<Option<Tar
     if let Some(phase) = &own.phase {
         record["phase"] = json!(phase);
     }
-    Ok(Some(Target { url, batches: batches(place, "project", &writes)?, record, first: false }))
+    Ok(Some(Target { url, batches: batches(place, "project", &writes)?, record, first: false, old }))
 }
 
 /// A linha de uma spec como vai para o banco da página do projeto.
@@ -547,8 +553,8 @@ impl Prepared {
     }
 
     /// A ordem da cópia, uma frase por passo: publicar a página que ainda não
-    /// tem endereço, no marco `milestone`, num link novo quando a da spec
-    /// ainda é a página inteira de uma versão antiga; copiar os lotes de cada
+    /// tem endereço, no marco `milestone`, num link novo quando ela ainda é a
+    /// página inteira de uma versão antiga; copiar os lotes de cada
     /// página e gravar cada cópia feita, com a primeira cópia da spec
     /// entregue a um agente separado; no fim, não levar os endereços para a
     /// resposta. Sem marco, a página sem endereço fica para o próximo.
@@ -567,8 +573,8 @@ impl Prepared {
                         .replace("{key}", key)
                         .replace("{milestone}", milestone),
                 );
-                if key == SPEC_PAGE && self.old_page {
-                    out.push(translate("page.copy.old_page", lang).to_string());
+                if target.old {
+                    out.push(translate("page.copy.old_page", lang).replace("{page}", page));
                 }
             }
             let url = target.url.clone().unwrap_or_else(|| translate("page.copy.new_address", lang).to_string());
@@ -652,6 +658,15 @@ pub(crate) fn batches_order(report: &Value, spec: &str, url: &str, lang: Locale)
         .replace("{files}", &files.join(", "))
         .replace("{spec}", spec)
         .replace("{record}", &report["copy"][SPEC_PAGE]["record"].to_string())
+}
+
+/// Para os testes: a frase que diz que a página `page` (`spec` ou `project`)
+/// publicada inteira por uma versão antiga fica parada, como o catálogo em
+/// `lang` a monta.
+#[cfg(test)]
+pub(crate) fn old_page_order(page: &str, lang: Locale) -> String {
+    let name = if page == PROJECT_PAGE { "page.name.project" } else { "page.name.spec" };
+    translate("page.copy.old_page", lang).replace("{page}", translate(name, lang))
 }
 
 /// Para os testes: a frase que entrega a um agente separado a primeira cópia
@@ -980,6 +995,81 @@ mod tests {
 
     const OLD_URL: &str = "https://claude.ai/code/artifact/pagina-antiga";
 
+    /// Um projeto com duas specs cuja página do projeto uma versão antiga do
+    /// Mustard publicou inteira, sem banco: a publicação gravada sem a marca
+    /// do template deixa na linha do projeto do índice os mesmos bytes que a
+    /// versão antiga gravava. O primeiro marco, uma rodada, manda publicar o
+    /// template do projeto num link novo, dizendo que a antiga fica parada, e
+    /// copiar para ele as linhas das duas specs. Nada vai para a página
+    /// antiga: o endereço dela não aparece na resposta nem nos lotes.
+    /// Publicado o template, a linha do projeto guarda a marca, e o marco
+    /// seguinte não publica de novo.
+    #[test]
+    fn the_old_project_page_gets_the_template_in_a_new_link() {
+        let dir = approved_project();
+        let root = dir.path();
+        let lang = Locale::PtBr;
+        let other = root.join(".claude/spec/y/spec.ndjson");
+        store::write(&other, "state", json!({"phase": "survey"}).as_object().cloned().unwrap(), &[]).unwrap();
+        // A página da spec já é o template, com a cópia gravada: só a do
+        // projeto é antiga.
+        write(root, "publish", json!({"page": "spec", "milestone": "approval", "ok": true, "template": true,
+            "url": SPEC_URL}));
+        write(root, "copy", json!({"page": "spec", "last": log(root).max_id()}));
+        // A versão antiga publicou a página do projeto inteira.
+        write(root, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "url": OLD_URL}));
+        let index = || std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
+        let old_line = mustard_core::domain::spec_index::project_line(Some(OLD_URL));
+        assert!(index().starts_with(&format!("{old_line}\n")), "the bytes the old version wrote: {}", index());
+
+        let first = round(root);
+        assert_eq!(first["publish"], json!(["project"]), "the old page is not the template: {first}");
+        assert_eq!(first["copy"]["project"]["published"], json!(false), "{first}");
+        let rows: Vec<Value> = sent(root, &first, "project").iter().map(|w| w["doc_id"].clone()).collect();
+        assert_eq!(rows, [json!("x"), json!("y")], "every row goes to the new link: {first}");
+        let next = first["next"].as_str().unwrap_or_default();
+        let publish = translate("page.copy.publish", lang)
+            .replace("{page}", translate("page.name.project", lang))
+            .replace("{template}", PROJECT_TEMPLATE)
+            .replace("{capabilities}", PROJECT_CAPABILITIES)
+            .replace("{spec}", "x")
+            .replace("{key}", PROJECT_PAGE)
+            .replace("{milestone}", "round");
+        let old = old_page_order(PROJECT_PAGE, lang);
+        let files: Vec<String> = first["copy"]["project"]["batches"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|b| format!("`{}`", b.as_str().unwrap_or_default()))
+            .collect();
+        let copy = translate("page.copy.batches", lang)
+            .replace("{page}", translate("page.name.project", lang))
+            .replace("{url}", translate("page.copy.new_address", lang))
+            .replace("{files}", &files.join(", "))
+            .replace("{spec}", "x")
+            .replace("{record}", &first["copy"]["project"]["record"].to_string());
+        let at = |sentence: &str| next.find(sentence).unwrap_or_else(|| panic!("missing «{sentence}» in {next}"));
+        assert!(at(&publish) < at(&old) && at(&old) < at(&copy), "publish, keep the old one still, then copy: {next}");
+        assert!(!next.contains(&old_page_order(SPEC_PAGE, lang)), "the spec page is the template: {next}");
+        assert!(root.join(PROJECT_TEMPLATE).is_file(), "the template to publish is on disk");
+        let batches = sent(root, &first, "project");
+        assert!(!first.to_string().contains(OLD_URL), "nothing goes to the old page: {first}");
+        assert!(!format!("{batches:?}").contains(OLD_URL), "nothing goes to the old page: {batches:?}");
+
+        // A conversa publica o template no link novo e grava a cópia.
+        write(root, "publish", json!({"page": "project", "milestone": "round", "ok": true, "template": true,
+            "url": PROJECT_URL}));
+        write(root, "copy", first["copy"]["project"]["record"].clone());
+        let second = round(root);
+        assert!(second.get("publish").is_none(), "the template is published once: {second}");
+        assert!(second["copy"].get("project").is_none(), "the rows are already there: {second}");
+        assert!(!second.to_string().contains(OLD_URL), "{second}");
+        let page = mustard_core::domain::spec_index::project_page(&index());
+        assert_eq!(page.map(|p| (p.url, p.template)), Some((PROJECT_URL.to_string(), true)), "{}", index());
+        assert_eq!(mustard_core::io::spec_index::project_page_url(root).as_deref(), Some(PROJECT_URL));
+    }
+
     /// Uma spec aprovada por uma versão antiga do Mustard, que publicou a
     /// página inteira dela e não pedia nota às tarefas, chega ao primeiro
     /// marco desta versão, uma rodada. A ordem manda publicar o template num
@@ -1037,7 +1127,8 @@ mod tests {
         assert_eq!(first["publish"], json!(["spec", "project"]), "the old page is not the template: {first}");
         let record = r#"'{"page":"spec","milestone":"round","ok":true,"template":true,"url":"…"}'"#;
         assert!(next.contains(record), "{next}");
-        assert!(next.contains(translate("page.copy.old_page", lang)), "{next}");
+        assert!(next.contains(&old_page_order(SPEC_PAGE, lang)), "{next}");
+        assert!(!next.contains(&old_page_order(PROJECT_PAGE, lang)), "the project page is new: {next}");
         assert!(!first.to_string().contains(OLD_URL), "the old page is never touched: {first}");
         // A primeira cópia leva a spec inteira e fica com um agente separado.
         assert_eq!(first["copy"]["spec"]["first"], json!(true), "{first}");

@@ -1846,7 +1846,7 @@ mod tests {
     /// template num link novo na aprovação.
     #[test]
     fn the_first_copy_goes_to_an_agent_at_the_approval_of_a_new_spec() {
-        use crate::commands::spec_events::pages::copy::{agent_order, batches_order};
+        use crate::commands::spec_events::pages::copy::{agent_order, batches_order, old_page_order};
         let lang = Locale::PtBr;
         for old in [false, true] {
             let dir = tempdir().unwrap();
@@ -1868,7 +1868,7 @@ mod tests {
             assert_eq!(report["publish"], json!(["spec", "project"]), "{old}: {report}");
             let record = r#"'{"page":"spec","milestone":"approval","ok":true,"template":true,"url":"…"}'"#;
             assert!(next.contains(record), "{old}: {next}");
-            assert_eq!(next.contains(translate("page.copy.old_page", lang)), old, "{old}: {next}");
+            assert_eq!(next.contains(&old_page_order("spec", lang)), old, "{old}: {next}");
             assert_eq!(report["copy"]["spec"]["first"], json!(true), "{old}: {report}");
             assert_eq!(sent_items(root, &report).first(), Some(&1), "{old}: the whole spec");
             let copy = batches_order(&report, "x", translate("page.copy.new_address", lang), lang);

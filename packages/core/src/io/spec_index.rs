@@ -68,17 +68,20 @@ pub fn refresh_line(index_path: &Path, name: &str, log: &SpecLog) -> Result<(), 
 }
 
 /// Grava `url` na linha do projeto do índice `index_path`: é o endereço da
-/// página do projeto que acabou de ser publicada. Pega a trava do índice, e o
-/// arquivo só é reescrito quando muda. Quem chama já segura a trava da spec
-/// em que a publicação foi gravada.
+/// página do projeto que acabou de ser publicada. A publicação do template
+/// (`template`) leva a marca dele; a publicação sem template, a página
+/// inteira de uma versão antiga, fica sem a marca, e o marco seguinte a trata
+/// como página antiga, que ganha o template num link novo. Pega a trava do
+/// índice, e o arquivo só é reescrito quando muda. Quem chama já segura a
+/// trava da spec em que a publicação foi gravada.
 ///
 /// # Errors
 ///
 /// [`Refusal::Io`] quando a trava, a leitura ou a escrita falham.
-pub fn set_project_url(index_path: &Path, url: &str) -> Result<(), Refusal> {
+pub fn set_project_url(index_path: &Path, url: &str, template: bool) -> Result<(), Refusal> {
     let mut file = LockedFile::exclusive(index_path).map_err(io_refusal)?;
     let current = file.read_to_string().map_err(io_refusal)?;
-    let next = index::with_project_url(&current, url);
+    let next = index::with_project_url(&current, url, template);
     if next != current {
         file.replace(next.as_bytes()).map_err(io_refusal)?;
     }
@@ -146,8 +149,9 @@ pub struct Rebuilt {
 /// só se algo mudou), refaz a linha dela no índice e solta a trava. Por
 /// último, só com a trava do índice, tira as linhas de specs que não existem
 /// mais e as que não se entendem, e garante a linha do projeto: com o
-/// endereço da última publicação da página do projeto gravada nas specs, ou,
-/// sem nenhuma, como estava.
+/// endereço da última publicação da página do projeto gravada nas specs, e a
+/// marca do template quando ela é a do template, ou, sem nenhuma, como
+/// estava.
 ///
 /// Sem spec, grava só a linha do projeto. Recusa só quando a trava ou a
 /// escrita falham, com [`Refusal::Io`].
@@ -162,7 +166,7 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
         lessons_search_updated: 0,
         skipped: listing.skipped,
     };
-    let mut project: Option<(String, String)> = None;
+    let mut project: Option<(String, String, bool)> = None;
     for (name, events) in &listing.specs {
         let mut file = match LockedFile::existing(events) {
             Ok(file) => file,
@@ -179,10 +183,10 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
         }
         let log = model::parse_log(&fixed);
         refresh_line(&index_path, name, &log)?;
-        if let Some((at, url)) = index::project_publish(&log)
-            && project.as_ref().is_none_or(|(latest, _)| later(at, latest))
+        if let Some((at, url, template)) = index::project_publish(&log)
+            && project.as_ref().is_none_or(|(latest, _, _)| later(at, latest))
         {
-            project = Some((at.to_string(), url.to_string()));
+            project = Some((at.to_string(), url.to_string(), template));
         }
         drop(file);
         out.specs += 1;
@@ -193,8 +197,8 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
     let mut file = LockedFile::exclusive(&index_path).map_err(io_refusal)?;
     let current = file.read_to_string().map_err(io_refusal)?;
     let mut next = index::prune(&current, |name| events_file(&paths, name).is_some());
-    if let Some((_, url)) = &project {
-        next = index::with_project_url(&next, url);
+    if let Some((_, url, template)) = &project {
+        next = index::with_project_url(&next, url, *template);
     }
     if next != current {
         file.replace(next.as_bytes()).map_err(io_refusal)?;
@@ -525,7 +529,9 @@ mod tests {
     /// A publicação da página do projeto grava o endereço na linha do
     /// projeto, na mesma gravação; uma gravação depois, na mesma spec ou em
     /// outra, não o desfaz, e a publicação seguinte, de outra spec, o troca.
-    /// Apagado o índice, o `rebuild` devolve o endereço da última.
+    /// Apagado o índice, o `rebuild` devolve o endereço da última. A
+    /// publicação do template leva a marca dele para a linha, o `rebuild` a
+    /// mantém, e a publicação seguinte sem template a tira.
     #[test]
     fn the_project_page_address_lands_on_the_project_line() {
         let dir = tempfile::tempdir().unwrap();
@@ -547,10 +553,24 @@ mod tests {
         put(root, "trava", "message", "10:12", json!({"author": "user", "text": "depois da falha"}));
         let written = raw();
         assert_eq!(index::project_url(&written).as_deref(), Some("https://claude.ai/p2"));
+        assert_eq!(index::project_page(&written).map(|page| page.template), Some(false), "the old page");
 
         std::fs::remove_file(index_file(root)).unwrap();
         rebuild(root).unwrap();
         assert_eq!(raw(), written, "the rebuilt index keeps the last project page address");
+
+        let template = json!({"page": "project", "milestone": "round", "ok": true, "template": true,
+            "url": "https://claude.ai/p3"});
+        put(root, "trava", "publish", "10:13", template);
+        let marked = raw();
+        let page = index::ProjectPage { url: "https://claude.ai/p3".into(), template: true };
+        assert_eq!(index::project_page(&marked), Some(page), "{marked}");
+        std::fs::remove_file(index_file(root)).unwrap();
+        rebuild(root).unwrap();
+        assert_eq!(raw(), marked, "the rebuilt index keeps the template mark");
+
+        put(root, "busca", "publish", "10:14", publish("https://claude.ai/p4"));
+        assert_eq!(index::project_page(&raw()).map(|page| page.template), Some(false), "{}", raw());
     }
 
     /// A spec descartada e arquivada continua no índice, com a fase

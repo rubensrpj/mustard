@@ -193,16 +193,19 @@ fn write_inner(
     let log = after;
     // Primeiro a trava da spec, depois a do índice: sempre nessa ordem. A
     // publicação da página do projeto leva o endereço para a linha do
-    // projeto: ela é, por ter acabado de ser gravada, a última.
-    let project_url = log
-        .events
-        .iter()
-        .rev()
-        .find(|e| e.id == id)
-        .and_then(|e| crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE));
+    // projeto: ela é, por ter acabado de ser gravada, a última. A marca do
+    // template vai junto, e a publicação sem ela é a da página antiga.
+    let project_url = log.events.iter().rev().find(|e| e.id == id).and_then(|e| {
+        crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE)
+            .map(|url| (url, crate::domain::spec_index::is_template(e)))
+    });
     let index_warning = crate::io::spec_index::index_for(path).and_then(|(index, name)| {
         crate::io::spec_index::refresh_line(&index, &name, &log)
-            .and_then(|()| project_url.map_or(Ok(()), |url| crate::io::spec_index::set_project_url(&index, url)))
+            .and_then(|()| {
+                project_url.map_or(Ok(()), |(url, template)| {
+                    crate::io::spec_index::set_project_url(&index, url, template)
+                })
+            })
             .err()
     });
     then(&log);
