@@ -399,6 +399,11 @@ fn build_dirs(root: &Path, count: usize) -> Vec<PathBuf> {
 /// quê; a onda sem pasta livre também não sai, e fica para a rodada seguinte.
 /// Roda com a trava do passo do git que o despacho já prendeu (`_held`): duas
 /// rodadas ao mesmo tempo não criam a mesma cópia duas vezes.
+///
+/// A obra de até 3 pontos (`solo`, de
+/// [`crate::commands::flow::plan::is_solo_work`]) não cria cópia nenhuma: o
+/// orquestrador faz a onda no checkout principal, na própria janela, e nada
+/// aqui teria onde compilar.
 pub(super) fn open_copies(
     root: &Path,
     spec: &str,
@@ -406,8 +411,12 @@ pub(super) fn open_copies(
     _held: &LockedFile,
     waves: &[u64],
     running: &BTreeMap<u64, u64>,
+    solo: bool,
     lang: Locale,
 ) -> (BTreeMap<u64, WaveCopy>, Vec<Value>) {
+    if solo {
+        return (BTreeMap::new(), Vec::new());
+    }
     let dir_of = |n: &u64| recorded_copy(log, *n).and_then(|copy| copy.build_dir);
     let held: BTreeSet<String> = running.keys().filter_map(dir_of).collect();
     let mut free: Vec<String> =
@@ -447,6 +456,22 @@ pub(super) fn open_copies(
         }
     }
     (copies, warnings)
+}
+
+/// Alguma tarefa das ondas `waves` mexe num arquivo de dentro de um
+/// submódulo? A obra de até 3 pontos que toca submódulo continua com a cópia
+/// separada, mesmo pequena: sem cópia não há onde a rodada pôr o submódulo na
+/// branch da unidade ([`copy_submodule`]) antes de o orquestrador editar, e
+/// essa conta só compensa dentro da cópia que já resolve isso.
+pub(super) fn touches_a_submodule(root: &Path, log: &SpecLog, waves: &[u64]) -> bool {
+    let subs = submodules_of(root);
+    if subs.is_empty() {
+        return false;
+    }
+    let files = wave_graph(log).files;
+    waves.iter().any(|wave| {
+        files.get(wave).into_iter().flatten().any(|file| submodule_holding(&subs, file).is_some())
+    })
 }
 
 /// A cópia em `path`, criada no commit `head` do checkout `root`. A pasta que

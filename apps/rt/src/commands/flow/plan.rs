@@ -387,22 +387,39 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
 }
 
 /// Quem executa a obra, pela soma das notas de todas as tarefas do plano
-/// (`total`) e pelo número de ondas que o plano já tem (`waves`): até 3
-/// pontos, sem ondas, o orquestrador faz; de 4 a 13, com uma onda só, um
-/// agente faz; acima de 13, ou com mais de uma onda já no plano, a obra vai
-/// em ondas de até [`WAVE_POINTS_CAP`] pontos cada. O plano com mais de uma
-/// onda nunca diz "numa onda só", mesmo com o total dentro do teto de uma
-/// onda. Em todo tamanho, a obra termina com o agente de teste dedicado.
+/// (`total`) e pelo número de ondas que o plano já tem (`waves`): com uma
+/// onda só e até 3 pontos, o orquestrador faz, sem cópia nem agente; de 4 a
+/// 13, ainda com uma onda só, um agente faz; acima de 13, ou com duas ondas
+/// ou mais já no plano — mesmo somando até 3 pontos —, a obra vai em ondas de
+/// até [`WAVE_POINTS_CAP`] pontos cada, uma por agente. O plano com mais de
+/// uma onda nunca diz "numa onda só" nem fica com o orquestrador, mesmo com o
+/// total dentro do teto de uma onda ou do orquestrador. Em todo tamanho, a
+/// obra termina com o agente de teste dedicado.
 fn who_executes(total: u64, waves: usize, lang: Locale) -> String {
-    let key = if total <= 3 {
+    let key = if waves <= 1 && total <= SOLO_POINTS_CAP {
         "plan.execution.solo"
-    } else if total <= WAVE_POINTS_CAP && waves <= 1 {
+    } else if waves <= 1 && total <= WAVE_POINTS_CAP {
         "plan.execution.one_wave"
     } else {
         "plan.execution.many_waves"
     };
     let scale = translate(key, lang).replace("{points}", &total.to_string());
     format!("{scale} {}", translate("plan.execution.ends_with_test_agent", lang))
+}
+
+/// O plano tem uma onda só, com nota em cada tarefa dela, e a soma não passa
+/// de [`SOLO_POINTS_CAP`] pontos? É a mesma soma de [`who_executes`], pela
+/// mesma leitura ([`wave_points`]), para a rodada nunca discordar de quem
+/// executa: só então a rodada manda o orquestrador fazer a onda na própria
+/// janela, sem cópia separada e sem agente. Com duas ondas ou mais, mesmo
+/// somando até o teto, cada onda vai para um agente — o orquestrador nunca
+/// divide a obra em partes. A tarefa sem nota nunca conta como obra pequena —
+/// ela travaria a pergunta de aprovação antes de a rodada rodar — e por isso
+/// tira a obra do caminho do orquestrador, em vez de arriscar uma soma que
+/// ainda falta.
+pub(crate) fn is_solo_work(log: &SpecLog) -> bool {
+    let points = wave_points(log, &BTreeSet::new());
+    points.unrated.is_empty() && points.sums.len() == 1 && points.sums.values().sum::<u64>() <= SOLO_POINTS_CAP
 }
 
 /// Grava cada achado da conferência como anotação, no idioma do projeto, que
@@ -730,6 +747,12 @@ fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
 /// O teto da soma das notas de uma onda: acima dele, o plano avisa, sem
 /// segurar a aprovação. Fica no código, sem chave de configuração.
 pub(crate) const WAVE_POINTS_CAP: u64 = 13;
+
+/// O teto da soma das notas da obra inteira até onde o orquestrador a faz
+/// sozinho, sem onda dividida em agente. [`who_executes`] e a rodada
+/// ([`is_solo_work`]) leem esta mesma constante, para nunca discordarem da
+/// soma. Fica no código, sem chave de configuração.
+pub(crate) const SOLO_POINTS_CAP: u64 = 3;
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
 /// nenhum — a de prosa, a de decisão, a de medida e a que só escreve na spec.
@@ -1769,6 +1792,17 @@ mod tests {
         waves_of_code(root, said, 1);
         rated(root, said, 1, "src/a.rs", Some(3));
         expect_solo("3", root);
+
+        // Os mesmos 3 pontos (1 + 2), mas já em duas ondas: a divisa não é só
+        // o total, é também o número de ondas. Com duas ondas ou mais, cada
+        // uma vai para um agente, mesmo dentro do teto do orquestrador.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 2);
+        rated(root, said, 1, "src/a1.rs", Some(1));
+        rated(root, said, 2, "src/a2.rs", Some(2));
+        expect_many_waves("3", root);
 
         // 4 pontos (3 + 1, porque a escala não tem o número 4 sozinho), a
         // divisa de cima da faixa do orquestrador: já é um agente numa onda

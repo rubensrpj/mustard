@@ -402,7 +402,9 @@ fn calls(project: &Project) -> BTreeMap<String, usize> {
 /// cada rodada 1 e pull request 1; a escolha antes do envio da primeira onda
 /// é uma rodada a mais, a que traz a escolha do orquestrador, e o fechamento
 /// é duas chamadas — o pedido do agente de teste dedicado e a aprovação dele
-/// —, mesmo com uma onda só.
+/// —, mesmo com uma onda só. A tarefa vale 1 ponto: a obra fica com o
+/// orquestrador, sem cópia separada, e ele edita direto no checkout
+/// principal.
 #[test]
 fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let project = Project::new();
@@ -413,19 +415,20 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     plan(&project);
     approve(&project);
 
-    // Primeira rodada: a análise antes do envio, e a onda sai numa cópia
-    // separada.
+    // Primeira rodada: a análise antes do envio, e a onda de 1 ponto fica com
+    // o orquestrador, sem cópia separada.
     let first = first_round(&project);
     let dispatched = first["dispatch"].as_array().cloned().unwrap_or_default();
     assert_eq!(dispatched.len(), 1, "{first}");
+    let next = first["next"].as_str().unwrap_or_default();
+    assert!(next.contains(&translate("round.next.solo", Locale::PtBr)), "{next}");
     let log = project.log();
     let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
-    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
-    assert!(copy.join(".git").is_file(), "the wave works in a linked checkout");
+    assert!(sent.str_field("copy").is_none(), "a obra de 1 ponto não ganha cópia separada");
 
-    // O agente da onda muda o arquivo na cópia e devolve a linha do fim. A
-    // rodada não pede revisão nenhuma dela.
-    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    // O orquestrador muda o arquivo no checkout principal e devolve a linha
+    // do fim. A rodada não pede revisão nenhuma dela.
+    std::fs::write(project.root.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá"});
     let second = project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);

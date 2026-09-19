@@ -500,6 +500,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Dispatch this round's requests: each wave to the `mustard-wave` agent and each review \
              to the `mustard-review` agent."
         }
+        // A obra de até 3 pontos: sem cópia separada e sem agente, é o
+        // orquestrador — a própria conversa que chamou a rodada — quem faz a
+        // onda, na própria janela, no checkout principal.
+        ("round.next.solo", Locale::PtBr) => {
+            "Faça a onda desta rodada você mesmo, nesta janela, no checkout principal e sem cópia \
+             separada: leia o pedido abaixo e implemente."
+        }
+        ("round.next.solo", Locale::EnUs) => {
+            "Do this round's wave yourself, in this window, on the main checkout and without a \
+             separate copy: read the request below and implement it."
+        }
         ("round.report", Locale::PtBr) => {
             "Quando voltarem, rode a rodada de novo com a linha do fim de cada agente, como ela veio, \
              uma por linha, todas no mesmo `--report '…'`: a do agente de onda é \
@@ -906,8 +917,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            118,
-            0xb1db_2886_ba52_9b3c,
+            119,
+            0xc922_d845_d748_5254,
         );
     }
 
@@ -1058,6 +1069,7 @@ mod tests {
             ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
+            ("round.next.solo", &[][..]),
             ("round.report", &[][..]),
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
