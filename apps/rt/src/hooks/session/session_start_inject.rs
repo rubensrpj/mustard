@@ -141,6 +141,10 @@ fn session_start_core(
     }
     let cwd = ctx.project_dir_or_cwd(input);
     let root = Path::new(&cwd);
+    // O mapa volta ao commit atual antes de qualquer aviso: um commit à mão
+    // ou um pull podem ter mudado o código fora da rodada, entre uma sessão e
+    // a outra.
+    crate::commands::flow::round::refresh_map_if_stale(root, &|root, out| mustard_core::Scan::locate().scan(root, out));
     let session = session_of(input);
     let refreshed = input
         .raw
@@ -797,6 +801,36 @@ mod tests {
         assert!(context.contains(&expected), "the merged branch is named: {context}");
         assert!(!context.contains("dev_live"), "the branch in flight is not: {context}");
         assert!(!context.contains("mustard-rt run") && !context.contains("git-settle"), "no command: {context}");
+    }
+
+    /// O mapa do projeto acompanha o commit atual desde o início da sessão,
+    /// pela mesma conferência da rodada: um mapa que ficou para trás do
+    /// commit do checkout nunca trava a sessão, mesmo sem a ferramenta do
+    /// scan instalada no ambiente do teste — o início da sessão continua
+    /// respondendo normalmente, com o resto dos avisos.
+    #[test]
+    fn the_session_start_never_breaks_on_a_stale_map() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "."]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        installed_project(root);
+        std::fs::write(root.join("README.md"), "loja\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "seed"]);
+
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(
+            mustard_core::io::project_map::model_path(root),
+            json!({"modules": [], "state": {"head": "0000000000000000000000000000000000000000"}}).to_string(),
+        )
+        .unwrap();
+
+        let ctx = ctx(root);
+        let input = session_input("s-stale-map", "startup");
+        assert!(session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH).is_ok(), "a sessão não trava com o mapa velho");
     }
 
     /// Com as sobras acima do limite, o aviso de disco traz o total e o

@@ -472,4 +472,5 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("vendor").join("b")).expect("empty dir");
         assert_eq!(hollow_submodules(dir.path()), vec!["vendor/b".to_string()]);
     }
+
 }

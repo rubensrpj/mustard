@@ -219,6 +219,24 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
     let _ = mine(root, &model);
 }
 
+/// O mapa fica atrasado do commit atual do checkout `root`: o mapa não
+/// existe, não se entende, ou o commit que ele leu por último não é o de
+/// agora — um commit à mão ou um pull mudaram o código fora da rodada.
+/// Quando fica, chama [`refresh_map`] com o mesmo `mine`, a releitura por
+/// partes que a rodada já faz depois de cada commit dela; sem git, sem mapa
+/// ou com o mapeador falhando, segue sem travar e sem aviso novo.
+pub(crate) fn refresh_map_if_stale(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
+    let Ok(map) = mustard_core::io::project_map::read(root) else { return };
+    if map.state.head.is_empty() {
+        return;
+    }
+    let Some(now) = git_exec::run(root, &["rev-parse", "HEAD"]).out() else { return };
+    if map.state.head == now.trim() {
+        return;
+    }
+    refresh_map(root, mine);
+}
+
 /// Os arquivos da rodada separados por repositório: os do principal e, por
 /// submódulo, os de dentro dele, escritos a partir do principal.
 #[derive(Debug, Default)]
@@ -695,6 +713,75 @@ mod tests {
 
     use super::*;
     use crate::commands::flow::round::tests::*;
+
+    /// A ferramenta que grava quantas vezes foi chamada e falha sempre, como
+    /// um scan que não está instalado.
+    fn mine_counting(calls: &std::cell::Cell<usize>) -> impl Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport> + '_ {
+        move |_, _| {
+            calls.set(calls.get() + 1);
+            Err(mustard_core::platform::error::Error::check_failed("scan: not found"))
+        }
+    }
+
+    /// Sem mapa no disco, sem git no diretório e com um mapa cujo commit já
+    /// bate com o do checkout, a ferramenta do scan nunca roda por
+    /// [`refresh_map_if_stale`]; e, quando ela falha, a chamada não trava nem
+    /// propaga o erro.
+    #[test]
+    fn a_stale_map_without_what_it_needs_never_breaks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let calls = std::cell::Cell::new(0);
+
+        // Sem mapa: nada a comparar, a ferramenta não roda.
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem mapa, a ferramenta não é chamada");
+
+        // Mapa sem o commit gravado (mapa antigo, de antes deste campo): idem.
+        let model = crate::commands::scan::default_model_path(root);
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::write(&model, json!({"modules": []}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem o head gravado, a ferramenta não é chamada");
+
+        // Mapa com um commit gravado, mas fora de um repositório git: sem
+        // como comparar, a ferramenta não roda.
+        std::fs::write(&model, json!({"modules": [], "state": {"head": "abc123"}}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem git, a ferramenta não é chamada");
+
+        // Um repositório git de verdade, com o mapa já no commit atual: a
+        // ferramenta segue sem rodar.
+        std::process::Command::new("git").args(["init", "-q"]).current_dir(root).output().expect("git init");
+        for args in [["config", "user.email"], ["config", "user.name"]] {
+            std::process::Command::new("git").args(args).arg("t").current_dir(root).output().expect("git config");
+        }
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        std::process::Command::new("git").args(["add", "-A"]).current_dir(root).output().expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "semente"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+        let head = String::from_utf8_lossy(
+            &std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap().stdout,
+        )
+        .trim()
+        .to_string();
+        std::fs::write(&model, json!({"modules": [], "state": {"head": head}}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "o mapa já está no commit atual");
+
+        // O commit andou fora da rodada e a ferramenta falha: a chamada
+        // tenta reler, mas o erro não trava nem propaga.
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "fora da rodada"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 1, "o commit andou: a ferramenta é chamada, mesmo falhando");
+    }
 
     /// A mensagem do commit tem título e corpo dentro do teto e nunca traz o
     /// link da conversa, o nome do modelo, a assinatura de coautoria nem o

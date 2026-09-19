@@ -21,8 +21,10 @@ pub struct WaveAliveObserver;
 
 /// A onda dona da cópia em `cwd`, quando `cwd` está dentro de
 /// `<root>/.claude/worktrees/mustard-<spec>-<onda>` — o mesmo nome que
-/// [`crate::commands::flow::stuck`] reconhece como cópia de onda.
-fn wave_of_copy(root: &Path, cwd: &Path) -> Option<(String, u64)> {
+/// [`crate::commands::flow::stuck`] reconhece como cópia de onda. Também lida
+/// por [`crate::hooks::session::conversation_size`], para achar a conversa do
+/// agente de onda.
+pub(crate) fn wave_of_copy(root: &Path, cwd: &Path) -> Option<(String, u64)> {
     let worktrees = root.join(".claude").join("worktrees");
     let rel = cwd.strip_prefix(&worktrees).ok()?;
     let folder = rel.components().next()?.as_os_str().to_str()?;

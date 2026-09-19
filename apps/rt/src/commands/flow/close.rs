@@ -841,11 +841,15 @@ mod tests {
             },
             None,
         );
+        // Lida antes do fechamento: a pasta dos lotes é refeita a cada
+        // marco, e o fechamento reconstrói a dele por cima.
+        let round_next = full_next(root, "x", "round", &rounded);
         let closed = close(root, "x");
 
-        for (report, milestone) in [(&rounded, "round"), (&closed, "close")] {
+        for (report, milestone, next) in
+            [(&rounded, "round", round_next), (&closed, "close", closed["next"].as_str().unwrap_or_default().to_string())]
+        {
             assert_eq!(report["publish"], json!(["spec", "project"]), "{report}");
-            let next = report["next"].as_str().unwrap_or_default();
             for page in ["spec", "project"] {
                 let record = format!(r#"'{{"page":"{page}","milestone":"{milestone}","#);
                 assert!(next.contains(&record), "{milestone} says how to record the {page} page: {next}");
@@ -889,6 +893,18 @@ mod tests {
         translate(key, Locale::PtBr).replace("{command}", command)
     }
 
+    /// O `next` do marco `milestone`, com a instrução de publicar e copiar
+    /// por extenso: na rodada, ela sai do arquivo que a resposta manda ler,
+    /// porque a resposta em si leva só a linha curta.
+    fn full_next(root: &Path, spec: &str, milestone: &str, report: &Value) -> String {
+        let next = report["next"].as_str().unwrap_or_default().to_string();
+        if milestone != "round" {
+            return next;
+        }
+        let file = root.join(".claude").join("spec").join(spec).join("copy").join("next.md");
+        std::fs::read_to_string(&file).map_or(next.clone(), |order| format!("{order} {next}"))
+    }
+
     /// Com um item de texto que parece senha, a rodada e o fechamento mandam
     /// publicar e copiar assim mesmo e dizem o código do item a expurgar; o
     /// item fica fora da cópia.
@@ -902,15 +918,22 @@ mod tests {
             json!({"text": "GITHUB_TOKEN=a1b2c3d4e5f6g7h8i9j0", "keys": ["token"], "origin": id_of(&said)}));
         let code = note["code"].as_str().unwrap_or_default().to_string();
 
+        // A ordem por extenso da rodada é lida do arquivo antes do
+        // fechamento rodar: a pasta dos lotes é refeita a cada marco, e o
+        // fechamento reconstrói a dele por cima.
         let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let round_then = then_of(&rounded, "round.close");
+        let round_next = full_next(root, "x", "round", &rounded);
         let closed = close(root, "x");
-        for (report, milestone, then) in
-            [(&rounded, "round", then_of(&rounded, "round.close")), (&closed, "close", then_of(&closed, "close.next"))]
-        {
+        let close_then = then_of(&closed, "close.next");
+
+        for (report, milestone, next, then) in [
+            (&rounded, "round", round_next, round_then),
+            (&closed, "close", closed["next"].as_str().unwrap_or_default().to_string(), close_then),
+        ] {
             assert_eq!(report["ok"], json!(true), "{report}");
             assert_eq!(report["publish"], json!(["spec", "project"]), "{milestone}: {report}");
             assert_eq!(report["withheld"], json!([code]), "{milestone}: {report}");
-            let next = report["next"].as_str().unwrap_or_default();
             assert!(next.contains(&code) && next.contains("write purge"), "{milestone}: {next}");
             assert!(next.contains("write publish") && next.ends_with(&then), "{milestone}: {next}");
             let warned = report["warnings"].as_array().cloned().unwrap_or_default();

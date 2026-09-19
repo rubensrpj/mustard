@@ -5,14 +5,16 @@
 //! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
 //! roda, e uma chamada que não casa com nenhum deles nem o executa.
 //!
-//! São dez, e só eles: a trava de comandos, o portão de escrita, o pedido do
+//! São onze, e só eles: a trava de comandos, o portão de escrita, o pedido do
 //! subagente, a testemunha da aprovação, a entrada da mensagem, o início da
-//! sessão, o conserto da barra de status, o sinal de vida da onda, a faxina
-//! do fim da sessão e a conferência do fim da resposta.
+//! sessão, o conserto da barra de status, o sinal de vida da onda, a pausa
+//! por tamanho da conversa, a faxina do fim da sessão e a conferência do fim
+//! da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
 use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
+use crate::hooks::session::conversation_size::WavePauseCheck;
 use crate::hooks::session::prompt_entry::PromptEntry;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
@@ -150,6 +152,15 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(WaveAliveObserver)),
             },
+            // A pausa por tamanho da conversa: depois de cada ferramenta, na
+            // cópia de uma onda, passando de 200 mil tokens, manda o agente
+            // gravar o passo e parar. Nunca barra.
+            Module {
+                id: "wave_pause_check",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any)],
+                check: Some(Box::new(WavePauseCheck)),
+                observer: None,
+            },
             // A faxina do fim da sessão.
             Module {
                 id: "session_cleanup_observer",
@@ -220,9 +231,9 @@ mod tests {
         registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
-    /// O registro tem os dez ganchos que ficam, e só eles.
+    /// O registro tem os onze ganchos que ficam, e só eles.
     #[test]
-    fn the_registry_holds_exactly_the_ten_hooks() {
+    fn the_registry_holds_exactly_the_eleven_hooks() {
         let registry = Registry::new();
         let mut ids = registry.ids();
         ids.sort_unstable();
@@ -238,6 +249,7 @@ mod tests {
                 "statusline_heal_observer",
                 "subagent_inject",
                 "wave_alive_observer",
+                "wave_pause_check",
                 "write_gate",
             ]
         );
@@ -263,7 +275,7 @@ mod tests {
     fn the_command_guard_runs_before_bash_only() {
         let registry = Registry::new();
         assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard"]);
-        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer", "wave_pause_check"]);
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
@@ -274,7 +286,7 @@ mod tests {
         let registry = Registry::new();
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
-            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer", "wave_pause_check"], "{tool}");
         }
         for tool in ["Bash", "Task", "Agent", "Skill"] {
             assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
@@ -290,7 +302,7 @@ mod tests {
         let registry = Registry::new();
         for tool in ["Task", "Agent"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject"], "{tool}");
-            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer", "wave_pause_check"], "{tool}");
         }
         assert!(applicable_ids(&registry, Trigger::SubagentStart, None).is_empty());
         assert!(applicable_ids(&registry, Trigger::SubagentStop, None).is_empty());
@@ -305,10 +317,13 @@ mod tests {
         let registry = Registry::new();
         assert_eq!(
             applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion")),
-            ["approval_witness", "wave_alive_observer"]
+            ["approval_witness", "wave_alive_observer", "wave_pause_check"]
         );
         assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")).is_empty());
-        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")), ["wave_alive_observer"]);
+        assert_eq!(
+            applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")),
+            ["wave_alive_observer", "wave_pause_check"]
+        );
         let module = registry.by_id("approval_witness").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());
     }
@@ -324,6 +339,19 @@ mod tests {
         }
         let module = registry.by_id("wave_alive_observer").expect("registered");
         assert!(module.check.is_none() && module.observer.is_some());
+    }
+
+    /// A pausa por tamanho da conversa roda depois de qualquer ferramenta,
+    /// junto do sinal de vida, e é uma trava que devolve veredito, não um
+    /// observador.
+    #[test]
+    fn wave_pause_check_runs_after_every_tool_too() {
+        let registry = Registry::new();
+        for tool in ["Bash", "Write", "Task"] {
+            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"wave_pause_check"), "{tool}");
+        }
+        let module = registry.by_id("wave_pause_check").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
     }
 
     /// O fim da resposta é uma conferência só, um `Check` puro.

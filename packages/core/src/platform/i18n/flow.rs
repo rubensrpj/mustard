@@ -10,8 +10,10 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] =
-    &["open", "plan", "round", "close", "resume", "reopen", "discard", "request", "message", "pr", "approve_spec", "retired", "banner", "stuck"];
+pub(super) const PREFIXES: &[&str] = &[
+    "open", "plan", "round", "close", "resume", "reopen", "discard", "request", "message", "pr", "approve_spec",
+    "retired", "banner", "stuck", "conversation_size",
+];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -427,6 +429,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("stuck.reason.waiting_loop", Locale::EnUs) => "waiting loop",
         ("stuck.reason.deleted_copy", Locale::PtBr) => "cópia de onda apagada",
         ("stuck.reason.deleted_copy", Locale::EnUs) => "deleted wave copy",
+        // O tamanho da conversa: a ordem de pausa ao agente de onda e o
+        // aviso de compactar ao orquestrador.
+        ("conversation_size.pause", Locale::PtBr) => {
+            "A conversa passou de 200 mil tokens. Grave o passo da onda {wave} na spec e pare com a \
+             linha `<PAUSED>{\"wave\":{wave}}</PAUSED>`."
+        }
+        ("conversation_size.pause", Locale::EnUs) => {
+            "The conversation passed 200 thousand tokens. Save the step of wave {wave} on the spec and \
+             stop with the line `<PAUSED>{\"wave\":{wave}}</PAUSED>`."
+        }
+        ("conversation_size.compact", Locale::PtBr) => {
+            "Esta conversa passou de mais um degrau de 200 mil tokens. Rode `/compact` e, depois, \
+             {command}. O que fica: spec {spec}, fase {phase}. {next}"
+        }
+        ("conversation_size.compact", Locale::EnUs) => {
+            "This conversation passed another 200-thousand-token step. Run `/compact` and, after, \
+             {command}. What stays: spec {spec}, phase {phase}. {next}"
+        }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
              levar. Peça ao agente o caminho certo. Nada foi gravado."
@@ -520,6 +540,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Do this round's wave yourself, in this window, on the main checkout and without a \
              separate copy: read the request below and implement it."
         }
+        // O pedido de publicar e copiar a página fica por extenso só no
+        // arquivo, e a resposta leva a linha curta.
+        ("round.next.copy_file", Locale::PtBr) => "Leia `{path}` e siga as instruções de lá.",
+        ("round.next.copy_file", Locale::EnUs) => "Read `{path}` and follow the instructions there.",
         ("round.report", Locale::PtBr) => {
             "Quando voltarem, rode a rodada de novo com a linha do fim de cada agente, como ela veio, \
              uma por linha, todas no mesmo `--report '…'`: a do agente de onda é \
@@ -941,8 +965,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            125,
-            0xe5c8_1b9c_adc4_8317,
+            128,
+            0xef49_c76e_b6bf_4b93,
         );
     }
 
@@ -1082,6 +1106,8 @@ mod tests {
             ("stuck.ended", &["{list}"][..]),
             ("stuck.reason.waiting_loop", &[][..]),
             ("stuck.reason.deleted_copy", &[][..]),
+            ("conversation_size.pause", &["{wave}"][..]),
+            ("conversation_size.compact", &["{spec}", "{phase}", "{command}", "{next}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
@@ -1096,6 +1122,7 @@ mod tests {
             ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
+            ("round.next.copy_file", &["{path}"][..]),
             ("round.next.solo", &[][..]),
             ("round.report", &[][..]),
             ("round.waiting", &["{waves}"][..]),

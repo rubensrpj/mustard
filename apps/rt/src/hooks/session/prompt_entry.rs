@@ -32,6 +32,7 @@ use mustard_core::platform::error::Error;
 use mustard_core::ProjectConfig;
 
 use crate::commands::spec_events::conversation::record_message;
+use crate::hooks::session::conversation_size;
 use crate::hooks::task::clarity_check::take_next_note;
 use crate::shared::prompt::is_harness_notice;
 
@@ -109,6 +110,15 @@ impl Check for PromptEntry {
         if let Some(note) = take_next_note(root, input.session_id.as_deref()) {
             line.push(' ');
             line.push_str(&note);
+        }
+        // O aviso de compactar, a cada novo degrau de 200 mil tokens, sem
+        // onda em andamento.
+        if let Some(path) = conversation_size::conversation_path(root, input)
+            && let Some(tokens) = conversation_size::tokens_in(&path)
+            && let Some(notice) = conversation_size::compact_notice(root, input.session_id.as_deref(), tokens)
+        {
+            line.push(' ');
+            line.push_str(&notice);
         }
         Ok(Verdict::Inject { context: line })
     }
@@ -552,5 +562,104 @@ mod tests {
                 assert_eq!(context.matches(PT_LINE).count(), 1, "{context}");
             }
         }
+    }
+
+    /// A conversa da transcrição com o uso gravado no último uso somando
+    /// `tokens`.
+    fn transcript_with(path: &Path, tokens: u64) {
+        let line = serde_json::json!({
+            "message": {"usage": {
+                "input_tokens": tokens, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+            }}
+        });
+        std::fs::write(path, line.to_string()).unwrap();
+    }
+
+    /// A entrada da mensagem `session`, com a transcrição em `transcript`.
+    fn prompt_with_transcript(root: &Path, session: &str, transcript: &Path) -> HookInput {
+        HookInput {
+            hook_event_name: Some("UserPromptSubmit".to_string()),
+            session_id: Some(session.to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            raw: serde_json::json!({ "prompt": "e agora?", "transcript_path": transcript.to_string_lossy() }),
+            ..HookInput::default()
+        }
+    }
+
+    /// O orquestrador é avisado para compactar, com o
+    /// comando `/compact` pronto e o resumo do que fica, a cada novo degrau
+    /// de 200 mil tokens: na divisa, 199.999 não avisa e 200.000 avisa;
+    /// 399.999 não repete o mesmo degrau e 400.000 repete. Nada disso
+    /// acontece com uma onda em andamento: a rodada já cobre esse caso.
+    #[test]
+    fn the_orchestrator_is_told_when_to_compact() {
+        let dir = project_with(PT_PROJECT);
+        let root = dir.path();
+        stand_on_spec_branch(root, "x");
+        record_open(root, "x", "feature/x", "dev").expect("open");
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        let c = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        let transcript = root.join("t.jsonl");
+
+        // 199.999: o último tamanho que não avisa.
+        transcript_with(&transcript, 199_999);
+        let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s1", &transcript), &c).unwrap());
+        assert_eq!(context, PT_LINE, "abaixo do degrau, sem aviso: {context}");
+
+        // 200.000: o primeiro tamanho que já avisa, com /compact e o resumo.
+        transcript_with(&transcript, 200_000);
+        let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s1", &transcript), &c).unwrap());
+        assert!(context.contains("/compact"), "{context}");
+        assert!(context.contains('x'), "traz a spec no resumo: {context}");
+
+        // 399.999: o mesmo degrau, não repete.
+        transcript_with(&transcript, 399_999);
+        let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s1", &transcript), &c).unwrap());
+        assert_eq!(context, PT_LINE, "o mesmo degrau não repete: {context}");
+
+        // 400.000: um novo degrau, repete.
+        transcript_with(&transcript, 400_000);
+        let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s1", &transcript), &c).unwrap());
+        assert!(context.contains("/compact"), "um novo degrau avisa de novo: {context}");
+
+        // Com uma onda em andamento, o aviso nunca sai, mesmo num degrau novo
+        // e numa sessão que ainda não viu nenhum.
+        let said = crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "message",
+            serde_json::json!({"author": "user", "text": "o plano"}),
+        );
+        let crit = crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "criterion",
+            serde_json::json!({"when": "a", "then": "b", "proof": "p", "origin": said}),
+        );
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "wave",
+            serde_json::json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "x", "origin": said}),
+        );
+        crate::shared::spec_state::seed_event(root, "x", "state", serde_json::json!({"phase": "running", "author": "binary"}));
+        // O envio leva o pid e a hora de início deste próprio processo, que
+        // segue vivo durante o teste: é assim que `waves_in_progress` conta
+        // a onda como em andamento, sem depender de um Claude Code de
+        // verdade.
+        let pid = std::process::id();
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("read this process's own stat");
+        let started: u64 = stat.rsplit_once(')').unwrap().1.split_whitespace().collect::<Vec<_>>()[19].parse().unwrap();
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "send",
+            serde_json::json!({"wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+                "items": [crit], "mustard": "0", "author": "binary",
+                "claude_pid": pid, "claude_started": started}),
+        );
+        transcript_with(&transcript, 800_000);
+        let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s2", &transcript), &c).unwrap());
+        assert_eq!(context, PT_LINE, "onda em andamento: sem aviso: {context}");
     }
 }

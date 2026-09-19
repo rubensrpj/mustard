@@ -23,7 +23,7 @@ use crate::model::ProjectModel;
 
 /// The scanner build tag written into the map. A map written by another
 /// build is read again in full, because what a file yields may have changed.
-pub(crate) const FORMAT: &str = concat!(env!("CARGO_PKG_VERSION"), "+map-3");
+pub(crate) const FORMAT: &str = concat!(env!("CARGO_PKG_VERSION"), "+map-4");
 
 /// Files whose change alters how every other file is classified: when one of
 /// them changed, everything is read again.

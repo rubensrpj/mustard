@@ -842,7 +842,10 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let newest = log.visible().into_iter().rfind(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).unwrap();
-        assert_eq!(again["running"], json!([{"wave": 1, "send": newest}]), "{again}");
+        let running = again["running"].as_array().cloned().unwrap_or_default();
+        assert_eq!(running.len(), 1, "{again}");
+        assert_eq!(running[0]["wave"], json!(1), "{again}");
+        assert_eq!(running[0]["send"], json!(newest), "{again}");
 
         let quiet = round(root, "x", None);
         assert_eq!(waves_in(&quiet, "dispatch"), Vec::<u64>::new(), "{quiet}");
@@ -915,7 +918,12 @@ mod tests {
                 .map(|e| codes[&e.id].clone())
                 .unwrap()
         };
-        assert_eq!(out["running"], json!([{"wave": 1, "send": sent(1)}, {"wave": 3, "send": sent(3)}]), "{out}");
+        let running: Vec<Value> = out["running"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            running.iter().map(|r| (r["wave"].clone(), r["send"].clone())).collect::<Vec<_>>(),
+            vec![(json!(1), json!(sent(1))), (json!(3), json!(sent(3)))],
+            "{out}"
+        );
 
         // Duas ondas em andamento enchem o limite de duas.
         let dir = tempdir().unwrap();
@@ -941,7 +949,8 @@ mod tests {
             .map(|e| codes[&e.id].clone())
             .next_back()
             .unwrap();
-        assert_eq!(running[1], json!({"wave": 2, "send": newest}), "o pedido novo é o que conta: {again}");
+        assert_eq!(running[1]["wave"], json!(2), "o pedido novo é o que conta: {again}");
+        assert_eq!(running[1]["send"], json!(newest), "o pedido novo é o que conta: {again}");
 
         // A onda 1 entregou antes de a rodada existir, e um pedido saiu para
         // ela depois, sem reprovação no meio: ela não está em andamento, e as
@@ -1351,5 +1360,133 @@ mod tests {
             json!([{"task": task_id, "skills": ["calculadora"], "files": ["src/calculadora_nova.rs"], "new_skill": false}]),
             "the choice is recorded on the send"
         );
+    }
+
+    /// O mapa do projeto acompanha o commit atual antes de montar o pedido:
+    /// enquanto o commit gravado no mapa bate com o do checkout, a
+    /// ferramenta do scan não roda de novo; um commit feito fora da rodada —
+    /// à mão, ou um pull — muda as linhas de uma função, e o pedido seguinte
+    /// sai com as linhas novas, sem que a própria rodada precise de um
+    /// commit dela para reler o mapa. A onda fica retida por um teto de
+    /// compilações zerado na primeira volta, só para a comparação do mapa
+    /// rodar sem nenhuma onda pronta para despachar; a segunda volta libera o
+    /// teto, e é o pedido dela que mostra as linhas.
+    #[test]
+    fn the_map_follows_the_code_before_each_request() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn antes() {}\n\nfn soma() {\n    1 + 1;\n}\n").unwrap();
+        approved_with(root, "x", &[], |said| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+            write(root, "x", "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
+                "done_when": "A suíte passa.", "origin": said}));
+            write(root, "x", "task", json!({"wave": 1, "text": "Somar.",
+                "files": [{"path": "src/a.rs"}], "must_read": ["src/a.rs#soma"], "origin": said}));
+        });
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":0}"#).unwrap();
+
+        // O mapa já foi lido no commit atual (a "semente"), com a função em
+        // 3-5.
+        let head_v1 = git_text(root, &["rev-parse", "HEAD"]);
+        let model = mustard_core::io::project_map::model_path(root);
+        std::fs::write(
+            &model,
+            json!({
+                "modules": [{"path": "src/a.rs",
+                    "declarations": [{"kind": "function", "name": "soma", "line": 3, "end_line": 5}]}],
+                "state": {"head": head_v1},
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // O teto está em zero: nenhuma onda sai, mas o mapa já é conferido.
+        // O commit não mudou: a ferramenta do scan não roda.
+        fn mine_untouched(
+            _: &Path,
+            _: &Path,
+        ) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
+            panic!("a ferramenta do scan não deveria rodar com o mapa em dia");
+        }
+        let first = round_with_mine(root, "x", None, &mine_untouched);
+        assert_eq!(waves_in(&first, "dispatch"), Vec::<u64>::new(), "{first}");
+
+        // Um commit feito fora da rodada, sem passar pelo commit dela.
+        git_at(root, &["commit", "--allow-empty", "-q", "-m", "fora da rodada"]);
+        let head_v2 = git_text(root, &["rev-parse", "HEAD"]);
+        assert_ne!(head_v1, head_v2, "o commit avançou");
+
+        let mine_refreshed = move |_: &Path, out: &Path| {
+            std::fs::write(
+                out,
+                json!({
+                    "modules": [{"path": "src/a.rs",
+                        "declarations": [{"kind": "function", "name": "soma", "line": 13, "end_line": 15}]}],
+                    "state": {"head": head_v2},
+                })
+                .to_string(),
+            )
+            .unwrap();
+            Ok(mustard_core::domain::scan::ScanReport { full: false, files: 1, head: head_v2.clone(), ..Default::default() })
+        };
+
+        // O teto libera a vaga, sem nenhum commit da própria rodada: só o
+        // mapa desatualizado explica a releitura a seguir.
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        let second = round_with_mine(root, "x", None, &mine_refreshed);
+        assert_eq!(waves_in(&second, "dispatch"), vec![1], "{second}");
+        let prompt = second["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert!(
+            prompt.contains("leia só as linhas 13-15 da função `soma` em `src/a.rs`"),
+            "o pedido segue o commit atual: {prompt}"
+        );
+        assert!(!prompt.contains("3-5"), "{prompt}");
+    }
+
+    /// A resposta da rodada mostra o estado de cada onda em andamento, para o
+    /// orquestrador responder "como estamos?" sem conferir a cópia à mão: os
+    /// minutos desde o envio, os arquivos que a cópia já tem mudados, o
+    /// código e o texto do último passo gravado depois do envio, e os
+    /// minutos desde o último sinal de vida. A onda sem passo gravado mostra
+    /// só o que tem, sem a chave `step`.
+    #[test]
+    fn the_round_shows_the_state_of_each_running_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+
+        // A onda 1 ganha um arquivo novo, ainda não entregue, na cópia dela;
+        // e um passo gravado depois do envio.
+        let (copy1, _) = sent_copy(root, 1);
+        std::fs::write(Path::new(&copy1).join("rascunho.txt"), "x").unwrap();
+        write(root, "x", "step", json!({"wave": 1, "item": "MSTD-TASK-0001", "text": "A tarefa 1 ficou pronta."}));
+
+        let second = round(root, "x", None);
+        let running = second["running"].as_array().cloned().unwrap_or_default();
+        let entry_of = |wave: u64| running.iter().find(|r| r["wave"] == json!(wave)).cloned().unwrap_or_else(|| panic!("wave {wave}: {running:?}"));
+
+        let one = entry_of(1);
+        assert!(one["send"].as_str().is_some(), "{one}");
+        assert!(one["minutes"].as_i64().is_some(), "os minutos desde o envio: {one}");
+        assert_eq!(one["files"], json!(["rascunho.txt"]), "{one}");
+        assert_eq!(one["step"], json!({"item": "MSTD-TASK-0001", "text": "A tarefa 1 ficou pronta."}), "{one}");
+        assert!(one["silent_minutes"].as_i64().is_some(), "os minutos desde o sinal de vida: {one}");
+
+        // A onda 2 não ganhou passo nenhum: a chave `step` fica de fora.
+        let two = entry_of(2);
+        assert!(two.get("step").is_none(), "sem passo, a chave fica de fora: {two}");
+        assert_eq!(two["files"], json!([]), "a cópia da onda 2 não mudou: {two}");
+        assert!(two["minutes"].as_i64().is_some(), "{two}");
+        assert!(two["silent_minutes"].as_i64().is_some(), "{two}");
+
+        // Nenhum aviso novo acorda o orquestrador: sem lista de "stuck" nem
+        // pergunta, e a rodada não passa do que já se pergunta hoje.
+        assert!(second.get("stopped").is_none(), "{second}");
     }
 }

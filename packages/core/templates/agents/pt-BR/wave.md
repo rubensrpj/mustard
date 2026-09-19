@@ -25,7 +25,7 @@ Falta algo, a tarefa pede o que a spec não diz, ou não fecha (arquivo que falt
 
 ## O que devolver
 
-Termine com uma linha só, com JSON válido. A rodada lê só ela:
+Sem prosa antes e sem JSON solto sem a marca: termine só com esta linha.
 <DELIVERED>{"wave":1,"text":"<a entrega>","files":["caminho/do/arquivo.rs"],"commit":"<o resumo do commit>"}</DELIVERED>
 
 - `wave`: a onda do pedido.

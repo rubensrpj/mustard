@@ -457,6 +457,7 @@ const KEPT_HOOKS: &[&str] = &[
     "statusline_heal_observer",
     "subagent_inject",
     "wave_alive_observer",
+    "wave_pause_check",
     "write_gate",
 ];
 

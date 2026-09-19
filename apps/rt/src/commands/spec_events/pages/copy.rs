@@ -754,6 +754,16 @@ mod tests {
         DiskSpecState::new(root).log("x").expect("the spec")
     }
 
+    /// O `next` de `report` por extenso: a rodada leva só a linha curta que
+    /// manda ler o arquivo, e a ordem por extenso mora nele — na mesma pasta
+    /// dos lotes, que o próximo marco reconstrói do zero. Leia logo depois
+    /// da rodada que gerou `report`, antes de outra rodada rodar.
+    fn full_next(root: &Path, report: &Value) -> String {
+        let next = report["next"].as_str().unwrap_or_default().to_string();
+        let file = root.join(".claude").join("spec").join("x").join("copy").join("next.md");
+        std::fs::read_to_string(&file).map_or(next.clone(), |order| format!("{order} {next}"))
+    }
+
     /// Um projeto no git, com os arquivos `files`, na branch da spec `x`
     /// aberta, com a fala do usuário e um critério gravados: devolve os
     /// números dos dois.
@@ -868,7 +878,7 @@ mod tests {
         let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
         assert_eq!(computed["body"]["waves"], json!({"1": "running"}), "{computed}");
         assert_eq!(second["withheld"], json!([secret["code"]]), "{second}");
-        let next = second["next"].as_str().unwrap_or_default();
+        let next = full_next(root, &second);
         assert!(next.contains("write purge") && next.contains(SPEC_URL), "{next}");
         assert!(second.get("publish").is_none(), "both pages have their address: {second}");
         assert!(second["copy"].get("project").is_none(), "the phase did not change: {second}");
@@ -964,7 +974,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!((&rows[0]["doc_id"], &rows[0]["body"]["phase"]), (&json!("x"), &json!("running")));
         assert_eq!(first["copy"]["project"]["record"], json!({"page": "project", "phase": "running"}));
-        let next = first["next"].as_str().unwrap_or_default();
+        let next = full_next(root, &first);
         assert!(next.contains(PROJECT_URL) && next.contains(r#"'{"page":"project","phase":"running"}'"#), "{next}");
         follow(root, &first);
 
@@ -1026,7 +1036,7 @@ mod tests {
         assert_eq!(first["copy"]["project"]["published"], json!(false), "{first}");
         let rows: Vec<Value> = sent(root, &first, "project").iter().map(|w| w["doc_id"].clone()).collect();
         assert_eq!(rows, [json!("x"), json!("y")], "every row goes to the new link: {first}");
-        let next = first["next"].as_str().unwrap_or_default();
+        let next = full_next(root, &first);
         let publish = translate("page.copy.publish", lang)
             .replace("{page}", translate("page.name.project", lang))
             .replace("{template}", PROJECT_TEMPLATE)
@@ -1121,7 +1131,7 @@ mod tests {
         let dispatched: Vec<u64> =
             first["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(dispatched, [1], "{first}");
-        let next = first["next"].as_str().unwrap_or_default();
+        let next = full_next(root, &first);
         // O template nasce num link novo, e a página antiga fica parada.
         assert_eq!(first["publish"], json!(["spec", "project"]), "the old page is not the template: {first}");
         let record = r#"'{"page":"spec","milestone":"round","ok":true,"template":true,"url":"…"}'"#;
@@ -1164,7 +1174,7 @@ mod tests {
                 "files": [{"path": "src/b.rs"}], "points": 3, "replaces": id_of(written), "origin": said}));
         }
         let second = round(root);
-        let next = second["next"].as_str().unwrap_or_default();
+        let next = full_next(root, &second);
         assert!(second.get("publish").is_none(), "the link does not change: {second}");
         assert_eq!(second["copy"]["spec"]["first"], json!(true), "{second}");
         assert_eq!(sent_items(root, &second).first(), Some(&1), "the whole spec again: {second}");
@@ -1178,7 +1188,7 @@ mod tests {
         let last = second["copy"]["spec"]["record"]["last"].as_u64().unwrap_or_default();
         write(root, "copy", second["copy"]["spec"]["record"].clone());
         let third = round(root);
-        let next = third["next"].as_str().unwrap_or_default();
+        let next = full_next(root, &third);
         assert!(third["copy"]["spec"].get("first").is_none(), "{third}");
         let agent = translate("page.copy.agent", lang).split('{').next().unwrap_or_default();
         assert!(!next.contains(agent), "{next}");

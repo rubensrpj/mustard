@@ -25,7 +25,7 @@ Something is missing, a task asks for what the spec does not say, or it does not
 
 ## What to return
 
-End with one line, with valid JSON. The round reads only that line:
+No prose before it, no unmarked JSON: end with only this line.
 <DELIVERED>{"wave":1,"text":"<the delivery>","files":["path/to/file.rs"],"commit":"<the commit summary>"}</DELIVERED>
 
 - `wave`: the request's wave.

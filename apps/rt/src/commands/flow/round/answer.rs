@@ -181,6 +181,57 @@ fn wave_steps(log: &SpecLog, wave: u64, codes: &BTreeMap<u64, String>) -> Vec<St
         .collect()
 }
 
+/// O último passo gravado depois do envio `sent` da onda `wave`: o código do
+/// item, pelo mapa `codes`, e o texto. `None` sem passo depois desse envio —
+/// um passo de um envio anterior, já respondido, não conta.
+fn last_step(log: &SpecLog, wave: u64, sent: u64, codes: &BTreeMap<u64, String>) -> Option<(String, String)> {
+    log.block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "step" && e.wave() == Some(wave) && e.id > sent)
+        .next_back()
+        .map(|e| (ref_shown(e.fields.get("item"), codes), e.str_field("text").unwrap_or_default().to_string()))
+}
+
+/// Os minutos desde o evento `at`. `None` sem hora legível.
+fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
+    let raw = log.get(at)?.at().to_string();
+    let at = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
+    let now = chrono::Local::now().with_timezone(at.offset());
+    Some((now - at).num_minutes())
+}
+
+/// Os arquivos mudados na cópia da onda `wave`, pelo `git status` curto dela.
+/// `None` sem cópia gravada, ou sem git.
+fn copy_files_changed(log: &SpecLog, wave: u64) -> Option<Vec<String>> {
+    let copy = recorded_copy(log, wave)?;
+    let out = mustard_core::platform::git::run(Path::new(&copy.path), &["status", "--porcelain", "--untracked-files=all"])
+        .out()?;
+    Some(out.lines().filter_map(|line| line.get(3..).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string)).collect())
+}
+
+/// O estado da onda `wave` em andamento, para o orquestrador saber como ela
+/// vai sem conferir a cópia à mão: o código do envio, os minutos desde ele,
+/// os arquivos que a cópia já tem mudados, o último passo gravado depois do
+/// envio e os minutos desde o último sinal de vida — a mesma leitura do
+/// aviso dos 40 minutos. O que falta fica fora da entrada, sem erro nenhum:
+/// nada disto trava a rodada.
+fn running_state(root: &Path, spec: &str, log: &SpecLog, codes: &BTreeMap<u64, String>, wave: u64, send: &str, sent: u64) -> Value {
+    let mut out = json!({ "wave": wave, "send": send });
+    if let Some(minutes) = minutes_since(log, sent) {
+        out["minutes"] = json!(minutes);
+    }
+    if let Some(files) = copy_files_changed(log, wave) {
+        out["files"] = json!(files);
+    }
+    if let Some((item, text)) = last_step(log, wave, sent, codes) {
+        out["step"] = json!({ "item": item, "text": text });
+    }
+    if let Some(silent) = silent_minutes(root, spec, wave, log, sent) {
+        out["silent_minutes"] = json!(silent);
+    }
+    out
+}
+
 /// O texto do reenvio: o pedido gravado no envio anterior, palavra por
 /// palavra, mais os passos já gravados desta onda e o aviso de começar vendo
 /// o que mudou na cópia. Sem passo nenhum, só o aviso.
@@ -266,6 +317,11 @@ pub(super) fn run_round_with_mine(
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
     let codes = log.codes();
 
+    // O mapa volta ao commit atual antes de montar os pedidos: um commit à
+    // mão ou um pull podem ter mudado o código fora da rodada, e sem isto a
+    // sugestão da onda seguinte apontaria linhas velhas.
+    super::commit::refresh_map_if_stale(root, mine);
+
     // O despacho da rodada seguinte: as ondas prontas, no máximo o que o
     // projeto deixa compilar ao mesmo tempo contando as que já estão em
     // andamento, e nenhuma que a onda parada pelo limite de consertos segura.
@@ -299,9 +355,11 @@ pub(super) fn run_round_with_mine(
     let flight = Flight { running: occupied.keys().chain(&next).copied().collect(), copies, choices };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
-    let mut in_flight: BTreeMap<u64, String> = running
+    // O código e o número do envio de cada onda em andamento — o número é o
+    // que a resposta usa para achar o último passo dela e a hora do envio.
+    let mut in_flight: BTreeMap<u64, (String, u64)> = running
         .iter()
-        .map(|(wave, sent)| (*wave, codes.get(sent).cloned().unwrap_or_else(|| sent.to_string())))
+        .map(|(wave, sent)| (*wave, (codes.get(sent).cloned().unwrap_or_else(|| sent.to_string()), *sent)))
         .collect();
     // O processo do Claude Code por trás desta rodada: gravado em todo envio,
     // novo ou reenviado, para a rodada seguinte saber se este ainda está
@@ -339,7 +397,7 @@ pub(super) fn run_round_with_mine(
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
         dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "prompt": prompt.text }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
-        in_flight.insert(*wave, code);
+        in_flight.insert(*wave, (code, written.written.id));
     }
     // O reenvio: a onda pausada por este relatório, ou a órfã de um Claude
     // Code que fechou, sai de novo com o pedido gravado no envio anterior,
@@ -374,7 +432,7 @@ pub(super) fn run_round_with_mine(
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
         dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "prompt": text }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
-        in_flight.insert(wave, code);
+        in_flight.insert(wave, (code, written.written.id));
     }
     drop(held_lock);
 
@@ -443,8 +501,10 @@ pub(super) fn run_round_with_mine(
     // só para reparar que ele tinha envelhecido.
     let rewritten = rewrite_open_pr(root, &spec);
 
-    let running: Vec<Value> =
-        in_flight.iter().map(|(wave, send)| json!({ "wave": wave, "send": send })).collect();
+    let running: Vec<Value> = in_flight
+        .iter()
+        .map(|(wave, (send, sent))| running_state(root, &spec, &log, &codes, *wave, send, *sent))
+        .collect();
     let mut out = json!({
         "ok": true,
         "spec": spec,
@@ -469,6 +529,7 @@ pub(super) fn run_round_with_mine(
         out["warnings"] = json!(warnings);
     }
     crate::commands::spec_events::pages::end_milestone(&mut out, prepared.as_ref(), &spec, "round", &then, lang);
+    shorten_publish_order(root, &spec, &mut out, &then, lang);
     if let Some(command) = command {
         out["command"] = json!(command);
     }
@@ -476,6 +537,35 @@ pub(super) fn run_round_with_mine(
         out["pr"] = json!({ "number": number, "body": "rewritten" });
     }
     Ok(out)
+}
+
+/// A instrução de publicar e copiar a página, que [`crate::commands::spec_events::pages::end_milestone`]
+/// monta por extenso em `out["next"]` — com a lista inteira dos lotes —, sai
+/// dali: o texto vai para `<spec>/round-next.md`, sob a pasta da spec, e
+/// `out["next"]` fica só com uma linha curta que manda ler o arquivo, seguida
+/// do `then`, que já era curto. O que o agente de cópia executa não muda: só
+/// onde o pedido mora. Sem instrução de página — `next` já é só o `then` —,
+/// nada muda; falha de disco também deixa `next` como estava.
+fn shorten_publish_order(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
+    let Some(next) = out.get("next").and_then(Value::as_str).map(str::to_string) else { return };
+    if next == then {
+        return;
+    }
+    let order = next.strip_suffix(then).map(str::trim_end).unwrap_or(next.as_str());
+    if order.is_empty() {
+        return;
+    }
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(root) else { return };
+    let Ok(spec_paths) = paths.for_spec(spec) else { return };
+    // A mesma pasta dos lotes que a cópia já grava (`pages::copy::FOLDER`):
+    // um arquivo a mais ali não muda o que a pasta da spec mostra por fora.
+    let path = spec_paths.dir().join(crate::commands::spec_events::pages::copy::FOLDER).join("next.md");
+    if mustard_core::io::fs::write_atomic(&path, order.as_bytes()).is_err() {
+        return;
+    }
+    let shown = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+    let short = translate("round.next.copy_file", lang).replace("{path}", &shown);
+    out["next"] = json!([short, then.to_string()].into_iter().filter(|s: &String| !s.is_empty()).collect::<Vec<_>>().join(" "));
 }
 
 /// Refaz o corpo do pull request desta spec, quando há um aberto. Devolve o
@@ -545,6 +635,38 @@ mod tests {
         assert_eq!(sent.len(), 1, "um envio por onda despachada");
         assert_eq!(sent[0].str_field("text"), Some(prompt.as_str()));
         assert_eq!(sent[0].wave(), Some(1));
+    }
+
+    /// A instrução de publicar e copiar a página, por extenso, fica só no
+    /// arquivo sob a pasta de lotes da spec: a resposta da rodada leva uma
+    /// linha curta que manda lê-lo, sem o texto que cita a ferramenta
+    /// `ArtifactData` nem a lista dos lotes. A resposta inteira fica bem
+    /// menor do que o texto que foi para o arquivo.
+    #[test]
+    fn the_round_response_moves_the_publish_order_to_a_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+
+        let out = round(root, "x", None);
+        let next = out["next"].as_str().unwrap_or_default().to_string();
+        assert!(next.contains("Leia `.claude/spec/x/copy/next.md`"), "{next}");
+        assert!(!next.contains("ArtifactData"), "o texto por extenso não fica na resposta: {next}");
+
+        let file_path = root.join(".claude").join("spec").join("x").join("copy").join("next.md");
+        let file_text = std::fs::read_to_string(&file_path).expect("o arquivo com a ordem por extenso");
+        assert!(file_text.contains("ArtifactData"), "{file_text}");
+
+        // O que `next` seria sem o desvio para o arquivo (a ordem por
+        // extenso mais o "depois" que já era curto) contra o que ele é
+        // agora: a resposta da rodada fica bem menor.
+        let before = format!("{file_text} …");
+        assert!(
+            next.len() < before.len(),
+            "antes: {} bytes; depois: {} bytes — a resposta devia ficar menor",
+            before.len(),
+            next.len()
+        );
     }
 
     /// Os campos de um envio já gravado, prontos para virar a base de um novo
@@ -941,7 +1063,10 @@ mod tests {
         let sends: Vec<String> = visible.iter().filter(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).collect();
         assert_eq!(sends.len(), 1, "the wave has one send: {outs:?}");
         for out in &outs {
-            assert_eq!(out["running"], json!([{"wave": 1, "send": sends[0]}]), "{outs:?}");
+            let running = out["running"].as_array().cloned().unwrap_or_default();
+            assert_eq!(running.len(), 1, "{outs:?}");
+            assert_eq!(running[0]["wave"], json!(1), "{outs:?}");
+            assert_eq!(running[0]["send"], json!(sends[0]), "{outs:?}");
         }
         let entered = visible.iter().filter(|e| e.event_type == "state" && e.str_field("phase") == Some("running"));
         assert_eq!(entered.count(), 1, "the spec enters the run once: {outs:?}");
