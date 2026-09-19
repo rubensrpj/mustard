@@ -508,15 +508,28 @@ pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
         .collect()
 }
 
-/// As ondas entregues e aprovadas: têm entrega, não estão em andamento, e a
-/// última revisão delas — quando há uma, do agente de teste dedicado que o
-/// fechamento pede — não reprovou. A onda entregue antes de a rodada existir,
-/// sem pedido e sem veredito, está provada pelo código que entrou. A rodada
-/// não pede revisão de onda nenhuma: a entrega já basta, e só uma reprovação
-/// devolve a onda para a fila.
+/// As ondas do plano com o conserto pendente: a última revisão delas
+/// reprovou, e nenhuma entrega chegou depois dessa reprovação — a entrega é
+/// o que resolve o conserto, com veredito novo ou sem ele, porque a
+/// aprovação final do agente de teste dedicado, quando não aponta onda, fica
+/// gravada na última onda do plano, e não solta as outras por um veredito
+/// novo delas. É a leitura única de "onda com conserto pendente", que
+/// `finished` (o fechamento), `waves_done` (a fila) e `wave_states` (o
+/// estado da página) compartilham, para as três não discordarem de quando o
+/// ciclo de conserto termina.
+pub(crate) fn waves_pending_fix(log: &SpecLog) -> BTreeMap<u64, u64> {
+    let delivered = log.last_by_wave("delivered");
+    log.last_rejected().into_iter().filter(|(n, id)| delivered.get(n).is_none_or(|fix| fix < id)).collect()
+}
+
+/// As ondas entregues e aprovadas: têm entrega, não estão em andamento, e não
+/// têm conserto pendente ([`waves_pending_fix`]). A onda entregue antes de a
+/// rodada existir, sem pedido e sem veredito, está provada pelo código que
+/// entrou. A rodada não pede revisão de onda nenhuma: a entrega já basta, e
+/// só uma reprovação sem conserto ainda entregue devolve a onda para a fila.
 fn waves_done(log: &SpecLog, running: &BTreeMap<u64, u64>) -> BTreeSet<u64> {
-    let rejected = log.last_rejected();
-    log.delivered_waves().into_iter().filter(|n| !running.contains_key(n) && !rejected.contains_key(n)).collect()
+    let pending = waves_pending_fix(log);
+    log.delivered_waves().into_iter().filter(|n| !running.contains_key(n) && !pending.contains_key(n)).collect()
 }
 
 /// A primeira onda planejada que ainda não está entregue e aprovada, com as
@@ -546,26 +559,22 @@ fn dependencies_of(n: u64, depends: &BTreeMap<u64, Vec<u64>>) -> BTreeSet<u64> {
     reached
 }
 
-/// As ondas que voltam para a fila: a última revisão delas reprovou, e o
-/// conserto ainda não saiu — o pedido mais novo da onda e a entrega mais nova
-/// dela são anteriores a essa reprovação. Depois que o conserto sai, a onda
-/// espera a revisão dele, e não é despachada de novo pela mesma reprovação.
-/// O pedido do conserto que o plano da onda deixou para trás, por uma versão
-/// nova da onda ou de uma tarefa dela, conta como se não existisse: a onda
-/// volta para a fila e sai com o pedido do plano atual.
-///
-/// O fechamento lê daqui também: uma onda cuja última revisão reprovou, mas
-/// que já recebeu o conserto e entregou de novo, sai daqui — mesmo sem
-/// veredito novo — porque o que falta agora é o agente de teste dedicado
-/// conferir o conserto, não a rodada despachar de novo.
+/// As ondas que voltam para a fila: têm o conserto pendente
+/// ([`waves_pending_fix`]) e ainda não foram despachadas de novo desde a
+/// reprovação — o pedido mais novo da onda é anterior a essa reprovação.
+/// Depois que o conserto sai, a onda espera a entrega dele, e não é
+/// despachada de novo pela mesma reprovação — mas continua com o conserto
+/// pendente para quem lê [`waves_pending_fix`], como o fechamento, até a
+/// entrega chegar. O pedido do conserto que o plano da onda deixou para
+/// trás, por uma versão nova da onda ou de uma tarefa dela, conta como se
+/// não existisse: a onda volta para a fila e sai com o pedido do plano
+/// atual.
 pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
     let last_send = log.last_by_wave("send");
     let replanned = waves_replanned(log);
-    let delivered = log.last_by_wave("delivered");
-    log.last_rejected()
+    waves_pending_fix(log)
         .into_iter()
         .filter(|(n, id)| replanned.contains(n) || last_send.get(n).is_none_or(|sent| sent < id))
-        .filter(|(n, id)| delivered.get(n).is_none_or(|fix| fix < id))
         .map(|(n, _)| n)
         .collect()
 }
@@ -608,7 +617,7 @@ pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> V
 pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveStates {
     use mustard_core::view::document::WaveState;
     let running = waves_in_progress(log);
-    let rejected = log.last_rejected();
+    let rejected = waves_pending_fix(log);
     let done = waves_done(log, &running);
     let mut states = mustard_core::view::document::WaveStates::new();
     for n in running.keys().chain(rejected.keys()).chain(&done) {

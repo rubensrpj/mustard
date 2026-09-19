@@ -370,15 +370,16 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     if let Some(id) = recorded {
         report["id"] = json!(id);
     }
-    // Quem executa vem da soma das notas de todas as tarefas do plano, antes
-    // da pergunta de aprovação: em todo tamanho, a obra termina com o agente
-    // de teste dedicado.
-    let total: u64 = wave_points(&log, &BTreeSet::new()).sums.values().sum();
+    // Quem executa vem da soma das notas de todas as tarefas do plano e do
+    // número de ondas que o plano já tem, antes da pergunta de aprovação: em
+    // todo tamanho, a obra termina com o agente de teste dedicado.
+    let points = wave_points(&log, &BTreeSet::new());
+    let total: u64 = points.sums.values().sum();
     // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
     // só reconhece essa pergunta, e outro texto não aprova nada.
     let ask = format!(
         "{} {}",
-        who_executes(total, lang),
+        who_executes(total, points.sums.len(), lang),
         translate("plan.next", lang).replace("{question}", translate("approval.question", lang)),
     );
     spec_events::pages::end_milestone(&mut report, Ok(&prepared), &spec, "approval", &ask, lang);
@@ -386,14 +387,16 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
 }
 
 /// Quem executa a obra, pela soma das notas de todas as tarefas do plano
-/// (`total`): até 3 pontos, sem ondas, o orquestrador faz; de 4 a 13, um
-/// agente faz, numa onda só; acima de 13, a obra vai em ondas de até
-/// [`WAVE_POINTS_CAP`] pontos cada. Em todo tamanho, a obra termina com o
-/// agente de teste dedicado.
-fn who_executes(total: u64, lang: Locale) -> String {
+/// (`total`) e pelo número de ondas que o plano já tem (`waves`): até 3
+/// pontos, sem ondas, o orquestrador faz; de 4 a 13, com uma onda só, um
+/// agente faz; acima de 13, ou com mais de uma onda já no plano, a obra vai
+/// em ondas de até [`WAVE_POINTS_CAP`] pontos cada. O plano com mais de uma
+/// onda nunca diz "numa onda só", mesmo com o total dentro do teto de uma
+/// onda. Em todo tamanho, a obra termina com o agente de teste dedicado.
+fn who_executes(total: u64, waves: usize, lang: Locale) -> String {
     let key = if total <= 3 {
         "plan.execution.solo"
-    } else if total <= WAVE_POINTS_CAP {
+    } else if total <= WAVE_POINTS_CAP && waves <= 1 {
         "plan.execution.one_wave"
     } else {
         "plan.execution.many_waves"
@@ -1724,24 +1727,59 @@ mod tests {
     }
 
     /// O plano diz quem executa pela soma das notas de todas as tarefas: até
-    /// 3 pontos, sem ondas, o orquestrador faz; de 4 a 13, um agente faz numa
-    /// onda só; acima de 13, a obra vai em ondas de até 13 pontos. Nos três
-    /// tamanhos, o aviso diz que a obra termina com o agente de teste
-    /// dedicado.
+    /// 3 pontos, sem ondas, o orquestrador faz; de 4 a 13, com uma onda só,
+    /// um agente faz; acima de 13, ou com mais de uma onda já no plano, a
+    /// obra vai em ondas de até 13 pontos. Em todos os tamanhos, o aviso diz
+    /// que a obra termina com o agente de teste dedicado. A divisa de cada
+    /// faixa entra: 3 e 4 pontos, que separam o orquestrador do agente numa
+    /// onda só; e 13 e 14 pontos, que separam a onda só das ondas de até 13.
+    /// E o caso de 13 pontos já divididos em duas ondas, que não pode dizer
+    /// "numa onda só" só porque o total cabe no teto de uma.
     #[test]
     fn the_plan_says_who_executes_by_the_points() {
+        let expect_solo = |points: &str, root: &Path| {
+            let out = plan(root, "x");
+            assert_eq!(out["ok"], json!(true), "{out}");
+            let next = out["next"].as_str().unwrap_or_default();
+            let expected = translate("plan.execution.solo", Locale::PtBr).replace("{points}", points);
+            assert!(next.contains(&expected), "{points} pontos deveria ser solo: {next}");
+            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        };
+        let expect_one_wave = |points: &str, root: &Path| {
+            let out = plan(root, "x");
+            assert_eq!(out["ok"], json!(true), "{out}");
+            let next = out["next"].as_str().unwrap_or_default();
+            let expected = translate("plan.execution.one_wave", Locale::PtBr).replace("{points}", points);
+            assert!(next.contains(&expected), "{points} pontos deveria ser onda só: {next}");
+            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        };
+        let expect_many_waves = |points: &str, root: &Path| {
+            let out = plan(root, "x");
+            assert_eq!(out["ok"], json!(true), "{out}");
+            let next = out["next"].as_str().unwrap_or_default();
+            let expected = translate("plan.execution.many_waves", Locale::PtBr).replace("{points}", points);
+            assert!(next.contains(&expected), "{points} pontos deveria ser ondas: {next}");
+            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        };
+
         // 3 pontos: sem ondas, o orquestrador faz.
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
         waves_of_code(root, said, 1);
         rated(root, said, 1, "src/a.rs", Some(3));
-        let solo = plan(root, "x");
-        assert_eq!(solo["ok"], json!(true), "{solo}");
-        let next = solo["next"].as_str().unwrap_or_default();
-        let expected = translate("plan.execution.solo", Locale::PtBr).replace("{points}", "3");
-        assert!(next.contains(&expected), "{next}");
-        assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        expect_solo("3", root);
+
+        // 4 pontos (3 + 1, porque a escala não tem o número 4 sozinho), a
+        // divisa de cima da faixa do orquestrador: já é um agente numa onda
+        // só, não mais o orquestrador sozinho.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 1);
+        rated(root, said, 1, "src/a1.rs", Some(3));
+        rated(root, said, 1, "src/a2.rs", Some(1));
+        expect_one_wave("4", root);
 
         // 8 pontos: um agente faz, numa onda só.
         let dir = tempdir().unwrap();
@@ -1749,12 +1787,27 @@ mod tests {
         let said = surveyed(root, "x");
         waves_of_code(root, said, 1);
         rated(root, said, 1, "src/a.rs", Some(8));
-        let one_wave = plan(root, "x");
-        assert_eq!(one_wave["ok"], json!(true), "{one_wave}");
-        let next = one_wave["next"].as_str().unwrap_or_default();
-        let expected = translate("plan.execution.one_wave", Locale::PtBr).replace("{points}", "8");
-        assert!(next.contains(&expected), "{next}");
-        assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        expect_one_wave("8", root);
+
+        // 13 pontos, o teto exato de uma onda, numa onda só: ainda é um
+        // agente numa onda só, não ondas de até 13.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 1);
+        rated(root, said, 1, "src/a.rs", Some(13));
+        expect_one_wave("13", root);
+
+        // 13 pontos já divididos em duas ondas: o total cabe no teto de uma
+        // onda, mas o plano já tem duas — a resposta não pode dizer "numa
+        // onda só".
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 2);
+        rated(root, said, 1, "src/a1.rs", Some(8));
+        rated(root, said, 2, "src/a2.rs", Some(5));
+        expect_many_waves("13", root);
 
         // 14 pontos, em duas ondas dentro do teto de cada uma: a obra vai em
         // ondas de até 13 pontos.
@@ -1765,12 +1818,7 @@ mod tests {
         rated(root, said, 1, "src/a1.rs", Some(8));
         rated(root, said, 2, "src/a2.rs", Some(5));
         rated(root, said, 2, "src/b2.rs", Some(1));
-        let many_waves = plan(root, "x");
-        assert_eq!(many_waves["ok"], json!(true), "{many_waves}");
-        let next = many_waves["next"].as_str().unwrap_or_default();
-        let expected = translate("plan.execution.many_waves", Locale::PtBr).replace("{points}", "14");
-        assert!(next.contains(&expected), "{next}");
-        assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        expect_many_waves("14", root);
     }
 
     /// A gravação pelo comando aceita só as notas da escala: na divisa, 3, 5

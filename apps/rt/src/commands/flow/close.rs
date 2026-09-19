@@ -329,11 +329,19 @@ fn final_approved(log: &SpecLog) -> bool {
     })
 }
 
-/// A obra terminou? Recusa enquanto houver onda sem commit, onda cuja última
-/// revisão reprovou e ainda não recebeu o conserto, ou pedido do usuário que
-/// nenhuma onda entregou. Não basta os testes passarem. As ondas e os
-/// vereditos são lidos como a rodada os lê: a onda que saiu do plano não é
-/// cobrada.
+/// A obra terminou? Recusa enquanto houver onda sem commit, onda com o
+/// conserto pendente ([`crate::commands::flow::round::waves_pending_fix`]:
+/// a última revisão dela reprovou e nenhuma entrega chegou depois), ou
+/// pedido do usuário que nenhuma onda entregou. Não basta os testes
+/// passarem. As ondas e os vereditos são lidos como a rodada os lê: a onda
+/// que saiu do plano não é cobrada.
+///
+/// A leitura é a mesma da fila e do estado da página, não a de
+/// `waves_to_redo`: aquela deixa de listar a onda assim que a rodada a
+/// despacha de novo, antes de o conserto chegar, e um fechamento nesse meio
+/// tempo fecharia com o conserto ainda em andamento — o commit da entrega
+/// original da onda, anterior à reprovação, já satisfaz a exigência de commit
+/// acima, e nada mais a travaria.
 ///
 /// A onda reprovada que já entregou o conserto não trava mais: falta o
 /// agente de teste dedicado conferir esse conserto, e é o fechamento —
@@ -341,7 +349,7 @@ fn final_approved(log: &SpecLog) -> bool {
 /// Sem essa saída, o conserto nunca chegaria ao agente de teste: nada mais
 /// grava um veredito comum enquanto a rodada está no ar.
 fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
-    if let Some(wave) = crate::commands::flow::round::waves_to_redo(log).into_iter().next() {
+    if let Some(wave) = crate::commands::flow::round::waves_pending_fix(log).into_keys().next() {
         return Err(CloseRefusal::WaveRejected { wave });
     }
 
@@ -733,6 +741,71 @@ mod tests {
         assert_eq!(waves_in(&stopped, "dispatch"), Vec::<u64>::new(), "a rodada para de despachar: {stopped}");
         let after = close(None);
         assert_eq!(after["reason"], json!("wave-rejected"), "o fechamento segue recusando: {after}");
+    }
+
+    /// O conserto de uma onda que não é a última do plano: o agente de teste
+    /// dedicado reprova a onda 1 de duas, e a aprovação final, sem onda, fica
+    /// gravada na onda 2, a última — nunca ganha um veredito próprio a onda 1.
+    /// Três coisas têm de continuar certas mesmo assim: (1) o fechamento
+    /// recusa enquanto o conserto está só despachado, sem entrega ainda; (2)
+    /// entregue o conserto, a rodada solta a onda e manda fechar; e (3) depois
+    /// da aprovação final, nenhuma onda fica com o estado de reprovada.
+    #[test]
+    fn a_fix_of_a_non_final_wave_releases_the_queue_and_leaves_no_wave_rejected() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 2);
+        let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
+        let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
+
+        // O agente de teste dedicado aponta a onda 1, não a última.
+        let reject = json!({"final": true, "wave": 1, "result": "rejected", "text": "Falta o teste da onda 1."});
+        let refused = close(Some(format!("<VERDICT>{reject}</VERDICT>")));
+        assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
+
+        // A rodada despacha o conserto da onda 1.
+        let fix = round(None);
+        assert_eq!(fix["dispatch"].as_array().unwrap().iter().filter_map(|d| d["wave"].as_u64()).collect::<Vec<_>>(), vec![1], "{fix}");
+
+        // (1) Só despachado, sem entrega: o fechamento continua recusando —
+        // o commit da entrega original da onda 1, anterior à reprovação, não
+        // pode bastar.
+        let still_pending = close(None);
+        assert_eq!(still_pending["reason"], json!("wave-rejected"), "{still_pending}");
+        assert!(still_pending["hint"].as_str().unwrap_or_default().contains('1'), "{still_pending}");
+
+        // A onda 1 entrega o conserto, com um código diferente do que já
+        // estava no disco.
+        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn tres() {}\n").unwrap();
+        let line = json!({"wave": 1, "text": "Sem faltar o teste.", "files": [wave_file(1)], "commit": "conserta a onda 1"});
+        let back = round(Some(format!("<DELIVERED>{line}</DELIVERED>")));
+        assert_eq!(back["ok"], json!(true), "{back}");
+
+        // (2) Entregue o conserto, a fila solta a onda: a rodada não tem mais
+        // nada a despachar nem a esperar, e manda fechar.
+        let released = round(None);
+        assert_eq!(released["command"], json!("mustard-rt run close --spec x"), "{released}");
+
+        // O agente de teste dedicado confere só o conserto, e aprova a obra
+        // inteira: a aprovação sem onda fica gravada na última onda do plano
+        // (a 2), não na 1, que foi a reprovada.
+        let fix_prompt = close(None)["review"]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(fix_prompt.contains("MSTD-WAVE-0001") && !fix_prompt.contains("MSTD-WAVE-0002"), "{fix_prompt}");
+        let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
+        let closed = close(Some(format!("<VERDICT>{approved}</VERDICT>")));
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+
+        // (3) Nenhuma onda fica com o estado de reprovada, nem a 1, cujo
+        // último veredito próprio continua sendo a reprovação: a aprovação
+        // que fechou a obra não é dela.
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let states = crate::commands::flow::round::wave_states(&log);
+        let rejected: Vec<u64> = states
+            .into_iter()
+            .filter(|(_, s)| *s == mustard_core::view::document::WaveState::Rejected)
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(rejected, Vec::<u64>::new(), "{closed}");
     }
 
     /// A resposta da rodada e a do fechamento, numa spec ainda sem páginas
