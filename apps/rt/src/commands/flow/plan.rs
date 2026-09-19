@@ -939,45 +939,12 @@ mod tests {
         assert_eq!(built.len(), 2, "duas ondas, dois pedidos");
         let computed = sent(root, &report, "spec").into_iter().find(|w| w["collection"] == json!("computed")).unwrap();
         for prompt in &built {
+            assert!(prompt.lines > 0);
+            // O texto que o banco da página recebe é o mesmo que o agente lê,
+            // instruções fixas incluídas: nenhuma linha fica de fora.
             assert_eq!(computed["body"]["prompts"][prompt.wave.to_string()], json!(prompt.text), "{computed}");
         }
-        spec_events::pages::refresh(root, "x", Locale::PtBr).expect("o comando de página");
-        let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        // A página mostra o pedido como um arquivo `.md`: cada linha aparece
-        // com o texto dela, sem as marcas do markdown.
-        let text = page_text(&page);
-        let shown = |line: &str| {
-            let line = line.trim().trim_start_matches('#').trim_start();
-            line.strip_prefix("- ").unwrap_or(line).replace("**", "").replace('`', "")
-        };
-        for prompt in &built {
-            assert!(prompt.lines > 0);
-            for line in prompt.text.lines().filter(|l| !l.trim().is_empty()) {
-                assert!(
-                    text.contains(&shown(line)),
-                    "a onda {} não mostra a linha {line:?}",
-                    prompt.wave
-                );
-            }
-        }
-        // As instruções fixas, que todo agente recebe, estão entre elas.
-        assert!(text.contains(&shown(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap())));
-    }
-
-    /// O texto que a página mostra: sem as marcas do HTML, com os caracteres
-    /// escapados de volta.
-    fn page_text(page: &str) -> String {
-        let mut out = String::with_capacity(page.len());
-        let mut in_tag = false;
-        for c in page.chars() {
-            match c {
-                '<' => in_tag = true,
-                '>' if in_tag => in_tag = false,
-                _ if !in_tag => out.push(c),
-                _ => {}
-            }
-        }
-        out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+        assert!(built.iter().any(|prompt| prompt.text.contains(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap())));
     }
 
     /// Um ponto do levantamento ainda aberto trava a pergunta de aprovação, e
@@ -1522,10 +1489,9 @@ mod tests {
 
     /// Cada achado da conferência é gravado como anotação quando o `plan`
     /// roda, com a mesma mensagem que a resposta dá e com o rótulo do achado
-    /// do plano, e a página o mostra de lá, na seção própria que vem antes das
-    /// anotações. Rodar de novo não repete a anotação.
+    /// do plano. Rodar de novo não repete a anotação.
     #[test]
-    fn every_finding_is_written_as_a_note_once_and_shows_up_on_the_page() {
+    fn every_finding_is_written_as_a_note_once() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1547,7 +1513,7 @@ mod tests {
             .collect();
         assert!(messages.len() >= 2, "{report}");
 
-        // Cada achado virou anotação, e a página a mostra.
+        // Cada achado virou anotação, com o texto exato.
         let notes = read_notes(root, "x");
         for message in &messages {
             assert!(notes.contains(message), "sem anotação de {message:?}: {notes:?}");
@@ -1558,29 +1524,16 @@ mod tests {
         assert!(!note_labels(root, "x").is_empty(), "nenhuma anotação de achado");
         assert!(note_labels(root, "x").iter().all(|l| l == label), "{:?}", note_labels(root, "x"));
 
-        // No `.md` o código do item fica como está; na página ele vira link.
-        spec_events::pages::refresh(root, "x", Locale::PtBr).expect("o comando de página");
-        let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
-        for message in &messages {
-            assert!(md.contains(message.as_str()), "o `.md` não mostra {message:?}");
-        }
-        let heading = translate("page.findings.heading", Locale::PtBr);
-        let (found, notes_heading) = (md.find(heading), md.find("## Anotações"));
-        assert!(found.is_some() && found < notes_heading, "a seção não vem antes das anotações: {md}");
-        let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(page.contains("MSTD-NOTE-0001"), "a página não mostra a anotação");
-        assert!(page.contains(heading), "a página não tem a seção do que o plano achou");
-
         // De novo: as mesmas anotações, sem repetir nenhuma.
         assert_eq!(plan(root, "x")["ok"], json!(true));
         assert_eq!(read_notes(root, "x"), notes, "o mesmo achado não vira anotação duas vezes");
     }
 
-    /// O achado que trava a pergunta também vira anotação, que a página
-    /// mostra: é nela que quem for corrigir o vê. O plano travado não é marco
-    /// e não escreve página nem prepara cópia.
+    /// O achado que trava a pergunta também vira anotação: é nela que quem
+    /// for corrigir o vê. O plano travado não é marco e não escreve página
+    /// nem prepara cópia.
     #[test]
-    fn a_blocking_finding_is_noted_and_the_page_still_comes_out() {
+    fn a_blocking_finding_is_noted_and_writes_no_page() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1597,9 +1550,6 @@ mod tests {
         assert!(report.get("copy").is_none() && report.get("publish").is_none(), "{report}");
         assert!(!root.join(".claude/spec/x/spec.html").exists(), "o plano travado não escreve página");
         assert!(!root.join(".claude/spec/x/copy").exists(), "nem prepara cópia");
-        spec_events::pages::refresh(root, "x", Locale::PtBr).expect("o comando de página");
-        let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
-        assert!(md.contains(hint.as_str()), "o `.md` não mostra o achado que trava");
     }
 
     /// O rótulo de cada anotação vigente que tem um, em ordem de número.

@@ -1107,13 +1107,11 @@ mod tests {
         assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
     }
 
-    /// Nenhuma gravação refaz a página nem o `.md`: os dois saem só pelo
-    /// comando de página. Depois dele, uma decisão revista mostra
-    /// só a versão nova fora da conversa, onde a antiga aparece marcada como
-    /// substituída; um item removido some dos dois e continua no arquivo de
-    /// eventos, com o motivo.
+    /// Uma decisão revista fica no arquivo de eventos com as duas versões, a
+    /// nova com o mesmo código; a leitura do combinado mostra só a nova. Um
+    /// item removido some da leitura e continua no arquivo, com o motivo.
     #[test]
-    fn the_page_and_the_md_come_out_at_the_end_of_the_step_and_not_at_each_write() {
+    fn a_revision_keeps_the_code_and_a_removal_leaves_the_reading_but_not_the_file() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"decida"}"#);
@@ -1126,27 +1124,15 @@ mod tests {
         assert!(removal.get("warnings").is_none(), "{removal}");
 
         let spec = root.join(".claude").join("spec").join("teste");
-        assert!(!spec.join("spec.html").exists(), "nenhuma gravação refez a página");
-        assert!(!spec.join("spec.md").exists(), "nenhuma gravação refez o `.md`");
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("os dois saem no fim do passo");
-        let md = std::fs::read_to_string(spec.join("spec.md")).unwrap();
-        let html = std::fs::read_to_string(spec.join("spec.html")).unwrap();
-        let (html_before, html_talk) = html.split_once("<section id=\"conversation\" class=\"block\"").unwrap();
-        let (md_before, md_talk) = md.rsplit_once("\n## ").unwrap();
-        for (before, talk) in [(html_before, html_talk), (md_before, md_talk)] {
-            assert!(before.contains("Texto novo.") && !before.contains("Texto antigo."), "{before}");
-            assert!(talk.contains("Texto antigo."), "{talk}");
-            assert!(!before.contains("Anotação que sai.") && !talk.contains("Anotação que sai."));
-        }
         let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
         assert!(events.contains("Anotação que sai.") && events.contains("engano"), "{events}");
     }
 
-    /// Remover pelo código que a página mostra tira o item da leitura, da
-    /// página e do `.md`, e ele continua no arquivo com o motivo. Um código
-    /// que não existe é recusado citando o código, e nada é gravado.
+    /// Remover pelo código que a leitura mostra tira o item dela, e ele
+    /// continua no arquivo com o motivo. Um código que não existe é recusado
+    /// citando o código, e nada é gravado.
     #[test]
-    fn removing_by_the_code_takes_the_item_out_of_the_reading_the_page_and_the_md() {
+    fn removing_by_the_code_takes_the_item_out_of_the_reading_but_not_the_file() {
         use crate::commands::spec_events::read::{read_at, ReadOpts};
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1168,12 +1154,6 @@ mod tests {
         .unwrap();
         assert!(!agreed.contains("Regra dois.") && agreed.contains("Regra três."), "{agreed}");
         let spec = root.join(".claude").join("spec").join("teste");
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
-        for page in ["spec.md", "spec.html"] {
-            let shown = std::fs::read_to_string(spec.join(page)).unwrap();
-            assert!(!shown.contains("Regra dois."), "{page}: {shown}");
-            assert!(shown.contains("Regra um.") && shown.contains("Regra três."), "{page}");
-        }
         let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
         assert!(events.contains("Regra dois.") && events.contains("Regra repetida."), "{events}");
 
@@ -1189,8 +1169,8 @@ mod tests {
     }
 
     /// Numa pasta de spec do formato antigo, que tem o `meta.json` e nenhum
-    /// arquivo de eventos, o binário não cria o arquivo: a gravação recusa, o
-    /// `spec.md` dela fica com os mesmos bytes e a página não nasce.
+    /// arquivo de eventos, o binário não cria o arquivo: a gravação recusa e o
+    /// `spec.md` dela fica com os mesmos bytes.
     #[test]
     fn the_binary_never_creates_an_event_file_in_an_old_format_spec() {
         let dir = tempdir().unwrap();
@@ -1206,47 +1186,27 @@ mod tests {
         assert!(out["hint"].as_str().unwrap().contains("teste"), "{out}");
         // A testemunha da aprovação chega pela mesma gravação, e recusa igual.
         assert_eq!(record_birth(root, "teste", None).unwrap_err().reason(), "old-format-spec");
-        // E o `page --spec` também.
-        assert_eq!(
-            super::super::pages::refresh(root, "teste", Locale::PtBr).unwrap_err().reason(),
-            "old-format-spec"
-        );
 
         assert_eq!(std::fs::read_to_string(spec.join("spec.md")).unwrap(), document, "the document is left alone");
         assert!(!spec.join("spec.ndjson").exists(), "no event file in an old spec");
-        assert!(!spec.join("spec.html").exists(), "no page over an old spec");
     }
 
-    /// Uma spec aberta pelo `open` tem a página e o `.md` refeitos pelo
-    /// comando de página, e não a cada gravação, mesmo com um `meta.json`
-    /// posto ao lado por uma porta antiga. A linha da spec no índice continua
-    /// saindo a cada gravação: refazê-la custa uma linha.
+    /// Uma spec aberta pelo `open`, mesmo com um `meta.json` posto ao lado por
+    /// uma porta antiga, grava normalmente: a linha dela sai no índice a cada
+    /// gravação.
     #[test]
-    fn a_spec_opened_by_open_gets_its_page_at_the_end_of_the_step() {
+    fn a_spec_opened_by_open_keeps_writing_with_an_old_meta_json_beside_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = root.join(".claude").join("spec").join("teste");
         write(root, "message", r#"{"author":"user","text":"um recado"}"#);
         std::fs::create_dir_all(&spec).unwrap();
         std::fs::write(spec.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do primeiro passo");
 
-        let before = std::fs::read_to_string(spec.join("spec.html")).unwrap();
         let out = write(root, "message", r#"{"author":"user","text":"e outro recado"}"#);
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(
-            std::fs::read_to_string(spec.join("spec.html")).unwrap(),
-            before,
-            "a gravação não mexeu na página"
-        );
         let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
         assert!(index.contains("\"teste\""), "{index}");
-
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do passo seguinte");
-        let after = std::fs::read_to_string(spec.join("spec.html")).unwrap();
-        assert_ne!(before, after, "a página sai no fim do passo");
-        assert!(after.contains("e outro recado"), "{after}");
-        assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("e outro recado"));
     }
 
     /// O fim de uma onda é o `entregou` dela, e ele não escreve página nem
@@ -1703,16 +1663,15 @@ mod tests {
     }
 
     /// A lição vai para o banco de lições, com a spec do `--spec` dizendo
-    /// onde ela nasceu; o arquivo de eventos, a página, o `.md` e o índice
-    /// ficam como estavam. Sem `--spec`, a lição diz sozinha onde nasceu.
+    /// onde ela nasceu; o arquivo de eventos e o índice ficam como estavam.
+    /// Sem `--spec`, a lição diz sozinha onde nasceu.
     #[test]
     fn writing_a_lesson_goes_to_the_bank_and_leaves_the_spec_untouched() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"um"}"#);
         let specs = root.join(".claude").join("spec");
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
-        let files = [specs.join("teste").join("spec.ndjson"), specs.join("teste").join("spec.md"), specs.join("teste").join("spec.html"), specs.join("index.ndjson")];
+        let files = [specs.join("teste").join("spec.ndjson"), specs.join("index.ndjson")];
         let before: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
 
         let lesson = r#"{"class":"defect","text":"Um rm -rf na pasta errada perde trabalho.","keys":["apagar","rm"],"applies_to":{"subproject":"apps/rt"}}"#;
@@ -1876,10 +1835,11 @@ mod tests {
         assert_eq!(kept(), [4, 6]);
     }
 
-    /// O `search` é gravado no arquivo de eventos e nunca aparece na página
-    /// nem no `.md`: os dois mostram só o texto original.
+    /// O `search` é gravado no arquivo de eventos para a busca no banco da
+    /// página, mas nunca aparece na lista dos itens sem dono: o campo não faz
+    /// parte do tipo do evento, então nenhum item o mostra.
     #[test]
-    fn the_page_and_the_md_never_show_the_search_field() {
+    fn the_owners_list_never_shows_the_search_field() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"combine"}"#);
@@ -1890,12 +1850,23 @@ mod tests {
         let line = events.lines().find(|l| l.contains("\"type\":\"rule\"")).unwrap();
         let search = serde_json::from_str::<Value>(line).unwrap()["search"].as_str().unwrap().to_string();
         assert!(search.contains(' '), "{search}");
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
-        for page in ["spec.md", "spec.html"] {
-            let shown = std::fs::read_to_string(spec.join(page)).unwrap();
-            assert!(shown.contains("Apagando a pasta, a trava barra o comando."), "{page}");
-            assert!(!shown.contains(&search) && !shown.contains("\"search\":"), "{page} shows the search field");
-        }
+
+        use crate::commands::spec::page::{build, PageOpts};
+        let owners = build(&PageOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            body: None,
+            out: None,
+            title: None,
+            subtitle: None,
+            kind: None,
+            owners: true,
+            given: None,
+        });
+        assert_eq!(owners["ok"], json!(true), "{owners}");
+        let html = std::fs::read_to_string(spec.join("owners.html")).unwrap();
+        assert!(html.contains("Apagando a pasta, a trava barra o comando."), "{html}");
+        assert!(!html.contains(&search) && !html.contains("\"search\":"), "the owners list shows the search field: {html}");
     }
 
     /// Uma spec nascida em plano, com uma mensagem, um critério e as ondas

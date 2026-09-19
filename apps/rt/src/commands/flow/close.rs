@@ -739,8 +739,8 @@ mod tests {
     /// publicadas, mandam publicar a página da spec e a do projeto, dizem como
     /// gravar as duas publicações e mandam copiar os lotes, e nenhuma delas
     /// traz o endereço de uma página para a conversa. A do plano prova o mesmo
-    /// no teste dela. Um passo comum — o levantamento, a gravação de um item,
-    /// a página refeita a pedido — não manda publicar nem copiar.
+    /// no teste dela. Um passo comum — o levantamento, a gravação de um item —
+    /// não manda publicar nem copiar.
     #[test]
     fn the_round_and_the_close_order_the_publish_and_never_carry_a_link() {
         let dir = tempdir().unwrap();
@@ -786,19 +786,7 @@ mod tests {
             None,
         );
         assert_eq!(grilled["ok"], json!(true), "{grilled}");
-        let paged = crate::commands::spec::page::build(&crate::commands::spec::page::PageOpts {
-            root: root.to_path_buf(),
-            spec: Some("y".into()),
-            body: None,
-            out: None,
-            title: None,
-            subtitle: None,
-            kind: None,
-            owners: false,
-            given: None,
-        });
-        assert_eq!(paged["ok"], json!(true), "{paged}");
-        for report in [&grilled, &context, &paged] {
+        for report in [&grilled, &context] {
             assert!(report.get("publish").is_none(), "um passo comum não manda publicar: {report}");
             assert!(report.get("copy").is_none(), "nem copiar: {report}");
             let shown = report.to_string();

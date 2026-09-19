@@ -2,7 +2,7 @@
 //! donos serem gravados: cada item na mesma linha da página da spec, com o
 //! dono que recebe e de onde ele veio, num grupo por regra.
 
-use super::{code_span, join, one_line, Page, SpecInputs, WavePrompts, WaveStates};
+use super::{code_span, join, one_line, Page};
 use crate::domain::spec_events::{SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{Owner, OwnerFrom, OwnerLine};
 use crate::platform::i18n::{translate, Locale};
@@ -14,8 +14,7 @@ use crate::view::document::{Document, Group, Item, Meta, Node, Status, Tone};
 /// dono, a página diz isso.
 #[must_use]
 pub fn owners_page(spec: &str, log: &SpecLog, lines: &[OwnerLine], lang: Locale) -> Document {
-    let (prompts, waves) = (WavePrompts::new(), WaveStates::new());
-    let page = Page::new(log, SpecInputs { prompts: &prompts, rtk: &[], waves: &waves }, lang);
+    let page = Page::new(log, lang);
     let mut body = vec![Node::Paragraph(page.t("page.owners.intro").to_string())];
     if lines.is_empty() {
         body.push(Node::Paragraph(page.t("page.owners.none").to_string()));
@@ -87,7 +86,7 @@ pub fn owner_label(owner: &Owner, lang: Locale) -> String {
     }
 }
 
-impl Page<'_> {
+impl Page {
     /// Um item da lista dos sem dono: a linha da página da spec, com o dono
     /// como situação e, antes dos outros campos, o dono e de onde ele veio.
     fn owner_item(&self, event: &SpecEvent, line: &OwnerLine) -> Item {

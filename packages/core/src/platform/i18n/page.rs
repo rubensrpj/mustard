@@ -78,16 +78,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}: \
              it goes back to the user to approve its split before it goes out."
         }
-        // O comando que ainda gera o `.md` e o `.html` da spec e da página do
-        // projeto.
-        ("page.deprecated", Locale::PtBr) => {
-            "O `page --spec` foi descontinuado: as páginas da spec e do projeto agora são templates \
-             que leem um banco de dados, e o `.md` e o `.html` gravados aqui não são mais publicados."
-        }
-        ("page.deprecated", Locale::EnUs) => {
-            "`page --spec` is deprecated: the spec and project pages are now templates that read a \
-             database, and the `.md` and `.html` written here are no longer published."
-        }
         ("page.copy.batches", Locale::PtBr) => {
             "Copie para o banco de dados da {page}, no endereço {url}, os lotes {files}, nessa ordem: \
              cada arquivo é a lista `writes` de uma chamada da ferramenta `ArtifactData` com `action` \
@@ -892,8 +882,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            340,
-            0x0670_1bdc_f257_9fc6,
+            339,
+            0x9f76_c8d5_521b_ee80,
         );
     }
 }

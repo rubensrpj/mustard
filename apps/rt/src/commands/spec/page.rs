@@ -10,22 +10,18 @@
 //!   escreve markdown, nunca HTML: HTML dentro do markdown sai escapado. Sem
 //!   `--title`, o título é a primeira linha `# Título` do markdown, que sai
 //!   do corpo.
-//! - `page --spec <nome>` refaz o `spec.md` e o `spec.html` da spec a partir
-//!   do `spec.ndjson`, e a página do projeto a partir do índice, sem gravar
-//!   nada no arquivo de eventos. Está descontinuado: o primeiro aviso da
-//!   resposta diz que as páginas agora são templates que leem um banco de
-//!   dados.
 //! - `page --spec <nome> --owners [<donos.json>]` grava a lista dos itens
 //!   combinados sem dono (`owners.html`, ao lado da página da spec), para o
 //!   usuário conferir antes de os donos serem gravados: cada item com o dono
 //!   que a proposta do binário dá e a regra de onde ele veio. O arquivo, uma
 //!   lista de linhas `{code, waves | applies_to, why}`, traz o dono que o
 //!   orquestrador dá aos itens, no lugar da proposta. Nada é gravado no
-//!   arquivo de eventos.
+//!   arquivo de eventos. `--spec` sem `--owners` é recusado na linha de
+//!   comando: o comando que refazia o `spec.md` e o `spec.html` saiu — as
+//!   páginas da spec e do projeto são templates que leem um banco de dados.
 //!
 //! Saída: `{ok, path}` na página avulsa, com `path` exatamente como `--out`
-//! foi passado (barras normais), e `{ok, spec, md, html, project}` na da spec,
-//! com os caminhos relativos ao projeto. A lista dos sem dono devolve
+//! foi passado (barras normais). A lista dos sem dono devolve
 //! `{ok, spec, html, unowned, proposed, given, left, items}`: cada item com o
 //! código, o tipo, o dono (`waves` ou `applies_to`, as mesmas linhas que o
 //! arquivo aceita), a regra (`from`) e, no do orquestrador, o motivo. A
@@ -53,7 +49,7 @@ use crate::report::{markdown, Render};
 pub struct PageOpts {
     /// Qualquer pasta dentro do repositório.
     pub root: PathBuf,
-    /// A spec cuja página e cujo `.md` são refeitos.
+    /// A spec da lista dos itens sem dono; só vale junto de `owners: true`.
     pub spec: Option<String>,
     /// O arquivo markdown da página avulsa.
     pub body: Option<PathBuf>,
@@ -122,27 +118,6 @@ pub(crate) fn build(opts: &PageOpts) -> Value {
     let lang = project.lang;
     if let Some(spec) = opts.spec.as_deref().filter(|_| opts.owners) {
         return owners(&project.root, spec.trim(), opts.given.as_deref(), lang);
-    }
-    if let Some(spec) = opts.spec.as_deref() {
-        return match pages::refresh(&project.root, spec, lang) {
-            Ok(written) => {
-                let mut report = json!({ "ok": true, "spec": spec.trim(), "md": written.md, "html": written.html });
-                if let Some(page) = written.project {
-                    report["project"] = json!(page);
-                }
-                if !written.withheld.is_empty() {
-                    report["withheld"] = json!(written.withheld);
-                }
-                if written.trimmed > 0 {
-                    report["trimmed"] = json!(written.trimmed);
-                }
-                if !written.warnings.is_empty() {
-                    report["warnings"] = json!(written.warnings);
-                }
-                report
-            }
-            Err(refusal) => refused(&refusal, lang),
-        };
     }
     let (Some(body), Some(out)) = (&opts.body, &opts.out) else {
         return PageRefusal::MissingBody.report(lang);
@@ -385,91 +360,6 @@ mod tests {
         assert_eq!(build(&nothing)["reason"], json!("missing-body"));
 
         assert!(!root.join("paginas").exists(), "a refusal writes nothing");
-    }
-
-    /// Pelo `page --spec`, numa spec de teste: cada forma comum de escrever
-    /// um segredo sai da página como "…", com o resto da mensagem legível e o
-    /// código dela em `withheld`, e o `.md` local continua inteiro; o que tem letra e número
-    /// sem ser segredo — código de item, data, caminho com linha, leitura de
-    /// variável de ambiente — continua na página.
-    #[test]
-    fn page_spec_withholds_every_common_secret_form_and_keeps_the_rest() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let events = root.join(".claude/spec/segredo/spec.ndjson");
-        let put = |event_type: &str, draft: Value| {
-            mustard_core::io::spec_events::write(&events, event_type, draft.as_object().cloned().unwrap(), &[])
-                .unwrap()
-                .code
-                .unwrap_or_default()
-        };
-        put("state", json!({"phase": "survey"}));
-        let npm = format!("npm_{}", "a1B2c3".repeat(6));
-        let project_key = format!("sk-proj-{}", "Ab_3-".repeat(8));
-        let secrets = [
-            "DB_PASSWORD=S3nh4F0rte2024",
-            "GITHUB_TOKEN=a1b2c3d4e5f6g7h8i9j0",
-            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-            r#"{"password": "Hunt3rDois"}"#,
-            "client_secret=9f8e7d6c5b4a3210",
-            "postgres://loja:Banc0Loja@db.interno:5432/loja",
-            "Authorization: Bearer 8f14e45fceea167a5a36dedd4bea2543",
-            &project_key,
-            &npm,
-            "a senha do banco: Pr0dSenha",
-            "SECRET_KEY=Ch4veDoSite",
-            r#""Jwt": {"Key": "Ch4veDoJwt"}"#,
-            "AccountKey=Ch4veDoAzure==;EndpointSuffix=core.windows.net",
-            "a chave é Ch4veDaFrase",
-            "postgres://app:senhadobanco@db",
-            "redis://:senhadocache@cache",
-        ];
-        let mut codes = Vec::new();
-        for secret in secrets {
-            codes.push(put("message", json!({"author": "user", "text": format!("o valor é {secret} e pronto")})));
-        }
-        let ordinary = [
-            "token: MSTD-TASK-0101",
-            "token: 2026-09-17T02:35:53-03:00",
-            "secret: apps/rt/src/shared/rtk_gain.rs:120",
-            "token: process.env.GITHUB_TOKEN2",
-            "chave: MSTD-DEC-0138",
-            "SECRET_KEY=process.env.SECRET_KEY2",
-            "a forma é postgres://usuário:senha@host",
-            "redis://:${REDIS_PASSWORD}@cache",
-        ];
-        for text in ordinary {
-            put("message", json!({"author": "user", "text": text}));
-        }
-
-        let report = build(&PageOpts {
-            root: root.to_path_buf(),
-            spec: Some("segredo".into()),
-            body: None,
-            out: None,
-            title: None,
-            subtitle: None,
-            kind: None,
-            owners: false,
-            given: None,
-        });
-        assert_eq!(report["ok"], json!(true), "{report}");
-        assert_eq!(report["withheld"], json!(codes), "{report}");
-        let html = fs::read_to_string(root.join(".claude/spec/segredo/spec.html")).unwrap();
-        let md = fs::read_to_string(root.join(".claude/spec/segredo/spec.md")).unwrap();
-        for value in ["S3nh4F0rte2024", "a1b2c3d4e5f6g7h8i9j0", "bPxRfiCYEXAMPLEKEY", "Hunt3rDois", "9f8e7d6c5b4a3210",
-            "Banc0Loja", "8f14e45fceea167a5a36dedd4bea2543", &project_key, &npm, "Pr0dSenha", "Ch4veDoSite",
-            "Ch4veDoJwt", "Ch4veDoAzure", "Ch4veDaFrase", "senhadobanco", "senhadocache"]
-        {
-            assert!(!html.contains(value), "{value} reached the page");
-            assert!(md.contains(value), "{value} left the local .md");
-        }
-        for text in ["MSTD-TASK-0101", "2026-09-17T02:35:53-03:00", "rtk_gain.rs:120", "process.env.GITHUB_TOKEN2",
-            "MSTD-DEC-0138", "process.env.SECRET_KEY2", "postgres://usuário:senha@host", "REDIS_PASSWORD"]
-        {
-            assert!(html.contains(text), "{text} was withheld without being a secret");
-        }
-        assert!(html.contains("o valor é DB_PASSWORD=… e pronto"), "only the excerpt leaves the page");
     }
 
     /// Cada recusa tem a mensagem nos dois idiomas.

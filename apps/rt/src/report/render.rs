@@ -560,33 +560,45 @@ fn md_item(item: &Item) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::domain::spec_events::parse_log;
-    use mustard_core::platform::i18n::Locale;
-    use mustard_core::view::document::{spec_document, spec_page, SpecInputs, WavePrompts, WaveState, WaveStates};
+    use mustard_core::view::document::Card;
 
-    const LOG: &str = concat!(
-        "{\"v\":1,\"id\":1,\"at\":\"2026-09-11T08:40:00-03:00\",\"type\":\"state\",\"author\":\"binary\",\"phase\":\"survey\",\"branch\":\"feature/demo\",\"base\":\"dev\"}\n",
-        "{\"v\":1,\"id\":2,\"at\":\"2026-09-11T08:40:30-03:00\",\"type\":\"message\",\"author\":\"user\",\"text\":\"Revise tudo\"}\n",
-        "{\"v\":1,\"id\":3,\"at\":\"2026-09-11T09:00:00-03:00\",\"type\":\"rule\",\"author\":\"assistant\",\"text\":\"A trava lê o comando.\",\"keys\":[\"trava\"],\"example\":\"`rm -rf pasta` é barrado.\",\"origin\":2}\n",
-        "{\"v\":1,\"id\":4,\"at\":\"2026-09-11T09:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\"text\":\"Versão antiga da decisão.\",\"keys\":[\"d\"],\"why\":\"w\",\"origin\":2}\n",
-        "{\"v\":1,\"id\":5,\"at\":\"2026-09-11T09:02:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\"text\":\"Versão nova, que segue MSTD-RULE-0001.\",\"keys\":[\"d\"],\"why\":\"w\",\"origin\":2,\"replaces\":4}\n",
-        "{\"v\":1,\"id\":6,\"at\":\"2026-09-11T09:03:00-03:00\",\"type\":\"note\",\"author\":\"assistant\",\"text\":\"Anotação que sai.\",\"keys\":[\"n\"],\"origin\":2}\n",
-        "{\"v\":1,\"id\":7,\"at\":\"2026-09-11T09:04:00-03:00\",\"type\":\"remove\",\"author\":\"assistant\",\"targets\":[6],\"reason\":\"engano\"}\n",
-    );
-
-    fn spec_page_of(render: Render) -> String {
-        render.render(&spec_document("demo", &parse_log(LOG), &WavePrompts::new(), Locale::PtBr))
+    fn field(label: &str, value: &str) -> mustard_core::view::document::Field {
+        mustard_core::view::document::Field { label: label.into(), value: value.into() }
     }
 
-    fn with(extra: &str) -> String {
-        Render::Html.render(&spec_document("demo", &parse_log(&[LOG, extra].concat()), &WavePrompts::new(), Locale::PtBr))
+    /// Um item sem situação, sem marca e sem campo: só o que o teste precisa.
+    fn item(code: &str, anchored: bool, title: &str, text: &str) -> Item {
+        Item {
+            code: code.into(),
+            anchored,
+            title: title.into(),
+            status: None,
+            who: None,
+            mark: None,
+            date: None,
+            text: text.into(),
+            fields: Vec::new(),
+        }
+    }
+
+    fn section(anchor: &str, heading: &str, body: Vec<Node>) -> Node {
+        Node::Section(Section { anchor: Some(anchor.into()), heading: heading.into(), body })
+    }
+
+    fn group(anchor: &str, title: &str, status: Option<Status>, summary: &str, open: bool, body: Vec<Node>) -> Node {
+        Node::Group(Group { anchor: anchor.into(), title: title.into(), status, summary: summary.into(), open, body })
+    }
+
+    fn doc(body: Vec<Node>) -> Document {
+        Document { lang: "pt-BR".into(), kind: None, title: "demo".into(), meta: Vec::new(), footer: None, body }
     }
 
     /// A mesma árvore dá sempre os mesmos bytes, nas duas formas.
     #[test]
     fn the_same_events_give_the_same_bytes_twice() {
-        assert_eq!(spec_page_of(Render::Md), spec_page_of(Render::Md));
-        assert_eq!(spec_page_of(Render::Html), spec_page_of(Render::Html));
+        let tree = doc(vec![section("agreed", "Combinado", vec![Node::Item(item("MSTD-RULE-0001", true, "t", "Regra."))])]);
+        assert_eq!(Render::Md.render(&tree), Render::Md.render(&tree));
+        assert_eq!(Render::Html.render(&tree), Render::Html.render(&tree));
     }
 
     /// Uma decisão revista: a página e o `.md` mostram a versão nova no
@@ -594,17 +606,28 @@ mod tests {
     /// marcada como substituída no `.md`.
     #[test]
     fn a_revised_decision_shows_only_the_new_version_outside_the_conversation() {
-        for (page, conversation, old) in [
-            (spec_page_of(Render::Html), "<section id=\"conversation\" class=\"block\"", "<span class=\"tag\">versão antiga</span>"),
-            (spec_page_of(Render::Md), "## Conversa", "versão substituída"),
+        let new = item("MSTD-DEC-0001", true, "t", "Versão nova, que segue.");
+        let old = Item {
+            status: Some(Status { label: "versão antiga".into(), tone: Tone::Old }),
+            mark: Some("versão substituída".into()),
+            date: Some("2026-09-11 09:01".into()),
+            ..item("MSTD-DEC-0001", false, "Versão antiga da decisão.", "Versão antiga da decisão.")
+        };
+        let tree = doc(vec![
+            section("agreed", "Combinado", vec![Node::Item(new)]),
+            section("conversation", "Conversa", vec![Node::Item(old)]),
+        ]);
+        for (page, conversation, marker) in [
+            (Render::Html.render(&tree), "<section id=\"conversation\" class=\"block\"", "<span class=\"tag\">versão antiga</span>"),
+            (Render::Md.render(&tree), "## Conversa", "versão substituída"),
         ] {
             let (before, talk) = page.split_once(conversation).unwrap_or_else(|| panic!("{page}"));
             assert!(before.contains("Versão nova"), "{before}");
             assert!(!before.contains("Versão antiga"), "{before}");
             assert!(talk.contains("Versão antiga da decisão."), "{talk}");
-            assert!(talk.contains(old), "{talk}");
+            assert!(talk.contains(marker), "{talk}");
         }
-        let html = spec_page_of(Render::Html);
+        let html = Render::Html.render(&tree);
         assert_eq!(html.matches("id=\"MSTD-DEC-0001\"").count(), 1, "one address per code");
         assert!(
             html.contains("<details class=\"item old\"><summary><code class=\"c\">MSTD-DEC-0001</code><span class=\"t\">Versão antiga da decisão.</span><span class=\"tail\"><span class=\"tag\">versão antiga</span><span class=\"when\">11/09 09:01</span></span></summary>"),
@@ -612,10 +635,13 @@ mod tests {
         );
     }
 
-    /// Um item removido sai da página e do `.md`.
+    /// Um registro de remoção, que fica na conversa, diz o código do que
+    /// tirou; o texto do item removido não é dele.
     #[test]
     fn a_removed_item_leaves_the_page_and_the_md() {
-        for page in [spec_page_of(Render::Html), spec_page_of(Render::Md)] {
+        let removal = Item { fields: vec![field("Motivo", "engano"), field("Alvo", "MSTD-NOTE-0001")], ..item("MSTD-RMV-0001", true, "t", "") };
+        let tree = doc(vec![section("conversation", "Conversa", vec![Node::Item(removal)])]);
+        for page in [Render::Html.render(&tree), Render::Md.render(&tree)] {
             assert!(!page.contains("Anotação que sai."), "{page}");
             assert!(page.contains("MSTD-NOTE-0001"), "the removal names what it took out");
         }
@@ -625,10 +651,14 @@ mod tests {
     /// leva o código como endereço. O `.md` mostra o código como texto.
     #[test]
     fn codes_link_to_their_items_on_the_page() {
-        let html = spec_page_of(Render::Html);
+        let rule =
+            Item { fields: vec![field("Exemplo", "`rm -rf pasta` é barrado."), field("Origem", "MSTD-MSG-0001")], ..item("MSTD-RULE-0001", true, "t", "A trava lê o comando.") };
+        let decision = item("MSTD-DEC-0001", true, "t", "Versão nova, que segue MSTD-RULE-0001.");
+        let tree = doc(vec![section("agreed", "Combinado", vec![Node::Item(rule), Node::Item(decision)])]);
+        let html = Render::Html.render(&tree);
         assert!(html.contains("<details class=\"item\" id=\"MSTD-RULE-0001\"><summary><code class=\"c\">MSTD-RULE-0001</code>"), "{html}");
         assert!(html.contains("segue <a href=\"#MSTD-RULE-0001\">MSTD-RULE-0001</a>."), "{html}");
-        let md = spec_page_of(Render::Md);
+        let md = Render::Md.render(&tree);
         assert!(md.contains("- **MSTD-RULE-0001** — A trava lê o comando."), "{md}");
         assert!(md.contains("  - Exemplo: `rm -rf pasta` é barrado."), "{md}");
         assert!(md.contains("  - Origem: MSTD-MSG-0001"), "{md}");
@@ -638,22 +668,21 @@ mod tests {
     /// quando a prova inteira sai como código.
     #[test]
     fn a_code_cited_in_a_criterion_proof_links_to_its_item() {
-        let html = with(
-            "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"criterion\",\"author\":\"assistant\",\"when\":\"w\",\"then\":\"t\",\"proof\":\"teste da trava (MSTD-RULE-0001)\",\"origin\":2}\n",
-        );
-        assert!(
-            html.contains("<code>teste da trava (<a href=\"#MSTD-RULE-0001\">MSTD-RULE-0001</a>)</code>"),
-            "{html}"
-        );
+        let criterion = Item { fields: vec![field("Prova", "`teste da trava (MSTD-RULE-0001)`")], ..item("MSTD-CRIT-0001", true, "t", "") };
+        let rule = item("MSTD-RULE-0001", true, "t", "");
+        let tree = doc(vec![section("criteria", "Critérios", vec![Node::Item(criterion), Node::Item(rule)])]);
+        let html = Render::Html.render(&tree);
+        assert!(html.contains("<code>teste da trava (<a href=\"#MSTD-RULE-0001\">MSTD-RULE-0001</a>)</code>"), "{html}");
     }
 
     /// Nada do relógio nem da máquina: a página só tem o que os eventos
     /// gravaram.
     #[test]
     fn the_page_carries_no_clock_and_no_machine_path() {
-        for page in [spec_page_of(Render::Html), spec_page_of(Render::Md)] {
+        let tree = doc(vec![section("agreed", "Combinado", vec![Node::Item(item("MSTD-RULE-0001", true, "t", "Regra."))])]);
+        for page in [Render::Html.render(&tree), Render::Md.render(&tree)] {
             assert!(!page.contains("/home/") && !page.contains("C:\\"), "{page}");
-            assert!(!page.contains(&mustard_core::time::now_iso8601()[..10]) || page.contains("2026-09-11"));
+            assert!(!page.contains(&mustard_core::time::now_iso8601()[..10]));
         }
     }
 
@@ -662,9 +691,18 @@ mod tests {
     /// só a medição abre aberta.
     #[test]
     fn the_menu_lists_the_sections_and_their_groups_and_groups_come_collapsed() {
-        let html = with(
-            "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"call\",\"author\":\"binary\",\"command\":\"grill\",\"ms\":5,\"result\":\"ok\"}\n",
-        );
+        let tree = doc(vec![
+            section("progress", "Andamento", vec![group("progress-metrics", "Medição", None, "", true, vec![])]),
+            section(
+                "agreed",
+                "Combinado",
+                vec![
+                    group("agreed-rule", "Regras", None, "", false, vec![Node::Item(item("MSTD-RULE-0001", true, "t", ""))]),
+                    group("agreed-decision", "Decisões", None, "", false, vec![Node::Item(item("MSTD-DEC-0001", true, "t", ""))]),
+                ],
+            ),
+        ]);
+        let html = Render::Html.render(&tree);
         assert!(
             html.contains(
                 "<li data-sec=\"agreed\"><button type=\"button\" data-go=\"agreed\" class=\"top\"><span>Combinado</span><i>2</i></button><ol>\
@@ -693,10 +731,24 @@ mod tests {
     #[test]
     fn each_item_is_one_row_with_code_title_status_and_date() {
         let long = "palavra ".repeat(60);
-        let html = with(&format!(
-            "{{\"v\":1,\"id\":8,\"at\":\"2026-09-12T10:03:00-03:00\",\"type\":\"verdict\",\"author\":\"review\",\"wave\":1,\"result\":\"rejected\",\"text\":\"**Faltou** o `teste`.\\n\\nO resto.\",\"criteria\":[]}}\n\
-             {{\"v\":1,\"id\":9,\"at\":\"2026-09-12T10:04:00-03:00\",\"type\":\"note\",\"author\":\"assistant\",\"text\":\"{long}\",\"keys\":[\"k\"],\"origin\":2}}\n"
-        ));
+        let verdict = Item {
+            status: Some(Status { label: "reprovada".into(), tone: Tone::Bad }),
+            date: Some("2026-09-12 10:03".into()),
+            fields: vec![field("Onda", "1")],
+            ..item("MSTD-VERD-0001", true, "Faltou o teste.", "**Faltou** o `teste`.\n\nO resto.")
+        };
+        let note = item("MSTD-NOTE-0001", true, &long, &long);
+        let message = Item {
+            who: Some("mensagem · usuário".into()),
+            date: Some("2026-09-11 08:40".into()),
+            ..item("MSTD-MSG-0001", true, "t", "Revise tudo")
+        };
+        let tree = doc(vec![
+            section("review", "Revisão e QA", vec![group("review-1", "Onda 1", None, "1 reprovada", false, vec![Node::Item(verdict)])]),
+            section("notes", "Anotações", vec![Node::Item(note)]),
+            section("conversation", "Conversa", vec![Node::Item(message)]),
+        ]);
+        let html = Render::Html.render(&tree);
         assert!(
             html.contains(
                 "<details class=\"item\" id=\"MSTD-VERD-0001\"><summary><code class=\"c\">MSTD-VERD-0001</code>\
@@ -711,7 +763,7 @@ mod tests {
         assert!(html.contains(&cut), "the long title is cut: {html}");
         assert!(
             html.contains("<span class=\"tail\"><span class=\"who\">mensagem · usuário</span><span class=\"when\">11/09 08:40</span></span>"),
-            "the conversation says what and whose: {html}"
+            "the conversation says what and whose it is: {html}"
         );
     }
 
@@ -720,20 +772,30 @@ mod tests {
     /// com o estado e o nome.
     #[test]
     fn the_wave_overview_shows_each_state_and_leads_to_its_group() {
-        let log = [
-            LOG,
-            "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"wave\",\"author\":\"assistant\",\"n\":1,\"text\":\"**A trava** nova.\",\"criteria\":[],\"done_when\":\"d\",\"origin\":2}\n",
-            "{\"v\":1,\"id\":9,\"at\":\"2026-09-11T09:06:00-03:00\",\"type\":\"wave\",\"author\":\"assistant\",\"n\":2,\"text\":\"Dois.\",\"criteria\":[],\"done_when\":\"d\",\"origin\":2}\n",
-        ]
-        .concat();
-        let waves = WaveStates::from([(1, WaveState::Rejected)]);
-        let doc = spec_page(
-            "demo",
-            &parse_log(&log),
-            SpecInputs { prompts: &WavePrompts::new(), rtk: &[], waves: &waves },
-            Locale::PtBr,
-        );
-        let html = Render::Html.render(&doc);
+        let overview = Overview {
+            title: "Ondas".into(),
+            legend: "1 reprovada · 1 a fazer".into(),
+            cards: vec![
+                Card { target: "waves-1".into(), label: "1".into(), status: Status { label: "reprovada".into(), tone: Tone::Bad }, hint: "A trava nova.".into() },
+                Card { target: "waves-2".into(), label: "2".into(), status: Status { label: "a fazer".into(), tone: Tone::Todo }, hint: "Dois.".into() },
+            ],
+        };
+        let tree = doc(vec![
+            section(
+                "progress",
+                "Andamento",
+                vec![Node::Overview(overview), group("progress-state", "Fases e publicações", None, "", false, vec![Node::Item(item("MSTD-STATE-0001", true, "t", "Fase."))])],
+            ),
+            section(
+                "waves",
+                "Ondas",
+                vec![
+                    group("waves-1", "Onda 1", Some(Status { label: "reprovada".into(), tone: Tone::Bad }), "A trava nova.", false, vec![Node::Item(item("MSTD-WAVE-0001", true, "t", "A trava nova."))]),
+                    group("waves-2", "Onda 2", None, "", false, vec![]),
+                ],
+            ),
+        ]);
+        let html = Render::Html.render(&tree);
         assert!(
             html.contains(
                 "<h2><span>Andamento</span><span class=\"count\">1 item</span></h2><div class=\"overview\"><div class=\"ov-head\">\
@@ -747,7 +809,7 @@ mod tests {
             html.contains("<details class=\"group\" id=\"waves-1\" data-crumb=\"Ondas / Onda 1\"><summary><span class=\"gt\">Onda 1</span><span class=\"gs\"><span class=\"tag no\">reprovada</span> A trava nova.</span>"),
             "{html}"
         );
-        let md = Render::Md.render(&doc);
+        let md = Render::Md.render(&tree);
         assert!(md.contains("**Ondas**: 1 reprovada · 1 a fazer\n\n- 1: reprovada — A trava nova.\n- 2: a fazer — Dois."), "{md}");
         assert!(md.contains("### Onda 1\n\n- **MSTD-WAVE-0001**"), "{md}");
     }
@@ -757,15 +819,14 @@ mod tests {
     /// cercado, linha por linha.
     #[test]
     fn the_request_reads_like_an_md_file() {
-        let mut prompts = WavePrompts::new();
-        prompts.insert(1, "# demo — onda 1\n\n## Combinado\n\n- MSTD-RULE-0001 (regra) — `ler MSTD-RULE-0001`".into());
-        let log = [
-            LOG,
-            "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"wave\",\"author\":\"assistant\",\"n\":1,\"text\":\"Onda.\",\"criteria\":[3],\"done_when\":\"d\",\"origin\":2}\n",
-        ]
-        .concat();
-        let doc = spec_document("demo", &parse_log(&log), &prompts, Locale::PtBr);
-        let html = Render::Html.render(&doc);
+        let details = Node::Details {
+            summary: "O pedido da onda 1 · 5 linhas, como o agente as recebe".into(),
+            body: vec![Node::Markdown("# demo — onda 1\n\n## Combinado\n\n- MSTD-RULE-0001 (regra) — `ler MSTD-RULE-0001`".into())],
+            owner: None,
+        };
+        let rule = item("MSTD-RULE-0001", true, "t", "");
+        let tree = doc(vec![section("waves", "Ondas", vec![group("waves-1", "Onda 1", None, "", false, vec![details, Node::Item(rule)])])]);
+        let html = Render::Html.render(&tree);
         assert!(
             html.contains(
                 "<details class=\"item prompt\"><summary><code class=\"c\">pedido</code><span class=\"t\">O pedido da onda 1 · 5 linhas, como o agente as recebe</span>\
@@ -775,7 +836,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<span class=\"count\">2 itens</span></summary>"), "the request counts as a row: {html}");
-        let md = Render::Md.render(&doc);
+        let md = Render::Md.render(&tree);
         assert!(md.contains("**O pedido da onda 1 · 5 linhas, como o agente as recebe**\n\n```\n# demo — onda 1\n"), "{md}");
     }
 
@@ -783,9 +844,9 @@ mod tests {
     /// grupo que cerca o item.
     #[test]
     fn a_heading_inside_an_item_sits_below_the_section_headings() {
-        let html = with(
-            "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"note\",\"author\":\"assistant\",\"text\":\"# Grande\\n\\n## Menor\\n\\nTexto.\",\"keys\":[\"k\"],\"origin\":2}\n",
-        );
+        let note = item("MSTD-NOTE-0001", true, "t", "# Grande\n\n## Menor\n\nTexto.");
+        let tree = doc(vec![section("notes", "Anotações", vec![Node::Item(note)])]);
+        let html = Render::Html.render(&tree);
         assert!(html.contains("<div class=\"prose\"><h4>Grande</h4><h5>Menor</h5><p>Texto.</p></div>"), "{html}");
     }
 
@@ -794,7 +855,7 @@ mod tests {
     /// Fonts, sem fonte gravada; a avulsa também tem as seções no menu.
     #[test]
     fn spec_and_standalone_pages_share_one_engine() {
-        let spec = spec_page_of(Render::Html);
+        let spec = Render::Html.render(&doc(vec![section("agreed", "Combinado", vec![Node::Item(item("MSTD-RULE-0001", true, "t", "Regra."))])]));
         let loose = Render::Html.render(&Document {
             lang: "pt-BR".into(),
             kind: None,

@@ -4,10 +4,22 @@
 
 use serde_json::Value;
 
-use super::findings::is_plan_finding;
 use super::{code_span, first_paragraph, join, one_line, Page};
 use crate::domain::spec_events::{type_spec, Block, Kind, SpecEvent};
+use crate::platform::i18n::{translate, Locale};
 use crate::view::document::{Field, Item, Status, Tone};
+
+/// A anotação que nasceu de um achado da conferência do plano: é a que leva o
+/// rótulo do achado, escrito pelo `plan` no idioma do projeto. O rótulo é
+/// reconhecido nos dois idiomas, para o item achar a anotação gravada antes
+/// de o projeto trocar de idioma. O item não repete esse rótulo como campo:
+/// quem monta uma seção com ele já o usa como título dela.
+fn is_plan_finding(event: &SpecEvent) -> bool {
+    event.event_type == "note"
+        && event.str_field("label").is_some_and(|label| {
+            [Locale::PtBr, Locale::EnUs].iter().any(|lang| translate("plan.finding.label", *lang) == label)
+        })
+}
 
 /// Os registros da execução: não mudam o que foi aprovado, e não levam a
 /// marca de "depois da aprovação".
@@ -27,7 +39,7 @@ const WAVE_NUMBERS: &[&str] = &["wave", "waves", "depends_on"];
 const LITERAL: &[&str] =
     &["sha", "proof", "command", "hook", "tool", "mustard", "branch", "base", "repo", "skill", "name"];
 
-impl Page<'_> {
+impl Page {
     /// "depois da aprovação": a marca do item do combinado, da especificação,
     /// dos critérios, das ondas ou das anotações gravado depois da aprovação
     /// que vale. Os registros da execução não a levam.
@@ -272,10 +284,10 @@ fn ints(value: &Value) -> Vec<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::*;
+    use super::super::tests::line;
+    use super::*;
     use crate::domain::spec_events::parse_log;
     use crate::platform::i18n::Locale;
-    use crate::view::document::{spec_document, Item, Node, Tone, WavePrompts};
 
     /// Cada item traz a linha recolhida: o título (o primeiro parágrafo do
     /// texto, ou os campos quando não há texto), a situação com o tom dela e
@@ -292,98 +304,48 @@ mod tests {
             line(7, "criterion_run", ",\"author\":\"binary\",\"criterion\":6,\"result\":\"pass\",\"exit\":0,\"ms\":5"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let all: Vec<&Item> = sections(&doc).into_iter().flat_map(items).collect();
-        let row = |code: &str| all.iter().find(|i| i.code == code).copied().unwrap_or_else(|| panic!("{code}"));
-        let status = |code: &str| row(code).status.clone().map(|s| (s.label, s.tone));
+        let log = parse_log(&content);
+        let page = Page::new(&log, Locale::PtBr);
+        let row = |id: u64| page.item(log.get(id).unwrap_or_else(|| panic!("no event {id}")), true);
+        let status = |id: u64| row(id).status.clone().map(|s| (s.label, s.tone));
 
-        assert_eq!(row("MSTD-DEC-0001").title, "**Primeira linha.**");
-        assert_eq!(row("MSTD-DEC-0001").date.as_deref(), Some("2026-09-12 10:02"));
-        assert_eq!(status("MSTD-DEC-0001"), None);
-        assert_eq!(status("MSTD-VERD-0001"), Some(("reprovada".into(), Tone::Bad)));
-        assert_eq!(status("MSTD-POINT-0001"), Some(("pendente".into(), Tone::Running)));
-        assert_eq!(status("MSTD-PUB-0001"), Some(("sim".into(), Tone::Good)));
-        assert_eq!(status("MSTD-CRUN-0001"), Some(("passou".into(), Tone::Good)));
-        let publish = row("MSTD-PUB-0001");
+        assert_eq!(row(2).title, "**Primeira linha.**");
+        assert_eq!(row(2).date.as_deref(), Some("2026-09-12 10:02"));
+        assert_eq!(status(2), None);
+        assert_eq!(status(3), Some(("reprovada".into(), Tone::Bad)));
+        assert_eq!(status(4), Some(("pendente".into(), Tone::Running)));
+        assert_eq!(status(5), Some(("sim".into(), Tone::Good)));
+        assert_eq!(status(7), Some(("passou".into(), Tone::Good)));
+        let publish = row(5);
         assert!(publish.text.is_empty());
         assert!(publish.title.starts_with("Página: spec · Marco: aprovação · Deu certo: sim"), "{}", publish.title);
-        let criterion = row("MSTD-CRIT-0001");
+        let criterion = row(6);
         assert!(!criterion.title.contains("Origem"), "the origin stays out of the title: {}", criterion.title);
         assert_eq!(criterion.note(), None, "a row with only its time says nothing more in the .md");
     }
 
     /// Toda referência a outro evento sai como o código dele, e o número da
-    /// onda vira o título do grupo dela.
+    /// onda fica fora dos campos: já está no subtítulo do grupo dela.
     #[test]
-    fn references_come_out_as_codes_and_waves_get_their_heading() {
+    fn references_come_out_as_codes_and_the_wave_number_stays_out_of_the_fields() {
         let content = [
             line(1, "criterion", ",\"when\":\"w\",\"then\":\"t\",\"proof\":\"cargo test\",\"origin\":1"),
             line(2, "wave", ",\"n\":1,\"text\":\"Objetivo.\",\"criteria\":[1],\"done_when\":\"d\",\"origin\":1"),
             line(3, "task", ",\"wave\":1,\"text\":\"Tarefa.\",\"files\":[{\"path\":\"a.rs\",\"new\":true}],\"origin\":1"),
-            line(4, "criterion_run", ",\"criterion\":1,\"result\":\"pass\",\"exit\":0,\"ms\":5"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let waves = section(&doc, "waves");
-        let one = group(waves, "waves-1");
-        assert_eq!((one.title.as_str(), one.summary.as_str()), ("Onda 1", "Objetivo."));
-        let wave = items(waves)[0];
+        let log = parse_log(&content);
+        let page = Page::new(&log, Locale::PtBr);
+        let item = |id: u64| page.item(log.get(id).unwrap_or_else(|| panic!("no event {id}")), true);
+
+        let wave = item(2);
         let criteria = wave.fields.iter().find(|f| f.label == "Critérios").expect("criteria field");
         assert_eq!(criteria.value, "MSTD-CRIT-0001");
-        let state = wave.fields.iter().find(|f| f.label == "Estado da onda").expect("wave state");
-        assert_eq!(state.value, "a fazer");
         assert!(wave.fields.iter().all(|f| f.label != "Número"), "the number is in the heading");
-        let task = items(waves)[1];
+        let task = item(3);
         assert_eq!(task.fields[0].value, "`a.rs` (novo)");
-        let criterion = items(section(&doc, "criteria"))[0];
+        let criterion = item(1);
         assert!(criterion.fields.iter().any(|f| f.value == "`cargo test`"));
-        assert!(criterion.fields.iter().any(|f| f.value == "passou (MSTD-CRUN-0001)"), "{criterion:?}");
-    }
-
-    /// O ponto do levantamento que outro fechou mostra o código do ponto que
-    /// o fechou, que é um endereço da página e sai como link; também quando
-    /// o fechamento aponta a versão antiga de um ponto revisto. O ponto ainda
-    /// aberto e o próprio fechamento não mostram fechamento nenhum.
-    #[test]
-    fn a_closed_survey_point_links_to_the_point_that_closed_it() {
-        let point = |status: &str, gap: &str, more: &str| {
-            format!(",\"block\":\"limits\",\"gap\":\"{gap}\",\"from\":\"gap\",\"status\":\"{status}\",\"facts\":[],\"origin\":1{more}")
-        };
-        let content = [
-            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
-            line(2, "point", &point("open", "Tamanho", "")),
-            line(3, "point", &point("open", "Prazo", "")),
-            line(4, "point", &point("closed", "Tamanho", ",\"closes\":2")),
-            line(5, "point", &point("open", "Formato", "")),
-            line(6, "point", &point("open", "Formato revisto", ",\"replaces\":5")),
-            line(7, "point", &point("not_applicable", "Formato", ",\"closes\":5,\"reason\":\"não se aplica\"")),
-        ]
-        .concat();
-        let closed_by = |lang: Locale, label: &str| -> Vec<(String, Option<String>)> {
-            let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), lang);
-            Node::items(&group(section(&doc, "agreed"), "agreed-point").body)
-                .into_iter()
-                .map(|item| {
-                    let link = item.fields.iter().find(|f| f.label == label).map(|f| f.value.clone());
-                    if let Some(code) = &link {
-                        assert!(doc.anchors().contains(code), "{code} is an address on the page, so it comes out as a link");
-                    }
-                    (item.code.clone(), link)
-                })
-                .collect()
-        };
-        let expected = |code: &str, link: Option<&str>| (code.to_string(), link.map(str::to_string));
-        assert_eq!(
-            closed_by(Locale::PtBr, "Fechado por"),
-            [
-                expected("MSTD-POINT-0001", Some("MSTD-POINT-0003")),
-                expected("MSTD-POINT-0002", None),
-                expected("MSTD-POINT-0003", None),
-                expected("MSTD-POINT-0004", Some("MSTD-POINT-0005")),
-                expected("MSTD-POINT-0005", None),
-            ]
-        );
-        assert_eq!(closed_by(Locale::EnUs, "Closed by")[0], expected("MSTD-POINT-0001", Some("MSTD-POINT-0003")));
     }
 
     /// Uma tarefa sem arquivo sai sem a linha dos arquivos; a que cita
@@ -396,11 +358,15 @@ mod tests {
             line(3, "task", ",\"wave\":1,\"text\":\"Mudar o leitor.\",\"files\":[{\"path\":\"a.rs\"}],\"origin\":1"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let tasks: Vec<&Item> =
-            items(section(&doc, "waves")).into_iter().filter(|i| i.code.starts_with("MSTD-TASK-")).collect();
-        let files = |item: &Item| item.fields.iter().any(|f| f.label == "Arquivos");
-        assert_eq!((files(tasks[0]), files(tasks[1])), (false, true), "{tasks:?}");
+        let log = parse_log(&content);
+        let page = Page::new(&log, Locale::PtBr);
+        let files = |id: u64| {
+            page.item(log.get(id).unwrap_or_else(|| panic!("no event {id}")), true)
+                .fields
+                .iter()
+                .any(|f| f.label == "Arquivos")
+        };
+        assert_eq!((files(2), files(3)), (false, true));
     }
 
     /// Uma prova que já traz o comando entre crases no meio da frase sai
@@ -413,14 +379,18 @@ mod tests {
             line(2, "criterion", ",\"when\":\"w\",\"then\":\"t\",\"proof\":\"cargo test\",\"origin\":1"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let proofs: Vec<&str> = items(section(&doc, "criteria"))
-            .iter()
-            .flat_map(|i| i.fields.iter())
-            .filter(|f| f.label == "Prova")
-            .map(|f| f.value.as_str())
-            .collect();
-        assert_eq!(proofs, ["`find . -type f | wc -l` = 3", "`cargo test`"]);
+        let log = parse_log(&content);
+        let page = Page::new(&log, Locale::PtBr);
+        let proof = |id: u64| {
+            page.item(log.get(id).unwrap_or_else(|| panic!("no event {id}")), true)
+                .fields
+                .iter()
+                .find(|f| f.label == "Prova")
+                .map(|f| f.value.clone())
+                .unwrap_or_else(|| panic!("no proof field on {id}"))
+        };
+        assert_eq!(proof(1), "`find . -type f | wc -l` = 3");
+        assert_eq!(proof(2), "`cargo test`");
     }
 
     /// O que a spec ganhou depois da aprovação que vale sai marcado, com a
@@ -445,11 +415,16 @@ mod tests {
         ]
         .concat();
         let notes = |content: &str, lang: Locale| -> Vec<(String, Option<String>)> {
-            let doc = spec_document("s", &parse_log(content), &WavePrompts::new(), lang);
-            sections(&doc)
+            let log = parse_log(content);
+            let page = Page::new(&log, lang);
+            log.visible()
                 .into_iter()
-                .filter(|s| s.anchor.as_deref() != Some("conversation"))
-                .flat_map(|s| items(s).into_iter().map(|i| (i.code.clone(), i.note())).collect::<Vec<_>>())
+                .filter(|e| e.block() != Some(Block::Conversation))
+                .map(|e| {
+                    let item = page.item(e, true);
+                    let note = item.note();
+                    (item.code, note)
+                })
                 .collect()
         };
         let marked = |got: &[(String, Option<String>)]| -> Vec<(String, String)> {
@@ -467,11 +442,6 @@ mod tests {
         );
         let english = marked(&notes(&approved, Locale::EnUs));
         assert_eq!(english[0].1, "after the approval · 2026-09-12 10:06");
-
-        let doc = spec_document("s", &parse_log(&approved), &WavePrompts::new(), Locale::PtBr);
-        let talk = items(section(&doc, "conversation"));
-        assert_eq!(talk[0].note().as_deref(), Some("mensagem · usuário · 2026-09-12 10:01"), "the conversation keeps its note");
-        assert_eq!(talk[0].who.as_deref(), Some("mensagem · usuário"), "the row says what and whose it is");
 
         let never = before_approval.replace("\"phase\":\"plan\"", "\"phase\":\"survey\"") + &after_approval.replace("approved", "plan");
         assert!(marked(&notes(&never, Locale::PtBr)).is_empty(), "a spec never approved marks nothing");
@@ -491,16 +461,15 @@ mod tests {
             line(5, "rule", ",\"text\":\"Depois da revisão.\",\"keys\":[\"k\"],\"example\":\"e\",\"origin\":1"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let rules: Vec<(String, Option<String>)> =
-            items(section(&doc, "agreed")).iter().map(|i| (i.text.clone(), i.note())).collect();
-        let rule = |text: &str, note: &str| (text.to_string(), Some(note.to_string()));
-        assert_eq!(
-            rules,
-            [
-                rule("Entre as duas.", "depois da aprovação · 2026-09-12 10:03"),
-                rule("Depois da revisão.", "depois da aprovação · 2026-09-12 10:05"),
-            ]
-        );
+        let log = parse_log(&content);
+        let page = Page::new(&log, Locale::PtBr);
+        let rule = |id: u64| {
+            let item = page.item(log.get(id).unwrap_or_else(|| panic!("no event {id}")), true);
+            let note = item.note();
+            (item.text, note)
+        };
+        let expected = |text: &str, note: &str| (text.to_string(), Some(note.to_string()));
+        assert_eq!(rule(3), expected("Entre as duas.", "depois da aprovação · 2026-09-12 10:03"));
+        assert_eq!(rule(5), expected("Depois da revisão.", "depois da aprovação · 2026-09-12 10:05"));
     }
 }

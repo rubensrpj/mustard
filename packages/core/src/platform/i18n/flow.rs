@@ -983,7 +983,6 @@ mod tests {
             ("page.copy.agent", &["{page}", "{order}"][..]),
             ("page.migration.unrated", &["{tasks}", "{scale}", "{cap}"][..]),
             ("page.migration.over_cap", &["{wave}", "{points}", "{cap}"][..]),
-            ("page.deprecated", &[][..]),
             ("page.copy.new_address", &[][..]),
             ("page.copy.no_links", &[][..]),
             ("page.copy.failed", &[][..]),

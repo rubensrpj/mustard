@@ -1,8 +1,11 @@
 //! Um motor de página só.
 //!
-//! A página de uma spec, a do projeto, uma página avulsa escrita em markdown e
-//! a lista dos itens sem dono de uma spec saem do mesmo motor: o mesmo estilo, as fontes do Google Fonts por um link,
-//! e nenhuma fonte gravada dentro da página.
+//! Uma página avulsa escrita em markdown e a lista dos itens sem dono de uma
+//! spec, os dois que o binário ainda escreve em HTML, saem do mesmo motor: o
+//! mesmo estilo, as fontes do Google Fonts por um link, e nenhuma fonte
+//! gravada dentro da página. A página da spec e a do projeto saem hoje de um
+//! template mais banco de dados, fora deste motor: o comando que as refazia
+//! saiu com esta obra.
 //!
 //! Fora de `apps/rt/src/report/`, nenhum arquivo de código do Mustard escreve
 //! o começo de uma página HTML (`<!doctype html>`) ou uma folha de estilo
@@ -124,9 +127,9 @@ fn style(html: &str) -> &str {
         .map_or("", |(css, _)| css)
 }
 
-/// As páginas geradas pelo binário: a da spec, a do projeto, a avulsa e a
-/// lista dos itens sem dono da spec.
-fn the_pages(root: &Path) -> [String; 4] {
+/// As páginas que o binário ainda escreve em HTML: a avulsa e a lista dos
+/// itens sem dono da spec.
+fn the_pages(root: &Path) -> [String; 2] {
     fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
     let spec = root.join(".claude").join("spec").join("demo");
     fs::create_dir_all(&spec).expect("spec dir");
@@ -140,7 +143,6 @@ fn the_pages(root: &Path) -> [String; 4] {
         ),
     )
     .expect("events");
-    let report = page(root, &["--spec", "demo"]);
     fs::write(root.join("corpo.md"), "# Avulsa\n\n## Seção\n\nTexto com **negrito**.\n").expect("body");
     page(root, &["--body", "corpo.md", "--out", "avulsa.html"]);
     let owners = page(root, &["--spec", "demo", "--owners"]);
@@ -150,18 +152,17 @@ fn the_pages(root: &Path) -> [String; 4] {
     let (ok, refused) = page_run(root, &["--spec", "demo", "--owners", "donos.json"]);
     assert!(!ok && refused["reason"] == "bad-owner-line", "{refused}");
     let read = |relative: &str| fs::read_to_string(root.join(relative)).unwrap_or_else(|_| panic!("{relative}"));
-    let project = report["project"].as_str().expect("the project page comes with the spec page");
     let owners = owners["html"].as_str().expect("the owners list says where it went");
-    [read(".claude/spec/demo/spec.html"), read(project), read("avulsa.html"), read(owners)]
+    [read("avulsa.html"), read(owners)]
 }
 
 #[test]
 fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
-    // As quatro páginas saem do mesmo motor: o mesmo estilo e as mesmas fontes.
+    // As duas páginas saem do mesmo motor: o mesmo estilo e as mesmas fontes.
     let project = tempfile::tempdir().expect("tempdir");
     let pages = the_pages(project.path());
     let fonts = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Geist";
-    for (name, html) in ["spec", "project", "loose", "owners"].iter().zip(&pages) {
+    for (name, html) in ["loose", "owners"].iter().zip(&pages) {
         assert!(html.starts_with("<!doctype html>"), "{name}: {html}");
         assert!(!style(html).is_empty(), "{name} has no style");
         assert_eq!(style(html), style(&pages[0]), "{name} has another style");
@@ -169,10 +170,8 @@ fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
         assert!(!html.contains("@font-face") && !html.contains("data:font"), "{name} carries a font");
         assert_eq!(html.matches("<style>").count(), 1, "{name} carries a second style");
     }
-    assert!(pages[0].contains("<code>tudo</code>"), "the spec page did not convert markdown");
-    assert!(pages[1].contains("<code class=\"c\">demo</code>"), "the project page does not list the spec");
-    assert!(pages[2].contains("<strong>negrito</strong>"), "the loose page did not convert markdown");
-    assert!(pages[3].contains("Todo item combinado já tem dono."), "the owners list is not the one asked for");
+    assert!(pages[0].contains("<strong>negrito</strong>"), "the loose page did not convert markdown");
+    assert!(pages[1].contains("Todo item combinado já tem dono."), "the owners list is not the one asked for");
 
     let root = repo_root();
     let mut files = Vec::new();
@@ -200,18 +199,9 @@ fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
     }
 }
 
-/// O grupo `group` da página: do começo dele até o começo do grupo seguinte.
-fn group<'a>(html: &'a str, group: &str) -> &'a str {
-    let open = format!("<details class=\"group\" id=\"{group}\"");
-    let at = html.find(&open).unwrap_or_else(|| panic!("the page has no {group} group"));
-    let rest = &html[at + open.len()..];
-    &rest[..rest.find("<details class=\"group\"").unwrap_or(rest.len())]
-}
-
 /// Um rascunho vira arquivo de eventos item por item: cada regra, critério,
 /// limite e caso de borda gravado pelo comando do seu tipo volta, na leitura
-/// do bloco dele, com o tipo certo e o texto igual; e a página que o motor
-/// gera desse arquivo mostra cada um no grupo do seu tipo.
+/// do bloco dele, com o tipo certo e o texto igual.
 #[test]
 fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
     let project = tempfile::tempdir().expect("tempdir");
@@ -230,35 +220,33 @@ fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
     )
     .expect("events");
 
-    // (tipo, bloco da leitura, grupo da página, campos, os textos que ficam iguais)
-    let items: [(&str, &str, &str, Value, &[&str]); 4] = [
-        ("rule", "agreed", "agreed-rule",
+    // (tipo, bloco da leitura, campos, os textos que ficam iguais)
+    let items: [(&str, &str, Value, &[&str]); 4] = [
+        ("rule", "agreed",
             serde_json::json!({"text": "A trava confere o programa, nunca o texto entre aspas.",
                 "example": "rm -rf pasta é barrado.", "keys": ["trava"], "origin": 2}),
             &["text"]),
-        ("criterion", "criteria", "criteria-criterion",
+        ("criterion", "criteria",
             serde_json::json!({"when": "O pedido de uma onda passa de 500 linhas.",
                 "then": "O binário recusa o despacho.", "proof": "cargo test", "origin": 2}),
             &["when", "then"]),
-        ("limit", "agreed", "agreed-limit",
+        ("limit", "agreed",
             serde_json::json!({"text": "Tamanho do pedido de cada onda.", "value": "500 linhas",
                 "keys": ["pedido"], "origin": 2}),
             &["text"]),
-        ("edge_case", "agreed", "agreed-edge_case",
+        ("edge_case", "agreed",
             serde_json::json!({"text": "Duas sessões gravam a mesma spec ao mesmo tempo.",
                 "expected": "A segunda espera a trava.", "keys": ["trava"], "origin": 2}),
             &["text"]),
     ];
     let mut written = Vec::new();
-    for (kind, _, _, fields, _) in &items {
+    for (kind, _, fields, _) in &items {
         let (ok, report) = rt(root, "write", &[*kind, "--spec", "demo", "--json", &fields.to_string()]);
         assert!(ok, "write {kind}: {report}");
         written.push(report["id"].as_u64().unwrap_or_else(|| panic!("write {kind} gives no number: {report}")));
     }
 
-    page(root, &["--spec", "demo"]);
-    let html = fs::read_to_string(spec.join("spec.html")).expect("the spec page");
-    for ((kind, block, group_id, fields, same), id) in items.iter().zip(written) {
+    for ((kind, block, fields, same), id) in items.iter().zip(written) {
         let (ok, read) = rt(root, "read", &[*block, "--spec", "demo"]);
         assert!(ok, "read {block}: {read}");
         let events = read["events"].as_array().cloned().unwrap_or_default();
@@ -267,11 +255,8 @@ fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
             .find(|e| e["id"].as_u64() == Some(id))
             .unwrap_or_else(|| panic!("the {kind} written as {id} is not in the {block} block: {read}"));
         assert_eq!(event["type"], *kind, "{event}");
-        let shown = group(&html, group_id);
         for field in *same {
             assert_eq!(event[field], fields[field], "the {kind} {field} changed on the way: {event}");
-            let text = fields[field].as_str().expect("a text field");
-            assert!(shown.contains(text), "the {group_id} group does not show {text:?}:\n{shown}");
         }
     }
 }

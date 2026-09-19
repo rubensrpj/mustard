@@ -229,12 +229,12 @@ mod tests {
 
     use serde_json::{json, Value};
 
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::domain::spec_events::parse_log;
     use crate::domain::spec_index::ProjectRow;
-    use crate::view::document::{
-        project_document, spec_page, Document, Item, Node, RtkDay, SpecInputs, WavePrompts, WaveState, WaveStates,
-    };
+    use crate::view::document::{RtkDay, WaveState, WaveStates};
 
     /// O apoio que roda um template no Node, com o DOM e as capacidades do
     /// claude.ai imitados.
@@ -242,6 +242,17 @@ mod tests {
 
     /// A spec de exemplo da página de hoje, com um item de cada tipo.
     const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/rt/tests/fixtures/spec_page/spec.ndjson"));
+
+    /// As seções, os grupos e os itens que o motor antigo (`spec_page`, saído
+    /// nesta obra) montava para a spec de exemplo: gravados uma vez, à mão,
+    /// como arquivo fixo — o teste lado a lado não chama mais o motor antigo.
+    const SPEC_PAGE_FIXTURE: &str =
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/page_templates/spec_page.json"));
+
+    /// As mesmas linhas que o motor antigo (`project_document`, saído nesta
+    /// obra) montava para a página do projeto de exemplo, como arquivo fixo.
+    const PROJECT_PAGE_FIXTURE: &str =
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/page_templates/project_page.json"));
 
     /// Os registros internos que a cópia para o banco não leva.
     const INTERNAL: &[&str] = &["injection", "hook", "call"];
@@ -273,8 +284,8 @@ mod tests {
         WaveStates::from([(2, WaveState::Approved), (3, WaveState::Running)])
     }
 
-    fn wave_prompts() -> WavePrompts {
-        WavePrompts::from([
+    fn wave_prompts() -> BTreeMap<u64, String> {
+        BTreeMap::from([
             (1, "# demo — onda 1\n\n## A onda e as tarefas dela\n\n- `waves`: MSTD-WAVE-0001\n".to_string()),
             (4, "# demo — onda 4\n\n## Combinado\n\n- `agreed`: MSTD-RULE-0001\n".to_string()),
         ])
@@ -289,7 +300,6 @@ mod tests {
         match state {
             WaveState::Todo => "todo",
             WaveState::Running => "running",
-            WaveState::Delivered => "delivered",
             WaveState::Approved => "approved",
             WaveState::Rejected => "rejected",
         }
@@ -333,62 +343,9 @@ mod tests {
         got
     }
 
-    /// Um texto em markdown de linha como a página o mostra: sem crase, sem
-    /// negrito e com cada link reduzido ao texto dele.
-    fn shown(md: &str) -> String {
-        let mut out = String::new();
-        let mut rest = md;
-        while let Some(open) = rest.find('[') {
-            let tail = &rest[open..];
-            if let Some(close) = tail.find("](")
-                && let Some(end) = tail[close..].find(')')
-            {
-                out.push_str(&rest[..open]);
-                out.push_str(&tail[1..close]);
-                rest = &tail[close + end + 1..];
-            } else {
-                out.push_str(&rest[..=open]);
-                rest = &rest[open + 1..];
-            }
-        }
-        out.push_str(rest);
-        out.replace("**", "").replace('`', "")
-    }
-
-    fn item_row(item: &Item) -> Value {
-        json!({
-            "code": item.code, "anchored": item.anchored, "title": shown(&item.title), "who": item.who,
-            "mark": item.mark, "status": item.status.as_ref().map(|s| s.label.clone()), "date": item.date,
-            "fields": item.fields.iter().map(|f| json!([f.label, shown(&f.value)])).collect::<Vec<_>>(),
-        })
-    }
-
-    /// As seções, os grupos e os itens da página que o binário montava, na
-    /// forma em que o teste lê a página do template.
-    fn page_of(doc: &Document) -> Value {
-        let sections: Vec<Value> = doc
-            .body
-            .iter()
-            .filter_map(|node| if let Node::Section(s) = node { Some(s) } else { None })
-            .map(|s| {
-                let groups: Vec<Value> = s
-                    .body
-                    .iter()
-                    .filter_map(|node| if let Node::Group(g) = node { Some(g) } else { None })
-                    .map(|g| {
-                        let status = g.status.as_ref().map(|s| s.label.clone()).unwrap_or_default();
-                        let items: Vec<Value> = Node::items(&g.body).into_iter().map(item_row).collect();
-                        json!({"id": g.anchor, "title": g.title, "summary": format!("{status}{}", shown(&g.summary)), "items": items})
-                    })
-                    .collect();
-                json!({"id": s.anchor, "heading": shown(&s.heading), "groups": groups})
-            })
-            .collect();
-        json!(sections)
-    }
-
-    /// A mesma forma, lida da página do template. A seção dos removidos fica
-    /// de fora: a página que o binário montava não a tinha.
+    /// A mesma forma que o arquivo fixo guarda, lida da página do template. A
+    /// seção dos removidos fica de fora: a página que o motor antigo montava
+    /// não a tinha.
     fn page_seen(seen: &Value) -> Value {
         let sections: Vec<Value> = seen["sections"]
             .as_array()
@@ -455,10 +412,6 @@ mod tests {
     #[test]
     fn the_page_templates_read_the_database() {
         let lines = spec_lines();
-        let content = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
-        let log = parse_log(&content);
-        let (states, prompts, rtk) = (wave_states(), wave_prompts(), rtk_days());
-        let doc = spec_page("demo", &log, SpecInputs { prompts: &prompts, rtk: &rtk, waves: &states }, Locale::PtBr);
         let steps = json!([
             {"do": "wait"}, {"do": "scrape", "as": "page"},
             {"do": "download", "as": "md"},
@@ -474,7 +427,8 @@ mod tests {
         assert_eq!(page["statusHidden"], json!(true));
         assert_eq!(page["title"], json!("demo"));
         assert_eq!(page["meta"], json!(["spec demo", "fase aprovada", "branch feature/demo", "sai de dev"]));
-        assert_eq!(page_seen(page), page_of(&doc), "the same sections, groups and items as today's page");
+        let fixed: Value = serde_json::from_str(SPEC_PAGE_FIXTURE).expect("the spec page fixture is valid JSON");
+        assert_eq!(page_seen(page), fixed, "the same sections, groups and items as the fixed page");
         // A versão mais nova de cada item, sem o item retirado, com a marca do
         // que entrou depois da aprovação; a versão antiga fica na conversa. O
         // item retirado só aparece na seção dos removidos.
@@ -571,22 +525,9 @@ mod tests {
         let got = run("project", &project_page_template(Locale::PtBr), Some(db), json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]));
         let page = &got["page"];
         assert_eq!(page["state"], json!("ready"));
-        let doc = project_document("loja", &rows, "i", "2026-09-17", Locale::PtBr);
-        let Some(Node::Section(specs)) = doc.body.first() else { panic!("the specs section") };
-        assert_eq!(specs.body.first(), Some(&Node::Paragraph(page["stages"].as_str().unwrap_or_default().to_string())));
-        let expected: Vec<Value> = specs
-            .body
-            .iter()
-            .filter_map(|n| if let Node::Group(g) = n { Some(g) } else { None })
-            .map(|g| {
-                let rows: Vec<Value> = Node::items(&g.body)
-                    .into_iter()
-                    .map(|i| json!({"code": i.code, "title": i.title, "status": i.status.as_ref().map(|s| s.label.clone()),
-                        "date": i.date, "fields": i.fields.iter().map(|f| json!([f.label, shown(&f.value)])).collect::<Vec<_>>()}))
-                    .collect();
-                json!({"id": g.anchor, "title": g.title, "rows": rows})
-            })
-            .collect();
+        let fixed: Value = serde_json::from_str(PROJECT_PAGE_FIXTURE).expect("the project page fixture is valid JSON");
+        assert_eq!(page["stages"], fixed["stages"], "the same stages line as the fixed page");
+        let expected = fixed["groups"].clone();
         let seen: Vec<Value> = page["groups"]
             .as_array()
             .expect("groups")
@@ -597,7 +538,7 @@ mod tests {
                 json!({"id": g["id"], "title": g["title"], "rows": rows})
             })
             .collect();
-        assert_eq!(seen, expected, "the same groups and rows as today's project page");
+        assert_eq!(seen, expected.as_array().cloned().unwrap_or_default(), "the same groups and rows as the fixed page");
         let link = &page["groups"][1]["rows"][0]["fields"][4];
         assert_eq!(link[2], json!(r#"<a href="https://claude.ai/code/artifact/busca" target="_blank" rel="noopener">busca</a>"#));
     }

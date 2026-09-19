@@ -422,7 +422,6 @@ fn state_name(state: WaveState) -> &'static str {
     match state {
         WaveState::Todo => "todo",
         WaveState::Running => "running",
-        WaveState::Delivered => "delivered",
         WaveState::Approved => "approved",
         WaveState::Rejected => "rejected",
     }

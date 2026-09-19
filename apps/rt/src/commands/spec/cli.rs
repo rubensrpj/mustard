@@ -27,17 +27,17 @@ pub enum SpecCmd {
     /// Com `--body` e `--out`, gera uma página avulsa (análise, relatório,
     /// plano) a partir de um arquivo markdown: escreve-se markdown, nunca
     /// HTML. Sem `--title`, o título é a primeira linha `# Título`. Com
-    /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
-    /// `spec.ndjson`; com `--spec` e `--owners`, grava a lista dos itens sem
-    /// dono, com a proposta de dono de cada um, para conferir antes de gravar.
-    /// Devolve `{ok, path}`, `{ok, spec, md, html}` ou
+    /// `--spec` e `--owners`, grava a lista dos itens sem dono, com a
+    /// proposta de dono de cada um, para conferir antes de gravar; as páginas
+    /// da spec e do projeto são templates que leem um banco de dados, e este
+    /// comando não as refaz mais.
+    /// Devolve `{ok, path}` ou
     /// `{ok, spec, html, unowned, proposed, given, left, items}`.
     #[command(name = "page")]
     #[command(display_order = 17)]
     Page {
-        /// A spec cuja página e cujo `.md` são refeitos. Descontinuado: as
-        /// páginas agora são templates que leem um banco de dados.
-        #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
+        /// A spec da lista dos itens sem dono; só vale junto de `--owners`.
+        #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"], requires = "owners")]
         spec: Option<String>,
         /// O arquivo markdown da página avulsa.
         #[arg(long)]
@@ -103,7 +103,8 @@ mod tests {
     }
 
     /// `--owners` vem sozinho ou com o arquivo de donos, e só junto de
-    /// `--spec`.
+    /// `--spec`; `--spec` só vem junto de `--owners`, porque o comando que
+    /// refazia o `spec.md` e o `spec.html` sozinho saiu.
     #[test]
     fn owners_comes_alone_or_with_the_file_and_only_with_a_spec() {
         let owners = |args: &[&str]| match Probe::try_parse_from(args).map(|probe| probe.cmd) {
@@ -115,7 +116,15 @@ mod tests {
             owners(&["t", "page", "--spec", "x", "--owners", "donos.json"]),
             Ok(Some(Some("donos.json".into())))
         );
-        assert_eq!(owners(&["t", "page", "--spec", "x"]), Ok(None));
         assert_eq!(owners(&["t", "page", "--owners"]), Err(clap::error::ErrorKind::MissingRequiredArgument));
+    }
+
+    /// O comando antigo que refazia o `spec.md` e o `spec.html` saiu: `--spec`
+    /// sozinho, sem `--owners`, é recusado na linha de comando, antes de
+    /// qualquer leitura de disco.
+    #[test]
+    fn the_old_page_command_is_gone() {
+        let refused = Probe::try_parse_from(["t", "page", "--spec", "x"]).map(|probe| probe.cmd).err().map(|e| e.kind());
+        assert_eq!(refused, Some(clap::error::ErrorKind::MissingRequiredArgument));
     }
 }
