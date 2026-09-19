@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{
     check_message, MessageRefusal, Refusal, SpecLog, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX,
 };
@@ -205,6 +206,17 @@ pub(super) fn git_lock(root: &Path) -> Result<LockedFile, RoundRefusal> {
 /// O commit atual do checkout `root`; vazio quando o git não responde.
 pub(super) fn head(root: &Path) -> String {
     git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string()
+}
+
+/// Depois do commit da rodada, o mapa relê só os arquivos que mudaram, pela
+/// leitura por partes que a ferramenta do scan já faz sozinha: sem isso, a
+/// sugestão de skill e de arquivos parecidos, antes do envio da onda
+/// seguinte, apontaria um arquivo que este commit acabou de apagar. Nunca
+/// trava a rodada nem avisa: sem o mapa, ou sem a ferramenta, a sugestão
+/// segue com o que já tinha.
+pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
+    let model = crate::commands::scan::default_model_path(root);
+    let _ = mine(root, &model);
 }
 
 /// Os arquivos da rodada separados por repositório: os do principal e, por

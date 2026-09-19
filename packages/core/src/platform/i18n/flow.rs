@@ -979,7 +979,7 @@ mod tests {
             ("plan.execution.ends_with_test_agent", &[][..]),
             ("page.copy.publish", &["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"][..]),
             ("page.copy.batches", &["{page}", "{url}", "{files}", "{spec}", "{record}"][..]),
-            ("page.copy.old_page", &[][..]),
+            ("page.copy.old_page", &["{page}"][..]),
             ("page.copy.agent", &["{page}", "{order}"][..]),
             ("page.migration.unrated", &["{tasks}", "{scale}", "{cap}"][..]),
             ("page.migration.over_cap", &["{wave}", "{points}", "{cap}"][..]),

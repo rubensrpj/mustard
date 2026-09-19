@@ -11,7 +11,7 @@ You write a skill: a short guide another agent will follow to do a task that rep
 
 - Read the examples in full, and their tests. Write only what the examples show; do not invent a pattern.
 - Save it as `.claude/skills/<task>/SKILL.md`, inside the subproject, under 500 lines.
-- The header carries `name: <task>` and `description: Use when <the situation, in the words of whoever asks>.`
+- The header carries `name: <task>` and `description: Use when <the file type, the folder and the task's words>.` — an index entry, not a loose sentence: it is what the search uses to find the right skill.
 - Then, in this order:
   1. Steps: each one with the exact file and what changes in it.
   2. One complete example, copied from a real file.

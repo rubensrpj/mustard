@@ -130,6 +130,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.lessons", Locale::EnUs) => "Lessons",
         ("prompt.part.skills", Locale::PtBr) => "Skills das tarefas",
         ("prompt.part.skills", Locale::EnUs) => "Task skills",
+        // Os arquivos de leitura que a escolha antes do envio confirmou, por
+        // tarefa: o mapa sugeriu, e o orquestrador manteve.
+        ("prompt.part.task_reads", Locale::PtBr) => "Leitura por tarefa",
+        ("prompt.part.task_reads", Locale::EnUs) => "Per-task reading",
         ("prompt.part.delivered", Locale::PtBr) => "O que as ondas anteriores entregaram",
         ("prompt.part.delivered", Locale::EnUs) => "What the earlier waves delivered",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
@@ -252,8 +256,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            40,
-            0x29d9_bd7a_2937_0a3f,
+            41,
+            0x6ec6_43c3_bf76_3257,
         );
     }
 }

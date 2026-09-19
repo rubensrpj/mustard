@@ -20,7 +20,7 @@ use super::queue::{
     analyse, analysis_lines, first_unfinished, max_parallel, next_waves, only_analysis, open_copies, sent_items,
     waves_in_progress, Analysed,
 };
-use super::report::{take_report, Taken};
+use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::{read::checkout, write::record};
@@ -145,6 +145,20 @@ pub(super) fn run_round(
     lang: Locale,
     session: Option<&str>,
 ) -> Result<Value, RoundRefusal> {
+    run_round_with_mine(opts, root, lang, session, &|root, out| {
+        mustard_core::Scan::locate().scan(root, out)
+    })
+}
+
+/// [`run_round`] com quem relê o mapa depois do commit da rodada (`mine`),
+/// que um teste escolhe sem instalar a ferramenta do scan de verdade.
+pub(super) fn run_round_with_mine(
+    opts: &RoundOpts,
+    root: &Path,
+    lang: Locale,
+    session: Option<&str>,
+    mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
+) -> Result<Value, RoundRefusal> {
     let refuse = RoundRefusal::Refused;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
@@ -167,7 +181,9 @@ pub(super) fn run_round(
     // a rodada vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, mut warnings, commit } = match raw {
-        Some(raw) if !only_analysis(raw) => take_report(&opts.root, root, &spec, raw, &log, lang)?,
+        Some(raw) if !only_analysis(raw) => {
+            super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, mine)?
+        }
         _ => Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None },
     };
     let (given, unread) = analysis_lines(raw, lang);

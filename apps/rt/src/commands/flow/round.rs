@@ -269,6 +269,26 @@ mod tests {
         )
     }
 
+    /// [`round`] com quem relê o mapa depois do commit da rodada (`mine`),
+    /// que um teste escolhe sem instalar a ferramenta do scan de verdade.
+    pub(super) fn round_with_mine(
+        root: &Path,
+        spec: &str,
+        report: Option<&str>,
+        mine: &dyn Fn(
+            &Path,
+            &Path,
+        ) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
+    ) -> Value {
+        let opts =
+            RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) };
+        let project = spec_events::project(&opts.root);
+        match answer::run_round_with_mine(&opts, &project.root, project.lang, None, mine) {
+            Ok(report) => report,
+            Err(refusal) => refusal.to_value(project.lang),
+        }
+    }
+
     /// Uma linha do fim de um agente, como os textos dele ensinam.
     pub(super) fn line(tag: &str, body: Value) -> String {
         format!("<{tag}>{body}</{tag}>")

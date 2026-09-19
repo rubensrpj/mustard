@@ -5,16 +5,18 @@
 
 use std::path::Path;
 
+use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{Refusal, SpecLog, DELIVERED_MAX_CHARS};
 use mustard_core::domain::spec_state::{PhaseWriter, State};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::Scan;
 use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::commit::{
     close_copies, commit_draft, commit_message, format_round_files, git_lock, head, join_copies, make_commit,
-    record_commit, round_repos, unknown_file, write_joined, UNMADE_SHA,
+    record_commit, refresh_map, round_repos, unknown_file, write_joined, UNMADE_SHA,
 };
 use super::stops::{change_accepted, replan_code};
 use crate::commands::spec_events::write::{record, RecordCheck};
@@ -85,6 +87,20 @@ pub(crate) fn take_report(
     raw: &str,
     log: &SpecLog,
     lang: Locale,
+) -> Result<Taken, RoundRefusal> {
+    take_report_with_mine(start, root, spec, raw, log, lang, &|root, out| Scan::locate().scan(root, out))
+}
+
+/// [`take_report`] com quem relê o mapa depois do commit (`mine`), que um
+/// teste escolhe sem instalar a ferramenta do scan de verdade.
+pub(crate) fn take_report_with_mine(
+    start: &Path,
+    root: &Path,
+    spec: &str,
+    raw: &str,
+    log: &SpecLog,
+    lang: Locale,
+    mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
 ) -> Result<Taken, RoundRefusal> {
     let mut report = parse_report(raw)?;
     // O agente que diz que o plano da onda não funciona para a rodada: a
@@ -194,6 +210,12 @@ pub(crate) fn take_report(
         None => None,
     };
     drop(held_lock);
+    // O mapa acompanha o commit, antes de a onda seguinte pedir a sugestão de
+    // skill e de arquivos parecidos: sem isso, ela apontaria o que este
+    // commit acabou de apagar.
+    if commit.is_some() {
+        refresh_map(root, mine);
+    }
     warnings.extend(close_copies(root, log, &report.waves, lang));
     // A prova nova roda uma vez: a que sai verde sem rodar teste nenhum é
     // avisada agora, antes de o fechamento recusá-la.

@@ -290,11 +290,29 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         .collect();
 
     let files = wave_files(log, wave);
-    let named = skills_named(log, wave);
+    let choice = wave_prompt::choice_for(log, wave, fresh);
+    // As skills que as tarefas nomeiam de saída e as que a escolha antes do
+    // envio confirmou, juntas, sem repetir.
+    let mut named = skills_named(log, wave);
+    for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).flat_map(|t| t.skills.iter()) {
+        if !named.contains(chosen) {
+            named.push(chosen.clone());
+        }
+    }
+    named.sort();
+    // Os arquivos de leitura que a escolha confirmou, por código da tarefa;
+    // a tarefa sem nenhum não entra.
+    let codes = log.codes();
+    let task_reads: Vec<(String, Vec<String>)> = choice
+        .as_ref()
+        .into_iter()
+        .flat_map(|c| c.tasks.iter())
+        .filter(|t| !t.files.is_empty())
+        .map(|t| (codes.get(&t.task).cloned().unwrap_or_else(|| t.task.to_string()), t.files.clone()))
+        .collect();
     // As lições que casam com a onda, menos as que a escolha do orquestrador
     // tirou. O pedido da revisão leva as mesmas.
     let tasks = tasks_text(log, wave);
-    let choice = wave_prompt::choice_for(log, wave, fresh);
     let lessons: Vec<&SpecEvent> = bank
         .map(|bank| wave_lessons(bank, log, wave))
         .unwrap_or_default()
@@ -346,8 +364,9 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         lessons,
         defects,
         skills,
+        task_reads,
         changes: Vec::new(),
-        codes: log.codes(),
+        codes,
     };
     let text = wave_prompt::write(&material, lang);
     let review = wave_prompt::write_review(&material, lang);

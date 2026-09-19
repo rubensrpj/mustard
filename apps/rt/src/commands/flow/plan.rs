@@ -59,8 +59,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
 use mustard_core::domain::project_map::MapRefusal;
-use mustard_core::domain::search;
-use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{open_points, open_refusal};
 use mustard_core::domain::wave_prompt::{self, Owner};
@@ -70,6 +69,7 @@ use mustard_core::io::wave_prompt::{prompts, Flight, WavePrompt};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use crate::commands::flow::skill_search::{best_skill, skills_on_disk, MAP_SUGGESTIONS};
 use crate::commands::spec_events::{self, read::checkout, write::record};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
@@ -716,54 +716,6 @@ pub(crate) fn migration_points(log: &SpecLog) -> WavePoints {
     wave_points(log, &gone)
 }
 
-/// As skills que existem no disco, pelo nome e pelas raízes do "quando usar"
-/// da descrição delas, prontas para a busca. Procuradas onde o pedido da onda
-/// as procura: nas pastas dos arquivos que as tarefas declaram, subindo até a
-/// raiz, e na raiz do projeto. A skill sem descrição fica de fora, porque é a
-/// descrição que diz se ela serve para a tarefa.
-fn skills_on_disk(root: &Path, tasks: &[&SpecEvent]) -> Vec<(String, String)> {
-    let mut folders: Vec<PathBuf> = Vec::new();
-    for task in tasks {
-        for (file, _) in declared_files(task) {
-            let mut folder = root.join(file);
-            while folder.pop() && folder.starts_with(root) {
-                if !folders.contains(&folder) {
-                    folders.push(folder.clone());
-                }
-            }
-        }
-    }
-    if !folders.contains(&root.to_path_buf()) {
-        folders.push(root.to_path_buf());
-    }
-    let mut out: Vec<(String, String)> = Vec::new();
-    for folder in folders {
-        let Ok(entries) = std::fs::read_dir(folder.join(".claude").join("skills")) else { continue };
-        for entry in entries.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
-            if out.iter().any(|(had, _)| *had == name) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(entry.path().join("SKILL.md")) else { continue };
-            let Ok(front) = mustard_core::domain::skill::frontmatter::parse(&text) else { continue };
-            let when = front.description.split_whitespace().collect::<Vec<_>>().join(" ");
-            if !when.is_empty() {
-                out.push((name, search_field(Some(&when), &[])));
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// A skill que serve para o texto de uma tarefa: a que casa mais forte com
-/// ele, pela mesma busca do recorte dos itens. `None` quando nenhuma casa.
-fn best_skill(on_disk: &[(String, String)], text: &str) -> Option<String> {
-    let docs = on_disk.iter().enumerate().map(|(i, (_, when))| (i as u64, when.as_str()));
-    let hit = search::search(docs, text).into_iter().next()?;
-    on_disk.get(hit.id as usize).map(|(name, _)| name.clone())
-}
-
 /// `true` quando o trabalho de uma tarefa se repete no projeto: o mapa acha
 /// arquivos do mesmo tipo dos que ela mexe. É o sinal de que vale uma skill.
 fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
@@ -771,9 +723,6 @@ fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
     let Ok(map) = mustard_core::io::project_map::read(root) else { return false };
     !mustard_core::domain::project_map::examples(&map, &target, Locale::PtBr).picks.is_empty()
 }
-
-/// Quantos arquivos o mapa sugere junto da recusa da tarefa sem arquivo.
-const MAP_SUGGESTIONS: usize = 3;
 
 /// O teto da soma das notas de uma onda: acima dele, o plano avisa, sem
 /// segurar a aprovação. Fica no código, sem chave de configuração.
@@ -800,7 +749,7 @@ fn says_it_touches_no_file(text: &str) -> bool {
 }
 
 /// Os arquivos que uma tarefa declara: o caminho e se ela o marcou como novo.
-fn declared_files(task: &SpecEvent) -> Vec<(String, bool)> {
+pub(super) fn declared_files(task: &SpecEvent) -> Vec<(String, bool)> {
     task.fields
         .get("files")
         .and_then(Value::as_array)

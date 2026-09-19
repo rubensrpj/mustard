@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
 use mustard_core::domain::spec_index::title_of;
-use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, WaveCopy};
+use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, TaskChoice, WaveCopy};
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::{copy_path, lesson_bank, recorded_copy, shown, wave_lessons};
 use mustard_core::platform::git;
@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 
 use super::report::{has_agent_lines, tagged};
 use super::stops::waves_replanned;
+use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 
@@ -100,6 +101,10 @@ pub(super) struct AnalysisLine {
     wave: u64,
     removed: Vec<(Value, String)>,
     added: Vec<(Value, String)>,
+    /// A escolha da skill e dos arquivos de leitura, por tarefa, como a
+    /// linha trouxe: cada entrada crua, ainda por validar contra as tarefas
+    /// desta onda.
+    tasks: Vec<Value>,
 }
 
 /// `true` quando o relatório só traz a escolha antes do envio: não há entrega
@@ -127,7 +132,8 @@ pub(super) fn analysis_lines(raw: Option<&str>, lang: Locale) -> (Vec<AnalysisLi
                         })
                         .collect()
                 };
-                lines.push(AnalysisLine { wave, removed: entries("removed"), added: entries("added") });
+                let tasks = fields.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+                lines.push(AnalysisLine { wave, removed: entries("removed"), added: entries("added"), tasks });
             }
             None => {
                 let detail = parsed.err().unwrap_or_else(|| body.to_string());
@@ -151,15 +157,59 @@ pub(super) struct Analysed {
     pub warnings: Vec<Value>,
 }
 
+/// A sugestão da rodada para uma tarefa, antes do envio: as skills que casam
+/// com o texto dela pela busca, o "quando usar" de todas as skills da área
+/// dela — mesmo as que a busca não achou — e até três arquivos parecidos do
+/// mapa. A tarefa que já nomeia uma skill não pede sugestão de skill: ela já
+/// está decidida, e só os arquivos continuam valendo.
+struct TaskHint {
+    task: u64,
+    matched: Vec<String>,
+    area: Vec<(String, String)>,
+    files: Vec<String>,
+}
+
+impl TaskHint {
+    /// `true` quando não há nada a sugerir para esta tarefa: nenhuma skill
+    /// casou e nenhum arquivo parecido apareceu. O "quando usar" da área
+    /// só é mostrado junto de uma das duas, nunca sozinho — quase todo
+    /// projeto tem alguma skill na raiz, e mostrá-la sem motivo pediria a
+    /// escolha do orquestrador em toda onda.
+    fn is_empty(&self) -> bool {
+        self.matched.is_empty() && self.files.is_empty()
+    }
+}
+
+/// As sugestões de skill e de arquivos parecidos, por tarefa da onda `wave`,
+/// que a rodada mostra ao orquestrador antes do envio: a mesma busca que o
+/// plano usa na conferência ([`skill_search`]), e o mapa que o scan mantém em
+/// dia depois de cada commit.
+fn task_hints(root: &Path, log: &SpecLog, wave: u64) -> Vec<TaskHint> {
+    log.block(BlockQuery::Wave(wave))
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .map(|task| {
+            let text = task.str_field("text").unwrap_or_default();
+            let named = task.str_field("skill").is_some_and(|s| !s.trim().is_empty());
+            let on_disk = skill_search::skills_on_disk(root, std::slice::from_ref(&task));
+            let matched = if named { Vec::new() } else { skill_search::matching_skills(&on_disk, text) };
+            let area = if named { Vec::new() } else { on_disk };
+            let files = crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS);
+            TaskHint { task: task.id, matched, area, files }
+        })
+        .collect()
+}
+
 /// A escolha antes do envio de cada onda pronta (`ready`), antes de a cópia
 /// dela ser criada. Os candidatos de cada onda são os itens do projeto todo,
-/// os sem dono e as lições do banco que casam com ela; a onda sem nenhum sai
+/// os sem dono e as lições do banco que casam com ela, e a sugestão de skill
+/// e de arquivos parecidos de cada tarefa dela; a onda sem nada disso sai
 /// como hoje. A que tem sai com a escolha que a linha `ANALYSIS` do relatório
 /// trouxe (`given`) ou, quando a mesma onda sai de novo sem plano novo, com a
 /// escolha gravada no envio anterior dela, se essa escolha julgou cada
 /// candidato de agora. Sem escolha, a onda não sai, e a resposta traz os
-/// candidatos dela ao orquestrador, cada um com o título. Nada é recusado, e
-/// nenhum agente é aberto para isso.
+/// candidatos e as sugestões dela ao orquestrador, cada um com o título. Nada
+/// é recusado, e nenhum agente é aberto para isso.
 pub(super) fn analyse(root: &Path, log: &SpecLog, ready: &[u64], given: &[AnalysisLine], lang: Locale) -> Analysed {
     let replanned = waves_replanned(log);
     let codes = log.codes();
@@ -168,7 +218,8 @@ pub(super) fn analyse(root: &Path, log: &SpecLog, ready: &[u64], given: &[Analys
     for wave in ready.iter().copied() {
         let mut found = candidates(log, wave);
         found.lessons = bank.as_ref().map(|bank| wave_lessons(bank, log, wave)).unwrap_or_default();
-        if found.is_empty() {
+        let hints = task_hints(root, log, wave);
+        if found.is_empty() && hints.iter().all(TaskHint::is_empty) {
             out.go.push(wave);
             continue;
         }
@@ -183,7 +234,7 @@ pub(super) fn analyse(root: &Path, log: &SpecLog, ready: &[u64], given: &[Analys
                 out.choices.insert(wave, choice);
                 out.go.push(wave);
             }
-            None => out.asked.push(shown_candidates(log, &codes, wave, &found)),
+            None => out.asked.push(shown_candidates(log, &codes, wave, &found, &hints)),
         }
     }
     out
@@ -236,35 +287,95 @@ fn chosen(
     for (entry, _) in line.added.iter().filter(|(entry, _)| entry.get("lesson").is_some()) {
         warnings.push(ignored(line.wave, entry, lang));
     }
-    Choice { judged: found.ids(), removed, added, judged_lessons: found.lesson_ids(), removed_lessons }
+    // A escolha da skill e dos arquivos, por tarefa: a entrada aponta uma
+    // tarefa desta onda, pelo código ou pelo número em `task`. A que não
+    // aponta nenhuma fica de fora, com um aviso.
+    let wave_tasks: Vec<&SpecEvent> =
+        log.block(BlockQuery::Wave(line.wave)).into_iter().filter(|e| e.event_type == "task").collect();
+    let mut tasks: Vec<TaskChoice> = Vec::new();
+    for entry in &line.tasks {
+        let task_id = entry
+            .get("task")
+            .and_then(EventRef::from_value)
+            .and_then(|found| match found {
+                EventRef::Id(n) => log.current(n).map(|e| e.id),
+                EventRef::Code(code) => wave_tasks.iter().find(|e| codes.get(&e.id) == Some(&code)).map(|e| e.id),
+            })
+            .filter(|id| wave_tasks.iter().any(|e| e.id == *id));
+        let Some(task_id) = task_id else {
+            warnings.push(ignored(line.wave, entry, lang));
+            continue;
+        };
+        let strings = |key: &str| -> Vec<String> {
+            entry
+                .get(key)
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        tasks.push(TaskChoice {
+            task: task_id,
+            skills: strings("skills"),
+            files: strings("files"),
+            new_skill: entry.get("new_skill").and_then(Value::as_bool).unwrap_or(false),
+        });
+    }
+    Choice { judged: found.ids(), removed, added, judged_lessons: found.lesson_ids(), removed_lessons, tasks }
 }
 
 /// O aviso da entrada da linha da escolha que ficou como estava.
 fn ignored(wave: u64, entry: &Value, lang: Locale) -> Value {
-    let said = entry.get("item").or_else(|| entry.get("lesson")).unwrap_or(entry);
+    let said = entry.get("item").or_else(|| entry.get("lesson")).or_else(|| entry.get("task")).unwrap_or(entry);
     let shown = said.as_str().map_or_else(|| said.to_string(), str::to_string);
     let hint = translate("round.analysis_ignored", lang).replace("{wave}", &wave.to_string()).replace("{item}", &shown);
     json!({ "reason": "analysis-item-ignored", "wave": wave, "hint": hint })
 }
 
 /// Os candidatos da onda `wave`, como a resposta da rodada os entrega ao
-/// orquestrador: o título da onda e, em cada grupo, cada candidato com o
-/// título dele — o item pelo código, a lição pelo número do banco. O texto
-/// inteiro se lê pelo código.
-fn shown_candidates(log: &SpecLog, codes: &BTreeMap<u64, String>, wave: u64, found: &Candidates) -> Value {
+/// orquestrador: o título da onda, em cada grupo, cada candidato com o título
+/// dele — o item pelo código, a lição pelo número do banco — e, por tarefa
+/// que tem alguma sugestão, a skill que casa, o "quando usar" das skills da
+/// área dela e os arquivos parecidos. O texto inteiro se lê pelo código.
+fn shown_candidates(
+    log: &SpecLog,
+    codes: &BTreeMap<u64, String>,
+    wave: u64,
+    found: &Candidates,
+    hints: &[TaskHint],
+) -> Value {
     let title = |e: &SpecEvent| title_of(e).unwrap_or_default();
     let items = |group: &[&SpecEvent]| -> Vec<Value> {
         let code = |e: &SpecEvent| codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string());
         group.iter().map(|e| json!({ "item": code(e), "title": title(e) })).collect()
     };
     let named = log.block(BlockQuery::Wave(wave)).into_iter().find(|e| e.event_type == "wave").map(title);
-    json!({
+    let tasks: Vec<Value> = hints
+        .iter()
+        .filter(|hint| !hint.is_empty())
+        .map(|hint| {
+            let code = codes.get(&hint.task).cloned().unwrap_or_else(|| hint.task.to_string());
+            let area: Vec<Value> =
+                hint.area.iter().map(|(name, when)| json!({ "name": name, "when": when })).collect();
+            json!({ "task": code, "matched_skills": hint.matched, "area_skills": area, "files": hint.files })
+        })
+        .collect();
+    let mut out = json!({
         "wave": wave,
         "title": named.unwrap_or_default(),
         "project": items(&found.project),
         "unowned": items(&found.unowned),
         "lessons": found.lessons.iter().map(|e| json!({ "lesson": e.id, "title": title(e) })).collect::<Vec<_>>(),
-    })
+    });
+    if !tasks.is_empty() {
+        out["tasks"] = json!(tasks);
+    }
+    out
 }
 
 /// As pastas de compilação fixas do checkout `root`, uma por vaga do limite
@@ -907,7 +1018,8 @@ mod tests {
             "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Fala da entrega, e não da tabela."}],
             "added": [{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}],
             "judged_lessons": [kept, dropped],
-            "removed_lessons": [{"lesson": dropped, "why": "A busca não muda nesta onda."}]});
+            "removed_lessons": [{"lesson": dropped, "why": "A busca não muda nesta onda."}],
+            "tasks": []});
         assert_eq!(sent[0].fields.get("analysis"), Some(&recorded), "the send records the choice: {out}");
         let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains("A tabela nova precisa de migração."), "{prompt}");
@@ -988,7 +1100,7 @@ mod tests {
         assert_eq!(sent[0]["analysis"], json!({"judged": judged,
             "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Fala da entrega, e não da tabela."}],
             "added": [{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}],
-            "judged_lessons": [], "removed_lessons": []}));
+            "judged_lessons": [], "removed_lessons": [], "tasks": []}));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let running = waves_in_progress(&log).into_keys().collect();
         let flight = mustard_core::io::wave_prompt::Flight { running, ..Default::default() };
@@ -1050,5 +1162,117 @@ mod tests {
         for out in &outs {
             assert!(out.get("analysis").is_none(), "neither round asks again: {out}");
         }
+    }
+
+    /// A ferramenta do scan de mentira: relê o disco inteiro, fora `.claude`
+    /// e `.git`, e grava o mapa no formato que a leitura de verdade espera.
+    /// Como o mapa relê depois de cada commit da rodada, o arquivo que um
+    /// commit acabou de apagar nunca aparece nele.
+    fn rescan_disk(root: &Path, model: &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
+        fn walk(root: &Path, dir: &Path, out: &mut Vec<Value>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            let mut entries: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            entries.sort();
+            for path in entries {
+                if path.file_name().is_some_and(|name| name == ".claude" || name == ".git") {
+                    continue;
+                }
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(json!({ "path": rel.to_string_lossy().replace('\\', "/") }));
+                }
+            }
+        }
+        let mut modules = Vec::new();
+        walk(root, root, &mut modules);
+        std::fs::write(model, json!({ "modules": modules }).to_string()).unwrap();
+        Ok(mustard_core::domain::scan::ScanReport { full: true, files: modules.len(), ..Default::default() })
+    }
+
+    /// A rodada vai soltar a onda 2, cuja tarefa casa com a skill `calculadora`
+    /// do projeto e tem um arquivo parecido no mapa, logo depois de um commit
+    /// que apagou outro arquivo parecido: a resposta mostra ao orquestrador,
+    /// por tarefa, a skill sugerida e até três arquivos parecidos, nenhum
+    /// deles apagado; a escolha dele vai gravada no envio, e o pedido leva a
+    /// skill e os arquivos de leitura.
+    #[test]
+    fn the_round_suggests_skills_and_examples_per_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/calculadora_velha.rs"], &[])], |said| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+            write(
+                root,
+                "x",
+                "wave",
+                json!({"n": 2, "text": "Onda 2.", "criteria": [crit], "done_when": "A suíte passa.",
+                    "depends_on": [1], "origin": said}),
+            );
+            write(
+                root,
+                "x",
+                "task",
+                json!({"wave": 2, "text": "Montar uma calculadora nova.",
+                    "files": [{"path": "src/calculadora_nova.rs"}], "origin": said}),
+            );
+        });
+        std::fs::write(root.join("src/calculadora_nova.rs"), "fn nova() {}\n").unwrap();
+        let skill = root.join(".claude/skills/calculadora");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: calculadora\ndescription: Use quando for preciso montar uma calculadora.\n---\n\nMonte.\n",
+        )
+        .unwrap();
+
+        // A onda 1 sai; a 2 depende dela e ainda não está pronta.
+        let first = round_with_mine(root, "x", None, &rescan_disk);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+
+        // A onda 1 entrega apagando o arquivo parecido antigo: o mapa relê
+        // antes de a onda 2 pedir a escolha, na mesma volta.
+        std::fs::remove_file(root.join("src/calculadora_velha.rs")).unwrap();
+        let delivered = line(
+            "DELIVERED",
+            json!({"wave": 1, "text": "Saiu.", "files": ["src/calculadora_velha.rs"], "commit": "tira a calculadora velha"}),
+        );
+        let asked = round_with_mine(root, "x", Some(&delivered), &rescan_disk);
+        assert_eq!(asked["ok"], json!(true), "{asked}");
+        assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
+        let tasks = asked["analysis"][0]["tasks"].as_array().cloned().unwrap_or_default();
+        assert_eq!(tasks.len(), 1, "{asked}");
+        assert_eq!(tasks[0]["matched_skills"], json!(["calculadora"]), "{asked}");
+        let files: Vec<String> =
+            tasks[0]["files"].as_array().unwrap().iter().filter_map(|f| f.as_str()).map(str::to_string).collect();
+        assert!(files.iter().any(|f| f.contains("calculadora_nova.rs")), "{files:?}");
+        assert!(
+            !files.iter().any(|f| f.contains("calculadora_velha.rs")),
+            "the deleted file is never suggested: {files:?}"
+        );
+        let task_code = tasks[0]["task"].as_str().unwrap_or_default().to_string();
+
+        // O orquestrador confirma a skill e o arquivo: a escolha vai gravada
+        // no envio, e o pedido leva os dois.
+        let chosen = line(
+            "ANALYSIS",
+            json!({"wave": 2, "removed": [], "added": [],
+                "tasks": [{"task": task_code, "skills": ["calculadora"], "files": ["src/calculadora_nova.rs"]}]}),
+        );
+        let out = round_with_mine(root, "x", Some(&chosen), &rescan_disk);
+        assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains("**calculadora**"), "{prompt}");
+        assert!(prompt.contains("src/calculadora_nova.rs"), "{prompt}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(2)).unwrap();
+        let codes = log.codes();
+        let task_id = codes.iter().find(|(_, code)| **code == task_code).map(|(id, _)| *id).unwrap();
+        assert_eq!(
+            sent.fields["analysis"]["tasks"],
+            json!([{"task": task_id, "skills": ["calculadora"], "files": ["src/calculadora_nova.rs"], "new_skill": false}]),
+            "the choice is recorded on the send"
+        );
     }
 }

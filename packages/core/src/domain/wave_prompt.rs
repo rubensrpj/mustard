@@ -121,6 +121,10 @@ pub struct Material<'a> {
     pub defects: Vec<&'a SpecEvent>,
     /// As skills nomeadas pelas tarefas, na ordem dos nomes.
     pub skills: Vec<Skill>,
+    /// Os arquivos de leitura que a escolha do orquestrador confirmou para
+    /// cada tarefa, pelo código dela: o mapa sugeriu, e ele manteve. As
+    /// skills confirmadas entram por [`Material::skills`], não aqui.
+    pub task_reads: Vec<(String, Vec<String>)>,
     /// Os commits da rodada: as mudanças que já entraram na branch, que o
     /// agente de teste dedicado confere no pedido da revisão final.
     pub changes: Vec<&'a SpecEvent>,
@@ -211,6 +215,7 @@ fn parts(material: &Material, lang: Locale) -> String {
     named("prompt.part.criteria", w.part_lines("prompt.part.criteria", &material.criteria));
     named("prompt.part.lessons", w.lessons_lines());
     named("prompt.part.skills", w.skills_lines());
+    named("prompt.part.task_reads", w.lines_of(|out| w.task_reads(out)));
     named("prompt.part.delivered", w.part_lines("prompt.part.delivered", &material.delivered));
     named("prompt.part.execution", w.lines_of(|out| w.execution(out)));
     out.join(", ")
@@ -410,6 +415,24 @@ pub struct Choice {
     pub judged_lessons: BTreeSet<u64>,
     /// As lições que saíram do pedido, com o motivo.
     pub removed_lessons: Vec<(u64, String)>,
+    /// A escolha da skill e dos arquivos parecidos, por tarefa.
+    pub tasks: Vec<TaskChoice>,
+}
+
+/// O que o orquestrador decidiu, para uma tarefa, entre a skill e os arquivos
+/// parecidos que a rodada sugeriu antes do envio: as skills que ele confirmou
+/// ou trocou, os arquivos que ele manteve como leitura, e se ele marcou que
+/// nenhuma skill serve e vale nascer uma nova.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskChoice {
+    /// O número da tarefa, na spec.
+    pub task: u64,
+    /// As skills confirmadas; a tarefa pode apontar mais de uma.
+    pub skills: Vec<String>,
+    /// Os arquivos de leitura confirmados, além dos que a tarefa já cita.
+    pub files: Vec<String>,
+    /// `true` quando o orquestrador marcou que vale nascer uma skill nova.
+    pub new_skill: bool,
 }
 
 impl Choice {
@@ -425,6 +448,7 @@ impl Choice {
             added: self.added.iter().filter(|(id, _)| has(&found.unowned, *id)).cloned().collect(),
             judged_lessons: found.lesson_ids(),
             removed_lessons: self.removed_lessons.iter().filter(|(id, _)| has(&found.lessons, *id)).cloned().collect(),
+            tasks: self.tasks.clone(),
         }
     }
 
@@ -446,18 +470,26 @@ impl Choice {
         let listed = |key: &str, items: &[(u64, String)]| -> Vec<Value> {
             items.iter().map(|(n, why)| serde_json::json!({ key: n, "why": why })).collect()
         };
+        let tasks: Vec<Value> = self
+            .tasks
+            .iter()
+            .map(|t| serde_json::json!({ "task": t.task, "skills": t.skills, "files": t.files, "new_skill": t.new_skill }))
+            .collect();
         serde_json::json!({
             "judged": self.judged,
             "removed": listed("item", &self.removed),
             "added": listed("item", &self.added),
             "judged_lessons": self.judged_lessons,
             "removed_lessons": listed("lesson", &self.removed_lessons),
+            "tasks": tasks,
         })
     }
 
     /// A escolha gravada num envio; `None` quando o campo não tem a forma
     /// de [`Choice::to_value`]. O envio gravado antes de as lições entrarem
-    /// na escolha não traz os dois campos delas, e vale sem lição julgada.
+    /// na escolha não traz os dois campos delas, e vale sem lição julgada; o
+    /// gravado antes da escolha por tarefa não traz `tasks`, e vale sem
+    /// nenhuma tarefa julgada.
     #[must_use]
     pub fn from_value(value: &Value) -> Option<Self> {
         let listed = |key: &str, id: &str| -> Option<Vec<(u64, String)>> {
@@ -469,12 +501,32 @@ impl Choice {
             value.get(key)?.as_array()?.iter().map(Value::as_u64).collect()
         };
         let lessons = value.get("judged_lessons").is_some() || value.get("removed_lessons").is_some();
+        let strings = |entry: &Value, key: &str| -> Vec<String> {
+            entry.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
+                .iter().filter_map(Value::as_str).map(str::to_string).collect()
+        };
+        let tasks: Vec<TaskChoice> = value
+            .get("tasks")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|entry| {
+                Some(TaskChoice {
+                    task: entry.get("task")?.as_u64()?,
+                    skills: strings(entry, "skills"),
+                    files: strings(entry, "files"),
+                    new_skill: entry.get("new_skill").and_then(Value::as_bool).unwrap_or(false),
+                })
+            })
+            .collect();
         Some(Self {
             judged: numbers("judged")?,
             removed: listed("removed", "item")?,
             added: listed("added", "item")?,
             judged_lessons: if lessons { numbers("judged_lessons")? } else { BTreeSet::new() },
             removed_lessons: if lessons { listed("removed_lessons", "lesson")? } else { Vec::new() },
+            tasks,
         })
     }
 }
@@ -922,6 +974,7 @@ impl Writer<'_> {
         self.part(&mut out, "prompt.part.criteria", &m.criteria);
         self.lessons(&mut out);
         self.skills(&mut out);
+        self.task_reads(&mut out);
         self.part(&mut out, "prompt.part.delivered", &m.delivered);
         self.execution(&mut out);
         while out.ends_with("\n\n") {
@@ -1197,6 +1250,21 @@ impl Writer<'_> {
                 let _ = write!(out, " — {}", skill.when.trim());
             }
             let _ = writeln!(out, " — `{}`", skill.path);
+        }
+        out.push('\n');
+    }
+
+    /// Uma linha por tarefa que ganhou arquivos de leitura na escolha antes
+    /// do envio: o código dela e os caminhos, na ordem em que a escolha os
+    /// trouxe. Sem nenhum, a parte some.
+    fn task_reads(&self, out: &mut String) {
+        if self.material.task_reads.is_empty() {
+            return;
+        }
+        let _ = writeln!(out, "## {}\n", self.t("prompt.part.task_reads"));
+        for (task, files) in &self.material.task_reads {
+            let paths: Vec<String> = files.iter().map(|file| format!("`{file}`")).collect();
+            let _ = writeln!(out, "- `{task}`: {}", paths.join(", "));
         }
         out.push('\n');
     }
