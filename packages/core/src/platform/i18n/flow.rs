@@ -30,12 +30,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("plan.next", Locale::PtBr) => {
             "Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
-             texto exato \"{question}\" e as opções \"Aprovar\" e \"Ajustar\": com outro texto, a \
+             texto exato \"{question}\" e as opções \"{option}\" e \"Ajustar\": com outro texto, a \
              aprovação não vale."
         }
         ("plan.next", Locale::EnUs) => {
             "Then ask the approval question in the order of explaining from the response style, with \
-             the exact text \"{question}\" and the options \"Approve\" and \"Adjust\": with another \
+             the exact text \"{question}\" and the options \"{option}\" and \"Adjust\": with another \
              text, the approval does not count."
         }
         // Quem executa a obra, pela soma das notas de todas as tarefas do
@@ -192,22 +192,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // moram só aqui, e a recusa da tarefa sem nota os mostra.
         ("plan.points_scale", Locale::PtBr) => {
             "A nota vai em `\"points\"`, na escala do Scrum, comparando a tarefa com o exemplo de \
-             cada nota. 1: trocar um texto, uma lista ou um número, como ligar o link clicável na \
-             configuração. 2: mudar uma regra num lugar só, com teste, como aceitar a unidade de \
-             tamanho de arquivo na conferência de escrita. 3: mudar uma regra que passa por vários \
-             arquivos, como o scan apontar as lições parecidas. 5: mexer no caminho que grava ou junta \
-             o trabalho, como o pedido da onda listar só os códigos. 8: mudar uma fase inteira, como a \
-             rodada criar a cópia de cada onda e juntar tudo no commit. 13: tarefa grande e incerta, \
+             cada nota. 1: trocar um texto, uma lista ou um número, como o texto de um botão ou o \
+             valor de um limite. 2: mudar uma regra num lugar só, com teste, como validar um campo \
+             novo de um formulário. 3: mudar uma regra que passa por vários arquivos, como um campo \
+             novo que vai da tela até o banco de dados. 5: mexer no caminho que grava ou junta os \
+             dados, como mudar o jeito de salvar e conferir um pedido. 8: mudar uma parte inteira do \
+             sistema, como trocar o jeito de entrar com usuário e senha. 13: tarefa grande e incerta, \
              que vale quebrar antes de gravar."
         }
         ("plan.points_scale", Locale::EnUs) => {
             "The points go in `\"points\"`, on the Scrum scale, comparing the task with the example of \
-             each value. 1: change a text, a list or a number, like turning on the clickable link in \
-             the settings. 2: change a rule in one place only, with a test, like accepting the file \
-             size unit in the writing check. 3: change a rule that runs through several files, like \
-             the scan pointing out similar lessons. 5: touch the path that writes or merges the work, \
-             like the wave request listing only the codes. 8: change a whole phase, like the round \
-             creating the copy of each wave and merging everything into the commit. 13: a large and \
+             each value. 1: change a text, a list or a number, like the text of a button or the value \
+             of a limit. 2: change a rule in one place only, with a test, like validating a new field \
+             in a form. 3: change a rule that runs through several files, like a new field that goes \
+             from the screen to the database. 5: touch the path that writes or merges the data, like \
+             changing the way an order is saved and checked. 8: change a whole part of the system, \
+             like changing the way of logging in with a username and password. 13: a large and \
              uncertain task, worth breaking up before recording."
         }
         ("plan.task_without_points", Locale::PtBr) => {
@@ -285,12 +285,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.next.plan", Locale::PtBr) => {
             "O plano está gravado: confira o plano, publique a página da spec e faça a pergunta de \
              aprovação na ordem de explicar do estilo de resposta, com o texto exato \"{question}\" e \
-             as opções \"Aprovar\" e \"Ajustar\": com outro texto, a aprovação não vale."
+             as opções \"{option}\" e \"Ajustar\": com outro texto, a aprovação não vale."
         }
         ("resume.next.plan", Locale::EnUs) => {
             "The plan is recorded: check the plan, publish the spec page and ask the approval \
              question in the order of explaining from the response style, with the exact text \
-             \"{question}\" and the options \"Approve\" and \"Adjust\": with another text, the \
+             \"{question}\" and the options \"{option}\" and \"Adjust\": with another text, the \
              approval does not count."
         }
         ("resume.next.running", Locale::PtBr) => {
@@ -977,7 +977,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             129,
-            0x7427_96b8_9c35_c4b3,
+            0x7e6e_29cf_7d79_a2dc,
         );
     }
 
@@ -1035,6 +1035,19 @@ mod tests {
         }
     }
 
+    /// A escala de notas do plano compara a tarefa com um exemplo de
+    /// qualquer projeto, nunca com algo que só existe no próprio Mustard,
+    /// como o scan, uma lição parecida ou o pedido de uma onda.
+    #[test]
+    fn the_points_scale_uses_examples_of_any_project() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let scale = translate("plan.points_scale", lang).to_lowercase();
+            for word in ["scan", "lições parecidas", "similar lessons", "pedido da onda", "wave request", "onda só"] {
+                assert!(!scale.contains(&word.to_lowercase()), "{lang:?}: a escala ainda cita {word:?}: {scale}");
+            }
+        }
+    }
+
     /// Os títulos e as instruções fixas do pedido de uma onda, e o que a
     /// conferência do plano acha, saem do catálogo nos dois idiomas, com as
     /// vagas que o montador preenche.
@@ -1042,7 +1055,7 @@ mod tests {
     fn i18n_translates_wave_prompt_keys() {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
-            ("plan.next", &["{question}"][..]),
+            ("plan.next", &["{question}", "{option}"][..]),
             ("plan.execution.solo", &["{points}"][..]),
             ("plan.execution.one_wave", &["{points}"][..]),
             ("plan.execution.many_waves", &["{points}"][..]),
@@ -1089,7 +1102,7 @@ mod tests {
             ("resume.none", &[][..]),
             ("resume.wave", &["{n}"][..]),
             ("resume.next.survey", &[][..]),
-            ("resume.next.plan", &["{question}"][..]),
+            ("resume.next.plan", &["{question}", "{option}"][..]),
             ("resume.next.running", &[][..]),
             ("resume.next.closed", &[][..]),
             ("resume.next.pr_open", &[][..]),

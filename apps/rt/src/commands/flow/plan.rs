@@ -380,7 +380,9 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     let ask = format!(
         "{} {}",
         who_executes(total, points.sums.len(), lang),
-        translate("plan.next", lang).replace("{question}", translate("approval.question", lang)),
+        translate("plan.next", lang)
+            .replace("{question}", translate("approval.question", lang))
+            .replace("{option}", translate("approval.option", lang)),
     );
     spec_events::pages::end_milestone(&mut report, Ok(&prepared), &spec, "approval", &ask, lang);
     report
@@ -1618,7 +1620,9 @@ mod tests {
         assert_eq!(held["withheld"], json!([code]), "{held}");
         let next = held["next"].as_str().unwrap_or_default();
         assert!(next.contains(&code) && next.contains("write purge"), "{next}");
-        let ask = translate("plan.next", Locale::PtBr).replace("{question}", "Aprovar esta spec?");
+        let ask = translate("plan.next", Locale::PtBr)
+            .replace("{question}", translate("approval.question", Locale::PtBr))
+            .replace("{option}", translate("approval.option", Locale::PtBr));
         assert!(next.contains("write publish") && next.ends_with(&ask), "{next}");
         let warned = held["warnings"].as_array().cloned().unwrap_or_default();
         assert!(warned.iter().any(|w| w["reason"] == json!("page-check")
@@ -1638,6 +1642,29 @@ mod tests {
         assert!(free.get("withheld").is_none(), "{free}");
         let copied = sent(root, &free, "spec").into_iter().find(|w| w["doc_id"] == json!(note_id.to_string())).unwrap();
         assert_eq!(copied["body"]["text"], json!("A senha do banco: …"), "the purged item goes, with the excerpt hidden");
+    }
+
+    /// A dica de aprovar do plano lê a opção de aprovar do catálogo, a mesma
+    /// que a testemunha da aprovação reconhece, nos dois idiomas.
+    #[test]
+    fn the_approval_hint_reads_the_option_from_the_catalog() {
+        for (lang, config) in [
+            (Locale::PtBr, "{}".to_string()),
+            (Locale::EnUs, r#"{"language":{"text":"en-US"}}"#.to_string()),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            std::fs::write(root.join("mustard.json"), config.as_bytes()).unwrap();
+            sound_plan(root, "x", said);
+
+            let report = plan(root, "x");
+            assert_eq!(report["ok"], json!(true), "{lang:?}: {report}");
+            let next = report["next"].as_str().unwrap_or_default();
+            let option = translate("approval.option", lang);
+            assert!(next.contains(&format!("\"{option}\"")), "{lang:?}: {next}");
+            assert!(!next.contains("{option}"), "{lang:?}: {next}");
+        }
     }
 
     /// Uma tarefa da onda `wave`, num arquivo novo só dela, com a nota dada
@@ -1930,7 +1957,9 @@ mod tests {
             let copy = batches_order(&report, "x", translate("page.copy.new_address", lang), lang);
             let agent = agent_order(&copy, lang);
             assert!(next.contains(&agent), "{old}: the first copy goes to an agent: {next}");
-            let ask = translate("plan.next", lang).replace("{question}", translate("approval.question", lang));
+            let ask = translate("plan.next", lang)
+                .replace("{question}", translate("approval.question", lang))
+                .replace("{option}", translate("approval.option", lang));
             assert!(next.find(&agent) < next.find(&ask) && next.ends_with(&ask), "{old}: {next}");
             assert!(report.get("migration").is_none(), "{old}: the plan check already asks for the points: {report}");
             assert_eq!(hints_of(&report, "warnings", "wave-points-over-cap").len(), 1, "{old}: {report}");

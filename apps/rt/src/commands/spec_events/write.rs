@@ -649,7 +649,7 @@ fn survey_report(
                 out.insert("point".to_string(), super::shown(point, &codes));
             }
             SurveyStep::Done { unrouted } => {
-                next.push(translate("survey.done", lang).to_string());
+                next.push(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
                 let listed: Vec<Value> = unrouted.into_iter().map(|m| super::shown(m, &codes)).collect();
                 out.insert("unrouted".to_string(), json!(listed));
             }
@@ -2635,7 +2635,7 @@ mod tests {
             assert_eq!(last["review"]["options"], json!([go_on]), "the reviewer is not an option: {last}");
             assert!(last.get("point").is_none(), "{last}");
             let review = translate("survey.review_step", lang).replace("{block}", "proof").replace("{continue}", go_on);
-            let done = translate("survey.done", lang);
+            let done = translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang));
             assert_eq!(last["next"], json!(format!("{review} {outside} {done}")), "review, reviewer, then the end");
             assert!(last["unrouted"].is_array(), "{last}");
         }
@@ -2672,7 +2672,8 @@ mod tests {
         assert_eq!(closed["review"]["options"], json!(["Seguir"]), "{closed}");
         let next = closed["next"].as_str().unwrap();
         assert!(!next.contains(&outside), "ordered once: {closed}");
-        assert!(next.ends_with(translate("survey.done", Locale::PtBr)), "{closed}");
+        let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
+        assert!(next.ends_with(&done), "{closed}");
         assert!(closed["unrouted"].is_array(), "{closed}");
     }
 
@@ -2749,7 +2750,8 @@ mod tests {
                 assert_eq!(report["next"], json!(translate("survey.present_all", Locale::PtBr)));
             } else {
                 assert!(report["unrouted"].is_array(), "{report}");
-                assert_eq!(report["next"], json!(translate("survey.done", Locale::PtBr)));
+                let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
+                assert_eq!(report["next"], json!(done));
             }
         }
     }

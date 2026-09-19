@@ -263,7 +263,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     } else {
         let unrouted: Vec<Value> = survey::unrouted_messages(&log).into_iter().map(|m| shown(m, &codes)).collect();
         report["unrouted"] = json!(unrouted);
-        report["hint"] = json!(translate("survey.done", lang));
+        report["hint"] = json!(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
     }
     report
 }
@@ -837,7 +837,8 @@ mod tests {
         let loose = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "E o painel?"})));
         let done = grill(root, "x", Some("fix"), false);
         assert!(done.get("next").is_none(), "{done}");
-        assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr)));
+        let scale = translate("plan.points_scale", Locale::PtBr);
+        assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr).replace("{scale}", scale)));
         let unrouted: Vec<u64> = done["unrouted"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect();
         assert_eq!(unrouted, [loose]);
     }

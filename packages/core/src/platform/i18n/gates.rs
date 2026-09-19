@@ -442,6 +442,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "hard to read: {score} on the Flesch reading-ease index, and the minimum is {min}; \
              write a short summary in plain words"
         }
+        // A resposta longa e difícil de ler ao mesmo tempo: as duas linhas
+        // acima se juntam nesta, para o pedido de resumo curto não se
+        // repetir.
+        ("clarity.too_long_and_hard_to_read", Locale::PtBr) => {
+            "resposta com {lines} linhas (o limite é {limit}) e difícil de ler: nota {score} no \
+             índice de Flesch (o mínimo é {min}); faça no chat um resumo curto, em palavras \
+             simples, e o JSON, a tabela ou o documento pedido vai para a página avulsa: \
+             `mustard-rt run page`"
+        }
+        ("clarity.too_long_and_hard_to_read", Locale::EnUs) => {
+            "reply with {lines} lines (the limit is {limit}) and hard to read: {score} on the \
+             Flesch reading-ease index (the minimum is {min}); write a short summary in the chat, \
+             in plain words, and put a requested JSON, table or document on its own page: \
+             `mustard-rt run page`"
+        }
         // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
         // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
         ("clarity.wrong_language", Locale::PtBr) => {
@@ -480,8 +495,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            64,
-            0x3f2d_a60b_0375_2d55,
+            65,
+            0xd62b_a498_030f_5113,
         );
     }
 
@@ -587,6 +602,7 @@ mod tests {
             ("clarity.internal_code", &["{code}"][..]),
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),
+("clarity.too_long_and_hard_to_read", &["{lines}", "{limit}", "{score}", "{min}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
             ("clarity.next.head", &["{errors}"][..]),
             ("clarity.more", &["{count}"][..]),

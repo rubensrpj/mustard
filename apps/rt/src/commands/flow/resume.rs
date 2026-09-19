@@ -70,7 +70,9 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         "line": resume_line(&spec, &log, lang),
         // A dica do plano manda fazer a pergunta de aprovação com o texto
         // exato do catálogo, o único que a testemunha da aprovação reconhece.
-        "next": translate(next_key(phase), lang).replace("{question}", translate("approval.question", lang)),
+        "next": translate(next_key(phase), lang)
+            .replace("{question}", translate("approval.question", lang))
+            .replace("{option}", translate("approval.option", lang)),
         "command": next_command(phase, &spec, &state),
     });
     if let Some(branch) = state.branch {
@@ -381,6 +383,28 @@ mod tests {
         assert!(next.contains("com o texto exato \"Aprovar esta spec?\""), "{next}");
         assert!(next.contains("na ordem de explicar do estilo de resposta"), "{next}");
         assert!(!next.contains("{question}"), "{next}");
+    }
+
+    /// A dica de aprovar da retomada lê a opção de aprovar do catálogo, a
+    /// mesma que a testemunha da aprovação reconhece, nos dois idiomas.
+    #[test]
+    fn the_approval_hint_reads_the_option_from_the_catalog() {
+        for (lang, config) in [
+            (Locale::PtBr, "{}".to_string()),
+            (Locale::EnUs, r#"{"language":{"text":"en-US"}}"#.to_string()),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), config.as_bytes()).unwrap();
+            assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+            crate::shared::spec_state::seed_event(root, "x", "state", json!({"phase": "plan", "author": "binary"}));
+
+            let out = resume(root, "x");
+            let next = out["next"].as_str().unwrap_or_default();
+            let option = translate("approval.option", lang);
+            assert!(next.contains(&format!("\"{option}\"")), "{lang:?}: {next}");
+            assert!(!next.contains("{option}"), "{lang:?}: {next}");
+        }
     }
 
     /// Sem spec nenhuma, a retomada recusa dizendo que não há spec atual.

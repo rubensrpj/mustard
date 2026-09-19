@@ -102,12 +102,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.done", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
              nenhum registro aponta, e pergunte o que fazer com cada uma; depois grave a \
-             especificação, as ondas e as tarefas."
+             especificação, as ondas e as tarefas, cada tarefa já com a nota dela. {scale}"
         }
         ("survey.done", Locale::EnUs) => {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
              points to, and ask what to do with each one; then record the specification, the waves \
-             and the tasks."
+             and the tasks, each task already with its points. {scale}"
         }
         ("survey.review_step", Locale::PtBr) => {
             "O bloco {block} fechou. Releia só as decisões dele e ache o que pode ter ficado de fora \
@@ -198,7 +198,7 @@ mod tests {
             include_str!("survey.rs"),
             super::PREFIXES,
             36,
-            0x77e9_fc03_69c4_09ea,
+            0xdf12_94a6_4575_b373,
         );
     }
 
@@ -221,7 +221,7 @@ mod tests {
             ("survey.present_all".into(), &[][..]),
             ("survey.record_points".into(), &["{spec}"][..]),
             ("survey.touched".into(), &["{count}", "{reason}"][..]),
-            ("survey.done".into(), &[][..]),
+            ("survey.done".into(), &["{scale}"][..]),
             ("survey.review_step".into(), &["{block}", "{continue}"][..]),
             ("survey.review_question".into(), &[][..]),
             ("survey.continue_option".into(), &[][..]),
