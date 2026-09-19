@@ -25,10 +25,19 @@
 # trocou à mão.
 #
 # ANTES de trocar qualquer arquivo, o original é copiado para uma pasta
-# datada (--restore desfaz, copiando de volta). A cópia do sistema pede
-# administrador: só é trocada quando o script já roda como root; senão, o
-# comando pronto para rodar com sudo é impresso, e nada na cópia do sistema é
-# tocado.
+# datada (--restore desfaz, copiando de volta). A pasta datada é criada sem
+# sobrescrever uma que já exista: duas rodadas no mesmo segundo produziriam o
+# mesmo nome, e a segunda recusa antes de tocar em qualquer arquivo, para não
+# gravar por cima do backup da primeira o programa que a primeira já trocou.
+#
+# A cópia do sistema pede administrador: só é trocada quando o script já
+# roda como root. Como o `sudo` do Ubuntu troca o HOME para `/root` e não
+# tem `~/.cargo/bin` no PATH, o comando impresso para rodar com sudo não é
+# este mesmo script sem argumento nenhum — é este script com
+# `--system-copy-only <pasta-dos-binários-já-compilados> <pasta-de-backup>`,
+# um modo que não compila nada, não procura a cópia do plugin e só troca a
+# cópia do sistema a partir dos binários que este mesmo processo (sem root)
+# acabou de compilar.
 #
 # Pastas trocáveis por variável de ambiente (para o teste, que não tem root
 # nem um ~/.claude de verdade):
@@ -49,16 +58,24 @@
 #   scripts/dev-install.sh --update-project <dir> # e roda o `mustard init`
 #                                                  # novo nesse projeto
 #   scripts/dev-install.sh --restore <pasta-datada>  # desfaz uma troca
+#   scripts/dev-install.sh --system-copy-only <pasta-dos-binários> <pasta-de-backup>
+#                                                  # só a cópia do sistema,
+#                                                  # sem compilar (é o comando
+#                                                  # que o script acima
+#                                                  # imprime pronto com sudo)
 # ============================================================================
 set -eu
 
 usage() {
   echo "uso: $(basename -- "$0") [--update-project <pasta-do-projeto>]"
   echo "     $(basename -- "$0") --restore <pasta-datada-do-backup>"
+  echo "     $(basename -- "$0") --system-copy-only <pasta-dos-binarios> <pasta-de-backup>"
 }
 
 RESTORE_DIR=""
 UPDATE_PROJECT=""
+SYSTEM_ONLY_RELEASE_DIR=""
+SYSTEM_ONLY_BACKUP_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --restore)
@@ -71,6 +88,12 @@ while [ $# -gt 0 ]; do
       UPDATE_PROJECT="$2"
       shift 2
       ;;
+    --system-copy-only)
+      [ $# -ge 3 ] || { echo "erro: --system-copy-only precisa da pasta dos binários e da pasta de backup." >&2; exit 1; }
+      SYSTEM_ONLY_RELEASE_DIR="$2"
+      SYSTEM_ONLY_BACKUP_DIR="$3"
+      shift 3
+      ;;
     -h|--help)
       usage
       exit 0
@@ -82,8 +105,12 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-if [ -n "$RESTORE_DIR" ] && [ -n "$UPDATE_PROJECT" ]; then
-  echo "erro: --restore e --update-project não se combinam." >&2
+MODOS=0
+if [ -n "$RESTORE_DIR" ]; then MODOS=$((MODOS + 1)); fi
+if [ -n "$UPDATE_PROJECT" ]; then MODOS=$((MODOS + 1)); fi
+if [ -n "$SYSTEM_ONLY_RELEASE_DIR" ]; then MODOS=$((MODOS + 1)); fi
+if [ "$MODOS" -gt 1 ]; then
+  echo "erro: --restore, --update-project e --system-copy-only não se combinam." >&2
   exit 1
 fi
 
@@ -92,30 +119,9 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "$0")"
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 
-# --- a versão que decide a pasta do plugin ----------------------------------
-MANIFESTO="$REPO_ROOT/plugin/.claude-plugin/plugin.json"
-VERSAO=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFESTO" 2>/dev/null | head -n 1)
-if [ -z "$VERSAO" ]; then
-  echo "erro: não consegui ler \"version\" em $MANIFESTO." >&2
-  exit 1
-fi
-
 # --- as duas cópias ----------------------------------------------------------
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
 SYSTEM_DIR="${MUSTARD_DEV_INSTALL_SYSTEM_DIR:-/usr/lib/mustard}"
-
-achar_copia_do_plugin() {
-  raiz="$CLAUDE_DIR/plugins/cache"
-  [ -d "$raiz" ] || return 0
-  find "$raiz" -maxdepth 3 -type d -path "*/mustard/$VERSAO" 2>/dev/null | head -n 1
-}
-PLUGIN_COPY=$(achar_copia_do_plugin)
-if [ -z "$PLUGIN_COPY" ]; then
-  echo "erro: não achei a cópia do plugin na versão $VERSAO, dentro de" >&2
-  echo "      $CLAUDE_DIR/plugins/cache — instale o plugin nesta versão antes:" >&2
-  echo "      /plugin marketplace add rubensrpj/mustard && /plugin install mustard@mustard-local" >&2
-  exit 1
-fi
 
 # --- troca um arquivo, com backup do que havia antes ------------------------
 swap_file() {
@@ -161,6 +167,52 @@ restore_tree() {
   cp -pR "$backup_dir" "$destino_dir"
 }
 
+# --- --system-copy-only: só a cópia do sistema, sem compilar e sem procurar
+#     a cópia do plugin. É o comando que a rodada sem root imprime pronto com
+#     sudo, para não repetir a compilação nem a busca da cópia do plugin como
+#     root (onde o HOME e o PATH do sudo não servem para nada disso).
+if [ -n "$SYSTEM_ONLY_RELEASE_DIR" ]; then
+  [ "$(id -u)" -eq 0 ] || { echo "erro: --system-copy-only precisa rodar como root." >&2; exit 1; }
+  [ -d "$SYSTEM_ONLY_RELEASE_DIR" ] || { echo "erro: pasta de binários inexistente: $SYSTEM_ONLY_RELEASE_DIR" >&2; exit 1; }
+  for b in mustard mustard-rt scan; do
+    [ -x "$SYSTEM_ONLY_RELEASE_DIR/$b" ] || { echo "erro: $SYSTEM_ONLY_RELEASE_DIR/$b não existe ou não é executável." >&2; exit 1; }
+  done
+  if [ -e "$SYSTEM_ONLY_BACKUP_DIR" ]; then
+    echo "erro: a pasta de backup já existe: $SYSTEM_ONLY_BACKUP_DIR" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname -- "$SYSTEM_ONLY_BACKUP_DIR")"
+  mkdir "$SYSTEM_ONLY_BACKUP_DIR"
+  echo "==> Trocando a cópia do sistema ($SYSTEM_DIR)…"
+  for b in mustard mustard-rt scan; do
+    swap_file "$SYSTEM_ONLY_RELEASE_DIR/$b" "$SYSTEM_DIR/bin/$b" "$SYSTEM_ONLY_BACKUP_DIR/bin/$b"
+  done
+  swap_tree "$REPO_ROOT/apps/cli/templates" "$SYSTEM_DIR/templates" "$SYSTEM_ONLY_BACKUP_DIR/templates"
+  echo "==> Originais preservados em: $SYSTEM_ONLY_BACKUP_DIR"
+  exit 0
+fi
+
+# --- a versão que decide a pasta do plugin ----------------------------------
+MANIFESTO="$REPO_ROOT/plugin/.claude-plugin/plugin.json"
+VERSAO=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFESTO" 2>/dev/null | head -n 1)
+if [ -z "$VERSAO" ]; then
+  echo "erro: não consegui ler \"version\" em $MANIFESTO." >&2
+  exit 1
+fi
+
+achar_copia_do_plugin() {
+  raiz="$CLAUDE_DIR/plugins/cache"
+  [ -d "$raiz" ] || return 0
+  find "$raiz" -maxdepth 3 -type d -path "*/mustard/$VERSAO" 2>/dev/null | head -n 1
+}
+PLUGIN_COPY=$(achar_copia_do_plugin)
+if [ -z "$PLUGIN_COPY" ]; then
+  echo "erro: não achei a cópia do plugin na versão $VERSAO, dentro de" >&2
+  echo "      $CLAUDE_DIR/plugins/cache — instale o plugin nesta versão antes:" >&2
+  echo "      /plugin marketplace add rubensrpj/mustard && /plugin install mustard@mustard-local" >&2
+  exit 1
+fi
+
 # --- --restore: desfaz uma troca anterior -----------------------------------
 if [ -n "$RESTORE_DIR" ]; then
   [ -d "$RESTORE_DIR" ] || { echo "erro: pasta de backup inexistente: $RESTORE_DIR" >&2; exit 1; }
@@ -188,9 +240,19 @@ for b in mustard mustard-rt scan; do
 done
 
 # --- a pasta datada deste backup ---------------------------------------------
+# Sem `-p` no `mkdir` final: duas rodadas no mesmo segundo caem no mesmo
+# nome, e a segunda recusa aqui, ANTES de trocar qualquer arquivo — senão a
+# pasta datada da segunda receberia o programa que a primeira já trocou, e o
+# original de verdade (guardado pela primeira) seria sobrescrito.
 BACKUP_ROOT="${MUSTARD_DEV_INSTALL_BACKUP_DIR:-$CLAUDE_DIR/mustard-dev-backups}"
+mkdir -p "$BACKUP_ROOT"
 BACKUP_DIR="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP_DIR"
+if [ -e "$BACKUP_DIR" ]; then
+  echo "erro: já existe uma pasta de backup para este segundo: $BACKUP_DIR" >&2
+  echo "      rode de novo daqui a pouco, para a pasta datada ter um nome novo." >&2
+  exit 1
+fi
+mkdir "$BACKUP_DIR"
 
 # --- cópia do plugin: os três programas, os moldes, o estilo de resposta,
 #     os comandos e os ganchos. O selo de versão (bin/.version) nunca entra
@@ -213,7 +275,7 @@ if [ "$(id -u)" -eq 0 ]; then
   swap_tree "$REPO_ROOT/apps/cli/templates" "$SYSTEM_DIR/templates" "$BACKUP_DIR/system/templates"
 else
   echo "==> A cópia do sistema ($SYSTEM_DIR) pede administrador. Para trocá-la:"
-  echo "        sudo env MUSTARD_DEV_INSTALL_SYSTEM_DIR=\"$SYSTEM_DIR\" \"$SCRIPT_PATH\""
+  echo "        sudo env MUSTARD_DEV_INSTALL_SYSTEM_DIR=\"$SYSTEM_DIR\" sh \"$SCRIPT_PATH\" --system-copy-only \"$RELEASE_DIR\" \"$BACKUP_DIR/system\""
 fi
 
 echo "==> Originais preservados em: $BACKUP_DIR"

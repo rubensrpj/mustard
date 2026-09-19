@@ -55,6 +55,21 @@ fn shim_cargo(dir: &Path) {
     }
 }
 
+/// Um executável (qualquer nome) que sempre escreve `stdout` para stdout,
+/// ignorando os argumentos. Usado para congelar `date` (a mesma marca de
+/// tempo nas duas rodadas de um teste) e para forjar `id -u` (fingir ser
+/// root sem precisar de root de verdade).
+fn shim_fixed_output(dir: &Path, name: &str, stdout: &str) {
+    let script = format!("#!/bin/sh\necho '{stdout}'\n");
+    let path = dir.join(name);
+    write(&path, &script);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+    }
+}
+
 /// Roda `scripts/dev-install.sh` de dentro do repositório de verdade (é dali
 /// que ele lê a versão do manifesto, os moldes, os comandos, os ganchos e o
 /// estilo de resposta), contra uma pasta de plugin e uma de sistema de
@@ -117,15 +132,30 @@ fn assert_trees_equal(a: &Path, b: &Path) {
     }
 }
 
+/// O conteúdo que o selo de versão (`bin/.version`) traz nos testes: um
+/// valor que o script JAMAIS produziria sozinho (ele só escreveria a versão
+/// do manifesto ali). Semear com a própria versão do manifesto escondia uma
+/// gravação: se o script reescrevesse o selo com `$VERSAO`, o arquivo ficava
+/// com o mesmo conteúdo de antes, e o teste não via diferença nenhuma.
+const VERSION_SEAL_SEED: &str = "conteudo-que-o-script-nunca-escreveria";
+
 /// Semeia uma cópia do plugin (versão do manifesto) com conteúdo antigo,
 /// reconhecível, em tudo que o script troca — inclusive o selo de versão,
 /// que tem de sobreviver sem ser tocado.
 fn seed_plugin_copy(claude_dir: &Path, version: &str) -> PathBuf {
+    let copy = seed_plugin_copy_without_version_seal(claude_dir, version);
+    write(&copy.join("bin/.version"), VERSION_SEAL_SEED);
+    copy
+}
+
+/// A mesma semeadura, sem gravar `bin/.version` — para a cópia que nunca
+/// teve selo de versão (por exemplo, uma cópia dev que nasceu sem o
+/// `mustard-boot` ter rodado) continuar sem ele depois do script.
+fn seed_plugin_copy_without_version_seal(claude_dir: &Path, version: &str) -> PathBuf {
     let copy = claude_dir.join(format!("plugins/cache/mustard-local/mustard/{version}"));
     write(&copy.join("bin/mustard"), "old-mustard");
     write(&copy.join("bin/mustard-rt"), "old-mustard-rt");
     write(&copy.join("bin/scan"), "old-scan");
-    write(&copy.join("bin/.version"), version);
     write(&copy.join("bin/templates/OLD.txt"), "old templates");
     write(&copy.join("commands/OLD.md"), "old command");
     write(&copy.join("hooks/hooks.json"), "{\"old\":true}");
@@ -173,8 +203,9 @@ fn the_dev_install_script_swaps_files_in_place() {
     assert_eq!(read(&plugin_copy.join("bin/mustard-rt")), "built-mustard-rt");
     assert_eq!(read(&plugin_copy.join("bin/scan")), "built-scan");
 
-    // O selo de versão nunca é tocado.
-    assert_eq!(read(&plugin_copy.join("bin/.version")), version, "o selo de versão mudou");
+    // O selo de versão nunca é tocado: continua com o valor semeado, que o
+    // script não teria como produzir sozinho (ele só escreveria a versão).
+    assert_eq!(read(&plugin_copy.join("bin/.version")), VERSION_SEAL_SEED, "o selo de versão mudou");
 
     // Os moldes, o estilo de resposta e os comandos vêm do repositório de
     // verdade, não de um resumo escrito à mão para o teste.
@@ -226,7 +257,7 @@ fn the_dev_install_script_swaps_files_in_place() {
     assert_eq!(read(&plugin_copy.join("bin/mustard")), "old-mustard");
     assert_eq!(read(&plugin_copy.join("bin/mustard-rt")), "old-mustard-rt");
     assert_eq!(read(&plugin_copy.join("bin/scan")), "old-scan");
-    assert_eq!(read(&plugin_copy.join("bin/.version")), version, "o selo de versão não deveria mudar nem na volta");
+    assert_eq!(read(&plugin_copy.join("bin/.version")), VERSION_SEAL_SEED, "o selo de versão não deveria mudar nem na volta");
     assert_eq!(files_under(&plugin_copy.join("bin/templates")), vec![PathBuf::from("OLD.txt")]);
     assert_eq!(read(&plugin_copy.join("bin/templates/OLD.txt")), "old templates");
     assert_eq!(files_under(&plugin_copy.join("commands")), vec![PathBuf::from("OLD.md")]);
@@ -257,4 +288,155 @@ fn refuses_without_a_matching_plugin_copy() {
     assert!(!out.status.success(), "sem cópia do plugin, o script não pode dar certo");
     assert!(!cargo_target.join("release").exists(), "recusou antes de compilar");
     assert!(!backup_root.exists(), "recusou antes de guardar qualquer backup");
+}
+
+/// Duas rodadas no mesmo segundo caem no mesmo nome de pasta datada. A
+/// segunda tem de recusar ANTES de trocar qualquer arquivo — senão ela
+/// gravaria, como "original", o programa que a primeira rodada já trocou,
+/// perdendo o original de verdade que a primeira guardou. Um `date`
+/// congelado garante que as duas rodadas caiam no mesmo segundo de fato, sem
+/// depender da sorte do relógio da máquina.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn a_second_run_in_the_same_second_refuses_and_keeps_the_first_backup() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_cargo(&shim);
+    shim_fixed_output(&shim, "date", "19991231-235959");
+
+    let version = plugin_version();
+    let plugin_copy = seed_plugin_copy(&claude_dir, &version);
+    seed_system_copy(&system_dir);
+
+    let first = run_script(&[], &shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(first.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&first.stdout), String::from_utf8_lossy(&first.stderr));
+    let backup_dir = the_dated_backup(&backup_root);
+
+    // A primeira rodada já trocou os três programas e guardou os originais.
+    assert_eq!(read(&plugin_copy.join("bin/mustard")), "built-mustard");
+    assert_eq!(read(&backup_dir.join("plugin/bin/mustard")), "old-mustard");
+
+    let second = run_script(&[], &shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(
+        !second.status.success(),
+        "a segunda rodada, no mesmo segundo, tem de recusar: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    // Continua havendo uma pasta datada só — a da primeira rodada — e ela
+    // continua com o ORIGINAL, sem o "old-mustard" virar "built-mustard".
+    let dirs: Vec<_> = fs::read_dir(&backup_root).expect("backup root exists").map(|e| e.expect("dir entry").path()).collect();
+    assert_eq!(dirs, vec![backup_dir.clone()], "uma pasta datada só, mesmo depois da recusa");
+    assert_eq!(read(&backup_dir.join("plugin/bin/mustard")), "old-mustard", "a segunda rodada não pode sobrescrever o original guardado pela primeira");
+    assert_eq!(read(&backup_dir.join("plugin/bin/mustard-rt")), "old-mustard-rt");
+    assert_eq!(read(&backup_dir.join("plugin/bin/scan")), "old-scan");
+}
+
+/// O comando com `sudo` que o script imprime, sem root, tem de funcionar de
+/// verdade: sem HOME real (o `sudo` do Ubuntu troca o HOME para `/root`),
+/// sem `cargo` no PATH (não compila nada — só troca a cópia do sistema com o
+/// que a rodada sem root já compilou) e só quando quem roda é root (aqui,
+/// forjado por um `id` de mentira que responde 0).
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn the_printed_sudo_command_swaps_the_system_copy_without_cargo_or_the_real_home() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_cargo(&shim);
+
+    let version = plugin_version();
+    seed_plugin_copy(&claude_dir, &version);
+    seed_system_copy(&system_dir);
+
+    // A rodada sem root: compila (com o `cargo` de mentira), troca a cópia
+    // do plugin e imprime o comando pronto, sem tocar na cópia do sistema.
+    let out = run_script(&[], &shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(out.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if running_as_root() {
+        // A própria rodada acima já tomou o ramo root; não há comando com
+        // sudo para extrair e testar por fora.
+        return;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let sudo_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("sudo "))
+        .unwrap_or_else(|| panic!("sem root, o comando pronto (com sudo) tem de aparecer: {stdout}"));
+    let bare_command = sudo_line.trim_start().trim_start_matches("sudo ");
+
+    // Roda o MESMO comando de verdade, sem `sudo` (o teste não é root), com
+    // um `id` de mentira que responde 0, sem HOME real e sem `cargo` no
+    // PATH — provando que o comando não depende de nenhum dos dois.
+    let fake_root_home = tmp.path().join("fake-root-home");
+    fs::create_dir_all(&fake_root_home).expect("mkdir fake root home");
+    let id_shim = tmp.path().join("id-shim");
+    fs::create_dir_all(&id_shim).expect("mkdir id shim");
+    shim_fixed_output(&id_shim, "id", "0");
+
+    let result = Command::new("sh")
+        .arg("-c")
+        .arg(bare_command)
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", id_shim.display()))
+        .env("HOME", &fake_root_home)
+        .output()
+        .expect("the printed command runs");
+    assert!(result.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+
+    // A cópia do sistema foi trocada de verdade, com o binário que a rodada
+    // sem root já tinha compilado.
+    assert_eq!(read(&system_dir.join("bin/mustard")), "built-mustard");
+    assert_eq!(read(&system_dir.join("bin/mustard-rt")), "built-mustard-rt");
+    assert_eq!(read(&system_dir.join("bin/scan")), "built-scan");
+    assert_trees_equal(&system_dir.join("templates"), &repo_root().join("apps/cli/templates"));
+
+    // E o original foi para a pasta datada que a rodada sem root já tinha
+    // criado — a mesma que o comando impresso citou.
+    let backup_dir = the_dated_backup(&backup_root);
+    assert_eq!(read(&backup_dir.join("system/bin/mustard")), "old-system-mustard");
+    assert_eq!(read(&backup_dir.join("system/bin/mustard-rt")), "old-system-mustard-rt");
+    assert_eq!(read(&backup_dir.join("system/bin/scan")), "old-system-scan");
+    assert_eq!(read(&backup_dir.join("system/templates/OLD.txt")), "old system templates");
+}
+
+/// Uma cópia do plugin sem selo de versão (`bin/.version`) — por exemplo,
+/// uma cópia de desenvolvimento que nunca passou pelo `mustard-boot` —
+/// continua sem selo depois do script: ele nunca lê, nunca cria e nunca
+/// escreve esse arquivo.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn a_plugin_copy_without_a_version_seal_stays_without_one() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_cargo(&shim);
+
+    let version = plugin_version();
+    let plugin_copy = seed_plugin_copy_without_version_seal(&claude_dir, &version);
+    seed_system_copy(&system_dir);
+
+    let out = run_script(&[], &shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(out.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+
+    assert!(!plugin_copy.join("bin/.version").exists(), "sem selo antes, o script não pode criar um");
+    let backup_dir = the_dated_backup(&backup_root);
+    assert!(!backup_dir.join("plugin/bin/.version").exists(), "e não deveria ir para o backup, já que nunca existiu");
 }
