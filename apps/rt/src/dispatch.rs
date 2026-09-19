@@ -355,7 +355,7 @@ mod tests {
     /// veio depois do sim; e a sugestão aprovada, apontada na terceira
     /// mensagem, que está duas voltas atrás dela.
     #[test]
-    fn the_barred_answer_is_recorded_before_its_complement() {
+    fn each_response_is_recorded_in_order_and_the_goal_only_accepts_its_own_origin_verbatim() {
         let dir = project_on("barrada");
         let root = dir.path();
         let hook_call = |event: &str, raw: Value| HookInput {

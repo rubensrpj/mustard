@@ -255,6 +255,13 @@ pub struct ProjectMap {
     pub state: MapState,
 }
 
+/// O mapa tem alguma parte Rust, que compila e testa pelo Cargo. Sem mapa,
+/// `false`.
+#[must_use]
+pub fn has_rust_part(map: Option<&ProjectMap>) -> bool {
+    map.is_some_and(|map| map.projects.iter().any(|part| part.kind == "cargo"))
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MapModule {

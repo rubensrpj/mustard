@@ -41,8 +41,8 @@
 //!    evento `deferred` dela cita — não é citada nesse texto, pelo título ou
 //!    pelo id (`P-3`), sem diferenciar maiúsculas. Id e título contam só
 //!    inteiros: `P-1` não cita dentro de `P-10`, e o título `um` não cita
-//!    dentro de `algum`. O bloqueio pede o título: a regra de clareza barra o
-//!    código na conversa.
+//!    dentro de `algum`. O bloqueio pede o título: a regra de clareza aponta
+//!    o código interno como defeito na conversa, sem barrar.
 //! 5. A regra ainda não bloqueou [`MAX_BLOCKS`] vezes por este fechamento, no
 //!    total, em qualquer sessão.
 //!
@@ -63,9 +63,10 @@
 //!
 //! ## `stop_hook_active` não libera
 //!
-//! Ele não diz QUEM bloqueou. Se a clareza barra o primeiro `Stop` e a
-//! reescrita fecha a spec, o `Stop` seguinte chega com `stop_hook_active` e um
-//! fechamento novo — e é a mensagem que encerra o fechamento. Liberá-lo pelo
+//! Ele não diz QUEM bloqueou. Se esta regra barra o primeiro `Stop`, por um
+//! fechamento anterior, e nesse meio-tempo a reescrita fecha a spec de novo, o
+//! `Stop` seguinte chega com `stop_hook_active` e um fechamento novo — e é a
+//! mensagem que encerra o fechamento novo. Liberá-lo pelo
 //! campo deixaria essa mensagem sem conferência (a perda original). O limite é
 //! o contador: no máximo [`MAX_BLOCKS`] bloqueios por fechamento, longe do teto
 //! de 8 bloqueios seguidos do Claude Code.

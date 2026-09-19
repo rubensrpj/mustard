@@ -259,8 +259,8 @@ pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Re
 
 /// As respostas do assistente que a mensagem `message` respondeu: as
 /// `response` visíveis gravadas depois da mensagem do usuário anterior a ela,
-/// ou desde o começo quando não há outra, e antes dela. Quando a conferência
-/// de escrita barra a resposta, a volta tem duas, a barrada e o complemento
+/// ou desde o começo quando não há outra, e antes dela. Quando a regra das
+/// pendências barra a resposta, a volta tem duas, a barrada e o complemento
 /// que o bloqueio pediu, e a sugestão pode estar em qualquer uma. Vale também
 /// a do turno em que a spec nasceu, gravada sem `reply_to` ([`reply_rule`]).
 /// A resposta de uma volta mais antiga fica de fora.
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     /// O sim acha a sugestão em qualquer resposta da volta que ele responde:
-    /// na resposta que a conferência de escrita barrou e no complemento que
+    /// na resposta que a regra das pendências barrou e no complemento que
     /// veio depois dela, não só na última. A volta começa depois da mensagem
     /// anterior do usuário: a primeira resposta dela vale, e a última resposta
     /// antes daquela mensagem, de uma volta mais antiga, já não; nem a

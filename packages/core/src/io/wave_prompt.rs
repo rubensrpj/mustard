@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::domain::lessons::{defects_in_scope, in_scope, related_to_tasks, Scope};
-use crate::domain::project_map::{check_skill, file_history, MapRefusal, ProjectMap};
+use crate::domain::project_map::{check_skill, file_history, has_rust_part, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{self, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
@@ -223,10 +223,6 @@ pub fn recorded_copy(log: &SpecLog, wave: u64) -> Option<WaveCopy> {
 /// Cargo. Sem mapa, o Mustard não sabe que o projeto é Rust, e a frase fica
 /// fora; a pasta continua escolhida, porque é ela a vaga das ondas que rodam
 /// juntas.
-fn has_rust_part(map: Option<&ProjectMap>) -> bool {
-    map.is_some_and(|map| map.projects.iter().any(|part| part.kind == "cargo"))
-}
-
 /// Um caminho como o pedido e o envio gravado o mostram: sempre com barras
 /// normais, que o terminal e o controle de versão aceitam nos três sistemas.
 #[must_use]
@@ -605,6 +601,13 @@ mod tests {
         std::fs::write(dir.join("SKILL.md"), text).unwrap();
     }
 
+    /// O mapa de teste, gravado como o scan o grava: cria a pasta `.claude`
+    /// antes de escrever o arquivo do mapa.
+    fn write_map(root: &Path, model: &Value) {
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(crate::io::project_map::model_path(root), model.to_string()).unwrap();
+    }
+
     /// A skill que a tarefa nomeia entra no pedido pelo caminho do arquivo e
     /// pelo quando usar da descrição dela, sem o texto; e ela é procurada no
     /// subprojeto em que a tarefa mexe.
@@ -752,15 +755,13 @@ mod tests {
                             "must_read": ["apps/rt/src/a.rs#soma"]})),
         ]);
         let write_model = |line: u64, end_line: u64| {
-            std::fs::create_dir_all(root.join(".claude")).unwrap();
             let model = json!({
                 "modules": [{
                     "path": "apps/rt/src/a.rs",
                     "declarations": [{"kind": "function", "name": "soma", "line": line, "end_line": end_line}],
                 }]
-            })
-            .to_string();
-            std::fs::write(crate::io::project_map::model_path(root), model).unwrap();
+            });
+            write_map(root, &model);
         };
 
         write_model(3, 5);
@@ -1073,18 +1074,15 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             write_skill(root, "apps/rt", "somar", "# O molde\n\nUm passo por linha.\n");
-            std::fs::create_dir_all(root.join(".claude")).unwrap();
-            std::fs::write(
-                crate::io::project_map::model_path(root),
-                json!({
+            write_map(
+                root,
+                &json!({
                     "history": {
                         "paths": ["apps/rt/src/exemplo.rs"],
                         "commits": [{"id": "abc1234", "at": moved, "changed": [0]}],
                     }
-                })
-                .to_string(),
-            )
-            .unwrap();
+                }),
+            );
             let mut events = vec![
                 ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
                 (
@@ -1115,9 +1113,7 @@ mod tests {
     fn the_request_carries_the_copy_the_round_chose_or_recorded_and_the_review_its_build_folder() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo"}]}).to_string();
-        std::fs::write(crate::io::project_map::model_path(root), model).unwrap();
+        write_map(root, &json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo"}]}));
         let log = log_of(&[
             ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
@@ -1168,9 +1164,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             if let Some(projects) = &map {
-                std::fs::create_dir_all(root.join(".claude")).unwrap();
-                let model = json!({"projects": projects}).to_string();
-                std::fs::write(crate::io::project_map::model_path(root), model).unwrap();
+                write_map(root, &json!({"projects": projects}));
             }
             let folder = shown(&root.join("target").join("copias").join("a"));
             let copy = shown(&copy_path(root, "teste", 1, false));

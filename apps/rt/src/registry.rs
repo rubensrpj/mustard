@@ -168,8 +168,9 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(SessionCleanupObserver)),
             },
-            // A conferência do fim da resposta, o único gancho do `Stop`: as
-            // regras dela (as pendências e a clareza) saem num bloqueio só.
+            // A conferência do fim da resposta, o único gancho do `Stop`: a
+            // regra das pendências bloqueia; a de clareza nunca bloqueia, só
+            // grava o erro para a mensagem seguinte.
             Module {
                 id: "end_of_turn_check",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],

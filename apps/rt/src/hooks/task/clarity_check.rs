@@ -222,6 +222,7 @@ fn write_record(path: &Path, record: &ClarityRecord) {
 mod tests {
     use super::*;
     use crate::hooks::task::end_of_turn_check::run_rules;
+    use mustard_core::domain::clarity::{LongSentence, WrongLanguage};
     use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
     use serde_json::{json, Value};
     use tempfile::tempdir;
@@ -611,18 +612,56 @@ mod tests {
     }
 
     /// Cada linha de defeito do catálogo abre com o erro, nos dois idiomas: o
-    /// trecho antes da primeira pontuação que fecha o erro.
+    /// trecho antes da primeira pontuação que fecha o erro. As linhas vêm do
+    /// próprio catálogo, lidas por `ClarityReport::defects`, não de cópias
+    /// escritas à mão: se o catálogo mudar a pontuação de uma linha, o
+    /// recorte muda e este teste cai.
     #[test]
-    fn each_defect_line_opens_with_its_error() {
-        for (defect, error) in [
-            ("frase com 29 palavras: \"Depois de ler…\"; diga a mesma ideia em frases curtas", "frase com 29 palavras"),
-            ("CI é uma sigla sem explicação; diga o nome por extenso", "CI é uma sigla sem explicação"),
-            ("resposta com 16 linhas, e o limite é 15; faça no chat um resumo curto", "resposta com 16 linhas, e o limite é 15"),
-            ("texto difícil de ler: nota 12 no índice de Flesch", "texto difícil de ler"),
-            ("resposta em en-US; o idioma do projeto e do usuário é pt-BR", "resposta em en-US"),
-            ("reply in pt-BR; the language of the project and the user is en-US", "reply in pt-BR"),
+    fn every_catalog_defect_line_yields_its_error_name() {
+        let full_report = |found: Locale, expected: Locale| ClarityReport {
+            long_sentences: vec![LongSentence { words: 29, opening: "Depois de ler".to_string() }],
+            unexpanded_acronyms: vec!["CI".to_string()],
+            internal_codes: vec!["MSTD-RULE-0008".to_string()],
+            prose_lines: 16,
+            lines: 16,
+            too_long: true,
+            reading_ease: Some(12),
+            hard_to_read: true,
+            wrong_language: Some(WrongLanguage { found, expected }),
+            passed: false,
+            explained: Vec::new(),
+        };
+        for (lang, report, errors) in [
+            (
+                Locale::PtBr,
+                full_report(Locale::EnUs, Locale::PtBr),
+                [
+                    "frase com 29 palavras",
+                    "CI é uma sigla sem explicação",
+                    "MSTD-RULE-0008 é um código interno",
+                    "resposta com 16 linhas, e o limite é 15",
+                    "texto difícil de ler",
+                    "resposta em en-US",
+                ],
+            ),
+            (
+                Locale::EnUs,
+                full_report(Locale::PtBr, Locale::EnUs),
+                [
+                    "sentence with 29 words",
+                    "CI is an unexplained acronym",
+                    "MSTD-RULE-0008 is an internal code",
+                    "reply with 16 lines, and the limit is 15",
+                    "hard to read",
+                    "reply in pt-BR",
+                ],
+            ),
         ] {
-            assert_eq!(error_of(defect), error);
+            let lines = report.defects(lang);
+            assert_eq!(lines.len(), errors.len(), "{lang:?}: {lines:?}");
+            for (line, error) in lines.iter().zip(errors) {
+                assert_eq!(error_of(line), error, "{lang:?}: {line}");
+            }
         }
         let dir = project();
         let reply = "A regra MSTD-RULE-0008 ficou pronta.";

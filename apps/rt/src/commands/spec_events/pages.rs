@@ -263,8 +263,23 @@ pub(crate) fn end_milestone(
     if !prepared.withheld.is_empty() {
         next.push(purge_pending(spec, &prepared.withheld, lang));
     }
-    next.push(then.to_string());
-    report["next"] = json!(next.join(" "));
+    report["next"] = json!(numbered_next(next, then));
+}
+
+/// Junta as ordens de `orders` com `then` num texto só. Mais de uma ordem sai
+/// numa lista numerada, uma por linha, na ordem de fazer, com `then` depois
+/// dela, na linha seguinte e sem número, para a rodada continuar separando-o
+/// do resto. Com uma ordem só, ou nenhuma, o texto sai como antes: as partes
+/// juntas com espaço, num parágrafo só.
+fn numbered_next(orders: Vec<String>, then: &str) -> String {
+    if orders.len() > 1 {
+        let list = orders.iter().enumerate().map(|(i, order)| format!("{}. {order}", i + 1)).collect::<Vec<_>>().join("\n");
+        format!("{list}\n{then}")
+    } else {
+        let mut parts = orders;
+        parts.push(then.to_string());
+        parts.join(" ")
+    }
 }
 
 /// A ordem da migração das notas: dar nota às tarefas `points.unrated` e
@@ -526,6 +541,20 @@ mod tests {
             assert!(checked.html.contains(text), "{text} was withheld without being a secret");
         }
         assert!(checked.html.contains("o valor é DB_PASSWORD=… e pronto"), "only the excerpt leaves the page");
+    }
+
+    /// Mais de uma ordem sai numa lista numerada, uma por linha, na ordem de
+    /// fazer, com `then` depois dela, na linha seguinte e sem número. Com uma
+    /// ordem só, ou nenhuma, o texto sai como antes, tudo junto com espaço.
+    #[test]
+    fn the_milestone_orders_come_as_a_numbered_list() {
+        let orders = vec!["Publique a página da spec.".to_string(), "Publique a página do projeto.".to_string()];
+        assert_eq!(
+            numbered_next(orders, "Copie os lotes."),
+            "1. Publique a página da spec.\n2. Publique a página do projeto.\nCopie os lotes."
+        );
+        assert_eq!(numbered_next(vec!["Publique a página da spec.".to_string()], "Copie os lotes."), "Publique a página da spec. Copie os lotes.");
+        assert_eq!(numbered_next(Vec::new(), "Copie os lotes."), "Copie os lotes.");
     }
 }
 

@@ -553,12 +553,13 @@ pub(super) fn run_round_with_mine(
 }
 
 /// A instrução de publicar e copiar a página, que [`crate::commands::spec_events::pages::end_milestone`]
-/// monta por extenso em `out["next"]` — com a lista inteira dos lotes —, sai
-/// dali: o texto vai para `<spec>/round-next.md`, sob a pasta da spec, e
-/// `out["next"]` fica só com uma linha curta que manda ler o arquivo, seguida
-/// do `then`, que já era curto. O que o agente de cópia executa não muda: só
-/// onde o pedido mora. Sem instrução de página — `next` já é só o `then` —,
-/// nada muda; falha de disco também deixa `next` como estava.
+/// monta por extenso em `out["next"]` — com a lista inteira dos lotes, numerada
+/// quando há mais de uma ordem —, sai dali: o texto vai para
+/// `.claude/spec/<spec>/copy/next.md`, sob a pasta da spec, e `out["next"]`
+/// fica só com uma linha curta que manda ler o arquivo, seguida do `then`, que
+/// já era curto. O que o agente de cópia executa não muda: só onde o pedido
+/// mora. Sem instrução de página — `next` já é só o `then` —, nada muda;
+/// falha de disco também deixa `next` como estava.
 fn shorten_publish_order(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
     let Some(next) = out.get("next").and_then(Value::as_str).map(str::to_string) else { return };
     if next == then {
