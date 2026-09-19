@@ -16,11 +16,10 @@
 //! resposta, na mesma ordem.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
 
 use crate::domain::ranking::{avgdl_x1024, bm25_x1024_default, idf_x1024, SCALE};
 use crate::domain::spec_events::search_terms;
-use crate::domain::text::{FUNCTION_WORDS_EN, FUNCTION_WORDS_PT};
+use crate::domain::text::{self, FUNCTION_WORDS_EN, FUNCTION_WORDS_PT};
 
 /// Quantas respostas a busca devolve.
 pub const TOP: usize = 5;
@@ -101,21 +100,20 @@ impl SearchIndex {
     }
 }
 
-/// As raízes de um pedido para a busca: as mesmas de `search_terms`, sem as
-/// palavras funcionais de português e de inglês.
+/// As raízes de um pedido para a busca: as de `search_terms`, sobre o pedido
+/// já sem as palavras funcionais de português e de inglês — cortadas pelo
+/// texto delas, antes do radical, para não confundir a raiz de uma com a de
+/// uma palavra de conteúdo parecida (a raiz de "some" nunca é a de "somar").
+/// Um pedido só com palavras funcionais vira vazio.
 #[must_use]
 pub fn query_terms(query: &str) -> Vec<String> {
-    let skip = function_roots();
-    search_terms(query).into_iter().filter(|t| !skip.contains(t)).collect()
-}
-
-/// As raízes das palavras funcionais, reduzidas uma vez só pelo mesmo redutor
-/// do `search`.
-fn function_roots() -> &'static BTreeSet<String> {
-    static ROOTS: OnceLock<BTreeSet<String>> = OnceLock::new();
-    ROOTS.get_or_init(|| {
-        FUNCTION_WORDS_PT.iter().chain(FUNCTION_WORDS_EN).flat_map(|w| search_terms(w)).collect()
-    })
+    let lower = query.to_lowercase();
+    let kept: Vec<&str> =
+        text::words(&lower).filter(|w| !FUNCTION_WORDS_PT.contains(w) && !FUNCTION_WORDS_EN.contains(w)).collect();
+    if kept.is_empty() {
+        return Vec::new();
+    }
+    search_terms(&kept.join(" "))
 }
 
 /// Monta o índice e devolve as [`TOP`] respostas mais fortes para o pedido.
@@ -198,6 +196,19 @@ mod tests {
         let docs = [(1, doc("A pasta de testes é para o time.", &["pasta"]))];
         assert!(query_terms("a de para o the of").is_empty());
         assert!(found(&docs, "a de para o").is_empty());
+    }
+
+    /// A raiz de "somar" não é a raiz da palavra funcional inglesa "some":
+    /// achar "somar" não pode depender de um texto que só tem "some", e tem
+    /// que achar o texto que fala em "soma".
+    #[test]
+    fn somar_does_not_match_the_english_word_some() {
+        let docs = [
+            (1, doc("There is some pasta left in the pot.", &[])),
+            (2, doc("A soma dos valores está errada.", &[])),
+        ];
+        let hits = found(&docs, "somar");
+        assert_eq!(ids(&hits), [2], "{hits:?}");
     }
 
     #[test]
