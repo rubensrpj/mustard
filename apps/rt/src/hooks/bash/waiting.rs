@@ -16,6 +16,12 @@
 //!   refused: the request is rewritten to run in the foreground, with the
 //!   command's own time limit, the same way [`crate::hooks::task::subagent_inject`]
 //!   rewrites a dispatch prompt.
+//! - **A cargo build or test with no time limit, or one under 600 seconds**,
+//!   in the foreground already: the Bash tool's own default (120 seconds)
+//!   sends a long suite to the background on its own. This is not refused
+//!   either: the request is rewritten with the 600-second ceiling. A command
+//!   that already carries a 600-second ceiling or more passes exactly as it
+//!   came.
 //!
 //! It reads the commands [`super::lex::segments`] found, never the raw text:
 //! `git commit -m "espera com pgrep"` names the danger inside a quote and
@@ -84,10 +90,11 @@ fn without_trailing_background(cmd: &str) -> String {
     cmd.trim_end().trim_end_matches('&').trim_end().to_string()
 }
 
-/// The waiting check: deny a loop that waits for another process, and
-/// rewrite a `cargo` build or test sent to the background — through
-/// `run_in_background`, a trailing `&`, or a full path — to run in the
-/// foreground instead, with the command's own time limit.
+/// The waiting check: deny a loop that waits for another process; rewrite a
+/// `cargo` build or test sent to the background — through `run_in_background`,
+/// a trailing `&`, or a full path — to run in the foreground instead; and
+/// rewrite a `cargo` build or test with no time limit, or one under 600
+/// seconds, to carry the 600-second ceiling.
 pub(super) fn bash_waiting(segments: &[Segment], cmd: &str, input: &HookInput, lang: SupportedLocale) -> Option<Verdict> {
     if waits_in_a_loop(segments) {
         let reason = translate("command_guard.waiting_loop", lang).replace("{command}", truncate(cmd, 120));
@@ -98,7 +105,9 @@ pub(super) fn bash_waiting(segments: &[Segment], cmd: &str, input: &HookInput, l
     let backgrounded = is_cargo && input.tool_input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false);
     let trailing_background = is_cargo && ends_in_background(cmd);
     let full_path = full_path_cargo(segments);
-    if !backgrounded && !trailing_background && full_path.is_none() {
+    let current_timeout = input.tool_input.get("timeout").and_then(Value::as_u64);
+    let short_ceiling = is_cargo && current_timeout.is_none_or(|timeout| timeout < FOREGROUND_TIMEOUT_MS);
+    if !backgrounded && !trailing_background && full_path.is_none() && !short_ceiling {
         return None;
     }
 
@@ -113,7 +122,7 @@ pub(super) fn bash_waiting(segments: &[Segment], cmd: &str, input: &HookInput, l
     let mut tool_input = input.tool_input.clone();
     let fields = tool_input.as_object_mut()?;
     fields.insert("command".to_string(), Value::String(command));
-    if backgrounded || trailing_background {
+    if backgrounded || trailing_background || short_ceiling {
         fields.remove("run_in_background");
         fields.insert("timeout".to_string(), Value::from(FOREGROUND_TIMEOUT_MS));
     }
@@ -136,6 +145,21 @@ mod tests {
 
     fn check(cmd: &str, run_in_background: Option<bool>) -> Option<Verdict> {
         let hook_input = input(cmd, run_in_background);
+        bash_waiting(&segments(cmd), cmd, &hook_input, SupportedLocale::PtBr)
+    }
+
+    /// An input with an explicit `timeout` (`None` leaves the field out, the
+    /// same as a command with no ceiling at all).
+    fn input_with_timeout(command: &str, timeout: Option<u64>) -> HookInput {
+        let mut tool_input = json!({ "command": command, "description": "roda a suíte" });
+        if let Some(timeout) = timeout {
+            tool_input["timeout"] = json!(timeout);
+        }
+        HookInput { tool_name: Some("Bash".to_string()), tool_input, ..HookInput::default() }
+    }
+
+    fn check_with_timeout(cmd: &str, timeout: Option<u64>) -> Option<Verdict> {
+        let hook_input = input_with_timeout(cmd, timeout);
         bash_waiting(&segments(cmd), cmd, &hook_input, SupportedLocale::PtBr)
     }
 
@@ -210,7 +234,9 @@ mod tests {
             }
             other => panic!("expected a rewrite, got {other:?}"),
         }
-        assert_eq!(check("cargo build && cargo test", None), None);
+        // `&&` is a second command, not backgrounding; with the ceiling
+        // already met it passes unchanged.
+        assert_eq!(check_with_timeout("cargo build && cargo test", Some(600_000)), None);
     }
 
     /// The full path to `cargo` — which the separate `rtk` hook does not
@@ -227,13 +253,13 @@ mod tests {
         }
     }
 
-    /// The bare `cargo test`, in the foreground, with no loop: the third
-    /// check has nothing to say, and the command passes as it came — the
-    /// bare-word rewrite is the separate `rtk` hook's own job.
+    /// The bare `cargo test`, in the foreground, with no loop and with the
+    /// 600-second ceiling already met: the third check has nothing to say,
+    /// and the command passes as it came — the bare-word rewrite is the
+    /// separate `rtk` hook's own job.
     #[test]
     fn the_same_command_in_the_foreground_with_no_loop_passes_unchanged() {
-        assert_eq!(check("cargo test -p mustard-rt", None), None);
-        assert_eq!(check("cargo test -p mustard-rt", Some(false)), None);
+        assert_eq!(check_with_timeout("cargo test -p mustard-rt", Some(600_000)), None);
         assert_eq!(check("git status", None), None);
     }
 
@@ -245,11 +271,13 @@ mod tests {
         assert_eq!(check("node server.js", Some(true)), None);
     }
 
-    /// O critério inteiro, os quatro casos do `when`/`then`: o laço é
+    /// O critério inteiro, os cinco casos do `when`/`then`: o laço é
     /// recusado com a instrução de rodar em primeiro plano; o segundo plano
     /// vira primeiro plano com o teto de tempo, sem recusa; o teste pelo
-    /// caminho completo passa pelo `rtk`; e o mesmo comando em primeiro
-    /// plano, sem laço, passa como veio.
+    /// caminho completo passa pelo `rtk`; a compilação ou o teste sem teto,
+    /// ou com teto menor que 600 segundos (599), ganha o teto de 600
+    /// segundos, sem recusa; e o mesmo comando em primeiro plano, sem laço e
+    /// já com o teto de 600 segundos, passa como veio.
     #[test]
     fn the_guard_refuses_waiting_loops_and_background_builds() {
         match check("while pgrep -f x >/dev/null; do sleep 1; done", None) {
@@ -271,6 +299,16 @@ mod tests {
             other => panic!("expected the full path to be rewritten through rtk, got {other:?}"),
         }
 
-        assert_eq!(check("cargo test -p mustard-rt", None), None);
+        for timeout in [None, Some(599_000)] {
+            match check_with_timeout("cargo test -p mustard-rt", timeout) {
+                Some(Verdict::Rewrite { tool_input, .. }) => {
+                    assert_eq!(tool_input["command"], "cargo test -p mustard-rt");
+                    assert_eq!(tool_input["timeout"], 600_000);
+                }
+                other => panic!("expected the ceiling for timeout {timeout:?}, got {other:?}"),
+            }
+        }
+
+        assert_eq!(check_with_timeout("cargo test -p mustard-rt", Some(600_000)), None);
     }
 }
