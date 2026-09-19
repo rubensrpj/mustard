@@ -1489,4 +1489,27 @@ mod tests {
         // pergunta, e a rodada não passa do que já se pergunta hoje.
         assert!(second.get("stopped").is_none(), "{second}");
     }
+
+    /// Um arquivo já rastreado, mudado sem estar preparado, sai do `git
+    /// status` com o código de estado começando em espaço (`" M arquivo"`);
+    /// a saída inteira é trimada antes de virar linhas, o que apaga esse
+    /// espaço quando o arquivo é o primeiro. A lista de arquivos mudados
+    /// continua trazendo o nome inteiro, sem a primeira letra cortada.
+    #[test]
+    fn the_wave_is_found_by_the_paths_of_the_call() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+
+        let (copy1, _) = sent_copy(root, 1);
+        std::fs::write(Path::new(&copy1).join("src").join("a.rs"), "fn dois() {}\n").unwrap();
+
+        let second = round(root, "x", None);
+        let running = second["running"].as_array().cloned().unwrap_or_default();
+        let one = running.iter().find(|r| r["wave"] == json!(1)).cloned().unwrap_or_else(|| panic!("wave 1: {running:?}"));
+        assert_eq!(one["files"], json!(["src/a.rs"]), "{one}");
+    }
 }

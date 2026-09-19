@@ -10,8 +10,8 @@
 //! andamento, ganha o aviso com o comando `/compact` pronto e o resumo do que
 //! fica, a cada novo degrau de 200 mil.
 //!
-//! Qual conversa: a do agente de onda quando a pasta de trabalho é a cópia de
-//! uma onda, pela mesma leitura de [`wave_of_copy`], do observador do sinal de
+//! Qual conversa: a do agente de onda quando a chamada é da cópia de uma
+//! onda, pela mesma leitura de [`wave_of_call`], do observador do sinal de
 //! vida — o arquivo dele fica em `<pasta da sessão>/subagents/agent-<id>.jsonl`,
 //! com o `agent_id` do registro quando ele vier, e sem ele o arquivo mais
 //! recente da pasta cuja primeira mensagem é o pedido daquela onda. Fora da
@@ -29,7 +29,7 @@ use mustard_core::{translate, ClaudePaths, ProjectConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::hooks::observe::wave_alive_observer::wave_of_copy;
+use crate::hooks::observe::wave_alive_observer::wave_of_call;
 
 /// O degrau de tamanho que dispara o aviso, em tokens.
 pub(crate) const THRESHOLD: u64 = 200_000;
@@ -110,10 +110,7 @@ fn pick_subagent_file(dir: &Path, wanted: Option<&str>) -> Option<PathBuf> {
 pub(crate) fn conversation_path(root: &Path, input: &HookInput) -> Option<PathBuf> {
     let transcript = input.raw.get("transcript_path").and_then(Value::as_str)?;
     let transcript = Path::new(transcript);
-    let Some(cwd) = input.cwd.as_deref().filter(|c| !c.is_empty()) else {
-        return Some(transcript.to_path_buf());
-    };
-    let Some((spec, wave)) = wave_of_copy(root, Path::new(cwd)) else {
+    let Some((spec, wave)) = wave_of_call(root, input) else {
         return Some(transcript.to_path_buf());
     };
     let session_dir = transcript.to_string_lossy();
@@ -143,8 +140,7 @@ impl Check for WavePauseCheck {
             return Ok(Verdict::Allow);
         }
         let root = ctx.workspace_root.clone().unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
-        let Some(cwd) = input.cwd.as_deref().filter(|c| !c.is_empty()) else { return Ok(Verdict::Allow) };
-        let Some((_, wave)) = wave_of_copy(&root, Path::new(cwd)) else { return Ok(Verdict::Allow) };
+        let Some((_, wave)) = wave_of_call(&root, input) else { return Ok(Verdict::Allow) };
         let Some(path) = conversation_path(&root, input) else { return Ok(Verdict::Allow) };
         let Some(tokens) = tokens_in(&path) else { return Ok(Verdict::Allow) };
         if tokens < THRESHOLD {
@@ -308,5 +304,38 @@ mod tests {
         let outside =
             HookInput { cwd: Some(root.to_string_lossy().into_owned()), ..input() };
         assert_eq!(WavePauseCheck.evaluate(&outside, &ctx).unwrap(), Verdict::Allow);
+    }
+
+    /// O agente de onda lê e edita pelo caminho, sem mudar de pasta: a pasta
+    /// de trabalho da chamada é a do projeto, não a da cópia. A pausa aos
+    /// 200 mil ainda dispara, achando a onda pelo caminho do arquivo pedido
+    /// (`file_path`).
+    #[test]
+    fn the_wave_is_found_by_the_paths_of_the_call() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = root.join(".claude").join("worktrees").join("mustard-x-3");
+        std::fs::create_dir_all(&copy).unwrap();
+        let subagents = root.join("s1").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let agent_file = subagents.join("agent-a1.jsonl");
+        let transcript = root.join("s1.jsonl");
+        std::fs::write(&agent_file, write_usage_line(200_000, 0, 0)).unwrap();
+
+        let input = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            tool_name: Some("Read".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            agent_id: Some("a1".to_string()),
+            tool_input: serde_json::json!({ "file_path": copy.join("src").join("lib.rs").to_string_lossy() }),
+            raw: serde_json::json!({ "transcript_path": transcript.to_string_lossy() }),
+            ..HookInput::default()
+        };
+        let ctx = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::PostToolUse));
+
+        let Verdict::Inject { context } = WavePauseCheck.evaluate(&input, &ctx).unwrap() else {
+            panic!("achada pelo file_path, a onda 3 é mandada parar");
+        };
+        assert!(context.contains("<PAUSED>{\"wave\":3}</PAUSED>"), "{context}");
     }
 }

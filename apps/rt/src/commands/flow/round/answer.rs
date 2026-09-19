@@ -202,11 +202,24 @@ fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
 
 /// Os arquivos mudados na cópia da onda `wave`, pelo `git status` curto dela.
 /// `None` sem cópia gravada, ou sem git.
+///
+/// A saída do `git status --porcelain` chega inteira e depois trimada
+/// (`GitRun::out`), o que apaga o espaço à esquerda da primeira linha quando
+/// o código de estado dela começa com espaço (ex.: `" M arquivo"` vira
+/// `"M arquivo"`). Por isso a linha não é lida por uma posição fixa: o nome
+/// do arquivo começa depois do primeiro espaço da linha, seja qual for a
+/// posição dele.
 fn copy_files_changed(log: &SpecLog, wave: u64) -> Option<Vec<String>> {
     let copy = recorded_copy(log, wave)?;
     let out = mustard_core::platform::git::run(Path::new(&copy.path), &["status", "--porcelain", "--untracked-files=all"])
         .out()?;
-    Some(out.lines().filter_map(|line| line.get(3..).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string)).collect())
+    Some(
+        out.lines()
+            .filter_map(|line| line.find(' ').map(|i| line[i + 1..].trim()))
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// O estado da onda `wave` em andamento, para o orquestrador saber como ela
