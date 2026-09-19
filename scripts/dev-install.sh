@@ -57,11 +57,21 @@
 #   scripts/dev-install.sh                        # compila e troca no lugar
 #   scripts/dev-install.sh --update-project <dir> # e roda o `mustard init`
 #                                                  # novo nesse projeto
-#   scripts/dev-install.sh --restore <pasta-datada>  # desfaz uma troca
+#   scripts/dev-install.sh --restore <pasta-datada>  # desfaz uma troca: o
+#                                                  # plugin sempre; o sistema
+#                                                  # só quando já roda como
+#                                                  # root, senão imprime o
+#                                                  # comando pronto com sudo
 #   scripts/dev-install.sh --system-copy-only <pasta-dos-binários> <pasta-de-backup>
 #                                                  # só a cópia do sistema,
 #                                                  # sem compilar (é o comando
 #                                                  # que o script acima
+#                                                  # imprime pronto com sudo)
+#   scripts/dev-install.sh --restore-system-only <pasta-de-backup-do-sistema>
+#                                                  # só devolve a cópia do
+#                                                  # sistema, sem procurar o
+#                                                  # plugin (é o comando que
+#                                                  # o --restore acima
 #                                                  # imprime pronto com sudo)
 # ============================================================================
 set -eu
@@ -70,12 +80,14 @@ usage() {
   echo "uso: $(basename -- "$0") [--update-project <pasta-do-projeto>]"
   echo "     $(basename -- "$0") --restore <pasta-datada-do-backup>"
   echo "     $(basename -- "$0") --system-copy-only <pasta-dos-binarios> <pasta-de-backup>"
+  echo "     $(basename -- "$0") --restore-system-only <pasta-de-backup-do-sistema>"
 }
 
 RESTORE_DIR=""
 UPDATE_PROJECT=""
 SYSTEM_ONLY_RELEASE_DIR=""
 SYSTEM_ONLY_BACKUP_DIR=""
+RESTORE_SYSTEM_ONLY_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --restore)
@@ -94,6 +106,11 @@ while [ $# -gt 0 ]; do
       SYSTEM_ONLY_BACKUP_DIR="$3"
       shift 3
       ;;
+    --restore-system-only)
+      [ $# -ge 2 ] || { echo "erro: --restore-system-only precisa da pasta de backup do sistema." >&2; exit 1; }
+      RESTORE_SYSTEM_ONLY_DIR="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -109,8 +126,9 @@ MODOS=0
 if [ -n "$RESTORE_DIR" ]; then MODOS=$((MODOS + 1)); fi
 if [ -n "$UPDATE_PROJECT" ]; then MODOS=$((MODOS + 1)); fi
 if [ -n "$SYSTEM_ONLY_RELEASE_DIR" ]; then MODOS=$((MODOS + 1)); fi
+if [ -n "$RESTORE_SYSTEM_ONLY_DIR" ]; then MODOS=$((MODOS + 1)); fi
 if [ "$MODOS" -gt 1 ]; then
-  echo "erro: --restore, --update-project e --system-copy-only não se combinam." >&2
+  echo "erro: --restore, --update-project, --system-copy-only e --restore-system-only não se combinam." >&2
   exit 1
 fi
 
@@ -192,6 +210,23 @@ if [ -n "$SYSTEM_ONLY_RELEASE_DIR" ]; then
   exit 0
 fi
 
+# --- --restore-system-only: só devolve a cópia do sistema, sem procurar a
+#     cópia do plugin. É o comando que a rodada sem root imprime pronto com
+#     sudo quando um --restore acha a parte do sistema na pasta datada — pelo
+#     mesmo motivo do --system-copy-only: o HOME e o PATH do sudo não servem
+#     para achar o plugin nem para compilar nada.
+if [ -n "$RESTORE_SYSTEM_ONLY_DIR" ]; then
+  [ "$(id -u)" -eq 0 ] || { echo "erro: --restore-system-only precisa rodar como root." >&2; exit 1; }
+  [ -d "$RESTORE_SYSTEM_ONLY_DIR" ] || { echo "erro: pasta de backup do sistema inexistente: $RESTORE_SYSTEM_ONLY_DIR" >&2; exit 1; }
+  echo "==> Restaurando a cópia do sistema ($SYSTEM_DIR)…"
+  for b in mustard mustard-rt scan; do
+    restore_file "$RESTORE_SYSTEM_ONLY_DIR/bin/$b" "$SYSTEM_DIR/bin/$b"
+  done
+  restore_tree "$RESTORE_SYSTEM_ONLY_DIR/templates" "$SYSTEM_DIR/templates"
+  echo "==> Sistema restaurado a partir de $RESTORE_SYSTEM_ONLY_DIR."
+  exit 0
+fi
+
 # --- a versão que decide a pasta do plugin ----------------------------------
 MANIFESTO="$REPO_ROOT/plugin/.claude-plugin/plugin.json"
 VERSAO=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFESTO" 2>/dev/null | head -n 1)
@@ -214,8 +249,13 @@ if [ -z "$PLUGIN_COPY" ]; then
 fi
 
 # --- --restore: desfaz uma troca anterior -----------------------------------
+# A cópia do plugin volta sempre, aqui mesmo. A cópia do sistema pede
+# administrador, como na instalação: só volta direto quando este processo já
+# é root; senão, o script não toca nela — imprime o comando pronto com sudo
+# (--restore-system-only, que não procura o plugin nem compila nada).
 if [ -n "$RESTORE_DIR" ]; then
   [ -d "$RESTORE_DIR" ] || { echo "erro: pasta de backup inexistente: $RESTORE_DIR" >&2; exit 1; }
+  echo "==> Restaurando a cópia do plugin ($PLUGIN_COPY)…"
   for b in mustard mustard-rt scan; do
     restore_file "$RESTORE_DIR/plugin/bin/$b" "$PLUGIN_COPY/bin/$b"
   done
@@ -223,11 +263,19 @@ if [ -n "$RESTORE_DIR" ]; then
   restore_tree "$RESTORE_DIR/plugin/commands" "$PLUGIN_COPY/commands"
   restore_tree "$RESTORE_DIR/plugin/hooks" "$PLUGIN_COPY/hooks"
   restore_tree "$RESTORE_DIR/plugin/output-styles" "$PLUGIN_COPY/output-styles"
-  for b in mustard mustard-rt scan; do
-    restore_file "$RESTORE_DIR/system/bin/$b" "$SYSTEM_DIR/bin/$b"
-  done
-  restore_tree "$RESTORE_DIR/system/templates" "$SYSTEM_DIR/templates"
   echo "==> Restaurado a partir de $RESTORE_DIR."
+  if [ -d "$RESTORE_DIR/system" ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+      echo "==> Restaurando a cópia do sistema ($SYSTEM_DIR)…"
+      for b in mustard mustard-rt scan; do
+        restore_file "$RESTORE_DIR/system/bin/$b" "$SYSTEM_DIR/bin/$b"
+      done
+      restore_tree "$RESTORE_DIR/system/templates" "$SYSTEM_DIR/templates"
+    else
+      echo "==> A cópia do sistema ($SYSTEM_DIR) pede administrador. Para restaurá-la:"
+      echo "        sudo env MUSTARD_DEV_INSTALL_SYSTEM_DIR=\"$SYSTEM_DIR\" sh \"$SCRIPT_PATH\" --restore-system-only \"$RESTORE_DIR/system\""
+    fi
+  fi
   exit 0
 fi
 
@@ -279,7 +327,7 @@ else
 fi
 
 echo "==> Originais preservados em: $BACKUP_DIR"
-echo "    Para desfazer: $SCRIPT_PATH --restore \"$BACKUP_DIR\""
+echo "    Para desfazer: sh \"$SCRIPT_PATH\" --restore \"$BACKUP_DIR\""
 
 # --- opcional: roda a atualização do Mustard num projeto ---------------------
 if [ -n "$UPDATE_PROJECT" ]; then

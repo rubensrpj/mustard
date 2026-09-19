@@ -412,6 +412,268 @@ fn the_printed_sudo_command_swaps_the_system_copy_without_cargo_or_the_real_home
     assert_eq!(read(&backup_dir.join("system/templates/OLD.txt")), "old system templates");
 }
 
+/// A linha "Para desfazer" tem de rodar como ela sai — o arquivo do script
+/// está no git sem permissão de execução (`100644`), então uma linha que
+/// invocasse o caminho do script direto, sem `sh` na frente, daria
+/// `Permission denied` na mão de quem só copia e cola.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn the_printed_undo_line_runs_as_is() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_cargo(&shim);
+
+    let version = plugin_version();
+    let plugin_copy = seed_plugin_copy(&claude_dir, &version);
+    seed_system_copy(&system_dir);
+
+    let out = run_script(&[], &shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(out.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let undo_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("Para desfazer:"))
+        .unwrap_or_else(|| panic!("tem de imprimir a linha \"Para desfazer:\": {stdout}"));
+    let bare_command = undo_line.trim_start().trim_start_matches("Para desfazer:").trim();
+
+    // Roda a linha impressa exatamente como uma pessoa colaria no terminal:
+    // mesma pasta pessoal e mesmas pastas trocáveis da instalação — só sem o
+    // `cargo` no PATH (a volta não compila nada).
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    let result = Command::new("sh")
+        .arg("-c")
+        .arg(bare_command)
+        .env_clear()
+        .env("PATH", real_path)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("MUSTARD_DEV_INSTALL_SYSTEM_DIR", &system_dir)
+        .env("MUSTARD_DEV_INSTALL_BACKUP_DIR", &backup_root)
+        .output()
+        .expect("the undo line runs");
+    assert!(result.status.success(), "a linha impressa tem de rodar como ela sai: stdout={}\nstderr={}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+    assert_eq!(read(&plugin_copy.join("bin/mustard")), "old-mustard", "a linha impressa tem de desfazer a troca do plugin");
+}
+
+/// Sem root, `--restore` só devolve a cópia do plugin. A cópia do sistema
+/// pede administrador (como na instalação): o script não tenta mexer nela —
+/// só imprime o comando pronto com sudo, que roda `--restore-system-only`
+/// sem procurar a cópia do plugin nem compilar nada.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn without_root_restore_only_touches_the_plugin_and_prints_a_ready_system_restore_command() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+
+    // a instalação é forjada como root (id=0), para a cópia do sistema
+    // também trocar e o backup nascer com a parte "system" — do jeito que
+    // uma instalação real, feita como root, deixaria.
+    let root_shim = tmp.path().join("root-shim");
+    fs::create_dir_all(&root_shim).expect("mkdir root shim");
+    shim_cargo(&root_shim);
+    shim_fixed_output(&root_shim, "id", "0");
+
+    let version = plugin_version();
+    let plugin_copy = seed_plugin_copy(&claude_dir, &version);
+    seed_system_copy(&system_dir);
+
+    let install = run_script(&[], &root_shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(install.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&install.stdout), String::from_utf8_lossy(&install.stderr));
+    let backup_dir = the_dated_backup(&backup_root);
+    assert!(backup_dir.join("system").is_dir(), "a instalação como root tem de guardar backup da cópia do sistema também");
+
+    // a restauração roda sem root (id != 0) — só o plugin pode voltar aqui.
+    let nonroot_shim = tmp.path().join("nonroot-shim");
+    fs::create_dir_all(&nonroot_shim).expect("mkdir nonroot shim");
+    shim_cargo(&nonroot_shim);
+    shim_fixed_output(&nonroot_shim, "id", "1000");
+
+    let restore = run_script(&["--restore", backup_dir.to_str().expect("utf8 path")], &nonroot_shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(restore.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&restore.stdout), String::from_utf8_lossy(&restore.stderr));
+
+    // o plugin voltou ao original
+    assert_eq!(read(&plugin_copy.join("bin/mustard")), "old-mustard");
+
+    // a cópia do sistema NÃO foi mexida por este processo sem root — continua
+    // com o que a instalação (como root) tinha trocado, sem voltar ao
+    // original sozinha.
+    assert_eq!(read(&system_dir.join("bin/mustard")), "built-mustard", "sem root, --restore não pode mexer na cópia do sistema");
+
+    let stdout = String::from_utf8_lossy(&restore.stdout);
+    assert!(stdout.contains("sudo"), "sem root, o comando pronto para restaurar o sistema tem de aparecer: {stdout}");
+    assert!(stdout.contains("--restore-system-only"), "o comando pronto usa --restore-system-only, sem procurar o plugin nem compilar: {stdout}");
+    assert!(stdout.contains(backup_dir.join("system").to_str().expect("utf8 path")), "o comando pronto tem de citar a parte do sistema da pasta datada: {stdout}");
+}
+
+/// O comando `--restore-system-only`, impresso pronto com sudo, tem de
+/// funcionar de verdade no mesmo ambiente do comando de instalação com sudo:
+/// sem HOME real, sem `cargo` no PATH e só quando quem roda é root (forjado
+/// aqui por um `id` de mentira que responde 0).
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn the_printed_system_restore_command_runs_and_restores_the_system_copy() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+
+    // instalação forjada como root, para o backup nascer com a parte
+    // "system" que este teste vai restaurar.
+    let root_shim = tmp.path().join("root-shim");
+    fs::create_dir_all(&root_shim).expect("mkdir root shim");
+    shim_cargo(&root_shim);
+    shim_fixed_output(&root_shim, "id", "0");
+
+    let version = plugin_version();
+    seed_plugin_copy(&claude_dir, &version);
+    seed_system_copy(&system_dir);
+
+    let install = run_script(&[], &root_shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(install.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&install.stdout), String::from_utf8_lossy(&install.stderr));
+    let backup_dir = the_dated_backup(&backup_root);
+
+    // a restauração roda sem root — só imprime o comando pronto.
+    let nonroot_shim = tmp.path().join("nonroot-shim");
+    fs::create_dir_all(&nonroot_shim).expect("mkdir nonroot shim");
+    shim_cargo(&nonroot_shim);
+    shim_fixed_output(&nonroot_shim, "id", "1000");
+
+    let restore = run_script(&["--restore", backup_dir.to_str().expect("utf8 path")], &nonroot_shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(restore.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&restore.stdout), String::from_utf8_lossy(&restore.stderr));
+    let stdout = String::from_utf8_lossy(&restore.stdout).into_owned();
+    let sudo_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("sudo "))
+        .unwrap_or_else(|| panic!("sem root, o comando pronto para restaurar o sistema tem de aparecer: {stdout}"));
+    let bare_command = sudo_line.trim_start().trim_start_matches("sudo ");
+
+    // Roda o MESMO comando de verdade, sem sudo, com um `id` de mentira que
+    // responde 0, sem HOME real e sem cargo no PATH.
+    let fake_root_home = tmp.path().join("fake-root-home");
+    fs::create_dir_all(&fake_root_home).expect("mkdir fake root home");
+    let id_shim = tmp.path().join("id-shim");
+    fs::create_dir_all(&id_shim).expect("mkdir id shim");
+    shim_fixed_output(&id_shim, "id", "0");
+
+    let result = Command::new("sh")
+        .arg("-c")
+        .arg(bare_command)
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", id_shim.display()))
+        .env("HOME", &fake_root_home)
+        .output()
+        .expect("the printed command runs");
+    assert!(result.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+
+    assert_eq!(read(&system_dir.join("bin/mustard")), "old-system-mustard", "a cópia do sistema tem de voltar ao original");
+    assert_eq!(read(&system_dir.join("bin/mustard-rt")), "old-system-mustard-rt");
+    assert_eq!(read(&system_dir.join("bin/scan")), "old-system-scan");
+    assert_eq!(read(&system_dir.join("templates/OLD.txt")), "old system templates");
+}
+
+/// `--system-copy-only` exige root (linha ~175 do script). Sem essa
+/// exigência, quem roda sem privilégio tentaria escrever direto na pasta do
+/// sistema (real, fora do teste, dona de root) e ficaria com um erro
+/// confuso de permissão, em vez da recusa clara de hoje.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn system_copy_only_refuses_without_root() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_dir = tmp.path().join("backups/system-only");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_cargo(&shim);
+    shim_fixed_output(&shim, "id", "1000");
+
+    let release_dir = tmp.path().join("release");
+    fs::create_dir_all(&release_dir).expect("mkdir release dir");
+    for b in ["mustard", "mustard-rt", "scan"] {
+        let path = release_dir.join(b);
+        write(&path, "built");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+    }
+    seed_system_copy(&system_dir);
+
+    let out = run_script(
+        &["--system-copy-only", release_dir.to_str().expect("utf8 path"), backup_dir.to_str().expect("utf8 path")],
+        &shim,
+        &home,
+        &system_dir,
+        &cargo_target,
+        &tmp.path().join("unused-backup-root"),
+    );
+
+    assert!(!out.status.success(), "sem root, --system-copy-only tem de recusar");
+    assert_eq!(read(&system_dir.join("bin/mustard")), "old-system-mustard", "recusou antes de tocar na cópia do sistema");
+    assert!(!backup_dir.exists(), "recusou antes de criar a pasta de backup");
+}
+
+/// A pasta de backup do `--system-copy-only` recusa colisão em vez de
+/// sobrescrever (linhas ~180-183). Sem essa recusa, uma segunda rodada com o
+/// mesmo destino gravaria por cima do backup da primeira o binário que a
+/// primeira já trocou, perdendo o original de verdade.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn system_copy_only_refuses_when_backup_dir_already_exists() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_dir = tmp.path().join("backups/system-only");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_cargo(&shim);
+    shim_fixed_output(&shim, "id", "0");
+
+    let release_dir = tmp.path().join("release");
+    fs::create_dir_all(&release_dir).expect("mkdir release dir");
+    for b in ["mustard", "mustard-rt", "scan"] {
+        let path = release_dir.join(b);
+        write(&path, "built");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+    }
+    seed_system_copy(&system_dir);
+    write(&backup_dir.join("bin/mustard"), "backup-de-uma-rodada-anterior");
+
+    let out = run_script(
+        &["--system-copy-only", release_dir.to_str().expect("utf8 path"), backup_dir.to_str().expect("utf8 path")],
+        &shim,
+        &home,
+        &system_dir,
+        &cargo_target,
+        &tmp.path().join("unused-backup-root"),
+    );
+
+    assert!(!out.status.success(), "a pasta de backup já existe: tem de recusar em vez de sobrescrever");
+    assert_eq!(read(&system_dir.join("bin/mustard")), "old-system-mustard", "recusou antes de trocar a cópia do sistema");
+    assert_eq!(read(&backup_dir.join("bin/mustard")), "backup-de-uma-rodada-anterior", "o backup anterior não pode ser sobrescrito");
+}
+
 /// Uma cópia do plugin sem selo de versão (`bin/.version`) — por exemplo,
 /// uma cópia de desenvolvimento que nunca passou pelo `mustard-boot` —
 /// continua sem selo depois do script: ele nunca lê, nunca cria e nunca
