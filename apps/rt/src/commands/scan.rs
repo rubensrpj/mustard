@@ -366,6 +366,41 @@ mod tests {
         assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "sem o mapa, nada falta: {failed}");
     }
 
+    /// Uma lição que cita um arquivo que ainda não existe é apontada como
+    /// sem arquivo por um mapeamento bom, como o teste vizinho já prova.
+    /// Depois de o arquivo nascer, um mapeamento que falha não pode mais
+    /// apontar essa lição como sem arquivo: sem o mapa desta vez, a conta
+    /// nem roda, e `path_found` confere o disco antes do mapa em qualquer
+    /// mapeamento que tenha o mapa em mãos.
+    #[test]
+    fn a_failed_scan_never_retires_a_lesson_whose_file_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("apps/rt/src/lib.rs"), "pub fn run() {}\n");
+        write(&root.join("packages/core/Cargo.toml"), "[package]\nname = \"core\"\n");
+        let cited = root.join("packages/core/src/domain/economy/estimator.rs");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        let stale = rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
+
+        // O arquivo ainda não existe: um mapeamento bom aponta a lição.
+        let before = scan_at(root, None, false, mine_disk);
+        assert_eq!(
+            before["lessons"]["missing_paths"],
+            serde_json::json!([{"id": stale, "paths": ["domain/economy/estimator.rs"]}]),
+            "o arquivo ainda não existe: {before}"
+        );
+
+        // O arquivo nasce, e um mapeamento que falha roda: sem o mapa desta
+        // vez, a lição não é apontada como sem arquivo.
+        write(&cited, "pub fn estimate() -> usize { 0 }\n");
+        let failed = scan_at(root, None, false, mine_fails);
+        assert_eq!(failed["ok"], serde_json::json!(false), "{failed}");
+        assert!(
+            failed.get("lessons").is_none(),
+            "o arquivo já existe, e sem mapa nada é dado como faltando: {failed}"
+        );
+    }
+
     /// Sem banco de lições, ou sem nada a enxugar, o relatório do scan não
     /// ganha a lista nem o passo seguinte.
     #[test]

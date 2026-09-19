@@ -37,7 +37,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
+use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
+use mustard_core::domain::wave_prompt::{recorded_choice, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
@@ -253,6 +255,23 @@ fn run_close(
             })
             .collect();
         out["pending"] = json!(items);
+    }
+    // O item combinado sem dono que nenhum envio levou para o pedido de
+    // onda nenhuma fica fora do código para sempre, sem que nada avise; a
+    // resposta do fechamento avisa, com o código e o título de cada um — é
+    // aviso, nunca recusa.
+    let carried: BTreeSet<u64> = log
+        .last_by_wave("send")
+        .keys()
+        .filter_map(|wave| recorded_choice(&log, *wave))
+        .flat_map(|choice| choice.added.into_iter().map(|(id, _)| id))
+        .collect();
+    let codes = log.codes();
+    for item in unowned(&log).into_iter().filter(|item| !carried.contains(&item.id)) {
+        let code = codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string());
+        let title = title_of(item).unwrap_or_default();
+        let hint = translate("close.unowned_item", lang).replace("{code}", &code).replace("{title}", &title);
+        spec_events::pages::push_warning(&mut out, "unowned-item", &hint);
     }
     // O fechamento manda copiar, menos com a cópia que não pôde ser
     // preparada, que fica para a próxima — e o pull request vem depois.
@@ -623,6 +642,76 @@ mod tests {
             json!([{"id": "P-1", "title": "Medir o antivírus", "question": question}]),
             "{out}",
         );
+    }
+
+    /// O item combinado sem dono que nenhum envio de onda levou fica fora do
+    /// código para sempre, sem que nada avise; o fechamento agora avisa,
+    /// pelo código e pelo título, sem recusar — e o segue fechando. O item
+    /// sem dono que a onda um levou, pela escolha gravada no envio dela, não
+    /// aparece no aviso.
+    #[test]
+    fn an_unowned_item_no_send_carried_is_reported_at_close() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn um() {}\n").unwrap();
+        git_at(root, &["init", "-q"]);
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "semente"]);
+        git_at(root, &["config", "user.email", "t@t"]);
+        git_at(root, &["config", "user.name", "t"]);
+        git_at(root, &["config", "commit.gpgsign", "false"]);
+
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "o objetivo"})));
+        let crit = id_of(&write(root, "x", "criterion", json!({"when": "a onda roda e prova com git --version",
+            "then": "a suíte passa", "proof": "git --version", "origin": said})));
+        // O código de cada decisão sai da ordem em que ela nasce na spec: a
+        // primeira decisão gravada ganha o código de número um, a segunda o
+        // de número dois.
+        id_of(&write(root, "x", "decision",
+            json!({"text": "Sem dono, a onda um leva.", "keys": ["k"], "why": "w", "origin": said})));
+        id_of(&write(root, "x", "decision",
+            json!({"text": "Sem dono, nenhuma onda leva.", "keys": ["k"], "why": "w", "origin": said})));
+        write(root, "x", "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
+            "done_when": "A suíte passa.", "origin": said}));
+        write(root, "x", "task", json!({"wave": 1, "text": "Tarefa da onda 1.",
+            "files": [{"path": wave_file(1)}], "origin": said}));
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
+
+        let round = |report: Option<String>| {
+            round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report }, None)
+        };
+        // Sem escolha, a onda espera: ela tem item sem dono para julgar.
+        let asked = round(None);
+        assert_eq!(asked["ok"], json!(true), "{asked}");
+        assert!(asked.get("dispatch").is_none() || asked["dispatch"].as_array().is_some_and(Vec::is_empty), "{asked}");
+
+        // A escolha do orquestrador leva só a primeira decisão sem dono.
+        let added = json!([{"item": "MSTD-DEC-0001", "why": "Ela entra na onda um."}]);
+        let analysis = json!({"wave": 1, "removed": [], "added": added});
+        let dispatched = round(Some(format!("<ANALYSIS>{analysis}</ANALYSIS>")));
+        assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
+
+        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
+        let delivered = json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"});
+        let back = round(Some(format!("<DELIVERED>{delivered}</DELIVERED>\n")));
+        assert_eq!(back["ok"], json!(true), "{back}");
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+
+        let out = close(root, "x");
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        let unowned: Vec<&Value> = warnings.iter().filter(|w| w["reason"] == json!("unowned-item")).collect();
+        assert_eq!(unowned.len(), 1, "só a decisão que nenhuma onda levou avisa: {out}");
+        let hint = unowned[0]["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-DEC-0002"), "{hint}");
+        assert!(hint.contains("Sem dono, nenhuma onda leva."), "{hint}");
+        assert!(!hint.contains("MSTD-DEC-0001"), "a levada pela onda um não aparece: {hint}");
     }
 
     /// O fechamento com um `mustard.json` que declara o lint.

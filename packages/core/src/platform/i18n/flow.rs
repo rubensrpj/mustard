@@ -388,6 +388,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The pending item {id} ({title}) is linked to the spec {spec}: does it enter this work, \
              stay for later with a reason, or go?"
         }
+        // O item combinado sem dono que nenhum envio de onda levou: o
+        // fechamento avisa em vez de deixá-lo fora do código para sempre.
+        ("close.unowned_item", Locale::PtBr) => {
+            "O item {code} ({title}) não tem dono e nenhuma onda o levou: fica fora do código."
+        }
+        ("close.unowned_item", Locale::EnUs) => {
+            "Item {code} ({title}) has no owner and no wave carried it: it stays out of the code."
+        }
 
         // A rodada de ondas (`commands/flow/round.rs`).
         ("round.bad_report", Locale::PtBr) => {
@@ -1000,8 +1008,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            132,
-            0x2f92_906b_b90d_d933,
+            133,
+            0x71be_dcd0_5c58_52ad,
         );
     }
 
@@ -1144,6 +1152,7 @@ mod tests {
             ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
+            ("close.unowned_item", &["{code}", "{title}"][..]),
             ("round.bad_report", &["{detail}"][..]),
             ("round.line_missing", &[][..]),
             ("round.line_field", &["{line}", "{field}"][..]),
