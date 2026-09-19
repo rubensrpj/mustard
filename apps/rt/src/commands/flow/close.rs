@@ -597,6 +597,28 @@ mod tests {
         assert!(!root.join(".claude/spec/project.html").exists(), "nem a página do projeto");
     }
 
+    /// O motor do comando `qa-run` saiu de `qa_run/mod.rs` e
+    /// `qa_run/runner.rs`, junto com `run_qa_cli`, `run_qa` e o gravador de
+    /// evento e de relatório em HTML que só ele alcançava. O fechamento
+    /// continua chamando `run_proof` do jeito de sempre: o critério roda uma
+    /// vez, e a execução grava `pass`.
+    #[test]
+    fn the_proofs_still_run_after_the_old_qa_command_left() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["echo running 1 test"]);
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        assert_eq!(asked["ok"], json!(true), "{asked}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let runs: Vec<&SpecEvent> =
+            log.visible().into_iter().filter(|e| e.event_type == "criterion_run").collect();
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].str_field("result"), Some("pass"), "{runs:?}");
+    }
+
     /// A pendência aberta que nasceu na spec fechada aparece na resposta do
     /// fechamento, com a pergunta de destino — a mesma linha que a gravação
     /// da pendência devolveria; é aviso, não recusa: o fechamento segue

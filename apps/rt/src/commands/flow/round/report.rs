@@ -1185,6 +1185,35 @@ mod tests {
         assert_eq!(out["warnings"], json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
     }
 
+    /// O motor do comando `qa-run` saiu de `qa_run/mod.rs` e
+    /// `qa_run/runner.rs`, junto com `run_qa_cli`, `run_qa` e o gravador de
+    /// evento e de relatório em HTML que só ele alcançava. A rodada continua
+    /// chamando `run_proof` do jeito de sempre: a prova nova que roda teste
+    /// não avisa nada, e a que sai verde sem rodar teste nenhum é avisada
+    /// pelo código do critério — sem cargo nenhum envolvido, só o shell.
+    #[test]
+    fn the_proofs_still_run_after_the_old_qa_command_left() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/lib.rs"], &[])]);
+        round(root, "x", None);
+
+        let report = |proof: &str, summary: &str| {
+            std::fs::write(root.join("src/lib.rs"), format!("// {proof}\n")).unwrap();
+            line("DELIVERED", json!({"wave": 1, "text": "A prova muda.", "files": ["src/lib.rs"],
+                "commit": summary, "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": proof}]}))
+        };
+
+        let out = round(root, "x", Some(&report("echo running 1 test", "a prova roda teste")));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(out.get("warnings").is_none(), "a prova que roda teste não avisa: {out}");
+
+        let out = round(root, "x", Some(&report("echo running 0 tests", "a prova não roda teste")));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let expected = translate("round.proof_ran_no_test", Locale::PtBr).replace("{code}", "MSTD-CRIT-0001");
+        assert_eq!(out["warnings"], json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
+    }
+
     /// A conferência antes do git é a da gravação inteira, contra a spec, e
     /// não só a da forma de cada linha: o veredito que aponta uma origem que a
     /// spec não tem é recusado antes do commit, sem commit e sem nada gravado,
