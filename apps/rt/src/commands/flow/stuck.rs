@@ -29,7 +29,7 @@ pub(crate) struct Ended {
 /// A leitura de um processo do sistema, restrita ao que a função de baixo
 /// nível precisa: o comando (para reconhecer o laço) e o diretório de
 /// trabalho (para reconhecer a cópia apagada).
-struct Snapshot {
+pub(crate) struct Snapshot {
     pid: u32,
     argv: Vec<String>,
     cwd: Option<std::path::PathBuf>,
@@ -43,7 +43,7 @@ pub(crate) fn end_stuck_processes(root: &Path) -> Vec<Ended> {
     system_processes()
         .into_iter()
         .filter(|proc| proc.pid != std::process::id())
-        .filter_map(|proc| reason_of(&proc, &worktrees).map(|reason| (proc.pid, reason)))
+        .filter_map(|proc| reason_of(&proc, root, &worktrees).map(|reason| (proc.pid, reason)))
         .filter(|(pid, _)| terminate(*pid))
         .map(|(pid, reason)| Ended { pid, reason })
         .collect()
@@ -63,12 +63,16 @@ pub(crate) fn report_line(ended: &[Ended], lang: Locale) -> Option<String> {
 }
 
 /// Por que `proc` está preso, ou `None` quando não está: o comando que ele
-/// roda é um laço de espera, ou o diretório de trabalho dele é uma cópia de
-/// onda (`{worktrees}/mustard-<spec>-<onda>`) que já não existe no disco — o
+/// roda é um laço de espera com a pasta de trabalho dentro de `root` — o que
+/// cobre as cópias das ondas, e deixa de fora o mesmo laço rodando num outro
+/// projeto do usuário —, ou o diretório de trabalho dele é uma cópia de onda
+/// (`{worktrees}/mustard-<spec>-<onda>`) que já não existe no disco — o
 /// kernel, no Linux, mantém o link de `cwd` apontando para o caminho apagado,
 /// às vezes com ` (deleted)` no fim.
-fn reason_of(proc: &Snapshot, worktrees: &Path) -> Option<&'static str> {
-    if let Some(script) = shell_script(&proc.argv)
+fn reason_of(proc: &Snapshot, root: &Path, worktrees: &Path) -> Option<&'static str> {
+    if let Some(cwd) = proc.cwd.as_ref()
+        && cwd.starts_with(root)
+        && let Some(script) = shell_script(&proc.argv)
         && is_a_waiting_loop(script)
     {
         return Some("waiting_loop");
@@ -115,7 +119,7 @@ fn terminate(_pid: u32) -> bool {
 /// (sem saber quem roda), a pasta ausente (fora do Linux) ou uma entrada que
 /// já sumiu ao ler viram "sem processo": nunca um erro.
 #[cfg(target_os = "linux")]
-fn system_processes() -> Vec<Snapshot> {
+pub(crate) fn system_processes() -> Vec<Snapshot> {
     use std::os::unix::fs::MetadataExt;
 
     let Some(uid) = current_uid() else { return Vec::new() };
@@ -145,7 +149,7 @@ fn system_processes() -> Vec<Snapshot> {
 
 /// Fora do Linux não há `/proc`: nenhum processo é lido.
 #[cfg(not(target_os = "linux"))]
-fn system_processes() -> Vec<Snapshot> {
+pub(crate) fn system_processes() -> Vec<Snapshot> {
     Vec::new()
 }
 
@@ -172,9 +176,27 @@ mod tests {
         false
     }
 
-    /// Os dois casos que ficam presos — o laço de espera e o comando na
-    /// cópia apagada — são encontrados, encerrados e citados na resposta; um
-    /// `sleep` comum, fora dos dois, nunca é tocado.
+    /// Espera até 2s `/proc/<pid>/cmdline` mostrar `needle`: logo após
+    /// nascer, o filho ainda carrega a linha de comando do pai (o binário de
+    /// teste), e ler antes disso é o que deixava o teste instável.
+    fn wait_until_spawned(pid: u32, needle: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline"))
+                && String::from_utf8_lossy(&raw).contains(needle)
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "pid {pid} never showed its own command line");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Os dois casos que ficam presos — o laço de espera com a pasta de
+    /// trabalho dentro do projeto e o comando na cópia apagada — são
+    /// encontrados, encerrados e citados na resposta; um `sleep` comum e um
+    /// laço de espera com a pasta de trabalho fora do projeto, como o de
+    /// outro projeto do mesmo usuário, nunca são tocados.
     #[test]
     fn the_stuck_processes_are_ended_and_reported() {
         let dir = tempdir().expect("tempdir");
@@ -183,31 +205,55 @@ mod tests {
         std::fs::create_dir_all(&worktrees).expect("worktrees dir");
         let copy = worktrees.join("mustard-x-1");
         std::fs::create_dir_all(&copy).expect("copy dir");
+        let outside = tempdir().expect("tempdir for the other project");
 
-        // O laço: um `pgrep` que casa a própria linha de comando, então
-        // segue rodando até alguém o encerrar.
-        let mut looping = spawn(Command::new("sh").arg("-c").arg(
-            "while pgrep -f mustard-stuck-test-marker >/dev/null 2>&1; do sleep 1; done",
-        ));
+        // O laço, dentro do projeto: um `pgrep` que casa a própria linha de
+        // comando, então segue rodando até alguém o encerrar.
+        let mut looping = spawn(
+            Command::new("sh")
+                .arg("-c")
+                .arg("while pgrep -f mustard-stuck-test-marker >/dev/null 2>&1; do sleep 1; done")
+                .current_dir(root),
+        );
+        // O mesmo laço, mas com a pasta de trabalho de outro projeto: fica
+        // de fora, mesmo casando o texto do comando.
+        let mut elsewhere_looping = spawn(
+            Command::new("sh")
+                .arg("-c")
+                .arg("while pgrep -f mustard-stuck-test-elsewhere-marker >/dev/null 2>&1; do sleep 1; done")
+                .current_dir(outside.path()),
+        );
         // O comando cuja cópia some debaixo dele.
         let mut orphaned = spawn(Command::new("sleep").arg("30").current_dir(&copy));
         // Um `sleep` comum, sem laço e sem cópia apagada: fica de fora.
         let mut ordinary = spawn(Command::new("sleep").arg("30"));
         std::fs::remove_dir_all(&copy).expect("remove the wave's copy");
 
+        wait_until_spawned(looping.id(), "mustard-stuck-test-marker");
+        wait_until_spawned(elsewhere_looping.id(), "mustard-stuck-test-elsewhere-marker");
+        wait_until_spawned(orphaned.id(), "sleep");
+        wait_until_spawned(ordinary.id(), "sleep");
+
         let ended = end_stuck_processes(root);
-        assert!(gone(&mut looping), "the waiting loop must be ended");
+        assert!(gone(&mut looping), "the waiting loop inside the project must be ended");
         assert!(gone(&mut orphaned), "the command in the deleted copy must be ended");
+        assert!(
+            elsewhere_looping.try_wait().ok().flatten().is_none(),
+            "a waiting loop outside the project is left alone"
+        );
         assert!(ordinary.try_wait().ok().flatten().is_none(), "an ordinary sleep is left alone");
 
         let pids: Vec<u32> = ended.iter().map(|e| e.pid).collect();
         assert!(pids.contains(&looping.id()), "{pids:?}");
         assert!(pids.contains(&orphaned.id()), "{pids:?}");
+        assert!(!pids.contains(&elsewhere_looping.id()), "{pids:?}");
         assert!(!pids.contains(&ordinary.id()), "{pids:?}");
 
         let line = report_line(&ended, Locale::PtBr).expect("a line for two ended processes");
         assert!(line.contains(&looping.id().to_string()) && line.contains(&orphaned.id().to_string()), "{line}");
 
+        let _ = elsewhere_looping.kill();
+        let _ = elsewhere_looping.wait();
         let _ = ordinary.kill();
         let _ = ordinary.wait();
     }
