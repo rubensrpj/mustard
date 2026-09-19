@@ -1,8 +1,8 @@
 //! A resposta da rodada e o próximo passo: a recusa, com a mensagem no idioma
 //! do projeto, e o caminho de uma chamada — conferir a fase, fechar o que
-//! voltou, pedir a análise antes do envio da onda que ainda não tem escolha,
-//! despachar as ondas prontas, pedir as revisões e dizer o que fazer em
-//! seguida.
+//! voltou, entregar ao orquestrador os candidatos da onda que ainda não tem
+//! escolha, despachar as ondas prontas, pedir as revisões e dizer o que fazer
+//! em seguida.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -162,7 +162,7 @@ pub(super) fn run_round(
         return Err(RoundRefusal::NotApproved { phase });
     }
 
-    // O relatório que só traz a análise antes do envio não tem o que juntar:
+    // O relatório que só traz a escolha antes do envio não tem o que juntar:
     // a rodada vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, mut warnings, commit } = match raw {
@@ -193,17 +193,18 @@ pub(super) fn run_round(
     let running = waves_in_progress(&log);
     let stuck = waves_stuck(&log);
     let ready = next_waves(&log, max_parallel(root), &running, &stuck);
-    // A análise antes do envio, antes da cópia: a onda com item do projeto
-    // todo ou sem dono a julgar só sai com a escolha; sem ela, a resposta traz
-    // o pedido da análise, e a onda fica para a rodada que trouxer a escolha.
-    let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &spec, &log, &ready, &given, lang);
+    // A escolha antes do envio, antes da cópia: a onda com item do projeto
+    // todo, item sem dono ou lição a julgar só sai com a escolha do
+    // orquestrador; sem ela, a resposta traz os candidatos dela, e a onda fica
+    // para a rodada que trouxer a escolha.
+    let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &log, &ready, &given, lang);
     warnings.extend(ignored);
     let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, &running, lang);
     warnings.extend(not_copied);
     let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as que
-    // saem junto com ela nesta rodada, e traz a cópia dela e a escolha da
-    // análise.
+    // saem junto com ela nesta rodada, e traz a cópia dela e a escolha do
+    // orquestrador.
     let flight = Flight { running: running.keys().chain(&next).copied().collect(), copies, choices };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
@@ -219,8 +220,8 @@ pub(super) fn run_round(
         draft.insert("text".into(), json!(prompt.text));
         draft.insert("lines".into(), json!(prompt.lines));
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
-        // Os itens que ficaram, e à parte a escolha da análise: o que saiu e
-        // o que entrou, cada um com o motivo.
+        // Os itens que ficaram, e à parte a escolha do orquestrador: o que
+        // saiu e o que entrou, cada um com o motivo.
         draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave))));
         if let Some(choice) = flight.choices.get(wave) {
             draft.insert("analysis".into(), choice.to_value());
@@ -267,7 +268,7 @@ pub(super) fn run_round(
         text
     };
     // A pergunta da onda parada vem antes do resto, que segue sem ela; o
-    // pedido da análise vem logo depois.
+    // pedido da escolha vem logo depois.
     let (stopped, question) = stopped_waves(&stuck, &codes, lang);
     let waiting: Vec<String> = asked.iter().filter_map(|a| a["wave"].as_u64()).map(|n| n.to_string()).collect();
     let analysis = (!asked.is_empty()).then(|| translate("round.analysis", lang).replace("{waves}", &waiting.join(", ")));

@@ -501,11 +501,13 @@ pub const TYPES: &[TypeSpec] = &[
             // fica ocupada enquanto a onda está em andamento.
             opt("copy", Kind::Text),
             opt("build_dir", Kind::Text),
-            // A escolha da análise antes do envio, à parte dos itens que
+            // A escolha do orquestrador antes do envio, à parte dos itens que
             // ficaram (`items`): os itens julgados (`judged`), os do projeto
             // todo que saíram (`removed`) e os sem dono que entraram
             // (`added`), cada um como `{"item": <número>, "why": "<o motivo
-            // numa frase>"}`.
+            // numa frase>"}`; e as lições do banco julgadas
+            // (`judged_lessons`) e as que saíram (`removed_lessons`), cada uma
+            // como `{"lesson": <número no banco>, "why": "<o motivo>"}`.
             opt("analysis", Kind::Object),
         ],
     ),

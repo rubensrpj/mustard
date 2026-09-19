@@ -57,8 +57,8 @@ pub struct Flight {
     /// A cópia de cada onda que sai agora, que a rodada criou antes de gravar
     /// o envio. A cópia de uma onda que já saiu vem do envio gravado dela.
     pub copies: BTreeMap<u64, WaveCopy>,
-    /// A escolha da análise antes do envio de cada onda que sai agora. A de
-    /// uma onda que já saiu vem do envio gravado dela.
+    /// A escolha do orquestrador antes do envio de cada onda que sai agora.
+    /// A de uma onda que já saiu vem do envio gravado dela.
     pub choices: BTreeMap<u64, Choice>,
 }
 
@@ -66,9 +66,7 @@ pub struct Flight {
 /// que estão fora em `flight`.
 #[must_use]
 pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Flight) -> Vec<WavePrompt> {
-    let bank = crate::ClaudePaths::for_project(root)
-        .ok()
-        .and_then(|paths| crate::io::lessons::read(&paths.lessons_path()).ok().flatten());
+    let bank = lesson_bank(root);
     let map = crate::io::project_map::read(root).ok();
     let commands = crate::ProjectConfig::load(root).commands();
     let base = Execution {
@@ -80,6 +78,35 @@ pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Fl
     };
     let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, flight, lang };
     log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
+}
+
+/// O banco de lições do projeto `root`; `None` quando ele não existe ou não
+/// se lê.
+#[must_use]
+pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
+    let paths = crate::ClaudePaths::for_project(root).ok()?;
+    crate::io::lessons::read(&paths.lessons_path()).ok().flatten()
+}
+
+/// As lições do banco que casam com a onda `wave`: as que valem para os
+/// arquivos das tarefas dela ou para as skills que elas nomeiam e, de cada
+/// classe, só as mais ligadas ao texto das tarefas. Uma pasta com centenas
+/// delas passaria do teto de linhas, e a lição sem palavra em comum com a
+/// tarefa só ocupa o agente. São as que a rodada mostra ao orquestrador antes
+/// do envio, e as que o pedido leva, menos as que a escolha dele tirou.
+#[must_use]
+pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a SpecEvent> {
+    let files = wave_files(log, wave);
+    let mut found: Vec<&SpecEvent> = Vec::new();
+    for skill in std::iter::once(None).chain(skills_named(log, wave).into_iter().map(Some)) {
+        let scope = Scope { files: files.clone(), subproject: None, skill };
+        for lesson in in_scope(bank, &scope) {
+            if !found.iter().any(|seen| seen.id == lesson.id) {
+                found.push(lesson);
+            }
+        }
+    }
+    related_to_tasks(found, &tasks_text(log, wave))
 }
 
 /// A pasta da cópia separada da onda `wave` da spec `spec`, dentro das cópias
@@ -192,9 +219,10 @@ struct Context<'a> {
 
 fn one(context: &Context, wave: u64) -> WavePrompt {
     let Context { root, spec, log, bank, map, lang, .. } = *context;
-    // O que a montagem escolhe, com a escolha da análise antes do envio: a
-    // que a rodada traz agora ou a gravada no envio da onda.
-    let read = wave_prompt::dispatch_items(log, wave, context.flight.choices.get(&wave));
+    // O que a montagem escolhe, com a escolha do orquestrador antes do envio:
+    // a que a rodada traz agora ou a gravada no envio da onda.
+    let fresh = context.flight.choices.get(&wave);
+    let read = wave_prompt::dispatch_items(log, wave, fresh);
     let of_type = |name: &str| -> Vec<&SpecEvent> {
         read.iter().copied().filter(|e| e.event_type == name).collect()
     };
@@ -233,25 +261,16 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
 
     let files = wave_files(log, wave);
     let named = skills_named(log, wave);
-    // Das lições que valem para a onda entram, de cada classe, só as mais
-    // ligadas ao texto das tarefas: uma pasta com centenas delas passaria do
-    // teto de linhas, e a lição sem palavra em comum com a tarefa só ocupa o
-    // agente. O pedido da revisão segue a mesma conta.
+    // As lições que casam com a onda, menos as que a escolha do orquestrador
+    // tirou. O pedido da revisão leva as mesmas.
     let tasks = tasks_text(log, wave);
-    let lessons = bank
-        .map(|bank| {
-            let mut found: Vec<&SpecEvent> = Vec::new();
-            for skill in std::iter::once(None).chain(named.iter().map(|s| Some(s.clone()))) {
-                let scope = Scope { files: files.clone(), subproject: None, skill };
-                for lesson in in_scope(bank, &scope) {
-                    if !found.iter().any(|seen| seen.id == lesson.id) {
-                        found.push(lesson);
-                    }
-                }
-            }
-            related_to_tasks(found, &tasks)
-        })
-        .unwrap_or_default();
+    let choice = wave_prompt::choice_for(log, wave, fresh);
+    let lessons: Vec<&SpecEvent> = bank
+        .map(|bank| wave_lessons(bank, log, wave))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|lesson| !choice.as_ref().is_some_and(|choice| choice.removes_lesson(lesson.id)))
+        .collect();
 
     // O revisor recebe os defeitos já vistos nestes arquivos, que o agente da
     // onda não recebe: é olhando o erro que já aconteceu ali que ele começa.

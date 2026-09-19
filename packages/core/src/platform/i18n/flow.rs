@@ -530,77 +530,50 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.fix_limit.question", Locale::EnUs) => {
             "Wave {wave} was rejected again after {max} fix rounds. Revise its plan or take it out of the plan?"
         }
-        // A análise do pedido antes do envio: o próximo passo, os avisos e o
-        // pedido pronto para o agente com o modelo Sonnet.
+        // A escolha do pedido antes do envio, que o orquestrador faz: o
+        // próximo passo, com a linha que devolve a escolha, e os avisos.
         ("round.analysis", Locale::PtBr) => {
-            "Antes de soltar as ondas {waves}, a rodada pede a análise do pedido de cada uma. \
-             Despache cada pedido de `analysis` a um agente com o modelo Sonnet (`model: \"sonnet\"`) \
-             e rode a rodada de novo com a linha `<ANALYSIS>{…}</ANALYSIS>` que cada um devolve, \
-             como veio, no mesmo `--report '…'` das outras linhas. Sem essa linha, a onda não sai."
+            "Antes de soltar as ondas {waves}, escolha os itens do pedido de cada uma. O pedido é a \
+             lista dos itens da spec que o agente da onda lê; os itens que as tarefas da onda fazem \
+             vão sempre. Em `analysis`, cada onda traz os candidatos, cada um com o título: as \
+             regras do projeto todo (`project`) e as lições (`lessons`) vão, a menos que você tire; \
+             os itens sem dono (`unowned`) ficam fora, a menos que você ponha. Tire o que não ajuda \
+             a onda, como uma regra da entrega numa onda que só cria uma tabela, e ponha o item sem \
+             dono que ajuda. Rode a rodada de novo com uma linha por onda no `--report '…'`, só com \
+             o que muda e o motivo de cada um numa frase: <ANALYSIS>{\"wave\":<n>,\"removed\":\
+             [{\"item\":\"<código>\",\"why\":\"<o motivo>\"},{\"lesson\":<número>,\"why\":\"<o \
+             motivo>\"}],\"added\":[{\"item\":\"<código>\",\"why\":\"<o motivo>\"}]}</ANALYSIS>. Sem \
+             mudança, as duas listas vão vazias. Sem essa linha, a onda não sai."
         }
         ("round.analysis", Locale::EnUs) => {
-            "Before sending out waves {waves}, the round asks for the analysis of each one's \
-             request. Dispatch each `analysis` request to an agent with the Sonnet model \
-             (`model: \"sonnet\"`) and run the round again with the `<ANALYSIS>{…}</ANALYSIS>` line \
-             each one returns, as it came, in the same `--report '…'` as the other lines. Without \
-             that line, the wave does not go out."
+            "Before sending out waves {waves}, choose the items of each one's request. The request \
+             is the list of spec items the wave agent reads; the items the wave's tasks do always \
+             go. In `analysis`, each wave brings its candidates, each with its title: the \
+             whole-project rules (`project`) and the lessons (`lessons`) go unless you take them \
+             out; the items without an owner (`unowned`) stay out unless you put them in. Take out \
+             what does not help the wave, such as a rule about the delivery in a wave that only \
+             creates a table, and put in the item without an owner that helps. Run the round again \
+             with one line per wave in the `--report '…'`, with only what changes and each one's \
+             reason in one sentence: <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<item \
+             code>\",\"why\":\"<the reason>\"},{\"lesson\":<number>,\"why\":\"<the reason>\"}],\
+             \"added\":[{\"item\":\"<item code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>. With no \
+             change, both lists go empty. Without that line, the wave does not go out."
         }
         ("round.analysis_ignored", Locale::PtBr) => {
-            "Na análise da onda {wave}, o item {item} ficou como estava: ele não está nos grupos que \
-             a análise julga, ou veio sem motivo."
+            "Na escolha da onda {wave}, o item {item} ficou como estava: ele não está entre os \
+             candidatos dela, a lição só sai e não entra, ou ele veio sem motivo."
         }
         ("round.analysis_ignored", Locale::EnUs) => {
-            "In the analysis of wave {wave}, item {item} stayed as it was: it is not in the groups \
-             the analysis judges, or it came without a reason."
+            "In the choice for wave {wave}, item {item} stayed as it was: it is not among the \
+             wave's candidates, a lesson can only go out and not in, or it came without a reason."
         }
         ("round.analysis_unreadable", Locale::PtBr) => {
             "Uma linha `<ANALYSIS>` não se leu e ficou de fora ({detail}): a onda dela pede a \
-             análise de novo."
+             escolha de novo."
         }
         ("round.analysis_unreadable", Locale::EnUs) => {
             "An `<ANALYSIS>` line could not be read and was left out ({detail}): its wave asks for \
-             the analysis again."
-        }
-        ("round.analysis.title", Locale::PtBr) => "{spec} — análise do pedido da onda {n}",
-        ("round.analysis.title", Locale::EnUs) => "{spec} — analysis of wave {n}'s request",
-        ("round.analysis.fixed", Locale::PtBr) => {
-            "Você analisa o pedido da onda {n} antes de ele sair. O pedido é a lista dos itens da \
-             spec que o agente da onda lê. Os itens que as tarefas da onda fazem vão sempre e não \
-             passam por você. Você julga só dois grupos: os itens do projeto todo, que o pedido \
-             leva, e os itens sem dono, que ele não leva. Leia a onda, cada tarefa e cada item dos \
-             dois grupos pelo código. Tire o item do projeto todo que não ajuda esta onda, como uma \
-             regra da entrega numa onda que só cria uma tabela. Ponha o item sem dono que ajuda \
-             esta onda. Não mude nada no disco e não grave nada na spec."
-        }
-        ("round.analysis.fixed", Locale::EnUs) => {
-            "You analyze wave {n}'s request before it goes out. The request is the list of spec \
-             items the wave agent reads. The items the wave's tasks do always go and do not pass \
-             through you. You judge only two groups: the whole-project items, which the request \
-             carries, and the items without an owner, which it does not. Read the wave, each task \
-             and each item of both groups by code. Take out the whole-project item that does not \
-             help this wave, such as a rule about the delivery in a wave that only creates a table. \
-             Put in the item without an owner that helps this wave. Do not change anything on disk \
-             and do not record anything in the spec."
-        }
-        ("round.analysis.part.wave", Locale::PtBr) => "A onda e as tarefas dela",
-        ("round.analysis.part.wave", Locale::EnUs) => "The wave and its tasks",
-        ("round.analysis.part.project", Locale::PtBr) => "Do projeto todo: ficam, a menos que você tire",
-        ("round.analysis.part.project", Locale::EnUs) => "Whole project: they stay unless you take them out",
-        ("round.analysis.part.unowned", Locale::PtBr) => "Sem dono: ficam fora, a menos que você ponha",
-        ("round.analysis.part.unowned", Locale::EnUs) => "Without an owner: they stay out unless you put them in",
-        ("round.analysis.part.answer", Locale::PtBr) => "O que devolver",
-        ("round.analysis.part.answer", Locale::EnUs) => "What to return",
-        ("round.analysis.answer", Locale::PtBr) => {
-            "Termine com uma linha só, com JSON válido, só com o que muda e o motivo de cada item \
-             numa frase:\n<ANALYSIS>{\"wave\":{n},\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
-             motivo>\"}],\"added\":[{\"item\":\"<código>\",\"why\":\"<o motivo>\"}]}</ANALYSIS>\nSem \
-             mudança, devolva as duas listas vazias."
-        }
-        ("round.analysis.answer", Locale::EnUs) => {
-            "End with a single line of valid JSON, with only what changes and each item's reason in \
-             one sentence:\n<ANALYSIS>{\"wave\":{n},\"removed\":[{\"item\":\"<item code>\",\"why\":\"<the \
-             reason>\"}],\"added\":[{\"item\":\"<item code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>\nWith \
-             no change, return both lists empty."
+             the choice again."
         }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
@@ -907,8 +880,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            121,
-            0x9fee_bc17_7435_a69c,
+            114,
+            0xca07_275e_9faf_5d0f,
         );
     }
 
@@ -1065,13 +1038,6 @@ mod tests {
             ("round.analysis", &["{waves}"][..]),
             ("round.analysis_ignored", &["{wave}", "{item}"][..]),
             ("round.analysis_unreadable", &["{detail}"][..]),
-            ("round.analysis.title", &["{spec}", "{n}"][..]),
-            ("round.analysis.fixed", &["{n}"][..]),
-            ("round.analysis.part.wave", &[][..]),
-            ("round.analysis.part.project", &[][..]),
-            ("round.analysis.part.unowned", &[][..]),
-            ("round.analysis.part.answer", &[][..]),
-            ("round.analysis.answer", &["{n}"][..]),
             ("page.findings.heading", &[][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
             ("prompt.fixed", &[][..]),

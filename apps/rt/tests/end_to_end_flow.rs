@@ -351,14 +351,18 @@ fn plan_files(project: &Project, files: &[&str]) {
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
 }
 
-/// A primeira rodada, com a análise antes do envio: as respostas do
-/// levantamento valem para o projeto todo, então a rodada pede a análise e
-/// não solta a onda; a linha que o agente da análise devolve, sem mudança,
-/// solta a onda. Devolve a resposta da rodada que a soltou.
+/// A primeira rodada, com a escolha antes do envio: as respostas do
+/// levantamento valem para o projeto todo, então a rodada entrega ao
+/// orquestrador os candidatos da onda, cada um com o título, sem pedir
+/// agente nenhum, e não solta a onda; a linha da escolha, sem mudança, solta
+/// a onda. Devolve a resposta da rodada que a soltou.
 fn first_round(project: &Project) -> Value {
     let asked = project.run(&["round", "--spec", SPEC]);
     assert_eq!(asked["dispatch"], json!([]), "{asked}");
-    assert_eq!(asked["analysis"][0]["model"], json!("sonnet"), "{asked}");
+    let candidates = asked["analysis"][0]["project"].as_array().cloned().unwrap_or_default();
+    assert!(!candidates.is_empty(), "{asked}");
+    assert!(candidates.iter().all(|c| c["title"].as_str().is_some_and(|t| !t.is_empty())), "{asked}");
+    assert!(asked["analysis"][0].get("model").is_none(), "{asked}");
     let answer = json!({"wave": 1, "removed": [], "added": []});
     project.run(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{answer}</ANALYSIS>")])
 }
@@ -395,8 +399,8 @@ fn calls(project: &Project) -> BTreeMap<String, usize> {
 /// abrir o pull request funcionam em sequência, e a pasta da spec termina com
 /// três arquivos. Cada passo do fluxo é uma chamada só: abrir 1, levantamento
 /// 1 (as respostas gravadas não contam), plano 1, aprovar 0, cada rodada 1,
-/// fechar 1 e pull request 1; a análise antes do envio da primeira onda é
-/// uma rodada a mais, a que traz a escolha do agente da análise.
+/// fechar 1 e pull request 1; a escolha antes do envio da primeira onda é
+/// uma rodada a mais, a que traz a escolha do orquestrador.
 #[test]
 fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let project = Project::new();

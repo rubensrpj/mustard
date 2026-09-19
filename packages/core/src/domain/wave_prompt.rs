@@ -325,36 +325,47 @@ pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
 }
 
 // ---------------------------------------------------------------------------
-// A análise do pedido antes do envio
+// A escolha do pedido antes do envio
 // ---------------------------------------------------------------------------
 
-/// Os dois grupos de itens combinados que a análise antes do envio julga para
-/// uma onda: os do projeto todo, que o pedido leva, e os sem dono, que ele não
-/// leva. Os itens que as tarefas da onda fazem ficam fora dos dois: vão
-/// sempre, sem análise.
+/// Os candidatos que o orquestrador julga antes de uma onda sair: os itens
+/// combinados do projeto todo, que o pedido leva, os sem dono, que ele não
+/// leva, e as lições do banco que casam com a onda, que ele leva. Os itens
+/// que as tarefas da onda fazem ficam fora dos grupos: vão sempre, sem
+/// escolha.
 #[derive(Debug, Default)]
 pub struct Candidates<'a> {
     /// Os do projeto todo que as tarefas da onda não fazem.
     pub project: Vec<&'a SpecEvent>,
     /// Os sem dono.
     pub unowned: Vec<&'a SpecEvent>,
+    /// As lições do banco que casam com a onda. Elas vêm do banco, fora da
+    /// spec, e o número de cada uma é o do banco, não o de um item.
+    pub lessons: Vec<&'a SpecEvent>,
 }
 
 impl Candidates<'_> {
-    /// `true` quando não há nada a julgar: a onda sai sem análise.
+    /// `true` quando não há nada a julgar: a onda sai sem escolha.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.project.is_empty() && self.unowned.is_empty()
+        self.project.is_empty() && self.unowned.is_empty() && self.lessons.is_empty()
     }
 
-    /// Os números dos itens dos dois grupos.
+    /// Os números dos itens da spec dos dois grupos.
     #[must_use]
     pub fn ids(&self) -> BTreeSet<u64> {
         self.project.iter().chain(&self.unowned).map(|item| item.id).collect()
     }
+
+    /// Os números das lições, no banco.
+    #[must_use]
+    pub fn lesson_ids(&self) -> BTreeSet<u64> {
+        self.lessons.iter().map(|lesson| lesson.id).collect()
+    }
 }
 
-/// Os dois grupos que a análise julga para a onda `wave`.
+/// Os dois grupos de itens da spec que o orquestrador julga para a onda
+/// `wave`; as lições, que moram no banco, quem lê o banco põe à parte.
 #[must_use]
 pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
     let owners = owners(log);
@@ -376,23 +387,28 @@ pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
     out
 }
 
-/// A escolha da análise antes do envio de uma onda, como o envio a grava no
-/// campo `analysis`: os itens julgados, os do projeto todo que saíram e os
-/// sem dono que entraram, cada um com o motivo numa frase.
+/// A escolha do orquestrador antes do envio de uma onda, como o envio a grava
+/// no campo `analysis`: os itens julgados, os do projeto todo que saíram, os
+/// sem dono que entraram e, à parte, as lições julgadas e as que saíram, cada
+/// uma com o motivo numa frase.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Choice {
-    /// Os itens dos dois grupos que a análise julgou.
+    /// Os itens dos dois grupos que a escolha julgou.
     pub judged: BTreeSet<u64>,
     /// Os itens do projeto todo que saíram do pedido, com o motivo.
     pub removed: Vec<(u64, String)>,
     /// Os itens sem dono que entraram no pedido, com o motivo.
     pub added: Vec<(u64, String)>,
+    /// As lições que a escolha julgou, pelo número no banco.
+    pub judged_lessons: BTreeSet<u64>,
+    /// As lições que saíram do pedido, com o motivo.
+    pub removed_lessons: Vec<(u64, String)>,
 }
 
 impl Choice {
-    /// A escolha reduzida aos grupos de agora: sai só o que ainda é do
-    /// projeto todo, entra só o que ainda está sem dono, e o julgado é o que
-    /// está nos dois grupos.
+    /// A escolha reduzida aos candidatos de agora: sai só o que ainda é do
+    /// projeto todo ou lição da onda, entra só o que ainda está sem dono, e o
+    /// julgado é o que está entre os candidatos.
     #[must_use]
     pub fn within(&self, found: &Candidates) -> Self {
         let has = |group: &[&SpecEvent], id: u64| group.iter().any(|item| item.id == id);
@@ -400,35 +416,59 @@ impl Choice {
             judged: found.ids(),
             removed: self.removed.iter().filter(|(id, _)| has(&found.project, *id)).cloned().collect(),
             added: self.added.iter().filter(|(id, _)| has(&found.unowned, *id)).cloned().collect(),
+            judged_lessons: found.lesson_ids(),
+            removed_lessons: self.removed_lessons.iter().filter(|(id, _)| has(&found.lessons, *id)).cloned().collect(),
         }
     }
 
-    /// `true` quando a escolha julgou cada item dos dois grupos de agora.
+    /// `true` quando a escolha julgou cada candidato de agora.
     #[must_use]
     pub fn covers(&self, found: &Candidates) -> bool {
-        found.ids().is_subset(&self.judged)
+        found.ids().is_subset(&self.judged) && found.lesson_ids().is_subset(&self.judged_lessons)
+    }
+
+    /// `true` quando a escolha tirou do pedido a lição `id`.
+    #[must_use]
+    pub fn removes_lesson(&self, id: u64) -> bool {
+        self.removed_lessons.iter().any(|(had, _)| *had == id)
     }
 
     /// O campo `analysis` do envio.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        let listed = |items: &[(u64, String)]| -> Vec<Value> {
-            items.iter().map(|(item, why)| serde_json::json!({ "item": item, "why": why })).collect()
+        let listed = |key: &str, items: &[(u64, String)]| -> Vec<Value> {
+            items.iter().map(|(n, why)| serde_json::json!({ key: n, "why": why })).collect()
         };
-        serde_json::json!({ "judged": self.judged, "removed": listed(&self.removed), "added": listed(&self.added) })
+        serde_json::json!({
+            "judged": self.judged,
+            "removed": listed("item", &self.removed),
+            "added": listed("item", &self.added),
+            "judged_lessons": self.judged_lessons,
+            "removed_lessons": listed("lesson", &self.removed_lessons),
+        })
     }
 
     /// A escolha gravada num envio; `None` quando o campo não tem a forma
-    /// de [`Choice::to_value`].
+    /// de [`Choice::to_value`]. O envio gravado antes de as lições entrarem
+    /// na escolha não traz os dois campos delas, e vale sem lição julgada.
     #[must_use]
     pub fn from_value(value: &Value) -> Option<Self> {
-        let listed = |key: &str| -> Option<Vec<(u64, String)>> {
+        let listed = |key: &str, id: &str| -> Option<Vec<(u64, String)>> {
             value.get(key)?.as_array()?.iter().map(|entry| {
-                Some((entry.get("item")?.as_u64()?, entry.get("why")?.as_str()?.to_string()))
+                Some((entry.get(id)?.as_u64()?, entry.get("why")?.as_str()?.to_string()))
             }).collect()
         };
-        let judged = value.get("judged")?.as_array()?.iter().map(Value::as_u64).collect::<Option<_>>()?;
-        Some(Self { judged, removed: listed("removed")?, added: listed("added")? })
+        let numbers = |key: &str| -> Option<BTreeSet<u64>> {
+            value.get(key)?.as_array()?.iter().map(Value::as_u64).collect()
+        };
+        let lessons = value.get("judged_lessons").is_some() || value.get("removed_lessons").is_some();
+        Some(Self {
+            judged: numbers("judged")?,
+            removed: listed("removed", "item")?,
+            added: listed("added", "item")?,
+            judged_lessons: if lessons { numbers("judged_lessons")? } else { BTreeSet::new() },
+            removed_lessons: if lessons { listed("removed_lessons", "lesson")? } else { Vec::new() },
+        })
     }
 }
 
@@ -439,15 +479,22 @@ pub fn recorded_choice(log: &SpecLog, wave: u64) -> Option<Choice> {
     Choice::from_value(sent.fields.get("analysis")?)
 }
 
+/// A escolha que vale para o pedido da onda `wave`: a dada (`fresh`) ou, sem
+/// ela, a gravada no envio mais novo da onda.
+#[must_use]
+pub fn choice_for(log: &SpecLog, wave: u64, fresh: Option<&Choice>) -> Option<Choice> {
+    fresh.cloned().or_else(|| recorded_choice(log, wave))
+}
+
 /// O que o pedido da onda `wave` lê: o que a montagem escolhe
-/// ([`Step::Dispatch`]), sem os itens do projeto todo que a análise tirou e
-/// com os sem dono que ela pôs. A escolha é a dada (`fresh`) ou, sem ela, a
-/// gravada no envio mais novo da onda, e vale só dentro dos grupos de agora:
-/// o item que as tarefas da onda passaram a fazer vai sempre.
+/// ([`Step::Dispatch`]), sem os itens do projeto todo que a escolha tirou e
+/// com os sem dono que ela pôs. A escolha é a de [`choice_for`], e vale só
+/// dentro dos grupos de agora: o item que as tarefas da onda passaram a fazer
+/// vai sempre.
 #[must_use]
 pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -> Vec<&'a SpecEvent> {
     let base = log.step(&Step::Dispatch { wave });
-    let Some(choice) = fresh.cloned().or_else(|| recorded_choice(log, wave)) else { return base };
+    let Some(choice) = choice_for(log, wave, fresh) else { return base };
     let choice = choice.within(&candidates(log, wave));
     let removed: BTreeSet<u64> = choice.removed.iter().map(|(id, _)| *id).collect();
     let mut out: Vec<&SpecEvent> = base.into_iter().filter(|item| !removed.contains(&item.id)).collect();
@@ -457,25 +504,6 @@ pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -
         }
     }
     out.sort_by_key(|item| item.id);
-    out
-}
-
-/// O pedido da análise antes do envio da onda do material: o agente lê a
-/// onda e as tarefas dela (`block`) e os dois grupos (`found`), cada item
-/// pelo código, e devolve a linha `<ANALYSIS>` com o que sai e o que entra.
-#[must_use]
-pub fn write_analysis(material: &Material, found: &Candidates, lang: Locale) -> String {
-    let w = Writer { material, lang };
-    let n = material.wave.to_string();
-    let mut out = String::new();
-    let _ = writeln!(out, "# {}\n", w.t("round.analysis.title").replace("{spec}", &material.spec).replace("{n}", &n));
-    let _ = writeln!(out, "{}\n", w.t("round.analysis.fixed").replace("{n}", &n));
-    w.read_example(&mut out, true);
-    w.part(&mut out, "round.analysis.part.wave", &w.wave_items());
-    w.part(&mut out, "round.analysis.part.project", &found.project);
-    w.part(&mut out, "round.analysis.part.unowned", &found.unowned);
-    let _ = writeln!(out, "## {}\n", w.t("round.analysis.part.answer"));
-    out.push_str(&w.t("round.analysis.answer").replace("{n}", &n));
     out
 }
 

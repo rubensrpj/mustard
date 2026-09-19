@@ -1,5 +1,5 @@
 //! A fila da rodada e as ondas em andamento: quais ondas saem agora, a
-//! análise do pedido antes do envio, a cópia separada e a pasta de compilação
+//! escolha do pedido antes do envio, a cópia separada e a pasta de compilação
 //! de cada uma, quais estão em andamento, quais esperam revisão, quais já
 //! estão entregues e aprovadas, e o estado de cada uma que a página mostra.
 
@@ -8,11 +8,10 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
-use mustard_core::domain::wave_prompt::{
-    candidates, dispatch_items, recorded_choice, write_analysis, Candidates, Choice, Execution, Material, WaveCopy,
-};
+use mustard_core::domain::spec_index::title_of;
+use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, WaveCopy};
 use mustard_core::io::fs::lock::LockedFile;
-use mustard_core::io::wave_prompt::{copy_path, recorded_copy, shown};
+use mustard_core::io::wave_prompt::{copy_path, lesson_bank, recorded_copy, shown, wave_lessons};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
@@ -86,32 +85,29 @@ pub(super) fn next_waves(
 }
 
 // ---------------------------------------------------------------------------
-// A análise do pedido antes do envio
+// A escolha do pedido antes do envio
 // ---------------------------------------------------------------------------
 
-/// A linha da análise antes do envio, como o agente com o modelo Sonnet a
-/// devolve.
+/// A linha em que o orquestrador devolve a escolha de uma onda.
 const ANALYSIS_LINE: &str = "ANALYSIS";
 
-/// O modelo do agente que faz a análise antes do envio.
-const ANALYSIS_MODEL: &str = "sonnet";
-
-/// O que a linha `ANALYSIS` de uma onda trouxe: cada item que sai e cada item
-/// que entra, como veio (pelo código ou pelo número), com o motivo.
+/// O que a linha `ANALYSIS` de uma onda trouxe: cada entrada que sai e cada
+/// uma que entra, como veio — o item pelo código ou pelo número em `item`, a
+/// lição pelo número do banco em `lesson` —, com o motivo.
 pub(super) struct AnalysisLine {
     wave: u64,
     removed: Vec<(Value, String)>,
     added: Vec<(Value, String)>,
 }
 
-/// `true` quando o relatório só traz a análise antes do envio: não há entrega
+/// `true` quando o relatório só traz a escolha antes do envio: não há entrega
 /// nem veredito a juntar, e a rodada vai direto ao despacho.
 pub(super) fn only_analysis(raw: &str) -> bool {
     !has_agent_lines(raw) && !tagged(raw, ANALYSIS_LINE).is_empty()
 }
 
 /// As linhas `ANALYSIS` do relatório `raw`. A que não se lê fica de fora com
-/// um aviso, e a onda dela pede a análise de novo: nada é recusado.
+/// um aviso, e a onda dela pede a escolha de novo: nada é recusado.
 pub(super) fn analysis_lines(raw: Option<&str>, lang: Locale) -> (Vec<AnalysisLine>, Vec<Value>) {
     let mut lines = Vec::new();
     let mut warnings = Vec::new();
@@ -125,7 +121,7 @@ pub(super) fn analysis_lines(raw: Option<&str>, lang: Locale) -> (Vec<AnalysisLi
                         .iter()
                         .map(|entry| {
                             let why = entry.get("why").and_then(Value::as_str).map(str::trim).unwrap_or_default();
-                            (entry.get("item").cloned().unwrap_or(Value::Null), why.to_string())
+                            (entry.clone(), why.to_string())
                         })
                         .collect()
                 };
@@ -141,38 +137,35 @@ pub(super) fn analysis_lines(raw: Option<&str>, lang: Locale) -> (Vec<AnalysisLi
     (lines, warnings)
 }
 
-/// O que a análise antes do envio decidiu para as ondas prontas.
+/// O que a escolha antes do envio decidiu para as ondas prontas.
 pub(super) struct Analysed {
     /// As ondas que saem agora, na ordem da fila.
     pub go: Vec<u64>,
     /// A escolha de cada onda que sai com uma.
     pub choices: BTreeMap<u64, Choice>,
-    /// O pedido de análise de cada onda que espera por ela.
+    /// Os candidatos de cada onda que espera a escolha do orquestrador.
     pub asked: Vec<Value>,
-    /// Os itens da linha da análise que ficaram como estavam.
+    /// As entradas da linha da escolha que ficaram como estavam.
     pub warnings: Vec<Value>,
 }
 
-/// A análise antes do envio de cada onda pronta (`ready`), antes de a cópia
-/// dela ser criada. A onda sem item do projeto todo nem item sem dono a
-/// julgar sai como hoje. A que tem sai com a escolha que a linha `ANALYSIS`
-/// do relatório trouxe (`given`) ou, quando a mesma onda sai de novo sem plano
-/// novo, com a escolha gravada no envio anterior dela, se essa escolha julgou
-/// cada item de agora. Sem escolha, a onda não sai, e a resposta traz o pedido
-/// pronto para o agente com o modelo Sonnet. Nada é recusado.
-pub(super) fn analyse(
-    root: &Path,
-    spec: &str,
-    log: &SpecLog,
-    ready: &[u64],
-    given: &[AnalysisLine],
-    lang: Locale,
-) -> Analysed {
+/// A escolha antes do envio de cada onda pronta (`ready`), antes de a cópia
+/// dela ser criada. Os candidatos de cada onda são os itens do projeto todo,
+/// os sem dono e as lições do banco que casam com ela; a onda sem nenhum sai
+/// como hoje. A que tem sai com a escolha que a linha `ANALYSIS` do relatório
+/// trouxe (`given`) ou, quando a mesma onda sai de novo sem plano novo, com a
+/// escolha gravada no envio anterior dela, se essa escolha julgou cada
+/// candidato de agora. Sem escolha, a onda não sai, e a resposta traz os
+/// candidatos dela ao orquestrador, cada um com o título. Nada é recusado, e
+/// nenhum agente é aberto para isso.
+pub(super) fn analyse(root: &Path, log: &SpecLog, ready: &[u64], given: &[AnalysisLine], lang: Locale) -> Analysed {
     let replanned = waves_replanned(log);
     let codes = log.codes();
+    let bank = lesson_bank(root);
     let mut out = Analysed { go: Vec::new(), choices: BTreeMap::new(), asked: Vec::new(), warnings: Vec::new() };
     for wave in ready.iter().copied() {
-        let found = candidates(log, wave);
+        let mut found = candidates(log, wave);
+        found.lessons = bank.as_ref().map(|bank| wave_lessons(bank, log, wave)).unwrap_or_default();
         if found.is_empty() {
             out.go.push(wave);
             continue;
@@ -188,16 +181,16 @@ pub(super) fn analyse(
                 out.choices.insert(wave, choice);
                 out.go.push(wave);
             }
-            None => out.asked.push(analysis_request(root, spec, log, &codes, wave, &found, lang)),
+            None => out.asked.push(shown_candidates(log, &codes, wave, &found)),
         }
     }
     out
 }
 
-/// A escolha que a linha da análise da onda traz, dentro dos grupos de agora
-/// (`found`): sai só o item do projeto todo, entra só o item sem dono, e
-/// cada um com o motivo. O item fora dos grupos, ou sem motivo, fica como
-/// estava, e um aviso diz qual.
+/// A escolha que a linha da onda traz, dentro dos candidatos de agora
+/// (`found`): sai só o item do projeto todo ou a lição, entra só o item sem
+/// dono, e cada um com o motivo. A entrada fora dos candidatos, ou sem
+/// motivo, fica como estava, e um aviso diz qual.
 fn chosen(
     log: &SpecLog,
     codes: &BTreeMap<u64, String>,
@@ -206,71 +199,69 @@ fn chosen(
     lang: Locale,
     warnings: &mut Vec<Value>,
 ) -> Choice {
-    let find = |group: &[&SpecEvent], item: &Value| -> Option<u64> {
-        let id = match EventRef::from_value(item)? {
-            EventRef::Id(n) => log.current(n)?.id,
-            EventRef::Code(code) => group.iter().find(|e| codes.get(&e.id) == Some(&code))?.id,
+    // A entrada aponta um item da spec em `item` ou uma lição do banco em
+    // `lesson`: os números dos dois não se misturam.
+    let find = |group: &[&SpecEvent], entry: &Value, lesson: bool| -> Option<u64> {
+        let id = if lesson {
+            entry.get("lesson")?.as_u64()?
+        } else {
+            match EventRef::from_value(entry.get("item")?)? {
+                EventRef::Id(n) => log.current(n)?.id,
+                EventRef::Code(code) => group.iter().find(|e| codes.get(&e.id) == Some(&code))?.id,
+            }
         };
         group.iter().any(|e| e.id == id).then_some(id)
     };
-    let mut pick = |group: &[&SpecEvent], entries: &[(Value, String)]| -> Vec<(u64, String)> {
+    let mut pick = |group: &[&SpecEvent], entries: &[(Value, String)], lesson: bool| -> Vec<(u64, String)> {
         let mut out: Vec<(u64, String)> = Vec::new();
-        for (item, why) in entries {
-            match find(group, item).filter(|_| !why.is_empty()) {
+        for (entry, why) in entries.iter().filter(|(entry, _)| entry.get("lesson").is_some() == lesson) {
+            match find(group, entry, lesson).filter(|_| !why.is_empty()) {
                 Some(id) => {
                     if !out.iter().any(|(had, _)| *had == id) {
                         out.push((id, why.clone()));
                     }
                 }
-                None => {
-                    let shown = item.as_str().map_or_else(|| item.to_string(), str::to_string);
-                    let hint = translate("round.analysis_ignored", lang)
-                        .replace("{wave}", &line.wave.to_string())
-                        .replace("{item}", &shown);
-                    warnings.push(json!({ "reason": "analysis-item-ignored", "wave": line.wave, "hint": hint }));
-                }
+                None => warnings.push(ignored(line.wave, entry, lang)),
             }
         }
         out
     };
-    let removed = pick(&found.project, &line.removed);
-    let added = pick(&found.unowned, &line.added);
-    Choice { judged: found.ids(), removed, added }
+    let removed = pick(&found.project, &line.removed, false);
+    let removed_lessons = pick(&found.lessons, &line.removed, true);
+    let added = pick(&found.unowned, &line.added, false);
+    // Lição não entra por escolha: as que casam com a onda já vão, e a lição
+    // em `added` fica como estava.
+    for (entry, _) in line.added.iter().filter(|(entry, _)| entry.get("lesson").is_some()) {
+        warnings.push(ignored(line.wave, entry, lang));
+    }
+    Choice { judged: found.ids(), removed, added, judged_lessons: found.lesson_ids(), removed_lessons }
 }
 
-/// O pedido da análise da onda `wave`, como a resposta da rodada o traz: os
-/// códigos das tarefas e dos dois grupos, o modelo e o pedido pronto.
-fn analysis_request(
-    root: &Path,
-    spec: &str,
-    log: &SpecLog,
-    codes: &BTreeMap<u64, String>,
-    wave: u64,
-    found: &Candidates,
-    lang: Locale,
-) -> Value {
-    let code = |e: &&SpecEvent| codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string());
-    let block: Vec<&SpecEvent> = log
-        .block(BlockQuery::Wave(wave))
-        .into_iter()
-        .filter(|e| matches!(e.event_type.as_str(), "wave" | "task"))
-        .collect();
-    let tasks: Vec<String> = block.iter().filter(|e| e.event_type == "task").map(code).collect();
-    let material = Material {
-        spec: spec.to_string(),
-        wave,
-        block,
-        execution: Execution { root: shown(root), ..Execution::default() },
-        codes: codes.clone(),
-        ..Material::default()
+/// O aviso da entrada da linha da escolha que ficou como estava.
+fn ignored(wave: u64, entry: &Value, lang: Locale) -> Value {
+    let said = entry.get("item").or_else(|| entry.get("lesson")).unwrap_or(entry);
+    let shown = said.as_str().map_or_else(|| said.to_string(), str::to_string);
+    let hint = translate("round.analysis_ignored", lang).replace("{wave}", &wave.to_string()).replace("{item}", &shown);
+    json!({ "reason": "analysis-item-ignored", "wave": wave, "hint": hint })
+}
+
+/// Os candidatos da onda `wave`, como a resposta da rodada os entrega ao
+/// orquestrador: o título da onda e, em cada grupo, cada candidato com o
+/// título dele — o item pelo código, a lição pelo número do banco. O texto
+/// inteiro se lê pelo código.
+fn shown_candidates(log: &SpecLog, codes: &BTreeMap<u64, String>, wave: u64, found: &Candidates) -> Value {
+    let title = |e: &SpecEvent| title_of(e).unwrap_or_default();
+    let items = |group: &[&SpecEvent]| -> Vec<Value> {
+        let code = |e: &SpecEvent| codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string());
+        group.iter().map(|e| json!({ "item": code(e), "title": title(e) })).collect()
     };
+    let named = log.block(BlockQuery::Wave(wave)).into_iter().find(|e| e.event_type == "wave").map(title);
     json!({
         "wave": wave,
-        "model": ANALYSIS_MODEL,
-        "tasks": tasks,
-        "project": found.project.iter().map(code).collect::<Vec<_>>(),
-        "unowned": found.unowned.iter().map(code).collect::<Vec<_>>(),
-        "prompt": write_analysis(&material, found, lang),
+        "title": named.unwrap_or_default(),
+        "project": items(&found.project),
+        "unowned": items(&found.unowned),
+        "lessons": found.lessons.iter().map(|e| json!({ "lesson": e.id, "title": title(e) })).collect::<Vec<_>>(),
     })
 }
 
@@ -533,7 +524,7 @@ fn waves_awaiting_review(log: &SpecLog) -> Vec<u64> {
 }
 
 /// Os itens que o pedido de uma onda leva: os números de tudo que entrou
-/// nele, com a escolha da análise antes do envio (`choice`).
+/// nele, com a escolha do orquestrador antes do envio (`choice`).
 pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> Vec<u64> {
     dispatch_items(log, wave, choice).into_iter().map(|e| e.id).collect()
 }
@@ -902,23 +893,94 @@ mod tests {
         log.codes().into_iter().map(|(id, code)| (code, id)).collect()
     }
 
-    /// A linha da análise da onda 1: o que sai e o que entra, com o motivo.
+    /// A linha da escolha da onda 1: o que sai e o que entra, com o motivo.
     fn analysis(removed: Value, added: Value) -> String {
         line("ANALYSIS", json!({"wave": 1, "removed": removed, "added": added}))
     }
 
+    /// Os códigos de um grupo de candidatos que a rodada entregou.
+    fn codes_in(asked: &Value, group: &str) -> Vec<String> {
+        let listed = asked[group].as_array().map(Vec::as_slice).unwrap_or_default();
+        listed.iter().filter_map(|c| c["item"].as_str()).map(str::to_string).collect()
+    }
+
+    /// A rodada que vai soltar uma onda com regras do projeto todo, itens sem
+    /// dono e lições que casam com ela entrega esses candidatos ao
+    /// orquestrador, cada um com o título, e nenhum agente é pedido: a
+    /// resposta não traz modelo nem pedido pronto, e o próximo passo não fala
+    /// de Sonnet. A lição que não casa com a onda não é candidata. A escolha
+    /// volta na linha que a rodada lê e fica gravada no envio com o motivo, a
+    /// da lição inclusive: o pedido leva a lição que ficou e não a que saiu.
+    #[test]
+    fn the_round_hands_the_candidates_to_the_orchestrator() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let ids = with_items_to_judge(root);
+        let lesson = |text: &str, key: &str| {
+            id_of(&write(root, "x", "lesson", json!({"class": "defect", "text": text, "keys": [key],
+                "applies_to": {"files": ["**"]}})))
+        };
+        let kept = lesson("A tabela nova precisa de migração.", "tabela");
+        let dropped = lesson("O índice novo deixa a busca lenta.", "índice");
+        let far = lesson("O terminal do Windows troca a barra.", "terminal");
+
+        let asked = round(root, "x", None);
+        assert_eq!(asked["ok"], json!(true), "{asked}");
+        assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
+        let title = |code: &str, title: &str| json!({"item": code, "title": title});
+        assert_eq!(
+            asked["analysis"],
+            json!([{
+                "wave": 1,
+                "title": "Onda 1.",
+                "project": [title("MSTD-RULE-0001", "Vale sempre: a tabela nova tem chave."),
+                    title("MSTD-RULE-0002", "Vale sempre: a spec vira um PR só.")],
+                "unowned": [title("MSTD-DEC-0001", "Sem dono: a tabela nasce vazia."),
+                    title("MSTD-DEC-0002", "Sem dono: o download não muda.")],
+                "lessons": [{"lesson": kept, "title": "A tabela nova precisa de migração."},
+                    {"lesson": dropped, "title": "O índice novo deixa a busca lenta."}],
+            }]),
+            "the lesson {far} does not fit the wave: {asked}"
+        );
+        let next = asked["next"].as_str().unwrap_or_default();
+        assert!(!next.to_lowercase().contains("sonnet") && !next.contains("model"), "{next}");
+        assert!(next.contains("<ANALYSIS>"), "the next step teaches the line: {next}");
+
+        let removed = json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega, e não da tabela."},
+            {"lesson": dropped, "why": "A busca não muda nesta onda."}]);
+        let added = json!([{"item": "MSTD-DEC-0001", "why": "A tabela nova nasce vazia."}]);
+        let out = round(root, "x", Some(&analysis(removed, added)));
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert!(out.get("warnings").is_none(), "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
+        assert_eq!(sent.len(), 1, "{out}");
+        let judged: Vec<u64> = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-DEC-0001", "MSTD-DEC-0002"].map(|c| ids[c]).to_vec();
+        let recorded = json!({"judged": judged,
+            "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Fala da entrega, e não da tabela."}],
+            "added": [{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}],
+            "judged_lessons": [kept, dropped],
+            "removed_lessons": [{"lesson": dropped, "why": "A busca não muda nesta onda."}]});
+        assert_eq!(sent[0].fields.get("analysis"), Some(&recorded), "the send records the choice: {out}");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains("A tabela nova precisa de migração."), "{prompt}");
+        for out_of_it in ["O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
+            assert!(!prompt.contains(out_of_it), "{out_of_it}: {prompt}");
+        }
+        assert!(prompt.contains("- `agreed`: MSTD-RULE-0001, MSTD-RULE-0003, MSTD-DEC-0001, MSTD-DEC-0003\n"), "{prompt}");
+    }
+
     /// A rodada que vai soltar uma onda com itens do projeto todo e itens sem
-    /// dono pede a análise antes do envio: nada sai, nenhum envio é gravado e
-    /// nenhuma cópia é criada, e a resposta traz o pedido pronto para o agente
-    /// com o modelo Sonnet, com as tarefas e os dois grupos; sem a escolha,
-    /// pede de novo. Com a linha da análise, a onda sai: o pedido e o envio
-    /// levam o que ficou, sem o que saiu e com o que entrou, e o envio grava à
-    /// parte o que saiu e o que entrou, com o motivo. O item que as tarefas da
-    /// onda fazem vai sempre: a análise nem o recebe, e a linha que tenta
-    /// tirá-lo fica sem efeito, como a que vem sem motivo. O gancho que monta
-    /// o pedido no despacho chega ao mesmo texto. Na divisa do conserto: com
-    /// os mesmos itens a julgar, o conserto sai com a escolha gravada; com uma
-    /// regra nova do projeto todo, a rodada pede a análise de novo.
+    /// dono entrega os candidatos ao orquestrador: nada sai, nenhum envio é
+    /// gravado e nenhuma cópia é criada; sem a escolha, entrega de novo. Com
+    /// a linha da escolha, a onda sai: o pedido e o envio levam o que ficou,
+    /// sem o que saiu e com o que entrou, e o envio grava à parte o que saiu
+    /// e o que entrou, com o motivo. O item que as tarefas da onda fazem vai
+    /// sempre: ele não é candidato, e a linha que tenta tirá-lo fica sem
+    /// efeito, como a que vem sem motivo. O gancho que monta o pedido no
+    /// despacho chega ao mesmo texto. Na divisa do conserto: com os mesmos
+    /// candidatos, o conserto sai com a escolha gravada; com uma regra nova do
+    /// projeto todo, a rodada pede a escolha de novo.
     #[test]
     fn the_round_records_the_analysis_before_sending() {
         let dir = tempdir().unwrap();
@@ -938,15 +1000,9 @@ mod tests {
             assert!(!copy_path(root, "x", 1, false).exists(), "no copy before the analysis");
             let request = &asked["analysis"][0];
             assert_eq!(request["wave"], json!(1), "{asked}");
-            assert_eq!(request["model"], json!("sonnet"), "{asked}");
-            assert_eq!(request["tasks"], json!(["MSTD-TASK-0001", "MSTD-TASK-0002"]), "{asked}");
-            assert_eq!(request["project"], json!(["MSTD-RULE-0001", "MSTD-RULE-0002"]), "the rule the task does is not judged");
-            assert_eq!(request["unowned"], json!(["MSTD-DEC-0001", "MSTD-DEC-0002"]), "{asked}");
-            let prompt = request["prompt"].as_str().unwrap_or_default();
-            for part in ["- `waves`: MSTD-WAVE-0001, MSTD-TASK-0001, MSTD-TASK-0002", "- `agreed`: MSTD-RULE-0001, MSTD-RULE-0002",
-                "- `agreed`: MSTD-DEC-0001, MSTD-DEC-0002", "<ANALYSIS>{\"wave\":1,"] {
-                assert!(prompt.contains(part), "{part}: {prompt}");
-            }
+            assert_eq!(codes_in(request, "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002"], "the rule the task does is not judged");
+            assert_eq!(codes_in(request, "unowned"), ["MSTD-DEC-0001", "MSTD-DEC-0002"], "{asked}");
+            assert_eq!(request["lessons"], json!([]), "{asked}");
             let next = translate("round.analysis", Locale::PtBr).replace("{waves}", "1");
             assert!(asked["next"].as_str().unwrap_or_default().contains(&next), "{asked}");
         }
@@ -984,7 +1040,8 @@ mod tests {
         let judged: Vec<u64> = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-DEC-0001", "MSTD-DEC-0002"].map(|c| ids[c]).to_vec();
         assert_eq!(sent[0]["analysis"], json!({"judged": judged,
             "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Fala da entrega, e não da tabela."}],
-            "added": [{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}]}));
+            "added": [{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}],
+            "judged_lessons": [], "removed_lessons": []}));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let running = waves_in_progress(&log).into_keys().collect();
         let flight = mustard_core::io::wave_prompt::Flight { running, ..Default::default() };
@@ -1008,7 +1065,7 @@ mod tests {
             "keys": ["k"], "applies_to": {"files": ["**"]}, "origin": said})));
         let again = round(root, "x", Some(&verdict(1, "rejected", "faltou o nome")));
         assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "{again}");
-        assert_eq!(again["analysis"][0]["project"], json!(["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0004"]), "{again}");
+        assert_eq!(codes_in(&again["analysis"][0], "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0004"], "{again}");
         assert_eq!(sends().len(), 2, "{again}");
         let out = round(root, "x", Some(&analysis(json!([]), json!([]))));
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
