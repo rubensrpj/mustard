@@ -116,9 +116,6 @@ pub struct Material<'a> {
     pub execution: Execution,
     /// As lições que valem para os arquivos, o subprojeto ou a skill da onda.
     pub lessons: Vec<&'a SpecEvent>,
-    /// Os defeitos já vistos nos arquivos da onda, que só o pedido do revisor
-    /// leva: o erro que já aconteceu ali é o que tem mais chance de voltar.
-    pub defects: Vec<&'a SpecEvent>,
     /// As skills nomeadas pelas tarefas, na ordem dos nomes.
     pub skills: Vec<Skill>,
     /// Os arquivos de leitura que a escolha do orquestrador confirmou para
@@ -174,15 +171,6 @@ pub fn too_long(material: &Material, lines: usize, lang: Locale) -> Refusal {
 #[must_use]
 pub fn write(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.text()
-}
-
-/// O texto do pedido do revisor da onda: a mesma lista de itens, o que a onda
-/// entregou, os critérios que ele confere, os defeitos já vistos nos arquivos
-/// da onda e como revisar numa cópia separada; na revisão de um conserto, as
-/// linhas dele.
-#[must_use]
-pub fn write_review(material: &Material, lang: Locale) -> String {
-    Writer { material, lang }.review_text()
 }
 
 /// O texto do pedido do agente de teste dedicado, que o fechamento pede a
@@ -983,34 +971,6 @@ impl Writer<'_> {
         out
     }
 
-    /// O pedido do revisor: as instruções fixas dele, o exemplo de leitura,
-    /// as linhas do conserto quando é a revisão de um, a lista de itens da
-    /// onda, o que ela entregou, os critérios que ele confere, os defeitos já
-    /// vistos naqueles arquivos e como revisar numa cópia separada. Nenhum
-    /// texto de item é copiado aqui tampouco.
-    fn review_text(&self) -> String {
-        let m = self.material;
-        let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "# {}\n",
-            self.t("prompt.review.title").replace("{spec}", &m.spec).replace("{n}", &m.wave.to_string())
-        );
-        out.push_str(self.t("prompt.review.fixed"));
-        out.push_str("\n\n");
-        self.read_example(&mut out, true);
-        self.fix(&mut out, "prompt.fix.review");
-        self.part(&mut out, "prompt.part.wave", &self.wave_items());
-        self.part(&mut out, "prompt.part.own_delivered", &m.own_delivered);
-        self.part(&mut out, "prompt.part.criteria", &m.criteria);
-        self.defects(&mut out);
-        self.review_execution(&mut out);
-        while out.ends_with("\n\n") {
-            out.pop();
-        }
-        out
-    }
-
     /// O pedido do agente de teste dedicado, que o fechamento pede a toda
     /// obra: as instruções fixas dele, o exemplo de leitura, o conserto —
     /// quando alguma onda voltou reprovada e já entregou de novo, só ele, sem
@@ -1035,21 +995,6 @@ impl Writer<'_> {
             out.pop();
         }
         out
-    }
-
-    /// Os defeitos já vistos nos arquivos da onda: o texto original de cada
-    /// um, como as lições. Eles vêm do banco, fora da spec, e não têm número
-    /// para serem lidos depois.
-    fn defects(&self, out: &mut String) {
-        if self.material.defects.is_empty() {
-            return;
-        }
-        let _ = writeln!(out, "## {}\n", self.t("prompt.part.defects"));
-        for defect in &self.material.defects {
-            let text = defect.str_field("text").unwrap_or_default().trim();
-            let _ = writeln!(out, "- {text}");
-        }
-        out.push('\n');
     }
 
     /// Os itens da onda na ordem de execução que ela declara: primeiro os que
@@ -1287,12 +1232,13 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// Um arquivo da leitura por tarefa: `caminho#função` manda ler só
-    /// aquela função; `caminho#função@início-fim[,início-fim…]` — que
-    /// [`crate::io::wave_prompt`] monta quando o mapa do projeto conhece a
-    /// função e a linha em que ela termina — manda ler só essas linhas, uma
-    /// faixa por trecho, para o nome que se repete no arquivo; um caminho
-    /// sozinho é o arquivo, entre crases, como antes.
+    /// Um arquivo da leitura por tarefa: `caminho#declaração` manda ler só
+    /// aquela declaração, função, estrutura ou constante — nunca chamada de
+    /// função quando não é; `caminho#declaração@início-fim[,início-fim…]` —
+    /// que [`crate::io::wave_prompt`] monta quando o mapa do projeto conhece
+    /// a declaração e a linha em que ela termina — manda ler só essas
+    /// linhas, uma faixa por trecho, para o nome que se repete no arquivo;
+    /// um caminho sozinho é o arquivo, entre crases, como antes.
     fn read_hint(&self, file: &str) -> String {
         let Some((path, rest)) = file.split_once('#') else { return format!("`{file}`") };
         if path.is_empty() || rest.is_empty() {
@@ -2027,21 +1973,24 @@ mod tests {
         }
     }
 
-    /// O pedido do conserto e o da revisão dele trazem as mesmas linhas, cada
-    /// um com o que fazer com elas: consertar só isso, e olhar só o conserto.
-    /// Fora de um conserto, os dois pedidos não têm a parte.
+    /// O pedido do conserto (o da própria onda) e o do agente de teste final
+    /// trazem as mesmas linhas do conserto, cada um com o que fazer com elas:
+    /// consertar só isso, e olhar só o conserto. Sem revisão por onda, o
+    /// agente de teste final é o único que confere o conserto, e o pedido
+    /// dele não muda: as mesmas linhas de antes, num lugar só. Fora de um
+    /// conserto, os dois pedidos não têm a parte.
     #[test]
-    fn the_fix_request_and_its_review_carry_the_same_lines_with_their_own_instruction() {
+    fn the_final_review_request_is_unchanged() {
         let log = rejected(false);
         let mut m = material(&log, 1);
         m.fix = fix_lines(&log, 1);
         for lang in [Locale::PtBr, Locale::EnUs] {
             let heading = translate("prompt.part.fix", lang);
             let wave = write(&m, lang);
-            let review = write_review(&m, lang);
+            let last = write_final_review(&m, lang);
             assert!(section(&wave, heading).contains(translate("prompt.fix.wave", lang)), "{wave}");
-            assert!(section(&review, heading).contains(translate("prompt.fix.review", lang)), "{review}");
-            for text in [&wave, &review] {
+            assert!(section(&last, heading).contains(translate("prompt.fix.final", lang)), "{last}");
+            for text in [&wave, &last] {
                 let fix = section(text, heading);
                 assert_eq!(
                     listed(text, heading),
@@ -2057,7 +2006,7 @@ mod tests {
         }
         let plain = material(&log, 1);
         assert!(section(&write(&plain, Locale::PtBr), "Conserto").is_empty());
-        assert!(section(&write_review(&plain, Locale::PtBr), "Conserto").is_empty());
+        assert!(section(&write_final_review(&plain, Locale::PtBr), "Conserto").is_empty());
     }
 
     /// A execução de um pedido montado com a cópia que a rodada criou, num
@@ -2077,8 +2026,8 @@ mod tests {
 
     /// Num projeto sem parte Rust, a cópia recebe a pasta de compilação do
     /// mesmo jeito, porque ela é a vaga das ondas que rodam juntas, mas
-    /// nenhum dos três pedidos a cita nem fala do Cargo; a cópia e o resto
-    /// das regras continuam. Num projeto Rust, os três citam a pasta.
+    /// nenhum dos dois pedidos a cita nem fala do Cargo; a cópia e o resto
+    /// das regras continuam. Num projeto Rust, os dois citam a pasta.
     #[test]
     fn the_build_folder_sentence_is_written_only_for_a_rust_project() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
@@ -2088,15 +2037,14 @@ mod tests {
             for rust in [false, true] {
                 m.execution = Execution { rust, ..with_copy() };
                 let wave = section(&write(&m, lang), rules).to_string();
-                let review = section(&write_review(&m, lang), rules).to_string();
                 let last = section(&write_final_review(&m, lang), rules).to_string();
-                for (text, folder) in [(&wave, "/repo/target/copias/a"), (&review, "/repo/target/copias/b"), (&last, "/repo/target/copias/b")] {
+                for (text, folder) in [(&wave, "/repo/target/copias/a"), (&last, "/repo/target/copias/b")] {
                     let sentence = translate("prompt.execution.build_dir", lang).replace("{dir}", folder);
                     assert_eq!(text.contains(&sentence), rust, "{lang:?} rust={rust}: {text}");
                     assert_eq!(text.contains("Cargo") || text.contains("target/copias"), rust, "{lang:?} rust={rust}: {text}");
                 }
-                assert!(wave.contains("`/repo/copia-1`") && review.contains("`/repo/revisao-1`"), "{wave}\n{review}");
-                assert!(wave.contains("`make test`") && review.contains("`make test`"), "{wave}\n{review}");
+                assert!(wave.contains("`/repo/copia-1`") && last.contains("`/repo/revisao-1`"), "{wave}\n{last}");
+                assert!(wave.contains("`make test`") && last.contains("`make test`"), "{wave}\n{last}");
             }
         }
     }
@@ -2105,10 +2053,10 @@ mod tests {
     /// rodada criou, a pasta de compilação dela, os comandos do projeto, não
     /// comitar e as outras ondas em andamento com os arquivos delas; o
     /// caminho do repositório principal vem só no exemplo de leitura. O da
-    /// revisão diz em que cópia trabalhar, como criá-la no commit da onda,
-    /// onde compilar, compilar com menos processos e apagar a cópia no fim;
-    /// sem commit, a cópia sai do atual. Sem cópia, o pedido da onda não fala
-    /// de cópia, de pasta de compilação nem do repositório principal.
+    /// revisão final diz em que cópia trabalhar, como criá-la no commit mais
+    /// novo, onde compilar, compilar com menos processos e apagar a cópia no
+    /// fim; sem commit, a cópia sai do atual. Sem cópia, o pedido da onda não
+    /// fala de cópia, de pasta de compilação nem do repositório principal.
     #[test]
     fn the_requests_carry_the_execution_rules_the_copy_and_its_build_folder() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
@@ -2135,10 +2083,10 @@ mod tests {
         assert!(wave.contains(&example) && !rules.contains("--root"), "{wave}");
         assert_eq!(wave.matches("--root").count(), 1, "{wave}");
 
-        let review = write_review(&m, Locale::PtBr);
-        assert!(review.contains(&example), "{review}");
-        assert_eq!(review.matches("--root").count(), 1, "{review}");
-        let rules = section(&review, t("prompt.part.execution"));
+        let last = write_final_review(&m, Locale::PtBr);
+        assert!(last.contains(&example), "{last}");
+        assert_eq!(last.matches("--root").count(), 1, "{last}");
+        let rules = section(&last, t("prompt.part.execution"));
         for line in [
             "`git worktree add --detach /repo/revisao-1 abc1234`",
             "`CARGO_TARGET_DIR=/repo/target/copias/b`",
@@ -2157,8 +2105,8 @@ mod tests {
         assert!(!rules.contains("Compile com") && !rules.contains(t("prompt.execution.running")), "{rules}");
         assert!(!rules.contains("CARGO_TARGET_DIR") && !wave.contains("--root"), "{wave}");
         assert!(rules.contains(t("prompt.execution.no_commit")), "{rules}");
-        assert!(write_review(&m, Locale::PtBr).contains("--detach  HEAD`"));
-        assert!(write_review(&m, Locale::PtBr).contains(&example), "o revisor trabalha sempre numa cópia");
+        assert!(write_final_review(&m, Locale::PtBr).contains("--detach  HEAD`"));
+        assert!(write_final_review(&m, Locale::PtBr).contains(&example), "o revisor trabalha sempre numa cópia");
         let en = write(&Material { execution: with_copy(), ..material(&log, 1) }, Locale::EnUs);
         let rules = section(&en, translate("prompt.part.execution", Locale::EnUs));
         assert!(rules.contains("`/repo/copia-1`") && rules.contains("`/repo/target/copias/a`"), "{rules}");
@@ -2185,7 +2133,7 @@ mod tests {
             ),
         ] {
             let agents = crate::platform::seeds::agent_texts(lang);
-            for (said, (agent, key)) in wave.iter().map(|s| (s, (agents[0].1, "prompt.fixed"))).chain(review.iter().map(|s| (s, (agents[1].1, "prompt.review.fixed")))) {
+            for (said, (agent, key)) in wave.iter().map(|s| (s, (agents[0].1, "prompt.fixed"))).chain(review.iter().map(|s| (s, (agents[1].1, "prompt.final.fixed")))) {
                 assert!(agent.contains(said), "{lang:?}: {said}: {agent}");
                 assert!(!translate(key, lang).contains(said), "{lang:?} {key} repeats {said}");
             }

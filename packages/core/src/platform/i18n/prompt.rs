@@ -58,21 +58,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              sequence, one line per spec block.\n\n\
              **What to return.** This wave's `<DELIVERED>` line."
         }
-        ("prompt.review.title", Locale::PtBr) => "{spec} — revisão da onda {n}",
-        ("prompt.review.title", Locale::EnUs) => "{spec} — review of wave {n}",
-        ("prompt.review.fixed", Locale::PtBr) => {
-            "**O que é isto.** O pedido da revisão desta onda, montado pelo binário a partir da \
-             spec. Nenhum texto vem copiado: cada parte traz só os códigos dos itens, em sequência, \
-             numa linha por bloco da spec.\n\n\
-             **O que devolver.** A linha `<VERDICT>` desta onda."
-        }
-        ("prompt.review.fixed", Locale::EnUs) => {
-            "**What this is.** This wave's review request, assembled by the binary from the spec. \
-             No text is copied in: each part carries only the items' codes, in sequence, one line \
-             per spec block.\n\n\
-             **What to return.** This wave's `<VERDICT>` line."
-        }
-
         // O agente de teste dedicado, que o fechamento pede a toda obra —
         // mesmo a de uma onda só —, no lugar da revisão de cada onda.
         ("prompt.final.title", Locale::PtBr) => "{spec} — agente de teste dedicado",
@@ -99,7 +84,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              **What to return.** The `<VERDICT>` line with `\"final\":true`: approved, with no \
              `wave`; rejected, with the wave the fix redoes in `wave`."
         }
-        // O exemplo único do comando que lê um item, que os três pedidos
+        // O exemplo único do comando que lê um item, que os dois pedidos
         // trazem logo depois da parte fixa. `{root}` é `--root <caminho> `
         // quando o agente trabalha numa cópia, e nada quando não trabalha.
         ("prompt.read", Locale::PtBr) => {
@@ -116,8 +101,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.each_delivered", Locale::EnUs) => "What each wave delivered",
         ("prompt.part.branch_changes", Locale::PtBr) => "Mudanças já na branch",
         ("prompt.part.branch_changes", Locale::EnUs) => "Changes already on the branch",
-        ("prompt.part.defects", Locale::PtBr) => "Defeitos já vistos nestes arquivos",
-        ("prompt.part.defects", Locale::EnUs) => "Defects already seen in these files",
         ("prompt.part.specification", Locale::PtBr) => "Especificação",
         ("prompt.part.specification", Locale::EnUs) => "Specification",
         ("prompt.part.agreed", Locale::PtBr) => "Combinado",
@@ -141,7 +124,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.skill.read", Locale::PtBr) => "Leia o arquivo da skill antes de começar a tarefa que a nomeia.",
         ("prompt.skill.read", Locale::EnUs) => "Read the skill file before starting the task that names it.",
 
-        // O conserto: a onda que volta por reprovação e a revisão dela.
+        // O conserto: a onda que volta por reprovação.
         ("prompt.part.fix", Locale::PtBr) => "Conserto",
         ("prompt.part.fix", Locale::EnUs) => "Fix",
         ("prompt.fix.wave", Locale::PtBr) => {
@@ -153,16 +136,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "This wave came back rejected. The lines below are the verdict that rejected it, this \
              wave's previous delivery and the agreed items recorded after the last send. Fix only what \
              the verdict points out, in light of those items: do not redo the wave."
-        }
-        ("prompt.fix.review", Locale::PtBr) => {
-            "Esta revisão é de um conserto. As linhas abaixo são o veredito que reprovou, a entrega \
-             anterior e os itens combinados gravados depois do último envio. Olhe só o conserto — o \
-             que o veredito apontou —, não a onda inteira de novo."
-        }
-        ("prompt.fix.review", Locale::EnUs) => {
-            "This review is of a fix. The lines below are the verdict that rejected the wave, its \
-             previous delivery and the agreed items recorded after the last send. Look only at the \
-             fix — what the verdict pointed out —, not the whole wave again."
         }
         ("prompt.fix.final", Locale::PtBr) => {
             "Esta é a volta do conserto. A linha abaixo é o veredito que reprovou; as ondas, as \
@@ -176,9 +149,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              whoever was rejected. Check only the fix — what the verdict pointed out —, not the \
              whole work again."
         }
-        ("prompt.part.own_delivered", Locale::PtBr) => "O que esta onda entregou",
-        ("prompt.part.own_delivered", Locale::EnUs) => "What this wave delivered",
-
         // As regras da execução: o que o orquestrador acrescentava à mão.
         ("prompt.part.execution", Locale::PtBr) => "Regras da execução",
         ("prompt.part.execution", Locale::EnUs) => "Execution rules",
@@ -229,19 +199,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.execution.no_background", Locale::EnUs) => {
             "Never send a build or test to the background, and never wait on another process in a loop."
         }
-        // A leitura obrigatória de uma tarefa, quando ela aponta uma função
-        // (`caminho#função`): o pedido manda ler só aquela função, não o
-        // arquivo inteiro.
-        ("prompt.task_read.function", Locale::PtBr) => "leia só a função `{function}` em `{path}`",
-        ("prompt.task_read.function", Locale::EnUs) => "read only the function `{function}` in `{path}`",
+        // A leitura obrigatória de uma tarefa, quando ela aponta uma
+        // declaração (`caminho#declaração`), função, estrutura ou constante:
+        // o pedido manda ler só aquela declaração, não o arquivo inteiro, e
+        // nunca a chama de função quando ela não é.
+        ("prompt.task_read.function", Locale::PtBr) => "leia só `{function}` em `{path}`",
+        ("prompt.task_read.function", Locale::EnUs) => "read only `{function}` in `{path}`",
         // A mesma leitura obrigatória, quando o mapa do projeto conhece a
-        // função e a linha em que ela termina: o pedido já manda ler só as
-        // linhas atuais dela, sem número que envelhece no plano.
+        // declaração e a linha em que ela termina: o pedido já manda ler só
+        // as linhas atuais dela, sem número que envelhece no plano.
         ("prompt.task_read.function_lines", Locale::PtBr) => {
-            "leia só as linhas {lines} da função `{function}` em `{path}`"
+            "leia só as linhas {lines} de `{function}` em `{path}`"
         }
         ("prompt.task_read.function_lines", Locale::EnUs) => {
-            "read only lines {lines} of the function `{function}` in `{path}`"
+            "read only lines {lines} of `{function}` in `{path}`"
         }
         ("prompt.execution.copy", Locale::PtBr) => {
             "Trabalhe só na cópia separada `{copy}`, que a rodada criou no commit atual, e rode cada \
@@ -299,8 +270,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            48,
-            0xa365_9d5d_947e_dac0,
+            43,
+            0x30e2_640f_5315_9b9b,
         );
     }
 }

@@ -74,6 +74,7 @@ kinds = [
   "type",
   "field",
   "enum_member",
+  "constant",
 ]
 
 [php]

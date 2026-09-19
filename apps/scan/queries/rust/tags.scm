@@ -6,6 +6,13 @@
 (trait_item name: (type_identifier) @name) @definition.trait
 (type_item name: (type_identifier) @name) @definition.type
 
+; Constants — `const` and `static`, the two Rust forms of a named value fixed
+; at compile time. Kept as one kind: neither is a callable or a type, and
+; `mine.rs::is_significant` leaves the kind out of both allowlists, so a
+; constant never becomes an architectural unit.
+(const_item name: (identifier) @name) @definition.constant
+(static_item name: (identifier) @name) @definition.constant
+
 ; Functions — a free function is a UNIT, a method is a MEMBER. Rust spells both
 ; with the same `function_item` node, so the line is drawn by CONTEXT: each
 ; pattern is anchored on its PARENT, which makes them mutually exclusive (no two

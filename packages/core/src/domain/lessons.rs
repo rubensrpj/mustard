@@ -18,8 +18,8 @@
 //! Duas buscas, só do Rust: por escopo ([`in_scope`]), pelo caminho dos
 //! arquivos, pelo subprojeto e pela skill; e por palavras ([`matching`]), com
 //! o BM25 de `domain::search` sobre o `search`, que devolve as 5 mais fortes.
-//! O pedido de uma onda e o da revisão levam, de cada classe, só as lições
-//! mais ligadas às tarefas ([`related_to_tasks`]), porque uma pasta pode ter
+//! O pedido de uma onda leva, de cada classe, só as lições mais ligadas às
+//! tarefas ([`related_to_tasks`]), porque uma pasta pode ter
 //! centenas delas: a mesma busca, mas sobre as palavras-chave de cada lição,
 //! e não sobre o texto inteiro, em que quase toda lição longa divide alguma
 //! palavra comum com qualquer tarefa.
@@ -331,18 +331,6 @@ pub fn in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
     found
 }
 
-/// Os defeitos já vistos nos arquivos de `scope`, em ordem de número: as
-/// lições da classe do defeito que valem ali. É o que o revisor de uma onda
-/// precisa ver antes de olhar o código — o erro que já aconteceu naqueles
-/// arquivos é o que tem mais chance de se repetir.
-#[must_use]
-pub fn defects_in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
-    in_scope(bank, scope).into_iter().filter(|lesson| lesson.event_type == DEFECT).collect()
-}
-
-/// A classe da lição que guarda um defeito que pode se repetir.
-pub const DEFECT: &str = "defect";
-
 /// A classe da lição que guarda uma regra do projeto: vale sempre, então
 /// não vira pergunta no levantamento.
 pub const PROJECT_RULE: &str = "project_rule";
@@ -417,7 +405,7 @@ pub fn matching_among(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
     search::search(lessons.iter().map(|lesson| (lesson.id, lesson.str_field("search").unwrap_or_default())), words)
 }
 
-/// As lições que o pedido de uma onda e o da revisão levam, entre as `found`
+/// As lições que o pedido de uma onda leva, entre as `found`
 /// que valem para ela: de cada classe, só as 5 mais ligadas às palavras das
 /// tarefas (`words`), pela busca de [`matching`] feita sobre as palavras-chave
 /// de cada lição ([`by_keys`]), e não sobre o texto dela. A lição sem

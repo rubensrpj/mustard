@@ -1501,7 +1501,7 @@ mod tests {
         assert_eq!(waves_in(&second, "dispatch"), vec![1], "{second}");
         let prompt = second["dispatch"][0]["prompt"].as_str().unwrap_or_default();
         assert!(
-            prompt.contains("leia só as linhas 13-15 da função `soma` em `src/a.rs`"),
+            prompt.contains("leia só as linhas 13-15 de `soma` em `src/a.rs`"),
             "o pedido segue o commit atual: {prompt}"
         );
         assert!(!prompt.contains("3-5"), "{prompt}");

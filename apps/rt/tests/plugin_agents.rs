@@ -308,9 +308,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
 }
 
-/// A parte fixa de cada pedido que o binário monta: o da onda, o da revisão
-/// dela e o da revisão final do conjunto.
-const FIXED_PARTS: [&str; 3] = ["prompt.fixed", "prompt.review.fixed", "prompt.final.fixed"];
+/// A parte fixa de cada pedido que o binário monta: o da onda e o da revisão
+/// final do conjunto.
+const FIXED_PARTS: [&str; 2] = ["prompt.fixed", "prompt.final.fixed"];
 
 /// Quantas palavras seguidas fazem uma frase repetida.
 const REPEATED_RUN: usize = 6;

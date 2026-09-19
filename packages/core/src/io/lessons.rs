@@ -338,35 +338,34 @@ mod tests {
         json!({"class": "defect", "text": text, "keys": keys, "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}})
     }
 
-    /// Os textos das lições que o pedido da onda 1 e o da revisão dela
-    /// levam, montados como a rodada os monta, do banco do projeto `root`.
-    fn requested(root: &Path) -> (String, String) {
+    /// O texto das lições que o pedido da onda 1 leva, montado como a rodada
+    /// o monta, do banco do projeto `root`.
+    fn requested(root: &Path) -> String {
         let log = events::parse_log(&format!(
             "{}\n{}\n",
             r#"{"v":1,"id":1,"at":"2026-09-18T10:00:00-03:00","type":"wave","n":1,"text":"A onda","criteria":[],"done_when":"passa"}"#,
             r#"{"v":1,"id":2,"at":"2026-09-18T10:00:00-03:00","type":"task","wave":1,"text":"Apagar a pasta velha e rodar a suíte em primeiro plano.","files":[{"path":"src/a.rs"}]}"#,
         ));
         let built = crate::io::wave_prompt::prompts(root, "teste", &log, crate::platform::i18n::Locale::PtBr, &Default::default());
-        (built[0].text.clone(), built[0].review.clone())
+        built[0].text.clone()
     }
 
     /// Pelo gravador do comando de gravar lição: duas lições parecidas viram
     /// uma só, que aponta as duas em `replaces`, e a que já não vale é
     /// retirada com o motivo. A leitura do banco mostra a lição junta no lugar
-    /// das duas e deixa de mostrar a retirada; o pedido da onda e o da
-    /// revisão, que levavam as três, passam a levar só a junta. Nenhuma linha
-    /// sai do arquivo.
+    /// das duas e deixa de mostrar a retirada; o pedido da onda, que levava
+    /// as três, passa a levar só a junta. Nenhuma linha sai do arquivo.
     #[test]
-    fn merging_two_lessons_and_retiring_one_leave_the_bank_lean_and_the_requests_without_them() {
+    fn merging_two_lessons_and_retiring_one_leave_the_bank_lean_and_the_request_without_them() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let path = crate::ClaudePaths::for_project(root).unwrap().lessons_path();
         let first = put(&path, everywhere("Apagar a pasta de outra sessão perde o trabalho dela.", &["apagar", "pasta"]));
         let second = put(&path, everywhere("Remover a pasta alheia joga fora o que a outra sessão fez.", &["pasta", "remover"]));
         let old = put(&path, everywhere("A suíte roda em segundo plano no servidor antigo.", &["suíte", "primeiro plano"]));
-        let (text, review) = requested(root);
+        let text = requested(root);
         for lesson in ["Apagar a pasta de outra sessão", "Remover a pasta alheia", "A suíte roda em segundo plano"] {
-            assert!(text.contains(lesson) && review.contains(lesson), "antes, o pedido leva {lesson}: {text}");
+            assert!(text.contains(lesson), "antes, o pedido leva {lesson}: {text}");
         }
 
         let mut merged = everywhere("Nunca apague a pasta de outra sessão: o trabalho dela se perde.", &["apagar", "pasta"]);
@@ -379,10 +378,10 @@ mod tests {
         let bank = read(&path).unwrap().unwrap();
         assert_eq!(model::kept(&bank).iter().map(|l| l.id).collect::<Vec<_>>(), [merged.id]);
         assert_eq!(bank.events.len(), 5, "as linhas antigas ficam no arquivo");
-        let (text, review) = requested(root);
-        assert!(text.contains("Nunca apague a pasta de outra sessão") && review.contains("Nunca apague a pasta de outra sessão"), "{text}");
+        let text = requested(root);
+        assert!(text.contains("Nunca apague a pasta de outra sessão"), "{text}");
         for gone in ["Apagar a pasta de outra sessão", "Remover a pasta alheia", "A suíte roda em segundo plano"] {
-            assert!(!text.contains(gone) && !review.contains(gone), "{gone} saiu dos dois pedidos: {text}");
+            assert!(!text.contains(gone), "{gone} saiu do pedido: {text}");
         }
     }
 

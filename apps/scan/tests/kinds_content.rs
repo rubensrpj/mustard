@@ -106,6 +106,8 @@ fn rust_files_a_free_fn_as_unit_and_an_impl_or_trait_fn_as_member() {
             ("Render", "trait"),
             ("draw", "method"),
             ("Count", "type"),
+            ("MAX_WIDTH", "constant"),
+            ("DEFAULT_MODE", "constant"),
         ],
     );
 }
