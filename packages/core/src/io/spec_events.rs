@@ -125,7 +125,8 @@ pub fn write_at(
 /// linha. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
 /// [`write_guarded`] recebe também a procura de segredo. Um nome de código citado num fato que
 /// o mapa do projeto (o da última de `cite_roots`) não confirma só avisa, em
-/// [`Written::citation_warnings`].
+/// [`Written::citation_warnings`]. O `last` de uma gravação `copy` que aponta
+/// além do último item do arquivo é trocado pelo último item, sem recusa.
 ///
 /// Numa pasta de spec do projeto (`<raiz>/.claude/spec/<nome>/spec.ndjson`),
 /// a linha da spec no índice é refeita logo depois da escrita, com a trava do
@@ -178,11 +179,21 @@ fn write_inner(
     guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
-    let Prepared { event, asked, citation_warnings } = prepare(event_type, draft, cite_roots)?;
+    let Prepared { mut event, asked, citation_warnings } = prepare(event_type, draft, cite_roots)?;
 
     let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
     let content = file.read_to_string().map_err(io_refusal)?;
     let log = model::parse_log(&content);
+    // O `last` de uma cópia da página da spec nunca aponta além do que o
+    // arquivo tem: um número maior, de uma pasta de cópia velha ou de um
+    // pedido errado, é trocado pelo último item do arquivo, sem recusa —
+    // senão a cópia seguinte pularia os itens até esse número para sempre.
+    if event_type == "copy"
+        && let Some(last) = event.get("last").and_then(Value::as_u64)
+        && last > log.max_id()
+    {
+        event.insert("last".to_string(), Value::from(log.max_id()));
+    }
     // O arquivo como ficaria, conferido antes de qualquer escrita.
     let Staged { next, appended, after, id, code, effects } = stage(&content, &log, event, asked, at, find)?;
     guard(&log, &after)?;

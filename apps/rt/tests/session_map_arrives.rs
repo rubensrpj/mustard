@@ -138,11 +138,15 @@ fn an_update_renames_the_session_map_and_its_declaration() {
     const OLD: &str = ".claude/mustard/mapa-inicio-sessao.md";
     const NEW: &str = ".claude/mustard/session-map.md";
     const NEIGHBOUR: &str = "docs/mapa-inicio-sessao.md";
-    for spelling in [
-        OLD,
-        "./.claude/mustard/mapa-inicio-sessao.md",
-        ".claude\\mustard\\mapa-inicio-sessao.md",
-        ".claude/mustard/Mapa-Inicio-Sessao.md",
+    for (spelling, on, once) in [
+        (OLD, "sessionStart", false),
+        // Prova que a troca preserva o evento e o `once`, e não os reseta ao
+        // padrão: só o campo `file` muda, o resto da declaração continua
+        // igual, mesmo quando a declaração antiga não entrega nada hoje
+        // (`userPromptSubmit` nunca entrega injetável).
+        ("./.claude/mustard/mapa-inicio-sessao.md", "userPromptSubmit", true),
+        (".claude\\mustard\\mapa-inicio-sessao.md", "sessionStart", false),
+        (".claude/mustard/Mapa-Inicio-Sessao.md", "sessionStart", false),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","buildCommand":"make","customKey":{"kept":true}}"#);
@@ -157,10 +161,22 @@ fn an_update_renames_the_session_map_and_its_declaration() {
         std::fs::write(&exclude, rules.replace("session-map.md", "mapa-inicio-sessao.md")).unwrap();
         let mut config: Value = serde_json::from_str(&std::fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
         config["inject"] = json!([
-            {"on": "sessionStart", "file": spelling, "once": false},
+            {"on": on, "file": spelling, "once": once},
             {"on": "sessionStart", "file": NEIGHBOUR, "once": true},
         ]);
         std::fs::write(root.join("mustard.json"), serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        // O vizinho é um arquivo de verdade da pessoa, não só uma declaração:
+        // a troca de nome mexe só em `mapa-inicio-sessao.md`, e o vizinho de
+        // mesmo nome numa pasta diferente fica no disco, intocado.
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join(NEIGHBOUR), "# a pagina da pessoa\n").unwrap();
+        Command::new("git").args(["add", "docs"]).current_dir(&root).status().unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "docs"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
 
         let report: Value = serde_json::from_str(rt(&root, &home, &["run", "upsert"], "").trim()).unwrap();
 
@@ -172,6 +188,11 @@ fn an_update_renames_the_session_map_and_its_declaration() {
         left.sort();
         // Ao lado do mapa, só a pasta dos templates das páginas.
         assert_eq!(left, ["pages", "session-map.md"], "`{spelling}`: the old map is still on disk");
+        assert_eq!(
+            std::fs::read_to_string(root.join(NEIGHBOUR)).unwrap(),
+            "# a pagina da pessoa\n",
+            "`{spelling}`: the neighbour file was touched",
+        );
         let mut expected = config.clone();
         expected["inject"][0]["file"] = json!(NEW);
         let after: Value = serde_json::from_str(&std::fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
@@ -183,7 +204,13 @@ fn an_update_renames_the_session_map_and_its_declaration() {
         );
 
         let context = session_start(&root, &home, "startup");
-        assert!(context.contains(map.trim()), "`{spelling}`: the session start misses the map: {context}");
+        if on == "sessionStart" {
+            assert!(context.contains(map.trim()), "`{spelling}`: the session start misses the map: {context}");
+        } else {
+            // O evento continua o que a pessoa escreveu: `userPromptSubmit`
+            // nunca entrega injetável nenhum, antes ou depois da troca.
+            assert!(!context.contains(map.trim()), "`{spelling}`: the map reached a `{on}` declaration: {context}");
+        }
         let status = Command::new("git")
             .args(["status", "--porcelain", "--untracked-files=all"])
             .current_dir(&root)

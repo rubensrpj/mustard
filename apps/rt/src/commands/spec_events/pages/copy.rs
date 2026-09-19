@@ -160,22 +160,56 @@ pub(crate) struct Target {
 pub(crate) fn prepare(root: &Path, spec: &str, moment: Moment, lang: Locale) -> Result<Option<Prepared>, Refusal> {
     let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
     let spec_paths = paths.for_spec(spec.trim()).map_err(|_| Refusal::BadSpecName { spec: spec.to_string() })?;
-    // O rtk roda antes da trava: ninguém espera por ele para gravar.
-    let rtk = super::rtk_days(root);
-    let folder = spec_paths.dir().join(FOLDER);
-    let place = Place { root, spec: spec.trim(), folder, index: paths.spec_index_path() };
-    store::with_locked_log(&spec_paths.spec_ndjson_path(), |log| build(&place, log, &rtk, moment, lang))?
-        .unwrap_or_else(|| Err(Refusal::NoSpecFile { spec: spec.trim().to_string() }))
+    prepare_in(root, spec, &spec_paths.spec_ndjson_path(), spec_paths.dir().join(FOLDER), moment, lang)
 }
 
 /// A cópia de um marco da spec `spec`, que sempre sai: [`prepare`] no
-/// [`Moment::Milestone`].
+/// [`Moment::Milestone`], no arquivo de eventos e na pasta de cópia que
+/// [`ClaudePaths`] indica.
 ///
 /// # Errors
 ///
 /// As recusas de [`prepare`].
 pub(crate) fn prepare_milestone(root: &Path, spec: &str, lang: Locale) -> Result<Prepared, Refusal> {
     prepare(root, spec, Moment::Milestone, lang)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.trim().to_string() })
+}
+
+/// A cópia de um marco da spec `spec`, lida do arquivo de eventos
+/// `spec_ndjson` e gravada em `copy_folder`, em vez de onde [`ClaudePaths`]
+/// os poria: o descarte usa isto para ler o arquivo já movido para a pasta
+/// arquivada, ou para gravar os lotes numa pasta temporária quando a pasta da
+/// spec vai ser apagada, e não sobreviveria até a cópia acabar.
+///
+/// # Errors
+///
+/// As recusas de [`prepare`].
+pub(crate) fn prepare_milestone_at(
+    root: &Path,
+    spec: &str,
+    spec_ndjson: &Path,
+    copy_folder: PathBuf,
+    lang: Locale,
+) -> Result<Prepared, Refusal> {
+    prepare_in(root, spec, spec_ndjson, copy_folder, Moment::Milestone, lang)?
+        .ok_or_else(|| Refusal::NoSpecFile { spec: spec.trim().to_string() })
+}
+
+/// O núcleo de [`prepare`] e [`prepare_milestone_at`]: lê `spec_ndjson` com a
+/// trava presa e grava os lotes em `copy_folder`.
+fn prepare_in(
+    root: &Path,
+    spec: &str,
+    spec_ndjson: &Path,
+    copy_folder: PathBuf,
+    moment: Moment,
+    lang: Locale,
+) -> Result<Option<Prepared>, Refusal> {
+    let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
+    // O rtk roda antes da trava: ninguém espera por ele para gravar.
+    let rtk = super::rtk_days(root);
+    let place = Place { root, spec: spec.trim(), folder: copy_folder, index: paths.spec_index_path() };
+    store::with_locked_log(spec_ndjson, |log| build(&place, log, &rtk, moment, lang))?
+        .unwrap_or_else(|| Err(Refusal::NoSpecFile { spec: spec.trim().to_string() }))
 }
 
 /// Onde a cópia de uma spec é preparada.
@@ -557,11 +591,14 @@ impl Prepared {
     /// A ordem da cópia, uma frase por passo: publicar a página que ainda não
     /// tem endereço, no marco `milestone`, num link novo quando ela ainda é a
     /// página inteira de uma versão antiga; copiar os lotes de cada
-    /// página e gravar cada cópia feita, com a primeira cópia da spec
-    /// entregue a um agente separado; no fim, não levar os endereços para a
-    /// resposta. Sem marco, a página sem endereço fica para o próximo.
+    /// página e, fora do descarte, gravar cada cópia feita, com a primeira
+    /// cópia da spec entregue a um agente separado; no fim, não levar os
+    /// endereços para a resposta. Sem marco, a página sem endereço fica para
+    /// o próximo. No descarte a spec já é terminal, sem cópia seguinte para
+    /// continuar dela, então a ordem não pede o registro da cópia.
     pub(crate) fn order(&self, spec: &str, milestone: Option<&str>, lang: Locale) -> Vec<String> {
         let mut out = Vec::new();
+        let record_next = milestone != Some("discard");
         for (target, key, name, template, capabilities) in self.targets() {
             let page = translate(name, lang);
             if target.url.is_none() {
@@ -581,12 +618,16 @@ impl Prepared {
             }
             let url = target.url.clone().unwrap_or_else(|| translate("page.copy.new_address", lang).to_string());
             let files: Vec<String> = target.batches.iter().map(|b| format!("`{b}`")).collect();
-            let copy = translate("page.copy.batches", lang)
+            let mut copy = translate("page.copy.batches", lang)
                 .replace("{page}", page)
                 .replace("{url}", &url)
-                .replace("{files}", &files.join(", "))
-                .replace("{spec}", spec)
-                .replace("{record}", &target.record.to_string());
+                .replace("{files}", &files.join(", "));
+            if record_next {
+                let record = translate("page.copy.record", lang)
+                    .replace("{spec}", spec)
+                    .replace("{record}", &target.record.to_string());
+                copy = format!("{copy} {record}");
+            }
             if target.first {
                 out.push(
                     translate("page.copy.agent", lang).replace("{page}", page).replace("{order}", &copy),
@@ -654,12 +695,14 @@ pub(crate) fn sent_items(root: &Path, report: &Value) -> Vec<u64> {
 pub(crate) fn batches_order(report: &Value, spec: &str, url: &str, lang: Locale) -> String {
     let batches = report["copy"][SPEC_PAGE]["batches"].as_array().cloned().unwrap_or_default();
     let files: Vec<String> = batches.iter().map(|b| format!("`{}`", b.as_str().unwrap_or_default())).collect();
-    translate("page.copy.batches", lang)
+    let copy = translate("page.copy.batches", lang)
         .replace("{page}", translate("page.name.spec", lang))
         .replace("{url}", url)
-        .replace("{files}", &files.join(", "))
+        .replace("{files}", &files.join(", "));
+    let record = translate("page.copy.record", lang)
         .replace("{spec}", spec)
-        .replace("{record}", &report["copy"][SPEC_PAGE]["record"].to_string())
+        .replace("{record}", &report["copy"][SPEC_PAGE]["record"].to_string());
+    format!("{copy} {record}")
 }
 
 /// Para os testes: a frase que diz que a página `page` (`spec` ou `project`)
@@ -895,6 +938,49 @@ mod tests {
         for page in [".claude/spec/x/spec.md", ".claude/spec/x/spec.html", ".claude/spec/project.html"] {
             assert!(!root.join(page).exists(), "{page} is no longer written");
         }
+    }
+
+    /// O trecho com cara de segredo pode morar em qualquer campo do item, não
+    /// só em `text`: aqui ele mora no `why` de uma decisão, com o `text`
+    /// limpo. O item fica fora da cópia até o expurgo, do mesmo jeito que um
+    /// segredo no texto.
+    #[test]
+    fn a_secret_outside_the_text_field_is_withheld_too() {
+        let dir = approved_project();
+        let root = dir.path();
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        let decision = write(root, "decision", json!({"text": "A regra não guarda nada.",
+            "why": "A senha do banco: S3nh4F0rte2024", "keys": ["banco"], "applies_to": {"files": ["**"]},
+            "origin": said}));
+
+        let first = round(root);
+        let bodies = sent(root, &first, "spec");
+        assert!(
+            bodies.iter().all(|w| !w.to_string().contains("S3nh4F0rte2024")),
+            "the secret in `why` never goes: {bodies:?}",
+        );
+        assert_eq!(first["withheld"], json!([decision["code"]]), "{first}");
+    }
+
+    /// A página republicada — um `publish` novo do template, depois de uma
+    /// cópia já gravada — reinicia a contagem: a cópia seguinte volta a levar
+    /// a spec inteira, como se a página tivesse acabado de nascer, mesmo com
+    /// uma cópia anterior gravada para o link antigo.
+    #[test]
+    fn a_republished_page_restarts_the_copy_from_zero() {
+        const REPUBLISHED_URL: &str = "https://claude.ai/code/artifact/spec-x-2";
+        let dir = approved_project();
+        let root = dir.path();
+        let first = round(root);
+        follow(root, &first);
+        assert_eq!(sent_items(root, &first).first(), Some(&1), "the first copy: {first}");
+
+        write(root, "publish",
+            json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "url": REPUBLISHED_URL}));
+
+        let second = round(root);
+        assert_eq!(second["copy"]["spec"]["first"], json!(true), "the republish restarts the copy: {second}");
+        assert_eq!(sent_items(root, &second).first(), Some(&1), "the whole spec goes again: {second}");
     }
 
     /// Um pedido que muda o plano, gravado pelo `run write`, faz a cópia sair

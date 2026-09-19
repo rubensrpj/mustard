@@ -264,6 +264,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("discard.incomplete", Locale::EnUs) => {
             "The discard did not finish: the spec folder did not move, or its index line did not change."
         }
+        ("discard.done", Locale::PtBr) => "A spec está descartada.",
+        ("discard.done", Locale::EnUs) => "The spec is discarded.",
 
         // A retomada de uma spec (`commands/flow/resume.rs`).
         ("resume.line", Locale::PtBr) => {
@@ -976,8 +978,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            129,
-            0x7e6e_29cf_7d79_a2dc,
+            130,
+            0xcec9_246e_9a94_9a00,
         );
     }
 
@@ -1061,7 +1063,8 @@ mod tests {
             ("plan.execution.many_waves", &["{points}"][..]),
             ("plan.execution.ends_with_test_agent", &[][..]),
             ("page.copy.publish", &["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"][..]),
-            ("page.copy.batches", &["{page}", "{url}", "{files}", "{spec}", "{record}"][..]),
+            ("page.copy.batches", &["{page}", "{url}", "{files}"][..]),
+            ("page.copy.record", &["{spec}", "{record}"][..]),
             ("page.copy.old_page", &["{page}"][..]),
             ("page.copy.agent", &["{page}", "{order}"][..]),
             ("page.migration.unrated", &["{tasks}", "{scale}", "{cap}"][..]),
@@ -1098,6 +1101,7 @@ mod tests {
             ("discard.reason", &[][..]),
             ("discard.confirm_mismatch", &[][..]),
             ("discard.incomplete", &[][..]),
+            ("discard.done", &[][..]),
             ("resume.line", &["{spec}", "{phase}", "{last}", "{next}"][..]),
             ("resume.none", &[][..]),
             ("resume.wave", &["{n}"][..]),

@@ -81,16 +81,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.copy.batches", Locale::PtBr) => {
             "Copie para o banco de dados da {page}, no endereço {url}, os lotes {files}, nessa ordem: \
              cada arquivo é a lista `writes` de uma chamada da ferramenta `ArtifactData` com `action` \
-             `batch`, e cada documento vai pelo `file_path` dele, sem você ler os itens. Depois grave a \
-             cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`."
+             `batch`, e cada documento vai pelo `file_path` dele, sem você ler os itens."
         }
         ("page.copy.batches", Locale::EnUs) => {
             "Copy into the {page}'s database, at {url}, the batches {files}, in this order: each file is \
              the `writes` list of one `ArtifactData` call with `action` `batch`, and each document goes \
-             by its `file_path`, without reading the items. Then record the copy with \
-             `mustard-rt run write copy --spec {spec} --json '{record}'`."
+             by its `file_path`, without reading the items."
         }
-        ("page.copy.new_address", Locale::PtBr) => "o endereço que a publicação devolver",
+        // Só entra depois de `page.copy.batches`, e só fora do descarte: a
+        // spec descartada é terminal, sem cópia seguinte para continuar dela.
+        ("page.copy.record", Locale::PtBr) => {
+            "Depois grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`."
+        }
+        ("page.copy.record", Locale::EnUs) => {
+            "Then record the copy with `mustard-rt run write copy --spec {spec} --json '{record}'`."
+        }
+        // Sempre entra em `{url}` de `page.copy.batches`, depois de "no
+        // endereço": sem "o endereço" aqui, ou a frase dobra a palavra.
+        ("page.copy.new_address", Locale::PtBr) => "que a publicação devolver",
         ("page.copy.new_address", Locale::EnUs) => "the address the publication returns",
         ("page.copy.no_links", Locale::PtBr) => {
             "Não escreva os endereços na resposta: eles ficam na barra de status."
@@ -882,6 +890,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use super::Locale;
+
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
     /// idiomas. Quem muda um texto de propósito grava aqui os dois números
     /// novos que a falha mostra.
@@ -890,8 +900,22 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            343,
-            0xbb8f_733f_c292_fa39,
+            344,
+            0x9fc2_c658_ccac_2eed,
         );
+    }
+
+    /// `page.copy.new_address` sempre entra em `{url}` de `page.copy.batches`,
+    /// depois de "no endereço" (pt-BR) ou "at" (en-US): a frase montada não
+    /// pode repetir a palavra "endereço"/"address".
+    #[test]
+    fn the_new_address_phrase_does_not_double_the_word() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let batches = super::text("page.copy.batches", lang).expect("page.copy.batches");
+            let address = super::text("page.copy.new_address", lang).expect("page.copy.new_address");
+            let filled = batches.replace("{url}", address).to_lowercase();
+            assert!(!filled.contains("endereço o endereço"), "{filled}");
+            assert!(!filled.contains("address the address"), "{filled}");
+        }
     }
 }
