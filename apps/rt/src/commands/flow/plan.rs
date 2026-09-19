@@ -33,8 +33,9 @@
 //! combinado de uma onda que nenhuma tarefa cobre — menos o marcado como "não
 //! vira código", que traz o motivo na linha dele, e o do projeto, que vale
 //! sempre; contrato que nenhum critério cita; tarefa que podia nomear uma
-//! skill; e tarefa cujo texto não casa com o texto da onda dela, que volta
-//! dizendo com qual onda ele casaria melhor.
+//! skill; tarefa cujo texto não casa com o texto da onda dela, que volta
+//! dizendo com qual onda ele casaria melhor; e o comando de compilar ou de
+//! testar que o `mustard.json` ainda não declara, com o campo a preencher.
 //!
 //! As conferências das tarefas olham só as ondas que ainda vêm: a tarefa de
 //! onda que já tem registro de entrega não é conferida, porque o que ela fez
@@ -130,6 +131,9 @@ enum PlanFinding {
     /// Uma tarefa sem skill cujo trabalho se repete no projeto: o plano
     /// precisa da tarefa que faz a skill dela nascer.
     SkillToBeBorn { task: String },
+    /// O comando de compilar ou de testar que o projeto ainda não declarou
+    /// no `mustard.json`, pelo nome do campo (`buildCommand`/`testCommand`).
+    CommandNotDeclared { field: &'static str },
 }
 
 impl PlanFinding {
@@ -154,7 +158,8 @@ impl PlanFinding {
             | Self::ContractWithoutCriterion { .. }
             | Self::TaskInTheWrongWave { .. }
             | Self::TaskCouldNameASkill { .. }
-            | Self::SkillToBeBorn { .. } => false,
+            | Self::SkillToBeBorn { .. }
+            | Self::CommandNotDeclared { .. } => false,
         }
     }
 
@@ -186,6 +191,7 @@ impl PlanFinding {
             Self::TaskMatchesNoWave { .. } => "task-matches-no-wave".into(),
             Self::TaskCouldNameASkill { .. } => "task-could-name-a-skill".into(),
             Self::SkillToBeBorn { .. } => "skill-to-be-born".into(),
+            Self::CommandNotDeclared { .. } => "command-not-declared".into(),
         }
     }
 
@@ -260,6 +266,9 @@ impl PlanFinding {
                 fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())])
             }
             Self::SkillToBeBorn { task } => fill("plan.skill_to_be_born", &[("{task}", task.clone())]),
+            Self::CommandNotDeclared { field } => {
+                fill("plan.command_not_declared", &[("{field}", (*field).to_string())])
+            }
         }
     }
 
@@ -533,6 +542,18 @@ fn check(
     }
     for (wave, points) in points.over_cap() {
         out.push(PlanFinding::WavePointsOverCap { wave, points });
+    }
+
+    // O comando de compilar e o de testar, do mesmo `mustard.json` que
+    // `prompts` já leu para montar `built`: o campo ainda não declarado, ou
+    // só com o provisório do `init`, sai como aviso, com o campo a
+    // preencher. Nunca recusa — a onda ainda sai, só sem a linha do comando.
+    let commands = mustard_core::ProjectConfig::load(root).commands();
+    if commands.build.is_none() {
+        out.push(PlanFinding::CommandNotDeclared { field: "buildCommand" });
+    }
+    if commands.test.is_none() {
+        out.push(PlanFinding::CommandNotDeclared { field: "testCommand" });
     }
 
     // Cada pedido cabe no teto de linhas, e cada skill nomeada passa.
@@ -1087,6 +1108,44 @@ mod tests {
             assert!(warnings.contains(&reason.to_string()), "{reason}: {report}");
         }
         assert!(!warnings.contains(&"task-without-file".to_string()), "{report}");
+    }
+
+    /// O comando provisório que `mustard init` grava em `buildCommand`,
+    /// quando o projeto não tem um stack reconhecido, não chega ao pedido da
+    /// onda: `commands()` o trata como ausente, então nem o texto do
+    /// provisório nem a linha "Compile com" aparecem, e o plano avisa, sem
+    /// recusar, qual campo falta preencher — só o campo mesmo ausente, não o
+    /// que está declarado.
+    #[test]
+    fn a_placeholder_command_never_reaches_the_request() {
+        for (build, test, missing, present) in [
+            (mustard_core::BUILD_COMMAND_FALLBACK, "make test", "buildCommand", "testCommand"),
+            ("cargo build", "", "testCommand", "buildCommand"),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            std::fs::write(
+                root.join("mustard.json"),
+                json!({"build_command": build, "test_command": test}).to_string(),
+            )
+            .unwrap();
+            sound_plan(root, "x", said);
+
+            let report = plan(root, "x");
+            assert_eq!(report["ok"], json!(true), "{report}");
+            let hints = hints_of(&report, "warnings", "command-not-declared");
+            assert!(hints.iter().any(|h| h.contains(missing)), "{missing}: {hints:?}");
+            assert!(!hints.iter().any(|h| h.contains(present)), "{present} está declarado: {hints:?}");
+
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default());
+            assert_eq!(built.len(), 1, "{built:?}");
+            let text = &built[0].text;
+            assert!(!text.contains(mustard_core::BUILD_COMMAND_FALLBACK), "{text}");
+            assert_eq!(text.contains("Compile com"), missing != "buildCommand", "{text}");
+            assert_eq!(text.contains("Teste com"), missing != "testCommand", "{text}");
+        }
     }
 
     /// A onda cujas tarefas não dividem arquivo entre si tem partes

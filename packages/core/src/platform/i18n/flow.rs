@@ -227,6 +227,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              wave. The warning does not hold the approval, and whoever approves decides whether the \
              wave goes on as it is."
         }
+        ("plan.command_not_declared", Locale::PtBr) => {
+            "O projeto não declara `{field}` no mustard.json: preencha esse campo com o comando de \
+             verdade. Até lá, o pedido de cada onda sai sem essa linha."
+        }
+        ("plan.command_not_declared", Locale::EnUs) => {
+            "The project does not declare `{field}` in mustard.json: fill in that field with the real \
+             command. Until then, each wave's request goes out without that line."
+        }
         // O descarte de uma spec (`commands/flow/discard.rs`).
         ("discard.preview", Locale::PtBr) => {
             "Descartar a spec {spec} fecha o pull request dela, apaga a branch {branch} \
@@ -992,8 +1000,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            131,
-            0x2d79_415b_a913_b839,
+            132,
+            0x2f92_906b_b90d_d933,
         );
     }
 

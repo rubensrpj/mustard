@@ -505,11 +505,15 @@ impl ProjectConfig {
         self.build_command().unwrap_or_else(|| BUILD_COMMAND_FALLBACK.to_string())
     }
 
-    /// The four close-gate commands, each trimmed / `None` when blank.
+    /// The four close-gate commands, each trimmed / `None` when blank. The
+    /// build placeholder that `mustard init` seeds for an unrecognised stack
+    /// ([`BUILD_COMMAND_FALLBACK`]) counts as absent here too: it is a hint to
+    /// fill, not a command to run. `build_command()` and the raw JSON keep
+    /// showing it, so the hint stays visible where someone edits the file.
     #[must_use]
     pub fn commands(&self) -> Commands {
         Commands {
-            build: non_blank(self.build_command.as_deref()),
+            build: non_blank(self.build_command.as_deref()).filter(|v| v != BUILD_COMMAND_FALLBACK),
             test: non_blank(self.test_command.as_deref()),
             lint: non_blank(self.lint_command.as_deref()),
             type_check: non_blank(self.type_check_command.as_deref()),
@@ -781,6 +785,24 @@ mod tests {
         let cfg = ProjectConfig::load(dir.path());
         assert_eq!(cfg.build_command(), Some("make".to_string()));
         assert_eq!(cfg.commands().test, Some("make test".to_string()));
+    }
+
+    /// O texto provisório que `mustard init` grava em `buildCommand` quando o
+    /// projeto não declara um comando de verdade some de `commands()`, como o
+    /// texto em branco já sumia; `build_command()` e o JSON no disco
+    /// continuam mostrando o provisório, que é a dica de preencher.
+    #[test]
+    fn commands_treats_the_placeholder_build_command_as_absent() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            format!(r#"{{"build_command":"{BUILD_COMMAND_FALLBACK}"}}"#),
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(cfg.commands().build.is_none(), "{:?}", cfg.commands().build);
+        assert_eq!(cfg.build_command(), Some(BUILD_COMMAND_FALLBACK.to_string()), "a dica continua no lugar de quem edita o mustard.json");
+        assert_eq!(cfg.build_command_or_fallback(), BUILD_COMMAND_FALLBACK);
     }
 
     #[test]
