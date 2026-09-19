@@ -6,9 +6,12 @@
 //! no gancho de onda: (1) o agente de onda, depois de cada ferramenta,
 //! passando de 200 mil, recebe a ordem de gravar o passo e parar com
 //! `<PAUSED>{"wave":n}</PAUSED>`, e a ordem repete a cada ferramenta até ele
-//! parar; (2) o orquestrador, na entrada de cada mensagem, sem onda em
-//! andamento, ganha o aviso com o comando `/compact` pronto e o resumo do que
-//! fica, a cada novo degrau de 200 mil.
+//! parar; (2) o orquestrador, na entrada de cada mensagem, ganha o aviso a
+//! cada novo degrau de 200 mil — sem onda em andamento, com o comando
+//! `/compact` pronto e o resumo do que fica; com onda em andamento, dizendo
+//! quais ondas estão rodando e que a volta delas chega pela rodada. O degrau
+//! guardado acompanha a conversa que encolheu, então um `/compact` de
+//! verdade não cala o próximo aviso.
 //!
 //! Qual conversa: a do agente de onda quando a chamada é da cópia de uma
 //! onda, pela mesma leitura de [`wave_of_call`], do observador do sinal de
@@ -139,6 +142,14 @@ impl Check for WavePauseCheck {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return Ok(Verdict::Allow);
         }
+        // Só a própria chamada do agente de onda pausa: o orquestrador pode
+        // citar o caminho da cópia (um `git -C`, por exemplo) sem ser dela —
+        // `wave_of_call` casaria pelo comando, e a ordem de pausa vazaria para
+        // a conversa dele. `agent_id` é o sinal do harness que só vem de
+        // dentro de uma chamada de subagente.
+        if !input.is_subagent() {
+            return Ok(Verdict::Allow);
+        }
         let root = ctx.workspace_root.clone().unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
         let Some((_, wave)) = wave_of_call(&root, input) else { return Ok(Verdict::Allow) };
         let Some(path) = conversation_path(&root, input) else { return Ok(Verdict::Allow) };
@@ -184,19 +195,28 @@ fn write_record(path: &Path, record: &CompactRecord) {
 /// O aviso ao orquestrador, com o comando `/compact` pronto e o resumo do que
 /// fica — a spec, a fase, o próximo passo e o que espera o usuário, pela
 /// mesma leitura do comando `resume` — quando a conversa em `root`, na sessão
-/// `session`, passou de um novo degrau de [`THRESHOLD`] e nenhuma onda está em
-/// andamento na spec atual. `None` sem novo degrau, com onda em andamento, ou
+/// `session`, passou de um novo degrau de [`THRESHOLD`]. Com onda em
+/// andamento, o resumo não se aplica (o próximo passo é dela, não do
+/// orquestrador): o aviso sai do mesmo jeito, dizendo quais ondas estão
+/// rodando e que a volta delas chega pela rodada. `None` sem novo degrau ou
 /// sem o que resumir.
+///
+/// O degrau guardado acompanha a conversa que encolheu (depois de um
+/// `/compact` de verdade): quando o tamanho atual já está abaixo do degrau
+/// avisado, a conta recomeça dali, para o próximo degrau avisar de novo — sem
+/// isso, um degrau avisado antes da compactação calava o aviso para sempre,
+/// mesmo a conversa voltando a crescer.
 pub(crate) fn compact_notice(root: &Path, session: Option<&str>, tokens: u64) -> Option<String> {
     use mustard_core::domain::spec_state::SpecState;
 
     let degree = tokens / THRESHOLD;
-    if degree == 0 {
-        return None;
-    }
     let Some(path) = record_path(root, session) else { return None };
     let mut record = read_record(&path);
-    if degree <= record.warned {
+    if degree < record.warned {
+        record.warned = degree;
+        write_record(&path, &record);
+    }
+    if degree == 0 || degree <= record.warned {
         return None;
     }
     let project = crate::commands::spec_events::project(root);
@@ -204,8 +224,12 @@ pub(crate) fn compact_notice(root: &Path, session: Option<&str>, tokens: u64) ->
         .active(session)?;
     let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(&project.root, &spec).ok()?)
         .ok()??;
-    if !crate::commands::flow::round::waves_in_progress(&log).is_empty() {
-        return None;
+    record.warned = degree;
+    write_record(&path, &record);
+    let running = crate::commands::flow::round::waves_in_progress(&log);
+    if !running.is_empty() {
+        let waves: Vec<String> = running.keys().map(u64::to_string).collect();
+        return Some(translate("conversation_size.compact_running", project.lang).replace("{waves}", &waves.join(", ")));
     }
     let resume = crate::commands::flow::resume::resume_for(
         &crate::commands::flow::resume::ResumeOpts { root: project.root.clone(), spec: Some(spec.clone()) },
@@ -214,8 +238,6 @@ pub(crate) fn compact_notice(root: &Path, session: Option<&str>, tokens: u64) ->
     let phase = resume["phase"].as_str().unwrap_or_default();
     let next = resume["next"].as_str().unwrap_or_default();
     let command = resume["command"].as_str().unwrap_or_default();
-    record.warned = degree;
-    write_record(&path, &record);
     Some(
         translate("conversation_size.compact", project.lang)
             .replace("{spec}", &spec)
@@ -337,5 +359,40 @@ mod tests {
             panic!("achada pelo file_path, a onda 3 é mandada parar");
         };
         assert!(context.contains("<PAUSED>{\"wave\":3}</PAUSED>"), "{context}");
+    }
+
+    /// O orquestrador que só cita o caminho da cópia de uma onda num comando
+    /// (por exemplo, um `git -C` para olhar o que ela mudou) não é o agente
+    /// dela: sem `agent_id`, com a pasta de trabalho no repositório principal,
+    /// a chamada não recebe a ordem de pausa, mesmo com o arquivo do agente de
+    /// onda acima do degrau.
+    #[test]
+    fn the_orchestrators_own_call_is_not_taken_for_the_wave_agent() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let subagents = root.join("s1").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let agent_file = subagents.join("agent-a1.jsonl");
+        std::fs::write(&agent_file, write_usage_line(200_000, 0, 0)).unwrap();
+        let transcript = root.join("s1.jsonl");
+
+        let input = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            tool_name: Some("Bash".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            agent_id: None,
+            tool_input: serde_json::json!({
+                "command": "git -C .claude/worktrees/mustard-x-35 log -1"
+            }),
+            raw: serde_json::json!({ "transcript_path": transcript.to_string_lossy() }),
+            ..HookInput::default()
+        };
+        let ctx = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::PostToolUse));
+
+        assert_eq!(
+            WavePauseCheck.evaluate(&input, &ctx).unwrap(),
+            Verdict::Allow,
+            "o orquestrador não é a onda 35, mesmo citando a cópia dela no comando",
+        );
     }
 }

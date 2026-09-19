@@ -460,6 +460,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "This conversation passed another 200-thousand-token step. Run `/compact` and, after, \
              {command}. What stays: spec {spec}, phase {phase}. {next}"
         }
+        ("conversation_size.compact_running", Locale::PtBr) => {
+            "Esta conversa passou de mais um degrau de 200 mil tokens. As ondas {waves} estão em \
+             andamento; a volta delas chega pela rodada. Rode `/compact` quando puder."
+        }
+        ("conversation_size.compact_running", Locale::EnUs) => {
+            "This conversation passed another 200-thousand-token step. Waves {waves} are in flight; \
+             their return comes through the round. Run `/compact` when you can."
+        }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
              levar. Peça ao agente o caminho certo. Nada foi gravado."
@@ -622,11 +630,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              regras do projeto todo (`project`) e as lições (`lessons`) vão, a menos que você tire; \
              os itens sem dono (`unowned`) ficam fora, a menos que você ponha. Tire o que não ajuda \
              a onda, como uma regra da entrega numa onda que só cria uma tabela, e ponha o item sem \
-             dono que ajuda. Rode a rodada de novo com uma linha por onda no `--report '…'`, só com \
-             o que muda e o motivo de cada um numa frase: <ANALYSIS>{\"wave\":<n>,\"removed\":\
-             [{\"item\":\"<código>\",\"why\":\"<o motivo>\"},{\"lesson\":<número>,\"why\":\"<o \
-             motivo>\"}],\"added\":[{\"item\":\"<código>\",\"why\":\"<o motivo>\"}]}</ANALYSIS>. Sem \
-             mudança, as duas listas vão vazias. Sem essa linha, a onda não sai."
+             dono que ajuda. A conferência das tarefas no código — achar se o que cada uma pede já \
+             está feito ou ainda falta — vai a um agente separado, que devolve só a tarefa ajustada \
+             para ser gravada: você não lê arquivo inteiro nem saída longa para isso. Rode a rodada \
+             de novo com uma linha por onda no `--report '…'`, só com o que muda e o motivo de cada \
+             um numa frase: <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
+             motivo>\"},{\"lesson\":<número>,\"why\":\"<o motivo>\"}],\"added\":[{\"item\":\"<código>\
+             \",\"why\":\"<o motivo>\"}]}</ANALYSIS>. Sem mudança, as duas listas vão vazias. Sem \
+             essa linha, a onda não sai."
         }
         ("round.analysis", Locale::EnUs) => {
             "Before sending out waves {waves}, choose the items of each one's request. The request \
@@ -635,12 +646,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              whole-project rules (`project`) and the lessons (`lessons`) go unless you take them \
              out; the items without an owner (`unowned`) stay out unless you put them in. Take out \
              what does not help the wave, such as a rule about the delivery in a wave that only \
-             creates a table, and put in the item without an owner that helps. Run the round again \
-             with one line per wave in the `--report '…'`, with only what changes and each one's \
-             reason in one sentence: <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<item \
-             code>\",\"why\":\"<the reason>\"},{\"lesson\":<number>,\"why\":\"<the reason>\"}],\
-             \"added\":[{\"item\":\"<item code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>. With no \
-             change, both lists go empty. Without that line, the wave does not go out."
+             creates a table, and put in the item without an owner that helps. Checking the tasks \
+             against the code — finding whether what each one asks is already done or still missing \
+             — goes to a separate agent, which returns only the adjusted task to record: you do not \
+             read a whole file nor long output for this. Run the round again with one line per wave \
+             in the `--report '…'`, with only what changes and each one's reason in one sentence: \
+             <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<item code>\",\"why\":\"<the \
+             reason>\"},{\"lesson\":<number>,\"why\":\"<the reason>\"}],\"added\":[{\"item\":\"<item \
+             code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>. With no change, both lists go empty. \
+             Without that line, the wave does not go out."
         }
         ("round.analysis_ignored", Locale::PtBr) => {
             "Na escolha da onda {wave}, o item {item} ficou como estava: ele não está entre os \
@@ -978,8 +992,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            130,
-            0xcec9_246e_9a94_9a00,
+            131,
+            0x2d79_415b_a913_b839,
         );
     }
 
@@ -1137,6 +1151,7 @@ mod tests {
             ("stuck.reason.deleted_copy", &[][..]),
             ("conversation_size.pause", &["{wave}"][..]),
             ("conversation_size.compact", &["{spec}", "{phase}", "{command}", "{next}"][..]),
+            ("conversation_size.compact_running", &["{waves}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
@@ -1199,6 +1214,24 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+    }
+
+    /// A dica que pede a escolha dos itens do pedido de uma onda manda a
+    /// conferência das tarefas no código para um agente separado, que devolve
+    /// só a tarefa ajustada para ser gravada, e diz que o orquestrador não lê
+    /// arquivo inteiro nem saída longa para isso — nos dois idiomas.
+    #[test]
+    fn the_analysis_hint_sends_the_reading_to_an_agent() {
+        for (lang, agent_word, whole_file, long_output) in [
+            (Locale::PtBr, "agente separado", "arquivo inteiro", "saída longa"),
+            (Locale::EnUs, "separate agent", "whole file", "long output"),
+        ] {
+            let hint = translate("round.analysis", lang).replace("{waves}", "1");
+            assert!(hint.contains(agent_word), "{lang:?}: sem o agente separado: {hint}");
+            assert!(hint.contains("tarefa ajustada") || hint.contains("adjusted task"), "{lang:?}: sem a tarefa ajustada: {hint}");
+            assert!(hint.contains(whole_file), "{lang:?}: não proíbe ler arquivo inteiro: {hint}");
+            assert!(hint.contains(long_output), "{lang:?}: não proíbe ler saída longa: {hint}");
         }
     }
 

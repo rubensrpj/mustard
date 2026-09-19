@@ -612,8 +612,9 @@ mod tests {
     /// O orquestrador é avisado para compactar, com o
     /// comando `/compact` pronto e o resumo do que fica, a cada novo degrau
     /// de 200 mil tokens: na divisa, 199.999 não avisa e 200.000 avisa;
-    /// 399.999 não repete o mesmo degrau e 400.000 repete. Nada disso
-    /// acontece com uma onda em andamento: a rodada já cobre esse caso.
+    /// 399.999 não repete o mesmo degrau e 400.000 repete. Com uma onda em
+    /// andamento, num degrau novo, o aviso sai do mesmo jeito, mas diz quais
+    /// ondas estão rodando em vez do resumo do `resume`.
     #[test]
     fn the_orchestrator_is_told_when_to_compact() {
         let dir = project_with(PT_PROJECT);
@@ -683,6 +684,71 @@ mod tests {
         );
         transcript_with(&transcript, 800_000);
         let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s2", &transcript), &c).unwrap());
-        assert_eq!(context, PT_LINE, "onda em andamento: sem aviso: {context}");
+        assert!(context.contains('1'), "onda em andamento: diz qual está rodando: {context}");
+        assert!(!context.contains("fase"), "sem resumo de fase com onda em andamento: {context}");
+    }
+
+    /// Uma conversa que passa de 400 mil, é compactada para 70 mil (um
+    /// `/compact` de verdade) e volta a crescer com uma onda em andamento: o
+    /// degrau guardado acompanha o encolhimento, então o aviso sai de novo no
+    /// próximo degrau de 200 mil — e diz quais ondas estão rodando e que a
+    /// volta delas chega pela rodada. Antes do conserto, o degrau avisado
+    /// (2) sobrevivia à compactação e calava o aviso para sempre.
+    #[test]
+    fn the_compact_notice_comes_back_after_a_compaction_even_with_waves_running() {
+        let dir = project_with(PT_PROJECT);
+        let root = dir.path();
+        stand_on_spec_branch(root, "x");
+        record_open(root, "x", "feature/x", "dev").expect("open");
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        let c = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        let transcript = root.join("t.jsonl");
+
+        let said = crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "message",
+            serde_json::json!({"author": "user", "text": "o plano"}),
+        );
+        let crit = crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "criterion",
+            serde_json::json!({"when": "a", "then": "b", "proof": "p", "origin": said}),
+        );
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "wave",
+            serde_json::json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "x", "origin": said}),
+        );
+        crate::shared::spec_state::seed_event(root, "x", "state", serde_json::json!({"phase": "running", "author": "binary"}));
+        let pid = std::process::id();
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("read this process's own stat");
+        let started: u64 = stat.rsplit_once(')').unwrap().1.split_whitespace().collect::<Vec<_>>()[19].parse().unwrap();
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "send",
+            serde_json::json!({"wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+                "items": [crit], "mustard": "0", "author": "binary",
+                "claude_pid": pid, "claude_started": started}),
+        );
+
+        // Passa de 400 mil: avisa, mesmo com a onda 1 em andamento.
+        transcript_with(&transcript, 400_000);
+        let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s3", &transcript), &c).unwrap());
+        assert!(context.contains('1'), "diz qual onda está rodando: {context}");
+
+        // Compactada de verdade: cai bem abaixo do degrau avisado.
+        transcript_with(&transcript, 70_000);
+        let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s3", &transcript), &c).unwrap());
+        assert_eq!(context, PT_LINE, "abaixo do degrau, sem aviso: {context}");
+
+        // Volta a passar de 200 mil: o degrau avisado recomeçou do atual, e
+        // este é um degrau novo — o aviso sai de novo.
+        transcript_with(&transcript, 200_000);
+        let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s3", &transcript), &c).unwrap());
+        assert!(context.contains('1'), "avisa de novo, com a onda 1 em andamento: {context}");
     }
 }
