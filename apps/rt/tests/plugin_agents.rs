@@ -356,11 +356,12 @@ fn run_returned(root: &Path, home: &Path, report: &Value) -> Value {
 
 /// Cada comando do fluxo responde o próximo passo, e o comando que ele
 /// devolve roda inteiro, sem o parser recusar opção nenhuma: a retomada no
-/// levantamento devolve o levantamento; a rodada sem nada a despachar, sem
-/// revisão pendente e com tudo entregue e aprovado devolve o fechamento; o
-/// fechamento devolve o pull request com a base e a branch da spec; e a
-/// retomada da spec fechada devolve a mesma linha. O que o modelo roda a
-/// seguir vem dessa resposta, nunca de um texto do Mustard.
+/// levantamento devolve o levantamento; a rodada sem nada a despachar e com
+/// tudo entregue devolve o fechamento; o fechamento, mesmo sem onda nenhuma,
+/// pede o agente de teste dedicado, e aprovado ele devolve o pull request com
+/// a base e a branch da spec; e a retomada da spec fechada devolve a mesma
+/// linha. O que o modelo roda a seguir vem dessa resposta, nunca de um texto
+/// do Mustard.
 #[test]
 fn every_flow_command_answers_its_next_step() {
     let dir = tempfile::tempdir().unwrap();
@@ -397,7 +398,16 @@ fn every_flow_command_answers_its_next_step() {
     let close = translate("round.close", Locale::PtBr).replace("{command}", "mustard-rt run close --spec passo");
     assert!(round["next"].as_str().is_some_and(|next| next.ends_with(&close)), "{round}");
 
-    let closed = run_returned(&root, &home, &round);
+    // Mesmo sem onda nenhuma, o fechamento pede o agente de teste dedicado.
+    let asked = run_returned(&root, &home, &round);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let approved = json!({"final": true, "result": "approved", "text": "Está pronto."});
+    let closed = rt(
+        &root,
+        &home,
+        &["run", "close", "--spec", "passo", "--report", &format!("<VERDICT>{approved}</VERDICT>")],
+        None,
+    );
     assert_eq!(closed["ok"], json!(true), "{closed}");
     let pr_open = "mustard-rt run pr-open --base dev --head feature/passo --spec passo";
     assert_eq!(closed["command"], json!(pr_open), "{closed}");

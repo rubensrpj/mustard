@@ -73,27 +73,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              **What to return.** This wave's `<VERDICT>` line."
         }
 
-        // A revisão final do conjunto, que o fechamento pede à spec de duas
-        // ondas ou mais.
-        ("prompt.final.title", Locale::PtBr) => "{spec} — revisão final do conjunto",
-        ("prompt.final.title", Locale::EnUs) => "{spec} — final review of the whole",
+        // O agente de teste dedicado, que o fechamento pede a toda obra —
+        // mesmo a de uma onda só —, no lugar da revisão de cada onda.
+        ("prompt.final.title", Locale::PtBr) => "{spec} — agente de teste dedicado",
+        ("prompt.final.title", Locale::EnUs) => "{spec} — dedicated test agent",
         ("prompt.final.fixed", Locale::PtBr) => {
-            "**O que é isto.** O pedido da revisão final desta spec, com as ondas juntas, montado \
-             pelo binário a partir dela. Nenhum texto vem copiado: cada parte traz só os códigos \
-             dos itens, em sequência, numa linha por bloco da spec.\n\n\
-             **O que olhar.** Só como as ondas se encaixam: código repetido entre ondas, decisão de \
-             uma que contradiz a de outra, prova que uma apagou da outra. Cada onda já teve a sua \
-             revisão, e esta não a refaz.\n\n\
+            "**O que é isto.** O pedido do agente de teste dedicado desta spec, com a obra inteira, \
+             montado pelo binário a partir dela. Nenhum texto vem copiado: cada parte traz só os \
+             códigos dos itens, em sequência, numa linha por bloco da spec.\n\n\
+             **O que olhar.** As entregas, os critérios, as mudanças da branch, as emendas gravadas \
+             entre as ondas e o que cada onda deixou aberto — como as ondas se encaixam, código \
+             repetido entre ondas, decisão de uma que contradiz a de outra, prova que uma apagou da \
+             outra. Aponte só; não conserte.\n\n\
              **O que devolver.** A linha `<VERDICT>` com `\"final\":true`: aprovada, sem `wave`; \
              reprovada, com a onda que o conserto refaz em `wave`."
         }
         ("prompt.final.fixed", Locale::EnUs) => {
-            "**What this is.** The final review request of this spec, with the waves together, \
-             assembled by the binary from it. No text is copied in: each part carries only the \
-             items' codes, in sequence, one line per spec block.\n\n\
-             **What to look at.** Only how the waves fit together: code repeated across waves, a \
-             decision of one that contradicts another's, a proof one erased from another. Each wave \
-             already had its own review, and this one does not redo it.\n\n\
+            "**What this is.** The dedicated test agent's request for this spec, with the whole \
+             work, assembled by the binary from it. No text is copied in: each part carries only \
+             the items' codes, in sequence, one line per spec block.\n\n\
+             **What to look at.** The deliveries, the criteria, the branch changes, the amendments \
+             recorded between waves and what each wave left open — how the waves fit together, code \
+             repeated across them, a decision of one that contradicts another's, a proof one erased \
+             from another. Point it out only; do not fix it.\n\n\
              **What to return.** The `<VERDICT>` line with `\"final\":true`: approved, with no \
              `wave`; rejected, with the wave the fix redoes in `wave`."
         }
@@ -112,6 +114,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.waves", Locale::EnUs) => "The waves and their tasks",
         ("prompt.part.each_delivered", Locale::PtBr) => "O que cada onda entregou",
         ("prompt.part.each_delivered", Locale::EnUs) => "What each wave delivered",
+        ("prompt.part.branch_changes", Locale::PtBr) => "Mudanças já na branch",
+        ("prompt.part.branch_changes", Locale::EnUs) => "Changes already on the branch",
         ("prompt.part.defects", Locale::PtBr) => "Defeitos já vistos nestes arquivos",
         ("prompt.part.defects", Locale::EnUs) => "Defects already seen in these files",
         ("prompt.part.specification", Locale::PtBr) => "Especificação",
@@ -155,6 +159,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "This review is of a fix. The lines below are the verdict that rejected the wave, its \
              previous delivery and the agreed items recorded after the last send. Look only at the \
              fix — what the verdict pointed out —, not the whole wave again."
+        }
+        ("prompt.fix.final", Locale::PtBr) => {
+            "Esta é a volta do conserto. A linha abaixo é o veredito que reprovou; as ondas, as \
+             emendas e as entregas que o resto do pedido traz já estão restritas a quem foi \
+             reprovado. Confira só o conserto — o que o veredito apontou —, não a obra inteira de \
+             novo."
+        }
+        ("prompt.fix.final", Locale::EnUs) => {
+            "This is the fix round. The line below is the verdict that rejected it; the waves, the \
+             amendments and the deliveries the rest of the request carries are already restricted to \
+             whoever was rejected. Check only the fix — what the verdict pointed out —, not the \
+             whole work again."
         }
         ("prompt.part.own_delivered", Locale::PtBr) => "O que esta onda entregou",
         ("prompt.part.own_delivered", Locale::EnUs) => "What this wave delivered",
@@ -236,8 +252,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            38,
-            0x3869_a135_e779_f38d,
+            40,
+            0x29d9_bd7a_2937_0a3f,
         );
     }
 }

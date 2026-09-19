@@ -35,6 +35,34 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the exact text \"{question}\" and the options \"Approve\" and \"Adjust\": with another \
              text, the approval does not count."
         }
+        // Quem executa a obra, pela soma das notas de todas as tarefas do
+        // plano: até 3 pontos, o orquestrador faz sem ondas; de 4 a 13, um
+        // agente faz numa onda só; acima de 13, ondas de até 13 pontos cada.
+        ("plan.execution.solo", Locale::PtBr) => {
+            "A obra soma {points} pontos: até 3, sem ondas, o orquestrador faz."
+        }
+        ("plan.execution.solo", Locale::EnUs) => {
+            "The work totals {points} points: up to 3, no waves, the orchestrator does it."
+        }
+        ("plan.execution.one_wave", Locale::PtBr) => {
+            "A obra soma {points} pontos: de 4 a 13, um agente faz, numa onda só."
+        }
+        ("plan.execution.one_wave", Locale::EnUs) => {
+            "The work totals {points} points: from 4 to 13, one agent does it, in a single wave."
+        }
+        ("plan.execution.many_waves", Locale::PtBr) => {
+            "A obra soma {points} pontos: acima de 13, vai em ondas de até 13 pontos cada, uma por agente."
+        }
+        ("plan.execution.many_waves", Locale::EnUs) => {
+            "The work totals {points} points: above 13, it goes in waves of up to 13 points each, one \
+             agent per wave."
+        }
+        ("plan.execution.ends_with_test_agent", Locale::PtBr) => {
+            "Em todo tamanho, a obra termina com o agente de teste dedicado."
+        }
+        ("plan.execution.ends_with_test_agent", Locale::EnUs) => {
+            "In every size, the work ends with the dedicated test agent."
+        }
         ("plan.wave_loop", Locale::PtBr) => {
             "As ondas {waves} dependem umas das outras em círculo, e nenhuma pode começar. Corte uma \
              das dependências."
@@ -325,15 +353,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The project lint (`{command}`) did not pass, and the spec did not close: {output}"
         }
         ("close.final_review", Locale::PtBr) => {
-            "A spec tem {count} ondas e a máquina passou: antes do pull request, despache ao agente \
-             `mustard-review` o pedido em `review.prompt`, a revisão final do conjunto, e feche de \
-             novo com a linha do fim dele, como veio: \
+            "A máquina passou: antes do pull request, despache ao agente de teste dedicado o pedido \
+             em `review.prompt` e feche de novo com a linha do fim dele, como veio: \
              `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`."
         }
         ("close.final_review", Locale::EnUs) => {
-            "The spec has {count} waves and the machine passed: before the pull request, dispatch the \
-             request in `review.prompt`, the final review of the whole, to the `mustard-review` agent, \
-             and close again with its closing line, as it came: \
+            "The machine passed: before the pull request, dispatch the request in `review.prompt` to \
+             the dedicated test agent, and close again with its closing line, as it came: \
              `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`."
         }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
@@ -880,8 +906,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            114,
-            0xca07_275e_9faf_5d0f,
+            118,
+            0xb1db_2886_ba52_9b3c,
         );
     }
 
@@ -947,6 +973,10 @@ mod tests {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
             ("plan.next", &["{question}"][..]),
+            ("plan.execution.solo", &["{points}"][..]),
+            ("plan.execution.one_wave", &["{points}"][..]),
+            ("plan.execution.many_waves", &["{points}"][..]),
+            ("plan.execution.ends_with_test_agent", &[][..]),
             ("page.copy.publish", &["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"][..]),
             ("page.copy.batches", &["{page}", "{url}", "{files}", "{spec}", "{record}"][..]),
             ("page.copy.old_page", &[][..]),
@@ -1003,7 +1033,7 @@ mod tests {
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
-            ("close.final_review", &["{count}", "{spec}"][..]),
+            ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
             ("round.bad_report", &["{detail}"][..]),
             ("round.line_missing", &[][..]),

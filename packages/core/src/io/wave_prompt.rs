@@ -126,28 +126,55 @@ pub fn final_copy_path(root: &Path, spec: &str) -> PathBuf {
     crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(format!("mustard-{spec}-final-review"))
 }
 
-/// O pedido da revisão final do conjunto da spec `spec`: as ondas do plano
-/// com as tarefas, a entrega mais nova de cada onda, os critérios e a cópia
-/// do revisor, no commit mais novo da spec e na pasta de compilação que a
-/// última onda enviada usou.
+/// O pedido do agente de teste dedicado da spec `spec`, que o fechamento pede
+/// a toda obra, mesmo a de uma onda só, no lugar da revisão de cada onda: as
+/// ondas do plano com as tarefas, as emendas gravadas para elas, a entrega
+/// mais nova de cada onda, os critérios, os commits que já entraram na branch
+/// e a cópia do revisor, no commit mais novo da spec e na pasta de compilação
+/// que a última onda enviada usou.
+///
+/// Uma onda cuja última revisão reprovou e que já entregou o conserto (o
+/// fechamento só chega aqui depois disso: veja
+/// [`crate::domain::spec_events::SpecLog::last_rejected`]) restringe as
+/// ondas, as emendas e as entregas a ela: o agente confere só o conserto, sem
+/// reabrir a obra inteira.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> String {
     let planned = log.planned_waves();
+    let fixing: BTreeSet<u64> = log.last_rejected().into_keys().filter(|n| planned.contains(n)).collect();
+    let scope: &BTreeSet<u64> = if fixing.is_empty() { &planned } else { &fixing };
     let visible = log.block(BlockQuery::Block(Block::Waves));
     let block: Vec<&SpecEvent> = visible
         .iter()
         .copied()
-        .filter(|e| matches!(e.event_type.as_str(), "wave" | "task") && e.wave().is_some_and(|n| planned.contains(&n)))
+        .filter(|e| matches!(e.event_type.as_str(), "wave" | "task") && e.wave().is_some_and(|n| scope.contains(&n)))
         .collect();
     let newest = log.last_by_wave("delivered");
     let own_delivered: Vec<&SpecEvent> = visible
         .iter()
         .copied()
         .filter(|e| e.event_type == "delivered")
-        .filter(|e| e.wave().filter(|n| planned.contains(n)).and_then(|n| newest.get(&n)) == Some(&e.id))
+        .filter(|e| e.wave().filter(|n| scope.contains(n)).and_then(|n| newest.get(&n)) == Some(&e.id))
         .collect();
     let criteria: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").collect();
+    let mut agreed: Vec<&SpecEvent> = Vec::new();
+    for wave in scope {
+        for item in wave_prompt::agreed_for(log, *wave) {
+            if !agreed.iter().any(|seen| seen.id == item.id) {
+                agreed.push(item);
+            }
+        }
+    }
+    agreed.sort_by_key(|e| e.id);
+    let changes: Vec<&SpecEvent> =
+        log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit").collect();
+    let fix: Vec<&SpecEvent> = if fixing.is_empty() {
+        Vec::new()
+    } else {
+        let verdicts = log.verdicts_by_wave();
+        fixing.iter().filter_map(|n| verdicts.get(n).and_then(|v| v.last().copied())).collect()
+    };
     let commit = log
         .block(BlockQuery::Block(Block::Progress))
         .into_iter()
@@ -171,7 +198,10 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         spec: spec.to_string(),
         block,
         criteria,
+        agreed,
+        fix,
         own_delivered,
+        changes,
         execution,
         codes: log.codes(),
         ..Material::default()
@@ -316,6 +346,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         lessons,
         defects,
         skills,
+        changes: Vec::new(),
         codes: log.codes(),
     };
     let text = wave_prompt::write(&material, lang);

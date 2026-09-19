@@ -115,20 +115,20 @@ pub enum FlowCmd {
         root: PathBuf,
     },
     /// Fecha uma spec: grava o que voltou da última rodada, confere se a obra
-    /// terminou (nenhuma onda sem commit, nenhuma reprovada e nenhum pedido
-    /// do usuário sem onda que o entregue), roda o lint do projeto inteiro e
-    /// cada critério uma vez, gravando a execução de cada um, e então grava a
-    /// fase fechada, solta a spec da sessão e prepara a cópia para o banco de
-    /// dados das páginas. A spec de duas
-    /// ondas ou mais recebe antes o pedido da revisão final do conjunto, e só
-    /// fecha com a linha dela aprovada.
+    /// terminou (nenhuma onda sem commit, nenhuma reprovada sem o conserto e
+    /// nenhum pedido do usuário sem onda que o entregue), roda o lint do
+    /// projeto inteiro e cada critério uma vez, gravando a execução de cada
+    /// um, e então grava a fase fechada, solta a spec da sessão e prepara a
+    /// cópia para o banco de dados das páginas. Toda obra, mesmo a de uma
+    /// onda só, recebe antes o pedido do agente de teste dedicado, e só fecha
+    /// com a linha dele aprovada.
     #[command(display_order = 4)]
     Close {
         /// A spec que fecha. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
-        /// O relatório da última rodada, no mesmo formato da rodada; na spec
-        /// de duas ondas ou mais, também a linha da revisão final do conjunto.
+        /// O relatório da última rodada, no mesmo formato da rodada, e também
+        /// a linha do agente de teste dedicado.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.

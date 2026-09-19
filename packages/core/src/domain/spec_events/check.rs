@@ -217,15 +217,19 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
                 need("reason")
             }
         }
-        // A revisão de uma onda diz quais critérios conferiu. A revisão final
-        // do conjunto não confere critério: ela confere o encaixe das ondas, e
-        // cobrar o campo dela travava o fechamento da spec de duas ondas ou
-        // mais, que não fecha sem essa revisão.
+        // A revisão de uma onda aponta a onda e diz quais critérios conferiu.
+        // A aprovação do agente de teste dedicado não aponta onda nenhuma —
+        // ela vale para a obra inteira, e uma obra sem onda nenhuma (até 3
+        // pontos, feita pelo orquestrador) não tem o que apontar —, nem
+        // confere critério: ela confere o encaixe do que a obra fez, e cobrar
+        // os dois campos dela travava o fechamento de toda obra, que não
+        // fecha sem essa aprovação.
         "verdict" => {
-            if event.get("final").and_then(Value::as_bool) == Some(true) {
-                Ok(())
-            } else {
-                need("criteria")
+            let approved = word("result") == "approved";
+            match event.get("final").and_then(Value::as_bool) {
+                Some(true) if approved => Ok(()),
+                Some(true) => need("wave"),
+                _ => need("wave").and_then(|()| need("criteria")),
             }
         }
         "point" => {
@@ -497,6 +501,30 @@ mod tests {
         assert_eq!(
             checked("verdict", half).unwrap_err(),
             Refusal::MissingField { event_type: "verdict".into(), field: "criteria[1].tests_rule".into() }
+        );
+    }
+
+    /// A aprovação do agente de teste dedicado, sem onda nenhuma: é a única
+    /// que entra assim, para a obra sem onda (até 3 pontos, feita pelo
+    /// orquestrador) também poder fechar. A reprovação final continua
+    /// apontando a onda do conserto, e a revisão de uma onda continua
+    /// apontando a dela.
+    #[test]
+    fn only_the_dedicated_test_agents_approval_is_recorded_without_a_wave() {
+        let approved = json!({"author": "review", "final": true, "result": "approved", "text": "pronto"});
+        assert_eq!(checked("verdict", approved), Ok(()));
+
+        let rejected = json!({"author": "review", "final": true, "result": "rejected", "text": "faltou"});
+        assert_eq!(
+            checked("verdict", rejected).unwrap_err(),
+            Refusal::MissingField { event_type: "verdict".into(), field: "wave".into() }
+        );
+
+        let no_wave = json!({"author": "review", "result": "approved", "text": "passou",
+            "criteria": [{"criterion": 7, "tests_rule": true}]});
+        assert_eq!(
+            checked("verdict", no_wave).unwrap_err(),
+            Refusal::MissingField { event_type: "verdict".into(), field: "wave".into() }
         );
     }
 

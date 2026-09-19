@@ -19,7 +19,7 @@ Mustard runs every piece of work that changes a file through one flow: survey, p
 - A new request from the user joins the same spec, with `write request`. A different subject becomes a pending item, with `mustard-rt run pending --add`.
 - A change that comes from you or from an agent only goes ahead with the user's "yes".
 - Never edit the `spec.*` files by hand. Record through `write` and read one block with `mustard-rt run read <block>`.
-- Hand to an agent any investigation that opens many files and every code run. A single check you do yourself: delegating costs more than reading one file.
+- Hand to an agent any investigation that opens many files. A single check you do yourself: delegating costs more than reading one file.
 
 ## Pages
 

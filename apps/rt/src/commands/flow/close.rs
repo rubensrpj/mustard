@@ -8,20 +8,26 @@
 //! a cópia para o banco de dados da página. A pasta de uma spec fechada fica
 //! com o arquivo de eventos e a pasta da cópia (`copy/`), e nenhuma página.
 //!
-//! **A revisão final do conjunto.** A spec de duas ondas ou mais não fecha
-//! sem ela: com a máquina verde, o fechamento devolve o pedido dessa revisão,
-//! que olha só como as ondas se encaixam, e só fecha — e só então devolve o
-//! pull request — quando a linha dela volta aprovada, pelo mesmo relatório.
+//! **O agente de teste dedicado.** Nenhuma spec fecha sem ele — nem a de uma
+//! onda só —, e a rodada não pede a revisão de onda nenhuma: com a máquina
+//! verde, o fechamento devolve o pedido dele, com as entregas da obra, os
+//! critérios, as mudanças da branch, as emendas gravadas entre as ondas e o
+//! que cada onda deixou aberto, e só fecha — e só então devolve o pull
+//! request — quando a linha dele volta aprovada, pelo mesmo relatório.
 //! Enquanto nada muda depois da máquina verde, a volta não roda o lint nem os
-//! critérios de novo. A revisão reprovada fica na onda que o revisor apontou,
-//! que volta como conserto. A spec de uma onda fecha sem ela.
+//! critérios de novo. A reprovação fica na onda que ele apontou, que volta
+//! como conserto pela rodada; entregue o conserto, o fechamento pede o mesmo
+//! agente de novo, mas só para conferir o conserto, não a obra inteira. Em
+//! até duas voltas de conserto sem aprovar, a onda para e a decisão passa a
+//! ser do usuário — o mesmo limite de qualquer conserto.
 //!
-//! **O que trava.** Onda sem commit; onda cuja última revisão foi reprovada;
-//! pedido do usuário que nenhuma onda entregou; o lint que falha, com a saída
-//! dele; critério cuja prova não passou; e critério cuja prova saiu verde sem
-//! rodar teste nenhum — a saída do executor diz zero teste, que é o que um
-//! nome de teste errado dá, e a recusa traz o comando e o número que ela leu.
-//! Cada recusa diz qual onda refazer — não basta os testes passarem.
+//! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
+//! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
+//! o lint que falha, com a saída dele; critério cuja prova não passou; e
+//! critério cuja prova saiu verde sem rodar teste nenhum — a saída do
+//! executor diz zero teste, que é o que um nome de teste errado dá, e a
+//! recusa traz o comando e o número que ela leu. Cada recusa diz qual onda
+//! refazer — não basta os testes passarem.
 //!
 //! O fechamento não chama a função antiga de fechar, que grava arquivos do
 //! formato velho: ela ficou onde estava, e a fase `closed` passa a sair só por
@@ -176,16 +182,15 @@ fn run_close(
     let log = read(&path)?;
     finished(&log)?;
 
-    // A máquina antes do revisor: o lint do projeto inteiro e cada critério,
-    // uma vez por fechamento. A volta da revisão final, sem nada mudado desde
-    // a máquina verde, não roda nada de novo.
+    // A máquina antes do agente de teste dedicado: o lint do projeto inteiro
+    // e cada critério, uma vez por fechamento. A volta que só confere a
+    // aprovação, sem nada mudado desde a máquina verde, não roda nada de novo.
     let runs = if proved_since_last_change(&log) { Vec::new() } else { machine(opts, root, &spec, &log)? };
 
     let log = read(&path)?;
-    let waves = log.planned_waves().len();
-    if waves >= 2 && !final_approved(&log) {
+    if !final_approved(&log) {
         let prompt = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
-        let next = translate("close.final_review", lang).replace("{count}", &waves.to_string()).replace("{spec}", &spec);
+        let next = translate("close.final_review", lang).replace("{spec}", &spec);
         return Ok(json!({
             "ok": true,
             "spec": spec,
@@ -312,7 +317,7 @@ fn proved_since_last_change(log: &SpecLog) -> bool {
         })
 }
 
-/// A revisão final do conjunto voltou aprovada depois da última mudança da
+/// O agente de teste dedicado voltou aprovado depois da última mudança da
 /// obra.
 fn final_approved(log: &SpecLog) -> bool {
     let since = last_change(log);
@@ -325,11 +330,18 @@ fn final_approved(log: &SpecLog) -> bool {
 }
 
 /// A obra terminou? Recusa enquanto houver onda sem commit, onda cuja última
-/// revisão foi reprovada ou pedido do usuário que nenhuma onda entregou. Não
-/// basta os testes passarem. As ondas e os vereditos são lidos como a rodada
-/// os lê: a onda que saiu do plano não é cobrada.
+/// revisão reprovou e ainda não recebeu o conserto, ou pedido do usuário que
+/// nenhuma onda entregou. Não basta os testes passarem. As ondas e os
+/// vereditos são lidos como a rodada os lê: a onda que saiu do plano não é
+/// cobrada.
+///
+/// A onda reprovada que já entregou o conserto não trava mais: falta o
+/// agente de teste dedicado conferir esse conserto, e é o fechamento —
+/// pedindo o agente de novo, mais adiante — que cobra isso, não esta função.
+/// Sem essa saída, o conserto nunca chegaria ao agente de teste: nada mais
+/// grava um veredito comum enquanto a rodada está no ar.
 fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
-    if let Some(wave) = log.last_rejected().into_keys().next() {
+    if let Some(wave) = crate::commands::flow::round::waves_to_redo(log).into_iter().next() {
         return Err(CloseRefusal::WaveRejected { wave });
     }
 
@@ -411,7 +423,9 @@ mod tests {
     }
 
     /// [`ready_to_close`] com `waves` ondas soltas, cada uma com a tarefa num
-    /// arquivo dela, despachadas, entregues e aprovadas juntas.
+    /// arquivo dela, despachadas e entregues juntas. A rodada não pede
+    /// revisão de onda nenhuma: a entrega já basta, e falta só o fechamento
+    /// pedir o agente de teste dedicado.
     fn ready_with_waves(root: &Path, spec: &str, proofs: &[&str], waves: u64) {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
@@ -449,40 +463,59 @@ mod tests {
         };
         assert_eq!(round(None)["ok"], json!(true));
         let mut delivered = String::new();
-        let mut judged = String::new();
-        let checked: Vec<Value> = crits.iter().map(|id| json!({"criterion": id, "tests_rule": true})).collect();
         for n in 1..=waves {
             std::fs::write(root.join(wave_file(n)), "fn um() {}\nfn dois() {}\n").unwrap();
             let line = json!({"wave": n, "text": "Saiu.", "files": [wave_file(n)], "commit": "a soma sai"});
             delivered.push_str(&format!("<DELIVERED>{line}</DELIVERED>\n"));
-            let line = json!({"wave": n, "result": "approved", "text": "passou", "criteria": checked});
-            judged.push_str(&format!("<VERDICT>{line}</VERDICT>\n"));
         }
         let back = round(Some(delivered));
         assert_eq!(back["ok"], json!(true), "{back}");
-        let judged = round(Some(judged));
-        assert_eq!(judged["ok"], json!(true), "{judged}");
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
     }
 
+    /// A linha `<VERDICT>` do agente de teste dedicado aprovando a obra
+    /// inteira.
+    fn final_approval() -> String {
+        let approved = json!({"final": true, "result": "approved", "text": "A obra está pronta."});
+        format!("<VERDICT>{approved}</VERDICT>")
+    }
+
+    /// O fechamento, com a volta transparente do agente de teste dedicado: a
+    /// obra pronta para fechar sempre passa por ele agora, mesmo a de uma
+    /// onda só, e quem só quer o resultado final não precisa cuidar disso.
+    /// Os testes que conferem o pedido dele por dentro chamam `close_for`
+    /// direto.
     fn close(root: &Path, spec: &str) -> Value {
-        close_for(&CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: None }, None)
+        let out = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: None }, None);
+        if out["review"]["final"] == json!(true) {
+            return close_for(
+                &CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: Some(final_approval()) },
+                None,
+            );
+        }
+        out
     }
 
     /// O fechamento roda cada critério uma vez — os dois critérios da spec
-    /// aparecem, cada um com uma execução —, grava cada execução, grava a fase
-    /// fechada e deixa a pasta da spec com exatamente três arquivos.
+    /// aparecem, cada um com uma execução —, grava cada execução, pede o
+    /// agente de teste dedicado mesmo com uma onda só, e, aprovado ele, grava
+    /// a fase fechada e deixa a pasta da spec com exatamente três arquivos.
     #[test]
     fn closing_runs_each_criterion_once_and_leaves_three_files_in_the_folder() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version", "git --help"]);
 
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        assert_eq!(asked["ok"], json!(true), "{asked}");
+        assert_eq!(asked["phase"], json!("running"), "{asked}");
+        assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(2), "os dois critérios rodaram: {asked}");
+        assert_eq!(asked["review"]["final"], json!(true), "a de uma onda só também pede o agente de teste: {asked}");
+
         let out = close(root, "x");
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["phase"], json!("closed"), "{out}");
-        assert_eq!(out["criteria"].as_array().map(Vec::len), Some(2), "os dois critérios rodaram: {out}");
-        assert!(out.get("review").is_none(), "a spec de uma onda fecha sem revisão final: {out}");
+        assert!(out.get("review").is_none(), "{out}");
 
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
@@ -520,46 +553,40 @@ mod tests {
     }
 
     /// O fechamento roda o lint do projeto inteiro. O lint que falha recusa
-    /// com a saída dele, antes de critério nenhum rodar. A spec de uma onda
-    /// fecha sem revisão final. A de duas ondas, com a máquina verde, recebe o
-    /// pedido da revisão final do conjunto, que manda olhar só como as ondas
-    /// se encaixam, e não fecha nem devolve o pull request; a revisão final
-    /// reprovada volta como conserto da onda que ela aponta, e a spec só fecha
-    /// e só devolve o pull request com a revisão final aprovada depois da
-    /// última mudança, sem rodar a máquina de novo.
+    /// com a saída dele, antes de critério nenhum rodar. O que passa roda no
+    /// projeto e, com a máquina verde, a resposta é o pedido do agente de
+    /// teste dedicado — mesmo a de uma onda só —, e não fecha nem devolve o
+    /// pull request; a reprovação dele volta como conserto da onda que ele
+    /// aponta, e o fechamento recusa enquanto ela não sai; entregue o
+    /// conserto, o fechamento pede o mesmo agente de novo, mas só para
+    /// conferir o conserto; e a spec só fecha e só devolve o pull request com
+    /// ele aprovado depois da última mudança, sem rodar a máquina de novo.
     ///
-    /// As duas linhas da revisão final vêm sem critério nenhum, que é como o
-    /// revisor do conjunto a devolve: ela confere o encaixe das ondas, e não
-    /// critério. As duas são gravadas assim mesmo.
+    /// As duas linhas do agente de teste vêm sem critério nenhum, que é como
+    /// ele as devolve: ele confere o encaixe das ondas, e não critério. As
+    /// duas são gravadas assim mesmo.
     #[test]
-    fn closing_runs_the_project_lint_and_a_spec_of_two_waves_opens_the_pull_request_only_after_the_final_review() {
+    fn closing_runs_the_project_lint_and_opens_the_pull_request_only_after_the_dedicated_test_agent() {
         let lint = "git init -q lint-rodou";
         let ran = |root: &Path| root.join("lint-rodou").is_dir();
-        let checked = json!([{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]);
 
-        // Uma onda: o lint que falha recusa com a saída dele; o que passa roda
-        // no projeto e a spec fecha sem revisão final.
+        // O lint que falha recusa com a saída dele, antes de critério nenhum
+        // rodar.
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_to_close(root, "x", &["git --version"]);
+        ready_with_waves(root, "x", &["git --version"], 2);
         let refused = close_with_lint(root, "git lint-que-nao-existe", None);
         assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("git lint-que-nao-existe") && hint.contains("lint-que-nao-existe' is not a git command"), "{hint}");
         assert_eq!(criterion_runs(root), 0, "nenhum critério roda com o lint vermelho");
-        let closed = close_with_lint(root, lint, None);
-        assert_eq!(closed["phase"], json!("closed"), "{closed}");
-        assert!(ran(root), "o lint rodou na raiz do projeto");
-        assert!(closed.get("review").is_none() && closed["command"].is_string(), "{closed}");
 
-        // Duas ondas: a máquina roda e a resposta é o pedido da revisão final.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        ready_with_waves(root, "x", &["git --version"], 2);
+        // O lint que passa roda no projeto, e a máquina verde pede o agente
+        // de teste dedicado.
         let asked = close_with_lint(root, lint, None);
         assert_eq!(asked["ok"], json!(true), "{asked}");
         assert_eq!(asked["phase"], json!("running"), "{asked}");
-        assert!(ran(root), "o lint rodou antes do revisor");
+        assert!(ran(root), "o lint rodou antes do agente");
         assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(1), "{asked}");
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
         let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
@@ -568,14 +595,14 @@ mod tests {
         for n in [1, 2] {
             assert!(prompt.contains(&format!("MSTD-WAVE-000{n}")), "a onda {n} está no pedido: {prompt}");
         }
-        assert!(asked.get("command").is_none(), "sem revisão final, nada de pull request: {asked}");
-        let expected = translate("close.final_review", Locale::PtBr).replace("{count}", "2").replace("{spec}", "x");
+        assert!(asked.get("command").is_none(), "sem aprovação, nada de pull request: {asked}");
+        let expected = translate("close.final_review", Locale::PtBr).replace("{spec}", "x");
         assert_eq!(asked["next"], json!(expected), "{asked}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
 
-        // A revisão final reprova apontando a onda 2: a onda 2 volta como
-        // conserto, e o fechamento recusa enquanto ela não sai.
+        // O agente reprova apontando a onda 2: a onda 2 volta como conserto,
+        // e o fechamento recusa enquanto ela não sai.
         let rejected = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1."});
         let out = close_with_lint(root, lint, Some(format!("<VERDICT>{rejected}</VERDICT>")));
         assert_eq!(out["reason"], json!("wave-rejected"), "{out}");
@@ -586,25 +613,30 @@ mod tests {
         assert_eq!(sent, vec![2], "{fix}");
         std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetição"});
-        assert_eq!(round(Some(format!("<DELIVERED>{line}</DELIVERED>")))["ok"], json!(true));
-        let line = json!({"wave": 2, "result": "approved", "text": "passou", "criteria": checked});
-        assert_eq!(round(Some(format!("<VERDICT>{line}</VERDICT>")))["command"], json!("mustard-rt run close --spec x"));
+        let back = round(Some(format!("<DELIVERED>{line}</DELIVERED>")));
+        assert_eq!(back["ok"], json!(true), "{back}");
+        assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");
 
-        // Depois do conserto, a máquina roda de novo e a revisão final é
-        // pedida de novo; aprovada, a spec fecha sem rodar a máquina outra vez.
+        // Depois do conserto, a máquina roda de novo, e o pedido volta —
+        // agora só com o conserto, não a obra inteira de novo.
         std::fs::remove_dir_all(root.join("lint-rodou")).unwrap();
         let again = close_with_lint(root, lint, None);
         assert_eq!(again["review"]["final"], json!(true), "{again}");
         assert!(ran(root), "{again}");
+        let fix_prompt = again["review"]["prompt"].as_str().unwrap_or_default();
+        assert!(fix_prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "{fix_prompt}");
+        assert!(fix_prompt.contains("MSTD-WAVE-0002") && !fix_prompt.contains("MSTD-WAVE-0001"), "só o conserto: {fix_prompt}");
+
+        // Aprovado, a spec fecha sem rodar a máquina outra vez.
         std::fs::remove_dir_all(root.join("lint-rodou")).unwrap();
         let before = criterion_runs(root);
-        let approved = json!({"final": true, "result": "approved", "text": "As ondas se encaixam."});
+        let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
         let closed = close_with_lint(root, lint, Some(format!("<VERDICT>{approved}</VERDICT>")));
         assert_eq!(closed["ok"], json!(true), "{closed}");
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
         assert!(closed.get("review").is_none(), "{closed}");
         assert_eq!(closed["command"], json!("mustard-rt run pr-open --base dev --head feature/x --spec x"), "{closed}");
-        assert_eq!(criterion_runs(root), before, "a volta da revisão final não roda os critérios de novo");
+        assert_eq!(criterion_runs(root), before, "a volta do agente de teste não roda os critérios de novo");
         assert!(!ran(root), "nem o lint");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let last = log.visible().into_iter().rfind(|e| e.event_type == "verdict").unwrap();
@@ -617,6 +649,90 @@ mod tests {
         let results: Vec<Option<&str>> = finals.iter().map(|e| e.str_field("result")).collect();
         assert_eq!(results, [Some("rejected"), Some("approved")], "as duas revisões finais ficaram gravadas");
         assert!(finals.iter().all(|e| e.fields.get("criteria").is_none()), "e nenhuma delas confere critério");
+    }
+
+    /// O agente de teste dedicado fecha toda obra: a de duas ondas, que
+    /// entrega as duas, e a de uma onda só, que entrega a dela. A rodada
+    /// nunca pede revisão de onda nenhuma, o fechamento pede o agente
+    /// dedicado com um pedido que leva as entregas da obra, e quando ele
+    /// aponta um problema numa onda, o conserto sai pela rodada e o
+    /// fechamento pede o mesmo agente de novo, só para conferir o conserto —
+    /// em até duas voltas; na terceira reprovação seguida, a onda para e a
+    /// decisão passa a ser do usuário.
+    #[test]
+    fn the_dedicated_test_agent_closes_every_work() {
+        let waves_in = |out: &Value, field: &str| -> Vec<u64> {
+            out[field].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect()
+        };
+
+        // A obra de duas ondas: as duas entregam, sem revisão nenhuma da
+        // rodada, e o fechamento pede o agente dedicado, com as duas
+        // entregas no pedido.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 2);
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        for n in [1, 2] {
+            assert!(prompt.contains(&format!("MSTD-DELIV-000{n}")), "a entrega da onda {n} está no pedido: {prompt}");
+        }
+
+        // A obra de uma onda só entrega a dela e passa pela mesma exigência.
+        let solo = tempdir().unwrap();
+        let solo_root = solo.path();
+        ready_to_close(solo_root, "x", &["git --version"]);
+        let asked_solo = close_for(&CloseOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        assert_eq!(asked_solo["review"]["final"], json!(true), "uma onda só também pede o agente: {asked_solo}");
+        let round_solo =
+            round_for(&RoundOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        assert!(round_solo.get("reviews").is_none(), "a rodada não pede revisão da onda: {round_solo}");
+
+        // De volta à obra de duas ondas: o agente aponta um problema na onda
+        // 2. O conserto sai pela rodada, sem revisão nenhuma pedida por ela.
+        let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
+        let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
+        let reject = |text: &str| {
+            let body = json!({"final": true, "wave": 2, "result": "rejected", "text": text});
+            format!("<VERDICT>{body}</VERDICT>")
+        };
+        let refused = close(Some(reject("Falta o teste da onda 2.")));
+        assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
+        let fix = round(None);
+        assert_eq!(waves_in(&fix, "dispatch"), vec![2], "{fix}");
+        assert!(fix.get("reviews").is_none(), "{fix}");
+        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
+        let line = json!({"wave": 2, "text": "Consertou.", "files": [wave_file(2)], "commit": "conserta a onda 2"});
+        let back = round(Some(format!("<DELIVERED>{line}</DELIVERED>")));
+        assert_eq!(back["ok"], json!(true), "{back}");
+        assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");
+
+        // Entregue o conserto, o fechamento pede o mesmo agente de novo, só
+        // para conferir o conserto — não a obra inteira de novo.
+        let rechecked = close(None);
+        assert_eq!(rechecked["review"]["final"], json!(true), "{rechecked}");
+        let fix_prompt = rechecked["review"]["prompt"].as_str().unwrap_or_default();
+        assert!(fix_prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "{fix_prompt}");
+        assert!(fix_prompt.contains("MSTD-WAVE-0002") && !fix_prompt.contains("MSTD-WAVE-0001"), "só o conserto: {fix_prompt}");
+
+        // A segunda volta de conserto: reprovado de novo, o conserto sai mais
+        // uma vez.
+        let refused_again = close(Some(reject("Ainda falta.")));
+        assert_eq!(refused_again["reason"], json!("wave-rejected"), "{refused_again}");
+        let fix_again = round(None);
+        assert_eq!(waves_in(&fix_again, "dispatch"), vec![2], "{fix_again}");
+        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn quatro() {}\n").unwrap();
+        let line = json!({"wave": 2, "text": "Consertou de novo.", "files": [wave_file(2)], "commit": "conserta de novo"});
+        assert_eq!(round(Some(format!("<DELIVERED>{line}</DELIVERED>")))["ok"], json!(true));
+
+        // A terceira reprovação seguida para a onda: a rodada deixa de
+        // despachá-la, e a decisão passa a ser do usuário.
+        close(Some(reject("Ainda não.")));
+        let stopped = round(None);
+        assert_eq!(stopped["stopped"][0]["wave"], json!(2), "{stopped}");
+        assert_eq!(waves_in(&stopped, "dispatch"), Vec::<u64>::new(), "a rodada para de despachar: {stopped}");
+        let after = close(None);
+        assert_eq!(after["reason"], json!("wave-rejected"), "o fechamento segue recusando: {after}");
     }
 
     /// A resposta da rodada e a do fechamento, numa spec ainda sem páginas
@@ -787,7 +903,13 @@ mod tests {
         assert_eq!(close_for(
             &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None },
             Some("s-fecha"),
-        )["ok"], json!(true));
+        )["review"]["final"], json!(true));
+        let closed = close_for(
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: Some(final_approval()) },
+            Some("s-fecha"),
+        );
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
         let armed = crate::commands::event::pending::armed_charges(root);
         assert!(armed.iter().any(|charge| charge.spec == "x"), "a cobrança ficou armada: {armed:?}");
     }
@@ -1004,8 +1126,11 @@ mod tests {
         let not_a_test = "echo src/msg.rs: no tests found here";
         ready_to_close(root, "x", &[not_a_test]);
 
-        let closed = close_with_lint(root, "echo Tests: 0 total", None);
-        assert_eq!(closed["ok"], json!(true), "o lint verde não é lido como prova: {closed}");
+        let asked = close_with_lint(root, "echo Tests: 0 total", None);
+        assert_eq!(asked["ok"], json!(true), "o lint verde não é lido como prova: {asked}");
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let closed = close_with_lint(root, "echo Tests: 0 total", Some(final_approval()));
+        assert_eq!(closed["ok"], json!(true), "{closed}");
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let runs: Vec<Option<&str>> = log

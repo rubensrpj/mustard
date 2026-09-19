@@ -1,7 +1,9 @@
 //! A fila da rodada e as ondas em andamento: quais ondas saem agora, a
 //! escolha do pedido antes do envio, a cópia separada e a pasta de compilação
-//! de cada uma, quais estão em andamento, quais esperam revisão, quais já
-//! estão entregues e aprovadas, e o estado de cada uma que a página mostra.
+//! de cada uma, quais estão em andamento, quais já estão entregues e
+//! aprovadas, e o estado de cada uma que a página mostra. A rodada não pede
+//! revisão de onda nenhuma: quem confere o trabalho, uma vez por obra, é o
+//! agente de teste dedicado que o fechamento pede.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -279,14 +281,12 @@ fn build_dirs(root: &Path, count: usize) -> Vec<PathBuf> {
 }
 
 /// As cópias das ondas `waves`, que saem agora, cada uma com uma pasta de
-/// compilação livre: a pasta que nenhuma onda em andamento (`running`) usa,
-/// primeiro as que também não esperam a revisão de uma onda entregue — a
-/// revisão compila na pasta da onda que ela revisa. Cada cópia sai do commit
-/// atual; a que já existe, de um envio anterior da mesma onda, é a mesma, e
-/// ela traz cada submódulo que as tarefas da onda tocam. A onda cuja cópia
-/// não pôde ser criada não sai, e o aviso diz por quê; a
-/// onda sem pasta livre também não sai, e fica para a rodada seguinte. Roda
-/// com a trava do passo do git que o despacho já prendeu (`_held`): duas
+/// compilação livre: a pasta que nenhuma onda em andamento (`running`) usa.
+/// Cada cópia sai do commit atual; a que já existe, de um envio anterior da
+/// mesma onda, é a mesma, e ela traz cada submódulo que as tarefas da onda
+/// tocam. A onda cuja cópia não pôde ser criada não sai, e o aviso diz por
+/// quê; a onda sem pasta livre também não sai, e fica para a rodada seguinte.
+/// Roda com a trava do passo do git que o despacho já prendeu (`_held`): duas
 /// rodadas ao mesmo tempo não criam a mesma cópia duas vezes.
 pub(super) fn open_copies(
     root: &Path,
@@ -299,10 +299,8 @@ pub(super) fn open_copies(
 ) -> (BTreeMap<u64, WaveCopy>, Vec<Value>) {
     let dir_of = |n: &u64| recorded_copy(log, *n).and_then(|copy| copy.build_dir);
     let held: BTreeSet<String> = running.keys().filter_map(dir_of).collect();
-    let reviewing: BTreeSet<String> = waves_awaiting_review(log).iter().filter_map(dir_of).collect();
     let mut free: Vec<String> =
         build_dirs(root, max_parallel(root)).iter().map(|dir| shown(dir)).filter(|dir| !held.contains(dir)).collect();
-    free.sort_by_key(|dir| reviewing.contains(dir));
 
     let mut copies = BTreeMap::new();
     let mut warnings = Vec::new();
@@ -399,17 +397,15 @@ pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
         .collect()
 }
 
-/// As ondas entregues e aprovadas: têm entrega, não estão em andamento, não
-/// esperam revisão, e a última revisão delas não reprovou. A onda entregue
-/// antes de a rodada existir, sem pedido e sem veredito, está provada pelo
-/// código que entrou.
+/// As ondas entregues e aprovadas: têm entrega, não estão em andamento, e a
+/// última revisão delas — quando há uma, do agente de teste dedicado que o
+/// fechamento pede — não reprovou. A onda entregue antes de a rodada existir,
+/// sem pedido e sem veredito, está provada pelo código que entrou. A rodada
+/// não pede revisão de onda nenhuma: a entrega já basta, e só uma reprovação
+/// devolve a onda para a fila.
 fn waves_done(log: &SpecLog, running: &BTreeMap<u64, u64>) -> BTreeSet<u64> {
-    let awaiting: BTreeSet<u64> = waves_awaiting_review(log).into_iter().collect();
     let rejected = log.last_rejected();
-    log.delivered_waves()
-        .into_iter()
-        .filter(|n| !running.contains_key(n) && !awaiting.contains(n) && !rejected.contains_key(n))
-        .collect()
+    log.delivered_waves().into_iter().filter(|n| !running.contains_key(n) && !rejected.contains_key(n)).collect()
 }
 
 /// A primeira onda planejada que ainda não está entregue e aprovada, com as
@@ -446,7 +442,12 @@ fn dependencies_of(n: u64, depends: &BTreeMap<u64, Vec<u64>>) -> BTreeSet<u64> {
 /// O pedido do conserto que o plano da onda deixou para trás, por uma versão
 /// nova da onda ou de uma tarefa dela, conta como se não existisse: a onda
 /// volta para a fila e sai com o pedido do plano atual.
-pub(super) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
+///
+/// O fechamento lê daqui também: uma onda cuja última revisão reprovou, mas
+/// que já recebeu o conserto e entregou de novo, sai daqui — mesmo sem
+/// veredito novo — porque o que falta agora é o agente de teste dedicado
+/// conferir o conserto, não a rodada despachar de novo.
+pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
     let last_send = log.last_by_wave("send");
     let replanned = waves_replanned(log);
     let delivered = log.last_by_wave("delivered");
@@ -482,47 +483,6 @@ fn ready_in_order(
     ready.into_iter().map(|(_, n)| n).collect()
 }
 
-/// As revisões que esta rodada pede: uma por onda cuja entrega mais nova é
-/// posterior ao veredito mais novo, pela regra de [`waves_awaiting_review`],
-/// com o pedido do revisor já montado — a lista de itens da onda, os
-/// critérios e os defeitos já vistos naqueles arquivos.
-pub(super) fn reviews_due(log: &SpecLog, built: &[mustard_core::io::wave_prompt::WavePrompt]) -> Vec<Value> {
-    waves_awaiting_review(log)
-        .into_iter()
-        .map(|wave| {
-            let review = built.iter().find(|p| p.wave == wave).map(|p| p.review.clone()).unwrap_or_default();
-            json!({ "wave": wave, "prompt": review })
-        })
-        .collect()
-}
-
-/// As ondas cuja entrega mais nova é posterior ao veredito mais novo: a
-/// revisão delas é o que a rodada seguinte pede. Entra a onda que nunca foi
-/// revisada, por não ter veredito nenhum, e entra também a onda reprovada que
-/// já entregou o conserto — o conserto é mais novo que a reprovação. Excluir
-/// toda onda que tem veredito fechava a porta da segunda: o conserto nunca
-/// voltava para a revisão e o fechamento recusava para sempre, porque o último
-/// veredito seguia sendo o que reprovou.
-///
-/// Sem veredito nenhum, só pede revisão a entrega que responde a um pedido da
-/// rodada — a entrega mais nova que o pedido mais novo daquela onda. A onda
-/// entregue antes de a rodada existir não tem pedido nenhum, e cobrar revisão
-/// dela é cobrar de novo um trabalho já feito, provado pelo código que entrou.
-/// A onda que saiu do plano não é revisada.
-fn waves_awaiting_review(log: &SpecLog) -> Vec<u64> {
-    let planned = log.planned_waves();
-    let last_verdict: BTreeMap<u64, u64> =
-        log.verdicts_by_wave().into_iter().filter_map(|(n, verdicts)| verdicts.last().map(|v| (n, v.id))).collect();
-    let last_send = log.last_by_wave("send");
-    log.last_by_wave("delivered")
-        .into_iter()
-        .filter(|(n, _)| planned.contains(n))
-        .filter(|(n, id)| last_verdict.get(n).is_none_or(|judged| judged < id))
-        .filter(|(n, id)| last_verdict.contains_key(n) || last_send.get(n).is_some_and(|sent| sent < id))
-        .map(|(n, _)| n)
-        .collect()
-}
-
 /// Os itens que o pedido de uma onda leva: os números de tudo que entrou
 /// nele, com a escolha do orquestrador antes do envio (`choice`).
 pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> Vec<u64> {
@@ -530,21 +490,19 @@ pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> V
 }
 
 /// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
-/// rodada despacha: em andamento, entregue à espera da revisão, reprovada na
-/// última revisão ou entregue e aprovada. A onda que não está aqui está por
-/// fazer. A página da spec mostra este estado.
+/// rodada despacha: em andamento, reprovada na última revisão ou entregue e
+/// aprovada — a rodada não pede revisão de onda nenhuma, então a entrega já
+/// vale como aprovada. A onda que não está aqui está por fazer. A página da
+/// spec mostra este estado.
 pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveStates {
     use mustard_core::view::document::WaveState;
     let running = waves_in_progress(log);
-    let awaiting: BTreeSet<u64> = waves_awaiting_review(log).into_iter().collect();
     let rejected = log.last_rejected();
     let done = waves_done(log, &running);
     let mut states = mustard_core::view::document::WaveStates::new();
-    for n in running.keys().chain(&awaiting).chain(rejected.keys()).chain(&done) {
+    for n in running.keys().chain(rejected.keys()).chain(&done) {
         let state = if running.contains_key(n) {
             WaveState::Running
-        } else if awaiting.contains(n) {
-            WaveState::Delivered
         } else if rejected.contains_key(n) {
             WaveState::Rejected
         } else {
@@ -641,29 +599,11 @@ mod tests {
         assert_eq!(waves, vec![2], "a onda 1 já tem entrega: {out}");
     }
 
-    /// A onda entregue antes de a rodada existir também não entra na lista de
-    /// revisões: sem veredito nenhum e sem pedido, a entrega dela não responde
-    /// a nada que esta rodada tenha mandado fazer.
-    #[test]
-    fn a_wave_delivered_before_the_round_is_not_asked_for_review() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        write(
-            root,
-            "x",
-            "delivered",
-            json!({"wave": 1, "text": "A onda 1 saiu antes da rodada.", "files": ["src/a.rs"]}),
-        );
-
-        let out = round(root, "x", None);
-        assert_eq!(out["reviews"], json!([]), "a onda 1 entregou antes e nunca foi pedida: {out}");
-    }
-
     /// A onda cuja última revisão reprovou volta a ser despachada, e uma vez
     /// só: depois que o conserto sai, a mesma reprovação não a manda de novo.
-    /// Entregue o conserto, ele volta para a revisão — é o que fecha o ciclo,
-    /// porque sem uma revisão nova o veredito que reprovou valeria para sempre.
+    /// Entregue o conserto, ele para de estar em andamento e de sair de novo
+    /// — falta o agente de teste dedicado, no fechamento, dizer se ficou
+    /// certo, e a rodada não pede revisão nenhuma dele.
     #[test]
     fn a_rejected_wave_goes_out_again_and_only_once() {
         let dir = tempdir().unwrap();
@@ -677,20 +617,12 @@ mod tests {
         assert_eq!(again["dispatch"].as_array().map(Vec::len), Some(1), "a onda reprovada volta a sair: {again}");
 
         let quiet = round(root, "x", None);
-        assert_eq!(quiet["dispatch"], json!([]), "o conserto já saiu, e a onda espera a revisão dele: {quiet}");
-        assert_eq!(quiet["reviews"], json!([]), "o conserto ainda não voltou: nada a revisar: {quiet}");
+        assert_eq!(quiet["dispatch"], json!([]), "o conserto já saiu: {quiet}");
 
-        // O conserto entregue é mais novo que a reprovação, e por isso pede
-        // revisão: é a revisão nova que tira o veredito velho da frente.
         let back = round(root, "x", Some(&delivered(root, 1, "O teste entrou.", &["src/a.rs"])));
-        let waves: Vec<u64> = back["reviews"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|review| review["wave"].as_u64())
-            .collect();
-        assert_eq!(waves, vec![1], "o conserto entregue volta para a revisão: {back}");
+        assert_eq!(back["ok"], json!(true), "{back}");
+        assert_eq!(back["dispatch"], json!([]), "o conserto não sai de novo: {back}");
+        assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");
     }
 
     /// A onda reprovada cujo conserto já saiu e que ganha uma tarefa nova
@@ -730,37 +662,38 @@ mod tests {
     }
 
     /// O estado de cada onda que a página mostra acompanha a rodada: em
-    /// andamento depois do pedido, entregue à espera da revisão, reprovada
-    /// pela última revisão, em andamento de novo com o conserto e aprovada no
-    /// fim; a onda que ainda não saiu não aparece, e a página a mostra por
-    /// fazer.
+    /// andamento depois do pedido, aprovada assim que entrega — a rodada não
+    /// pede revisão nenhuma —, o que já solta a onda seguinte, reprovada por
+    /// quem julgar (o agente de teste dedicado, no fechamento), em andamento
+    /// de novo com o conserto e aprovada no fim; a onda que ainda não saiu
+    /// não aparece, e a página a mostra por fazer.
     #[test]
     fn the_wave_states_follow_the_round() {
-        use mustard_core::view::document::WaveState::{Approved, Delivered, Rejected, Running};
+        use mustard_core::view::document::WaveState::{Approved, Rejected, Running};
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        let events = root.join(".claude/spec/x/spec.ndjson");
         let states = || {
-            let log = mustard_core::io::spec_events::read(&root.join(".claude/spec/x/spec.ndjson")).unwrap().unwrap();
+            let log = mustard_core::io::spec_events::read(&events).unwrap().unwrap();
             wave_states(&log).into_iter().collect::<Vec<_>>()
         };
         assert_eq!(states(), [], "nothing went out yet");
         round(root, "x", None);
         assert_eq!(states(), [(1, Running)]);
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
-        assert_eq!(states(), [(1, Delivered)], "the delivery waits for its review, and the last wave waits for it");
-        // A reprovação gravada antes de a rodada seguinte despachar o conserto.
-        let events = root.join(".claude/spec/x/spec.ndjson");
-        let log = mustard_core::io::spec_events::read(&events).unwrap().unwrap();
-        let crit = log.events.iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
-        let rejected = json!({"author": "review", "wave": 1, "result": "rejected", "text": "faltou o teste",
-            "criteria": [{"criterion": crit, "tests_rule": true}]});
+        assert_eq!(states(), [(1, Approved), (2, Running)], "the delivery already frees the next wave");
+
+        // A reprovação, que só o agente de teste dedicado grava, no
+        // fechamento.
+        let rejected = json!({"author": "review", "final": true, "wave": 1, "result": "rejected", "text": "faltou o teste"});
         mustard_core::io::spec_events::write(&events, "verdict", rejected.as_object().cloned().unwrap(), &[]).unwrap();
-        assert_eq!(states(), [(1, Rejected)]);
+        assert_eq!(states(), [(1, Rejected), (2, Running)]);
         round(root, "x", None);
-        assert_eq!(states(), [(1, Running)], "the fix went out");
+        assert_eq!(states(), [(1, Running), (2, Running)], "the fix went out");
         round(root, "x", Some(&delivered(root, 1, "O teste entrou.", &["src/a.rs"])));
-        round(root, "x", Some(&verdict(1, "approved", "pronto")));
+        let approval = json!({"author": "review", "final": true, "wave": 1, "result": "approved", "text": "pronto"});
+        mustard_core::io::spec_events::write(&events, "verdict", approval.as_object().cloned().unwrap(), &[]).unwrap();
         assert_eq!(states(), [(1, Approved), (2, Running)]);
     }
 
@@ -835,9 +768,11 @@ mod tests {
         assert_eq!(waves_in(&free, "running"), vec![2, 3], "a onda 1 não está em andamento: {free}");
     }
 
-    /// A onda que depende de todas as outras só sai depois das aprovações
-    /// delas, não só das entregas. A que depende de uma parte sai com a
-    /// entrega, como antes.
+    /// A onda que depende de todas as outras só sai depois de elas estarem
+    /// aprovadas, não só entregues — a rodada não pede revisão nenhuma, então
+    /// a entrega já vale como aprovação, menos para a onda que voltou
+    /// reprovada: essa segura a que depende de todas até o conserto voltar. A
+    /// que depende de uma parte sai com a entrega, como antes.
     #[test]
     fn the_wave_that_depends_on_all_the_others_waits_for_their_approvals() {
         let dir = tempdir().unwrap();
@@ -846,16 +781,12 @@ mod tests {
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
 
+        // As duas entregam: sem revisão nenhuma da rodada, a entrega já basta
+        // para soltar a 3.
         let both = format!("{}\n{}", delivered(root, 1, "Saiu.", &["src/a.rs"]), delivered(root, 2, "Saiu.", &["src/b.rs"]));
         let out = round(root, "x", Some(&both));
-        assert_eq!(waves_in(&out, "reviews"), vec![1, 2], "{out}");
-        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "entregues não bastam: {out}");
-
-        let one = round(root, "x", Some(&verdict(1, "approved", "passou")));
-        assert_eq!(one["ok"], json!(true), "{one}");
-        assert_eq!(waves_in(&one, "dispatch"), Vec::<u64>::new(), "a onda 2 ainda espera revisão: {one}");
-        let both = round(root, "x", Some(&verdict(2, "approved", "passou")));
-        assert_eq!(waves_in(&both, "dispatch"), vec![3], "as duas aprovadas soltam a 3: {both}");
+        assert!(out.get("reviews").is_none(), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![3], "as duas entregas já soltam a 3: {out}");
 
         // A onda 2 depende só da 1, e a 3 não passa por ela: a 2 sai com a
         // entrega da 1.
@@ -865,6 +796,22 @@ mod tests {
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 3]);
         let out = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(waves_in(&out, "dispatch"), vec![2], "a entrega basta para quem não depende de todas: {out}");
+
+        // A onda 2 entrega e é reprovada antes de a 1 entregar: a 3, que
+        // depende das duas, não sai enquanto a 2 não voltar aprovada, mesmo
+        // com a 1 pronta.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[1, 2])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
+        round(root, "x", None);
+        round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
+        let events = root.join(".claude/spec/x/spec.ndjson");
+        let rejected = json!({"author": "review", "final": true, "wave": 2, "result": "rejected", "text": "faltou algo"});
+        mustard_core::io::spec_events::write(&events, "verdict", rejected.as_object().cloned().unwrap(), &[]).unwrap();
+        let out = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(waves_in(&out, "dispatch"), vec![2], "a reprovada volta antes da que depende de todas: {out}");
+        assert_eq!(waves_in(&out, "running"), vec![2], "a 3 ainda espera a 2 aprovada: {out}");
     }
 
     /// A spec aprovada da análise antes do envio: uma onda, com a tarefa que

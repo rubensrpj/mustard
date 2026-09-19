@@ -19,7 +19,7 @@ O Mustard conduz todo trabalho que muda arquivo por um fluxo só: levantamento, 
 - Pedido novo do usuário entra na mesma spec, com `write request`. Assunto diferente vira pendência, com `mustard-rt run pending --add`.
 - Mudança que parte de você ou de um agente só segue com o "sim" do usuário.
 - Nunca edite os arquivos `spec.*` à mão. Grave pelo `write` e leia um bloco com `mustard-rt run read <bloco>`.
-- Delegue a um agente a investigação que abre muitos arquivos e toda execução de código. Uma conferência pontual, faça você: delegar custa mais que ler um arquivo.
+- Delegue a um agente a investigação que abre muitos arquivos. Uma conferência pontual, faça você: delegar custa mais que ler um arquivo.
 
 ## Páginas
 

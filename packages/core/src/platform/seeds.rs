@@ -106,4 +106,19 @@ mod tests {
 
         assert!(CLAUDE_GITIGNORE.contains(".events/"), "gitignore covers the event logs");
     }
+
+    /// O mapa não manda mais passar toda execução de código a um agente: quem
+    /// diz quem executa é a resposta do plano, pela soma das notas. A
+    /// delegação da investigação que abre muitos arquivos continua.
+    #[test]
+    fn the_session_map_no_longer_delegates_every_code_run() {
+        for (text, code_run, investigation) in [
+            (Locale::PtBr, "toda execução de código", "a investigação que abre muitos arquivos"),
+            (Locale::EnUs, "every code run", "any investigation that opens many files"),
+        ] {
+            let map = session_map(text);
+            assert!(!map.contains(code_run), "the {text} map still hands code execution to an agent: {map}");
+            assert!(map.contains(investigation), "the {text} map lost the investigation delegation: {map}");
+        }
+    }
 }

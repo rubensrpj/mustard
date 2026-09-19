@@ -121,6 +121,9 @@ pub struct Material<'a> {
     pub defects: Vec<&'a SpecEvent>,
     /// As skills nomeadas pelas tarefas, na ordem dos nomes.
     pub skills: Vec<Skill>,
+    /// Os commits da rodada: as mudanças que já entraram na branch, que o
+    /// agente de teste dedicado confere no pedido da revisão final.
+    pub changes: Vec<&'a SpecEvent>,
     /// O código de cada evento, para o pedido citar item por código.
     pub codes: BTreeMap<u64, String>,
 }
@@ -178,10 +181,14 @@ pub fn write_review(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.review_text()
 }
 
-/// O texto do pedido da revisão final do conjunto, que o fechamento faz à
-/// spec de duas ondas ou mais: as ondas e as tarefas delas (`block`), o que
-/// cada onda entregou por último (`own_delivered`), os critérios e como
-/// revisar numa cópia separada. O número da onda do material não conta aqui.
+/// O texto do pedido do agente de teste dedicado, que o fechamento pede a
+/// toda obra, mesmo a de uma onda só: as ondas e as tarefas delas (`block`),
+/// as emendas gravadas para elas (`agreed`), o que cada onda entregou por
+/// último (`own_delivered`), os critérios, os commits da branch (`changes`) e
+/// como revisar numa cópia separada. Onda reprovada com o conserto já
+/// entregue restringe `block`, `agreed` e `own_delivered` a ela: o agente
+/// confere só o conserto, não a obra inteira de novo. O número da onda do
+/// material não conta aqui.
 #[must_use]
 pub fn write_final_review(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.final_review_text()
@@ -951,9 +958,12 @@ impl Writer<'_> {
         out
     }
 
-    /// O pedido da revisão final: as instruções fixas dela, o exemplo de
-    /// leitura, as ondas com as tarefas, o que cada uma entregou, os critérios
-    /// e como revisar numa cópia separada.
+    /// O pedido do agente de teste dedicado, que o fechamento pede a toda
+    /// obra: as instruções fixas dele, o exemplo de leitura, o conserto —
+    /// quando alguma onda voltou reprovada e já entregou de novo, só ele, sem
+    /// pedir a obra inteira outra vez —, as ondas com as tarefas, as emendas
+    /// gravadas para elas, o que cada uma entregou, os critérios, os commits
+    /// que já entraram na branch e como revisar numa cópia separada.
     fn final_review_text(&self) -> String {
         let m = self.material;
         let mut out = String::new();
@@ -961,9 +971,12 @@ impl Writer<'_> {
         out.push_str(self.t("prompt.final.fixed"));
         out.push_str("\n\n");
         self.read_example(&mut out, true);
+        self.fix(&mut out, "prompt.fix.final");
         self.part(&mut out, "prompt.part.waves", &m.block);
+        self.part(&mut out, "prompt.part.agreed", &m.agreed);
         self.part(&mut out, "prompt.part.each_delivered", &m.own_delivered);
         self.part(&mut out, "prompt.part.criteria", &m.criteria);
+        self.part(&mut out, "prompt.part.branch_changes", &m.changes);
         self.review_execution(&mut out);
         while out.ends_with("\n\n") {
             out.pop();

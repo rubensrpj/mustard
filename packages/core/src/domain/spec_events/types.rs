@@ -525,7 +525,10 @@ pub const TYPES: &[TypeSpec] = &[
         Block::Review,
         false,
         &[
-            req("wave", Kind::Int),
+            // A onda que o veredito julga. O agente de teste dedicado que
+            // aprova a obra inteira não aponta uma onda; a cobrança do campo
+            // fica com a situação (veja `check_conditions`).
+            opt("wave", Kind::Int),
             req("result", Kind::OneOf(VERDICTS)),
             TEXT,
             // Os critérios conferidos. A revisão de uma onda os traz sempre; a

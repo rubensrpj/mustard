@@ -21,7 +21,7 @@ use crate::commands::spec_events::write::{record, RecordCheck};
 
 /// A linha da entrega, como o agente de onda a devolve.
 const DELIVERED_LINE: &str = "DELIVERED";
-/// A linha do veredito, como o revisor a devolve.
+/// A linha do veredito, como o agente de teste dedicado a devolve.
 const VERDICT_LINE: &str = "VERDICT";
 
 /// O que a linha `DELIVERED` de uma onda trouxe.
@@ -39,8 +39,8 @@ pub(crate) struct WaveReport {
 }
 
 /// O que a linha `VERDICT` de uma onda trouxe: os campos do veredito, com a
-/// onda à parte. Só a revisão final aprovada vem sem onda, e fica na última
-/// onda do plano.
+/// onda à parte. Só a aprovação do agente de teste dedicado vem sem onda, e
+/// fica na última onda do plano.
 pub(crate) struct VerdictReport {
     pub wave: Option<u64>,
     pub fields: Map<String, Value>,
@@ -239,7 +239,8 @@ fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<Strin
     Ok((fields.get("wave").and_then(Value::as_u64), fields))
 }
 
-/// A linha é a da revisão final aprovada, a única que vem sem onda.
+/// A linha é a da aprovação do agente de teste dedicado, a única que vem sem
+/// onda.
 fn final_approval(fields: &Map<String, Value>) -> bool {
     fields.get("final") == Some(&Value::Bool(true)) && fields.get("result").and_then(Value::as_str) == Some("approved")
 }
@@ -332,7 +333,9 @@ type RecordedReport = (Vec<Value>, Vec<(String, String)>);
 /// e cada entregou já montado, com a onda, e o número de cada critério com
 /// prova nova, com o comando.
 struct CheckedReport {
-    verdicts: Vec<(u64, Map<String, Value>)>,
+    /// A onda de cada veredito, quando ele aponta uma: a aprovação do agente
+    /// de teste dedicado, na obra sem onda nenhuma, não aponta.
+    verdicts: Vec<(Option<u64>, Map<String, Value>)>,
     deliveries: Vec<(u64, Map<String, Value>)>,
     proofs: Vec<(u64, String)>,
 }
@@ -361,14 +364,13 @@ fn check_reports(
                 }
             }
         }
-        let wave = match verdict.wave {
-            Some(wave) => wave,
-            None => check.log().planned_waves().last().copied().ok_or_else(|| Refusal::MissingField {
-                event_type: "verdict".to_string(),
-                field: "wave".to_string(),
-            })?,
-        };
-        draft.insert("wave".into(), json!(wave));
+        // A aprovação do agente de teste dedicado não aponta onda: a última
+        // onda do plano, quando há uma, ou onda nenhuma, na obra de até 3
+        // pontos que o orquestrador faz direto, sem onda nenhuma.
+        let wave = verdict.wave.or_else(|| check.log().planned_waves().last().copied());
+        if let Some(wave) = wave {
+            draft.insert("wave".into(), json!(wave));
+        }
         draft.insert("author".into(), json!("review"));
         check.record("verdict", draft.clone())?;
         verdicts.push((wave, draft));
@@ -441,7 +443,11 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
     let mut recorded = Vec::new();
     for (wave, draft) in verdicts {
         let written = record(start, spec, "verdict", draft, PhaseWriter::Binary)?;
-        recorded.push(json!({ "wave": wave, "type": "verdict", "id": written.written.id }));
+        let mut entry = json!({ "type": "verdict", "id": written.written.id });
+        if let Some(wave) = wave {
+            entry["wave"] = json!(wave);
+        }
+        recorded.push(entry);
     }
     for (wave, draft) in deliveries {
         let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;
@@ -471,8 +477,8 @@ mod tests {
     use super::*;
     use crate::commands::flow::round::tests::*;
 
-    /// A rodada grava o que cada onda entregou e o veredito da revisão dela, e
-    /// passa a pedir a revisão do que entregou depois do último veredito.
+    /// A rodada grava o que cada onda entregou, sem pedir revisão nenhuma
+    /// dela, e grava o veredito de quem julgar, sob a mesma porta.
     #[test]
     fn what_came_back_becomes_the_delivered_and_the_verdict_of_the_wave() {
         let dir = tempdir().unwrap();
@@ -482,12 +488,10 @@ mod tests {
 
         let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
         assert_eq!(out["ok"], json!(true), "{out}");
-        let reviews = out["reviews"].as_array().cloned().unwrap_or_default();
-        assert_eq!(reviews.len(), 1, "a onda entregue sem veredito pede revisão: {out}");
-        assert_eq!(reviews[0]["wave"], json!(1), "{out}");
+        assert!(out.get("reviews").is_none(), "a rodada não pede revisão nenhuma: {out}");
 
         let out = round(root, "x", Some(&verdict(1, "approved", "passou")));
-        assert_eq!(out["reviews"], json!([]), "o veredito é mais novo que a entrega dele: {out}");
+        assert!(out.get("reviews").is_none(), "{out}");
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 1);
@@ -1051,9 +1055,9 @@ mod tests {
         assert_eq!(seen, "commit\ncommit\ncommit\n", "nothing of the round was staged while a commit ran");
     }
 
-    /// O conserto que diz as ondas que fecha grava a entrega também nelas, o
-    /// que pede a revisão de cada uma de novo sem mandá-las refazer; o commit
-    /// é de conserto e leva as ondas consertadas.
+    /// O conserto que diz as ondas que fecha grava a entrega também nelas,
+    /// sem mandá-las refazer nem pedir revisão nenhuma; o commit é de
+    /// conserto e leva as ondas consertadas.
     #[test]
     fn a_fix_records_the_delivery_on_the_waves_it_closes_and_asks_their_review_again() {
         let dir = tempdir().unwrap();
@@ -1075,8 +1079,10 @@ mod tests {
             "commit": "o commit sai do resumo", "fixes": [1]}));
         let out = round(root, "x", Some(&fix));
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(waves_in(&out, "reviews"), vec![1, 2], "{out}");
+        assert!(out.get("reviews").is_none(), "{out}");
         assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "the fixed wave is not redone: {out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(!waves_to_redo(&log).contains(&1), "wave 1's fix already delivered: {out}");
         let (subject, body) = last_commit(root);
         assert_eq!(subject, "fix(onda-2): o commit sai do resumo");
         assert_eq!(body, "- onda 2: o commit sai do resumo (conserta: onda 1)");

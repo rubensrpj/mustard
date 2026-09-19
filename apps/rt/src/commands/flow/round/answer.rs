@@ -1,8 +1,9 @@
 //! A resposta da rodada e o próximo passo: a recusa, com a mensagem no idioma
 //! do projeto, e o caminho de uma chamada — conferir a fase, fechar o que
 //! voltou, entregar ao orquestrador os candidatos da onda que ainda não tem
-//! escolha, despachar as ondas prontas, pedir as revisões e dizer o que fazer
-//! em seguida.
+//! escolha, despachar as ondas prontas e dizer o que fazer em seguida. A
+//! rodada não pede a revisão de onda nenhuma: quem confere o trabalho é o
+//! agente de teste dedicado que o fechamento pede, uma vez por obra.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -16,8 +17,8 @@ use serde_json::{json, Map, Value};
 
 use super::commit::git_lock;
 use super::queue::{
-    analyse, analysis_lines, first_unfinished, max_parallel, next_waves, only_analysis, open_copies, reviews_due,
-    sent_items, waves_in_progress, Analysed,
+    analyse, analysis_lines, first_unfinished, max_parallel, next_waves, only_analysis, open_copies, sent_items,
+    waves_in_progress, Analysed,
 };
 use super::report::{take_report, Taken};
 use super::stops::{change_question, stopped_waves, waves_stuck};
@@ -242,14 +243,15 @@ pub(super) fn run_round(
         in_flight.insert(*wave, code);
     }
     drop(held_lock);
-    let reviews = reviews_due(&log, &built);
 
     // O próximo passo: despachar o que saiu agora; esperar as que estão em
     // andamento; fechar, com tudo entregue e aprovado; ou dizer qual onda
-    // falta, quando nada se move.
+    // falta, quando nada se move. A rodada não pede revisão de onda nenhuma:
+    // quem confere o trabalho é o agente de teste dedicado que o fechamento
+    // pede, uma vez por obra.
     let report_back = translate("round.report", lang);
     let mut command: Option<String> = None;
-    let then = if !dispatched.is_empty() || !reviews.is_empty() {
+    let then = if !dispatched.is_empty() {
         format!("{} {report_back}", translate("round.next", lang))
     } else if !asked.is_empty() {
         String::new()
@@ -297,7 +299,6 @@ pub(super) fn run_round(
         "recorded": recorded,
         "formatted": formatted,
         "dispatch": dispatched,
-        "reviews": reviews,
         "running": running,
     });
     if entering {
@@ -396,8 +397,9 @@ mod tests {
 
     /// O pedido da onda nova traz os comandos do projeto e a outra onda que
     /// sai junto, com o arquivo dela. O do conserto traz também o veredito,
-    /// a entrega anterior e a decisão gravada depois do envio; a revisão do
-    /// conserto, as mesmas linhas, a entrega dele e a cópia no commit dele.
+    /// a entrega anterior e a decisão gravada depois do envio. Entregue o
+    /// conserto, a rodada não pede revisão nenhuma dele: a resposta não traz
+    /// o campo `reviews`, e a onda 1 sai da fila sem veredito novo.
     #[test]
     fn the_round_assembles_the_new_request_the_fix_request_and_its_review() {
         let dir = tempdir().unwrap();
@@ -429,20 +431,15 @@ mod tests {
         assert!(lines[2].starts_with("- `agreed`: ") && lines[2].contains("MSTD-DEC-0001"), "{fix}");
 
         let back = round(root, "x", Some(&delivered(root, 1, "Teste acrescentado.", &["src/a.rs"])));
-        let review = text(&back, "reviews", 1);
-        let sha = back["commit"]["sha"].as_str().unwrap_or_default();
-        assert!(review.contains(&format!("## Conserto\n\n{}", translate("prompt.fix.review", Locale::PtBr))), "{review}");
-        assert_eq!(fix_lines(&review), lines, "a revisão do conserto traz as mesmas linhas: {review}");
-        assert!(review.contains("## O que esta onda entregou\n\n- `waves`: MSTD-DELIV-0002\n\n"), "{review}");
-        assert_eq!(review.matches("mustard-rt run read").count(), 1, "{review}");
-        let review_copy = mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copy_path(root, "x", 1, true));
-        assert!(!sha.is_empty() && review.contains(&format!("--detach {review_copy} {sha}`")), "{sha}: {review}");
+        assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");
+        assert_eq!(waves_in(&back, "dispatch"), Vec::<u64>::new(), "{back}");
     }
 
     /// A rodada diz o próximo passo de cada situação: despachar o que saiu;
     /// esperar as ondas em andamento; dizer qual onda falta quando nada se
-    /// move; e, com todas as ondas entregues e aprovadas, fechar — com a
-    /// linha do fechamento pronta, que o binário aceita.
+    /// move; e, com todas as ondas entregues, fechar — com a linha do
+    /// fechamento pronta, que o binário aceita. A rodada não pede revisão de
+    /// onda nenhuma: a entrega já basta, sem esperar veredito.
     #[test]
     fn the_round_answers_close_when_every_wave_is_approved_and_names_the_missing_one() {
         let report_back = translate("round.report", Locale::PtBr);
@@ -488,26 +485,11 @@ mod tests {
         assert!(next.ends_with(&format!("{expected} {report_back}")), "{waiting}");
         assert!(waiting.get("command").is_none(), "{waiting}");
 
-        // As duas voltam; a 1 aprovada, a 2 reprovada. O conserto da 2 sai,
-        // e o plano dela muda depois: o conserto sai de novo, com o plano
-        // atual, e a rodada manda despachá-lo.
+        // As duas entregam: a rodada não pede revisão nenhuma, e a entrega já
+        // basta para dizer que a obra terminou.
         let both = format!("{}\n{}", delivered(root, 1, "Saiu.", &["src/a.rs"]), delivered(root, 2, "Saiu.", &["src/b.rs"]));
-        let back = round(root, "x", Some(&both));
-        assert_eq!(waves_in(&back, "reviews"), vec![1, 2], "{back}");
-        let judged = format!("{}\n{}", verdict(1, "approved", "passou"), verdict(2, "rejected", "faltou"));
-        let fix = round(root, "x", Some(&judged));
-        assert_eq!(waves_in(&fix, "dispatch"), vec![2], "{fix}");
-        replan(root, 2);
-        let again = round(root, "x", None);
-        assert_eq!(waves_in(&again, "dispatch"), vec![2], "{again}");
-        let next = again["next"].as_str().unwrap_or_default();
-        assert!(next.ends_with(&format!("{} {report_back}", translate("round.next", Locale::PtBr))), "{again}");
-        assert!(again.get("command").is_none(), "{again}");
-
-        // O conserto volta aprovado: tudo entregue e aprovado, a rodada manda
-        // fechar.
-        round(root, "x", Some(&delivered(root, 2, "Consertou.", &["src/b.rs"])));
-        let done = round(root, "x", Some(&verdict(2, "approved", "passou")));
+        let done = round(root, "x", Some(&both));
+        assert!(done.get("reviews").is_none(), "{done}");
         assert_eq!(done["ok"], json!(true), "{done}");
         let command = done["command"].as_str().unwrap_or_default();
         assert_eq!(command, "mustard-rt run close --spec x", "{done}");
