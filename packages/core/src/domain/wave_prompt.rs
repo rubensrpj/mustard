@@ -47,6 +47,19 @@ pub const WAVE_TASKS_CAP: usize = 3;
 /// mesma conta de [`WAVE_TASKS_CAP`].
 pub const WAVE_PROOFS_CAP: usize = 3;
 
+/// O modelo pedido para o papel `role` (`wave`, `review` ou `skill`) no
+/// envio: a onda que implementa sai em Sonnet 5; a revisão e o agente de
+/// teste dedicado, em Opus 5. Quem manda isso é o binário, no próprio pedido
+/// — sem escolha explícita, a onda herda o modelo da sessão e a decisão
+/// morre em silêncio.
+#[must_use]
+pub fn requested_model(role: &str) -> &'static str {
+    match role {
+        "wave" => "Sonnet 5",
+        _ => "Opus 5",
+    }
+}
+
 /// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
 /// não entra: a skill mora num arquivo do projeto, e o agente da onda o lê.
 #[derive(Debug, Clone, PartialEq, Eq)]

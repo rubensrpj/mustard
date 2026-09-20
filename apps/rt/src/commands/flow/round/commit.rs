@@ -866,6 +866,11 @@ mod tests {
                 proofs: Vec::new(),
                 fixes: Vec::new(),
                 replan: None,
+                model_used: None,
+                steps: None,
+                tokens: None,
+                caller_steps: None,
+                caller_tokens: None,
             };
             let (title, _) = commit_message(&[report("a".repeat(limit))], lang)
                 .unwrap_or_else(|_| panic!("{lang:?}: a {limit}-character summary fits"))
@@ -893,6 +898,11 @@ mod tests {
             proofs: Vec::new(),
             fixes: Vec::new(),
             replan: None,
+            model_used: None,
+            steps: None,
+            tokens: None,
+            caller_steps: None,
+            caller_tokens: None,
         };
 
         let waves = [report(1, "a".repeat(43)), report(2, "a".repeat(43))];

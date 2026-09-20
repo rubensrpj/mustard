@@ -487,8 +487,11 @@ pub const TYPES: &[TypeSpec] = &[
         &[
             req("wave", Kind::Int),
             req("role", Kind::OneOf(ROLES)),
-            // O pedido exato, como foi injetado no agente. É por ele que se
-            // confere depois se a onda recebeu o que devia.
+            // O molde do agente, como o instalador o gravou no projeto, e o
+            // pedido exato, como foi injetado no agente — nesta ordem, a
+            // mesma em que ele os recebe. É por eles que se confere depois se
+            // a onda recebeu o que devia; nada aqui é remontado na leitura.
+            opt("template", Kind::Text),
             TEXT,
             req("lines", Kind::Int),
             req("chars", Kind::Int),
@@ -496,6 +499,17 @@ pub const TYPES: &[TypeSpec] = &[
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
+            // O modelo pedido para o agente, no envio; o que ele usou de
+            // verdade, os passos que deu e os tokens que gastou só se sabem
+            // na volta, e entram na versão nova do mesmo envio
+            // (`replaces`). O consumo de quem despacha até ali — a conta do
+            // orquestrador, não da onda — vem junto, na mesma volta.
+            opt("model", Kind::Text),
+            opt("model_used", Kind::Text),
+            opt("steps", Kind::Int),
+            opt("tokens", Kind::Int),
+            opt("caller_steps", Kind::Int),
+            opt("caller_tokens", Kind::Int),
             // A cópia separada que a rodada criou para a onda e a pasta de
             // compilação dela: a volta junta os arquivos da cópia, e a pasta
             // fica ocupada enquanto a onda está em andamento.

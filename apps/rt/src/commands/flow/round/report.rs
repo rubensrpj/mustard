@@ -42,6 +42,16 @@ pub(crate) struct WaveReport {
     /// As ondas que este conserto fecha.
     pub fixes: Vec<u64>,
     pub replan: Option<String>,
+    /// O consumo da onda, que só quem despacha sabe dizer, junto da entrega:
+    /// o modelo que o agente usou de verdade, os passos que deu e os tokens
+    /// que gastou.
+    pub model_used: Option<String>,
+    pub steps: Option<u64>,
+    pub tokens: Option<u64>,
+    /// O consumo de quem despacha até esta rodada — a conversa do
+    /// orquestrador, não a da onda —, informado junto da mesma entrega.
+    pub caller_steps: Option<u64>,
+    pub caller_tokens: Option<u64>,
 }
 
 /// O que a linha `VERDICT` de uma onda trouxe: os campos do veredito, com a
@@ -394,7 +404,28 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect())
             .unwrap_or_default();
-        waves.push(WaveReport { wave, delivered, files, commit, proofs, fixes, replan });
+        // O consumo, que só quem despacha sabe: o modelo que a onda usou de
+        // verdade, os passos e os tokens dela, e os do orquestrador até esta
+        // rodada. Vêm juntos da mesma entrega; sem eles, o envio não ganha
+        // versão nova.
+        let model_used = text(&fields, "model");
+        let as_u64 = |key: &str| fields.get(key).and_then(Value::as_u64);
+        let (steps, tokens) = (as_u64("steps"), as_u64("tokens"));
+        let (caller_steps, caller_tokens) = (as_u64("caller_steps"), as_u64("caller_tokens"));
+        waves.push(WaveReport {
+            wave,
+            delivered,
+            files,
+            commit,
+            proofs,
+            fixes,
+            replan,
+            model_used,
+            steps,
+            tokens,
+            caller_steps,
+            caller_tokens,
+        });
     }
     let mut verdicts = Vec::new();
     for body in verdict_bodies {
@@ -446,14 +477,18 @@ fn criterion_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
 type RecordedReport = (Vec<Value>, Vec<(String, String)>);
 
 /// O que [`check_reports`] conferiu e [`record_reports`] grava: cada veredito
-/// e cada entregou já montado, com a onda, e o número de cada critério com
-/// prova nova, com o comando.
+/// e cada entregou já montado, com a onda, o número de cada critério com
+/// prova nova, com o comando, e a versão nova de cada envio com consumo
+/// informado na entrega.
 struct CheckedReport {
     /// A onda de cada veredito, quando ele aponta uma: a aprovação do agente
     /// de teste dedicado, na obra sem onda nenhuma, não aponta.
     verdicts: Vec<(Option<u64>, Map<String, Value>)>,
     deliveries: Vec<(u64, Map<String, Value>)>,
     proofs: Vec<(u64, String)>,
+    /// A versão nova do envio de cada onda cuja entrega trouxe o modelo
+    /// usado, os passos, os tokens ou o consumo de quem despacha.
+    sends: Vec<(u64, Map<String, Value>)>,
 }
 
 /// O caminho como a rodada grava `file` da onda `wave`: quando é o caminho
@@ -518,6 +553,35 @@ fn check_reports(
             deliveries.push((wave, draft));
         }
     }
+    // O consumo, que só se sabe na volta: quando a entrega traz algum dos
+    // cinco campos, o envio da onda ganha uma versão nova com eles, sem
+    // remontar o resto do que foi enviado.
+    let mut sends = Vec::new();
+    for report in &report.waves {
+        let mut extra = Map::new();
+        if let Some(model) = &report.model_used {
+            extra.insert("model_used".into(), json!(model));
+        }
+        if let Some(steps) = report.steps {
+            extra.insert("steps".into(), json!(steps));
+        }
+        if let Some(tokens) = report.tokens {
+            extra.insert("tokens".into(), json!(tokens));
+        }
+        if let Some(caller_steps) = report.caller_steps {
+            extra.insert("caller_steps".into(), json!(caller_steps));
+        }
+        if let Some(caller_tokens) = report.caller_tokens {
+            extra.insert("caller_tokens".into(), json!(caller_tokens));
+        }
+        if extra.is_empty() {
+            continue;
+        }
+        if let Some(draft) = super::queue::send_revision(check.log(), report.wave, extra) {
+            check.record("send", draft.clone())?;
+            sends.push((report.wave, draft));
+        }
+    }
     // Mais de uma prova para o mesmo critério não vira uma versão por prova,
     // em cadeia: junta todas num comando só, ligado por `&&`, na ordem e sem
     // repetir, e o critério ganha uma versão só, mais abaixo.
@@ -543,7 +607,7 @@ fn check_reports(
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sends })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -579,7 +643,7 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando.
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
-    let CheckedReport { verdicts, deliveries, proofs } = checked;
+    let CheckedReport { verdicts, deliveries, proofs, sends } = checked;
     let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
     let mut recorded = Vec::new();
@@ -594,6 +658,10 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
     for (wave, draft) in deliveries {
         let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;
         recorded.push(json!({ "wave": wave, "type": "delivered", "id": written.written.id }));
+    }
+    for (wave, draft) in sends {
+        let written = record(start, spec, "send", draft, PhaseWriter::Binary)?;
+        recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
     }
     let mut ran = Vec::new();
     for (id, proof) in proofs {
@@ -1458,5 +1526,44 @@ mod tests {
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_ne!(head(), seed, "the corrected call commits: {went}");
         assert_eq!(delivered_count(root), 1, "the corrected call records the delivery once");
+    }
+
+    /// O envio da onda guarda o molde do agente e o modelo pedido, na hora do
+    /// despacho; quando a entrega volta com o modelo usado, os passos, os
+    /// tokens e o consumo de quem despacha, o envio ganha uma versão nova com
+    /// esses cinco campos, apontando para o envio original e mantendo o
+    /// molde e o modelo que já estavam lá.
+    #[test]
+    fn a_waves_delivery_with_usage_fields_records_a_new_version_of_its_send() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
+        std::fs::write(root.join(".claude/agents/mustard/wave.md"), "molde da onda").unwrap();
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert_eq!(sent.str_field("template"), Some("molde da onda"), "the send carries the agent's template");
+        assert_eq!(sent.str_field("model"), Some("Sonnet 5"), "the send carries the requested model");
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let delivery = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a onda 1 saiu", "model": "Sonnet 5", "steps": 42, "tokens": 123_456,
+            "caller_steps": 7, "caller_tokens": 89_000}));
+        let out = round(root, "x", Some(&delivery));
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert_eq!(revised.replaced(), vec![sent.id], "the new version points to the original send");
+        assert_eq!(revised.str_field("model_used"), Some("Sonnet 5"), "{revised:?}");
+        assert_eq!(revised.int("steps"), Some(42), "{revised:?}");
+        assert_eq!(revised.int("tokens"), Some(123_456), "{revised:?}");
+        assert_eq!(revised.int("caller_steps"), Some(7), "{revised:?}");
+        assert_eq!(revised.int("caller_tokens"), Some(89_000), "{revised:?}");
+        assert_eq!(revised.str_field("template"), Some("molde da onda"), "keeps what was already there");
+        assert_eq!(revised.str_field("model"), Some("Sonnet 5"), "keeps what was already there");
     }
 }

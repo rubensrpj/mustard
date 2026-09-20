@@ -391,7 +391,15 @@ pub(super) fn run_round_with_mine(
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
+        // Os dois textos do input, na ordem em que o agente os recebe: o
+        // molde dele, instalado no projeto, e só depois o pedido. O modelo
+        // pedido vai junto — nada disso é remontado na leitura, é o que foi
+        // enviado.
+        if !prompt.template.is_empty() {
+            draft.insert("template".into(), json!(prompt.template));
+        }
         draft.insert("text".into(), json!(prompt.text));
+        draft.insert("model".into(), json!(prompt.model));
         draft.insert("lines".into(), json!(prompt.lines));
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
         // Os itens que ficaram, e à parte a escolha do orquestrador: o que
@@ -433,6 +441,14 @@ pub(super) fn run_round_with_mine(
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
+        // O molde e o modelo pedido são os do envio original: um reenvio não
+        // remonta o input, só acrescenta o aviso do que mudou na cópia.
+        if let Some(template) = prior.str_field("template") {
+            draft.insert("template".into(), json!(template));
+        }
+        if let Some(model) = prior.str_field("model") {
+            draft.insert("model".into(), json!(model));
+        }
         draft.insert("items".into(), prior.fields.get("items").cloned().unwrap_or_else(|| json!([])));
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("copy".into(), json!(copy.path));

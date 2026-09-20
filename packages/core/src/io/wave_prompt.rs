@@ -32,6 +32,13 @@ use crate::platform::i18n::Locale;
 pub struct WavePrompt {
     /// O número da onda.
     pub wave: u64,
+    /// O texto do molde do agente, como o instalador o gravou no projeto —
+    /// o primeiro dos dois textos que o agente recebe. Vazio quando o
+    /// projeto ainda não tem o arquivo do molde.
+    pub template: String,
+    /// O modelo pedido para a onda: fixo, pelo papel `wave`
+    /// ([`wave_prompt::requested_model`]).
+    pub model: String,
     /// O texto do pedido, sempre: a página mostra mesmo o pedido recusado,
     /// que é justamente o que precisa ser visto antes da aprovação.
     pub text: String,
@@ -227,6 +234,16 @@ pub fn shown(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+/// O texto do molde do agente instalado no projeto `root`, para o papel
+/// `role` (`wave`, `review` ou `skill`) — o arquivo que o instalador grava em
+/// `.claude/agents/mustard/<role>.md`. Vazio quando o projeto ainda não o
+/// tem.
+#[must_use]
+pub fn agent_template(root: &Path, role: &str) -> String {
+    std::fs::read_to_string(root.join(".claude").join("agents").join("mustard").join(format!("{role}.md")))
+        .unwrap_or_default()
+}
+
 /// O que é igual para o pedido de todas as ondas de uma montagem.
 struct Context<'a> {
     root: &'a Path,
@@ -383,7 +400,9 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let lines = wave_prompt::count_lines(&text);
     let too_long =
         (lines > wave_prompt::MAX_LINES).then(|| wave_prompt::too_long(&material, lines, lang));
-    WavePrompt { wave, text, lines, too_long, bad_skills, stale_skills }
+    let template = agent_template(root, "wave");
+    let model = wave_prompt::requested_model("wave").to_string();
+    WavePrompt { wave, template, model, text, lines, too_long, bad_skills, stale_skills }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras

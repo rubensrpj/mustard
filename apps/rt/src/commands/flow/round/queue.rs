@@ -16,7 +16,7 @@ use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::{copy_path, lesson_bank, recorded_copy, shown, wave_lessons};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use super::report::{has_agent_lines, tagged};
 use super::stops::waves_replanned;
@@ -542,6 +542,27 @@ pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
             !ids.iter().any(|id| id < sent) || judged_before == Some("rejected")
         })
         .collect()
+}
+
+/// A versão nova do envio mais recente da onda `wave`: os campos dele, tirando
+/// `v`, `id`, `code`, `at`, `type` e `search`, com `replaces` apontando para
+/// ele e os campos de `extra` somados por cima. Usado quando a volta de uma
+/// onda traz o consumo — o modelo usado de verdade, os passos e os tokens —,
+/// que só se sabe depois do envio já gravado. `None` sem envio para a onda.
+pub(crate) fn send_revision(log: &SpecLog, wave: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+    let id = *log.last_by_wave("send").get(&wave)?;
+    let event = log.get(id)?;
+    let mut draft: Map<String, Value> = event
+        .fields
+        .iter()
+        .filter(|(key, _)| !["v", "id", "code", "at", "type", "search"].contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    draft.insert("replaces".into(), json!(id));
+    for (key, value) in extra {
+        draft.insert(key, value);
+    }
+    Some(draft)
 }
 
 /// `true` quando o processo do Claude Code que mandou o envio `sent` ainda
