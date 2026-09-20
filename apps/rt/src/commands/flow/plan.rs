@@ -1894,6 +1894,12 @@ mod tests {
         rated(root, said, 1, "src/a1.rs", Some(1));
         rated(root, said, 2, "src/a2.rs", Some(2));
         expect_many_waves("3", root);
+        // A razão de ir em ondas aqui é o número de ondas já no plano, não o
+        // total: com 3 pontos, a frase não pode mentir dizendo que passou de
+        // 13.
+        let out = plan(root, "x");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(!next.contains("acima de 13"), "3 pontos não passou de 13: {next}");
 
         // 4 pontos (3 + 1, porque a escala não tem o número 4 sozinho), a
         // divisa de cima da faixa do orquestrador: já é um agente numa onda

@@ -39,8 +39,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              text, the approval does not count."
         }
         // Quem executa a obra, pela soma das notas de todas as tarefas do
-        // plano: até 3 pontos, o orquestrador faz sem ondas; de 4 a 13, um
-        // agente faz numa onda só; acima de 13, ondas de até 13 pontos cada.
+        // plano e pelo número de ondas que ele já tem: até 3 pontos numa
+        // onda só, o orquestrador faz sem ondas; de 4 a 13 numa onda só, um
+        // agente faz; acima de 13, ou já com mais de uma onda no plano,
+        // ondas de até 13 pontos cada — sem dizer que o total passou de 13,
+        // porque isso pode ser falso quando a razão é a onda já dividida.
         ("plan.execution.solo", Locale::PtBr) => {
             "A obra soma {points} pontos: até 3, sem ondas, o orquestrador faz."
         }
@@ -54,11 +57,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The work totals {points} points: from 4 to 13, one agent does it, in a single wave."
         }
         ("plan.execution.many_waves", Locale::PtBr) => {
-            "A obra soma {points} pontos: acima de 13, vai em ondas de até 13 pontos cada, uma por agente."
+            "A obra soma {points} pontos: vai em ondas de até 13 pontos cada, uma por agente."
         }
         ("plan.execution.many_waves", Locale::EnUs) => {
-            "The work totals {points} points: above 13, it goes in waves of up to 13 points each, one \
-             agent per wave."
+            "The work totals {points} points: it goes in waves of up to 13 points each, one agent per \
+             wave."
         }
         ("plan.execution.ends_with_test_agent", Locale::PtBr) => {
             "Em todo tamanho, a obra termina com o agente de teste dedicado."
@@ -1001,7 +1004,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             132,
-            0x1b9c_27c8_8a83_fbaa,
+            0x9a41_d6b8_a70d_6b15,
         );
     }
 
