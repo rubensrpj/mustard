@@ -694,10 +694,11 @@ mod tests {
     }
 
     /// A leitura obrigatória de uma tarefa que aponta uma função
-    /// (`caminho#função`) manda ler só aquela função, não o arquivo inteiro;
-    /// e as regras de execução do pedido mandam ler por trecho, rodar só os
-    /// testes do que mudou e a suíte inteira uma vez no fim, em primeiro
-    /// plano.
+    /// (`caminho#função`) faz a linha da tarefa dizer o que ler antes, e
+    /// manda ler só aquela função, não o arquivo inteiro. As frases de ler
+    /// por trecho, rodar só os testes do que mudou e a suíte inteira uma vez
+    /// no fim, em primeiro plano, saíram do catálogo — moraram para o molde
+    /// do agente — e não voltam a aparecer no pedido.
     #[test]
     fn the_wave_request_asks_to_read_by_excerpt() {
         let dir = tempdir().unwrap();
@@ -710,10 +711,10 @@ mod tests {
                             "must_read": ["apps/rt/src/a.rs#soma"]})),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        assert!(built[0].text.contains("leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
+        assert!(built[0].text.contains("leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
         assert!(!built[0].text.contains("`apps/rt/src/a.rs#soma`"), "{}", built[0].text);
         for phrase in ["Leia por trecho", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
-            assert!(built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
+            assert!(!built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
         }
     }
 
@@ -820,16 +821,16 @@ mod tests {
                             "must_read": ["apps/rt/src/nao-existe.rs"]})),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let part = crate::platform::i18n::translate("prompt.part.task_reads", Locale::PtBr);
-        assert!(!built[0].text.contains(part), "{}", built[0].text);
+        let read_before = crate::platform::i18n::translate("prompt.task.read_before", Locale::PtBr);
+        assert!(!built[0].text.contains(read_before), "{}", built[0].text);
     }
 
     /// O pedido de uma onda, montado como a rodada o monta — com a cópia que
     /// ela criou para ela —, lista só os códigos: cada parte traz uma linha
-    /// por bloco da spec, com os códigos em sequência (os da onda na ordem de
-    /// execução que ela declara). O comando de leitura aparece uma vez só, no
-    /// exemplo, com o caminho do repositório principal, e nenhum item repete
-    /// o comando nem o código.
+    /// por bloco da spec, com os códigos em sequência, e as tarefas ganham
+    /// linha própria, na ordem de execução que a onda declara. O comando de
+    /// leitura aparece uma vez só, no exemplo, com o caminho do repositório
+    /// principal, e nenhum item repete o comando nem o código.
     #[test]
     fn the_wave_request_lists_only_the_codes_per_block_with_one_example() {
         let dir = tempdir().unwrap();
@@ -858,15 +859,18 @@ mod tests {
         assert!(example.contains(&command), "{example}");
         let wave = &built[0].text;
 
-        let waves = ["`waves`: MSTD-TASK-0002, MSTD-TASK-0001, MSTD-WAVE-0001"];
+        // A onda tem `order: [8, 7]`: a tarefa 2 (id 8) vem antes da 1 (id 7).
+        let tasks = ["`MSTD-TASK-0002`: `src/b.rs`", "`MSTD-TASK-0001`: `src/a.rs`"];
+        let waves = ["`waves`: MSTD-WAVE-0001"];
         let criteria = ["`criteria`: MSTD-CRIT-0001"];
         assert_eq!(section_lines(wave, part("prompt.part.specification")), ["`specification`: MSTD-CTX-0001, MSTD-CTX-0002"], "{wave}");
         assert_eq!(section_lines(wave, part("prompt.part.agreed")), ["`agreed`: MSTD-DEC-0001, MSTD-RULE-0001"], "{wave}");
+        assert_eq!(section_lines(wave, part("prompt.part.tasks")), tasks, "{wave}");
         assert_eq!(section_lines(wave, part("prompt.part.wave")), waves, "{wave}");
         assert_eq!(section_lines(wave, part("prompt.part.criteria")), criteria, "{wave}");
 
         assert!(wave.contains(&example), "{wave}");
-        for once in ["mustard-rt run read", "--term", "--root", "MSTD-TASK-0001", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
+        for once in ["mustard-rt run read", "--term", "--root", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
             assert_eq!(wave.matches(once).count(), 1, "{once}: {wave}");
         }
         for copied in ["O objetivo da obra.", "Montar a lista", "a lista sai curta", "A lista saiu."] {
@@ -884,7 +888,8 @@ mod tests {
 
     /// Um banco com seis defeitos ligados às tarefas, dois sem palavra em
     /// comum com elas e uma preferência também sem: o pedido da onda leva só
-    /// os cinco defeitos mais ligados. O sexto, que divide uma palavra só,
+    /// os cinco defeitos mais ligados, pelo número deles no banco — nenhum
+    /// texto de lição entra no pedido. O sexto, que divide uma palavra só,
     /// perde o lugar; os sem palavra em comum ficam fora do pedido.
     #[test]
     fn the_wave_request_carries_only_the_lessons_tied_to_the_tasks() {
@@ -918,11 +923,14 @@ mod tests {
         ]);
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let expected: Vec<&str> = strong.iter().map(String::as_str).collect();
+        // Ids 2 a 6 no banco: os cinco defeitos fortes, na ordem em que
+        // entraram — `loose[0]` ocupa o 1, e o sexto e o oitavo (o fraco e o
+        // outro solto) ficam fora.
+        let expected: Vec<String> = (2u64..=6).map(|id| format!("`lessons`: {id}")).collect();
         let lessons = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.lessons", Locale::PtBr));
-        assert_eq!(lessons, expected, "o pedido da onda: {}", built[0].text);
-        for out in [weak, loose[0], loose[1], "Resposta curta."] {
-            assert!(!built[0].text.contains(out), "{out} ficou de fora do pedido");
+        assert_eq!(lessons, expected.iter().map(String::as_str).collect::<Vec<_>>(), "o pedido da onda: {}", built[0].text);
+        for out in strong.iter().map(String::as_str).chain([weak, loose[0], loose[1], "Resposta curta."]) {
+            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
         }
     }
 
@@ -948,9 +956,9 @@ mod tests {
     /// divide palavras do texto com a tarefa ("primeira", "linha"), mas
     /// nenhuma palavra-chave dela aparece na tarefa: ela fica fora do pedido
     /// da onda e do da revisão. A lição do teste, cuja palavra-chave "teste"
-    /// aparece na tarefa, continua entrando nos dois; a da trava, cuja
-    /// palavra-chave "ao mesmo tempo" só aparece pela metade ("tempo"), e a
-    /// da suíte ficam fora.
+    /// aparece na tarefa, continua entrando nos dois, pelo número dela no
+    /// banco; a da trava, cuja palavra-chave "ao mesmo tempo" só aparece pela
+    /// metade ("tempo"), e a da suíte ficam fora.
     #[test]
     fn the_request_carries_a_lesson_by_its_keywords_and_not_by_the_words_of_its_text() {
         let dir = tempdir().unwrap();
@@ -978,10 +986,9 @@ mod tests {
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
         let lessons = section_lines(&built[0].text, part("prompt.part.lessons"));
-        assert_eq!(lessons.len(), 1, "{lessons:?}");
-        assert!(lessons[0].starts_with("O teste tem de falhar"), "{lessons:?}");
-        for out in ["O pedido da onda vai INTEIRO", "Subagente nunca roda", "Quem tira uma proteção"] {
-            assert!(!built[0].text.contains(out), "{out} fica fora do pedido");
+        assert_eq!(lessons, ["`lessons`: 96"], "{lessons:?}");
+        for out in [DISPATCH_LESSON, "Subagente nunca roda", "Quem tira uma proteção", "O teste tem de falhar"] {
+            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
         }
     }
 
@@ -994,9 +1001,9 @@ mod tests {
 
     /// Uma pasta com 500 regras do projeto, e a onda mexe num arquivo dela: o
     /// pedido leva no máximo 5 regras, as mais ligadas ao texto das tarefas,
-    /// e fica abaixo do teto de linhas. A regra que só divide uma palavra com
-    /// a tarefa perde o lugar para as que dividem quatro; das outras classes
-    /// entra só a lição ligada à tarefa.
+    /// pelo número delas no banco, e fica abaixo do teto de linhas. A regra
+    /// que só divide uma palavra com a tarefa perde o lugar para as que
+    /// dividem quatro; das outras classes entra só a lição ligada à tarefa.
     #[test]
     fn a_folder_with_hundreds_of_rules_sends_at_most_the_five_closest_to_the_tasks() {
         let dir = tempdir().unwrap();
@@ -1032,10 +1039,16 @@ mod tests {
         assert!(built[0].too_long.is_none(), "{} linhas", built[0].lines);
         assert!(built[0].lines <= wave_prompt::MAX_LINES, "{} linhas", built[0].lines);
         let shown = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.lessons", Locale::PtBr));
-        let rules: Vec<&str> = shown.iter().copied().filter(|line| line.contains("fatura") || line.contains("Regra")).filter(|line| !line.contains("reais")).collect();
-        assert_eq!(rules, strong.iter().map(String::as_str).collect::<Vec<_>>(), "{shown:?}");
-        assert!(!shown.contains(&"Apagar a pasta perde trabalho."), "o defeito sem palavra em comum sai: {shown:?}");
-        assert!(shown.contains(&"O total da fatura sai em reais."), "{shown:?}");
+        // Ids 501 a 505: as cinco regras fortes, gravadas depois das 500
+        // "Regra N"; id 509: a preferência, cujo texto também divide
+        // "total" e "fatura" com a tarefa. Id 508, o defeito sem palavra em
+        // comum, fica fora.
+        let expected: Vec<String> =
+            (501u64..=505).chain(std::iter::once(509)).map(|id| format!("`lessons`: {id}")).collect();
+        assert_eq!(shown, expected.iter().map(String::as_str).collect::<Vec<_>>(), "{shown:?}");
+        for out in strong.iter().chain(&weak).map(String::as_str).chain(["Apagar a pasta perde trabalho.", "O total da fatura sai em reais."]) {
+            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
+        }
         assert_eq!(shown.len(), 6, "{shown:?}");
     }
 

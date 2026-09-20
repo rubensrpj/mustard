@@ -254,7 +254,8 @@ mod tests {
             Verdict::Rewrite { tool_input, .. } => {
                 assert_eq!(tool_input["prompt"], json!(assembled(root)));
                 let prompt = tool_input["prompt"].as_str().unwrap();
-                assert!(prompt.contains("- `waves`: MSTD-WAVE-0001, MSTD-TASK-0001\n"), "{prompt}");
+                assert!(prompt.lines().any(|l| l == "- `MSTD-TASK-0001`"), "{prompt}");
+                assert!(prompt.lines().any(|l| l == "- `waves`: MSTD-WAVE-0001"), "{prompt}");
                 assert_eq!(prompt.matches("mustard-rt run read").count(), 1, "{prompt}");
                 assert_eq!(tool_input["subagent_type"], json!("general-purpose"));
                 assert_eq!(tool_input["description"], json!("onda"));

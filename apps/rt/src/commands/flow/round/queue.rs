@@ -845,8 +845,7 @@ mod tests {
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "the replanned fix goes out again: {again}");
         let prompt = again["dispatch"][0]["prompt"].as_str().unwrap_or_default();
-        let mut waves_lines = prompt.lines().filter_map(|l| l.strip_prefix("- `waves`: "));
-        assert!(waves_lines.any(|codes| codes.split(", ").any(|code| code == task_code)), "{prompt}");
+        assert!(prompt.lines().any(|l| l.starts_with(&format!("- `{task_code}`"))), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let newest = log.visible().into_iter().rfind(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).unwrap();
@@ -1170,8 +1169,12 @@ mod tests {
             "tasks": []});
         assert_eq!(sent[0].fields.get("analysis"), Some(&recorded), "the send records the choice: {out}");
         let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
-        assert!(prompt.contains("A tabela nova precisa de migração."), "{prompt}");
-        for out_of_it in ["O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
+        // Lições vão só pelo número, sem o texto delas no pedido.
+        assert!(prompt.lines().any(|l| l == format!("- `lessons`: {kept}")), "{prompt}");
+        for out_of_it in [dropped, far] {
+            assert!(!prompt.contains(&format!("- `lessons`: {out_of_it}")), "{out_of_it}: {prompt}");
+        }
+        for out_of_it in ["A tabela nova precisa de migração.", "O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
             assert!(!prompt.contains(out_of_it), "{out_of_it}: {prompt}");
         }
         assert!(prompt.contains("- `agreed`: MSTD-RULE-0001, MSTD-RULE-0003, MSTD-DEC-0001, MSTD-DEC-0003\n"), "{prompt}");

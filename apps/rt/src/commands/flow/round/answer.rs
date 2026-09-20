@@ -628,10 +628,10 @@ mod tests {
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{out}");
         let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default().to_string();
-        // A lista só com os códigos, e o comando de leitura uma vez só, no
-        // exemplo, com o caminho do repositório principal: a onda trabalha na
-        // cópia que a rodada criou.
-        assert!(prompt.lines().any(|l| l.starts_with("- `waves`: ") && l.contains("MSTD-TASK-0001")), "{prompt}");
+        // A tarefa ganha linha própria, pelo código, e o comando de leitura
+        // uma vez só, no exemplo, com o caminho do repositório principal: a
+        // onda trabalha na cópia que a rodada criou.
+        assert!(prompt.lines().any(|l| l.starts_with("- `MSTD-TASK-0001`") && l.contains("src/a.rs")), "{prompt}");
         let example = translate("prompt.read", Locale::PtBr)
             .replace("{root}", &format!("--root {} ", mustard_core::io::wave_prompt::shown(root)))
             .replace("{spec}", "x");

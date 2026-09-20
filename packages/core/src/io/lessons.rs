@@ -364,8 +364,8 @@ mod tests {
         let second = put(&path, everywhere("Remover a pasta alheia joga fora o que a outra sessão fez.", &["pasta", "remover"]));
         let old = put(&path, everywhere("A suíte roda em segundo plano no servidor antigo.", &["suíte", "primeiro plano"]));
         let text = requested(root);
-        for lesson in ["Apagar a pasta de outra sessão", "Remover a pasta alheia", "A suíte roda em segundo plano"] {
-            assert!(text.contains(lesson), "antes, o pedido leva {lesson}: {text}");
+        for id in [first.id, second.id, old.id] {
+            assert!(text.contains(&format!("`lessons`: {id}")), "antes, o pedido leva a lição {id}: {text}");
         }
 
         let mut merged = everywhere("Nunca apague a pasta de outra sessão: o trabalho dela se perde.", &["apagar", "pasta"]);
@@ -379,9 +379,9 @@ mod tests {
         assert_eq!(model::kept(&bank).iter().map(|l| l.id).collect::<Vec<_>>(), [merged.id]);
         assert_eq!(bank.events.len(), 5, "as linhas antigas ficam no arquivo");
         let text = requested(root);
-        assert!(text.contains("Nunca apague a pasta de outra sessão"), "{text}");
-        for gone in ["Apagar a pasta de outra sessão", "Remover a pasta alheia", "A suíte roda em segundo plano"] {
-            assert!(!text.contains(gone), "{gone} saiu do pedido: {text}");
+        assert!(text.contains(&format!("`lessons`: {}", merged.id)), "{text}");
+        for gone in [first.id, second.id, old.id] {
+            assert!(!text.contains(&format!("`lessons`: {gone}")), "a lição {gone} devia sair do pedido: {text}");
         }
     }
 

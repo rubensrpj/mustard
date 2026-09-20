@@ -287,39 +287,37 @@ fn each_agent_template_declares_its_own_model_and_effort() {
 /// reler depois de editar, rodar só os testes do que mudou, a suíte inteira
 /// uma vez no fim pelo `rtk`, nada em segundo plano, não comitar nem usar
 /// `git add`, rodar cada comando de dentro da cópia e a pasta de compilação
-/// fixa — voltam para o molde da onda e do revisor, com as palavras inteiras
-/// do catálogo, nos dois idiomas.
+/// fixa — moram só no molde do agente, escritas à mão: o catálogo não guarda
+/// mais essas frases (onda 11), e o molde da onda e do revisor levam as
+/// mesmas palavras, nos dois idiomas.
 #[test]
 fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
-    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
-        let from_catalog = [
-            "prompt.execution.excerpt",
-            "prompt.execution.no_reread",
-            "prompt.execution.changed_tests",
-            "prompt.execution.suite_once",
-            "prompt.execution.no_background",
-            "prompt.execution.no_commit",
-        ];
-        let hand_written: [&str; 3] = if text == Locale::PtBr {
-            [
-                "Rode cada comando de dentro da cópia",
-                "passa de uma cópia para a seguinte",
-                "o corte que mexe no mesmo trecho de outro vai sozinho",
-            ]
-        } else {
-            [
-                "Run every command from inside the copy",
-                "passes from one copy to the next",
-                "a cut that touches the same spot as another goes alone",
-            ]
-        };
+    let pt_br = [
+        "Leia por trecho: ache a função com a busca e leia só ela",
+        "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado",
+        "Durante o trabalho, rode só os testes do que mudou",
+        "A suíte inteira roda uma vez no fim, em primeiro plano",
+        "Nunca mande compilação ou teste para segundo plano",
+        "Não comite e não use `git add`: o commit é da rodada",
+        "Rode cada comando de dentro da cópia",
+        "passa de uma cópia para a seguinte",
+        "o corte que mexe no mesmo trecho de outro vai sozinho",
+    ];
+    let en_us = [
+        "Read by excerpt: find the function with search and read only it",
+        "Do not reread the file after editing: the edit already shows the changed excerpt",
+        "During the work, run only the tests of what changed",
+        "The whole suite runs once at the end, in the foreground",
+        "Never send a build or test to the background",
+        "Do not commit and do not use `git add`: the commit belongs to the round",
+        "Run every command from inside the copy",
+        "passes from one copy to the next",
+        "a cut that touches the same spot as another goes alone",
+    ];
+    for (lang, phrases) in [("pt-BR", pt_br), ("en-US", en_us)] {
         for name in ["wave", "review"] {
             let agent = template(lang, name);
-            for key in from_catalog {
-                let phrase = translate(key, text);
-                assert!(agent.contains(phrase), "the {lang} `{name}` agent lost the execution rule `{key}`: {phrase}");
-            }
-            for phrase in hand_written {
+            for phrase in phrases {
                 assert!(agent.contains(phrase), "the {lang} `{name}` agent lost the execution rule `{phrase}`");
             }
         }
