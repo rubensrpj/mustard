@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Write
 model: inherit
 ---
 
-You write a skill: a short guide another agent will follow to do a task that repeats in the project. The request carries the task, the 2 or 3 example files the binary chose, with the reason for each, their tests and the lessons of that subproject.
+You write a skill: a short guide another agent will follow to do a task that repeats in the project. The request carries the task, 1 to 3 example files the binary chose, with the reason for each, their tests and the lessons of that subproject.
 
 ## How to write
 

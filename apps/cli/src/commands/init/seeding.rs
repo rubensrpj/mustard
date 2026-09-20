@@ -139,13 +139,25 @@ pub(super) fn hide_footprint(project_path: &Path) -> Result<()> {
 }
 
 /// Print one didactic line per seeded file. The seeding itself lives in the
-/// core (`mustard_core::platform::project_seed`) — the CLI only narrates:
-/// `Created`/`Updated` announce a write, `Preserved` confirms the user's file
-/// survived the merge untouched.
-pub(super) fn report_seed(name: &str, outcome: SeedOutcome) {
+/// core (`mustard_core::platform::project_seed`) — the CLI only narrates.
+///
+/// `ours` says whose file it is, and nothing else changes the wording of a
+/// `Preserved`. Mustard's own texts (the agents, the session map, the two page
+/// templates) are laid down again on every install, so a `Preserved` there
+/// means the copy already matched the shipped one — calling it "yours" said
+/// the opposite, that an edit had survived, and it read as a promise the
+/// seeder never made. The project's own files (the settings, the ignore list)
+/// keep the old wording, which is true of them.
+pub(super) fn report_seed(name: &str, outcome: SeedOutcome, ours: bool) {
+    println!("{}", seed_line(name, outcome, ours));
+}
+
+/// The line [`report_seed`] prints, so a test reads the exact words.
+fn seed_line(name: &str, outcome: SeedOutcome, ours: bool) -> String {
     match outcome {
-        SeedOutcome::Created | SeedOutcome::Updated => println!("  wrote {name}"),
-        SeedOutcome::Preserved => println!("  kept {name} (yours, unchanged)"),
+        SeedOutcome::Created | SeedOutcome::Updated => format!("  wrote {name}"),
+        SeedOutcome::Preserved if ours => format!("  kept {name} (already the shipped text)"),
+        SeedOutcome::Preserved => format!("  kept {name} (yours, unchanged)"),
     }
 }
 
@@ -288,6 +300,28 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    /// O instalador só chama um arquivo de "seu" quando ele é do projeto. O
+    /// texto do próprio Mustard é gravado de novo a cada instalação, então um
+    /// arquivo que sobreviveu intacto apenas já estava igual ao do binário, e a
+    /// linha diz isso. Escrever e criar falam igual nos dois casos.
+    #[test]
+    fn only_the_projects_own_file_is_called_the_users() {
+        let ours = |outcome| seed_line(".claude/mustard/pages/spec.html", outcome, true);
+        let theirs = |outcome| seed_line(".claude/settings.json", outcome, false);
+        assert_eq!(
+            ours(SeedOutcome::Preserved),
+            "  kept .claude/mustard/pages/spec.html (already the shipped text)"
+        );
+        assert_eq!(
+            theirs(SeedOutcome::Preserved),
+            "  kept .claude/settings.json (yours, unchanged)"
+        );
+        for outcome in [SeedOutcome::Created, SeedOutcome::Updated] {
+            assert_eq!(ours(outcome), "  wrote .claude/mustard/pages/spec.html");
+            assert_eq!(theirs(outcome), "  wrote .claude/settings.json");
+        }
+    }
 
     /// Regression guard (2026-06-03): the legacy per-subproject guards file
     /// `.claude/commands/guards.md` (and its `patterns.md` companion) is
