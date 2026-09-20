@@ -153,12 +153,14 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(WaveAliveObserver)),
             },
-            // A pausa por tamanho da conversa: depois de cada ferramenta, na
-            // cópia de uma onda, passando de 200 mil tokens, manda o agente
-            // gravar o passo e parar. Nunca barra.
+            // O tamanho da conversa: depois de cada ferramenta, na cópia de
+            // uma onda, passando de 200 mil tokens, manda o agente de onda
+            // gravar o passo e parar; antes de cada ferramenta de quem
+            // conduz, no mesmo teto, recusa a chamada com o bloco de
+            // retomada.
             Module {
                 id: "wave_pause_check",
-                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any)],
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any), (Trigger::PreToolUse, ToolMatch::Any)],
                 check: Some(Box::new(WavePauseCheck)),
                 observer: None,
             },
@@ -271,23 +273,25 @@ mod tests {
         assert!(!ToolMatch::Named("Bash").matches(Some("bash")));
     }
 
-    /// A trava de comandos roda só no `PreToolUse` do Bash; o sinal de vida
-    /// da onda, que roda depois de toda ferramenta, continua no `PostToolUse`.
+    /// A trava de comandos roda só no `PreToolUse` do Bash, junto do tamanho
+    /// da conversa, que roda antes de toda ferramenta; o sinal de vida da
+    /// onda, que roda depois de toda ferramenta, continua no `PostToolUse`.
     #[test]
     fn the_command_guard_runs_before_bash_only() {
         let registry = Registry::new();
-        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard", "wave_pause_check"]);
         assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer", "wave_pause_check"]);
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
     /// O portão de escrita roda antes das cinco ferramentas de arquivo, e só
-    /// delas; o sinal de vida da onda segue rodando depois de cada uma.
+    /// delas; o tamanho da conversa roda antes de toda ferramenta, e o sinal
+    /// de vida da onda segue rodando depois de cada uma.
     #[test]
     fn the_write_gate_runs_on_the_five_file_tools() {
         let registry = Registry::new();
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"] {
-            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate", "wave_pause_check"], "{tool}");
             assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer", "wave_pause_check"], "{tool}");
         }
         for tool in ["Bash", "Task", "Agent", "Skill"] {
@@ -297,18 +301,18 @@ mod tests {
         assert!(module.check.is_some() && module.observer.is_none());
     }
 
-    /// O pedido do subagente roda no despacho de um agente, e o início e o
-    /// fim de subagente não têm gancho nenhum.
+    /// O pedido do subagente roda no despacho de um agente, junto do tamanho
+    /// da conversa, e o início e o fim de subagente não têm gancho nenhum.
     #[test]
     fn the_agent_dispatch_runs_only_the_subagent_inject() {
         let registry = Registry::new();
         for tool in ["Task", "Agent"] {
-            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject", "wave_pause_check"], "{tool}");
             assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer", "wave_pause_check"], "{tool}");
         }
         assert!(applicable_ids(&registry, Trigger::SubagentStart, None).is_empty());
         assert!(applicable_ids(&registry, Trigger::SubagentStop, None).is_empty());
-        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")).is_empty());
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")), ["wave_pause_check"]);
     }
 
     /// A testemunha roda só depois da pergunta com opções, e é uma trava que
@@ -321,7 +325,7 @@ mod tests {
             applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion")),
             ["approval_witness", "wave_alive_observer", "wave_pause_check"]
         );
-        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")).is_empty());
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")), ["wave_pause_check"]);
         assert_eq!(
             applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")),
             ["wave_alive_observer", "wave_pause_check"]
@@ -343,14 +347,16 @@ mod tests {
         assert!(module.check.is_none() && module.observer.is_some());
     }
 
-    /// A pausa por tamanho da conversa roda depois de qualquer ferramenta,
-    /// junto do sinal de vida, e é uma trava que devolve veredito, não um
-    /// observador.
+    /// O tamanho da conversa roda depois de qualquer ferramenta, junto do
+    /// sinal de vida, e também antes de qualquer ferramenta — para poder
+    /// recusar a chamada de quem conduz — e é uma trava que devolve veredito,
+    /// não um observador.
     #[test]
     fn wave_pause_check_runs_after_every_tool_too() {
         let registry = Registry::new();
         for tool in ["Bash", "Write", "Task"] {
             assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"wave_pause_check"), "{tool}");
+            assert!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"wave_pause_check"), "{tool}");
         }
         let module = registry.by_id("wave_pause_check").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());

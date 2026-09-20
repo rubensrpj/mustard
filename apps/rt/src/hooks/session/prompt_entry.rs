@@ -699,7 +699,7 @@ mod tests {
         transcript_with(&transcript, 800_000);
         let context = context_of(PromptEntry.evaluate(&prompt_with_transcript(root, "s2", &transcript), &c).unwrap());
         assert!(context.contains('1'), "onda em andamento: diz qual está rodando: {context}");
-        assert!(!context.contains("fase"), "sem resumo de fase com onda em andamento: {context}");
+        assert!(context.contains("fase"), "o bloco de retomada sai também com onda em andamento: {context}");
     }
 
     /// Uma conversa que passa de 400 mil, é compactada para 70 mil (um

@@ -473,21 +473,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The conversation passed 200 thousand tokens. Save the step of wave {wave} on the spec and \
              stop with the line `<PAUSED>{\"wave\":{wave}}</PAUSED>`."
         }
+        ("conversation_size.block", Locale::PtBr) => {
+            "spec {spec}, fase {phase}. Ondas entregues: {delivered}. Ondas em andamento: {running}. \
+             Falta: {missing}."
+        }
+        ("conversation_size.block", Locale::EnUs) => {
+            "spec {spec}, phase {phase}. Delivered waves: {delivered}. Waves in flight: {running}. \
+             Missing: {missing}."
+        }
         ("conversation_size.compact", Locale::PtBr) => {
             "Esta conversa passou de mais um degrau de 200 mil tokens. Rode `/compact` e, depois, \
-             {command}. O que fica: spec {spec}, fase {phase}. {next}"
+             {command}. O que fica: {block} {next}"
         }
         ("conversation_size.compact", Locale::EnUs) => {
             "This conversation passed another 200-thousand-token step. Run `/compact` and, after, \
-             {command}. What stays: spec {spec}, phase {phase}. {next}"
+             {command}. What stays: {block} {next}"
         }
-        ("conversation_size.compact_running", Locale::PtBr) => {
-            "Esta conversa passou de mais um degrau de 200 mil tokens. As ondas {waves} estão em \
-             andamento; a volta delas chega pela rodada. Rode `/compact` quando puder."
+        ("conversation_size.blocked", Locale::PtBr) => {
+            "A conversa passou de 200 mil tokens: esta chamada de ferramenta foi recusada. Rode \
+             `/compact` e cole de volta o bloco de retomada: {block} Depois, {command}. {next}"
         }
-        ("conversation_size.compact_running", Locale::EnUs) => {
-            "This conversation passed another 200-thousand-token step. Waves {waves} are in flight; \
-             their return comes through the round. Run `/compact` when you can."
+        ("conversation_size.blocked", Locale::EnUs) => {
+            "The conversation passed 200 thousand tokens: this tool call was refused. Run `/compact` \
+             and paste back the resume block: {block} After, {command}. {next}"
         }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
@@ -1041,8 +1049,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            137,
-            0x9455_0c98_8cb1_d8c8,
+            138,
+            0x9e0c_ba91_3624_bc50,
         );
     }
 
@@ -1204,8 +1212,9 @@ mod tests {
             ("stuck.reason.waiting_loop", &[][..]),
             ("stuck.reason.deleted_copy", &[][..]),
             ("conversation_size.pause", &["{wave}"][..]),
-            ("conversation_size.compact", &["{spec}", "{phase}", "{command}", "{next}"][..]),
-            ("conversation_size.compact_running", &["{waves}"][..]),
+            ("conversation_size.block", &["{spec}", "{phase}", "{delivered}", "{running}", "{missing}"][..]),
+            ("conversation_size.compact", &["{block}", "{command}", "{next}"][..]),
+            ("conversation_size.blocked", &["{block}", "{command}", "{next}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
