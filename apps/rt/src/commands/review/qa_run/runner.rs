@@ -3,8 +3,6 @@
 //! `qa_run`.
 
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
-use mustard_core::ClaudePaths;
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use super::{AcResult, QaRunOptions};
@@ -372,27 +370,6 @@ fn is_compile_bound(command: &str, compiling: &[String]) -> bool {
     ["type-check", "typecheck", "tsc "].iter().any(|t| lower.contains(t))
 }
 
-/// Locate the spec file. Tries, in order:
-///   1. `.claude/specs/{spec}.md` (very-legacy single-file layout)
-///   2. `.claude/spec/{spec}/spec.md` (canonical flat layout — single-spec mode)
-///   3. `.claude/spec/{spec}/wave-plan.md` (flat layout — wave-plan mode where
-///      the global ACs live in `wave-plan.md` and `spec.md` is absent)
-///
-/// Flat layout is the current contract: there are no
-/// `active/` / `completed/` buckets anymore. The spec dir lives at the same
-/// path for its entire lifecycle and the canonical status is in the SQLite
-/// event store + the `### Status:` header.
-pub(super) fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
-    let paths = ClaudePaths::for_project(cwd).ok()?;
-    // `specs/<spec>.md` is the legacy pre-flat-layout fallback; that directory
-    // is not in the documented `ClaudePaths` catalog (post-flat-layout) so
-    // build it from the claude_dir root.
-    let legacy = paths.claude_dir().join("specs").join(format!("{spec}.md"));
-    let sp = paths.for_spec(spec).ok()?;
-    let candidates = [legacy, sp.spec_md_path(), sp.wave_plan_md_path()];
-    candidates.into_iter().find(|c| c.exists())
-}
-
 /// Rewrite a `cargo build/test --workspace` command so the workspace build
 /// leaves out the one crate whose output IS the running binary.
 ///
@@ -594,7 +571,6 @@ fn run_ac_command_inner(
             .map(|(_, exe)| running_binary_label(cwd, exe))
             .unwrap_or_default();
         return AcResult {
-            id: String::new(),
             status: "skip".to_string(),
             exit: None,
             duration_ms: t0.elapsed().as_millis(),
@@ -629,7 +605,6 @@ fn run_ac_command_inner(
         // nothing — `skip` (warn-and-allow) would let the run read green.
         ShellOutcome::TimedOut { after } => {
             return AcResult {
-                id: String::new(),
                 status: "timeout".to_string(),
                 exit: None,
                 duration_ms: t0.elapsed().as_millis(),
@@ -644,7 +619,6 @@ fn run_ac_command_inner(
         // the misleading verdict this spec exists to remove.
         ShellOutcome::SpawnFailed { error } => {
             return AcResult {
-                id: String::new(),
                 status: "skip".to_string(),
                 exit: None,
                 duration_ms: t0.elapsed().as_millis(),
@@ -676,7 +650,6 @@ fn run_ac_command_inner(
         let pattern = expect.unwrap_or_default();
         return match evaluate_expect(expect, &combined_full) {
             ExpectVerdict::NoExpectation | ExpectVerdict::Matched => AcResult {
-                id: String::new(),
                 status: "pass".to_string(),
                 exit: Some(0),
                 duration_ms,
@@ -692,7 +665,6 @@ fn run_ac_command_inner(
                 tests_run: counted,
             },
             ExpectVerdict::Missed => AcResult {
-                id: String::new(),
                 status: "fail".to_string(),
                 exit: Some(0),
                 duration_ms,
@@ -703,7 +675,6 @@ fn run_ac_command_inner(
                 tests_run: counted,
             },
             ExpectVerdict::InvalidPattern => AcResult {
-                id: String::new(),
                 status: "skip".to_string(),
                 exit: Some(0),
                 duration_ms,
@@ -754,7 +725,6 @@ fn run_ac_command_inner(
     }
     if status.code().map(i64::from) == Some(EXIT_COMMAND_NOT_FOUND) {
         return AcResult {
-            id: String::new(),
             status: "fail".to_string(),
             exit: Some(EXIT_COMMAND_NOT_FOUND),
             duration_ms,
@@ -766,32 +736,12 @@ fn run_ac_command_inner(
         };
     }
     AcResult {
-        id: String::new(),
         status: "fail".to_string(),
         exit: Some(status.code().map_or(1, i64::from)),
         duration_ms,
         stderr_excerpt: excerpt(&combined_full),
         tests_run: counted,
     }
-}
-
-/// O gravador velho de eventos saiu, e com ele o destino do resultado dos
-/// critérios: quem guarda a execução hoje é o arquivo de eventos da spec.
-pub(super) fn emit_qa_event(_cwd: &Path, _spec: &str, _overall: &str, _criteria: &[Value]) {}
-
-/// Emit the `qa` metric (fail-silent).
-pub(super) fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) {
-    let (mut pass, mut fail, mut skip, mut timeout) = (0, 0, 0, 0);
-    for c in criteria {
-        match c.status.as_str() {
-            "pass" => pass += 1,
-            "fail" => fail += 1,
-            "skip" => skip += 1,
-            "timeout" => timeout += 1,
-            _ => {}
-        }
-    }
-    let _ = (spec, overall, pass, fail, skip, timeout, cwd);
 }
 
 thread_local! {
@@ -866,20 +816,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Wave-plans keep their global ACs in `wave-plan.md` (no `spec.md` at the
-    /// root). `find_spec_file` must fall back to `wave-plan.md` so qa-run
-    /// closes wave-plans end-to-end without the operator copying/renaming.
-    #[test]
-    fn finds_wave_plan_md_when_spec_md_absent() {
-        let dir = tempdir().unwrap();
-        let spec_dir = ClaudePaths::for_project(dir.path()).unwrap().for_spec("plan-a").unwrap().dir().to_path_buf();
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        let wp = spec_dir.join("wave-plan.md");
-        std::fs::write(&wp, "# Plan A\n## Acceptance Criteria\n- [ ] AC-G1: ok — Command: `true`\n").unwrap();
-        let found = find_spec_file(dir.path(), "plan-a").unwrap();
-        assert_eq!(found, wp);
-    }
-
     /// Quantos testes a saída diz ter rodado, em cada executor que o projeto
     /// usa: o cargo soma os alvos e basta um alvo com teste para o verde
     /// valer; o jest, o vitest, o pytest, o unittest, o dotnet e o mocha dizem
@@ -949,22 +885,6 @@ mod tests {
         assert!(zero.stderr_excerpt.contains("running 0 tests"), "o zero leva a saída real: {}", zero.stderr_excerpt);
         let quiet = run_ac_command("echo lint ok: no tests to skip", None, dir.path());
         assert_eq!((quiet.status.as_str(), quiet.tests_run), ("pass", None), "{}", quiet.stderr_excerpt);
-    }
-
-    /// When both `spec.md` and `wave-plan.md` exist in the same dir, the
-    /// `spec.md` path wins — preserves the single-spec contract for the rare
-    /// case where an operator authored both (e.g. legacy migrations).
-    #[test]
-    fn spec_md_wins_over_wave_plan_md_when_both_exist() {
-        let dir = tempdir().unwrap();
-        let spec_dir = ClaudePaths::for_project(dir.path()).unwrap().for_spec("plan-b").unwrap().dir().to_path_buf();
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        let sp = spec_dir.join("spec.md");
-        let wp = spec_dir.join("wave-plan.md");
-        std::fs::write(&sp, "# Spec B\n## Acceptance Criteria\n- [ ] AC-1: x — Command: `true`\n").unwrap();
-        std::fs::write(&wp, "# Plan B\n## Acceptance Criteria\n- [ ] AC-G1: y — Command: `true`\n").unwrap();
-        let found = find_spec_file(dir.path(), "plan-b").unwrap();
-        assert_eq!(found, sp);
     }
 
     /// An AC-style command with quotes AND parentheses must survive intact to

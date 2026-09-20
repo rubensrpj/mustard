@@ -1,5 +1,5 @@
 //! Os tipos de evento da spec: os blocos em que cada tipo cai, a forma de
-//! cada campo e os 33 tipos, com os campos próprios de cada um.
+//! cada campo e os 35 tipos, com os campos próprios de cada um.
 
 use serde_json::Value;
 
@@ -287,7 +287,7 @@ const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 /// uma mora no catálogo, no texto que a recusa da tarefa sem nota mostra.
 const POINTS: &[u64] = &[1, 2, 3, 5, 8, 13];
 
-/// Os 33 tipos. Os campos marcados com `opt` podem faltar; os outros são
+/// Os 35 tipos. Os campos marcados com `opt` podem faltar; os outros são
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa. A mensagem que responde a um gesto de aprovação leva a
@@ -343,6 +343,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("reason", Kind::Text),
         ],
     ),
+    // A publicação de uma página. A do template do Mustard, que lê o banco de
+    // dados guardado junto da página, traz `template: true`; a que não traz é
+    // a página inteira de uma versão antiga, que fica parada como está.
     ty(
         "publish",
         "PUB",
@@ -354,7 +357,19 @@ pub const TYPES: &[TypeSpec] = &[
             req("ok", Kind::Bool),
             opt("url", Kind::Text),
             opt("reason", Kind::Text),
+            opt("template", Kind::Bool),
         ],
+    ),
+    // A cópia dos itens para o banco de dados de uma página publicada, gravada
+    // depois que ela foi feita: a da página da spec diz em `last` o número do
+    // último item que ela levou; a da página do projeto diz em `phase` a fase
+    // da linha da spec que ela levou.
+    ty(
+        "copy",
+        "COPY",
+        Block::State,
+        false,
+        &[req("page", Kind::OneOf(PAGES)), opt("last", Kind::Int), opt("phase", Kind::OneOf(PHASES))],
     ),
     // Combinado.
     ty("work_type", "WORK", Block::Agreed, true, &[req("kinds", Kind::ManyOf(WORK_KINDS))]),
@@ -486,6 +501,24 @@ pub const TYPES: &[TypeSpec] = &[
             // fica ocupada enquanto a onda está em andamento.
             opt("copy", Kind::Text),
             opt("build_dir", Kind::Text),
+            // A escolha do orquestrador antes do envio, à parte dos itens que
+            // ficaram (`items`): os itens julgados (`judged`), os do projeto
+            // todo que saíram (`removed`) e os sem dono que entraram
+            // (`added`), cada um como `{"item": <número>, "why": "<o motivo
+            // numa frase>"}`; e as lições do banco julgadas
+            // (`judged_lessons`) e as que saíram (`removed_lessons`), cada uma
+            // como `{"lesson": <número no banco>, "why": "<o motivo>"}`.
+            opt("analysis", Kind::Object),
+            // O envio anterior, pelo número ou pelo código: só num reenvio,
+            // da onda pausada ou da órfã de um Claude Code que fechou.
+            opt("resends", Kind::Ref),
+            // O processo do Claude Code que mandou este envio — o número e a
+            // hora de início que `/proc` contava então, para um número
+            // reaproveitado não enganar. Sem o par, num envio de versão
+            // antiga ou fora do Linux, a rodada não sabe dizer se ele segue
+            // aberto.
+            opt("claude_pid", Kind::Int),
+            opt("claude_started", Kind::Int),
         ],
     ),
     ty(
@@ -493,7 +526,18 @@ pub const TYPES: &[TypeSpec] = &[
         "DELIV",
         Block::Waves,
         false,
-        &[req("wave", Kind::Int), TEXT, req("files", Kind::Texts)],
+        // Sem replanejamento, a entrega exige a lista de arquivos; com ele, a
+        // onda pode ter voltado sem mexer em nenhum (veja `check_conditions`).
+        &[req("wave", Kind::Int), TEXT, opt("files", Kind::Texts), opt("replan", Kind::Text)],
+    ),
+    // O agente de onda grava um passo ao terminar cada tarefa e ao provar o
+    // vermelho e o verde de cada critério: não substitui a entrega do fim.
+    ty(
+        "step",
+        "STEP",
+        Block::Waves,
+        false,
+        &[req("wave", Kind::Int), req("item", Kind::Ref), TEXT],
     ),
     // Revisão.
     ty(
@@ -502,7 +546,10 @@ pub const TYPES: &[TypeSpec] = &[
         Block::Review,
         false,
         &[
-            req("wave", Kind::Int),
+            // A onda que o veredito julga. O agente de teste dedicado que
+            // aprova a obra inteira não aponta uma onda; a cobrança do campo
+            // fica com a situação (veja `check_conditions`).
+            opt("wave", Kind::Int),
             req("result", Kind::OneOf(VERDICTS)),
             TEXT,
             // Os critérios conferidos. A revisão de uma onda os traz sempre; a
@@ -575,10 +622,10 @@ mod tests {
     use crate::domain::spec_events::Refusal;
 
     #[test]
-    fn there_are_thirty_three_types_each_with_one_block() {
-        assert_eq!(TYPES.len(), 33);
+    fn there_are_thirty_five_types_each_with_one_block() {
+        assert_eq!(TYPES.len(), 35);
         let names: BTreeSet<&str> = TYPES.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 33, "a type name repeats");
+        assert_eq!(names.len(), 35, "a type name repeats");
         for block in Block::ALL {
             if block == Block::Metrics {
                 assert!(TYPES.iter().all(|t| t.block != block), "nobody writes to the panel");

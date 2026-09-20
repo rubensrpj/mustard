@@ -1,20 +1,25 @@
 //! `command_guard` — a trava de comandos, no `PreToolUse` do Bash.
 //!
 //! O comando é lido uma vez, como o terminal o parte ([`lex`]), e passa por
-//! duas conferências, nesta ordem:
+//! três conferências, nesta ordem:
 //!
 //! - [`safety`] — recusa os comandos que destroem trabalho;
-//! - [`windows_redirect`] — recusa o redirecionamento para um caminho do
-//!   Windows (`> C:\...`), que o shell POSIX transformaria num arquivo com
-//!   nome estranho na pasta atual.
+//! - [`windows_redirect`] — corrige, sem recusar, o redirecionamento para um
+//!   caminho do Windows (`> C:\...`), que o shell POSIX transformaria num
+//!   arquivo com nome estranho na pasta atual;
+//! - [`waiting`] — recusa o laço que espera outro processo (`while`/`until`
+//!   com `pgrep`, `pidof` ou `ps`) e corrige, sem recusar, a compilação ou o
+//!   teste do `cargo` mandados para segundo plano ou chamados pelo caminho
+//!   completo.
 //!
-//! A primeira que decide vence. Trocar um comando por `rtk` não é feito aqui:
-//! o gancho do próprio rtk faz isso.
+//! A primeira que decide vence. Trocar o `cargo` da linha de comando por
+//! `rtk` não é feito aqui: o gancho do próprio rtk faz isso; `waiting` só
+//! cobre o caminho completo, que esse gancho não alcança.
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
 
-use super::{lex, safety, windows_redirect};
+use super::{lex, safety, waiting, windows_redirect};
 
 /// A trava de comandos do Bash.
 pub struct CommandGuard;
@@ -47,7 +52,10 @@ impl Check for CommandGuard {
             return Ok(verdict);
         }
         let lang = ctx.config.language().text_or_default();
-        if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, lang) {
+        if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, input, lang) {
+            return Ok(verdict);
+        }
+        if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang) {
             return Ok(verdict);
         }
         Ok(Verdict::Allow)
@@ -96,26 +104,60 @@ mod tests {
         assert!(!verdict_for("git push --force-with-lease origin dev").is_blocking());
     }
 
-    /// O redirecionamento para um caminho do Windows é recusado com o motivo
-    /// próprio dele.
+    /// O redirecionamento para um caminho do Windows é reescrito, com uma
+    /// nota do que trocou, para `>` e `2>` nos dois jeitos de escrever o
+    /// caminho, e para o `tee`; o comando segue, sem recusa. Um comando que
+    /// destrói trabalho, mesmo com um redirecionamento assim, continua
+    /// recusado: a trava que sobra (`safety::bash_safety`) cobre o caso que
+    /// a recusa desta trava cobria.
     #[test]
-    fn a_windows_path_redirect_is_refused_with_its_own_reason() {
-        let cmd = "cat src/main.rs > C:\\Atiz\\dump.txt";
-        let expected = mustard_core::translate("command_guard.windows_path", SupportedLocale::PtBr)
-            .replace("{target}", "C:\\Atiz\\dump.txt")
-            .replace("{command}", cmd);
-        match verdict_for(cmd) {
-            Verdict::Deny { reason } => assert_eq!(reason, expected),
-            other => panic!("expected Deny, got {other:?}"),
+    fn a_windows_redirect_is_rewritten_instead_of_refused() {
+        for (cmd, rewritten) in [
+            ("cat src/main.rs > C:\\Atiz\\dump.txt", "cat src/main.rs > /c/Atiz/dump.txt"),
+            ("rtk cargo test 2> D:/logs/erro.txt", "rtk cargo test 2> /d/logs/erro.txt"),
+            ("cmd | tee C:\\Atiz\\out.txt", "cmd | tee /c/Atiz/out.txt"),
+        ] {
+            match verdict_for(cmd) {
+                Verdict::Rewrite { tool_input, note } => {
+                    assert_eq!(tool_input["command"], rewritten, "{cmd}");
+                    assert!(note.is_some(), "{cmd}");
+                }
+                other => panic!("expected Rewrite for {cmd:?}, got {other:?}"),
+            }
+        }
+
+        match verdict_for("rm -rvf /tmp/work > C:\\pasta\\arquivo.txt") {
+            Verdict::Deny { .. } => {}
+            other => panic!("a destructive command stays denied even with a Windows redirect: {other:?}"),
         }
     }
 
-    /// Comando comum passa: a trava só tem as duas conferências, e ler ou
+    /// Comando comum passa: a trava tem só as três conferências, e ler ou
     /// buscar pelo terminal não é uma delas.
     #[test]
     fn ordinary_commands_pass_the_chain() {
         for cmd in ["git status", "npm run build", "grep -r pattern src/", "cat README.md", "git commit -m x"] {
             assert!(!verdict_for(cmd).is_blocking(), "{cmd}");
+        }
+    }
+
+    /// O laço que espera outro processo é recusado pela trava inteira, o
+    /// mesmo veredito que a conferência sozinha (`waiting::bash_waiting`) dá;
+    /// e o `cargo` mandado para segundo plano, que não é recusado, chega
+    /// reescrito com o campo `run_in_background` fora e o teto de tempo.
+    #[test]
+    fn the_waiting_check_runs_inside_the_full_chain() {
+        assert!(verdict_for("while pgrep -f x >/dev/null; do sleep 1; done").is_blocking());
+
+        let (mut input, ctx) = pre_bash("cargo test -p mustard-rt");
+        input.tool_input["run_in_background"] = json!(true);
+        match CommandGuard.evaluate(&input, &ctx).expect("check never errors") {
+            Verdict::Rewrite { tool_input, .. } => {
+                assert_eq!(tool_input["command"], "cargo test -p mustard-rt");
+                assert_eq!(tool_input["timeout"], 600_000);
+                assert!(tool_input.get("run_in_background").is_none(), "{tool_input}");
+            }
+            other => panic!("expected a rewrite, got {other:?}"),
         }
     }
 

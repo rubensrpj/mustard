@@ -30,10 +30,12 @@ pub const SETTINGS_SEED: &str = include_str!("../../templates/settings.json");
 /// O nome do mapa do início da sessão, em `.claude/mustard/`. É o único texto
 /// que o início da sessão coloca, e o nome não muda com o idioma: a
 /// declaração do `mustard.json` segue valendo quando o `language.text` muda.
-pub const SESSION_MAP_NAME: &str = "mapa-inicio-sessao.md";
+/// O nome é em inglês, como o dos outros arquivos do Mustard; o nome antigo,
+/// em português, é trocado na atualização (veja `project_seed::files`).
+pub const SESSION_MAP_NAME: &str = "session-map.md";
 
-const SESSION_MAP_PT_BR: &str = include_str!("../../templates/mustard/pt-BR/mapa-inicio-sessao.md");
-const SESSION_MAP_EN_US: &str = include_str!("../../templates/mustard/en-US/mapa-inicio-sessao.md");
+const SESSION_MAP_PT_BR: &str = include_str!("../../templates/mustard/pt-BR/session-map.md");
+const SESSION_MAP_EN_US: &str = include_str!("../../templates/mustard/en-US/session-map.md");
 
 /// O mapa do início da sessão no idioma `text`: o que o Mustard faz, quando
 /// uma spec abre e onde cada coisa mora. Os dois idiomas são molde do
@@ -103,5 +105,20 @@ mod tests {
         assert_ne!(session_map(Locale::PtBr), session_map(Locale::EnUs), "each language has its own map");
 
         assert!(CLAUDE_GITIGNORE.contains(".events/"), "gitignore covers the event logs");
+    }
+
+    /// O mapa não manda mais passar toda execução de código a um agente: quem
+    /// diz quem executa é a resposta do plano, pela soma das notas. A
+    /// delegação da investigação que abre muitos arquivos continua.
+    #[test]
+    fn the_session_map_no_longer_delegates_every_code_run() {
+        for (text, code_run, investigation) in [
+            (Locale::PtBr, "toda execução de código", "a investigação que abre muitos arquivos"),
+            (Locale::EnUs, "every code run", "any investigation that opens many files"),
+        ] {
+            let map = session_map(text);
+            assert!(!map.contains(code_run), "the {text} map still hands code execution to an agent: {map}");
+            assert!(map.contains(investigation), "the {text} map lost the investigation delegation: {map}");
+        }
     }
 }

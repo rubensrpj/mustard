@@ -13,10 +13,14 @@
 //! ```
 //!
 //! A linha da spec no índice das specs é refeita a cada gravação, ainda com a
-//! trava do arquivo de eventos presa. A página e o `.md` não: refazer os dois
-//! custa segundos na spec real, e gravar um evento tem de custar o tempo de
-//! escrever uma linha. Eles saem no fim de cada passo do fluxo, no fim de cada
-//! onda — o `entregou`, que passa por aqui — e no comando de página.
+//! trava do arquivo de eventos presa. A gravação não mexe em página nenhuma: a
+//! página publicada lê o banco de dados dela, e a cópia para o banco sai nos
+//! marcos (`super::pages::copy`).
+//!
+//! Um pedido (`request`) muda o plano, e a cópia sai logo depois dele: numa
+//! spec cuja página já foi publicada, a saída traz em `copy` os lotes
+//! preparados e, em `next`, a ordem de copiá-los e de gravar a cópia feita
+//! (`copy`), que diz o número do último item que ela levou.
 //!
 //! Com o tipo `lesson`, a gravação vai para o banco de lições
 //! (`.claude/spec/lessons.ndjson`), e não para a spec: a classe vem em
@@ -32,6 +36,18 @@
 //!
 //! ```text
 //! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
+//! ```
+//!
+//! A publicação da página do projeto (`publish` com `"page":"project"`) é o
+//! outro tipo que dispensa o `--spec`. A página do projeto nasce na primeira
+//! sessão, quando ainda não há spec em que a publicação caiba: sem `--spec`,
+//! o endereço da publicação que deu certo vai direto para a linha do projeto
+//! do índice das specs, com a trava do índice, e a barra de status passa a
+//! mostrar o link. A publicação que falhou, sem spec, não tem onde ficar e é
+//! recusada pedindo a spec:
+//!
+//! ```text
+//! {"ok": true, "type": "publish", "page": "project", "url": "https://claude.ai/…"}
 //! ```
 //!
 //! O mesmo comando enxuga o banco. A lição que junta outras numa só aponta
@@ -153,7 +169,6 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use super::pages::SpecPages;
 use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
@@ -234,6 +249,11 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         return write_lesson(&project, opts.spec.as_deref(), draft);
     }
     let Some(spec) = opts.spec.as_deref() else {
+        // A página do projeto nasce antes de qualquer spec.
+        let page = draft.get("page").and_then(Value::as_str).map(str::trim);
+        if event_type == "publish" && page == Some(spec_index::PROJECT_PAGE) {
+            return record_project_page(&project, &draft);
+        }
         // Sem spec, um tipo que não existe continua recusado pelo nome.
         return refuse(if type_spec(event_type).is_some() {
             Refusal::SpecRequired { event_type: event_type.to_string() }
@@ -267,7 +287,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
         .flatten();
     match record_in(&project, &opts.root, spec, event_type, draft, None) {
-        Ok(Recorded { written, pages, grew, survey }) => {
+        Ok(Recorded { written, grew, survey }) => {
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -283,14 +303,10 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             if !written.purged.is_empty() {
                 report["purged"] = json!(written.purged);
             }
-            // Se não deu para gravar a página e o `.md`, ou para refazer a
-            // linha da spec no índice, o evento já está no arquivo: fica o
-            // aviso. O nome citado num fato que o mapa não confirma também
-            // só avisa.
+            // Se não deu para refazer a linha da spec no índice, o evento já
+            // está no arquivo: fica o aviso. O nome citado num fato que o
+            // mapa não confirma também só avisa.
             let mut warnings = Vec::new();
-            if let Some(Err(refusal)) = &pages {
-                warnings.push(refusal.message(lang));
-            }
             if let Some(refusal) = &written.index_warning {
                 warnings.push(spec_index::write_warning(refusal, lang));
             }
@@ -305,11 +321,32 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
                         .replace("{now}", &now.to_string()),
                 );
             }
+            // O pedido muda o plano: a cópia para o banco da página sai logo
+            // depois dele. A que não pôde ser preparada só avisa, e a cópia
+            // seguinte leva os mesmos itens.
+            let mut next = next.map(|key| translate(&key, lang).to_string());
+            if let Some(said) = next.as_mut() {
+                match super::pages::copy::prepare(&project.root, spec, super::pages::copy::Moment::Request, lang) {
+                    Ok(Some(prepared)) => {
+                        report["copy"] = prepared.to_value();
+                        for sentence in prepared.order(spec.trim(), None, lang) {
+                            said.push(' ');
+                            said.push_str(&sentence);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(refusal) => {
+                        warnings.push(refusal.message(lang));
+                        said.push(' ');
+                        said.push_str(translate("page.copy.failed", lang));
+                    }
+                }
+            }
             if !warnings.is_empty() {
                 report["warnings"] = json!(warnings);
             }
-            if let Some(key) = next {
-                report["next"] = json!(translate(&key, lang));
+            if let Some(next) = next {
+                report["next"] = json!(next);
             } else if let Some(survey) = survey {
                 for (key, value) in survey {
                     report[key.as_str()] = value;
@@ -399,13 +436,10 @@ fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result
     }
 }
 
-/// O que uma gravação deixou: o evento e, no fim de uma onda, onde a página e
-/// o `.md` foram refeitos ou por que não foram gravados.
+/// O que uma gravação deixou: o evento, o crescimento das ondas e o passo do
+/// levantamento.
 pub struct Recorded {
     pub(crate) written: store::Written,
-    /// Onde a página e o `.md` foram gravados, ou a recusa da gravação deles.
-    /// Só no `entregou` de uma onda: as outras gravações não os refazem.
-    pub(crate) pages: Option<Result<SpecPages, Refusal>>,
     /// As ondas aprovadas e as de agora, quando a onda gravada fez a spec
     /// passar das ondas que tinha na aprovação que vale.
     pub(crate) grew: Option<(usize, usize)>,
@@ -415,9 +449,8 @@ pub struct Recorded {
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
-/// `run write`: a linha no arquivo de eventos e a linha da spec no índice. A
-/// página e o `.md` só no `entregou` de uma onda. `by` diz quem grava, para a
-/// regra da mudança de fase.
+/// `run write`: a linha no arquivo de eventos e a linha da spec no índice.
+/// `by` diz quem grava, para a regra da mudança de fase.
 ///
 /// # Errors
 ///
@@ -453,17 +486,11 @@ fn record_in(
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
-    // A página e o `.md` saem no fim de cada passo e no fim de cada onda, não
-    // a cada gravação. O fim de uma onda é o `entregou`, e ele passa por
-    // aqui: os dois são refeitos antes de a trava soltar, do que acabou de
-    // ser gravado, e a gravação seguinte, de outra sessão, só entra depois. A
-    // conta das ondas também sai dali, com a trava presa: duas ondas gravadas
-    // ao mesmo tempo nunca avisam a mesma conta.
-    let mut pages = None;
+    // A conta das ondas sai com a trava presa: duas ondas gravadas ao mesmo
+    // tempo nunca avisam a mesma conta.
     let mut grew = None;
     let mut survey = None;
     let wave = event_type == "wave";
-    let ends_a_wave = event_type == "delivered";
     let lang = project.lang;
     let written = store::write_guarded(
         &path,
@@ -483,12 +510,9 @@ fn record_in(
             if wave {
                 grew = waves_grown_by(log, log.max_id());
             }
-            if ends_a_wave {
-                pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
-            }
         },
     )?;
-    Ok(Recorded { written, pages, grew, survey })
+    Ok(Recorded { written, grew, survey })
 }
 
 /// A fase que uma gravação de `state` traz e o `state` que ela revê; nos
@@ -625,7 +649,7 @@ fn survey_report(
                 out.insert("point".to_string(), super::shown(point, &codes));
             }
             SurveyStep::Done { unrouted } => {
-                next.push(translate("survey.done", lang).to_string());
+                next.push(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
                 let listed: Vec<Value> = unrouted.into_iter().map(|m| super::shown(m, &codes)).collect();
                 out.insert("unrouted".to_string(), json!(listed));
             }
@@ -856,6 +880,33 @@ pub(crate) fn branch_of_spec(start: &Path, spec: &str) -> Option<String> {
     (slug_of_work_branch(&current, &config).as_deref() == Some(spec.trim())).then_some(current)
 }
 
+/// Grava o endereço da página do projeto publicada fora de uma spec: na
+/// primeira sessão do projeto ainda não há spec em que a publicação caiba. O
+/// endereço vai para a linha do projeto do índice das specs, pela mesma
+/// gravação da publicação feita numa spec, com a trava do índice presa da
+/// leitura à escrita. Só a publicação que deu certo tem o que gravar: a que
+/// falhou é recusada pedindo a spec, e a que deu certo sem endereço, pelo
+/// campo que falta. A publicação fora de uma spec só nasce do aviso do início
+/// da sessão, que publica o template da página do projeto: o endereço vai
+/// sempre com a marca do template.
+fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> Value {
+    let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
+    if draft.get("ok").and_then(Value::as_bool) != Some(true) {
+        return refuse(Refusal::SpecRequired { event_type: "publish".to_string() });
+    }
+    let Some(url) = draft.get("url").and_then(Value::as_str).map(str::trim).filter(|url| !url.is_empty()) else {
+        return refuse(Refusal::MissingField { event_type: "publish".to_string(), field: "url".to_string() });
+    };
+    let index = match ClaudePaths::for_project(&project.root) {
+        Ok(paths) => paths.spec_index_path(),
+        Err(e) => return refuse(Refusal::Io { detail: e.to_string() }),
+    };
+    match mustard_core::io::spec_index::set_project_url(&index, url, true) {
+        Ok(()) => json!({ "ok": true, "type": "publish", "page": spec_index::PROJECT_PAGE, "url": url }),
+        Err(refusal) => refuse(refusal),
+    }
+}
+
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
 /// que spec a lição nasceu. O texto passa antes pela medição da conferência
 /// de escrita do fim da resposta; com defeito, nada é gravado.
@@ -1056,13 +1107,11 @@ mod tests {
         assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
     }
 
-    /// Nenhuma gravação refaz a página nem o `.md`: os dois saem no fim do
-    /// passo, pela porta que os refaz. Depois dela, uma decisão revista mostra
-    /// só a versão nova fora da conversa, onde a antiga aparece marcada como
-    /// substituída; um item removido some dos dois e continua no arquivo de
-    /// eventos, com o motivo.
+    /// Uma decisão revista fica no arquivo de eventos com as duas versões, a
+    /// nova com o mesmo código; a leitura do combinado mostra só a nova. Um
+    /// item removido some da leitura e continua no arquivo, com o motivo.
     #[test]
-    fn the_page_and_the_md_come_out_at_the_end_of_the_step_and_not_at_each_write() {
+    fn a_revision_keeps_the_code_and_a_removal_leaves_the_reading_but_not_the_file() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"decida"}"#);
@@ -1075,27 +1124,15 @@ mod tests {
         assert!(removal.get("warnings").is_none(), "{removal}");
 
         let spec = root.join(".claude").join("spec").join("teste");
-        assert!(!spec.join("spec.html").exists(), "nenhuma gravação refez a página");
-        assert!(!spec.join("spec.md").exists(), "nenhuma gravação refez o `.md`");
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("os dois saem no fim do passo");
-        let md = std::fs::read_to_string(spec.join("spec.md")).unwrap();
-        let html = std::fs::read_to_string(spec.join("spec.html")).unwrap();
-        let (html_before, html_talk) = html.split_once("<section id=\"conversation\" class=\"block\"").unwrap();
-        let (md_before, md_talk) = md.rsplit_once("\n## ").unwrap();
-        for (before, talk) in [(html_before, html_talk), (md_before, md_talk)] {
-            assert!(before.contains("Texto novo.") && !before.contains("Texto antigo."), "{before}");
-            assert!(talk.contains("Texto antigo."), "{talk}");
-            assert!(!before.contains("Anotação que sai.") && !talk.contains("Anotação que sai."));
-        }
         let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
         assert!(events.contains("Anotação que sai.") && events.contains("engano"), "{events}");
     }
 
-    /// Remover pelo código que a página mostra tira o item da leitura, da
-    /// página e do `.md`, e ele continua no arquivo com o motivo. Um código
-    /// que não existe é recusado citando o código, e nada é gravado.
+    /// Remover pelo código que a leitura mostra tira o item dela, e ele
+    /// continua no arquivo com o motivo. Um código que não existe é recusado
+    /// citando o código, e nada é gravado.
     #[test]
-    fn removing_by_the_code_takes_the_item_out_of_the_reading_the_page_and_the_md() {
+    fn removing_by_the_code_takes_the_item_out_of_the_reading_but_not_the_file() {
         use crate::commands::spec_events::read::{read_at, ReadOpts};
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1117,12 +1154,6 @@ mod tests {
         .unwrap();
         assert!(!agreed.contains("Regra dois.") && agreed.contains("Regra três."), "{agreed}");
         let spec = root.join(".claude").join("spec").join("teste");
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
-        for page in ["spec.md", "spec.html"] {
-            let shown = std::fs::read_to_string(spec.join(page)).unwrap();
-            assert!(!shown.contains("Regra dois."), "{page}: {shown}");
-            assert!(shown.contains("Regra um.") && shown.contains("Regra três."), "{page}");
-        }
         let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
         assert!(events.contains("Regra dois.") && events.contains("Regra repetida."), "{events}");
 
@@ -1138,8 +1169,8 @@ mod tests {
     }
 
     /// Numa pasta de spec do formato antigo, que tem o `meta.json` e nenhum
-    /// arquivo de eventos, o binário não cria o arquivo: a gravação recusa, o
-    /// `spec.md` dela fica com os mesmos bytes e a página não nasce.
+    /// arquivo de eventos, o binário não cria o arquivo: a gravação recusa e o
+    /// `spec.md` dela fica com os mesmos bytes.
     #[test]
     fn the_binary_never_creates_an_event_file_in_an_old_format_spec() {
         let dir = tempdir().unwrap();
@@ -1155,65 +1186,64 @@ mod tests {
         assert!(out["hint"].as_str().unwrap().contains("teste"), "{out}");
         // A testemunha da aprovação chega pela mesma gravação, e recusa igual.
         assert_eq!(record_birth(root, "teste", None).unwrap_err().reason(), "old-format-spec");
-        // E o `page --spec` também.
-        assert_eq!(
-            super::super::pages::refresh(root, "teste", Locale::PtBr).unwrap_err().reason(),
-            "old-format-spec"
-        );
 
         assert_eq!(std::fs::read_to_string(spec.join("spec.md")).unwrap(), document, "the document is left alone");
         assert!(!spec.join("spec.ndjson").exists(), "no event file in an old spec");
-        assert!(!spec.join("spec.html").exists(), "no page over an old spec");
     }
 
-    /// Uma spec aberta pelo `open` tem a página e o `.md` refeitos no fim do
-    /// passo, e não a cada gravação, mesmo com um `meta.json` posto ao lado
-    /// por uma porta antiga. A linha da spec no índice continua saindo a cada
-    /// gravação: refazê-la custa uma linha.
+    /// Uma spec aberta pelo `open`, mesmo com um `meta.json` posto ao lado por
+    /// uma porta antiga, grava normalmente: a linha dela sai no índice a cada
+    /// gravação.
     #[test]
-    fn a_spec_opened_by_open_gets_its_page_at_the_end_of_the_step() {
+    fn a_spec_opened_by_open_keeps_writing_with_an_old_meta_json_beside_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = root.join(".claude").join("spec").join("teste");
         write(root, "message", r#"{"author":"user","text":"um recado"}"#);
         std::fs::create_dir_all(&spec).unwrap();
         std::fs::write(spec.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do primeiro passo");
 
-        let before = std::fs::read_to_string(spec.join("spec.html")).unwrap();
         let out = write(root, "message", r#"{"author":"user","text":"e outro recado"}"#);
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(
-            std::fs::read_to_string(spec.join("spec.html")).unwrap(),
-            before,
-            "a gravação não mexeu na página"
-        );
         let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
         assert!(index.contains("\"teste\""), "{index}");
-
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do passo seguinte");
-        let after = std::fs::read_to_string(spec.join("spec.html")).unwrap();
-        assert_ne!(before, after, "a página sai no fim do passo");
-        assert!(after.contains("e outro recado"), "{after}");
-        assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("e outro recado"));
     }
 
-    /// O fim de uma onda é o `entregou` dela, e ele refaz a página e o `.md`
-    /// dentro da própria gravação, ainda com a trava do arquivo presa.
+    /// O fim de uma onda é o `entregou` dela, e ele não escreve página nem
+    /// `.md`: a página publicada lê o banco dela, que a rodada manda copiar.
     #[test]
-    fn the_delivered_of_a_wave_rebuilds_the_page_inside_the_write() {
+    fn the_delivered_of_a_wave_writes_no_page() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = root.join(".claude").join("spec").join("teste");
         write(root, "message", r#"{"author":"user","text":"o plano"}"#);
-        assert!(!spec.join("spec.html").exists(), "a mensagem não refez a página");
 
         let delivered = r#"{"wave":1,"text":"A onda 1 ficou pronta.","files":["src/a.rs"]}"#;
         let out = write(root, "delivered", delivered);
         assert_eq!(out["ok"], json!(true), "{out}");
-        let page = std::fs::read_to_string(spec.join("spec.html")).expect("a página sai no fim da onda");
-        assert!(page.contains("A onda 1 ficou pronta."), "{page}");
-        assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("A onda 1 ficou pronta."));
+        for page in ["spec.html", "spec.md", "copy"] {
+            assert!(!spec.join(page).exists(), "{page}");
+        }
+    }
+
+    /// O agente de onda grava um passo ao terminar uma tarefa ou provar um
+    /// critério, pelo `run write step`: o tipo não está em `BINARY_ONLY`, então
+    /// a gravação segue e não vira a entrega do fim.
+    #[test]
+    fn the_agent_writes_a_step_by_hand() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "message", r#"{"author":"user","text":"o plano"}"#);
+
+        let step = write(root, "step", r#"{"wave":23,"item":"MSTD-TASK-0041","text":"O tipo passo ficou gravado."}"#);
+        assert_eq!(step["ok"], json!(true), "{step}");
+        assert_eq!(step["type"], json!("step"), "{step}");
+        assert!(step["code"].as_str().unwrap().starts_with("MSTD-STEP-"), "{step}");
+
+        let spec = root.join(".claude").join("spec").join("teste");
+        for page in ["spec.html", "spec.md"] {
+            assert!(!spec.join(page).exists(), "{page}: the step is not the end of a wave");
+        }
     }
 
     /// O que cada onda entregou, o commit, o clique e a fala digitada do
@@ -1653,16 +1683,15 @@ mod tests {
     }
 
     /// A lição vai para o banco de lições, com a spec do `--spec` dizendo
-    /// onde ela nasceu; o arquivo de eventos, a página, o `.md` e o índice
-    /// ficam como estavam. Sem `--spec`, a lição diz sozinha onde nasceu.
+    /// onde ela nasceu; o arquivo de eventos e o índice ficam como estavam.
+    /// Sem `--spec`, a lição diz sozinha onde nasceu.
     #[test]
     fn writing_a_lesson_goes_to_the_bank_and_leaves_the_spec_untouched() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"um"}"#);
         let specs = root.join(".claude").join("spec");
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
-        let files = [specs.join("teste").join("spec.ndjson"), specs.join("teste").join("spec.md"), specs.join("teste").join("spec.html"), specs.join("index.ndjson")];
+        let files = [specs.join("teste").join("spec.ndjson"), specs.join("index.ndjson")];
         let before: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
 
         let lesson = r#"{"class":"defect","text":"Um rm -rf na pasta errada perde trabalho.","keys":["apagar","rm"],"applies_to":{"subproject":"apps/rt"}}"#;
@@ -1826,10 +1855,14 @@ mod tests {
         assert_eq!(kept(), [4, 6]);
     }
 
-    /// O `search` é gravado no arquivo de eventos e nunca aparece na página
-    /// nem no `.md`: os dois mostram só o texto original.
+    /// O `search` é gravado no arquivo de eventos para a busca no banco da
+    /// página, mas `shown()` — o que qualquer leitura do evento mostra —
+    /// nunca o traz: é um campo binário (`BINARY_FIELDS`), fora do tipo do
+    /// evento. A lista dos itens sem dono, que exercitava essa garantia pela
+    /// própria renderização, saiu com esta obra: a garantia agora é só a de
+    /// `shown()`, já provada em `domain::spec_events` e em `domain::lessons`.
     #[test]
-    fn the_page_and_the_md_never_show_the_search_field() {
+    fn the_search_field_never_shows_in_what_shown_returns() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"combine"}"#);
@@ -1840,12 +1873,12 @@ mod tests {
         let line = events.lines().find(|l| l.contains("\"type\":\"rule\"")).unwrap();
         let search = serde_json::from_str::<Value>(line).unwrap()["search"].as_str().unwrap().to_string();
         assert!(search.contains(' '), "{search}");
-        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
-        for page in ["spec.md", "spec.html"] {
-            let shown = std::fs::read_to_string(spec.join(page)).unwrap();
-            assert!(shown.contains("Apagando a pasta, a trava barra o comando."), "{page}");
-            assert!(!shown.contains(&search) && !shown.contains("\"search\":"), "{page} shows the search field");
-        }
+
+        let log = store::read(&spec.join("spec.ndjson")).unwrap().unwrap();
+        let rule_event = log.visible().into_iter().rev().find(|e| e.event_type == "rule").unwrap();
+        let shown = rule_event.shown();
+        assert!(shown.contains("Apagando a pasta, a trava barra o comando."), "{shown}");
+        assert!(!shown.contains(&search) && !shown.contains("\"search\""), "shown() carries the search field: {shown}");
     }
 
     /// Uma spec nascida em plano, com uma mensagem, um critério e as ondas
@@ -2594,7 +2627,7 @@ mod tests {
             assert_eq!(last["review"]["options"], json!([go_on]), "the reviewer is not an option: {last}");
             assert!(last.get("point").is_none(), "{last}");
             let review = translate("survey.review_step", lang).replace("{block}", "proof").replace("{continue}", go_on);
-            let done = translate("survey.done", lang);
+            let done = translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang));
             assert_eq!(last["next"], json!(format!("{review} {outside} {done}")), "review, reviewer, then the end");
             assert!(last["unrouted"].is_array(), "{last}");
         }
@@ -2631,7 +2664,8 @@ mod tests {
         assert_eq!(closed["review"]["options"], json!(["Seguir"]), "{closed}");
         let next = closed["next"].as_str().unwrap();
         assert!(!next.contains(&outside), "ordered once: {closed}");
-        assert!(next.ends_with(translate("survey.done", Locale::PtBr)), "{closed}");
+        let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
+        assert!(next.ends_with(&done), "{closed}");
         assert!(closed["unrouted"].is_array(), "{closed}");
     }
 
@@ -2708,7 +2742,8 @@ mod tests {
                 assert_eq!(report["next"], json!(translate("survey.present_all", Locale::PtBr)));
             } else {
                 assert!(report["unrouted"].is_array(), "{report}");
-                assert_eq!(report["next"], json!(translate("survey.done", Locale::PtBr)));
+                let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
+                assert_eq!(report["next"], json!(done));
             }
         }
     }
@@ -3416,5 +3451,66 @@ mod tests {
         }
         witness_approves(root);
         assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
+    }
+
+    /// A publicação da página do projeto sem spec e as gravações de uma spec,
+    /// ao mesmo tempo: a publicação grava sem parar enquanto a spec grava, e
+    /// as duas pegam a trava do índice da leitura à escrita. No fim, o
+    /// endereço gravado por último fica na linha do projeto e a linha da spec
+    /// é a da última gravação dela: nenhuma apaga a outra.
+    #[test]
+    fn the_project_page_address_and_a_spec_write_at_once_both_land_in_the_index() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        // Cada regra muda os títulos da linha da spec, então a linha muda a
+        // cada gravação, mesmo dentro do mesmo segundo.
+        let origin = write_to(&root, Some("um"), "message", r#"{"author":"user","text":"combine as regras"}"#);
+        assert_eq!(origin["ok"], json!(true), "{origin}");
+        let start = Arc::new(Barrier::new(2));
+        let done = Arc::new(AtomicBool::new(false));
+        let publisher = {
+            let (root, start, done) = (root.clone(), Arc::clone(&start), Arc::clone(&done));
+            std::thread::spawn(move || {
+                start.wait();
+                let mut last = String::new();
+                for i in 0.. {
+                    if done.load(Ordering::SeqCst) && i > 0 {
+                        break;
+                    }
+                    last = format!("https://claude.ai/p{i}");
+                    let publish = json!({"page": "project", "ok": true, "url": last});
+                    let out = write_to(&root, None, "publish", &publish.to_string());
+                    assert_eq!(out["ok"], json!(true), "{out}");
+                }
+                last
+            })
+        };
+        let writer = {
+            let (root, start, done) = (root.clone(), Arc::clone(&start), Arc::clone(&done));
+            std::thread::spawn(move || {
+                start.wait();
+                for i in 0..15 {
+                    let rule = json!({"text": format!("Regra {i}."), "keys": ["k"], "example": "e", "origin": 1});
+                    let out = write_to(&root, Some("um"), "rule", &rule.to_string());
+                    assert_eq!(out["ok"], json!(true), "{out}");
+                }
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        writer.join().unwrap();
+        let last = publisher.join().unwrap();
+
+        let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
+        assert_eq!(spec_index::project_url(&index), Some(last), "{index}");
+        // Sem spec, só o início da sessão publica, e ele publica o template.
+        assert_eq!(spec_index::project_page(&index).map(|page| page.template), Some(true), "{index}");
+        let log = mustard_core::domain::spec_events::parse_log(
+            &std::fs::read_to_string(root.join(".claude/spec/um/spec.ndjson")).unwrap(),
+        );
+        let line = spec_index::spec_line("um", &log).expect("the spec has a line");
+        assert!(index.lines().any(|l| l == line), "the spec line lost its last write: {index}");
     }
 }

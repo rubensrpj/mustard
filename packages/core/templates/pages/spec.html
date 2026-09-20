@@ -1,0 +1,1306 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mustard · spec</title>
+<style>
+/* A página de uma spec do Mustard (mostarda e carvão): um template igual para
+   toda spec, que lê o banco de dados da página e monta as seções na tela.
+   Menu lateral com as seções, barra com a busca, o filtro por tipo e o botão
+   de baixar o .md, grupos recolhidos numa linha e cada item numa linha que
+   abre para ler. */
+:root{
+  --paper:#FAFAF7;--surface:#FFFFFF;--ink:#2B2B29;--muted:#6B6A64;--rule:#E6E4DC;--rule-soft:#EFEDE6;
+  --mustard:#E1AD01;--mustard-text:#8A6700;--mustard-soft:#FBF1CF;--mustard-line:#EFD27A;
+  --code:#F0EEE7;--ok:#2F7A4B;--ok-soft:#E3F1E7;--no:#B3261E;--no-soft:#F8E3E1;--charcoal:#2E2E2B;
+  --sans:"Geist","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --paper:#1C1C1A;--surface:#232321;--ink:#ECEAE3;--muted:#A7A59C;--rule:#363532;--rule-soft:#2C2B29;
+  --mustard:#E8B923;--mustard-text:#F0C849;--mustard-soft:#352E17;--mustard-line:#6B5717;
+  --code:#2C2B28;--ok:#7BC99A;--ok-soft:#1E3326;--no:#F2A097;--no-soft:#3A1F1C;--charcoal:#121211;
+  color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{height:100%;overflow-x:clip}
+body{margin:0;overflow:hidden;background:var(--paper);color:var(--ink);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--mustard-text);text-decoration-color:var(--mustard-line);text-underline-offset:2px}
+p,ul,ol{margin:0 0 10px}
+ul,ol{padding-left:22px}
+li{margin-bottom:4px}
+li::marker{color:var(--mustard-text)}
+strong{font-weight:600}
+code,pre{font-family:var(--mono);font-size:.86em}
+code{background:var(--code);padding:1px 5px;border-radius:5px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:14px 16px;overflow-x:auto;border-radius:10px;font-size:13px}
+pre code{background:none;padding:0}
+blockquote{margin:0 0 10px;padding-left:12px;border-left:3px solid var(--mustard-line);color:var(--muted)}
+button,select,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--mustard);outline-offset:2px}
+.muted{color:var(--muted)}
+.shell{display:grid;grid-template-columns:260px minmax(0,1fr);height:100vh}
+.side{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--rule)}
+.brand{font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0;padding:22px 24px 18px}
+.brand b{color:var(--mustard-text);font-weight:600}
+.side nav{flex:1;min-height:0;overflow:auto;padding:0 12px 16px 14px}
+ol.nav{list-style:none;margin:0;padding:0}
+ol.nav li{margin:0 0 2px}
+ol.nav a{display:flex;align-items:baseline;gap:8px;padding:5px 10px;border-radius:6px;font-weight:500;font-size:14px;color:var(--ink);text-decoration:none}
+ol.nav a span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ol.nav a i{font:400 11px var(--mono);font-style:normal;color:var(--muted)}
+ol.nav a:hover{color:var(--mustard-text);background:var(--mustard-soft)}
+.tools{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--rule)}
+.tools button,.btn{cursor:pointer;border:1px solid var(--rule);background:var(--surface);border-radius:7px;padding:6px 10px;font-size:12.5px;color:var(--muted)}
+.tools button{flex:1}
+.tools button:hover,.btn:hover{color:var(--ink);border-color:var(--mustard-line)}
+.btn.main{background:var(--charcoal);color:#F3F1E9;border-color:var(--charcoal)}
+#content{overflow:auto;height:100vh;min-width:0}
+.bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;min-height:56px;padding:8px 40px;background:var(--paper);border-bottom:1px solid var(--rule);flex-wrap:wrap}
+.menu-btn{display:none}
+.search{position:relative;flex:1 1 280px;min-width:0}
+.search input{width:100%;height:36px;padding:0 90px 0 12px;border:1px solid var(--rule);border-radius:8px;background:var(--surface)}
+.search input:focus,select:focus{outline:none;border-color:var(--mustard);box-shadow:0 0 0 3px var(--mustard-soft)}
+.hits{position:absolute;right:10px;top:50%;transform:translateY(-50%);font:12px var(--mono);color:var(--muted);pointer-events:none}
+select{height:36px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);padding:0 8px;max-width:220px}
+.page{max-width:1040px;padding:0 40px 40vh;margin:0 auto}
+header.top{padding:34px 0 6px}
+.eyebrow{font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mustard-text);margin:0 0 10px}
+header.top h1{font-size:32px;font-weight:650;letter-spacing:-.02em;line-height:1.2;margin:0 0 12px}
+.meta{display:flex;flex-wrap:wrap;gap:6px 20px;list-style:none;margin:0;padding:0;font-size:13px;color:var(--muted)}
+.meta li{margin:0}
+.meta b{font:500 12.5px var(--mono);color:var(--ink)}
+.empty{margin:40px 0;padding:18px 20px;border:1px dashed var(--rule);border-radius:10px;color:var(--muted)}
+section.block{padding-top:44px}
+section.block>h2{display:flex;align-items:baseline;gap:12px;font-size:22px;font-weight:650;letter-spacing:-.015em;line-height:1.25;margin:0 0 4px;padding:0 0 12px;border-bottom:1px solid var(--rule)}
+.count{flex:none;margin-left:auto;font:400 12px var(--mono);color:var(--muted)}
+.overview{margin:18px 0 8px}
+.ov-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:13px;font-weight:600;margin:0 0 10px}
+.ov-head span{font-weight:400;color:var(--muted)}
+.wgrid{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px}
+.wgrid li{margin:0}
+.w{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border-radius:8px;border:1px solid var(--rule);background:var(--surface);color:var(--ink);text-decoration:none}
+.w b{font:600 15px/1.2 var(--mono)}
+.w span{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.w.ok span{color:var(--ok)}.w.no span{color:var(--no)}
+.w.run{border-color:var(--mustard-line);background:var(--mustard-soft)}.w.run span{color:var(--mustard-text)}
+.w.todo{border-style:dashed;background:transparent}
+.w:hover{border-color:var(--mustard)}
+details.group{border-bottom:1px solid var(--rule)}
+details.group>summary{list-style:none;display:flex;align-items:center;gap:12px;min-width:0;padding:13px 4px;cursor:pointer}
+details.group>summary::-webkit-details-marker,details.item>summary::-webkit-details-marker{display:none}
+details.group>summary::before{content:"";flex:none;width:7px;height:7px;margin:0 3px 0 2px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(-45deg);transition:transform .15s}
+details.group[open]>summary::before{transform:rotate(45deg) translate(-2px,-1px)}
+.gt{flex:none;font-weight:600;font-size:15.5px}
+.gs{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:13.5px}
+.gbody{padding:0 0 14px 20px}
+.gbody>h3{font-size:14px;font-weight:600;margin:18px 0 8px}
+details.item{border-top:1px solid var(--rule-soft)}
+details.item>summary{list-style:none;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:baseline;gap:14px;padding:8px 10px;margin:0 -10px;border-radius:7px;cursor:pointer}
+details.item>summary:hover{background:var(--surface)}
+.c{background:none;padding:0;font:500 12px var(--mono);color:var(--mustard-text);white-space:nowrap}
+.t{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14.5px}
+.tail{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
+.tag{font:500 11.5px/1 var(--sans);padding:3px 8px;border-radius:999px;background:var(--code);color:var(--muted);white-space:nowrap}
+.tag.ok{background:var(--ok-soft);color:var(--ok)}.tag.no{background:var(--no-soft);color:var(--no)}
+.tag.run,.tag.mark{background:var(--mustard-soft);color:var(--mustard-text)}
+.tag.todo{background:transparent;border:1px dashed var(--rule)}.tag.done{color:var(--ink)}
+.who,.when{font-size:12px;color:var(--muted)}.when{font-family:var(--mono)}
+details.item.old .c,details.item.old .t{color:var(--muted)}
+details.item[open]{margin:6px -12px 10px;padding:0 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
+details.item[open]>summary{margin:0 -12px;padding:12px 12px 8px}
+details.item[open]>summary .t{white-space:normal;font-weight:600}
+.body{padding:0 0 14px;font-size:14.5px;min-width:0}
+.prose{max-width:76ch}
+.prose+.kv{margin-top:12px}
+dl.kv{display:grid;grid-template-columns:minmax(120px,max-content) minmax(0,1fr);gap:5px 18px;margin:0;font-size:13.5px}
+dl.kv dt{color:var(--muted)}
+dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+details.prompt{margin:4px 0 10px;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
+details.prompt>summary{cursor:pointer;padding:10px 14px;font-size:13.5px;color:var(--muted)}
+details.prompt>.md{padding:0 16px 12px;font-size:14px}
+.mh{font-weight:650;margin:14px 0 6px}
+.table{overflow-x:auto;max-width:100%;margin:0 0 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;vertical-align:top;padding:9px 14px;border-bottom:1px solid var(--rule)}
+th{font-weight:500;font-size:12.5px;color:var(--muted);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+[hidden]{display:none!important}
+@media (max-width:900px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .side{position:fixed;z-index:10;inset:0 auto 0 0;width:min(300px,86vw);background:var(--paper);transform:translateX(-100%);transition:transform .2s}
+  body.nav-open .side{transform:none}
+  .menu-btn{display:block}
+  .bar{padding:8px 16px}
+  .page{padding:0 16px 40vh}
+  details.item>summary{grid-template-columns:minmax(0,1fr) auto;gap:4px 10px}
+  details.item>summary .c{grid-column:1/-1}
+  .who{display:none}
+  dl.kv{grid-template-columns:minmax(0,1fr)}
+}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="application/json" id="mustard-catalog">{}</script>
+<script id="mustard-page">
+// O script da página da spec. Ele lê o banco de dados que o claude.ai guarda
+// junto da página (os itens copiados do spec.ndjson e o documento das coisas
+// calculadas), monta as seções com as mesmas regras da página que o binário
+// montava, mais a seção dos removidos no fim, e se atualiza sozinho quando uma
+// cópia nova chega. Os textos, os
+// tipos de evento e as fases vêm do catálogo que o binário põe na tag
+// mustard-catalog, no idioma do projeto. Sem banco, ou com o banco vazio, a
+// página diz que ainda não há dados.
+(function () {
+  'use strict';
+  var W = window, D = document;
+  var CAT = {};
+  try { CAT = JSON.parse(D.getElementById('mustard-catalog').textContent || '{}'); } catch (_) { CAT = {}; }
+  var L = CAT.labels || {};
+  function t(key) { return Object.prototype.hasOwnProperty.call(L, key) ? L[key] : key; }
+  function say(key, vars) {
+    var s = t(key);
+    Object.keys(vars).forEach(function (k) { s = s.split('{' + k + '}').join(String(vars[k])); });
+    return s;
+  }
+  var DBP = CAT.db || { ranges: 'ranges', computed: 'computed/current' };
+  var TYPES = {}, TYPE_LIST = CAT.types || [];
+  TYPE_LIST.forEach(function (ty) { TYPES[ty.name] = ty; });
+  var BLOCKS = CAT.blocks || [], PHASES = CAT.phases || [], APPROVED = CAT.approvedPhases || [];
+  var FINDING = CAT.findingLabels || [];
+  var MARK = typeof CAT.purgedMark === 'string' ? CAT.purgedMark : '';
+  var PAGE = 500;
+  if (CAT.lang) D.documentElement.setAttribute('lang', CAT.lang);
+
+  // As regras de mostrar cada campo, as mesmas da página que o binário montava.
+  var EXECUTION = ['criterion_run', 'send', 'delivered'];
+  var EVENT_REF = ['reply_to', 'closes', 'criterion'];
+  var EVENT_REFS = ['criteria', 'covers', 'items', 'result', 'targets', 'contracts'];
+  var WAVE_NUMBERS = ['wave', 'waves', 'depends_on'];
+  var LITERAL = ['sha', 'proof', 'command', 'hook', 'tool', 'mustard', 'branch', 'base', 'repo', 'skill', 'name'];
+  var MARKED = ['agreed', 'specification', 'criteria', 'waves', 'notes'];
+  var SUBJECTS = [['task', 'tasks', 'page.findings.tasks'], ['wave', 'waves', 'page.findings.waves'],
+    ['criterion', 'criteria', 'page.findings.criteria'], ['rule', 'rules', 'page.findings.rules'],
+    ['decision', 'decisions', 'page.findings.decisions'], ['skill', 'skills', 'page.findings.skills'],
+    ['', 'others', 'page.findings.others']];
+  var STATES = {
+    todo: ['page.value.wave_todo', 'page.value.wave_todo.many', 'todo'],
+    running: ['page.value.wave_running', 'page.value.wave_running.many', 'run'],
+    delivered: ['page.value.wave_delivered', 'page.value.wave_delivered.many', 'done'],
+    approved: ['page.value.wave_approved', 'page.value.wave_approved.many', 'ok'],
+    rejected: ['page.value.wave_rejected', 'page.value.wave_rejected.many', 'no']
+  };
+  var COLUMNS = ['page.metrics.col.wave', 'page.metrics.col.lines', 'page.metrics.col.chars', 'page.metrics.col.items',
+    'page.metrics.col.delivery', 'page.metrics.col.rejected', 'page.metrics.col.last'];
+  var CODE_RE = /(^|[^A-Za-z0-9_])(MSTD-[A-Z]+-\d{4,})(?![A-Za-z0-9_])/g;
+
+  // ---------------------------------------------------------------------
+  // Pequenas leituras
+  // ---------------------------------------------------------------------
+  function isInt(v) { return typeof v === 'number' && Number.isInteger(v) && v >= 0; }
+  function str(v) { return typeof v === 'string' ? v : null; }
+  function arr(v) { return Array.isArray(v) ? v : []; }
+  function ints(v) { return arr(v).filter(isInt); }
+  function has(o, k) { return o !== null && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k); }
+  function get(o, k) { return has(o, k) ? o[k] : undefined; }
+  function oneLine(s) { return String(s).split(/\s+/).filter(Boolean).join(' '); }
+  function join(list) { return list.join(', '); }
+  function codeSpan(text) {
+    var s = oneLine(text);
+    var longest = s.split(/[^`]/).reduce(function (m, r) { return Math.max(m, r.length); }, 0);
+    var fence = new Array(longest + 2).join('`');
+    return longest === 0 ? fence + s + fence : fence + ' ' + s + ' ' + fence;
+  }
+  function firstParagraph(text) {
+    var line = oneLine(text.trim().split('\n\n')[0] || '').replace(/^#+/, '').replace(/^\s+/, '');
+    return line.indexOf('- ') === 0 || line.indexOf('* ') === 0 ? line.slice(2) : line;
+  }
+  function when(e) { var at = str(e.at) || ''; return at ? at.slice(0, 16).replace('T', ' ') : null; }
+  function countLines(text) { return text === '' ? 0 : text.replace(/\r?\n$/, '').split(/\r?\n/).length; }
+  function fold(s) { return String(s).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase(); }
+  function waveOf(e) {
+    if (e.type === 'wave') return isInt(e.n) ? e.n : null;
+    if (['task', 'send', 'delivered', 'verdict'].indexOf(e.type) >= 0) return isInt(e.wave) ? e.wave : null;
+    return null;
+  }
+  function blockOf(e) { return TYPES[e.type] ? TYPES[e.type].block : null; }
+  function replacedBy(e) { return isInt(e.replaces) ? [e.replaces] : ints(e.replaces); }
+  function seconds(from, to) {
+    var a = Date.parse(from), b = Date.parse(to);
+    return isNaN(a) || isNaN(b) ? null : Math.max(0, Math.floor((b - a) / 1000));
+  }
+  function duration(secs) {
+    var m = Math.floor(secs / 60);
+    if (m === 0) return '< 1 min';
+    if (m < 60) return m + ' min';
+    if (m < 1440) return Math.floor(m / 60) + ' h ' + String(m % 60).padStart(2, '0') + ' min';
+    return Math.floor(m / 1440) + ' d ' + Math.floor(m % 1440 / 60) + ' h';
+  }
+
+  // ---------------------------------------------------------------------
+  // A leitura dos itens: o que está à mostra, o código de cada um e a
+  // aprovação que vale
+  // ---------------------------------------------------------------------
+  // Os números que uma remoção tira da leitura: os alvos dela e, com o
+  // filtro, cada item do tipo e do intervalo gravado antes dela.
+  function removeTargets(e, all) {
+    var targets = ints(e.targets), f = e.filter;
+    if (f && str(f.type) !== null && str(f.from) !== null && str(f.to) !== null) {
+      all.forEach(function (o) { if (o.id < e.id && filterMatches(f, o)) targets.push(o.id); });
+    }
+    return targets;
+  }
+  function hiddenOf(all) {
+    var hidden = new Map();
+    all.forEach(function (e) {
+      if (isInt(e.purged)) hidden.set(e.id, 'purged');
+      if (e.type === 'remove') {
+        removeTargets(e, all).forEach(function (id) { if (!hidden.has(id)) hidden.set(id, 'removed'); });
+      }
+      replacedBy(e).forEach(function (old) { if (!hidden.has(old)) hidden.set(old, 'replaced'); });
+    });
+    return hidden;
+  }
+  // O que saiu da spec, pelo número de cada item: o item que uma remoção
+  // tirou da leitura e o item de que um expurgo tirou um trecho, cada um com
+  // o registro que o tirou. O expurgo vence a remoção, porque o texto do item
+  // expurgado nunca aparece; a linha que o formato antigo do expurgo
+  // esvaziou aponta o expurgo pelo campo `purged`.
+  function takenOutOf(all, byId) {
+    var out = new Map();
+    all.forEach(function (e) {
+      if (isInt(e.purged)) out.set(e.id, { by: byId.get(e.purged) || null, purged: true });
+      if (e.type === 'remove') {
+        removeTargets(e, all).forEach(function (id) { if (!out.has(id)) out.set(id, { by: e, purged: false }); });
+      }
+      if (e.type === 'purge') ints(e.targets).forEach(function (id) { out.set(id, { by: e, purged: true }); });
+    });
+    return out;
+  }
+  function filterMatches(f, e) {
+    if (e.type !== f.type) return false;
+    var local = (str(e.at) || '').slice(0, 19), from = f.from.slice(0, 19), to = f.to.slice(0, 19);
+    return local.slice(0, from.length) >= from && local.slice(0, to.length) <= to;
+  }
+  function pad(n) { var s = String(n); while (s.length < 4) s = '0' + s; return s; }
+  function recorded(e) {
+    var ty = TYPES[e.type], m = ty && str(e.code) !== null ? /^MSTD-([A-Z]+)-(\d{4,})$/.exec(e.code.trim()) : null;
+    return m && m[1] === ty.code ? [m[1], parseInt(m[2], 10)] : null;
+  }
+  function codesOf(all, byId) {
+    var codes = new Map(), taken = {}, top = {};
+    all.forEach(function (e) {
+      var r = recorded(e);
+      if (r) { codes.set(e.id, 'MSTD-' + r[0] + '-' + pad(r[1])); taken[r[0] + ':' + r[1]] = true; }
+    });
+    all.forEach(function (e) {
+      var ty = TYPES[e.type];
+      if (!ty) return;
+      var k = ty.code;
+      if (!has(top, k)) top[k] = 0;
+      var r = recorded(e);
+      if (r) { top[k] = Math.max(top[k], r[1]); return; }
+      var old = isInt(e.replaces) ? e.replaces : null;
+      if (old !== null && byId.has(old) && byId.get(old).type === e.type && codes.has(old)) {
+        codes.set(e.id, codes.get(old));
+        return;
+      }
+      var n = top[k] + 1;
+      while (taken[k + ':' + n]) n++;
+      top[k] = n;
+      codes.set(e.id, 'MSTD-' + k + '-' + pad(n));
+    });
+    return codes;
+  }
+
+  // O modelo da página: as mesmas seções, grupos e itens da página de hoje.
+  function build(raw, computed) {
+    var byId = new Map();
+    raw.filter(function (e) { return e && isInt(e.id) && typeof e.type === 'string'; })
+      .sort(function (a, b) { return a.id - b.id; })
+      .forEach(function (e) { if (!byId.has(e.id)) byId.set(e.id, e); });
+    var all = Array.from(byId.values());
+    var hidden = hiddenOf(all);
+    var visible = all.filter(function (e) { return !hidden.has(e.id); });
+    var codes = codesOf(all, byId);
+    var byCode = new Map();
+    visible.forEach(function (e) { if (codes.has(e.id)) byCode.set(codes.get(e.id), e); });
+    var waves = (computed && computed.waves) || {}, prompts = (computed && computed.prompts) || {};
+    var rtk = arr(computed && computed.rtk);
+
+    function code(id) { return codes.has(id) ? codes.get(id) : String(id); }
+    function ofBlock(block) { return visible.filter(function (e) { return blockOf(e) === block; }); }
+    function ofType(type) { return visible.filter(function (e) { return e.type === type; }); }
+    function originalOf(e) {
+      var at = e.id;
+      for (var i = 0; i <= all.length; i++) {
+        var cur = byId.get(at), older = cur && isInt(cur.replaces) ? cur.replaces : null;
+        if (older === null || older === at) break;
+        at = older;
+      }
+      return at;
+    }
+    function currentOf(id) {
+      var next = new Map();
+      all.forEach(function (e) { replacedBy(e).forEach(function (old) { next.set(old, e.id); }); });
+      for (var i = 0; i <= all.length && next.has(id); i++) id = next.get(id);
+      return byId.has(id) && !hidden.has(id) ? byId.get(id) : null;
+    }
+    var approval = (function () {
+      var states = ofType('state'), phase = null, best = null;
+      states.forEach(function (e) { var p = str(e.phase) && e.phase.trim(); if (p && PHASES.indexOf(p) >= 0) phase = p; });
+      if (!phase || APPROVED.indexOf(phase) < 0) return null;
+      states.filter(function (e) { return str(e.phase) && e.phase.trim() === 'approved'; }).forEach(function (e) {
+        var o = originalOf(e);
+        if (!best || o > best[0] || (o === best[0] && e.id > best[1])) best = [o, e.id];
+      });
+      return best ? best[0] : null;
+    })();
+
+    function isFinding(e) { return e.type === 'note' && str(e.label) !== null && FINDING.indexOf(e.label) >= 0; }
+    function plain(v) {
+      if (v === null || v === undefined) return '';
+      if (typeof v === 'boolean') return t(v ? 'page.value.yes' : 'page.value.no');
+      if (typeof v === 'number') return String(v);
+      if (typeof v === 'string') return oneLine(v);
+      if (Array.isArray(v)) return join(v.map(plain));
+      return Object.keys(v).map(function (k) { return k + ': ' + plain(v[k]); }).join('; ');
+    }
+    function file(f) {
+      var path = str(f) !== null ? f : (str(get(f, 'path')) || '');
+      return get(f, 'new') === true ? codeSpan(path) + ' (' + t('page.value.new') + ')' : codeSpan(path);
+    }
+    // Uma entrada da escolha do orquestrador (`{"item": <número>, "why": ...}`
+    // ou `{"lesson": <número>, "why": ...}`): o item vira o código dele, a
+    // lição fica com o número, do jeito que o banco de lições a numera.
+    function analysisEntry(entry) {
+      var label = isInt(get(entry, 'item')) ? code(entry.item)
+        : isInt(get(entry, 'lesson')) ? t('page.value.lesson') + ' ' + entry.lesson : '';
+      if (!label) return '';
+      var why = oneLine(str(get(entry, 'why')) || '');
+      return why ? label + ' (' + why + ')' : label;
+    }
+    function value(name, kind, v) {
+      if (EVENT_REF.indexOf(name) >= 0 && isInt(v)) return code(v);
+      if (EVENT_REFS.indexOf(name) >= 0 && (kind === 'ints' || kind === 'refs')) {
+        return join(arr(v).map(function (x) { return isInt(x) ? code(x) : plain(x); }));
+      }
+      if (WAVE_NUMBERS.indexOf(name) >= 0) return isInt(v) ? String(v) : join(ints(v).map(String));
+      if (kind === 'one_of') {
+        var word = str(v) || '';
+        return name === 'phase' ? t('page.phase.' + word) : t('page.value.' + word);
+      }
+      if (kind === 'many_of') {
+        return join(arr(v).filter(function (w) { return str(w) !== null; }).map(function (w) { return t('page.value.' + w); }));
+      }
+      switch (name) {
+        case 'files': return join(arr(v).map(file));
+        case 'facts': return arr(v).map(function (f) {
+          var text = oneLine(str(get(f, 'text')) || ''), source = str(get(f, 'source'));
+          return source !== null ? text + ' (' + codeSpan(source) + ')' : text;
+        }).join('; ');
+        case 'examples': return join(arr(v).map(function (x) {
+          return codeSpan(str(get(x, 'path')) || '') + ': ' + oneLine(str(get(x, 'why')) || '');
+        }));
+        case 'skills': return join(arr(v).map(function (s) {
+          return codeSpan(str(get(s, 'name')) || '') + ' (' + codeSpan(str(get(s, 'sha')) || '') + ')';
+        }));
+        case 'criteria': return join(arr(v).map(function (c) {
+          var id = isInt(get(c, 'criterion')) ? code(c.criterion) : '';
+          return id + ' (' + t(get(c, 'tests_rule') === true ? 'page.value.tests_rule' : 'page.value.not_tests_rule') + ')';
+        }));
+        case 'lessons':
+          if (kind === 'objects') {
+            return join(arr(v).map(function (l) {
+              var id = has(l, 'lesson') ? plain(l.lesson) : '';
+              return id + ' (' + t(get(l, 'repeated') === true ? 'page.value.repeated' : 'page.value.not_repeated') + ')';
+            }));
+          }
+          break;
+        case 'analysis': {
+          var removedList = arr(get(v, 'removed')).concat(arr(get(v, 'removed_lessons'))).map(analysisEntry).filter(Boolean);
+          var addedList = arr(get(v, 'added')).map(analysisEntry).filter(Boolean);
+          var parts = [];
+          if (removedList.length) parts.push(t('page.analysis.removed') + ': ' + removedList.join('; '));
+          if (addedList.length) parts.push(t('page.analysis.added') + ': ' + addedList.join('; '));
+          return parts.join(' · ');
+        }
+        case 'witness':
+          return oneLine(str(get(v, 'question')) || '') + ' → ' + oneLine(str(get(v, 'answer')) || '');
+        case 'filter':
+          return t('page.type.' + (str(get(v, 'type')) || '')) + ' ' + (str(get(v, 'from')) || '') + ' → ' + (str(get(v, 'to')) || '');
+        case 'url': return str(v) !== null ? '[' + v + '](' + v + ')' : '';
+      }
+      if (LITERAL.indexOf(name) >= 0) {
+        return str(v) !== null ? (v.indexOf('`') >= 0 ? oneLine(v) : codeSpan(v)) : plain(v);
+      }
+      return plain(v);
+    }
+    function inHeading(type, field) {
+      return (type === 'wave' && field === 'n') || (['task', 'send', 'delivered'].indexOf(type) >= 0 && field === 'wave');
+    }
+    function fieldsOf(e) {
+      var ty = TYPES[e.type], out = [];
+      if (!ty) return out;
+      ty.fields.forEach(function (f) {
+        if (f.name === 'text' || f.name === 'keys' || inHeading(ty.name, f.name) || !has(e, f.name)) return;
+        var shown = value(f.name, f.kind, e[f.name]);
+        if (shown) out.push([t('page.field.' + f.name), shown]);
+      });
+      if (str(e.label) !== null && !isFinding(e)) out.push([t('page.field.label'), e.label]);
+      if (isInt(e.origin)) out.push([t('page.field.origin'), code(e.origin)]);
+      return out;
+    }
+    function statusOf(e) {
+      var word = null;
+      if (['verdict', 'criterion_run', 'call'].indexOf(e.type) >= 0) word = str(e.result);
+      else if (e.type === 'point') word = str(e.status);
+      else if (e.type === 'publish') { if (typeof e.ok !== 'boolean') return null; word = e.ok ? 'yes' : 'no'; }
+      if (word === null) return null;
+      var tone = ['approved', 'pass', 'ok', 'closed', 'yes'].indexOf(word) >= 0 ? 'ok'
+        : ['rejected', 'fail', 'refused', 'no'].indexOf(word) >= 0 ? 'no' : word === 'open' ? 'run' : '';
+      return { label: t('page.value.' + word), tone: tone };
+    }
+    function afterApproval(e) {
+      if (approval === null || MARKED.indexOf(blockOf(e)) < 0 || e.id <= approval || EXECUTION.indexOf(e.type) >= 0) return null;
+      return t('page.after_approval');
+    }
+    function item(e, anchored) {
+      var text = (str(e.text) || '').trim(), fields = fieldsOf(e);
+      var origin = t('page.field.origin'), label = t('page.field.label');
+      var title = text ? firstParagraph(text) : fields.filter(function (f) { return f[0] !== origin && f[0] !== label; })
+        .map(function (f) { return f[0] + ': ' + f[1]; }).join(' · ');
+      return { kind: 'item', id: e.id, type: e.type, code: code(e.id), anchored: anchored, title: title, status: statusOf(e),
+        who: null, mark: afterApproval(e), date: when(e), text: text, fields: fields };
+    }
+    function section(anchor, heading, body) {
+      return { kind: 'section', anchor: anchor, heading: heading,
+        body: body.length ? body : [{ kind: 'paragraph', text: t('page.empty') }] };
+    }
+    function group(anchor, title, body) {
+      return { kind: 'group', anchor: anchor, title: title, status: null, summary: '', open: false, body: body };
+    }
+    function groupOf(anchor, title, events) {
+      return events.length ? group(anchor, title, events.map(function (e) { return item(e, true); })) : null;
+    }
+    function tallied(anchor, title, events) {
+      var g = groupOf(anchor, title, events);
+      if (!g) return null;
+      var tally = [];
+      g.body.forEach(function (it) {
+        if (!it.status) return;
+        var hit = tally.filter(function (x) { return x[0] === it.status.label; })[0];
+        if (hit) hit[1]++; else tally.push([it.status.label, 1]);
+      });
+      g.summary = tally.map(function (x) { return x[1] + ' ' + x[0]; }).join(' · ');
+      return g;
+    }
+    function waveState(n) { var s = str(waves[String(n)]); return s && has(STATES, s) ? s : 'todo'; }
+    function waveStatus(n) { var s = STATES[waveState(n)]; return { label: t(s[0]), tone: s[2] }; }
+    function waveNames() {
+      var names = new Map();
+      ofType('wave').forEach(function (w) { var n = waveOf(w); if (n !== null) names.set(n, firstParagraph(str(w.text) || '')); });
+      return new Map(Array.from(names.entries()).sort(function (a, b) { return a[0] - b[0]; }));
+    }
+    function pending(n) { return str(prompts[String(n)]); }
+
+    // O andamento: a visão das ondas, a medição, as fases e publicações e os
+    // commits.
+    function overview() {
+      var cards = [];
+      waveNames().forEach(function (name, n) { cards.push({ target: 'waves-' + n, label: String(n), state: waveState(n), status: waveStatus(n), hint: name }); });
+      if (!cards.length) return null;
+      var tally = [];
+      cards.forEach(function (c) {
+        var hit = tally.filter(function (x) { return x[0] === c.state; })[0];
+        if (hit) hit[1]++; else tally.push([c.state, 1]);
+      });
+      tally = tally.map(function (x, i) { return [x[0], x[1], i]; }).sort(function (a, b) { return b[1] - a[1] || a[2] - b[2]; });
+      var legend = tally.map(function (x) { return x[1] + ' ' + t(STATES[x[0]][x[1] > 1 ? 1 : 0]); }).join(' · ');
+      return { kind: 'overview', title: t('page.block.waves'), legend: legend, cards: cards };
+    }
+    function surveyPoints() {
+      var pairs = new Map();
+      function slot(k) { if (!pairs.has(k)) pairs.set(k, { original: null, closing: null }); return pairs.get(k); }
+      ofType('point').forEach(function (e) {
+        var target = isInt(e.closes) ? byId.get(e.closes) : null;
+        if (target && target.type === 'point') { var p = slot(originalOf(target)); if (!p.closing) p.closing = e; }
+        else if (str(e.status) && e.status.trim() === 'open') { var q = slot(originalOf(e)); if (!q.original) q.original = e; }
+      });
+      return Array.from(pairs.values());
+    }
+    function metrics() {
+      var rows = [], out = [];
+      var count = function (events, field, word) { return events.filter(function (e) { return e[field] === word; }).length; };
+      var phases = phaseTimes();
+      if (phases) rows.push([t('page.metrics.phases'), phases]);
+      var verdicts = ofType('verdict');
+      if (verdicts.length) {
+        var rework = [];
+        verdicts.forEach(function (v) { var n = waveOf(v); if (v.result === 'rejected' && n !== null && rework.indexOf(n) < 0) rework.push(n); });
+        var said = say('page.metrics.verdicts.value', { approved: count(verdicts, 'result', 'approved'), rejected: count(verdicts, 'result', 'rejected') });
+        if (rework.length) said += say('page.metrics.rework', { waves: join(rework.sort(function (a, b) { return a - b; }).map(String)) });
+        rows.push([t('page.metrics.verdicts'), said]);
+      }
+      var points = ofType('point');
+      if (points.length) {
+        var pairs = surveyPoints();
+        rows.push([t('page.metrics.points'), say('page.metrics.points.value', {
+          open: pairs.filter(function (p) { return p.original && !p.closing; }).length,
+          closed: pairs.filter(function (p) { return p.closing; }).length })]);
+        var reminders = points.reduce(function (s, p) { return s + arr(p.reminders).length; }, 0);
+        rows.push([t('page.metrics.reminders'), say('page.metrics.reminders.value', { count: reminders })]);
+      }
+      var sends = ofType('send');
+      if (sends.length) {
+        var largest = sends.reduce(function (m, e) { return isInt(e.lines) ? Math.max(m, e.lines) : m; }, 0);
+        rows.push([t('page.metrics.sends'), say('page.metrics.sends.value', { count: sends.length, lines: largest })]);
+      }
+      var saved = rtkSavings();
+      if (saved) rows.push([t('page.metrics.rtk'), saved]);
+      if (!rows.length) return out;
+      out.push({ kind: 'table', headers: [t('page.metrics.col.measure'), t('page.metrics.col.value')], rows: rows });
+      var byWave = sizeAgainstReview(sends, verdicts);
+      if (byWave) out.push({ kind: 'heading', text: t('page.metrics.by_wave') }, byWave);
+      return out;
+    }
+    function phaseTimes() {
+      var states = ofType('state').map(function (s) { return [originalOf(s), s]; })
+        .sort(function (a, b) { return a[0] - b[0] || a[1].id - b[1].id; });
+      var spans = [];
+      states.forEach(function (x) {
+        var phase = str(x[1].phase);
+        if (phase === null) return;
+        if (!spans.length || spans[spans.length - 1][0] !== phase) {
+          var first = byId.get(x[0]);
+          spans.push([phase, str((first || x[1]).at) || '']);
+        }
+      });
+      if (!all.length) return null;
+      var end = str(all[all.length - 1].at) || '', totals = [];
+      for (var i = 0; i < spans.length; i++) {
+        var secs = seconds(spans[i][1], i + 1 < spans.length ? spans[i + 1][1] : end);
+        if (secs === null) return null;
+        var hit = totals.filter(function (x) { return x[0] === spans[i][0]; })[0];
+        if (hit) hit[1] += secs; else totals.push([spans[i][0], secs]);
+      }
+      return totals.length ? join(totals.map(function (x) { return t('page.phase.' + x[0]) + ' ' + duration(x[1]); })) : null;
+    }
+    function rtkSavings() {
+      if (!all.length) return null;
+      var from = (str(all[0].at) || '').slice(0, 10), to = (str(all[all.length - 1].at) || '').slice(0, 10);
+      var days = rtk.filter(function (d) { return str(get(d, 'date')) !== null && d.date >= from && d.date <= to; });
+      var sum = function (k) { return days.reduce(function (s, d) { return s + (isInt(d[k]) ? d[k] : 0); }, 0); };
+      var commands = sum('commands');
+      if (!commands) return null;
+      var input = sum('input'), saved = sum('saved'), pct = input ? Math.floor((saved * 100 + Math.floor(input / 2)) / input) : 0;
+      var counted = days.filter(function (d) { return isInt(d.commands) && d.commands > 0; }).map(function (d) { return d.date; }).sort();
+      return say('page.metrics.rtk.value', { commands: commands, saved: saved, pct: pct,
+        from: counted.length ? counted[0] : from, to: counted.length ? counted[counted.length - 1] : to });
+    }
+    function sizeAgainstReview(sends, verdicts) {
+      var last = new Map();
+      sends.filter(function (s) { return s.role === 'wave' && isInt(s.lines); })
+        .forEach(function (s) { var n = waveOf(s); if (n !== null) last.set(n, s); });
+      if (!last.size) return null;
+      var deliveries = ofType('delivered');
+      var rows = Array.from(last.entries()).sort(function (a, b) { return a[0] - b[0]; }).map(function (x) {
+        var n = x[0], send = x[1];
+        var of = verdicts.filter(function (v) { return waveOf(v) === n; });
+        var lastV = of.length ? str(of[of.length - 1].result) : null;
+        var d = deliveries.filter(function (d) { return waveOf(d) === n && d.id > send.id; })[0];
+        var secs = d ? seconds(send.at, d.at) : null;
+        var numberOf = function (f) { return isInt(send[f]) ? String(send[f]) : '—'; };
+        return [String(n), numberOf('lines'), numberOf('chars'), String(ints(send.items).length),
+          secs === null ? '—' : duration(secs), String(of.filter(function (v) { return v.result === 'rejected'; }).length),
+          lastV === null ? '—' : t('page.value.' + lastV)];
+      });
+      return { kind: 'table', headers: COLUMNS.map(t), rows: rows };
+    }
+    function progress() {
+      var body = [], ov = overview(), m = metrics();
+      if (ov) body.push(ov);
+      if (m.length) { var g = group('progress-metrics', t('page.group.metrics'), m); g.open = true; body.push(g); }
+      [groupOf('progress-state', t('page.group.state'), ofBlock('state')),
+        groupOf('progress-commits', t('page.group.commits'), ofBlock('progress'))].forEach(function (g) { if (g) body.push(g); });
+      return section('progress', t('page.block.progress'), body);
+    }
+
+    // A especificação e o combinado: um grupo por tipo. Os critérios, com a
+    // última execução, e as execuções.
+    function byType(block) {
+      var closedBy = new Map();
+      surveyPoints().forEach(function (p) { if (p.original && p.closing) closedBy.set(code(p.original.id), code(p.closing.id)); });
+      var body = TYPE_LIST.filter(function (ty) { return ty.block === block; }).map(function (ty) {
+        var g = tallied(block + '-' + ty.name, t('page.group.' + ty.name), ofType(ty.name));
+        if (g && ty.name === 'point') {
+          g.body.forEach(function (it) {
+            if (!closedBy.has(it.code)) return;
+            it.fields.push([t('page.field.closed_by'), closedBy.get(it.code)]);
+            it.status = { label: t('page.value.closed'), tone: 'ok' };
+          });
+        }
+        return g;
+      }).filter(Boolean);
+      return section(block, t('page.block.' + block), body);
+    }
+    function criteria() {
+      var runs = ofType('criterion_run'), body = [];
+      var list = ofType('criterion').map(function (c) {
+        var it = item(c, true);
+        var last = runs.slice().reverse().filter(function (r) { return isInt(r.criterion) && code(r.criterion) === code(c.id); })[0];
+        if (last) it.fields.push([t('page.field.last_run'), (str(last.result) ? t('page.value.' + last.result) : '') + ' (' + code(last.id) + ')']);
+        return it;
+      });
+      if (list.length) body.push(group('criteria-criterion', t('page.group.criterion'), list));
+      var g = groupOf('criteria-runs', t('page.group.criterion_run'), runs);
+      if (g) body.push(g);
+      return section('criteria', t('page.block.criteria'), body);
+    }
+
+    // As ondas: o pedido de cada uma aparece completo, com o texto de cada
+    // item no lugar do código.
+    function listed(line) {
+      var m = /^`([^`]*)`: (.*)$/.exec(line);
+      return m && BLOCKS.indexOf(m[1]) >= 0 ? m[2].split(', ').length : 1;
+    }
+    function receives(prompt) {
+      var parts = [];
+      prompt.split('\n').forEach(function (raw) {
+        var line = raw.replace(/\r$/, '');
+        if (line.indexOf('## ') === 0) parts.push([line.slice(3).trim(), 0]);
+        else if (line.indexOf('- ') === 0 && parts.length) parts[parts.length - 1][1] += listed(line.slice(2));
+      });
+      return join(parts.filter(function (p) { return p[1] > 0; }).map(function (p) { return p[0] + ' (' + p[1] + ')'; }));
+    }
+    function itemText(e) { var it = item(e, true); return it.text || it.title; }
+    function fullPrompt(prompt) {
+      var out = [];
+      prompt.split('\n').forEach(function (line) {
+        var m = /^- `([a-z_-]+)`: (.+)$/.exec(line.replace(/\r$/, ''));
+        var listedCodes = m && BLOCKS.indexOf(m[1]) >= 0 ? m[2].split(', ').map(function (c) { return c.trim(); }) : null;
+        if (!listedCodes || !listedCodes.every(function (c) { return /^MSTD-[A-Z]+-\d{4,}$/.test(c); })) { out.push(line); return; }
+        out.push('- `' + m[1] + '`:');
+        listedCodes.forEach(function (c) {
+          var e = byCode.get(c), lines = e ? itemText(e).split('\n') : [];
+          out.push('  - **' + c + '**' + (lines.length && lines[0] ? ' — ' + lines[0] : ''));
+          lines.slice(1).forEach(function (l) { out.push(l.trim() ? '    ' + l : ''); });
+        });
+      });
+      return out.join('\n');
+    }
+    function wavesSection() {
+      var events = ofBlock('waves'), names = waveNames(), sends = ofType('send'), groups = [];
+      var numbers = [];
+      events.forEach(function (e) { var n = waveOf(e); if (n !== null && numbers.indexOf(n) < 0) numbers.push(n); });
+      numbers.sort(function (a, b) { return a - b; }).forEach(function (n) {
+        var out = [], sent = sends.filter(function (s) { return waveOf(s) === n; });
+        var lastWave = sent.slice().reverse().filter(function (s) { return s.role === 'wave'; })[0];
+        var prompt = (lastWave && str(lastWave.text)) || pending(n);
+        events.filter(function (e) { return waveOf(e) === n; }).forEach(function (e) {
+          var it = item(e, true);
+          if (e.type === 'wave') {
+            var st = waveStatus(n);
+            it.fields.push([t('page.field.wave_state'), st.label]);
+            it.status = st;
+            var commits = join(ofType('commit').filter(function (c) { return ints(c.waves).indexOf(n) >= 0; })
+              .map(function (c) { return codeSpan(str(c.sha) || '') + ' (' + code(c.id) + ')'; }));
+            if (commits) it.fields.push([t('page.field.wave_commit'), commits]);
+            var parts = prompt ? receives(prompt) : '';
+            if (parts) it.fields.push([t('page.field.wave_receives'), parts]);
+            var points = ofType('task').filter(function (k) { return waveOf(k) === n && isInt(k.points); });
+            if (points.length) it.fields.push([t('page.field.wave_points'), String(points.reduce(function (s, k) { return s + k.points; }, 0))]);
+          }
+          if (e.type === 'send') {
+            var text = it.text;
+            it.text = '';
+            out.push(it);
+            if (text) {
+              var role = str(e.role) ? t('page.value.' + e.role) : '';
+              out.push({ kind: 'details', owner: it.code, markdown: fullPrompt(text),
+                summary: say('page.wave.sent', { role: role, lines: countLines(text) }) + ' · ' + t('page.wave.full') });
+            }
+            return;
+          }
+          out.push(it);
+        });
+        var waiting = pending(n);
+        if (!sent.length && waiting) {
+          out.push({ kind: 'details', owner: null, markdown: fullPrompt(waiting),
+            summary: say('page.wave.prompt', { n: n }) + ' · ' + say('page.wave.prompt.summary', { lines: countLines(waiting) }) + ' · ' + t('page.wave.full') });
+        }
+        var g = group('waves-' + n, say('page.wave.heading', { n: n }), out);
+        g.status = names.has(n) ? waveStatus(n) : null;
+        g.summary = names.get(n) || '';
+        groups.push(g);
+      });
+      var skills = groupOf('waves-skills', t('page.group.skill'), events.filter(function (e) { return waveOf(e) === null; }));
+      if (skills) groups.push(skills);
+      return section('waves', t('page.block.waves'), groups);
+    }
+    function review() {
+      // O veredito final do agente de teste dedicado (`final: true`) nunca
+      // entra no grupo da onda que ele aponta: ele ganha um grupo só dele, no
+      // fim da seção, mesmo quando aponta a mesma onda de um veredito comum.
+      var events = ofBlock('review');
+      var finals = events.filter(function (e) { return e.final === true; });
+      var waveEvents = events.filter(function (e) { return e.final !== true; });
+      var numbers = [];
+      waveEvents.forEach(function (e) { var n = waveOf(e); if (numbers.indexOf(n) < 0) numbers.push(n); });
+      numbers.sort(function (a, b) { return a === null ? -1 : b === null ? 1 : a - b; });
+      var body = numbers.map(function (n) {
+        var of = waveEvents.filter(function (e) { return waveOf(e) === n; });
+        return n === null ? tallied('review-others', t('page.findings.others'), of)
+          : tallied('review-' + n, say('page.wave.heading', { n: n }), of);
+      }).filter(Boolean);
+      var finalGroup = tallied('review-final', t('page.review.final'), finals);
+      if (finalGroup) body.push(finalGroup);
+      return section('review', t('page.block.review'), body);
+    }
+    function subjectOf(e) {
+      var kind = str(arr(e.keys)[0]) || '';
+      if (kind.indexOf('skill-') === 0) return 'skills';
+      if (kind.indexOf('wave-') === 0 || kind.indexOf('waves-') === 0) return 'waves';
+      CODE_RE.lastIndex = 0;
+      var m = CODE_RE.exec(str(e.text) || ''), cited = '';
+      if (m) {
+        var letters = m[2].split('-')[1];
+        TYPE_LIST.forEach(function (ty) { if (ty.code === letters && !cited) cited = ty.name; });
+      }
+      var hit = SUBJECTS.filter(function (s) { return s[0] && s[0] === cited; })[0];
+      return hit ? hit[1] : 'others';
+    }
+    function findings() {
+      var events = ofBlock('notes').filter(isFinding);
+      if (!events.length) return null;
+      var body = SUBJECTS.map(function (s) {
+        return groupOf('findings-' + s[1], t(s[2]), events.filter(function (e) { return subjectOf(e) === s[1]; }));
+      }).filter(Boolean);
+      return section('findings', t('page.findings.heading'), body);
+    }
+    function notes() {
+      var g = groupOf('notes-all', t('page.block.notes'), ofBlock('notes').filter(function (e) { return !isFinding(e); }));
+      return section('notes', t('page.block.notes'), g ? [g] : []);
+    }
+    function kindAnd(e, who) { return [t('page.type.' + e.type)].concat(who ? [who] : []).join(' · '); }
+    function conversation() {
+      var entries = ofBlock('conversation').map(function (e) {
+        var it = item(e, true);
+        it.who = kindAnd(e, str(e.author) !== null ? t('page.author.' + e.author) : null);
+        return it;
+      });
+      all.forEach(function (e) {
+        if (hidden.get(e.id) === 'replaced' && currentOf(e.id)) {
+          var it = item(e, false);
+          it.who = kindAnd(e, null);
+          it.mark = t('page.replaced');
+          it.status = { label: t('page.old_version'), tone: 'old' };
+          entries.push(it);
+        }
+      });
+      entries.sort(function (a, b) { return a.id - b.id; });
+      var days = new Map();
+      entries.forEach(function (it) {
+        var at = str(byId.get(it.id).at) || '', day = at.slice(0, 10);
+        if (!days.has(day)) days.set(day, []);
+        days.get(day).push(it);
+      });
+      var body = Array.from(days.keys()).sort().map(function (day) {
+        var shown = day.length >= 10 ? day.slice(8, 10) + '/' + day.slice(5, 7) : day;
+        return group('conversation-' + day, say('page.group.day', { day: shown }), days.get(day));
+      });
+      return section('conversation', t('page.block.conversation'), body);
+    }
+    // Os removidos, no fim da página: cada item que saiu, com o código, o
+    // texto, quem o tirou, quando e por quê. O item expurgado aparece só com
+    // a marca no lugar do texto. Um item aparece uma vez, pela versão mais
+    // nova; a remoção de uma versão antiga de um item que continua à mostra
+    // não tirou o item, e fica de fora.
+    function removedItem(id, taken) {
+      var e = byId.get(id), by = taken.by, purged = taken.purged;
+      var it = e ? item(e, false) : { kind: 'item', id: id, type: '', code: code(id), anchored: false, title: '',
+        status: null, who: null, mark: null, date: null, text: '', fields: [] };
+      if (e) it.who = kindAnd(e, null);
+      it.mark = t(purged ? 'page.removed.purged' : 'page.removed.removed');
+      if (purged) { it.title = MARK; it.text = MARK; } else if (!it.text) it.text = it.title;
+      it.fields = [];
+      if (!by) return it;
+      if (str(by.author) !== null) {
+        it.fields.push([t(purged ? 'page.removed.purged_by' : 'page.removed.removed_by'), t('page.author.' + by.author)]);
+      }
+      if (when(by)) it.fields.push([t(purged ? 'page.removed.purged_at' : 'page.removed.removed_at'), when(by)]);
+      if (str(by.reason) !== null) {
+        it.fields.push([t('page.field.reason'), purged ? t('page.value.' + by.reason) : oneLine(by.reason)]);
+      }
+      it.fields.push([t('page.removed.record'), code(by.id)]);
+      return it;
+    }
+    function removed() {
+      var latest = new Map();
+      takenOutOf(all, byId).forEach(function (taken, id) {
+        var c = code(id), seen = latest.get(c);
+        if (!taken.purged && byCode.has(c)) return;
+        if (!seen || id > seen.id) latest.set(c, { id: id, taken: taken });
+      });
+      var entries = Array.from(latest.values()).sort(function (a, b) { return a.id - b.id; })
+        .map(function (x) { return removedItem(x.id, x.taken); });
+      if (!entries.length) return null;
+      return section('removed', t('page.removed.heading'), [group('removed-all', t('page.removed.heading'), entries)]);
+    }
+
+    var meta = [], states = ofType('state');
+    if (str(computed && computed.spec)) meta.push([t('page.meta.spec'), computed.spec]);
+    var lastPhase = states.length ? str(states[states.length - 1].phase) : null;
+    if (lastPhase !== null) meta.push([t('page.meta.phase'), t('page.phase.' + lastPhase)]);
+    [['branch', 'page.meta.branch'], ['base', 'page.meta.base']].forEach(function (k) {
+      var found = states.slice().reverse().filter(function (e) { return str(e[k[0]]) !== null; })[0];
+      if (found) meta.push([t(k[1]), found[k[0]]]);
+    });
+    var sections = [progress(), byType('specification'), byType('agreed'), criteria(), wavesSection(), review()];
+    var found = findings();
+    if (found) sections.push(found);
+    sections.push(notes(), conversation());
+    var gone = removed();
+    if (gone) sections.push(gone);
+    return { spec: str(computed && computed.spec) || '', title: str(computed && computed.spec) || t('page.kind.spec'),
+      kind: t('page.kind.spec'), meta: meta, sections: sections, known: new Set(byCode.keys()),
+      top: all.length ? all[all.length - 1].id : null };
+  }
+
+  // ---------------------------------------------------------------------
+  // Markdown: o texto de cada item e o pedido de cada onda. Tudo é escapado
+  // antes de virar HTML; link só sai com endereço http ou https.
+  // ---------------------------------------------------------------------
+  var KNOWN = new Set();
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function inline(src) {
+    var kept = [];
+    function keep(html) { kept.push(html); return '\u0000' + (kept.length - 1) + '\u0000'; }
+    var s = String(src).replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, function (_, f, body) {
+      return keep('<code>' + esc(body.replace(/^ ([\s\S]*) $/, '$1')) + '</code>');
+    });
+    s = s.replace(/\[([^\]\u0000]+)\]\((https?:\/\/[^\s)]+)\)/g, function (_, text, url) {
+      return keep('<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(text) + '</a>');
+    });
+    s = esc(s)
+      .replace(/\*\*([^*\u0000]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])\*([^*\s\u0000][^*\u0000]*?)\*(?![*\w])/g, '$1<em>$2</em>')
+      .replace(CODE_RE, function (m, pre, c) { return KNOWN.has(c) ? pre + '<a href="#' + c + '">' + c + '</a>' : m; });
+    return s.replace(/\u0000(\d+)\u0000/g, function (_, i) { return kept[+i]; });
+  }
+  var LIST = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+  function lead(l) { return l.length - l.replace(/^\s+/, '').length; }
+  function startsBlock(l) { return LIST.test(l) || /^#{1,6}\s/.test(l) || /^\s*(`{3,}|~{3,})/.test(l) || /^\s*>/.test(l); }
+  function markdown(src) { return blocks(String(src).replace(/\r\n?/g, '\n').split('\n')); }
+  function blocks(lines) {
+    var html = '', i = 0, n = lines.length, m;
+    while (i < n) {
+      var line = lines[i];
+      if (!line.trim()) { i++; continue; }
+      if ((m = /^\s*(`{3,}|~{3,})/.exec(line))) {
+        var fence = m[1], body = [];
+        for (i++; i < n && lines[i].trim().indexOf(fence) !== 0; i++) body.push(lines[i]);
+        i++;
+        html += '<pre><code>' + esc(body.join('\n')) + '</code></pre>';
+      } else if ((m = /^(#{1,6})\s+(.*)$/.exec(line))) {
+        html += '<p class="mh h' + m[1].length + '">' + inline(m[2]) + '</p>';
+        i++;
+      } else if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < n && /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) {
+        var rows = [];
+        while (i < n && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
+        var cells = function (r) { return r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(function (c) { return inline(c.trim()); }); };
+        html += '<div class="table"><table><thead><tr>' + cells(rows[0]).map(function (c) { return '<th>' + c + '</th>'; }).join('') +
+          '</tr></thead><tbody>' + rows.slice(2).map(function (r) {
+          return '<tr>' + cells(r).map(function (c) { return '<td>' + c + '</td>'; }).join('') + '</tr>';
+        }).join('') + '</tbody></table></div>';
+      } else if (LIST.test(line)) {
+        var r = list(lines, i);
+        html += r.html;
+        i = r.next;
+      } else if (/^\s*>/.test(line)) {
+        var quote = [];
+        while (i < n && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*> ?/, ''));
+        html += '<blockquote>' + blocks(quote) + '</blockquote>';
+      } else {
+        var para = [line.trim()];
+        for (i++; i < n && lines[i].trim() && !startsBlock(lines[i]); i++) para.push(lines[i].trim());
+        html += '<p>' + inline(para.join(' ')) + '</p>';
+      }
+    }
+    return html;
+  }
+  function list(lines, start) {
+    var first = LIST.exec(lines[start]), indent = first[1].length, ordered = /\d/.test(first[2]);
+    var items = [], i = start;
+    while (i < lines.length) {
+      var m = LIST.exec(lines[i]);
+      if (!m || m[1].length !== indent || /\d/.test(m[2]) !== ordered) break;
+      var content = [m[3]], inner = indent + m[2].length + 1;
+      for (i++; i < lines.length; i++) {
+        var l = lines[i];
+        if (!l.trim()) {
+          var j = i + 1;
+          while (j < lines.length && !lines[j].trim()) j++;
+          if (j < lines.length && lead(lines[j]) > indent) { for (; i < j; i++) content.push(''); i--; continue; }
+          break;
+        }
+        if (lead(l) > indent) content.push(l.slice(Math.min(lead(l), inner)));
+        else if (LIST.test(l) || startsBlock(l)) break;
+        else content.push(l.trim());
+      }
+      items.push(content);
+      var k = i;
+      while (k < lines.length && !lines[k].trim()) k++;
+      var next = k < lines.length ? LIST.exec(lines[k]) : null;
+      if (next && next[1].length === indent && /\d/.test(next[2]) === ordered) i = k; else break;
+    }
+    var tag = ordered ? 'ol' : 'ul';
+    return { next: i, html: '<' + tag + '>' + items.map(function (c) {
+      return '<li>' + blocks(c).replace(/^<p>([\s\S]*?)<\/p>/, '$1') + '</li>';
+    }).join('') + '</' + tag + '>' };
+  }
+
+  // ---------------------------------------------------------------------
+  // O .md que o botão baixa, com o mesmo conteúdo que a página mostra
+  // ---------------------------------------------------------------------
+  function fenceFor(text) {
+    var longest = String(text).split(/[^`]/).reduce(function (m, r) { return Math.max(m, r.length); }, 0);
+    return new Array(Math.max(3, longest + 1) + 1).join('`');
+  }
+  function mdNode(node, out, level) {
+    if (node.kind === 'paragraph') out.push(node.text, '');
+    else if (node.kind === 'heading') out.push(new Array(level + 1).join('#') + ' ' + node.text, '');
+    else if (node.kind === 'overview') {
+      out.push('**' + node.title + '**: ' + node.legend, '');
+      node.cards.forEach(function (c) { out.push('- ' + c.label + ': ' + c.status.label + ' — ' + c.hint); });
+      out.push('');
+    } else if (node.kind === 'group') {
+      out.push(new Array(level + 1).join('#') + ' ' + node.title, '');
+      node.body.forEach(function (n) { mdNode(n, out, level + 1); });
+    } else if (node.kind === 'table') {
+      var cell = function (c) { return String(c).replace(/\|/g, '\\|'); };
+      out.push('| ' + node.headers.map(cell).join(' | ') + ' |', '|' + node.headers.map(function () { return '---'; }).join('|') + '|');
+      node.rows.forEach(function (r) { out.push('| ' + r.map(cell).join(' | ') + ' |'); });
+      out.push('');
+    } else if (node.kind === 'details') {
+      var fence = fenceFor(node.markdown);
+      out.push('**' + node.summary + '**', '', fence + 'markdown', node.markdown, fence, '');
+    } else if (node.kind === 'item') {
+      var note = node.who || node.mark ? ' · ' + [node.who, node.mark, node.date].filter(Boolean).join(' · ') : '';
+      var head = '- **' + node.code + '**' + note;
+      if (node.text && node.text.indexOf('\n') < 0) out.push(head + ' — ' + node.text);
+      else {
+        out.push(head);
+        if (node.text) { out.push(''); node.text.split('\n').forEach(function (l) { out.push(l ? '  ' + l : ''); }); }
+      }
+      if (node.fields.length) {
+        out.push('');
+        node.fields.forEach(function (f) { out.push('  - ' + f[0] + ': ' + f[1]); });
+      }
+      out.push('');
+    }
+  }
+  function toMarkdown(model) {
+    var out = ['# ' + model.title, ''];
+    if (model.meta.length) out.push(model.meta.map(function (m) { return m[0] + ': **' + m[1] + '**'; }).join(' · '), '');
+    model.sections.forEach(function (s) {
+      out.push('## ' + s.heading, '');
+      s.body.forEach(function (n) { mdNode(n, out, 3); });
+    });
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+  }
+
+  // ---------------------------------------------------------------------
+  // A tela
+  // ---------------------------------------------------------------------
+  function h(tag, attrs, kids) {
+    var el = D.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k === 'text') el.textContent = String(v);
+      else if (k === 'html') el.innerHTML = v;
+      else el.setAttribute(k, v === true ? '' : String(v));
+    });
+    (kids || []).forEach(function (c) { if (c) el.appendChild(typeof c === 'string' ? D.createTextNode(c) : c); });
+    return el;
+  }
+  function plural(n) { return say(n === 1 ? 'page.count.one' : 'page.count.many', { n: n }); }
+  var app = D.getElementById('app');
+  var q = h('input', { type: 'search', id: 'q', placeholder: t('page.search.placeholder'), 'aria-label': t('page.search.label'), autocomplete: 'off' });
+  var hits = h('span', { class: 'hits' });
+  var kind = h('select', { id: 'type', 'aria-label': t('page.filter.label'), title: t('page.filter.label') });
+  var download = h('button', { id: 'download', class: 'btn main', type: 'button', text: t('page.download'), hidden: true });
+  var openAll = h('button', { id: 'openAll', type: 'button', text: t('page.open_all') });
+  var closeAll = h('button', { id: 'closeAll', type: 'button', text: t('page.close_all') });
+  var menu = h('button', { class: 'btn menu-btn', type: 'button', 'aria-label': t('page.sections'), text: '☰' });
+  var nav = h('ol', { class: 'nav' });
+  var titleEl = h('h1', { text: t('page.kind.spec') });
+  var metaEl = h('ul', { class: 'meta' });
+  var statusEl = h('p', { class: 'empty', id: 'status', text: t('page.loading') });
+  var notFound = h('p', { class: 'empty', id: 'notFound', hidden: true, text: t('page.not_found') });
+  var box = h('div', { id: 'sections' });
+  app.appendChild(h('div', { class: 'shell' }, [
+    h('aside', { class: 'side' }, [
+      h('p', { class: 'brand' }, [h('b', { text: 'Mustard' }), ' · ' + t('page.kind.spec')]),
+      h('nav', { 'aria-label': t('page.sections') }, [nav]),
+      h('div', { class: 'tools' }, [openAll, closeAll])]),
+    h('main', { id: 'content' }, [
+      h('div', { class: 'bar' }, [menu, h('label', { class: 'search' }, [q, hits]), kind, download]),
+      h('div', { class: 'page' }, [
+        h('header', { class: 'top' }, [h('p', { class: 'eyebrow', text: 'Mustard · ' + t('page.kind.spec') }), titleEl, metaEl]),
+        statusEl, notFound, box])])]));
+  app.setAttribute('data-state', 'loading');
+
+  var MODEL = null, ITEMS = [], EXTRAS = [], GROUPS = [], SECTIONS = [], OVERVIEWS = [], RENDERS = 0;
+  function renderItem(it, ctx) {
+    var tail = h('span', { class: 'tail' }, [
+      it.who ? h('span', { class: 'who', text: it.who }) : null,
+      it.mark ? h('span', { class: 'tag mark', text: it.mark }) : null,
+      it.status ? h('span', { class: 'tag state ' + it.status.tone, text: it.status.label }) : null,
+      it.date ? h('span', { class: 'when', text: it.date }) : null]);
+    var fields = it.fields.length ? h('dl', { class: 'kv' }, [].concat.apply([], it.fields.map(function (f) {
+      return [h('dt', { text: f[0] }), h('dd', { html: inline(f[1]) })];
+    }))) : null;
+    var el = h('details', { class: 'item' + (it.anchored ? '' : ' old'), id: it.anchored ? it.code : null, 'data-code': it.code, 'data-type': it.type }, [
+      h('summary', null, [h('code', { class: 'c', text: it.code }), h('span', { class: 't', html: inline(it.title) }), tail]),
+      h('div', { class: 'body' }, [it.text ? h('div', { class: 'prose', html: markdown(it.text) }) : null, fields])]);
+    var words = [it.code, it.title, it.text, it.who || ''].concat([].concat.apply([], it.fields)).join(' ');
+    var entry = { el: el, code: fold(it.code), type: it.type, text: fold(words) };
+    ITEMS.push(entry);
+    if (ctx) ctx.items.push(entry);
+    return el;
+  }
+  function renderNode(node, ctx) {
+    if (node.kind === 'paragraph') return h('p', { class: 'muted', html: inline(node.text) });
+    if (node.kind === 'heading') return h('h3', { text: node.text });
+    if (node.kind === 'item') return renderItem(node, ctx);
+    if (node.kind === 'table') {
+      return h('div', { class: 'table' }, [h('table', null, [
+        h('thead', null, [h('tr', null, node.headers.map(function (c) { return h('th', { text: c }); }))]),
+        h('tbody', null, node.rows.map(function (r) { return h('tr', null, r.map(function (c) { return h('td', { html: inline(c) }); })); }))])]);
+    }
+    if (node.kind === 'details') {
+      var d = h('details', { class: 'prompt', 'data-owner': node.owner }, [h('summary', { text: node.summary }), h('div', { class: 'md', html: markdown(node.markdown) })]);
+      EXTRAS.push({ el: d, owner: node.owner });
+      return d;
+    }
+    if (node.kind === 'overview') {
+      var ov = h('div', { class: 'overview' }, [
+        h('div', { class: 'ov-head' }, [h('b', { text: node.title }), h('span', { text: node.legend })]),
+        h('ol', { class: 'wgrid' }, node.cards.map(function (c) {
+          return h('li', null, [h('a', { class: 'w ' + c.status.tone, href: '#' + c.target, title: c.hint }, [h('b', { text: c.label }), h('span', { text: c.status.label })])]);
+        }))]);
+      OVERVIEWS.push(ov);
+      return ov;
+    }
+    if (node.kind === 'group') {
+      var own = { items: [] }, count = h('span', { class: 'count' });
+      var g = h('details', { class: 'group', id: node.anchor, open: node.open }, [
+        h('summary', null, [
+          h('span', { class: 'gt', text: node.title }),
+          h('span', { class: 'gs' }, [node.status ? h('span', { class: 'tag ' + node.status.tone, text: node.status.label }) : null,
+            node.summary ? h('span', { html: inline(node.summary) }) : null]),
+          count]),
+        h('div', { class: 'gbody' }, node.body.map(function (n) { return renderNode(n, own); }))]);
+      count.textContent = own.items.length ? plural(own.items.length) : '';
+      var entry = { el: g, items: own.items, open: node.open };
+      GROUPS.push(entry);
+      if (ctx) { ctx.items.push.apply(ctx.items, own.items); ctx.groups.push(entry); }
+      return g;
+    }
+    return null;
+  }
+  function render(model) {
+    var open = new Set();
+    ITEMS.concat(GROUPS).forEach(function (x) { if (x.el.open && x.el.getAttribute('id')) open.add(x.el.getAttribute('id')); });
+    ITEMS = []; EXTRAS = []; GROUPS = []; SECTIONS = []; OVERVIEWS = [];
+    KNOWN = model.known;
+    MODEL = model;
+    D.title = 'Mustard · ' + model.title;
+    titleEl.textContent = model.title;
+    metaEl.textContent = '';
+    model.meta.forEach(function (m) { metaEl.appendChild(h('li', null, [m[0] + ' ', h('b', { text: m[1] })])); });
+    box.textContent = '';
+    nav.textContent = '';
+    model.sections.forEach(function (s) {
+      var ctx = { items: [], groups: [] };
+      var count = h('span', { class: 'count' });
+      var el = h('section', { class: 'block', id: s.anchor }, [h('h2', null, [h('span', { text: s.heading }), count])]);
+      s.body.forEach(function (n) { var c = renderNode(n, ctx); if (c) el.appendChild(c); });
+      count.textContent = ctx.items.length ? plural(ctx.items.length) : '';
+      box.appendChild(el);
+      var link = h('li', null, [h('a', { href: '#' + s.anchor }, [h('span', { text: s.heading }), h('i', { text: ctx.items.length ? String(ctx.items.length) : '' })])]);
+      nav.appendChild(link);
+      SECTIONS.push({ el: el, nav: link, ctx: ctx });
+    });
+    open.forEach(function (id) {
+      ITEMS.concat(GROUPS).forEach(function (x) { if (x.el.getAttribute('id') === id) x.el.open = true; });
+    });
+    var chosen = kind.value;
+    kind.textContent = '';
+    kind.appendChild(h('option', { value: '', text: t('page.filter.all') }));
+    TYPE_LIST.forEach(function (ty) {
+      if (ITEMS.some(function (x) { return x.type === ty.name; })) kind.appendChild(h('option', { value: ty.name, text: t('page.type.' + ty.name) }));
+    });
+    kind.value = ITEMS.some(function (x) { return x.type === chosen; }) ? chosen : '';
+    statusEl.hidden = true;
+    RENDERS++;
+    app.setAttribute('data-state', 'ready');
+    app.setAttribute('data-renders', String(RENDERS));
+    apply();
+  }
+  function noData() {
+    ITEMS = []; EXTRAS = []; GROUPS = []; SECTIONS = []; OVERVIEWS = []; MODEL = null;
+    box.textContent = '';
+    nav.textContent = '';
+    statusEl.textContent = t('page.no_data');
+    statusEl.hidden = false;
+    RENDERS++;
+    app.setAttribute('data-state', 'empty');
+    app.setAttribute('data-renders', String(RENDERS));
+  }
+
+  // A busca (por texto, sem acento e sem caixa, ou pelo código de um item) e
+  // o filtro por tipo valem juntos.
+  function apply() {
+    var terms = fold(q.value.trim()).split(/\s+/).filter(Boolean), type = kind.value, active = terms.length > 0 || !!type;
+    var owners = null;
+    if (terms.length === 1 && /[a-z]-\d/.test(terms[0])) {
+      owners = ITEMS.filter(function (x) { return x.code === terms[0] || x.code.slice(-terms[0].length - 1) === '-' + terms[0]; });
+      if (!owners.length) owners = null;
+    }
+    var found = 0;
+    ITEMS.forEach(function (x) {
+      var ok = !type || x.type === type;
+      if (ok && terms.length) ok = owners ? owners.indexOf(x) >= 0 : terms.every(function (w) { return x.text.indexOf(w) >= 0; });
+      x.el.hidden = !ok;
+      if (ok) found++;
+    });
+    var shownCodes = new Set(ITEMS.filter(function (x) { return !x.el.hidden; }).map(function (x) { return x.el.getAttribute('data-code'); }));
+    EXTRAS.forEach(function (x) { x.el.hidden = active && !(x.owner && shownCodes.has(x.owner)); });
+    GROUPS.forEach(function (g) {
+      var any = g.items.some(function (x) { return !x.el.hidden; });
+      g.el.hidden = active && !any;
+      if (active) g.el.open = any; else g.el.open = g.el.open || g.open;
+    });
+    SECTIONS.forEach(function (s) {
+      var any = s.ctx.items.some(function (x) { return !x.el.hidden; });
+      s.el.hidden = active && !any;
+      s.nav.hidden = active && !any;
+    });
+    OVERVIEWS.forEach(function (o) { o.hidden = active; });
+    hits.textContent = active ? plural(found) : '';
+    notFound.hidden = !active || found > 0 || !MODEL;
+  }
+  q.addEventListener('input', apply);
+  kind.addEventListener('change', apply);
+  openAll.addEventListener('click', function () {
+    GROUPS.forEach(function (g) { if (!g.el.hidden) g.el.open = true; });
+    ITEMS.forEach(function (x) { if (!x.el.hidden) x.el.open = true; });
+  });
+  closeAll.addEventListener('click', function () {
+    ITEMS.forEach(function (x) { x.el.open = false; });
+    GROUPS.forEach(function (g) { g.el.open = false; });
+  });
+  menu.addEventListener('click', function () { D.body.classList.toggle('nav-open'); });
+  app.addEventListener('click', function (ev) {
+    var a = ev.target && ev.target.closest ? ev.target.closest('a[href^="#"]') : null;
+    var el = a ? D.getElementById(decodeURIComponent(a.getAttribute('href').slice(1))) : null;
+    if (!el) return;
+    ev.preventDefault();
+    for (var p = el; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true;
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+    D.body.classList.remove('nav-open');
+  });
+  // O botão só aparece com o salvar arquivo do claude.ai (`downloads`)
+  // disponível: sem ele, baixar direto pelo navegador não funciona dentro
+  // do claude.ai, então o botão some em vez de tentar.
+  var hasDownloads = W.claude && typeof W.claude.use === 'function' ? W.claude.use('downloads') : Promise.resolve(null);
+  Promise.resolve(hasDownloads).then(function (dl) { download.hidden = !dl; }, function () { download.hidden = true; });
+  download.addEventListener('click', function () {
+    if (!MODEL) return Promise.resolve();
+    var text = toMarkdown(MODEL), name = (MODEL.spec || 'spec') + '.md';
+    var ask = W.claude && typeof W.claude.use === 'function' ? W.claude.use('downloads') : Promise.resolve(null);
+    return Promise.resolve(ask).then(function (dl) {
+      if (dl) return dl.save({ filename: name, data: text }).catch(function () { return null; });
+      return null;
+    }, function () { return null; });
+  });
+
+  // ---------------------------------------------------------------------
+  // O banco: as faixas de itens em páginas, em ordem de início (e de
+  // pedaço, dentro da mesma faixa), e o documento das coisas calculadas.
+  // Uma cópia nova (uma faixa nova ou trocada, ou o documento das coisas
+  // calculadas) faz a página ler de novo.
+  // ---------------------------------------------------------------------
+  var SEEN = { top: null, computed: null };
+  // O primeiro pedaço de cada faixa (seq = início * 1000) leva `chunks`,
+  // quantos pedaços ela tem agora. Um pedaço velho, que sobrou depois de a
+  // faixa encolher (um expurgo, por exemplo), continua no banco sem ninguém
+  // apagar; esta conta é por onde a leitura sabe até qual pedaço ler,
+  // ignorando o que sobrou, sem repetir item.
+  function readItems(db) {
+    var out = [];
+    var expect = {};
+    function page(after) {
+      return db.collection(DBP.ranges).where('seq', '>', after).orderBy('seq').limit(PAGE).get().then(function (snap) {
+        var last = null;
+        snap.docs.forEach(function (d) {
+          var b = d.data();
+          if (!b || !isInt(b.seq)) return;
+          var start = Math.floor(b.seq / 1000);
+          var n = b.seq - start * 1000;
+          if (n === 0) expect[start] = isInt(b.chunks) ? b.chunks : 1;
+          if (n < (expect[start] === undefined ? 1 : expect[start])) {
+            (b.items || []).forEach(function (item) { out.push(item); });
+          }
+          last = b;
+        });
+        if (snap.docs.length < PAGE || !last || !isInt(last.seq) || last.seq <= after) return out;
+        return page(last.seq);
+      });
+    }
+    return page(-1);
+  }
+  function readComputed(db) {
+    return db.doc(DBP.computed).get().then(function (s) { return (s && s.exists && s.data()) || {}; });
+  }
+  function reload(db) {
+    return Promise.all([readItems(db), readComputed(db)]).then(function (got) {
+      SEEN.computed = JSON.stringify(got[1]);
+      if (!got[0].length) { SEEN.top = null; noData(); return; }
+      var model = build(got[0], got[1]);
+      SEEN.top = model.top;
+      render(model);
+    }, function () { if (!MODEL) noData(); });
+  }
+  function watch(db) {
+    var timer = 0;
+    function later() { clearTimeout(timer); timer = setTimeout(function () { reload(db); }, 600); }
+    function failed() { statusEl.textContent = t('page.watch_failed'); statusEl.hidden = false; }
+    db.doc(DBP.computed).onSnapshot(function (s) {
+      if (JSON.stringify((s && s.exists && s.data()) || {}) !== SEEN.computed) later();
+    }, failed);
+    db.collection(DBP.ranges).orderBy('seq', 'desc').limit(1).onSnapshot(function (s) {
+      var d = s.docs[0], b = d && d.data();
+      var items = (b && b.items) || [];
+      var top = items.length ? items[items.length - 1] : null;
+      if ((top && isInt(top.id) ? top.id : null) !== SEEN.top) later();
+    }, failed);
+  }
+  var ready = W.claude && typeof W.claude.use === 'function' ? W.claude.use('db') : Promise.resolve(null);
+  Promise.resolve(ready).then(function (db) {
+    if (!db) { noData(); return; }
+    return reload(db).then(function () { watch(db); });
+  }, noData);
+})();
+</script>
+</body>
+</html>

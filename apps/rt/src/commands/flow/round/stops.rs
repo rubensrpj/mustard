@@ -239,23 +239,6 @@ mod tests {
         assert_eq!(after["dispatch"], json!([]), "a onda 1 já entregou: {after}");
     }
 
-    /// A resposta do usuário à pergunta `question`, dada pela testemunha dos
-    /// gestos, como o harness a entrega depois do clique.
-    fn click(root: &Path, session: &str, question: &str, answer: &str) {
-        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
-        let input = HookInput {
-            hook_event_name: Some("PostToolUse".to_string()),
-            tool_name: Some("AskUserQuestion".to_string()),
-            session_id: Some(session.to_string()),
-            tool_input: json!({ "questions": [{ "question": question,
-                "options": [{ "label": "Aceitar" }, { "label": "Recusar" }] }] }),
-            raw: json!({ "tool_response": { "answers": { question: answer } } }),
-            ..HookInput::default()
-        };
-        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
-        crate::hooks::observe::approval_witness::ApprovalWitness.evaluate(&input, &ctx).expect("never errors");
-    }
-
     /// O agente que diz que o plano da onda não funciona para a rodada até o
     /// "sim" do usuário, e o "sim" é o clique em "Aceitar" na pergunta da
     /// mudança, gravado pela testemunha. A recusa mostra a mudança e a
@@ -329,7 +312,7 @@ mod tests {
     fn a_wave_rejected_after_its_second_fix_round_is_not_sent_again_and_the_user_is_asked() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
 
@@ -380,7 +363,7 @@ mod tests {
         assert!(stopped["next"].as_str().unwrap_or_default().ends_with(&asked), "{stopped}");
         assert!(stopped.get("command").is_none(), "{stopped}");
 
-        // Parada continua parada, e a onda 2 também não sai.
+        // Parada continua parada.
         let still = round(root, "x", None);
         assert_eq!(waves_in(&still, "stopped"), vec![1], "{still}");
         assert_eq!(sends(root), 3);
@@ -475,11 +458,10 @@ mod tests {
     }
 
     /// A onda parada pelo limite de consertos segura só ela e as que dependem
-    /// dela, direta ou por outra onda: a onda independente sai, a revisão
-    /// pendente é pedida, e a resposta traz a pergunta com os vereditos da
-    /// onda parada antes do resto. Tirada do plano, a onda parada deixa de
-    /// contar: não segura mais nada nem é revisada; e a onda em andamento
-    /// tirada do plano não ocupa vaga.
+    /// dela, direta ou por outra onda: a onda independente sai, e a resposta
+    /// traz a pergunta com os vereditos da onda parada antes do resto. Tirada
+    /// do plano, a onda parada deixa de contar: não segura mais nada; e a
+    /// onda em andamento tirada do plano não ocupa vaga.
     #[test]
     fn a_stuck_wave_holds_only_itself_and_its_dependents_and_stops_counting_out_of_the_plan() {
         let dir = tempdir().unwrap();
@@ -506,7 +488,7 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(waves_in(&out, "dispatch"), vec![5], "a 6 depende da 1, e a 3 depende dela pela 2: {out}");
-        assert_eq!(waves_in(&out, "reviews"), vec![4], "{out}");
+        assert!(out.get("reviews").is_none(), "{out}");
         assert_eq!(waves_in(&out, "stopped"), vec![1], "{out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
@@ -537,7 +519,6 @@ mod tests {
         let mut sent = waves_in(&out, "dispatch");
         sent.sort_unstable();
         assert_eq!(sent, vec![3, 6], "{out}");
-        assert_eq!(waves_in(&out, "reviews"), vec![4], "a onda fora do plano não é revisada: {out}");
         assert_eq!(waves_in(&out, "running"), vec![3, 6], "a onda fora do plano não ocupa vaga: {out}");
     }
 }

@@ -767,6 +767,7 @@ dependencies = [
 name = "mustard-rt"
 version = "0.2.1"
 dependencies = [
+ "chrono",
  "clap",
  "mustard-core",
  "regex",

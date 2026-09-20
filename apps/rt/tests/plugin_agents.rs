@@ -225,12 +225,31 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
     }
 }
 
+/// O agente de onda instalado proíbe usar o stash do git, na mesma frase que
+/// já proíbe comitar, enviar ao servidor e trocar de branch, nos dois
+/// idiomas, e continua dentro do teto de bytes do agente.
+#[test]
+fn the_wave_agent_never_uses_the_git_stash() {
+    for (lang, phrase) in [("pt-BR", "use o stash"), ("en-US", "or stash")] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let wave = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        assert!(wave.len() <= AGENT_CAP, "the {lang} wave agent is {} bytes", wave.len());
+        let guard = wave
+            .lines()
+            .find(|l| l.contains("Nunca comite") || l.contains("Never commit"))
+            .unwrap_or_else(|| panic!("the {lang} wave agent lost its git guard line"));
+        assert!(guard.contains(phrase), "the {lang} wave agent does not forbid the stash: {guard}");
+    }
+}
+
 /// Nenhum texto de agente manda criar cópia do projeto por conta própria —
 /// nem os três que o projeto recebe, em cada idioma, nem as instruções fixas
 /// que o binário monta no pedido da onda e da revisão —; os de onda e de
-/// revisão mandam trabalhar na cópia separada e na pasta de compilação que o
-/// pedido indica. O pedido que a rodada monta, pelo binário, traz a cópia que
-/// ela criou e a pasta de compilação. O aviso das sobras no disco continua no
+/// revisão mandam trabalhar na cópia separada que o pedido indica e usar a
+/// pasta de compilação quando ele indicar uma. O pedido que a rodada monta,
+/// pelo binário, num projeto que o mapa marca como Rust, traz a cópia que ela
+/// criou e a pasta de compilação. O aviso das sobras no disco continua no
 /// catálogo do início da sessão, com o comando que as limpa.
 #[test]
 fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_the_build_folder() {
@@ -246,9 +265,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
             }
         }
         let said: [&str; 3] = if text == Locale::PtBr {
-            ["cópia separada que o pedido indica", "pasta de compilação que ele indica", "Nunca crie cópia por conta própria"]
+            ["cópia separada que o pedido indica", "se ele indicar uma pasta de compilação, use-a", "Nunca crie cópia por conta própria"]
         } else {
-            ["separate copy the request names", "build folder it names", "Never create a copy on your own"]
+            ["separate copy the request names", "if it names a build folder, use it", "Never create a copy on your own"]
         };
         for name in ["wave", "review"] {
             for line in said {
@@ -279,6 +298,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
         put("task", json!({"wave": n, "text": "Mexer no mesmo arquivo.", "files": [{"path": "src/main.rs"}], "origin": said}));
     }
     put("state", json!({"phase": "running", "branch": "feature/copia"}));
+    // O mapa marca o projeto como Rust, como o scan o grava.
+    let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo", "code_files": 1}]});
+    std::fs::write(mustard_core::io::project_map::model_path(&root), model.to_string()).unwrap();
 
     let round = rt(&root, &home, &["run", "round", "--spec", "copia"], None);
     assert_eq!(round["ok"], json!(true), "{round}");
@@ -304,9 +326,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
 }
 
-/// A parte fixa de cada pedido que o binário monta: o da onda, o da revisão
-/// dela e o da revisão final do conjunto.
-const FIXED_PARTS: [&str; 3] = ["prompt.fixed", "prompt.review.fixed", "prompt.final.fixed"];
+/// A parte fixa de cada pedido que o binário monta: o da onda e o da revisão
+/// final do conjunto.
+const FIXED_PARTS: [&str; 2] = ["prompt.fixed", "prompt.final.fixed"];
 
 /// Quantas palavras seguidas fazem uma frase repetida.
 const REPEATED_RUN: usize = 6;
@@ -352,11 +374,12 @@ fn run_returned(root: &Path, home: &Path, report: &Value) -> Value {
 
 /// Cada comando do fluxo responde o próximo passo, e o comando que ele
 /// devolve roda inteiro, sem o parser recusar opção nenhuma: a retomada no
-/// levantamento devolve o levantamento; a rodada sem nada a despachar, sem
-/// revisão pendente e com tudo entregue e aprovado devolve o fechamento; o
-/// fechamento devolve o pull request com a base e a branch da spec; e a
-/// retomada da spec fechada devolve a mesma linha. O que o modelo roda a
-/// seguir vem dessa resposta, nunca de um texto do Mustard.
+/// levantamento devolve o levantamento; a rodada sem nada a despachar e com
+/// tudo entregue devolve o fechamento; o fechamento, mesmo sem onda nenhuma,
+/// pede o agente de teste dedicado, e aprovado ele devolve o pull request com
+/// a base e a branch da spec; e a retomada da spec fechada devolve a mesma
+/// linha. O que o modelo roda a seguir vem dessa resposta, nunca de um texto
+/// do Mustard.
 #[test]
 fn every_flow_command_answers_its_next_step() {
     let dir = tempfile::tempdir().unwrap();
@@ -393,7 +416,16 @@ fn every_flow_command_answers_its_next_step() {
     let close = translate("round.close", Locale::PtBr).replace("{command}", "mustard-rt run close --spec passo");
     assert!(round["next"].as_str().is_some_and(|next| next.ends_with(&close)), "{round}");
 
-    let closed = run_returned(&root, &home, &round);
+    // Mesmo sem onda nenhuma, o fechamento pede o agente de teste dedicado.
+    let asked = run_returned(&root, &home, &round);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let approved = json!({"final": true, "result": "approved", "text": "Está pronto."});
+    let closed = rt(
+        &root,
+        &home,
+        &["run", "close", "--spec", "passo", "--report", &format!("<VERDICT>{approved}</VERDICT>")],
+        None,
+    );
     assert_eq!(closed["ok"], json!(true), "{closed}");
     let pr_open = "mustard-rt run pr-open --base dev --head feature/passo --spec passo";
     assert_eq!(closed["command"], json!(pr_open), "{closed}");

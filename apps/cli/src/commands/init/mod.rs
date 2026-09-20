@@ -21,9 +21,10 @@
 //!      statusLine / plansDirectory …), rtk's hook following
 //!      `mustard.json#rtk`, and Claude Code's own signature off; plugin
 //!      enablement is NOT planted (user-scope choice);
-//!    - `mustard/mapa-inicio-sessao.md` and `agents/mustard/*.md` — the
-//!      session map and the three agents, always rewritten, in the language
-//!      of `language.text`;
+//!    - `mustard/session-map.md`, `mustard/pages/*.html` and
+//!      `agents/mustard/*.md` — the session map, the two page templates and
+//!      the three agents, always rewritten, in the language of
+//!      `language.text`;
 //!    - `.gitignore` — covers the ephemeral harness state;
 //!
 //!    Before those, the single project-root `mustard.json` is written
@@ -72,7 +73,7 @@ mod questions;
 mod seeding;
 mod tools;
 
-pub(crate) use tools::{ensure_ripgrep, probe_rtk};
+pub(crate) use tools::{ensure_code_tools, ensure_ripgrep, probe_rtk};
 
 use questions::ExistingAction;
 
@@ -170,7 +171,8 @@ pub fn init_with_templates(
         }
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
         println!("    settings.local.json — reduced seed, rtk's hook per mustard.json#rtk, Claude Code's signature off");
-        println!("    mustard/mapa-inicio-sessao.md — the session map, delivered at session start per mustard.json#inject");
+        println!("    mustard/session-map.md — the session map, delivered at session start per mustard.json#inject");
+        println!("    mustard/pages/*.html — the spec page and project page templates, in the project's text language");
         println!("    agents/mustard/*.md — the mustard-wave, mustard-review and mustard-skill agents, in the project's text language");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would list what an older Mustard left in CLAUDE.md files and .claude/settings.json (nothing leaves without a yes)");
@@ -359,8 +361,8 @@ mod tests {
             "the versioned settings file is never created",
         );
         assert!(
-            claude.join("mustard").join("mapa-inicio-sessao.md").exists(),
-            ".claude/mustard/mapa-inicio-sessao.md seeded"
+            claude.join("mustard").join("session-map.md").exists(),
+            ".claude/mustard/session-map.md seeded"
         );
         for name in ["wave.md", "review.md", "skill.md"] {
             assert!(claude.join("agents/mustard").join(name).exists(), "agent {name} seeded");
@@ -438,7 +440,7 @@ mod tests {
         assert_eq!(inject.len(), 1, "only the session map: {inject:?}");
         assert_eq!(
             inject[0].get("file").and_then(|v| v.as_str()),
-            Some(".claude/mustard/mapa-inicio-sessao.md")
+            Some(".claude/mustard/session-map.md")
         );
         assert_eq!(inject[0].get("on").and_then(|v| v.as_str()), Some("sessionStart"));
         // Without a declared language the local settings get the pt-BR style.
@@ -571,7 +573,7 @@ mod tests {
         let claude = project.join(".claude");
         // A diverged session map already present in .claude/mustard/.
         fs::create_dir_all(claude.join("mustard")).unwrap();
-        fs::write(claude.join("mustard/mapa-inicio-sessao.md"), "USER EDIT").unwrap();
+        fs::write(claude.join("mustard/session-map.md"), "USER EDIT").unwrap();
 
         // Non-interactive existing-dir path resolves to a merge.
         init_with_templates(
@@ -584,7 +586,7 @@ mod tests {
         // The session map is the harness's own text, so merge mode does not
         // reach it: the seed is laid down again whatever was there…
         assert_eq!(
-            fs::read_to_string(claude.join("mustard/mapa-inicio-sessao.md")).unwrap(),
+            fs::read_to_string(claude.join("mustard/session-map.md")).unwrap(),
             mustard_core::session_map(mustard_core::platform::i18n::Locale::PtBr),
             "merge must still rewrite the session map — it is not project configuration"
         );

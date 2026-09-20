@@ -255,6 +255,13 @@ pub struct ProjectMap {
     pub state: MapState,
 }
 
+/// O mapa tem alguma parte Rust, que compila e testa pelo Cargo. Sem mapa,
+/// `false`.
+#[must_use]
+pub fn has_rust_part(map: Option<&ProjectMap>) -> bool {
+    map.is_some_and(|map| map.projects.iter().any(|part| part.kind == "cargo"))
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MapModule {
@@ -280,6 +287,10 @@ pub struct MapDecl {
     pub name: String,
     /// A linha em que a declaração começa.
     pub line: u64,
+    /// A linha em que a declaração termina. `0` num mapa antigo, sem o
+    /// campo, ou quando o scan não resolveu — nesses casos a leitura
+    /// obrigatória de uma tarefa cita só o nome, sem linha.
+    pub end_line: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

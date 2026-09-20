@@ -69,14 +69,16 @@ pub mod settings;
 pub use cleanup::{CleanupDone, CleanupPlan};
 pub use files::{
     default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations,
-    same_declared_path, seed_gitignore, seed_harness_texts, session_map_declared_path,
+    project_page_template_path, same_declared_path, seed_gitignore, seed_harness_texts,
+    session_map_declared_path,
 };
 pub use footprint::{
     carries_private_marks, detect_install_mode, footprint, footprint_pathspecs, footprint_rules,
     is_written_footprint, FootprintEntry, InstallMode, PRIVATE_MARKS,
 };
 pub use settings::{
-    output_style_for, retire_planted_plugin_enablement, seed_settings, Switches, RTK_HOOK_COMMAND,
+    output_style_for, retire_planted_plugin_enablement, seed_settings, Switches, PAGE_DATABASE_TOOL,
+    RTK_HOOK_COMMAND,
 };
 
 /// `.claude/settings.json` — the shared-mode settings seed, and the team's file.
@@ -357,7 +359,9 @@ mod tests {
             report.created,
             vec![
                 ".claude/settings.json",
-                ".claude/mustard/mapa-inicio-sessao.md",
+                ".claude/mustard/session-map.md",
+                ".claude/mustard/pages/spec.html",
+                ".claude/mustard/pages/project.html",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
                 ".claude/agents/mustard/skill.md",
@@ -378,7 +382,7 @@ mod tests {
         .unwrap();
         assert!(settings.get("statusLine").is_some(), "real seed content laid down");
         assert_eq!(
-            std_fs::read_to_string(root.join(".claude/mustard/mapa-inicio-sessao.md")).unwrap(),
+            std_fs::read_to_string(root.join(".claude/mustard/session-map.md")).unwrap(),
             session_map(Locale::PtBr),
             "a project that declares no language gets the pt-BR text",
         );
@@ -420,7 +424,9 @@ mod tests {
             second.preserved,
             vec![
                 ".claude/settings.json",
-                ".claude/mustard/mapa-inicio-sessao.md",
+                ".claude/mustard/session-map.md",
+                ".claude/mustard/pages/spec.html",
+                ".claude/mustard/pages/project.html",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
                 ".claude/agents/mustard/skill.md",
@@ -439,7 +445,7 @@ mod tests {
         // A diverged session map + a settings.json with a user key + a curated
         // mustard.json (own inject list, own version, English text).
         std_fs::create_dir_all(root.join(".claude/mustard")).unwrap();
-        std_fs::write(root.join(".claude/mustard/mapa-inicio-sessao.md"), "USER EDIT").unwrap();
+        std_fs::write(root.join(".claude/mustard/session-map.md"), "USER EDIT").unwrap();
         std_fs::write(
             root.join(".claude/settings.json"),
             "{\n  \"userKey\": true\n}\n",
@@ -458,11 +464,11 @@ mod tests {
         // declared language, and the report says `Updated` so the overwrite is
         // never silent.
         assert_eq!(
-            std_fs::read_to_string(root.join(".claude/mustard/mapa-inicio-sessao.md")).unwrap(),
+            std_fs::read_to_string(root.join(".claude/mustard/session-map.md")).unwrap(),
             session_map(Locale::EnUs),
         );
         assert!(report.created.contains(&".claude/.gitignore".to_string()));
-        assert!(report.updated.contains(&".claude/mustard/mapa-inicio-sessao.md".to_string()));
+        assert!(report.updated.contains(&".claude/mustard/session-map.md".to_string()));
         // settings.json: user key kept, missing seed keys backfilled.
         let settings: Value = serde_json::from_str(
             &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),

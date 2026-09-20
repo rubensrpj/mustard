@@ -218,20 +218,10 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         })
         .collect();
     let reminders: usize = list.iter().map(|item| item.reminders.len()).sum();
-    // O passo termina refazendo a página e o `.md`: a gravação de cada evento
-    // já não os refaz. Falhar aqui só avisa, porque o que o passo tinha para
-    // gravar já está gravado. O levantamento não é marco e nunca manda
-    // publicar; o item que ainda guarda um trecho com cara de segredo sai
-    // dito, com o código.
-    let mut warnings: Vec<String> = Vec::new();
-    let mut withheld: Vec<String> = Vec::new();
-    match spec_events::pages::refresh(&project.root, &spec, lang) {
-        Ok(pages) => {
-            warnings.extend(pages.warnings);
-            withheld = pages.withheld;
-        }
-        Err(refusal) => warnings.push(refusal.message(lang)),
-    }
+    // O levantamento não é marco: não escreve página nem manda copiar nada
+    // para o banco dela. O item que ainda guarda um trecho com cara de
+    // segredo sai dito, com o código, para ser expurgado antes da cópia.
+    let withheld = spec_events::pages::copy::withheld(&log);
     let mut report = json!({
         "ok": true,
         "spec": spec,
@@ -256,12 +246,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
                 .replace("{reason}", reason));
         }
     }
-    if !warnings.is_empty() {
-        report["warnings"] = json!(warnings);
-    }
-    if !withheld.is_empty() {
-        report["withheld"] = json!(withheld);
-    }
+    spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
     let open = survey::open_points(&log);
     if to_record > 0 {
         report["hint"] = json!(translate("survey.record_points", lang).replace("{spec}", &spec));
@@ -278,7 +263,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     } else {
         let unrouted: Vec<Value> = survey::unrouted_messages(&log).into_iter().map(|m| shown(m, &codes)).collect();
         report["unrouted"] = json!(unrouted);
-        report["hint"] = json!(translate("survey.done", lang));
+        report["hint"] = json!(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
     }
     report
 }
@@ -454,9 +439,8 @@ mod tests {
     }
 
     /// Com um item de texto que parece senha, o levantamento devolve o código
-    /// do item a expurgar, nos avisos e em `withheld`, e não manda publicar,
-    /// porque não é marco; o `.html` local sai com o trecho trocado por "…" e
-    /// o resto do item legível.
+    /// do item a expurgar, nos avisos e em `withheld`, e não manda publicar
+    /// nem copiar, porque não é marco.
     #[test]
     fn the_grill_names_the_withheld_item_and_never_orders_the_publish() {
         let dir = tempdir().unwrap();
@@ -470,28 +454,26 @@ mod tests {
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(report["withheld"], json!([code]), "{report}");
         let warnings = report["warnings"].as_array().cloned().unwrap_or_default();
-        assert!(warnings.iter().any(|w| w.as_str().unwrap_or_default().contains(&code)), "{report}");
+        assert!(warnings.iter().any(|w| w["hint"].as_str().unwrap_or_default().contains(&code)), "{report}");
         assert!(report.get("publish").is_none() && !report.to_string().contains("write publish"), "{report}");
-        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(!html.contains("9f8e7d6c5b4a3210"), "the local page keeps the secret out");
-        assert!(html.contains("client_secret=…"), "the rest of the item stays readable");
+        assert!(report.get("copy").is_none() && !report.to_string().contains("write copy"), "{report}");
     }
 
-    /// O `grill` termina refazendo a página e o `.md` da spec: a gravação de
-    /// cada evento já não os refaz.
+    /// O `grill` não escreve página nem prepara cópia: o levantamento não é
+    /// marco.
     #[test]
-    fn the_grill_leaves_the_page_and_the_md_rebuilt() {
+    fn the_grill_writes_no_page() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root, "x");
         let spec = root.join(".claude").join("spec").join("x");
-        assert!(!spec.join("spec.html").exists(), "nenhuma gravação refez a página");
 
         let report = grill(root, "x", Some("fix"), false);
         assert_eq!(report["ok"], json!(true), "{report}");
         assert!(report["warnings"].is_null(), "{report}");
-        assert!(spec.join("spec.html").is_file(), "a página sai no fim do passo");
-        assert!(spec.join("spec.md").is_file(), "e o `.md` também");
+        for written in ["spec.html", "spec.md", "copy"] {
+            assert!(!spec.join(written).exists(), "{written}");
+        }
     }
 
     fn events(root: &Path, spec: &str) -> String {
@@ -584,6 +566,8 @@ mod tests {
         let hint = next["hint"].as_str().unwrap();
         let code = next["next"]["code"].as_str().unwrap();
         assert!(hint.contains(code) && hint.contains(&next["next"]["id"].to_string()), "{hint}");
+        // O ponto é apresentado na ordem de explicar do estilo de resposta.
+        assert!(hint.contains("na ordem de explicar do estilo de resposta"), "{hint}");
     }
 
     /// Repetir o `grill` com os mesmos tipos não grava nada e devolve o mesmo
@@ -853,18 +837,19 @@ mod tests {
         let loose = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "E o painel?"})));
         let done = grill(root, "x", Some("fix"), false);
         assert!(done.get("next").is_none(), "{done}");
-        assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr)));
+        let scale = translate("plan.points_scale", Locale::PtBr);
+        assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr).replace("{scale}", scale)));
         let unrouted: Vec<u64> = done["unrouted"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect();
         assert_eq!(unrouted, [loose]);
     }
 
-    /// Lado a lado: a página e o `grill` contam pela mesma leitura dos pontos
-    /// abertos. O ponto revisto e fechado pela primeira versão, e o fechado
-    /// por um ponto que grava outro texto na lacuna, saem fechados nos dois;
-    /// com todos fechados, a página não mostra nenhum pendente e o `grill`
-    /// passa ao fim.
+    /// Lado a lado: a leitura única dos pontos e o `grill` contam pela mesma
+    /// leitura dos pontos abertos. O ponto revisto e fechado pela primeira
+    /// versão, e o fechado por um ponto que grava outro texto na lacuna, saem
+    /// fechados nos dois; com todos fechados, a leitura não mostra nenhum
+    /// pendente e o `grill` passa ao fim.
     #[test]
-    fn the_page_and_grill_count_the_same_open_points() {
+    fn survey_points_and_grill_count_the_same_open_points() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -882,20 +867,14 @@ mod tests {
         assert_eq!(write(root, Some("x"), "point", revision)["ok"], json!(true));
         close(first, ids[0]);
 
-        // A página sai no fim do passo, não a cada gravação: aqui ela é
-            // refeita pela mesma porta que o passo usa.
-            let page = || {
-                spec_events::pages::refresh(root, "x", Locale::PtBr).expect("a página do fim do passo");
-                std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap()
-            };
-        let panel = |open: usize, closed: usize| {
-            translate("page.metrics.points.value", Locale::PtBr)
-                .replace("{open}", &open.to_string())
-                .replace("{closed}", &closed.to_string())
+        // A leitura única dos pontos é a mesma que a página e o `grill` usam.
+        let open_points = |root: &std::path::Path| -> usize {
+            let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+            survey::points(&log).iter().filter(|p| p.is_open()).count()
         };
         let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
         assert_eq!(survey::open_points(&log).len(), ids.len() - 1);
-        assert!(page().contains(&panel(ids.len() - 1, 1)), "the revised point closed by its first number: {}", page());
+        assert_eq!(open_points(root), ids.len() - 1, "the revised point closed by its first number");
         let next = grill(root, "x", Some("fix"), false);
         assert_eq!(next["next"]["id"], json!(ids[1]), "{next}");
 
@@ -903,7 +882,7 @@ mod tests {
         let reworded = json!({"block": second["block"], "gap": "Outro texto na lacuna", "from": "gap",
             "status": "not_applicable", "closes": ids[1], "reason": "não se aplica", "origin": said});
         assert_eq!(write(root, Some("x"), "point", reworded)["ok"], json!(true));
-        assert!(page().contains(&panel(ids.len() - 2, 2)), "{}", page());
+        assert_eq!(open_points(root), ids.len() - 2);
         let after = grill(root, "x", Some("fix"), false);
         let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
         assert_eq!(open, ids.len() - 2, "{after}");
@@ -914,14 +893,15 @@ mod tests {
         for (item, id) in items(&listed).iter().zip(&ids).skip(2) {
             close(item, *id);
         }
-        assert!(page().contains(&panel(0, ids.len())), "{}", page());
+        assert_eq!(open_points(root), 0);
         let done = grill(root, "x", Some("fix"), false);
         assert!(done.get("next").is_none() && done["unrouted"].is_array(), "{done}");
     }
 
     /// O expurgo de um ponto fechado só oculta o trecho do original, que
-    /// continua lá: a lacuna segue coberta, o `grill` e a página contam o ponto
-    /// como fechado, e a passagem para o plano não a pede de novo.
+    /// continua lá: a lacuna segue coberta, o `grill` e a leitura única dos
+    /// pontos contam o ponto como fechado, e a passagem para o plano não a
+    /// pede de novo.
     #[test]
     fn a_point_closed_and_then_purged_still_covers_its_gap() {
         let dir = tempdir().unwrap();
@@ -944,11 +924,9 @@ mod tests {
         let after = grill(root, "x", Some("fix"), false);
         assert_eq!(after["to_record"], json!(0), "{after}");
         assert!(items(&after).iter().all(|item| item["status"] == json!("closed")), "{after}");
-        let page = std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
-        let panel = translate("page.metrics.points.value", Locale::PtBr)
-            .replace("{open}", "0")
-            .replace("{closed}", &ids.len().to_string());
-        assert!(page.contains(&panel), "{page}");
+        let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+        assert_eq!(survey::points(&log).iter().filter(|p| p.is_open()).count(), 0);
+        assert_eq!(survey::points(&log).len(), ids.len());
 
         let mut plan = Map::new();
         plan.insert("phase".into(), json!("plan"));
@@ -957,15 +935,15 @@ mod tests {
     }
 
     /// Lado a lado, a leitura única dos pontos: cada ponto é o par do
-    /// original com o fechamento, e a página, o `grill`, o passo do `write` e
-    /// a passagem para o plano o leem igual. Fechado com outro texto na
-    /// lacuna, fechado e depois expurgado no trecho, fechado e depois
-    /// removido, e as duas coisas juntas: a lacuna segue coberta e o ponto
-    /// conta como fechado. O fechamento grava a lacuna do original, e o
-    /// `grill` mostra o número do original enquanto ele existe — o expurgo não
-    /// o tira — e, depois que ele sai, o do fechamento.
+    /// original com o fechamento, e ela, o `grill`, o passo do `write` e a
+    /// passagem para o plano o leem igual. Fechado com outro texto na lacuna,
+    /// fechado e depois expurgado no trecho, fechado e depois removido, e as
+    /// duas coisas juntas: a lacuna segue coberta e o ponto conta como
+    /// fechado. O fechamento grava a lacuna do original, e o `grill` mostra o
+    /// número do original enquanto ele existe — o expurgo não o tira — e,
+    /// depois que ele sai, o do fechamento.
     #[test]
-    fn a_closed_point_counts_the_same_on_the_page_grill_write_and_passage() {
+    fn a_closed_point_counts_the_same_on_survey_points_grill_write_and_passage() {
         let cases = [(true, None), (false, Some("purge")), (false, Some("remove")), (true, Some("purge")), (true, Some("remove"))];
         for (reworded, leaves) in cases {
             let case = format!("reworded: {reworded}, original: {leaves:?}");
@@ -980,16 +958,12 @@ mod tests {
                     "closes": closes, "reason": "O fato tinha um segredo.", "origin": said});
                 write(root, Some("x"), "point", closing)
             };
-            // A página sai no fim do passo, não a cada gravação: aqui ela é
-            // refeita pela mesma porta que o passo usa.
-            let page = || {
-                spec_events::pages::refresh(root, "x", Locale::PtBr).expect("a página do fim do passo");
-                std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap()
-            };
-            let panel = |open: usize, closed: usize| {
-                translate("page.metrics.points.value", Locale::PtBr)
-                    .replace("{open}", &open.to_string())
-                    .replace("{closed}", &closed.to_string())
+            // A leitura única dos pontos é a mesma que o `grill` usa.
+            let open_closed = || -> (usize, usize) {
+                let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+                let points = survey::points(&log);
+                let open = points.iter().filter(|p| p.is_open()).count();
+                (open, points.len() - open)
             };
 
             let first = &items(&listed)[0];
@@ -1022,12 +996,12 @@ mod tests {
             let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
             assert_eq!(open, ids.len() - 1, "{case}: {after}");
             assert_eq!(after["next"]["id"], json!(ids[1]), "{case}: {after}");
-            assert!(page().contains(&panel(ids.len() - 1, 1)), "{case}: {}", page());
+            assert_eq!(open_closed(), (ids.len() - 1, 1), "{case}");
 
             for (item, id) in items(&listed).iter().zip(&ids).skip(1) {
                 assert_eq!(close(item, *id, item["gap"].as_str().unwrap())["ok"], json!(true), "{case}");
             }
-            assert!(page().contains(&panel(0, ids.len())), "{case}: {}", page());
+            assert_eq!(open_closed(), (0, ids.len()), "{case}");
             let mut plan = Map::new();
             plan.insert("phase".into(), json!("plan"));
             plan.insert("author".into(), json!("binary"));
@@ -1037,7 +1011,8 @@ mod tests {
 
     /// A versão nova de um fechamento pode vir sem `closes`: com o original
     /// já fora, ela é aceita e recebe o ponto que a antiga fechava. O ponto
-    /// segue fechado na página, no `grill` e na passagem para o plano.
+    /// segue fechado na leitura única dos pontos, no `grill` e na passagem
+    /// para o plano.
     #[test]
     fn a_new_version_of_a_closing_without_closes_keeps_the_point_closed() {
         for leaves in ["remove"] {
@@ -1052,16 +1027,12 @@ mod tests {
                     "closes": closes, "reason": "O fato tinha um segredo.", "origin": said});
                 write(root, Some("x"), "point", closing)
             };
-            // A página sai no fim do passo, não a cada gravação: aqui ela é
-            // refeita pela mesma porta que o passo usa.
-            let page = || {
-                spec_events::pages::refresh(root, "x", Locale::PtBr).expect("a página do fim do passo");
-                std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap()
-            };
-            let panel = |open: usize, closed: usize| {
-                translate("page.metrics.points.value", Locale::PtBr)
-                    .replace("{open}", &open.to_string())
-                    .replace("{closed}", &closed.to_string())
+            // A leitura única dos pontos é a mesma que o `grill` usa.
+            let open_closed = || -> (usize, usize) {
+                let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+                let points = survey::points(&log);
+                let open = points.iter().filter(|p| p.is_open()).count();
+                (open, points.len() - open)
             };
 
             let first = &items(&listed)[0];
@@ -1081,12 +1052,12 @@ mod tests {
             let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
             assert_eq!(open, ids.len() - 1, "{leaves}: {after}");
             assert_eq!(after["next"]["id"], json!(ids[1]), "{leaves}: {after}");
-            assert!(page().contains(&panel(ids.len() - 1, 1)), "{leaves}: {}", page());
+            assert_eq!(open_closed(), (ids.len() - 1, 1), "{leaves}");
 
             for (item, id) in items(&listed).iter().zip(&ids).skip(1) {
                 assert_eq!(close(item, *id)["ok"], json!(true), "{leaves}");
             }
-            assert!(page().contains(&panel(0, ids.len())), "{leaves}: {}", page());
+            assert_eq!(open_closed(), (0, ids.len()), "{leaves}");
             let mut plan = Map::new();
             plan.insert("phase".into(), json!("plan"));
             plan.insert("author".into(), json!("binary"));

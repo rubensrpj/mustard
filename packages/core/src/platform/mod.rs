@@ -1,9 +1,11 @@
+pub mod code_tools;
 pub mod error;
 pub mod git;
 pub mod git_branches;
 pub mod git_exclude;
 pub mod git_provider;
 pub mod harness;
+pub mod page_templates;
 pub mod i18n;
 pub mod process;
 pub mod project_seed;

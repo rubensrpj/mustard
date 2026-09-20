@@ -4,11 +4,12 @@
 //! É a porta entre o levantamento e a aprovação. Depois que a especificação,
 //! as ondas e as tarefas estão gravadas, este comando monta o pedido de cada
 //! onda a partir dos eventos — com as lições e as skills —, confere o plano
-//! contra o código real, refaz a página e o índice, grava a fase `plan` pela
-//! mesma porta de gravação de fase das outras, e responde o próximo passo:
-//! publique as duas páginas e faça a pergunta de aprovação. O item que ainda
-//! guarda um trecho com cara de segredo sai dito, para ser expurgado; na
-//! página, o trecho já saiu como "…".
+//! contra o código real, refaz o índice, grava a fase `plan` pela mesma porta
+//! de gravação de fase das outras, prepara a cópia da spec para o banco de
+//! dados da página e responde o próximo passo: publique a página que ainda
+//! não foi publicada, copie os lotes para o banco e faça a pergunta de
+//! aprovação. O item que ainda guarda um trecho com cara de segredo sai dito,
+//! para ser expurgado; ele fica fora da cópia.
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; erro de montagem do plano (ciclo entre ondas, e
@@ -17,9 +18,11 @@
 //! que não existe e não está marcado como novo; tarefa que mexe em código
 //! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere;
 //! tarefa sem nota de trabalho, que volta com a escala e o exemplo de cada
-//! nota; tarefa cujo texto não casa com onda nenhuma do plano; e item
-//! combinado sem dono — nenhuma tarefa de uma onda do plano o cobre, ele não
-//! diz as ondas dele nem vale no projeto todo.
+//! nota; e tarefa cujo texto não casa com onda nenhuma do plano.
+//!
+//! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
+//! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
+//! a análise antes do envio de cada onda decide se ele vai para ela.
 //!
 //! **O que só avisa**, e a decisão fica com quem aprova: arquivo citado fora
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
@@ -30,13 +33,19 @@
 //! combinado de uma onda que nenhuma tarefa cobre — menos o marcado como "não
 //! vira código", que traz o motivo na linha dele, e o do projeto, que vale
 //! sempre; contrato que nenhum critério cita; tarefa que podia nomear uma
-//! skill; e tarefa cujo texto não casa com o texto da onda dela, que volta
-//! dizendo com qual onda ele casaria melhor.
+//! skill; tarefa cujo texto não casa com o texto da onda dela, que volta
+//! dizendo com qual onda ele casaria melhor; e o comando de compilar ou de
+//! testar que o `mustard.json` ainda não declara, com o campo a preencher.
 //!
 //! As conferências das tarefas olham só as ondas que ainda vêm: a tarefa de
 //! onda que já tem registro de entrega não é conferida, porque o que ela fez
 //! está provado pelo código que entrou, pelo commit que a carrega e pela
 //! revisão que a aprovou, e não pelo texto que a descreveu.
+//!
+//! A leitura das notas ([`wave_points`]) é uma só: serve à conferência e à
+//! migração de uma spec aprovada por uma versão antiga, que não pedia nota —
+//! no marco em que o template da página dela nasce, a ordem manda dar nota às
+//! tarefas das ondas que ainda não saíram ([`migration_points`]).
 //!
 //! Cada achado, dos que travam e dos que só avisam, é gravado como anotação
 //! no arquivo de eventos quando este comando roda, com o rótulo do achado do
@@ -45,18 +54,13 @@
 //! citado existe, o arquivo está no git — rodam aqui, uma vez por plano, e
 //! nunca ao desenhar a página. Rodar o comando de novo não repete a anotação
 //! que já está no arquivo.
-//!
-//! Quando a publicação anterior falhou, a resposta já traz o `scp` pronto
-//! para o usuário copiar a página para a máquina dele: a aprovação não fica
-//! presa a uma dependência de fora.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
 use mustard_core::domain::project_map::MapRefusal;
-use mustard_core::domain::search;
-use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{open_points, open_refusal};
 use mustard_core::domain::wave_prompt::{self, Owner};
@@ -66,6 +70,7 @@ use mustard_core::io::wave_prompt::{prompts, Flight, WavePrompt};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use crate::commands::flow::skill_search::{best_skill, skills_on_disk, MAP_SUGGESTIONS};
 use crate::commands::spec_events::{self, read::checkout, write::record};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
@@ -111,8 +116,6 @@ enum PlanFinding {
     Cited { task: String, finding: Finding },
     /// Um item combinado que nenhuma tarefa cobre.
     ItemWithoutTask { code: String },
-    /// Um item combinado sem dono.
-    ItemWithoutOwner { code: String },
     /// Um contrato que nenhum critério cita.
     ContractWithoutCriterion { code: String },
     /// Uma tarefa que mexe em código e não diz em que arquivo mexe, com os
@@ -128,6 +131,9 @@ enum PlanFinding {
     /// Uma tarefa sem skill cujo trabalho se repete no projeto: o plano
     /// precisa da tarefa que faz a skill dela nascer.
     SkillToBeBorn { task: String },
+    /// O comando de compilar ou de testar que o projeto ainda não declarou
+    /// no `mustard.json`, pelo nome do campo (`buildCommand`/`testCommand`).
+    CommandNotDeclared { field: &'static str },
 }
 
 impl PlanFinding {
@@ -139,7 +145,6 @@ impl PlanFinding {
             | Self::WaveLoop { .. }
             | Self::DependsOnMissing { .. }
             | Self::TaskWithoutWave { .. }
-            | Self::ItemWithoutOwner { .. }
             | Self::TaskWithoutFile { .. }
             | Self::TasksWithoutPoints { .. }
             | Self::TaskMatchesNoWave { .. } => true,
@@ -153,7 +158,8 @@ impl PlanFinding {
             | Self::ContractWithoutCriterion { .. }
             | Self::TaskInTheWrongWave { .. }
             | Self::TaskCouldNameASkill { .. }
-            | Self::SkillToBeBorn { .. } => false,
+            | Self::SkillToBeBorn { .. }
+            | Self::CommandNotDeclared { .. } => false,
         }
     }
 
@@ -179,13 +185,13 @@ impl PlanFinding {
                 Finding::NoMap => "names-unchecked".into(),
             },
             Self::ItemWithoutTask { .. } => "item-without-task".into(),
-            Self::ItemWithoutOwner { .. } => "item-without-owner".into(),
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
             Self::TaskInTheWrongWave { .. } => "task-in-the-wrong-wave".into(),
             Self::TaskMatchesNoWave { .. } => "task-matches-no-wave".into(),
             Self::TaskCouldNameASkill { .. } => "task-could-name-a-skill".into(),
             Self::SkillToBeBorn { .. } => "skill-to-be-born".into(),
+            Self::CommandNotDeclared { .. } => "command-not-declared".into(),
         }
     }
 
@@ -238,7 +244,6 @@ impl PlanFinding {
                 format!("{task}: {text}")
             }
             Self::ItemWithoutTask { code } => fill("plan.item_without_task", &[("{code}", code.clone())]),
-            Self::ItemWithoutOwner { code } => fill("plan.item_without_owner", &[("{code}", code.clone())]),
             Self::ContractWithoutCriterion { code } => {
                 fill("plan.contract_without_criterion", &[("{code}", code.clone())])
             }
@@ -261,6 +266,9 @@ impl PlanFinding {
                 fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())])
             }
             Self::SkillToBeBorn { task } => fill("plan.skill_to_be_born", &[("{task}", task.clone())]),
+            Self::CommandNotDeclared { field } => {
+                fill("plan.command_not_declared", &[("{field}", (*field).to_string())])
+            }
         }
     }
 
@@ -272,12 +280,11 @@ impl PlanFinding {
 /// O núcleo testável de [`run`]. A sessão vem do ambiente. Nunca entra em
 /// pânico.
 pub(crate) fn plan_at(opts: &PlanOpts) -> Value {
-    plan_for(opts, session_from_env().as_deref(), std::env::var("SSH_CONNECTION").ok().as_deref())
+    plan_for(opts, session_from_env().as_deref())
 }
 
-/// [`plan_at`] com a sessão e a conexão recebidas, que é como um teste as
-/// escolhe.
-pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>) -> Value {
+/// [`plan_at`] com a sessão recebida, que é como um teste a escolhe.
+pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
     let refuse = |refusal: &Refusal| spec_events::refused(refusal, lang);
@@ -319,18 +326,16 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
         .collect();
 
     if !blocking.is_empty() {
-        // A página sai mesmo com o plano travado: é nela que o achado que
-        // segura a pergunta aparece para quem vai corrigi-lo.
-        let pages = match spec_events::pages::refresh(&project.root, &spec, lang) {
-            Ok(pages) => pages,
-            Err(refusal) => return refuse(&refusal),
-        };
+        // O plano travado não é marco: nada vai para o banco da página, e o
+        // item que guarda um trecho com cara de segredo sai dito, para ser
+        // expurgado antes da cópia.
         let mut report = json!({
             "ok": false, "spec": spec, "reason": "plan-not-ready",
             "hint": translate("plan.not_ready", lang).replace("{count}", &blocking.len().to_string()),
             "waves": waves, "blocking": blocking, "warnings": warnings,
         });
-        spec_events::pages::note_checked(&mut report, &pages);
+        let withheld = spec_events::pages::copy::withheld(&log);
+        spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
         return report;
     }
 
@@ -356,18 +361,17 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
         }
     };
 
-    // O passo termina refazendo a página e o `.md`: a gravação de cada evento
-    // já não os refaz, e é por esta página que a spec é aprovada.
-    let pages = match spec_events::pages::refresh(&project.root, &spec, lang) {
-        Ok(pages) => pages,
+    // O passo termina preparando a cópia para o banco da página, que é por
+    // onde a spec é aprovada. A cópia acontece só nos marcos, e a aprovação é
+    // um deles: a resposta manda publicar a página que ainda não tem endereço
+    // e copiar os lotes, e nenhum endereço vai para a resposta ao usuário — o
+    // link mora na barra de status. O item que ainda guarda um trecho com
+    // cara de segredo sai dito, para ser expurgado, sem segurar a cópia nem a
+    // pergunta.
+    let prepared = match spec_events::pages::copy::prepare_milestone(&project.root, &spec, lang) {
+        Ok(prepared) => prepared,
         Err(refusal) => return refuse(&refusal),
     };
-
-    // A publicação acontece só nos marcos, e a aprovação é um deles: a
-    // resposta manda publicar as duas páginas, e nenhum endereço entra na
-    // conversa — o link mora na barra de status. O item que ainda guarda um
-    // trecho com cara de segredo sai dito, para ser expurgado, sem segurar a
-    // publicação nem a pergunta.
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,
         "waves": waves, "warnings": warnings,
@@ -375,15 +379,58 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
     if let Some(id) = recorded {
         report["id"] = json!(id);
     }
-    spec_events::pages::end_milestone(&mut report, Ok(&pages), "approval", translate("plan.next", lang), lang);
-    if report.get("publish").is_some()
-        && let Some(command) = fallback_copy(&project.root, &spec, &log, ssh)
-    {
-        report["copy"] = json!(command);
-        let next = report["next"].as_str().unwrap_or_default().to_string();
-        report["next"] = json!(format!("{next} {}", translate("plan.copy", lang)));
-    }
+    // Quem executa vem da soma das notas de todas as tarefas do plano e do
+    // número de ondas que o plano já tem, antes da pergunta de aprovação: em
+    // todo tamanho, a obra termina com o agente de teste dedicado.
+    let points = wave_points(&log, &BTreeSet::new());
+    let total: u64 = points.sums.values().sum();
+    // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
+    // só reconhece essa pergunta, e outro texto não aprova nada.
+    let ask = format!(
+        "{} {}",
+        who_executes(total, points.sums.len(), lang),
+        translate("plan.next", lang)
+            .replace("{question}", translate("approval.question", lang))
+            .replace("{option}", translate("approval.option", lang)),
+    );
+    spec_events::pages::end_milestone(&mut report, Ok(&prepared), &spec, "approval", &ask, lang);
     report
+}
+
+/// Quem executa a obra, pela soma das notas de todas as tarefas do plano
+/// (`total`) e pelo número de ondas que o plano já tem (`waves`): com uma
+/// onda só e até 3 pontos, o orquestrador faz, sem cópia nem agente; de 4 a
+/// 13, ainda com uma onda só, um agente faz; acima de 13, ou com duas ondas
+/// ou mais já no plano — mesmo somando até 3 pontos —, a obra vai em ondas de
+/// até [`WAVE_POINTS_CAP`] pontos cada, uma por agente. O plano com mais de
+/// uma onda nunca diz "numa onda só" nem fica com o orquestrador, mesmo com o
+/// total dentro do teto de uma onda ou do orquestrador. Em todo tamanho, a
+/// obra termina com o agente de teste dedicado.
+fn who_executes(total: u64, waves: usize, lang: Locale) -> String {
+    let key = if waves <= 1 && total <= SOLO_POINTS_CAP {
+        "plan.execution.solo"
+    } else if waves <= 1 && total <= WAVE_POINTS_CAP {
+        "plan.execution.one_wave"
+    } else {
+        "plan.execution.many_waves"
+    };
+    let scale = translate(key, lang).replace("{points}", &total.to_string());
+    format!("{scale} {}", translate("plan.execution.ends_with_test_agent", lang))
+}
+
+/// O plano tem uma onda só, com nota em cada tarefa dela, e a soma não passa
+/// de [`SOLO_POINTS_CAP`] pontos? É a mesma soma de [`who_executes`], pela
+/// mesma leitura ([`wave_points`]), para a rodada nunca discordar de quem
+/// executa: só então a rodada manda o orquestrador fazer a onda na própria
+/// janela, sem cópia separada e sem agente. Com duas ondas ou mais, mesmo
+/// somando até o teto, cada onda vai para um agente — o orquestrador nunca
+/// divide a obra em partes. A tarefa sem nota nunca conta como obra pequena —
+/// ela travaria a pergunta de aprovação antes de a rodada rodar — e por isso
+/// tira a obra do caminho do orquestrador, em vez de arriscar uma soma que
+/// ainda falta.
+pub(crate) fn is_solo_work(log: &SpecLog) -> bool {
+    let points = wave_points(log, &BTreeSet::new());
+    points.unrated.is_empty() && points.sums.len() == 1 && points.sums.values().sum::<u64>() <= SOLO_POINTS_CAP
 }
 
 /// Grava cada achado da conferência como anotação, no idioma do projeto, que
@@ -489,25 +536,24 @@ fn check(
     // sem nota numa onda que ainda não saiu segura a pergunta, como a tarefa
     // sem arquivo, e a onda cuja soma passa do teto só avisa — o aviso nunca
     // recusa nem divide a onda. A onda já entregue fica de fora das duas.
-    let mut unrated: Vec<String> = Vec::new();
-    let mut sums: BTreeMap<u64, u64> = BTreeMap::new();
-    for task in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task") {
-        let Some(wave) = task.wave() else { continue };
-        if delivered.contains(&wave) {
-            continue;
-        }
-        match task.int("points") {
-            Some(points) => *sums.entry(wave).or_default() += points,
-            None => unrated.push(code_of(task)),
-        }
+    let points = wave_points(log, &delivered);
+    if !points.unrated.is_empty() {
+        out.push(PlanFinding::TasksWithoutPoints { tasks: points.unrated.join(", ") });
     }
-    if !unrated.is_empty() {
-        out.push(PlanFinding::TasksWithoutPoints { tasks: unrated.join(", ") });
+    for (wave, points) in points.over_cap() {
+        out.push(PlanFinding::WavePointsOverCap { wave, points });
     }
-    for (wave, points) in sums {
-        if points > WAVE_POINTS_CAP {
-            out.push(PlanFinding::WavePointsOverCap { wave, points });
-        }
+
+    // O comando de compilar e o de testar, do mesmo `mustard.json` que
+    // `prompts` já leu para montar `built`: o campo ainda não declarado, ou
+    // só com o provisório do `init`, sai como aviso, com o campo a
+    // preencher. Nunca recusa — a onda ainda sai, só sem a linha do comando.
+    let commands = mustard_core::ProjectConfig::load(root).commands();
+    if commands.build.is_none() {
+        out.push(PlanFinding::CommandNotDeclared { field: "buildCommand" });
+    }
+    if commands.test.is_none() {
+        out.push(PlanFinding::CommandNotDeclared { field: "testCommand" });
     }
 
     // Cada pedido cabe no teto de linhas, e cada skill nomeada passa.
@@ -576,9 +622,10 @@ fn check(
         }
     }
 
-    // O dono e a cobertura: o item combinado sem dono trava; o item de uma
-    // onda sem tarefa e o contrato sem critério só avisam, e a decisão fica
-    // com quem aprova.
+    // A cobertura: o item de uma onda sem tarefa e o contrato sem critério só
+    // avisam, e a decisão fica com quem aprova. O item sem dono não é
+    // conferido aqui: a análise antes do envio de cada onda decide se ele vai
+    // para ela.
     let covered: BTreeSet<u64> = tasks
         .iter()
         .flat_map(|task| task.ints("covers"))
@@ -595,8 +642,7 @@ fn check(
     let owners = wave_prompt::owners(log);
     for item in &agreed {
         match owners.get(&item.id) {
-            None => out.push(PlanFinding::ItemWithoutOwner { code: code_of(item) }),
-            Some(Owner::Project) => {}
+            None | Some(Owner::Project) => {}
             Some(Owner::Waves(_)) => {
                 if !covered.contains(&item.id) && item.str_field("no_code").is_none() {
                     out.push(PlanFinding::ItemWithoutTask { code: code_of(item) });
@@ -661,52 +707,56 @@ fn check(
     out
 }
 
-/// As skills que existem no disco, pelo nome e pelas raízes do "quando usar"
-/// da descrição delas, prontas para a busca. Procuradas onde o pedido da onda
-/// as procura: nas pastas dos arquivos que as tarefas declaram, subindo até a
-/// raiz, e na raiz do projeto. A skill sem descrição fica de fora, porque é a
-/// descrição que diz se ela serve para a tarefa.
-fn skills_on_disk(root: &Path, tasks: &[&SpecEvent]) -> Vec<(String, String)> {
-    let mut folders: Vec<PathBuf> = Vec::new();
-    for task in tasks {
-        for (file, _) in declared_files(task) {
-            let mut folder = root.join(file);
-            while folder.pop() && folder.starts_with(root) {
-                if !folders.contains(&folder) {
-                    folders.push(folder.clone());
-                }
-            }
+/// As notas de trabalho das tarefas de um plano: as tarefas sem nota, pelos
+/// códigos, na ordem do arquivo, e a soma das notas de cada onda.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WavePoints {
+    pub unrated: Vec<String>,
+    pub sums: BTreeMap<u64, u64>,
+}
+
+impl WavePoints {
+    /// Cada onda cuja soma passa do teto de [`WAVE_POINTS_CAP`], com a soma.
+    pub(crate) fn over_cap(&self) -> Vec<(u64, u64)> {
+        self.sums.iter().filter(|(_, points)| **points > WAVE_POINTS_CAP).map(|(wave, points)| (*wave, *points)).collect()
+    }
+
+    /// Nenhuma tarefa sem nota e nenhuma onda acima do teto.
+    pub(crate) fn is_clear(&self) -> bool {
+        self.unrated.is_empty() && self.over_cap().is_empty()
+    }
+}
+
+/// A leitura das notas das tarefas do plano, a mesma da conferência do plano
+/// e da migração de uma spec antiga: a tarefa de uma onda em `skip` não conta.
+pub(crate) fn wave_points(log: &SpecLog, skip: &BTreeSet<u64>) -> WavePoints {
+    let codes = log.codes();
+    let mut out = WavePoints::default();
+    for task in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task") {
+        let Some(wave) = task.wave() else { continue };
+        if skip.contains(&wave) {
+            continue;
+        }
+        match task.int("points") {
+            Some(points) => *out.sums.entry(wave).or_default() += points,
+            None => out.unrated.push(codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string())),
         }
     }
-    if !folders.contains(&root.to_path_buf()) {
-        folders.push(root.to_path_buf());
-    }
-    let mut out: Vec<(String, String)> = Vec::new();
-    for folder in folders {
-        let Ok(entries) = std::fs::read_dir(folder.join(".claude").join("skills")) else { continue };
-        for entry in entries.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
-            if out.iter().any(|(had, _)| *had == name) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(entry.path().join("SKILL.md")) else { continue };
-            let Ok(front) = mustard_core::domain::skill::frontmatter::parse(&text) else { continue };
-            let when = front.description.split_whitespace().collect::<Vec<_>>().join(" ");
-            if !when.is_empty() {
-                out.push((name, search_field(Some(&when), &[])));
-            }
-        }
-    }
-    out.sort();
     out
 }
 
-/// A skill que serve para o texto de uma tarefa: a que casa mais forte com
-/// ele, pela mesma busca do recorte dos itens. `None` quando nenhuma casa.
-fn best_skill(on_disk: &[(String, String)], text: &str) -> Option<String> {
-    let docs = on_disk.iter().enumerate().map(|(i, (_, when))| (i as u64, when.as_str()));
-    let hit = search::search(docs, text).into_iter().next()?;
-    on_disk.get(hit.id as usize).map(|(name, _)| name.clone())
+/// As notas das tarefas das ondas que ainda não saíram, lidas na migração de
+/// uma spec aprovada por uma versão antiga, que não pedia nota: a onda com
+/// pedido de onda gravado já saiu, e a entregue também, e nenhuma delas conta.
+pub(crate) fn migration_points(log: &SpecLog) -> WavePoints {
+    let gone: BTreeSet<u64> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("wave"))
+        .filter_map(SpecEvent::wave)
+        .chain(log.delivered_waves())
+        .collect();
+    wave_points(log, &gone)
 }
 
 /// `true` quando o trabalho de uma tarefa se repete no projeto: o mapa acha
@@ -717,12 +767,15 @@ fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
     !mustard_core::domain::project_map::examples(&map, &target, Locale::PtBr).picks.is_empty()
 }
 
-/// Quantos arquivos o mapa sugere junto da recusa da tarefa sem arquivo.
-const MAP_SUGGESTIONS: usize = 3;
-
 /// O teto da soma das notas de uma onda: acima dele, o plano avisa, sem
 /// segurar a aprovação. Fica no código, sem chave de configuração.
-const WAVE_POINTS_CAP: u64 = 13;
+pub(crate) const WAVE_POINTS_CAP: u64 = 13;
+
+/// O teto da soma das notas da obra inteira até onde o orquestrador a faz
+/// sozinho, sem onda dividida em agente. [`who_executes`] e a rodada
+/// ([`is_solo_work`]) leem esta mesma constante, para nunca discordarem da
+/// soma. Fica no código, sem chave de configuração.
+pub(crate) const SOLO_POINTS_CAP: u64 = 3;
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
 /// nenhum — a de prosa, a de decisão, a de medida e a que só escreve na spec.
@@ -745,7 +798,7 @@ fn says_it_touches_no_file(text: &str) -> bool {
 }
 
 /// Os arquivos que uma tarefa declara: o caminho e se ela o marcou como novo.
-fn declared_files(task: &SpecEvent) -> Vec<(String, bool)> {
+pub(super) fn declared_files(task: &SpecEvent) -> Vec<(String, bool)> {
     task.fields
         .get("files")
         .and_then(Value::as_array)
@@ -761,33 +814,6 @@ fn declared_files(task: &SpecEvent) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// O comando que copia a página para a máquina do usuário, quando a última
-/// publicação falhou. Numa sessão por SSH ele vem pronto, com o endereço do
-/// servidor e o usuário da sessão; fora dela, vem o caminho do arquivo.
-fn fallback_copy(root: &Path, spec: &str, log: &SpecLog, ssh: Option<&str>) -> Option<String> {
-    let failed = log
-        .block(BlockQuery::Block(Block::State))
-        .into_iter()
-        .rfind(|e| {
-            e.event_type == "publish" && e.str_field("page") == Some(mustard_core::domain::spec_index::SPEC_PAGE)
-        })
-        .is_some_and(|e| e.fields.get("ok").and_then(Value::as_bool) == Some(false));
-    if !failed {
-        return None;
-    }
-    let page = mustard_core::ClaudePaths::for_project(root).ok()?.for_spec(spec).ok()?.spec_html_path();
-    let shown = page.to_string_lossy().replace('\\', "/");
-    let server = ssh.and_then(|line| line.split_whitespace().nth(2).map(str::to_string));
-    match server {
-        Some(server) => {
-            let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
-            let who = if user.is_empty() { String::new() } else { format!("{user}@") };
-            Some(format!("scp {who}{server}:{shown} ."))
-        }
-        None => Some(shown),
-    }
-}
-
 fn join(items: impl Iterator<Item = String>) -> String {
     items.collect::<Vec<_>>().join(", ")
 }
@@ -797,6 +823,7 @@ fn join(items: impl Iterator<Item = String>) -> String {
 mod tests {
     use super::*;
     use crate::commands::flow::grill::{grill_for, GrillOpts};
+    use crate::commands::spec_events::pages::copy::{sent, sent_items};
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
     use std::process::Command;
     use tempfile::tempdir;
@@ -870,7 +897,7 @@ mod tests {
     }
 
     fn plan(root: &Path, spec: &str) -> Value {
-        plan_for(&PlanOpts { root: root.to_path_buf(), spec: Some(spec.into()) }, None, None)
+        plan_for(&PlanOpts { root: root.to_path_buf(), spec: Some(spec.into()) }, None)
     }
 
     fn reasons(report: &Value, field: &str) -> Vec<String> {
@@ -884,8 +911,9 @@ mod tests {
     }
 
     /// Um plano são é conferido numa chamada: a spec passa para o plano, a
-    /// página e o `.md` saem refeitos, e a resposta manda publicar a página e
-    /// fazer a pergunta.
+    /// cópia para o banco da página sai preparada, sem página nem `.md`
+    /// escritos, e a resposta manda publicar as duas páginas, copiar os lotes
+    /// e fazer a pergunta.
     #[test]
     fn a_sound_plan_is_checked_in_one_call_and_asks_for_the_page_and_the_question() {
         let dir = tempdir().unwrap();
@@ -900,36 +928,46 @@ mod tests {
         assert_eq!(report["waves"][0]["wave"], json!(1));
         assert!(report["waves"][0]["lines"].as_u64().unwrap() > 0);
         let next = report["next"].as_str().unwrap_or_default();
-        assert!(next.contains(translate("plan.next", Locale::PtBr)), "{next}");
+        // A pergunta de aprovação sai com o texto exato que a testemunha da
+        // aprovação reconhece, e nenhuma vaga fica por preencher.
+        assert!(next.contains("com o texto exato \"Aprovar esta spec?\""), "{next}");
+        assert!(!next.contains("{question}"), "{next}");
         for page in ["spec", "project"] {
             assert!(next.contains(&format!(r#"'{{"page":"{page}","milestone":"approval","#)), "{page}: {next}");
         }
-        assert!(report["copy"].is_null(), "sem publicação falha, nada de copiar: {report}");
-        // A aprovação é um marco: a resposta manda publicar as duas páginas, e
-        // nenhum endereço entra na conversa.
+        assert!(next.contains("write copy") && next.contains("ArtifactData"), "{next}");
+        // A aprovação é um marco: a resposta manda publicar as duas páginas,
+        // que ainda não têm endereço, e copiar a spec inteira para o banco.
         assert_eq!(report["publish"], json!(["spec", "project"]), "{report}");
         assert!(!report.to_string().contains("http"), "{report}");
-        assert!(root.join(".claude/spec/x/spec.html").is_file());
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(!sent_items(root, &report).is_empty(), "{report}");
+        assert_eq!(report["copy"]["spec"]["record"], json!({"page": "spec", "last": log.max_id()}), "{report}");
+        for page in ["spec.html", "spec.md"] {
+            assert!(!root.join(".claude/spec/x").join(page).exists(), "{page}");
+        }
+        assert!(!root.join(".claude/spec/project.html").exists());
 
-        // A linha da spec no índice sai refeita junto com a página.
+        // A linha da spec no índice sai refeita no passo.
         let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
         assert!(index.contains("\"phase\":\"plan\""), "{index}");
 
-        // Rodar de novo não grava fase nenhuma, refaz a página e o índice, e
-        // continua respondendo o mesmo.
-        std::fs::remove_file(root.join(".claude/spec/x/spec.html")).unwrap();
+        // Rodar de novo não grava fase nenhuma, refaz o índice e continua
+        // respondendo o mesmo.
         std::fs::remove_file(root.join(".claude/spec/index.ndjson")).unwrap();
         let again = plan(root, "x");
         assert_eq!(again["ok"], json!(true), "{again}");
         assert_eq!(again["from"], json!("plan"));
         assert!(again["id"].is_null(), "{again}");
-        assert!(root.join(".claude/spec/x/spec.html").is_file(), "a página volta");
+        assert_eq!(again["publish"], json!(["spec", "project"]), "{again}");
         let rebuilt = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
         assert_eq!(rebuilt, index, "o índice volta igual");
     }
 
-    /// Cada linha de cada pedido aparece na página da spec, sem exceção, as
-    /// instruções fixas incluídas: é por essa página que a spec é aprovada.
+    /// Cada linha de cada pedido aparece na página da spec que o comando de
+    /// página refaz, sem exceção, as instruções fixas incluídas, e vai inteiro
+    /// para o banco da página publicada no documento das coisas calculadas: é
+    /// por essa página que a spec é aprovada.
     #[test]
     fn every_line_of_every_request_shows_up_on_the_page() {
         let dir = tempdir().unwrap();
@@ -945,45 +983,17 @@ mod tests {
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
-        let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default());
         assert_eq!(built.len(), 2, "duas ondas, dois pedidos");
-        // A página mostra o pedido como um arquivo `.md`: cada linha aparece
-        // com o texto dela, sem as marcas do markdown.
-        let text = page_text(&page);
-        let shown = |line: &str| {
-            let line = line.trim().trim_start_matches('#').trim_start();
-            line.strip_prefix("- ").unwrap_or(line).replace("**", "").replace('`', "")
-        };
+        let computed = sent(root, &report, "spec").into_iter().find(|w| w["collection"] == json!("computed")).unwrap();
         for prompt in &built {
             assert!(prompt.lines > 0);
-            for line in prompt.text.lines().filter(|l| !l.trim().is_empty()) {
-                assert!(
-                    text.contains(&shown(line)),
-                    "a onda {} não mostra a linha {line:?}",
-                    prompt.wave
-                );
-            }
+            // O texto que o banco da página recebe é o mesmo que o agente lê,
+            // instruções fixas incluídas: nenhuma linha fica de fora.
+            assert_eq!(computed["body"]["prompts"][prompt.wave.to_string()], json!(prompt.text), "{computed}");
         }
-        // As instruções fixas, que todo agente recebe, estão entre elas.
-        assert!(text.contains(&shown(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap())));
-    }
-
-    /// O texto que a página mostra: sem as marcas do HTML, com os caracteres
-    /// escapados de volta.
-    fn page_text(page: &str) -> String {
-        let mut out = String::with_capacity(page.len());
-        let mut in_tag = false;
-        for c in page.chars() {
-            match c {
-                '<' => in_tag = true,
-                '>' if in_tag => in_tag = false,
-                _ if !in_tag => out.push(c),
-                _ => {}
-            }
-        }
-        out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+        assert!(built.iter().any(|prompt| prompt.text.contains(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap())));
     }
 
     /// Um ponto do levantamento ainda aberto trava a pergunta de aprovação, e
@@ -1098,6 +1108,44 @@ mod tests {
             assert!(warnings.contains(&reason.to_string()), "{reason}: {report}");
         }
         assert!(!warnings.contains(&"task-without-file".to_string()), "{report}");
+    }
+
+    /// O comando provisório que `mustard init` grava em `buildCommand`,
+    /// quando o projeto não tem um stack reconhecido, não chega ao pedido da
+    /// onda: `commands()` o trata como ausente, então nem o texto do
+    /// provisório nem a linha "Compile com" aparecem, e o plano avisa, sem
+    /// recusar, qual campo falta preencher — só o campo mesmo ausente, não o
+    /// que está declarado.
+    #[test]
+    fn a_placeholder_command_never_reaches_the_request() {
+        for (build, test, missing, present) in [
+            (mustard_core::BUILD_COMMAND_FALLBACK, "make test", "buildCommand", "testCommand"),
+            ("cargo build", "", "testCommand", "buildCommand"),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            std::fs::write(
+                root.join("mustard.json"),
+                json!({"build_command": build, "test_command": test}).to_string(),
+            )
+            .unwrap();
+            sound_plan(root, "x", said);
+
+            let report = plan(root, "x");
+            assert_eq!(report["ok"], json!(true), "{report}");
+            let hints = hints_of(&report, "warnings", "command-not-declared");
+            assert!(hints.iter().any(|h| h.contains(missing)), "{missing}: {hints:?}");
+            assert!(!hints.iter().any(|h| h.contains(present)), "{present} está declarado: {hints:?}");
+
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default());
+            assert_eq!(built.len(), 1, "{built:?}");
+            let text = &built[0].text;
+            assert!(!text.contains(mustard_core::BUILD_COMMAND_FALLBACK), "{text}");
+            assert_eq!(text.contains("Compile com"), missing != "buildCommand", "{text}");
+            assert_eq!(text.contains("Teste com"), missing != "testCommand", "{text}");
+        }
     }
 
     /// A onda cujas tarefas não dividem arquivo entre si tem partes
@@ -1450,12 +1498,15 @@ mod tests {
         assert!(uncovered[0].contains("MSTD-DEC-0002"), "{uncovered:?}");
     }
 
-    /// O item combinado sem dono trava o plano, pelo código, e a recusa diz
-    /// como dar dono a ele. Têm dono, e não travam, o item que a tarefa de uma
-    /// onda cobre, o que diz a onda dele e o do projeto todo, que nem avisa
-    /// por não ter tarefa; a onda que o plano não tem não é dona de nada.
+    /// O item combinado sem dono não trava o plano nem avisa: a análise antes
+    /// do envio de cada onda decide se ele vai para ela. Sem dono ficam o item
+    /// que nada cobre e o que diz uma onda que o plano não tem. Os outros
+    /// seguem como eram: o item que a tarefa cobre e o do projeto todo não
+    /// avisam, e o que diz a onda dele sem tarefa que o cubra avisa. Na divisa,
+    /// o plano continua travando o que trava: a tarefa sem nota segura a
+    /// pergunta, e o item sem dono não aparece entre os motivos.
     #[test]
-    fn an_item_without_owner_blocks_the_plan_and_says_how_to_give_it_one() {
+    fn the_plan_accepts_an_item_without_owner() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1470,29 +1521,34 @@ mod tests {
         decision("Da onda um.", json!({"waves": [1]}));
         decision("Do projeto.", json!({"applies_to": {"files": ["**"]}}));
         decision("Da onda que não existe.", json!({"waves": [9]}));
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no código.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
             "covers": [covered], "origin": said}));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let unowned: Vec<String> = wave_prompt::unowned(&log).iter().map(|e| codes[&e.id].clone()).collect();
+        assert_eq!(unowned, ["MSTD-DEC-0001", "MSTD-DEC-0005"], "the two items really have no owner");
 
         let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let hints = |field: &str, reason: &str| -> Vec<String> {
-            report[field]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-                .iter()
-                .filter(|f| f["reason"] == json!(reason))
-                .filter_map(|f| f["hint"].as_str().map(str::to_string))
-                .collect()
-        };
-        let unowned = hints("blocking", "item-without-owner");
-        assert_eq!(unowned.len(), 2, "{report}");
-        assert!(unowned[0].contains("MSTD-DEC-0001") && unowned[1].contains("MSTD-DEC-0005"), "{unowned:?}");
-        assert!(unowned[0].contains("`\"waves\":[<ondas>]`") && unowned[0].contains("**"), "{unowned:?}");
-        let uncovered = hints("warnings", "item-without-task");
+        assert_eq!(report["ok"], json!(true), "the item without owner does not hold the plan: {report}");
+        assert_eq!(report["phase"], json!("plan"), "{report}");
+        let every: Vec<String> = ["blocking", "warnings"]
+            .iter()
+            .flat_map(|field| report[*field].as_array().cloned().unwrap_or_default())
+            .map(|f| f.to_string())
+            .collect();
+        for code in &unowned {
+            assert!(every.iter().all(|f| !f.contains(code.as_str())), "{code} is not a finding: {report}");
+        }
+        let uncovered = hints_of(&report, "warnings", "item-without-task");
         assert_eq!(uncovered.len(), 1, "só a da onda um avisa, o do projeto não: {report}");
         assert!(uncovered[0].contains("MSTD-DEC-0003"), "{uncovered:?}");
+
+        // O que trava continua travando, e o item sem dono não entra na conta.
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer mais.", "files": [{"path": "src/b.rs"}], "origin": said}));
+        let held = plan(root, "x");
+        assert_eq!(held["ok"], json!(false), "{held}");
+        assert_eq!(reasons(&held, "blocking"), ["task-without-points"], "{held}");
     }
 
     /// A tarefa que mexe em código e não nomeia arquivo trava o plano, e a
@@ -1520,10 +1576,9 @@ mod tests {
 
     /// Cada achado da conferência é gravado como anotação quando o `plan`
     /// roda, com a mesma mensagem que a resposta dá e com o rótulo do achado
-    /// do plano, e a página o mostra de lá, na seção própria que vem antes das
-    /// anotações. Rodar de novo não repete a anotação.
+    /// do plano. Rodar de novo não repete a anotação.
     #[test]
-    fn every_finding_is_written_as_a_note_once_and_shows_up_on_the_page() {
+    fn every_finding_is_written_as_a_note_once() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1545,7 +1600,7 @@ mod tests {
             .collect();
         assert!(messages.len() >= 2, "{report}");
 
-        // Cada achado virou anotação, e a página a mostra.
+        // Cada achado virou anotação, com o texto exato.
         let notes = read_notes(root, "x");
         for message in &messages {
             assert!(notes.contains(message), "sem anotação de {message:?}: {notes:?}");
@@ -1556,27 +1611,16 @@ mod tests {
         assert!(!note_labels(root, "x").is_empty(), "nenhuma anotação de achado");
         assert!(note_labels(root, "x").iter().all(|l| l == label), "{:?}", note_labels(root, "x"));
 
-        // No `.md` o código do item fica como está; na página ele vira link.
-        let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
-        for message in &messages {
-            assert!(md.contains(message.as_str()), "o `.md` não mostra {message:?}");
-        }
-        let heading = translate("page.findings.heading", Locale::PtBr);
-        let (found, notes_heading) = (md.find(heading), md.find("## Anotações"));
-        assert!(found.is_some() && found < notes_heading, "a seção não vem antes das anotações: {md}");
-        let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(page.contains("MSTD-NOTE-0001"), "a página não mostra a anotação");
-        assert!(page.contains(heading), "a página não tem a seção do que o plano achou");
-
         // De novo: as mesmas anotações, sem repetir nenhuma.
         assert_eq!(plan(root, "x")["ok"], json!(true));
         assert_eq!(read_notes(root, "x"), notes, "o mesmo achado não vira anotação duas vezes");
     }
 
-    /// O achado que trava a pergunta também vira anotação, e a página sai
-    /// mesmo com o plano travado: é nela que quem for corrigir o vê.
+    /// O achado que trava a pergunta também vira anotação: é nela que quem
+    /// for corrigir o vê. O plano travado não é marco e não escreve página
+    /// nem prepara cópia.
     #[test]
-    fn a_blocking_finding_is_noted_and_the_page_still_comes_out() {
+    fn a_blocking_finding_is_noted_and_writes_no_page() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1590,9 +1634,9 @@ mod tests {
         assert!(reasons(&report, "blocking").contains(&"depends-on-missing-wave".to_string()), "{report}");
         let hint = report["blocking"][0]["hint"].as_str().unwrap().to_string();
         assert!(read_notes(root, "x").contains(&hint), "o achado que trava não virou anotação");
-        let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
-        assert!(md.contains(hint.as_str()), "o `.md` não mostra o achado que trava");
-        assert!(root.join(".claude/spec/x/spec.html").is_file(), "a página sai com o plano travado");
+        assert!(report.get("copy").is_none() && report.get("publish").is_none(), "{report}");
+        assert!(!root.join(".claude/spec/x/spec.html").exists(), "o plano travado não escreve página");
+        assert!(!root.join(".claude/spec/x/copy").exists(), "nem prepara cópia");
     }
 
     /// O rótulo de cada anotação vigente que tem um, em ordem de número.
@@ -1615,10 +1659,10 @@ mod tests {
             .collect()
     }
 
-    /// Com um item de texto que parece senha, o plano manda publicar e fazer
-    /// a pergunta de aprovação assim mesmo: o `.html` local sai com o trecho
-    /// trocado por "…" e o resto do item legível, e a resposta diz o código do
-    /// item a expurgar. Expurgado o item, o aviso some.
+    /// Com um item de texto que parece senha, o plano manda publicar, copiar
+    /// e fazer a pergunta de aprovação assim mesmo: o item fica fora da cópia,
+    /// e a resposta diz o código dele, para ser expurgado. Expurgado o item, o
+    /// aviso some e ele vai na cópia, com o trecho oculto.
     #[test]
     fn a_withheld_item_no_longer_holds_the_publish_and_is_named_until_it_is_purged() {
         let dir = tempdir().unwrap();
@@ -1635,47 +1679,56 @@ mod tests {
         assert_eq!(held["withheld"], json!([code]), "{held}");
         let next = held["next"].as_str().unwrap_or_default();
         assert!(next.contains(&code) && next.contains("write purge"), "{next}");
-        assert!(next.contains("write publish") && next.ends_with(translate("plan.next", Locale::PtBr)), "{next}");
+        let ask = translate("plan.next", Locale::PtBr)
+            .replace("{question}", translate("approval.question", Locale::PtBr))
+            .replace("{option}", translate("approval.option", Locale::PtBr));
+        assert!(next.contains("write publish") && next.ends_with(&ask), "{next}");
         let warned = held["warnings"].as_array().cloned().unwrap_or_default();
         assert!(warned.iter().any(|w| w["reason"] == json!("page-check")
             && w["hint"].as_str().unwrap_or_default().contains(&code)), "{held}");
-        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(!html.contains("S3nh4F0rte"), "the local page keeps the secret out");
-        assert!(html.contains("A senha do banco: …"), "the rest of the item stays readable");
+        let note_id = note["id"].as_u64().unwrap_or_default();
+        assert!(!sent_items(root, &held).contains(&note_id), "the item stays out of the copy");
+        let folder = std::fs::read_dir(root.join(".claude/spec/x/copy/ranges")).unwrap();
+        for file in folder.flatten() {
+            let body = std::fs::read_to_string(file.path()).unwrap();
+            assert!(!body.contains("S3nh4F0rte"), "{}", file.path().display());
+        }
 
         let purged = write(root, Some("x"), "purge", json!({"targets": [code], "reason": "secret"}));
         assert_eq!(purged["ok"], json!(true), "{purged}");
         let free = plan(root, "x");
         assert_eq!(free["publish"], json!(["spec", "project"]), "{free}");
         assert!(free.get("withheld").is_none(), "{free}");
-        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(html.contains("A senha do banco: …"), "the purged item stays on the page");
+        let writes = sent(root, &free, "spec");
+        let range = writes
+            .iter()
+            .find(|w| w["body"]["items"].as_array().is_some_and(|items| items.iter().any(|i| i["id"].as_u64() == Some(note_id))))
+            .expect("the range with the purged item goes again");
+        let copied = range["body"]["items"].as_array().unwrap().iter().find(|i| i["id"].as_u64() == Some(note_id)).unwrap();
+        assert_eq!(copied["text"], json!("A senha do banco: …"), "the purged item goes, with the excerpt hidden");
     }
 
-    /// Quando a última publicação falhou, a conferência passa e a resposta
-    /// traz o comando pronto: numa sessão por SSH, o `scp` com o endereço do
-    /// servidor; fora dela, o caminho do arquivo.
+    /// A dica de aprovar do plano lê a opção de aprovar do catálogo, a mesma
+    /// que a testemunha da aprovação reconhece, nos dois idiomas.
     #[test]
-    fn a_failed_publish_hands_the_copy_command_over() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        sound_plan(root, "x", said);
-        let published = write(root, Some("x"), "publish", json!({"page": "spec",
-            "milestone": "approval", "ok": false, "reason": "O claude.ai não respondeu.", "origin": said}));
-        assert_eq!(published["ok"], json!(true), "{published}");
+    fn the_approval_hint_reads_the_option_from_the_catalog() {
+        for (lang, config) in [
+            (Locale::PtBr, "{}".to_string()),
+            (Locale::EnUs, r#"{"language":{"text":"en-US"}}"#.to_string()),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            std::fs::write(root.join("mustard.json"), config.as_bytes()).unwrap();
+            sound_plan(root, "x", said);
 
-        let opts = PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) };
-        let over_ssh = plan_for(&opts, None, Some("10.0.0.2 51000 10.0.0.9 22"));
-        assert_eq!(over_ssh["ok"], json!(true), "{over_ssh}");
-        let copy = over_ssh["copy"].as_str().unwrap_or_default();
-        assert!(copy.starts_with("scp ") && copy.contains("10.0.0.9:"), "{copy}");
-        assert!(copy.ends_with("spec.html ."), "{copy}");
-        assert!(over_ssh["next"].as_str().unwrap_or_default().contains(translate("plan.copy", Locale::PtBr)));
-
-        let local = plan_for(&opts, None, None);
-        let path = local["copy"].as_str().unwrap_or_default();
-        assert!(path.ends_with("spec.html") && !path.starts_with("scp "), "{path}");
+            let report = plan(root, "x");
+            assert_eq!(report["ok"], json!(true), "{lang:?}: {report}");
+            let next = report["next"].as_str().unwrap_or_default();
+            let option = translate("approval.option", lang);
+            assert!(next.contains(&format!("\"{option}\"")), "{lang:?}: {next}");
+            assert!(!next.contains("{option}"), "{lang:?}: {next}");
+        }
     }
 
     /// Uma tarefa da onda `wave`, num arquivo novo só dela, com a nota dada
@@ -1787,6 +1840,125 @@ mod tests {
         assert!(hints_of(&after, "warnings", "wave-points-over-cap").is_empty(), "{after}");
     }
 
+    /// O plano diz quem executa pela soma das notas de todas as tarefas: até
+    /// 3 pontos, sem ondas, o orquestrador faz; de 4 a 13, com uma onda só,
+    /// um agente faz; acima de 13, ou com mais de uma onda já no plano, a
+    /// obra vai em ondas de até 13 pontos. Em todos os tamanhos, o aviso diz
+    /// que a obra termina com o agente de teste dedicado. A divisa de cada
+    /// faixa entra: 3 e 4 pontos, que separam o orquestrador do agente numa
+    /// onda só; e 13 e 14 pontos, que separam a onda só das ondas de até 13.
+    /// E o caso de 13 pontos já divididos em duas ondas, que não pode dizer
+    /// "numa onda só" só porque o total cabe no teto de uma.
+    #[test]
+    fn the_plan_says_who_executes_by_the_points() {
+        let expect_solo = |points: &str, root: &Path| {
+            let out = plan(root, "x");
+            assert_eq!(out["ok"], json!(true), "{out}");
+            let next = out["next"].as_str().unwrap_or_default();
+            let expected = translate("plan.execution.solo", Locale::PtBr).replace("{points}", points);
+            assert!(next.contains(&expected), "{points} pontos deveria ser solo: {next}");
+            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        };
+        let expect_one_wave = |points: &str, root: &Path| {
+            let out = plan(root, "x");
+            assert_eq!(out["ok"], json!(true), "{out}");
+            let next = out["next"].as_str().unwrap_or_default();
+            let expected = translate("plan.execution.one_wave", Locale::PtBr).replace("{points}", points);
+            assert!(next.contains(&expected), "{points} pontos deveria ser onda só: {next}");
+            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        };
+        let expect_many_waves = |points: &str, root: &Path| {
+            let out = plan(root, "x");
+            assert_eq!(out["ok"], json!(true), "{out}");
+            let next = out["next"].as_str().unwrap_or_default();
+            let expected = translate("plan.execution.many_waves", Locale::PtBr).replace("{points}", points);
+            assert!(next.contains(&expected), "{points} pontos deveria ser ondas: {next}");
+            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
+        };
+
+        // 3 pontos: sem ondas, o orquestrador faz.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 1);
+        rated(root, said, 1, "src/a.rs", Some(3));
+        expect_solo("3", root);
+
+        // Os mesmos 3 pontos (1 + 2), mas já em duas ondas: a divisa não é só
+        // o total, é também o número de ondas. Com duas ondas ou mais, cada
+        // uma vai para um agente, mesmo dentro do teto do orquestrador.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 2);
+        rated(root, said, 1, "src/a1.rs", Some(1));
+        rated(root, said, 2, "src/a2.rs", Some(2));
+        expect_many_waves("3", root);
+        // A razão de ir em ondas aqui é o número de ondas já no plano, não o
+        // total: com 3 pontos, a frase não pode mentir dizendo que passou de
+        // 13.
+        let out = plan(root, "x");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(!next.contains("acima de 13"), "3 pontos não passou de 13: {next}");
+        // A mesma guarda nos dois idiomas, no próprio catálogo: a frase cita
+        // o teto da onda uma vez só. A versão antiga dizia 13 duas vezes, e a
+        // primeira era a razão inventada — o inglês tinha a mesma mentira.
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let phrase = translate("plan.execution.many_waves", lang);
+            assert_eq!(phrase.matches("13").count(), 1, "a frase cita o teto uma vez só: {phrase}");
+        }
+
+        // 4 pontos (3 + 1, porque a escala não tem o número 4 sozinho), a
+        // divisa de cima da faixa do orquestrador: já é um agente numa onda
+        // só, não mais o orquestrador sozinho.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 1);
+        rated(root, said, 1, "src/a1.rs", Some(3));
+        rated(root, said, 1, "src/a2.rs", Some(1));
+        expect_one_wave("4", root);
+
+        // 8 pontos: um agente faz, numa onda só.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 1);
+        rated(root, said, 1, "src/a.rs", Some(8));
+        expect_one_wave("8", root);
+
+        // 13 pontos, o teto exato de uma onda, numa onda só: ainda é um
+        // agente numa onda só, não ondas de até 13.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 1);
+        rated(root, said, 1, "src/a.rs", Some(13));
+        expect_one_wave("13", root);
+
+        // 13 pontos já divididos em duas ondas: o total cabe no teto de uma
+        // onda, mas o plano já tem duas — a resposta não pode dizer "numa
+        // onda só".
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 2);
+        rated(root, said, 1, "src/a1.rs", Some(8));
+        rated(root, said, 2, "src/a2.rs", Some(5));
+        expect_many_waves("13", root);
+
+        // 14 pontos, em duas ondas dentro do teto de cada uma: a obra vai em
+        // ondas de até 13 pontos.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 2);
+        rated(root, said, 1, "src/a1.rs", Some(8));
+        rated(root, said, 2, "src/a2.rs", Some(5));
+        rated(root, said, 2, "src/b2.rs", Some(1));
+        expect_many_waves("14", root);
+    }
+
     /// A gravação pelo comando aceita só as notas da escala: na divisa, 3, 5
     /// e 13 entram; 4, 14, 0 e o texto "5" são recusados, a recusa diz os
     /// números aceitos, e o arquivo de eventos fica como estava.
@@ -1822,6 +1994,52 @@ mod tests {
         }
         for on in [3, 5, 13] {
             assert_eq!(task(json!(on))["ok"], json!(true), "{on} está na escala");
+        }
+    }
+
+    /// A aprovação é o primeiro marco de uma spec nova, que ainda não tem
+    /// template: a ordem manda publicar o template, sem falar de página
+    /// antiga, e entregar a primeira cópia, a spec inteira, a um agente
+    /// separado, antes da pergunta. A onda acima do teto fica no aviso da
+    /// conferência, como sempre, e a ordem da migração não se repete. Uma spec
+    /// que uma versão antiga publicou inteira, ainda no plano, ganha o
+    /// template num link novo na aprovação.
+    #[test]
+    fn the_first_copy_goes_to_an_agent_at_the_approval_of_a_new_spec() {
+        use crate::commands::spec_events::pages::copy::{agent_order, batches_order, old_page_order};
+        let lang = Locale::PtBr;
+        for old in [false, true] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            waves_of_code(root, said, 1);
+            rated(root, said, 1, "src/a1.rs", Some(8));
+            rated(root, said, 1, "src/b1.rs", Some(5));
+            rated(root, said, 1, "src/c1.rs", Some(1));
+            if old {
+                let page = json!({"page": "spec", "milestone": "approval", "ok": true,
+                    "url": "https://claude.ai/code/artifact/pagina-antiga"});
+                assert_eq!(write(root, Some("x"), "publish", page)["ok"], json!(true));
+            }
+
+            let report = plan(root, "x");
+            assert_eq!(report["ok"], json!(true), "{old}: {report}");
+            let next = report["next"].as_str().unwrap_or_default();
+            assert_eq!(report["publish"], json!(["spec", "project"]), "{old}: {report}");
+            let record = r#"'{"page":"spec","milestone":"approval","ok":true,"template":true,"url":"…"}'"#;
+            assert!(next.contains(record), "{old}: {next}");
+            assert_eq!(next.contains(&old_page_order("spec", lang)), old, "{old}: {next}");
+            assert_eq!(report["copy"]["spec"]["first"], json!(true), "{old}: {report}");
+            assert_eq!(sent_items(root, &report).first(), Some(&1), "{old}: the whole spec");
+            let copy = batches_order(&report, "x", translate("page.copy.new_address", lang), lang);
+            let agent = agent_order(&copy, lang);
+            assert!(next.contains(&agent), "{old}: the first copy goes to an agent: {next}");
+            let ask = translate("plan.next", lang)
+                .replace("{question}", translate("approval.question", lang))
+                .replace("{option}", translate("approval.option", lang));
+            assert!(next.find(&agent) < next.find(&ask) && next.ends_with(&ask), "{old}: {next}");
+            assert!(report.get("migration").is_none(), "{old}: the plan check already asks for the points: {report}");
+            assert_eq!(hints_of(&report, "warnings", "wave-points-over-cap").len(), 1, "{old}: {report}");
         }
     }
 }

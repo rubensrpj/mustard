@@ -11,7 +11,7 @@ use crate::shared::rtk_gain::RtkGain;
 use crate::shared::spec_state::DiskSpecState;
 use mustard_core::domain::spec_events::{Block, BlockQuery};
 use mustard_core::domain::spec_state::SpecState;
-use mustard_core::{ClaudePaths, SupportedLocale};
+use mustard_core::SupportedLocale;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -79,21 +79,13 @@ pub fn module_segment(cwd: &Path) -> Segment {
     let module = cwd
         .file_name()
         .map_or_else(|| "?".to_string(), |n| n.to_string_lossy().to_string());
-    let text = match project_page_url(cwd) {
+    // A mesma leitura com que o início da sessão decide se manda publicar a
+    // página do projeto: link na barra e silêncio no início andam juntos.
+    let text = match mustard_core::io::spec_index::project_page_url(cwd) {
         Some(url) => hyperlink(&url, &module),
         None => module,
     };
     Segment::new(SegmentKind::Module, text)
-}
-
-/// O endereço da página do projeto, na linha do projeto do índice das specs
-/// do checkout principal. Um caractere de controle no endereço quebraria a
-/// sequência do link, e aí não há endereço.
-fn project_page_url(cwd: &Path) -> Option<String> {
-    let root = mustard_core::io::spec_events::spec_root(cwd);
-    let index = ClaudePaths::for_project(&root).ok()?.spec_index_path();
-    let content = std::fs::read_to_string(index).ok()?;
-    mustard_core::domain::spec_index::project_url(&content).filter(|url| !url.chars().any(char::is_control))
 }
 
 /// `⎇ branch +N~N?N` or `⎇ branch ✓`. `branch` é a do checkout, lida uma vez

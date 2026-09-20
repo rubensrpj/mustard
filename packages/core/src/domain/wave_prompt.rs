@@ -29,7 +29,7 @@ use crate::domain::lessons::{applies_to, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
 use crate::domain::search;
-use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
@@ -57,8 +57,10 @@ pub struct Skill {
 pub struct WaveCopy {
     /// A pasta da cópia.
     pub path: String,
-    /// A pasta de compilação fixa, que passa de uma cópia para a seguinte;
-    /// sem ela, o pedido não diz onde compilar.
+    /// A pasta de compilação fixa, que passa de uma cópia para a seguinte.
+    /// Toda onda recebe uma, porque ela é também a vaga que conta quantas
+    /// ondas rodam juntas; o pedido só a cita quando o projeto é Rust
+    /// ([`Execution::rust`]).
     pub build_dir: Option<String>,
 }
 
@@ -82,6 +84,10 @@ pub struct Execution {
     pub copy: Option<WaveCopy>,
     /// A cópia em que o revisor da onda trabalha.
     pub review: WaveCopy,
+    /// O mapa do projeto marca alguma parte dele como `cargo`. Só então o
+    /// pedido traz a frase que manda compilar na pasta de compilação da cópia
+    /// e cita o Cargo: num projeto Node, por exemplo, ela não serve.
+    pub rust: bool,
 }
 
 /// Os blocos já lidos de que o pedido de uma onda é feito.
@@ -110,11 +116,15 @@ pub struct Material<'a> {
     pub execution: Execution,
     /// As lições que valem para os arquivos, o subprojeto ou a skill da onda.
     pub lessons: Vec<&'a SpecEvent>,
-    /// Os defeitos já vistos nos arquivos da onda, que só o pedido do revisor
-    /// leva: o erro que já aconteceu ali é o que tem mais chance de voltar.
-    pub defects: Vec<&'a SpecEvent>,
     /// As skills nomeadas pelas tarefas, na ordem dos nomes.
     pub skills: Vec<Skill>,
+    /// Os arquivos de leitura que a escolha do orquestrador confirmou para
+    /// cada tarefa, pelo código dela: o mapa sugeriu, e ele manteve. As
+    /// skills confirmadas entram por [`Material::skills`], não aqui.
+    pub task_reads: Vec<(String, Vec<String>)>,
+    /// Os commits da rodada: as mudanças que já entraram na branch, que o
+    /// agente de teste dedicado confere no pedido da revisão final.
+    pub changes: Vec<&'a SpecEvent>,
     /// O código de cada evento, para o pedido citar item por código.
     pub codes: BTreeMap<u64, String>,
 }
@@ -163,19 +173,14 @@ pub fn write(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.text()
 }
 
-/// O texto do pedido do revisor da onda: a mesma lista de itens, o que a onda
-/// entregou, os critérios que ele confere, os defeitos já vistos nos arquivos
-/// da onda e como revisar numa cópia separada; na revisão de um conserto, as
-/// linhas dele.
-#[must_use]
-pub fn write_review(material: &Material, lang: Locale) -> String {
-    Writer { material, lang }.review_text()
-}
-
-/// O texto do pedido da revisão final do conjunto, que o fechamento faz à
-/// spec de duas ondas ou mais: as ondas e as tarefas delas (`block`), o que
-/// cada onda entregou por último (`own_delivered`), os critérios e como
-/// revisar numa cópia separada. O número da onda do material não conta aqui.
+/// O texto do pedido do agente de teste dedicado, que o fechamento pede a
+/// toda obra, mesmo a de uma onda só: as ondas e as tarefas delas (`block`),
+/// as emendas gravadas para elas (`agreed`), o que cada onda entregou por
+/// último (`own_delivered`), os critérios, os commits da branch (`changes`) e
+/// como revisar numa cópia separada. Onda reprovada com o conserto já
+/// entregue restringe `block`, `agreed` e `own_delivered` a ela: o agente
+/// confere só o conserto, não a obra inteira de novo. O número da onda do
+/// material não conta aqui.
 #[must_use]
 pub fn write_final_review(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.final_review_text()
@@ -198,6 +203,7 @@ fn parts(material: &Material, lang: Locale) -> String {
     named("prompt.part.criteria", w.part_lines("prompt.part.criteria", &material.criteria));
     named("prompt.part.lessons", w.lessons_lines());
     named("prompt.part.skills", w.skills_lines());
+    named("prompt.part.task_reads", w.lines_of(|out| w.task_reads(out)));
     named("prompt.part.delivered", w.part_lines("prompt.part.delivered", &material.delivered));
     named("prompt.part.execution", w.lines_of(|out| w.execution(out)));
     out.join(", ")
@@ -293,9 +299,10 @@ pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
     out
 }
 
-/// Os itens combinados que vão no pedido da onda `wave`: os de que ela é
-/// dona e os do projeto. O item sem dono não vai para onda nenhuma: o plano o
-/// recusa até ele ganhar um.
+/// Os itens combinados que vão no pedido da onda `wave`, como a montagem os
+/// escolhe antes da análise: os de que ela é dona e os do projeto. O item sem
+/// dono não entra aqui; só a análise antes do envio ([`dispatch_items`]) pode
+/// pô-lo num pedido.
 #[must_use]
 pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let owners = owners(log);
@@ -309,11 +316,242 @@ pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
         .collect()
 }
 
-/// Os itens combinados sem dono, em ordem de número: os que o plano recusa.
+/// Os itens combinados sem dono, em ordem de número: os que a análise antes
+/// do envio julga para cada onda.
 #[must_use]
 pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
     let owners = owners(log);
     agreed_items(log).into_iter().filter(|item| !owners.contains_key(&item.id)).collect()
+}
+
+// ---------------------------------------------------------------------------
+// A escolha do pedido antes do envio
+// ---------------------------------------------------------------------------
+
+/// Os candidatos que o orquestrador julga antes de uma onda sair: os itens
+/// combinados do projeto todo, que o pedido leva, os sem dono, que ele não
+/// leva, e as lições do banco que casam com a onda, que ele leva. Os itens
+/// que as tarefas da onda fazem ficam fora dos grupos: vão sempre, sem
+/// escolha.
+#[derive(Debug, Default)]
+pub struct Candidates<'a> {
+    /// Os do projeto todo que as tarefas da onda não fazem.
+    pub project: Vec<&'a SpecEvent>,
+    /// Os sem dono.
+    pub unowned: Vec<&'a SpecEvent>,
+    /// As lições do banco que casam com a onda. Elas vêm do banco, fora da
+    /// spec, e o número de cada uma é o do banco, não o de um item.
+    pub lessons: Vec<&'a SpecEvent>,
+}
+
+impl Candidates<'_> {
+    /// `true` quando não há nada a julgar: a onda sai sem escolha.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.project.is_empty() && self.unowned.is_empty() && self.lessons.is_empty()
+    }
+
+    /// Os números dos itens da spec dos dois grupos.
+    #[must_use]
+    pub fn ids(&self) -> BTreeSet<u64> {
+        self.project.iter().chain(&self.unowned).map(|item| item.id).collect()
+    }
+
+    /// Os números das lições, no banco.
+    #[must_use]
+    pub fn lesson_ids(&self) -> BTreeSet<u64> {
+        self.lessons.iter().map(|lesson| lesson.id).collect()
+    }
+}
+
+/// Os dois grupos de itens da spec que o orquestrador julga para a onda
+/// `wave`; as lições, que moram no banco, quem lê o banco põe à parte.
+#[must_use]
+pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
+    let owners = owners(log);
+    let done: BTreeSet<u64> = log
+        .block(BlockQuery::Wave(wave))
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .flat_map(|task| task.ints("covers"))
+        .filter_map(|id| log.current(id).map(|e| e.id))
+        .collect();
+    let mut out = Candidates::default();
+    for item in agreed_items(log).into_iter().filter(|item| !done.contains(&item.id)) {
+        match owners.get(&item.id) {
+            Some(Owner::Project) => out.project.push(item),
+            None => out.unowned.push(item),
+            Some(Owner::Waves(_)) => {}
+        }
+    }
+    out
+}
+
+/// A escolha do orquestrador antes do envio de uma onda, como o envio a grava
+/// no campo `analysis`: os itens julgados, os do projeto todo que saíram, os
+/// sem dono que entraram e, à parte, as lições julgadas e as que saíram, cada
+/// uma com o motivo numa frase.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Choice {
+    /// Os itens dos dois grupos que a escolha julgou.
+    pub judged: BTreeSet<u64>,
+    /// Os itens do projeto todo que saíram do pedido, com o motivo.
+    pub removed: Vec<(u64, String)>,
+    /// Os itens sem dono que entraram no pedido, com o motivo.
+    pub added: Vec<(u64, String)>,
+    /// As lições que a escolha julgou, pelo número no banco.
+    pub judged_lessons: BTreeSet<u64>,
+    /// As lições que saíram do pedido, com o motivo.
+    pub removed_lessons: Vec<(u64, String)>,
+    /// A escolha da skill e dos arquivos parecidos, por tarefa.
+    pub tasks: Vec<TaskChoice>,
+}
+
+/// O que o orquestrador decidiu, para uma tarefa, entre a skill e os arquivos
+/// parecidos que a rodada sugeriu antes do envio: as skills que ele confirmou
+/// ou trocou, os arquivos que ele manteve como leitura, e se ele marcou que
+/// nenhuma skill serve e vale nascer uma nova.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskChoice {
+    /// O número da tarefa, na spec.
+    pub task: u64,
+    /// As skills confirmadas; a tarefa pode apontar mais de uma.
+    pub skills: Vec<String>,
+    /// Os arquivos de leitura confirmados, além dos que a tarefa já cita.
+    pub files: Vec<String>,
+    /// `true` quando o orquestrador marcou que vale nascer uma skill nova.
+    pub new_skill: bool,
+}
+
+impl Choice {
+    /// A escolha reduzida aos candidatos de agora: sai só o que ainda é do
+    /// projeto todo ou lição da onda, entra só o que ainda está sem dono, e o
+    /// julgado é o que está entre os candidatos.
+    #[must_use]
+    pub fn within(&self, found: &Candidates) -> Self {
+        let has = |group: &[&SpecEvent], id: u64| group.iter().any(|item| item.id == id);
+        Self {
+            judged: found.ids(),
+            removed: self.removed.iter().filter(|(id, _)| has(&found.project, *id)).cloned().collect(),
+            added: self.added.iter().filter(|(id, _)| has(&found.unowned, *id)).cloned().collect(),
+            judged_lessons: found.lesson_ids(),
+            removed_lessons: self.removed_lessons.iter().filter(|(id, _)| has(&found.lessons, *id)).cloned().collect(),
+            tasks: self.tasks.clone(),
+        }
+    }
+
+    /// `true` quando a escolha julgou cada candidato de agora.
+    #[must_use]
+    pub fn covers(&self, found: &Candidates) -> bool {
+        found.ids().is_subset(&self.judged) && found.lesson_ids().is_subset(&self.judged_lessons)
+    }
+
+    /// `true` quando a escolha tirou do pedido a lição `id`.
+    #[must_use]
+    pub fn removes_lesson(&self, id: u64) -> bool {
+        self.removed_lessons.iter().any(|(had, _)| *had == id)
+    }
+
+    /// O campo `analysis` do envio.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let listed = |key: &str, items: &[(u64, String)]| -> Vec<Value> {
+            items.iter().map(|(n, why)| serde_json::json!({ key: n, "why": why })).collect()
+        };
+        let tasks: Vec<Value> = self
+            .tasks
+            .iter()
+            .map(|t| serde_json::json!({ "task": t.task, "skills": t.skills, "files": t.files, "new_skill": t.new_skill }))
+            .collect();
+        serde_json::json!({
+            "judged": self.judged,
+            "removed": listed("item", &self.removed),
+            "added": listed("item", &self.added),
+            "judged_lessons": self.judged_lessons,
+            "removed_lessons": listed("lesson", &self.removed_lessons),
+            "tasks": tasks,
+        })
+    }
+
+    /// A escolha gravada num envio; `None` quando o campo não tem a forma
+    /// de [`Choice::to_value`]. O envio gravado antes de as lições entrarem
+    /// na escolha não traz os dois campos delas, e vale sem lição julgada; o
+    /// gravado antes da escolha por tarefa não traz `tasks`, e vale sem
+    /// nenhuma tarefa julgada.
+    #[must_use]
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let listed = |key: &str, id: &str| -> Option<Vec<(u64, String)>> {
+            value.get(key)?.as_array()?.iter().map(|entry| {
+                Some((entry.get(id)?.as_u64()?, entry.get("why")?.as_str()?.to_string()))
+            }).collect()
+        };
+        let numbers = |key: &str| -> Option<BTreeSet<u64>> {
+            value.get(key)?.as_array()?.iter().map(Value::as_u64).collect()
+        };
+        let lessons = value.get("judged_lessons").is_some() || value.get("removed_lessons").is_some();
+        let strings = |entry: &Value, key: &str| -> Vec<String> {
+            entry.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
+                .iter().filter_map(Value::as_str).map(str::to_string).collect()
+        };
+        let tasks: Vec<TaskChoice> = value
+            .get("tasks")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|entry| {
+                Some(TaskChoice {
+                    task: entry.get("task")?.as_u64()?,
+                    skills: strings(entry, "skills"),
+                    files: strings(entry, "files"),
+                    new_skill: entry.get("new_skill").and_then(Value::as_bool).unwrap_or(false),
+                })
+            })
+            .collect();
+        Some(Self {
+            judged: numbers("judged")?,
+            removed: listed("removed", "item")?,
+            added: listed("added", "item")?,
+            judged_lessons: if lessons { numbers("judged_lessons")? } else { BTreeSet::new() },
+            removed_lessons: if lessons { listed("removed_lessons", "lesson")? } else { Vec::new() },
+            tasks,
+        })
+    }
+}
+
+/// A escolha gravada no envio mais novo da onda `wave`, quando ele tem uma.
+#[must_use]
+pub fn recorded_choice(log: &SpecLog, wave: u64) -> Option<Choice> {
+    let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
+    Choice::from_value(sent.fields.get("analysis")?)
+}
+
+/// A escolha que vale para o pedido da onda `wave`: a dada (`fresh`) ou, sem
+/// ela, a gravada no envio mais novo da onda.
+#[must_use]
+pub fn choice_for(log: &SpecLog, wave: u64, fresh: Option<&Choice>) -> Option<Choice> {
+    fresh.cloned().or_else(|| recorded_choice(log, wave))
+}
+
+/// O que o pedido da onda `wave` lê: o que a montagem escolhe
+/// ([`Step::Dispatch`]), sem os itens do projeto todo que a escolha tirou e
+/// com os sem dono que ela pôs. A escolha é a de [`choice_for`], e vale só
+/// dentro dos grupos de agora: o item que as tarefas da onda passaram a fazer
+/// vai sempre.
+#[must_use]
+pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -> Vec<&'a SpecEvent> {
+    let base = log.step(&Step::Dispatch { wave });
+    let Some(choice) = choice_for(log, wave, fresh) else { return base };
+    let choice = choice.within(&candidates(log, wave));
+    let removed: BTreeSet<u64> = choice.removed.iter().map(|(id, _)| *id).collect();
+    let mut out: Vec<&SpecEvent> = base.into_iter().filter(|item| !removed.contains(&item.id)).collect();
+    for (id, _) in &choice.added {
+        if let Some(item) = log.get(*id).filter(|item| !out.iter().any(|had| had.id == item.id)) {
+            out.push(item);
+        }
+    }
+    out.sort_by_key(|item| item.id);
+    out
 }
 
 /// A gravação de um item combinado novo depois da aprovação: ele nasce com
@@ -322,7 +560,7 @@ pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
 ///
 /// A onda que o item diz em `waves` vale mesmo antes de estar no plano: a
 /// decisão costuma vir antes da onda que a faz, e a tarefa entra numa onda no
-/// replanejamento. Até lá, o plano recusa o item, e nenhum pedido o leva.
+/// replanejamento. Até lá, só a análise antes do envio pode pô-lo num pedido.
 ///
 /// # Errors
 ///
@@ -724,6 +962,7 @@ impl Writer<'_> {
         self.part(&mut out, "prompt.part.criteria", &m.criteria);
         self.lessons(&mut out);
         self.skills(&mut out);
+        self.task_reads(&mut out);
         self.part(&mut out, "prompt.part.delivered", &m.delivered);
         self.execution(&mut out);
         while out.ends_with("\n\n") {
@@ -732,37 +971,12 @@ impl Writer<'_> {
         out
     }
 
-    /// O pedido do revisor: as instruções fixas dele, o exemplo de leitura,
-    /// as linhas do conserto quando é a revisão de um, a lista de itens da
-    /// onda, o que ela entregou, os critérios que ele confere, os defeitos já
-    /// vistos naqueles arquivos e como revisar numa cópia separada. Nenhum
-    /// texto de item é copiado aqui tampouco.
-    fn review_text(&self) -> String {
-        let m = self.material;
-        let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "# {}\n",
-            self.t("prompt.review.title").replace("{spec}", &m.spec).replace("{n}", &m.wave.to_string())
-        );
-        out.push_str(self.t("prompt.review.fixed"));
-        out.push_str("\n\n");
-        self.read_example(&mut out, true);
-        self.fix(&mut out, "prompt.fix.review");
-        self.part(&mut out, "prompt.part.wave", &self.wave_items());
-        self.part(&mut out, "prompt.part.own_delivered", &m.own_delivered);
-        self.part(&mut out, "prompt.part.criteria", &m.criteria);
-        self.defects(&mut out);
-        self.review_execution(&mut out);
-        while out.ends_with("\n\n") {
-            out.pop();
-        }
-        out
-    }
-
-    /// O pedido da revisão final: as instruções fixas dela, o exemplo de
-    /// leitura, as ondas com as tarefas, o que cada uma entregou, os critérios
-    /// e como revisar numa cópia separada.
+    /// O pedido do agente de teste dedicado, que o fechamento pede a toda
+    /// obra: as instruções fixas dele, o exemplo de leitura, o conserto —
+    /// quando alguma onda voltou reprovada e já entregou de novo, só ele, sem
+    /// pedir a obra inteira outra vez —, as ondas com as tarefas, as emendas
+    /// gravadas para elas, o que cada uma entregou, os critérios, os commits
+    /// que já entraram na branch e como revisar numa cópia separada.
     fn final_review_text(&self) -> String {
         let m = self.material;
         let mut out = String::new();
@@ -770,29 +984,17 @@ impl Writer<'_> {
         out.push_str(self.t("prompt.final.fixed"));
         out.push_str("\n\n");
         self.read_example(&mut out, true);
+        self.fix(&mut out, "prompt.fix.final");
         self.part(&mut out, "prompt.part.waves", &m.block);
+        self.part(&mut out, "prompt.part.agreed", &m.agreed);
         self.part(&mut out, "prompt.part.each_delivered", &m.own_delivered);
         self.part(&mut out, "prompt.part.criteria", &m.criteria);
+        self.part(&mut out, "prompt.part.branch_changes", &m.changes);
         self.review_execution(&mut out);
         while out.ends_with("\n\n") {
             out.pop();
         }
         out
-    }
-
-    /// Os defeitos já vistos nos arquivos da onda: o texto original de cada
-    /// um, como as lições. Eles vêm do banco, fora da spec, e não têm número
-    /// para serem lidos depois.
-    fn defects(&self, out: &mut String) {
-        if self.material.defects.is_empty() {
-            return;
-        }
-        let _ = writeln!(out, "## {}\n", self.t("prompt.part.defects"));
-        for defect in &self.material.defects {
-            let text = defect.str_field("text").unwrap_or_default().trim();
-            let _ = writeln!(out, "- {text}");
-        }
-        out.push('\n');
     }
 
     /// Os itens da onda na ordem de execução que ela declara: primeiro os que
@@ -875,9 +1077,10 @@ impl Writer<'_> {
     }
 
     /// As regras da execução do agente da onda: a cópia separada que a rodada
-    /// criou e a pasta de compilação dela, quando há cópia; os comandos do
-    /// projeto, a proibição de comitar e as outras ondas em andamento, com os
-    /// arquivos delas. De onde ler a spec, o exemplo de leitura já diz.
+    /// criou e, num projeto Rust, a pasta de compilação dela, quando há
+    /// cópia; os comandos do projeto, a proibição de comitar e as outras
+    /// ondas em andamento, com os arquivos delas. De onde ler a spec, o
+    /// exemplo de leitura já diz.
     fn execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let running = &execution.running;
@@ -888,6 +1091,7 @@ impl Writer<'_> {
             self.build_dir(out, copy);
         }
         self.commands(out);
+        self.consumption(out);
         let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
         if !running.is_empty() {
             let _ = writeln!(out, "- {}", self.t("prompt.execution.running"));
@@ -905,9 +1109,9 @@ impl Writer<'_> {
     }
 
     /// As regras da execução do revisor: criar a cópia que o pedido indica no
-    /// commit da onda, compilar na pasta de compilação dela, os comandos do
-    /// projeto com menos processos, não comitar e apagar a cópia no fim. De
-    /// onde ler a spec, o exemplo de leitura já diz.
+    /// commit da onda, compilar na pasta de compilação dela num projeto Rust,
+    /// os comandos do projeto com menos processos, não comitar e apagar a
+    /// cópia no fim. De onde ler a spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let (copy, root) = (&execution.review, &execution.root);
@@ -917,16 +1121,37 @@ impl Writer<'_> {
         let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
         self.build_dir(out, copy);
         self.commands(out);
+        self.consumption(out);
         let _ = writeln!(out, "- {}", self.t("prompt.review.jobs"));
         let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
         let _ = writeln!(out, "- {}", self.t("prompt.review.cleanup").replace("{copy}", &copy.path));
         out.push('\n');
     }
 
-    /// A pasta de compilação da cópia, quando ela tem uma.
+    /// A pasta de compilação da cópia, quando ela tem uma e o projeto é Rust:
+    /// a frase cita o Cargo, e fora dele não serve.
     fn build_dir(&self, out: &mut String, copy: &WaveCopy) {
+        if !self.material.execution.rust {
+            return;
+        }
         if let Some(dir) = &copy.build_dir {
             let _ = writeln!(out, "- {}", self.t("prompt.execution.build_dir").replace("{dir}", dir));
+        }
+    }
+
+    /// Como o agente gasta menos: lê por trecho, não relê depois de editar,
+    /// roda só os testes do que mudou e a suíte inteira uma vez no fim, em
+    /// primeiro plano, pelo `rtk`. Uma linha por regra, para a onda e para a
+    /// revisão.
+    fn consumption(&self, out: &mut String) {
+        for key in [
+            "prompt.execution.excerpt",
+            "prompt.execution.no_reread",
+            "prompt.execution.changed_tests",
+            "prompt.execution.suite_once",
+            "prompt.execution.no_background",
+        ] {
+            let _ = writeln!(out, "- {}", self.t(key));
         }
     }
 
@@ -990,6 +1215,43 @@ impl Writer<'_> {
             let _ = writeln!(out, " — `{}`", skill.path);
         }
         out.push('\n');
+    }
+
+    /// Uma linha por tarefa que ganhou arquivos de leitura na escolha antes
+    /// do envio: o código dela e os caminhos, na ordem em que a escolha os
+    /// trouxe. Sem nenhum, a parte some.
+    fn task_reads(&self, out: &mut String) {
+        if self.material.task_reads.is_empty() {
+            return;
+        }
+        let _ = writeln!(out, "## {}\n", self.t("prompt.part.task_reads"));
+        for (task, files) in &self.material.task_reads {
+            let parts: Vec<String> = files.iter().map(|file| self.read_hint(file)).collect();
+            let _ = writeln!(out, "- `{task}`: {}", parts.join(", "));
+        }
+        out.push('\n');
+    }
+
+    /// Um arquivo da leitura por tarefa: `caminho#declaração` manda ler só
+    /// aquela declaração, função, estrutura ou constante — nunca chamada de
+    /// função quando não é; `caminho#declaração@início-fim[,início-fim…]` —
+    /// que [`crate::io::wave_prompt`] monta quando o mapa do projeto conhece
+    /// a declaração e a linha em que ela termina — manda ler só essas
+    /// linhas, uma faixa por trecho, para o nome que se repete no arquivo;
+    /// um caminho sozinho é o arquivo, entre crases, como antes.
+    fn read_hint(&self, file: &str) -> String {
+        let Some((path, rest)) = file.split_once('#') else { return format!("`{file}`") };
+        if path.is_empty() || rest.is_empty() {
+            return format!("`{file}`");
+        }
+        match rest.split_once('@') {
+            Some((function, lines)) if !function.is_empty() && !lines.is_empty() => self
+                .t("prompt.task_read.function_lines")
+                .replace("{function}", function)
+                .replace("{path}", path)
+                .replace("{lines}", lines),
+            _ => self.t("prompt.task_read.function").replace("{function}", rest).replace("{path}", path),
+        }
     }
 }
 
@@ -1711,21 +1973,24 @@ mod tests {
         }
     }
 
-    /// O pedido do conserto e o da revisão dele trazem as mesmas linhas, cada
-    /// um com o que fazer com elas: consertar só isso, e olhar só o conserto.
-    /// Fora de um conserto, os dois pedidos não têm a parte.
+    /// O pedido do conserto (o da própria onda) e o do agente de teste final
+    /// trazem as mesmas linhas do conserto, cada um com o que fazer com elas:
+    /// consertar só isso, e olhar só o conserto. Sem revisão por onda, o
+    /// agente de teste final é o único que confere o conserto, e o pedido
+    /// dele não muda: as mesmas linhas de antes, num lugar só. Fora de um
+    /// conserto, os dois pedidos não têm a parte.
     #[test]
-    fn the_fix_request_and_its_review_carry_the_same_lines_with_their_own_instruction() {
+    fn the_final_review_request_is_unchanged() {
         let log = rejected(false);
         let mut m = material(&log, 1);
         m.fix = fix_lines(&log, 1);
         for lang in [Locale::PtBr, Locale::EnUs] {
             let heading = translate("prompt.part.fix", lang);
             let wave = write(&m, lang);
-            let review = write_review(&m, lang);
+            let last = write_final_review(&m, lang);
             assert!(section(&wave, heading).contains(translate("prompt.fix.wave", lang)), "{wave}");
-            assert!(section(&review, heading).contains(translate("prompt.fix.review", lang)), "{review}");
-            for text in [&wave, &review] {
+            assert!(section(&last, heading).contains(translate("prompt.fix.final", lang)), "{last}");
+            for text in [&wave, &last] {
                 let fix = section(text, heading);
                 assert_eq!(
                     listed(text, heading),
@@ -1741,10 +2006,11 @@ mod tests {
         }
         let plain = material(&log, 1);
         assert!(section(&write(&plain, Locale::PtBr), "Conserto").is_empty());
-        assert!(section(&write_review(&plain, Locale::PtBr), "Conserto").is_empty());
+        assert!(section(&write_final_review(&plain, Locale::PtBr), "Conserto").is_empty());
     }
 
-    /// A execução de um pedido montado com a cópia que a rodada criou.
+    /// A execução de um pedido montado com a cópia que a rodada criou, num
+    /// projeto Rust.
     fn with_copy() -> Execution {
         Execution {
             build: Some("make".into()),
@@ -1754,6 +2020,32 @@ mod tests {
             root: "/repo".into(),
             copy: Some(WaveCopy { path: "/repo/copia-1".into(), build_dir: Some("/repo/target/copias/a".into()) }),
             review: WaveCopy { path: "/repo/revisao-1".into(), build_dir: Some("/repo/target/copias/b".into()) },
+            rust: true,
+        }
+    }
+
+    /// Num projeto sem parte Rust, a cópia recebe a pasta de compilação do
+    /// mesmo jeito, porque ela é a vaga das ondas que rodam juntas, mas
+    /// nenhum dos dois pedidos a cita nem fala do Cargo; a cópia e o resto
+    /// das regras continuam. Num projeto Rust, os dois citam a pasta.
+    #[test]
+    fn the_build_folder_sentence_is_written_only_for_a_rust_project() {
+        let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
+        let mut m = material(&log, 1);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let rules = translate("prompt.part.execution", lang);
+            for rust in [false, true] {
+                m.execution = Execution { rust, ..with_copy() };
+                let wave = section(&write(&m, lang), rules).to_string();
+                let last = section(&write_final_review(&m, lang), rules).to_string();
+                for (text, folder) in [(&wave, "/repo/target/copias/a"), (&last, "/repo/target/copias/b")] {
+                    let sentence = translate("prompt.execution.build_dir", lang).replace("{dir}", folder);
+                    assert_eq!(text.contains(&sentence), rust, "{lang:?} rust={rust}: {text}");
+                    assert_eq!(text.contains("Cargo") || text.contains("target/copias"), rust, "{lang:?} rust={rust}: {text}");
+                }
+                assert!(wave.contains("`/repo/copia-1`") && last.contains("`/repo/revisao-1`"), "{wave}\n{last}");
+                assert!(wave.contains("`make test`") && last.contains("`make test`"), "{wave}\n{last}");
+            }
         }
     }
 
@@ -1761,10 +2053,10 @@ mod tests {
     /// rodada criou, a pasta de compilação dela, os comandos do projeto, não
     /// comitar e as outras ondas em andamento com os arquivos delas; o
     /// caminho do repositório principal vem só no exemplo de leitura. O da
-    /// revisão diz em que cópia trabalhar, como criá-la no commit da onda,
-    /// onde compilar, compilar com menos processos e apagar a cópia no fim;
-    /// sem commit, a cópia sai do atual. Sem cópia, o pedido da onda não fala
-    /// de cópia, de pasta de compilação nem do repositório principal.
+    /// revisão final diz em que cópia trabalhar, como criá-la no commit mais
+    /// novo, onde compilar, compilar com menos processos e apagar a cópia no
+    /// fim; sem commit, a cópia sai do atual. Sem cópia, o pedido da onda não
+    /// fala de cópia, de pasta de compilação nem do repositório principal.
     #[test]
     fn the_requests_carry_the_execution_rules_the_copy_and_its_build_folder() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
@@ -1791,10 +2083,10 @@ mod tests {
         assert!(wave.contains(&example) && !rules.contains("--root"), "{wave}");
         assert_eq!(wave.matches("--root").count(), 1, "{wave}");
 
-        let review = write_review(&m, Locale::PtBr);
-        assert!(review.contains(&example), "{review}");
-        assert_eq!(review.matches("--root").count(), 1, "{review}");
-        let rules = section(&review, t("prompt.part.execution"));
+        let last = write_final_review(&m, Locale::PtBr);
+        assert!(last.contains(&example), "{last}");
+        assert_eq!(last.matches("--root").count(), 1, "{last}");
+        let rules = section(&last, t("prompt.part.execution"));
         for line in [
             "`git worktree add --detach /repo/revisao-1 abc1234`",
             "`CARGO_TARGET_DIR=/repo/target/copias/b`",
@@ -1813,8 +2105,8 @@ mod tests {
         assert!(!rules.contains("Compile com") && !rules.contains(t("prompt.execution.running")), "{rules}");
         assert!(!rules.contains("CARGO_TARGET_DIR") && !wave.contains("--root"), "{wave}");
         assert!(rules.contains(t("prompt.execution.no_commit")), "{rules}");
-        assert!(write_review(&m, Locale::PtBr).contains("--detach  HEAD`"));
-        assert!(write_review(&m, Locale::PtBr).contains(&example), "o revisor trabalha sempre numa cópia");
+        assert!(write_final_review(&m, Locale::PtBr).contains("--detach  HEAD`"));
+        assert!(write_final_review(&m, Locale::PtBr).contains(&example), "o revisor trabalha sempre numa cópia");
         let en = write(&Material { execution: with_copy(), ..material(&log, 1) }, Locale::EnUs);
         let rules = section(&en, translate("prompt.part.execution", Locale::EnUs));
         assert!(rules.contains("`/repo/copia-1`") && rules.contains("`/repo/target/copias/a`"), "{rules}");
@@ -1841,7 +2133,7 @@ mod tests {
             ),
         ] {
             let agents = crate::platform::seeds::agent_texts(lang);
-            for (said, (agent, key)) in wave.iter().map(|s| (s, (agents[0].1, "prompt.fixed"))).chain(review.iter().map(|s| (s, (agents[1].1, "prompt.review.fixed")))) {
+            for (said, (agent, key)) in wave.iter().map(|s| (s, (agents[0].1, "prompt.fixed"))).chain(review.iter().map(|s| (s, (agents[1].1, "prompt.final.fixed")))) {
                 assert!(agent.contains(said), "{lang:?}: {said}: {agent}");
                 assert!(!translate(key, lang).contains(said), "{lang:?} {key} repeats {said}");
             }

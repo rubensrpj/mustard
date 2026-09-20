@@ -1,7 +1,8 @@
 //! O que a máquina tem instalado: o programa `claude` no PATH, o servidor de
-//! linguagem de cada pilha que o projeto usa e uma Nerd Font para os temas da
-//! barra de status. Nenhuma dessas faltas trava: cada uma vira aviso com o
-//! comando que instala.
+//! linguagem de cada pilha que o projeto usa (pela mesma tabela que
+//! `mustard init` usa para instalar), a cópia certa de `rtk` no PATH e uma
+//! Nerd Font para os temas da barra de status. Nenhuma dessas faltas trava:
+//! cada uma vira aviso com o comando que instala.
 
 use std::path::{Path, PathBuf};
 
@@ -46,88 +47,6 @@ pub(super) fn check_claude_cli() -> CheckResult {
     )
 }
 
-/// Map a stack name to the canonical language-server binary name (and an
-/// install hint). The table is best-effort; unmapped stacks are silently ignored.
-fn lsp_server_for_stack(stack: &str) -> Option<(&'static str, &'static str)> {
-    match stack {
-        "rust" => Some(("rust-analyzer", "rustup component add rust-analyzer")),
-        "typescript" | "javascript" => {
-            Some(("typescript-language-server", "npm install -g typescript-language-server typescript"))
-        }
-        "python" => Some(("pyright", "pip install pyright")),
-        "go" => Some(("gopls", "go install golang.org/x/tools/gopls@latest")),
-        "java" => Some(("jdtls", "install Eclipse JDT Language Server")),
-        "csharp" => Some(("omnisharp", "install OmniSharp via .NET or VS extension")),
-        _ => None,
-    }
-}
-
-/// Detect which language stacks are active in `project_dir` by probing for
-/// well-known manifest files, reduced to stack-name strings. Fail-open: IO
-/// errors → empty list.
-fn detect_stacks(project_dir: &Path) -> Vec<&'static str> {
-    let mut stacks: Vec<&'static str> = Vec::new();
-
-    // Rust: Cargo.toml with [package]
-    let cargo = project_dir.join("Cargo.toml");
-    if cargo.is_file()
-        && fs::read_to_string(&cargo)
-            .unwrap_or_default()
-            .contains("[package]")
-    {
-        stacks.push("rust");
-    }
-
-    // Go: go.mod
-    if project_dir.join("go.mod").is_file() {
-        stacks.push("go");
-    }
-
-    // Python: pyproject.toml or requirements.txt
-    if project_dir.join("pyproject.toml").is_file()
-        || project_dir.join("requirements.txt").is_file()
-    {
-        stacks.push("python");
-    }
-
-    // TypeScript/JavaScript: package.json
-    let pkg_path = project_dir.join("package.json");
-    if pkg_path.is_file() {
-        let content = fs::read_to_string(&pkg_path).unwrap_or_default();
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            let deps_have_ts = ["dependencies", "devDependencies"].iter().any(|section| {
-                json.get(*section)
-                    .and_then(serde_json::Value::as_object)
-                    .is_some_and(|obj| obj.contains_key("typescript"))
-            });
-            if deps_have_ts {
-                stacks.push("typescript");
-            } else {
-                stacks.push("javascript");
-            }
-        } else {
-            stacks.push("javascript");
-        }
-    }
-
-    // C#: any *.csproj present
-    if let Ok(entries) = fs::read_dir(project_dir) {
-        let has_csproj = entries
-            .iter()
-            .any(|e| e.file_name.ends_with(".csproj"));
-        if has_csproj {
-            stacks.push("csharp");
-        }
-    }
-
-    // Java: pom.xml or build.gradle
-    if project_dir.join("pom.xml").is_file() || project_dir.join("build.gradle").is_file() {
-        stacks.push("java");
-    }
-
-    stacks
-}
-
 /// Look up `binary` in the directories listed in the `PATH` environment
 /// variable. On Windows, also probes with the `.exe` suffix. Fail-open:
 /// any lookup error returns `false`.
@@ -151,30 +70,40 @@ fn which(binary: &str) -> bool {
     false
 }
 
-/// Check that each detected stack's language server is present on `PATH`.
+/// Check that each detected language's code-tool program is present on
+/// `PATH` — the table `packages/core/src/platform/code_tools.rs` shares with
+/// `mustard init`, so a language a plugin can drive here is the same one the
+/// install tried to set up.
 pub(super) fn lsp_check(project_dir: &Path) -> CheckResult {
-    let stacks = detect_stacks(project_dir);
+    let model_path = mustard_core::io::project_map::model_path(project_dir);
+    let languages = mustard_core::platform::code_tools::detect_code_languages(project_dir, &model_path);
 
-    // Collect mapped (stack → server) entries, ignoring unmapped stacks.
-    let mapped: Vec<(&str, &str, &str)> = stacks
+    // Only languages the catalog maps to a program, deduplicated by binary
+    // (typescript + javascript both map to the same server).
+    let mapped: Vec<(&str, &str)> = languages
         .iter()
-        .filter_map(|s| lsp_server_for_stack(s).map(|(bin, hint)| (*s, bin, hint)))
+        .filter_map(|lang| {
+            mustard_core::platform::code_tools::code_tool_for_language(lang)
+                .map(|tool| (lang.as_str(), tool.program))
+        })
         .collect();
 
     if mapped.is_empty() {
         return CheckResult::skip("lsp", "no mapped stacks detected");
     }
 
-    // Deduplicate by binary (typescript + javascript both map to the same server).
     let mut seen_bins: Vec<&str> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
 
-    for (_stack, bin, hint) in &mapped {
+    for (lang, bin) in &mapped {
         if seen_bins.contains(bin) {
             continue;
         }
         seen_bins.push(bin);
         if !which(bin) {
+            let hint = mustard_core::platform::code_tools::code_tool_for_language(lang)
+                .map(|tool| tool.install_cmd)
+                .unwrap_or_default();
             missing.push(format!("missing: {bin} (install: {hint})"));
         }
     }
@@ -184,6 +113,99 @@ pub(super) fn lsp_check(project_dir: &Path) -> CheckResult {
     } else {
         CheckResult::warn("lsp", missing)
     }
+}
+
+/// A cópia de `rtk` que o Mustard instala ao lado do binário que está
+/// rodando — `<pasta-do-binário>/rtk` (`<...>/rtk.exe` no Windows). `exe` já
+/// deve chegar canonizado (o pacote `.deb` põe o binário em
+/// `/usr/lib/mustard/bin`, e `/usr/bin/mustard-rt` é um atalho para lá).
+/// `None` quando não há cópia ao lado — uma compilação de desenvolvimento,
+/// por exemplo.
+fn bundled_rtk_path(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) { "rtk.exe" } else { "rtk" };
+    let candidate = dir.join(name);
+    candidate.is_file().then_some(candidate)
+}
+
+/// A primeira cópia de `rtk` (ou `rtk.exe` no Windows) achada em `path_var`,
+/// na ordem do `PATH` — a que o gancho de fato roda.
+fn first_rtk_on_path(path_var: &str) -> Option<PathBuf> {
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let name = if cfg!(windows) { "rtk.exe" } else { "rtk" };
+    for dir in path_var.split(sep) {
+        let candidate = Path::new(dir).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// A saída de `rtk --version` de `path`, ou `None` quando o comando não roda.
+fn rtk_version_output(path: &Path) -> Option<String> {
+    let output = std::process::Command::new(path).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// O veredito puro do que [`check_rtk`] observou. Separado da leitura do
+/// `PATH` e do `current_exe()` para que o teste possa afirmar as regras sem
+/// depender do que esta máquina tem instalado — o mesmo motivo de
+/// `append_missing` em `apps/rt/src/shared/proc.rs`.
+///
+/// `bundled` e `first_on_path` já chegam canonizados: a comparação é só
+/// igualdade de caminho.
+fn rtk_verdict(bundled: Option<&Path>, first_on_path: Option<&Path>, version_output: Option<&str>) -> CheckResult {
+    let Some(first_on_path) = first_on_path else {
+        return CheckResult::warn("rtk", vec!["rtk not found on PATH".to_string()]);
+    };
+
+    let mut warnings = Vec::new();
+
+    if let Some(bundled) = bundled
+        && bundled != first_on_path {
+            warnings.push(format!(
+                "the rtk PATH finds first is not Mustard's own copy: {} (Mustard's copy: {}) — \
+                 put Mustard's copy ahead on PATH",
+                first_on_path.display(),
+                bundled.display()
+            ));
+        }
+
+    match version_output {
+        Some(out) if out.starts_with("rtk ") => {}
+        Some(out) => warnings.push(format!(
+            "`rtk --version` did not start with \"rtk \": {out:?} — another program named rtk is \
+             on PATH ahead of Mustard's own copy"
+        )),
+        None => warnings.push("could not run `rtk --version`".to_string()),
+    }
+
+    if warnings.is_empty() {
+        CheckResult::ok("rtk")
+    } else {
+        CheckResult::warn("rtk", warnings)
+    }
+}
+
+/// Confere que o `rtk` que o PATH acha primeiro é a cópia do Mustard, e que
+/// `rtk --version` responde como o rtk de verdade — em 19/09, um pacote do
+/// npm chamado `rtk` ficou na frente e desligou o filtro sem aviso. Sem cópia
+/// ao lado do binário (compilação de desenvolvimento), confere só a
+/// resposta.
+pub(super) fn check_rtk() -> CheckResult {
+    let bundled = std::env::current_exe().ok().and_then(|exe| {
+        let real = std::fs::canonicalize(&exe).unwrap_or(exe);
+        bundled_rtk_path(&real)
+    });
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let first = first_rtk_on_path(&path_var)
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+    let version = first.as_deref().and_then(rtk_version_output);
+    rtk_verdict(bundled.as_deref(), first.as_deref(), version.as_deref())
 }
 
 /// Probe OS font directories for *any* Nerd Font (filename containing both a
@@ -288,5 +310,66 @@ mod tests {
         // Empty directory: no manifest files → no mapped stacks → Skip.
         let result = lsp_check(dir.path());
         assert_eq!(result.status, Status::Skip, "{:?}", result.details);
+    }
+
+    /// A tabela partilhada com `mustard init`
+    /// (`packages/core/src/platform/code_tools.rs`) chega até aqui: um
+    /// `Cargo.toml` faz o rust entrar no mapeamento, então o resultado nunca é
+    /// `Skip` — a divisa entre "nada mapeado" e "rust mapeado".
+    #[test]
+    fn lsp_check_maps_rust_via_the_shared_code_tool_table() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let result = lsp_check(dir.path());
+        assert_ne!(result.status, Status::Skip, "{:?}", result.details);
+    }
+
+    #[test]
+    fn rtk_verdict_ok_when_the_first_on_path_is_mustards_own_copy() {
+        let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
+        let result = rtk_verdict(Some(&bundled), Some(&bundled), Some("rtk 0.49.0"));
+        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
+    }
+
+    /// O caso de 19/09: um pacote de outro catálogo com o mesmo nome `rtk`
+    /// ficou à frente do PATH e desligou o filtro sem aviso.
+    #[test]
+    fn rtk_verdict_warns_when_another_copy_is_ahead_on_path() {
+        let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
+        let other = PathBuf::from("/home/dev/.npm-global/bin/rtk");
+        let result = rtk_verdict(Some(&bundled), Some(&other), Some("rtk 0.49.0"));
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        assert!(
+            result.details.iter().any(|d| d.contains("/usr/lib/mustard/bin/rtk")),
+            "{:?}",
+            result.details
+        );
+    }
+
+    #[test]
+    fn rtk_verdict_warns_when_the_version_reply_does_not_start_with_rtk_space() {
+        let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
+        let result = rtk_verdict(Some(&bundled), Some(&bundled), Some("Rust Type Kit 1.0.0"));
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+    }
+
+    /// Compilação de desenvolvimento: sem cópia ao lado do binário, o veredito
+    /// confere só a resposta de `rtk --version` — não há caminho de cópia para
+    /// comparar.
+    #[test]
+    fn rtk_verdict_without_a_bundled_copy_checks_only_the_response() {
+        let path = PathBuf::from("/usr/bin/rtk");
+        let ok = rtk_verdict(None, Some(&path), Some("rtk 0.49.0"));
+        assert_eq!(ok.status, Status::Ok, "{:?}", ok.details);
+
+        let warn = rtk_verdict(None, Some(&path), Some("not rtk at all"));
+        assert_eq!(warn.status, Status::Warn);
+    }
+
+    #[test]
+    fn rtk_verdict_warns_when_rtk_is_not_on_path_at_all() {
+        let bundled = PathBuf::from("/usr/lib/mustard/bin/rtk");
+        let result = rtk_verdict(Some(&bundled), None, None);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
     }
 }

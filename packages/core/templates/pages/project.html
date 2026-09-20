@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mustard · projeto</title>
+<style>
+/* A página do projeto do Mustard (mostarda e carvão): um template igual para
+   todo projeto, que lê do banco de dados da página uma linha por spec e mostra
+   as specs agrupadas por fase, cada uma com o link da página dela. */
+:root{
+  --paper:#FAFAF7;--surface:#FFFFFF;--ink:#2B2B29;--muted:#6B6A64;--rule:#E6E4DC;--rule-soft:#EFEDE6;
+  --mustard:#E1AD01;--mustard-text:#8A6700;--mustard-soft:#FBF1CF;--mustard-line:#EFD27A;
+  --code:#F0EEE7;--ok:#2F7A4B;--ok-soft:#E3F1E7;
+  --sans:"Geist","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --paper:#1C1C1A;--surface:#232321;--ink:#ECEAE3;--muted:#A7A59C;--rule:#363532;--rule-soft:#2C2B29;
+  --mustard:#E8B923;--mustard-text:#F0C849;--mustard-soft:#352E17;--mustard-line:#6B5717;
+  --code:#2C2B28;--ok:#7BC99A;--ok-soft:#1E3326;
+  color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{overflow-x:clip}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--mustard-text);text-decoration-color:var(--mustard-line);text-underline-offset:2px}
+code{font-family:var(--mono);font-size:.86em;background:var(--code);padding:1px 5px;border-radius:5px}
+.page{max-width:1040px;padding:0 40px 20vh;margin:0 auto}
+header.top{padding:34px 0 6px}
+.eyebrow{font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mustard-text);margin:0 0 10px}
+header.top h1{font-size:32px;font-weight:650;letter-spacing:-.02em;line-height:1.2;margin:0 0 12px}
+.empty{margin:40px 0;padding:18px 20px;border:1px dashed var(--rule);border-radius:10px;color:var(--muted)}
+.stages{color:var(--muted);margin:18px 0 8px}
+details.group{border-bottom:1px solid var(--rule)}
+details.group>summary{list-style:none;display:flex;align-items:center;gap:12px;padding:13px 4px;cursor:pointer}
+details.group>summary::-webkit-details-marker,details.item>summary::-webkit-details-marker{display:none}
+details.group>summary::before{content:"";flex:none;width:7px;height:7px;margin:0 3px 0 2px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(-45deg);transition:transform .15s}
+details.group[open]>summary::before{transform:rotate(45deg) translate(-2px,-1px)}
+.gt{font-weight:600;font-size:15.5px}
+.count{margin-left:auto;font:400 12px var(--mono);color:var(--muted)}
+.gbody{padding:0 0 14px 20px}
+details.item{border-top:1px solid var(--rule-soft)}
+details.item>summary{list-style:none;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:baseline;gap:14px;padding:8px 10px;margin:0 -10px;border-radius:7px;cursor:pointer}
+details.item>summary:hover{background:var(--surface)}
+.c{background:none;padding:0;font:500 12px var(--mono);color:var(--mustard-text);white-space:nowrap}
+.t{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14.5px}
+.tail{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
+.tag{font:500 11.5px/1 var(--sans);padding:3px 8px;border-radius:999px;background:var(--code);color:var(--muted)}
+.tag.ok{background:var(--ok-soft);color:var(--ok)}.tag.run{background:var(--mustard-soft);color:var(--mustard-text)}
+.when{font:12px var(--mono);color:var(--muted)}
+details.item[open]{margin:6px -12px 10px;padding:0 12px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
+details.item[open]>summary{margin:0 -12px;padding:12px 12px 8px}
+details.item[open]>summary .t{white-space:normal;font-weight:600}
+dl.kv{display:grid;grid-template-columns:minmax(120px,max-content) minmax(0,1fr);gap:5px 18px;margin:0;font-size:13.5px}
+dl.kv dt{color:var(--muted)}
+dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+[hidden]{display:none!important}
+@media (max-width:700px){
+  .page{padding:0 16px 20vh}
+  details.item>summary{grid-template-columns:minmax(0,1fr) auto;gap:4px 10px}
+  details.item>summary .c{grid-column:1/-1}
+  dl.kv{grid-template-columns:minmax(0,1fr)}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="application/json" id="mustard-catalog">{}</script>
+<script id="mustard-page">
+// O script da página do projeto. Ele lê do banco de dados da página uma linha
+// por spec (nome, objetivo, fase, branch, datas e o link da página dela) e
+// mostra as specs agrupadas por fase, na ordem do fluxo. A página se atualiza
+// sozinha quando uma linha muda. Sem banco, ou com o banco vazio, ela diz que
+// ainda não há dados.
+(function () {
+  'use strict';
+  var W = window, D = document;
+  var CAT = {};
+  try { CAT = JSON.parse(D.getElementById('mustard-catalog').textContent || '{}'); } catch (_) { CAT = {}; }
+  var L = CAT.labels || {};
+  function t(key) { return Object.prototype.hasOwnProperty.call(L, key) ? L[key] : key; }
+  function say(key, vars) {
+    var s = t(key);
+    Object.keys(vars).forEach(function (k) { s = s.split('{' + k + '}').join(String(vars[k])); });
+    return s;
+  }
+  var DBP = CAT.db || { specs: 'specs' }, PHASES = CAT.phases || [];
+  if (CAT.lang) D.documentElement.setAttribute('lang', CAT.lang);
+
+  function str(v) { return typeof v === 'string' ? v : null; }
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function day(at) { return at !== null && at.length >= 10 ? at.slice(0, 10) : '—'; }
+  function phaseLabel(p) {
+    if (p === null) return '—';
+    return Object.prototype.hasOwnProperty.call(L, 'page.phase.' + p) ? L['page.phase.' + p] : p;
+  }
+  function capitalized(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  function h(tag, attrs, kids) {
+    var el = D.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k === 'text') el.textContent = String(v);
+      else if (k === 'html') el.innerHTML = v;
+      else el.setAttribute(k, v === true ? '' : String(v));
+    });
+    (kids || []).forEach(function (c) { if (c) el.appendChild(typeof c === 'string' ? D.createTextNode(c) : c); });
+    return el;
+  }
+
+  var app = D.getElementById('app');
+  var statusEl = h('p', { class: 'empty', id: 'status', text: t('page.loading') });
+  var box = h('div', { id: 'specs' });
+  app.appendChild(h('div', { class: 'page' }, [
+    h('header', { class: 'top' }, [h('p', { class: 'eyebrow', text: 'Mustard · ' + t('project.kind') }), h('h1', { text: t('project.specs') })]),
+    statusEl, box]));
+  app.setAttribute('data-state', 'loading');
+  var RENDERS = 0;
+  function done(state) {
+    RENDERS++;
+    app.setAttribute('data-state', state);
+    app.setAttribute('data-renders', String(RENDERS));
+  }
+  function noData() {
+    box.textContent = '';
+    statusEl.textContent = t('page.no_data');
+    statusEl.hidden = false;
+    done('empty');
+  }
+
+  // Cada documento do banco vira uma linha; o que não tem nome fica de fora.
+  function rowsOf(docs) {
+    var rows = [];
+    docs.forEach(function (d) {
+      var b = d.data ? d.data() : null;
+      if (!b || !str(b.name)) return;
+      rows.push({ name: b.name, goal: str(b.goal), phase: str(b.phase), branch: str(b.branch),
+        created: str(b.created), updated: str(b.updated), url: str(b.url) });
+    });
+    return rows.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+  }
+  function known(row) { return row.phase !== null && PHASES.indexOf(row.phase) >= 0; }
+  function row(r) {
+    var tone = r.phase === 'running' ? 'run' : r.phase === 'approved' ? 'ok' : '';
+    var link = r.url !== null && /^https?:\/\//.test(r.url)
+      ? '<a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.name) + '</a>' : null;
+    var fields = [
+      [t('project.col.state'), esc(phaseLabel(r.phase))],
+      [t('project.col.branch'), r.branch !== null ? '<code>' + esc(r.branch) + '</code>' : '—'],
+      [t('project.col.created'), esc(day(r.created))],
+      [t('project.col.updated'), esc(day(r.updated))]];
+    if (link) fields.push([t('page.field.url'), link]);
+    return h('details', { class: 'item', 'data-spec': r.name }, [
+      h('summary', null, [
+        h('code', { class: 'c', text: r.name }),
+        h('span', { class: 't', text: r.goal || '' }),
+        h('span', { class: 'tail' }, [
+          h('span', { class: 'tag state ' + tone, text: phaseLabel(r.phase) }),
+          r.updated !== null ? h('span', { class: 'when', text: r.updated.slice(0, 16).replace('T', ' ') }) : null])]),
+      h('dl', { class: 'kv' }, [].concat.apply([], fields.map(function (f) { return [h('dt', { text: f[0] }), h('dd', { html: f[1] })]; })))]);
+  }
+  function render(rows) {
+    if (!rows.length) { noData(); return; }
+    var parts = [];
+    PHASES.forEach(function (p) {
+      var n = rows.filter(function (r) { return r.phase === p; }).length;
+      if (n) parts.push(n + ' ' + t('page.phase.' + p));
+    });
+    var unknown = rows.filter(function (r) { return !known(r); }).length;
+    if (unknown) parts.push(unknown + ' ' + t('project.no_phase'));
+    box.textContent = '';
+    box.appendChild(h('p', { class: 'stages', text: say('project.stages', { stages: parts.join(', ') }) }));
+    PHASES.concat([null]).forEach(function (p) {
+      var of = rows.filter(function (r) { return p === null ? !known(r) : r.phase === p; });
+      if (!of.length) return;
+      var title = capitalized(p === null ? t('project.no_phase') : phaseLabel(p));
+      box.appendChild(h('details', { class: 'group', id: 'specs-' + (p || 'none'), open: true }, [
+        h('summary', null, [h('span', { class: 'gt', text: title }), h('span', { class: 'count', text: String(of.length) })]),
+        h('div', { class: 'gbody' }, of.map(row))]));
+    });
+    statusEl.hidden = true;
+    done('ready');
+  }
+
+  var ready = W.claude && typeof W.claude.use === 'function' ? W.claude.use('db') : Promise.resolve(null);
+  Promise.resolve(ready).then(function (db) {
+    if (!db) { noData(); return; }
+    db.collection(DBP.specs).onSnapshot(function (snap) { render(rowsOf(snap.docs)); }, function () { if (!RENDERS) noData(); });
+  }, noData);
+})();
+</script>
+</body>
+</html>

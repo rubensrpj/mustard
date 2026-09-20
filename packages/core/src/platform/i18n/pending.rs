@@ -159,9 +159,10 @@ mod tests {
     /// The pending advisories come from the catalog in both languages, and
     /// each carries the slots the caller fills. The texts of the end-of-answer
     /// hooks that left (the summary delivery, the QA on `Stop`, the reminder to
-    /// record the conversation) and the next-message advisory left with them,
-    /// the invented-name defect left with its measure, and the two texts of the
-    /// old-flow criteria copy left with it.
+    /// record the conversation) left with them, the invented-name defect left
+    /// with its measure, and the two texts of the old-flow criteria copy left
+    /// with it. The next-message phrase of the writing check is back in the
+    /// gates part, with a new role: its test lives there.
     #[test]
     fn i18n_translates_pending_keys() {
         for (key, slots) in [
@@ -206,7 +207,6 @@ mod tests {
             "deliver.publish",
             "stopgate.block.reason",
             "crystallise.nudge",
-            "clarity.next.head",
             "clarity.unexplained_term",
             "pending.notice",
             "spec_events.criteria_from_spec_md",

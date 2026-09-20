@@ -36,6 +36,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 
+# A hora do sinal de vida de uma onda (`round::queue::silent_minutes`) e do
+# processo Claude Code por trás dela: a mesma leitura de `rfc3339` que o
+# núcleo já usa.
+chrono = { workspace = true }
+
 # The pull-request calls against Azure DevOps go over HTTP. `ureq` is the
 # workspace's blocking, runtime-free HTTP client — the same one `mustard-cli`
 # uses; no async runtime is pulled in.

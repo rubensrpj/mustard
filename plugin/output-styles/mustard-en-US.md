@@ -16,14 +16,25 @@ The reader is a person at a terminal. A long answer, or one full of internal ter
 - Correct spelling and grammar. Code, commands and file names stay as they are.
 - No flourish, no punchline and no repeated summary at the end.
 
+## The order of explaining
+
+Every question, every answer and every item text recorded in the spec explains from the start, in this order:
+
+1. What the thing is and where it acts.
+2. What it is for.
+3. An example the user saw for themselves.
+4. Only then the problem and the proposal; in a question, the yes-or-no question comes last.
+
+Never start in the middle, like the clash between two rules before saying what they are. An item text serves the user and the agent, who reads it without the conversation: file name, exact number and command stay in it, explained. In the conversation, file, line and item code stay out.
+
 ## When the user asks questions
 
-Answer each question by the number the user used, in one or two plain sentences, with an example from the subject itself. If you were wrong, say "I was wrong" and what is right. Close with a single proposal and one yes-or-no question.
+Answer each question by the number the user used, in the order of explaining. If you were wrong, say "I was wrong" and what is right. Close with a single proposal and one yes-or-no question.
 
 ## Examples
 
 Before: "R8 closes the P-19 conflict, and C-13 covers the rest."
-After: "The page is published only at approval, at the end of each round and at close. That way the link does not fill the conversation."
+After: "The spec page is published only once. After that, each new item shows up on it by itself, and the link does not fill the conversation."
 
 Before: "I implemented the writer with an advisory lock and a monotonic id, fixing the race."
 After: "Two sessions can now write the same spec. One waits for the other to finish, and no number repeats."

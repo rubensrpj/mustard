@@ -1,16 +1,16 @@
 //! O motor de página do Mustard: o único lugar que escreve uma página HTML.
 //!
-//! A página de uma spec, a do projeto, uma página avulsa escrita em markdown
-//! e os relatórios da face `run` saem daqui, no layout aprovado em 17/09
-//! (mostarda e carvão): menu lateral com as seções e os grupos, barra com a
-//! busca, grupos recolhidos e cada item numa linha. As fontes Geist e Geist
-//! Mono são buscadas do Google Fonts; nenhuma fonte vai gravada dentro da
-//! página, e quem abre o arquivo sem internet vê a fonte do sistema.
+//! Hoje só a página avulsa escrita em markdown sai daqui, no layout aprovado
+//! em 17/09 (mostarda e carvão): menu lateral com as seções, barra com a
+//! busca. As fontes Geist e Geist Mono são buscadas do Google Fonts; nenhuma
+//! fonte vai gravada dentro da página, e quem abre o arquivo sem internet vê
+//! a fonte do sistema. O motor que montava a página inteira de uma spec e a
+//! do projeto, item por item, saiu com o comando que só ele servia.
 //!
 //! - [`Report`] monta a moldura da página: o `<head>`, o estilo, o menu, a
 //!   barra, o cabeçalho e o script.
 //! - [`markdown`] é o único conversor de markdown do Mustard.
-//! - [`Render`] escreve a árvore de `view::document` como `.md` ou `.html`.
+//! - [`Render`] escreve a árvore de `view::document` como HTML.
 //!
 //! As funções daqui são puras: montam um `String` e nunca tocam no disco nem
 //! encerram o processo.
@@ -158,18 +158,6 @@ impl Report {
         self
     }
 
-    /// Acrescenta uma seção: um `h2` seguido do HTML interno já montado pelo
-    /// chamador, com o endereço dela no menu lateral.
-    pub fn section(&mut self, heading: &str, inner_html: &str) -> &mut Self {
-        let id = format!("section-{}", self.nav.len() + 1);
-        let title = escape(heading);
-        let _ = write!(
-            self.body,
-            "<section id=\"{id}\" class=\"block\" data-crumb=\"{title}\"><h2><span>{title}</span></h2>{inner_html}</section>"
-        );
-        self.nav(NavSection { id, title: heading.to_string(), count: 0, groups: Vec::new() })
-    }
-
     /// Render the finished standalone HTML document.
     #[must_use]
     pub fn render(&self) -> String {
@@ -260,28 +248,6 @@ fn shown_count(count: usize) -> String {
     if count == 0 { String::new() } else { count.to_string() }
 }
 
-/// Build a `<table>` from a header row and string cells. Each row is rendered
-/// verbatim as escaped text — callers that need status colouring should use
-/// [`table_with_classes`] instead.
-#[must_use]
-pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    // A moldura `.table` dá a borda arredondada e a rolagem horizontal do layout.
-    let mut html = String::from("<div class=\"table\"><table><thead><tr>");
-    for h in headers {
-        let _ = write!(html, "<th>{}</th>", escape(h));
-    }
-    html.push_str("</tr></thead><tbody>");
-    for row in rows {
-        html.push_str("<tr>");
-        for cell in row {
-            let _ = write!(html, "<td>{}</td>", escape(cell));
-        }
-        html.push_str("</tr>");
-    }
-    html.push_str("</tbody></table></div>");
-    html
-}
-
 /// Os endereços de fora que uma página do motor carrega: só o das fontes.
 #[cfg(test)]
 pub(crate) fn assert_only_the_fonts_are_external(html: &str) {
@@ -320,12 +286,13 @@ mod tests {
     #[test]
     fn report_renders_standalone_document() {
         let mut r = Report::new("QA", "spec: demo");
-        r.section("Raw", "<p>ok</p>");
+        r.raw("<p>ok</p>");
         let html = r.render();
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("<style>"));
         assert_only_the_fonts_are_external(&html);
         assert!(html.contains("spec: demo"));
+        assert!(html.contains("<p>ok</p>"));
         assert!(html.ends_with("</html>\n"));
     }
 
@@ -377,7 +344,12 @@ mod tests {
     #[test]
     fn report_renders_the_standard_mustard_layout() {
         let mut r = Report::new("Resumo da spec", "spec: demo").with_lang("pt-BR");
-        r.section("Tabela", &table(&["A"], &[vec!["`x`".into()]]));
+        r.raw(
+            "<section id=\"section-1\" class=\"block\" data-crumb=\"Tabela\"><h2><span>Tabela</span></h2>\
+             <div class=\"table\"><table><thead><tr><th>A</th></tr></thead>\
+             <tbody><tr><td>`x`</td></tr></tbody></table></div></section>",
+        );
+        r.nav(NavSection { id: "section-1".to_string(), title: "Tabela".to_string(), count: 0, groups: Vec::new() });
         let html = r.render();
 
         // Idioma pedido no <html>; sem pedido, vale o padrão `en`.
@@ -522,12 +494,5 @@ mod tests {
         for piece in ["placeholder=\"Search text or code\"", ">Open all</button>", "data-of=\"{n} of {total}\""] {
             assert!(en.contains(piece), "{piece} is missing in English");
         }
-    }
-
-    #[test]
-    fn table_builds_rows() {
-        let html = table(&["A", "B"], &[vec!["1".into(), "2".into()]]);
-        assert!(html.contains("<th>A</th>"));
-        assert!(html.contains("<td>1</td>"));
     }
 }

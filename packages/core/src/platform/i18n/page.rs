@@ -1,6 +1,7 @@
 //! As páginas: a da spec e o `.md` dela (blocos, tipos, campos, valores, fases,
 //! autores e o painel de medição), a lista dos itens sem dono, a do projeto, a
-//! publicação nos marcos e as recusas do comando `page`.
+//! cópia para o banco de dados das páginas publicadas e as recusas do comando
+//! `page`.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -15,84 +16,131 @@ pub(super) const PREFIXES: &[&str] = &["page", "project"];
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
-        // A publicação nos marcos, dita pelo plano, pela rodada e pelo
-        // fechamento (`commands/spec_events/pages.rs`).
-        ("page.publish", Locale::PtBr) => {
-            "Publique a página da spec e a do projeto (`.claude/spec/project.html`) e grave as duas \
-             publicações: `mustard-rt run write publish --spec <spec> --json '{\"page\":\"spec\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'` \
-             e `mustard-rt run write publish --spec <spec> --json '{\"page\":\"project\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
-             cada uma com `\"ok\":false` e `\"reason\"` quando falhar. Não escreva os endereços na \
-             resposta: eles ficam na barra de status."
+        // A cópia para o banco de dados das páginas publicadas, dita pelos
+        // marcos (o plano, a rodada e o fechamento) e pela gravação de um
+        // pedido que muda o plano (`commands/spec_events/pages/copy.rs`).
+        ("page.copy.publish", Locale::PtBr) => {
+            "A {page} ainda não foi publicada: publique o template `{template}` com a ferramenta \
+             `Artifact`, passando em `capabilities` o valor `{capabilities}`, e grave o endereço com \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
+             com `\"ok\":false` e `\"reason\"` quando falhar."
         }
-        ("page.publish", Locale::EnUs) => {
-            "Publish the spec page and the project page (`.claude/spec/project.html`) and record both \
-             publications: `mustard-rt run write publish --spec <spec> --json '{\"page\":\"spec\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'` \
-             and `mustard-rt run write publish --spec <spec> --json '{\"page\":\"project\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
-             each with `\"ok\":false` and a `\"reason\"` when it fails. Never write the addresses in \
-             the reply: they live in the status line."
+        ("page.copy.publish", Locale::EnUs) => {
+            "The {page} is not published yet: publish the template `{template}` with the `Artifact` \
+             tool, passing `{capabilities}` as `capabilities`, and record the address with \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
+             with `\"ok\":false` and a `\"reason\"` when it fails."
         }
-        // O que a ordem de publicar diz de cada página já publicada: o que
-        // entrou na spec depois da última publicação dela, e o endereço
-        // gravado, que a ferramenta de publicar exige ler antes.
-        ("page.publish.since", Locale::PtBr) => {
-            "Desde a última publicação da {page}, em {at}, entraram na spec: {items}."
+        // A página da spec, ou a do projeto, que uma versão antiga publicou
+        // inteira ganha o template num link novo; a antiga fica parada.
+        // `{page}` é o nome da página (`page.name.*`).
+        ("page.copy.old_page", Locale::PtBr) => {
+            "A {page} que uma versão antiga do Mustard publicou fica parada como está, como um \
+             retrato: publique o template como página nova, com link novo, sem mexer na antiga e sem \
+             copiar nada para ela, e a barra de status passa a mostrar o link novo."
         }
-        ("page.publish.since", Locale::EnUs) => {
-            "Since the last publication of the {page}, at {at}, the spec got: {items}."
+        ("page.copy.old_page", Locale::EnUs) => {
+            "The {page} an older Mustard version published stays still as it is, like a snapshot: \
+             publish the template as a new page, with a new link, without touching the old one or \
+             copying anything into it, and the status line starts showing the new link."
         }
-        ("page.publish.nothing_since", Locale::PtBr) => {
-            "Nada entrou na spec desde a última publicação da {page}, em {at}."
+        // A primeira cópia leva a spec inteira e fica com um agente separado.
+        ("page.copy.agent", Locale::PtBr) => {
+            "A primeira cópia para o banco da {page} leva a spec inteira e fica com um agente \
+             separado, para esta conversa continuar leve: despache um agente com o texto entre « e », \
+             com o endereço da página escrito nele, e espere a volta dele antes de seguir. «{order}»"
         }
-        ("page.publish.nothing_since", Locale::EnUs) => {
-            "Nothing entered the spec since the last publication of the {page}, at {at}."
+        ("page.copy.agent", Locale::EnUs) => {
+            "The first copy into the {page}'s database carries the whole spec and goes to a separate \
+             agent, so this conversation stays light: dispatch an agent with the text between « and », \
+             with the page's address written in it, and wait for it to come back before going on. \
+             «{order}»"
         }
-        ("page.publish.same_list", Locale::PtBr) => "Para a {page}, vale a mesma lista.",
-        ("page.publish.same_list", Locale::EnUs) => "The same list holds for the {page}.",
-        ("page.publish.read_first", Locale::PtBr) => {
-            "Se esta conversa ainda não publicou a {page}, leia antes o endereço gravado dela, {url}: \
-             a ferramenta de publicar exige."
+        // A migração de uma spec antiga: as notas de trabalho das tarefas das
+        // ondas que ainda não saíram.
+        ("page.migration.unrated", Locale::PtBr) => {
+            "Esta spec veio de uma versão do Mustard sem a nota de trabalho das tarefas: grave uma \
+             versão nova de cada tarefa das ondas que ainda não saíram, {tasks}, com a nota dela. \
+             {scale} Depois some as notas de cada onda: a que passar de {cap} pontos volta para o \
+             usuário aprovar a divisão dela antes de sair."
         }
-        ("page.publish.read_first", Locale::EnUs) => {
-            "If this conversation has not published the {page} yet, first read its recorded address, \
-             {url}: the publishing tool requires it."
+        ("page.migration.unrated", Locale::EnUs) => {
+            "This spec came from a Mustard version without the tasks' points: record a new version of \
+             each task of the waves that have not gone out yet, {tasks}, with its points. {scale} \
+             Then add up the points of each wave: the one over {cap} points goes back to the user to \
+             approve its split before it goes out."
         }
-        ("page.publish.check_only", Locale::PtBr) => {
-            "Confira só essa lista e publique, sem ler o `.md` nem o `.html`: o resto já foi publicado."
+        ("page.migration.over_cap", Locale::PtBr) => {
+            "A onda {wave} ainda não saiu e soma {points} pontos, acima do teto de {cap}: ela volta \
+             para o usuário aprovar a divisão dela antes de sair."
         }
-        ("page.publish.check_only", Locale::EnUs) => {
-            "Check only this list and publish, without reading the `.md` or the `.html`: the rest was \
-             already published."
+        ("page.migration.over_cap", Locale::EnUs) => {
+            "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}: \
+             it goes back to the user to approve its split before it goes out."
+        }
+        ("page.copy.batches", Locale::PtBr) => {
+            "Copie para o banco de dados da {page}, no endereço {url}, os lotes {files}, nessa ordem: \
+             cada arquivo é a lista `writes` de uma chamada da ferramenta `ArtifactData` com `action` \
+             `batch`, e cada documento vai pelo `file_path` dele, sem você ler os itens."
+        }
+        ("page.copy.batches", Locale::EnUs) => {
+            "Copy into the {page}'s database, at {url}, the batches {files}, in this order: each file is \
+             the `writes` list of one `ArtifactData` call with `action` `batch`, and each document goes \
+             by its `file_path`, without reading the items."
+        }
+        // Só entra depois de `page.copy.batches`, quando algum documento do
+        // lote já existe no banco de uma cópia anterior: o banco recusa a
+        // troca de um documento assim sem a versão dele.
+        ("page.copy.existing", Locale::PtBr) => {
+            "Os documentos {docs} já existem no banco: leia a versão de cada um com a ação `get` da \
+             ferramenta `ArtifactData` e ponha cada uma em `if_version` na escrita dele antes de mandar o \
+             lote; os outros documentos vão sem versão."
+        }
+        ("page.copy.existing", Locale::EnUs) => {
+            "The documents {docs} already exist in the database: read each one's version with the `get` \
+             action of the `ArtifactData` tool and put it in `if_version` on that write before sending the \
+             batch; the other documents go without a version."
+        }
+        // Só entra depois de `page.copy.batches`, e só fora do descarte: a
+        // spec descartada é terminal, sem cópia seguinte para continuar dela.
+        ("page.copy.record", Locale::PtBr) => {
+            "Depois grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`."
+        }
+        ("page.copy.record", Locale::EnUs) => {
+            "Then record the copy with `mustard-rt run write copy --spec {spec} --json '{record}'`."
+        }
+        // Sempre entra em `{url}` de `page.copy.batches`, depois de "no
+        // endereço": sem "o endereço" aqui, ou a frase dobra a palavra.
+        ("page.copy.new_address", Locale::PtBr) => "que a publicação devolver",
+        ("page.copy.new_address", Locale::EnUs) => "the address the publication returns",
+        ("page.copy.no_links", Locale::PtBr) => {
+            "Não escreva os endereços na resposta: eles ficam na barra de status."
+        }
+        ("page.copy.no_links", Locale::EnUs) => {
+            "Never write the addresses in the reply: they live in the status line."
+        }
+        ("page.copy.failed", Locale::PtBr) => {
+            "A cópia para o banco de dados das páginas não pôde ser preparada, e o motivo está em \
+             `warnings`: não copie nada agora, porque a próxima cópia leva os mesmos itens."
+        }
+        ("page.copy.failed", Locale::EnUs) => {
+            "The copy into the pages' database could not be prepared, and the reason is in `warnings`: \
+             copy nothing now, since the next copy carries the same items."
         }
         ("page.purge_pending", Locale::PtBr) => {
-            "Os itens {codes} ainda guardam no arquivo um trecho com cara de segredo, que saiu da \
-             página como \"…\": expurgue cada um com `mustard-rt run write purge --spec <spec> --json \
-             '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
+            "Os itens {codes} guardam no arquivo um trecho com cara de segredo e ficam fora da cópia \
+             para o banco de dados da página até serem expurgados: expurgue cada um com \
+             `mustard-rt run write purge --spec {spec} --json '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
         }
         ("page.purge_pending", Locale::EnUs) => {
-            "Items {codes} still keep in the file an excerpt that looks like a secret, which left the \
-             page as \"…\": purge each one with `mustard-rt run write purge --spec <spec> --json \
-             '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
+            "Items {codes} keep in the file an excerpt that looks like a secret and stay out of the \
+             copy into the page's database until they are purged: purge each one with \
+             `mustard-rt run write purge --spec {spec} --json '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
         }
-        ("page.after_rebuild", Locale::PtBr) => {
-            "Refaça a página com `mustard-rt run page --spec <spec>`, publique as duas páginas e \
-             grave cada publicação com o marco `{milestone}`."
-        }
-        ("page.after_rebuild", Locale::EnUs) => {
-            "Rebuild the page with `mustard-rt run page --spec <spec>`, publish both pages and \
-             record each publication with the `{milestone}` milestone."
-        }
-        ("page.not_rebuilt", Locale::PtBr) => {
-            "Não publique as páginas: a {page} não pôde ser refeita, e o motivo está em `warnings`."
-        }
-        ("page.not_rebuilt", Locale::EnUs) => {
-            "Do not publish the pages: the {page} could not be rebuilt, and the reason is in `warnings`."
-        }
-        ("page.rebuild_failed", Locale::PtBr) => "Não consegui refazer a {page}: {detail}.",
-        ("page.rebuild_failed", Locale::EnUs) => "Could not rebuild the {page}: {detail}.",
         ("page.name.spec", Locale::PtBr) => "página da spec",
         ("page.name.spec", Locale::EnUs) => "spec page",
-        ("page.name.project", Locale::PtBr) => "página do projeto (`.claude/spec/project.html`)",
-        ("page.name.project", Locale::EnUs) => "project page (`.claude/spec/project.html`)",
+        ("page.name.project", Locale::PtBr) => "página do projeto",
+        ("page.name.project", Locale::EnUs) => "project page",
 
         // A moldura de toda página: o menu lateral, a busca e os botões de
         // abrir e fechar. `{n}` e `{total}` são preenchidos pelo script da
@@ -118,6 +166,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.request", Locale::EnUs) => "request",
         ("page.old_version", Locale::PtBr) => "versão antiga",
         ("page.old_version", Locale::EnUs) => "old version",
+
+        // Os templates das páginas (`platform::page_templates`): o que eles
+        // dizem enquanto leem o banco de dados da página, quando o banco
+        // ainda está vazio, o filtro por tipo e o botão de baixar o `.md`.
+        ("page.loading", Locale::PtBr) => "Lendo o banco de dados da página…",
+        ("page.loading", Locale::EnUs) => "Reading the page's database…",
+        ("page.no_data", Locale::PtBr) => {
+            "Ainda não há dados: o Mustard ainda não copiou nada para o banco de dados desta página."
+        }
+        ("page.no_data", Locale::EnUs) => "No data yet: Mustard has not copied anything to this page's database.",
+        ("page.watch_failed", Locale::PtBr) => "Não deu para conferir se há dados novos. Recarregue a página.",
+        ("page.watch_failed", Locale::EnUs) => "Could not check for new data. Reload the page.",
+        ("page.filter.label", Locale::PtBr) => "Filtrar por tipo",
+        ("page.filter.label", Locale::EnUs) => "Filter by type",
+        ("page.filter.all", Locale::PtBr) => "Todos os tipos",
+        ("page.filter.all", Locale::EnUs) => "All types",
+        ("page.download", Locale::PtBr) => "Baixar .md",
+        ("page.download", Locale::EnUs) => "Download .md",
+        ("page.wave.full", Locale::PtBr) => "com o texto de cada item no lugar do código",
+        ("page.wave.full", Locale::EnUs) => "with each item's text in place of its code",
+        // A seção do fim da página da spec com cada item que saiu: o nome
+        // dela, a marca de cada item (removido ou expurgado) e os campos de
+        // quem o tirou, quando e o registro que o tirou.
+        ("page.removed.heading", Locale::PtBr) => "Removidos",
+        ("page.removed.heading", Locale::EnUs) => "Removed",
+        ("page.removed.removed", Locale::PtBr) => "removido",
+        ("page.removed.removed", Locale::EnUs) => "removed",
+        ("page.removed.purged", Locale::PtBr) => "expurgado",
+        ("page.removed.purged", Locale::EnUs) => "purged",
+        ("page.removed.removed_by", Locale::PtBr) => "Removido por",
+        ("page.removed.removed_by", Locale::EnUs) => "Removed by",
+        ("page.removed.removed_at", Locale::PtBr) => "Removido em",
+        ("page.removed.removed_at", Locale::EnUs) => "Removed on",
+        ("page.removed.purged_by", Locale::PtBr) => "Expurgado por",
+        ("page.removed.purged_by", Locale::EnUs) => "Purged by",
+        ("page.removed.purged_at", Locale::PtBr) => "Expurgado em",
+        ("page.removed.purged_at", Locale::EnUs) => "Purged on",
+        ("page.removed.record", Locale::PtBr) => "Registro",
+        ("page.removed.record", Locale::EnUs) => "Record",
 
         // A página e o `.md` de uma spec (`view::document`): os títulos das
         // seções e dos grupos, os nomes dos tipos, os rótulos dos campos e
@@ -155,6 +242,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.block.waves", Locale::EnUs) => "Waves",
         ("page.block.review", Locale::PtBr) => "Revisão e QA",
         ("page.block.review", Locale::EnUs) => "Review and QA",
+        ("page.review.final", Locale::PtBr) => "Veredito final",
+        ("page.review.final", Locale::EnUs) => "Final verdict",
         ("page.block.progress", Locale::PtBr) => "Andamento",
         ("page.block.progress", Locale::EnUs) => "Progress",
         ("page.block.notes", Locale::PtBr) => "Anotações",
@@ -167,67 +256,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.kind.spec", _) => "spec",
         ("page.meta.spec", _) => "spec",
 
-        // A lista dos itens sem dono (`page --spec <nome> --owners`), que o
-        // usuário confere antes de os donos serem gravados.
-        ("page.kind.owners", Locale::PtBr) => "donos para conferir",
-        ("page.kind.owners", Locale::EnUs) => "owners to check",
-        ("page.owners.heading", Locale::PtBr) => "Itens sem dono",
-        ("page.owners.heading", Locale::EnUs) => "Items without an owner",
-        ("page.owners.intro", Locale::PtBr) => {
-            "Cada item combinado que ainda não tem dono, com o dono que ele recebe e a regra de onde o \
-             dono veio. Nada foi gravado: confira, diga o que muda, e só então os donos são gravados. O \
-             pedido de cada onda passa a levar só os itens dela e os do projeto."
-        }
-        ("page.owners.intro", Locale::EnUs) => {
-            "Every agreed item that still has no owner, with the owner it gets and the rule the owner came \
-             from. Nothing was recorded: check it, say what changes, and only then are the owners \
-             recorded. Each wave's request then carries only its own items and the project's."
-        }
-        ("page.owners.none", Locale::PtBr) => "Todo item combinado já tem dono.",
-        ("page.owners.none", Locale::EnUs) => "Every agreed item already has an owner.",
-        ("page.owners.tally", Locale::PtBr) => {
-            "{unowned} sem dono · {proposed} pela proposta · {given} pelo orquestrador · {left} ainda sem dono"
-        }
-        ("page.owners.tally", Locale::EnUs) => {
-            "{unowned} without owner · {proposed} by the proposal · {given} by the orchestrator · {left} still \
-             without owner"
-        }
-        ("page.owners.group.tasks", Locale::PtBr) => "Pelas tarefas que apontam o item",
-        ("page.owners.group.tasks", Locale::EnUs) => "By the tasks that point to the item",
-        ("page.owners.group.cited", Locale::PtBr) => "Pela onda citada no texto",
-        ("page.owners.group.cited", Locale::EnUs) => "By the wave the text cites",
-        ("page.owners.group.files", Locale::PtBr) => "Pelos arquivos em comum",
-        ("page.owners.group.files", Locale::EnUs) => "By the shared files",
-        ("page.owners.group.orchestrator", Locale::PtBr) => "Pelo orquestrador",
-        ("page.owners.group.orchestrator", Locale::EnUs) => "By the orchestrator",
-        ("page.owners.group.nothing", Locale::PtBr) => "Ainda sem dono",
-        ("page.owners.group.nothing", Locale::EnUs) => "Still without owner",
-        ("page.owners.owner", Locale::PtBr) => "Dono",
-        ("page.owners.owner", Locale::EnUs) => "Owner",
-        ("page.owners.from", Locale::PtBr) => "De onde veio",
-        ("page.owners.from", Locale::EnUs) => "Where it came from",
-        ("page.owners.project", Locale::PtBr) => "projeto",
-        ("page.owners.project", Locale::EnUs) => "project",
-        ("page.owners.wave", Locale::PtBr) => "onda {n}",
-        ("page.owners.wave", Locale::EnUs) => "wave {n}",
-        ("page.owners.waves", Locale::PtBr) => "ondas {waves}",
-        ("page.owners.waves", Locale::EnUs) => "waves {waves}",
-        ("page.owners.missing", Locale::PtBr) => "sem dono",
-        ("page.owners.missing", Locale::EnUs) => "no owner",
-        ("page.owners.from.tasks", Locale::PtBr) => "tarefas que nasceram do item ou citam o código dele: {tasks}",
-        ("page.owners.from.tasks", Locale::EnUs) => "tasks born from the item or citing its code: {tasks}",
-        ("page.owners.from.cited", Locale::PtBr) => "o texto do item cita a onda",
-        ("page.owners.from.cited", Locale::EnUs) => "the item's text cites the wave",
-        ("page.owners.from.files", Locale::PtBr) => "arquivos que o item cita e as tarefas da onda mexem: {files}",
-        ("page.owners.from.files", Locale::EnUs) => "files the item cites and the wave's tasks touch: {files}",
-        ("page.owners.from.orchestrator", Locale::PtBr) => "o orquestrador: {why}",
-        ("page.owners.from.orchestrator", Locale::EnUs) => "the orchestrator: {why}",
-        ("page.owners.from.nothing", Locale::PtBr) => {
-            "nenhuma regra achou dono; o orquestrador classifica este item"
-        }
-        ("page.owners.from.nothing", Locale::EnUs) => {
-            "no rule found an owner; the orchestrator classifies this item"
-        }
         ("page.meta.phase", Locale::PtBr) => "fase",
         ("page.meta.phase", Locale::EnUs) => "phase",
         ("page.meta.branch", _) => "branch",
@@ -286,6 +314,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.type.state", Locale::EnUs) => "state",
         ("page.type.publish", Locale::PtBr) => "publicação",
         ("page.type.publish", Locale::EnUs) => "publish",
+        ("page.type.copy", Locale::PtBr) => "cópia",
+        ("page.type.copy", Locale::EnUs) => "copy",
         ("page.type.work_type", Locale::PtBr) => "tipo de trabalho",
         ("page.type.work_type", Locale::EnUs) => "work type",
         ("page.type.point", Locale::PtBr) => "ponto",
@@ -400,6 +430,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.ok", Locale::EnUs) => "Succeeded",
         ("page.field.url", Locale::PtBr) => "Endereço",
         ("page.field.url", Locale::EnUs) => "Address",
+        ("page.field.template", Locale::PtBr) => "Template do Mustard",
+        ("page.field.template", Locale::EnUs) => "Mustard template",
+        ("page.field.last", Locale::PtBr) => "Último item copiado",
+        ("page.field.last", Locale::EnUs) => "Last item copied",
         ("page.field.kinds", Locale::PtBr) => "Tipos",
         ("page.field.kinds", Locale::EnUs) => "Kinds",
         ("page.field.block", Locale::PtBr) => "Grupo de lacunas",
@@ -488,6 +522,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.copy", Locale::EnUs) => "Separate copy",
         ("page.field.build_dir", Locale::PtBr) => "Pasta de compilação",
         ("page.field.build_dir", Locale::EnUs) => "Build folder",
+        ("page.field.analysis", Locale::PtBr) => "Análise antes do envio",
+        ("page.field.analysis", Locale::EnUs) => "Analysis before sending",
+        ("page.analysis.removed", Locale::PtBr) => "Tirou do pedido",
+        ("page.analysis.removed", Locale::EnUs) => "Removed from the request",
+        ("page.analysis.added", Locale::PtBr) => "Pôs no pedido",
+        ("page.analysis.added", Locale::EnUs) => "Added to the request",
         ("page.field.title", Locale::PtBr) => "Título",
         ("page.field.title", Locale::EnUs) => "Title",
         ("page.field.waves", Locale::PtBr) => "Ondas",
@@ -774,34 +814,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("page.write_failed", Locale::PtBr) => "Não consegui gravar {path}: {detail}.",
         ("page.write_failed", Locale::EnUs) => "Could not write {path}: {detail}.",
-        ("page.owners.unreadable", Locale::PtBr) => {
-            "Não consegui ler {path}. Passe em --owners um arquivo JSON com uma lista de linhas \
-             `{\"code\": \"<código>\", \"waves\": [<ondas>], \"why\": \"<motivo>\"}`, ou com \
-             `\"applies_to\": {\"files\": [\"**\"]}` no lugar de `waves` para o item do projeto. Nada foi \
-             gravado."
-        }
-        ("page.owners.unreadable", Locale::EnUs) => {
-            "Could not read {path}. Pass --owners a JSON file holding a list of lines \
-             `{\"code\": \"<item code>\", \"waves\": [<waves>], \"why\": \"<reason>\"}`, or with \
-             `\"applies_to\": {\"files\": [\"**\"]}` instead of `waves` for a project item. Nothing was \
-             written."
-        }
-        ("page.owners.bad_line", Locale::PtBr) => {
-            "A linha de {code} em {path} não serve: o código tem de ser de um item sem dono, o dono tem \
-             de ser ondas do plano em `waves` ou o projeto em `\"applies_to\": {\"files\": [\"**\"]}`, e o \
-             motivo vai em `why`. Nada foi gravado."
-        }
-        ("page.owners.bad_line", Locale::EnUs) => {
-            "The line for {code} in {path} does not fit: the code must be an item without owner, the \
-             owner must be planned waves in `waves` or the project in \
-             `\"applies_to\": {\"files\": [\"**\"]}`, and the reason goes in `why`. Nothing was written."
-        }
         _ => return None,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::Locale;
+
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
     /// idiomas. Quem muda um texto de propósito grava aqui os dois números
     /// novos que a falha mostra.
@@ -810,8 +830,22 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            321,
-            0x03be_12e4_8634_f440,
+            322,
+            0xd0a2_833c_8e8e_9d1c,
         );
+    }
+
+    /// `page.copy.new_address` sempre entra em `{url}` de `page.copy.batches`,
+    /// depois de "no endereço" (pt-BR) ou "at" (en-US): a frase montada não
+    /// pode repetir a palavra "endereço"/"address".
+    #[test]
+    fn the_new_address_phrase_does_not_double_the_word() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let batches = super::text("page.copy.batches", lang).expect("page.copy.batches");
+            let address = super::text("page.copy.new_address", lang).expect("page.copy.new_address");
+            let filled = batches.replace("{url}", address).to_lowercase();
+            assert!(!filled.contains("endereço o endereço"), "{filled}");
+            assert!(!filled.contains("address the address"), "{filled}");
+        }
     }
 }

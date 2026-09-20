@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{
     check_message, MessageRefusal, Refusal, SpecLog, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX,
 };
@@ -39,7 +40,14 @@ pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Optio
     let scope_key = if numbers.len() == 1 { "round.commit.scope.one" } else { "round.commit.scope.many" };
     let scope = translate(scope_key, lang).replace("{waves}", &numbers.join("-"));
     let kind = if committed.iter().any(|(w, _)| !w.fixes.is_empty()) { "fix" } else { "feat" };
-    let title = format!("{kind}({scope}): {first}");
+    let mut title = format!("{kind}({scope}): {first}");
+    // O escopo com todas as ondas pode passar do teto do título quando há
+    // mais de uma; nesse caso, o título fica só com o começo da primeira
+    // onda, e o corpo — com uma linha por onda — segue como está.
+    if title.chars().count() > MESSAGE_TITLE_MAX && numbers.len() > 1 {
+        let scope = translate("round.commit.scope.one", lang).replace("{waves}", &numbers[0]);
+        title = format!("{kind}({scope}): {first}");
+    }
     let body: Vec<String> = committed
         .iter()
         .map(|(w, summary)| {
@@ -205,6 +213,35 @@ pub(super) fn git_lock(root: &Path) -> Result<LockedFile, RoundRefusal> {
 /// O commit atual do checkout `root`; vazio quando o git não responde.
 pub(super) fn head(root: &Path) -> String {
     git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string()
+}
+
+/// Depois do commit da rodada, o mapa relê só os arquivos que mudaram, pela
+/// leitura por partes que a ferramenta do scan já faz sozinha: sem isso, a
+/// sugestão de skill e de arquivos parecidos, antes do envio da onda
+/// seguinte, apontaria um arquivo que este commit acabou de apagar. Nunca
+/// trava a rodada nem avisa: sem o mapa, ou sem a ferramenta, a sugestão
+/// segue com o que já tinha.
+pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
+    let model = crate::commands::scan::default_model_path(root);
+    let _ = mine(root, &model);
+}
+
+/// O mapa fica atrasado do commit atual do checkout `root`: o mapa não
+/// existe, não se entende, ou o commit que ele leu por último não é o de
+/// agora — um commit à mão ou um pull mudaram o código fora da rodada.
+/// Quando fica, chama [`refresh_map`] com o mesmo `mine`, a releitura por
+/// partes que a rodada já faz depois de cada commit dela; sem git, sem mapa
+/// ou com o mapeador falhando, segue sem travar e sem aviso novo.
+pub(crate) fn refresh_map_if_stale(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
+    let Ok(map) = mustard_core::io::project_map::read(root) else { return };
+    if map.state.head.is_empty() {
+        return;
+    }
+    let Some(now) = git_exec::run(root, &["rev-parse", "HEAD"]).out() else { return };
+    if map.state.head == now.trim() {
+        return;
+    }
+    refresh_map(root, mine);
 }
 
 /// Os arquivos da rodada separados por repositório: os do principal e, por
@@ -684,6 +721,75 @@ mod tests {
     use super::*;
     use crate::commands::flow::round::tests::*;
 
+    /// A ferramenta que grava quantas vezes foi chamada e falha sempre, como
+    /// um scan que não está instalado.
+    fn mine_counting(calls: &std::cell::Cell<usize>) -> impl Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport> + '_ {
+        move |_, _| {
+            calls.set(calls.get() + 1);
+            Err(mustard_core::platform::error::Error::check_failed("scan: not found"))
+        }
+    }
+
+    /// Sem mapa no disco, sem git no diretório e com um mapa cujo commit já
+    /// bate com o do checkout, a ferramenta do scan nunca roda por
+    /// [`refresh_map_if_stale`]; e, quando ela falha, a chamada não trava nem
+    /// propaga o erro.
+    #[test]
+    fn a_stale_map_without_what_it_needs_never_breaks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let calls = std::cell::Cell::new(0);
+
+        // Sem mapa: nada a comparar, a ferramenta não roda.
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem mapa, a ferramenta não é chamada");
+
+        // Mapa sem o commit gravado (mapa antigo, de antes deste campo): idem.
+        let model = crate::commands::scan::default_model_path(root);
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::write(&model, json!({"modules": []}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem o head gravado, a ferramenta não é chamada");
+
+        // Mapa com um commit gravado, mas fora de um repositório git: sem
+        // como comparar, a ferramenta não roda.
+        std::fs::write(&model, json!({"modules": [], "state": {"head": "abc123"}}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem git, a ferramenta não é chamada");
+
+        // Um repositório git de verdade, com o mapa já no commit atual: a
+        // ferramenta segue sem rodar.
+        std::process::Command::new("git").args(["init", "-q"]).current_dir(root).output().expect("git init");
+        for args in [["config", "user.email"], ["config", "user.name"]] {
+            std::process::Command::new("git").args(args).arg("t").current_dir(root).output().expect("git config");
+        }
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        std::process::Command::new("git").args(["add", "-A"]).current_dir(root).output().expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "semente"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+        let head = String::from_utf8_lossy(
+            &std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap().stdout,
+        )
+        .trim()
+        .to_string();
+        std::fs::write(&model, json!({"modules": [], "state": {"head": head}}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "o mapa já está no commit atual");
+
+        // O commit andou fora da rodada e a ferramenta falha: a chamada
+        // tenta reler, mas o erro não trava nem propaga.
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "fora da rodada"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 1, "o commit andou: a ferramenta é chamada, mesmo falhando");
+    }
+
     /// A mensagem do commit tem título e corpo dentro do teto e nunca traz o
     /// link da conversa, o nome do modelo, a assinatura de coautoria nem o
     /// e-mail de ninguém; o commit é recusado até o e-mail sair.
@@ -702,6 +808,75 @@ mod tests {
             let refused = check_commit_text(&title, &body).expect_err(&format!("{title} / {body}"));
             assert_eq!(refused.reason(), reason, "{title} / {body}");
         }
+    }
+
+    /// O texto do agente de onda diz, nos dois idiomas, o limite do resumo do
+    /// commit, e o limite é o que a rodada aceita: com o começo que ela põe na
+    /// frente (o tipo e o número de uma onda de dois dígitos), um resumo de 45
+    /// caracteres fecha o título em 60 e passa, e um de 46 passa de 60 e é
+    /// recusado.
+    #[test]
+    fn the_wave_agent_text_states_the_commit_summary_limit_the_round_accepts() {
+        let limit = 45;
+        for (lang, said) in [(Locale::PtBr, "até 45 caracteres"), (Locale::EnUs, "at most 45 characters")] {
+            let (_, agent) = mustard_core::agent_texts(lang)[0];
+            let line = agent.lines().find(|l| l.starts_with("- `commit`")).expect("the commit line of the wave agent");
+            assert!(line.contains(said), "{lang:?}: {line}");
+            assert!(line.contains(&MESSAGE_TITLE_MAX.to_string()), "{lang:?}: {line}");
+            let report = |summary: String| WaveReport {
+                wave: 13,
+                delivered: "A onda saiu.".into(),
+                files: vec!["src/a.rs".into()],
+                commit: Some(summary),
+                proofs: Vec::new(),
+                fixes: Vec::new(),
+                replan: None,
+            };
+            let (title, _) = commit_message(&[report("a".repeat(limit))], lang)
+                .unwrap_or_else(|_| panic!("{lang:?}: a {limit}-character summary fits"))
+                .expect("a message");
+            assert_eq!(title.chars().count(), MESSAGE_TITLE_MAX, "{lang:?}: {title}");
+            let Err(over) = commit_message(&[report("a".repeat(limit + 1))], lang) else {
+                panic!("{lang:?}: a summary over {limit} characters is refused");
+            };
+            assert_eq!(over.reason(), "commit-too-long", "{lang:?}");
+        }
+    }
+
+    /// Duas ondas no mesmo commit dão um título dentro do teto, mesmo quando
+    /// o escopo das duas juntas passaria de 60: na divisa, um resumo de 43
+    /// caracteres ainda cabe com o escopo das duas ondas, e um de 44 só cabe
+    /// porque o título cai para o começo da primeira onda só; o corpo
+    /// continua com uma linha por onda nos dois casos.
+    #[test]
+    fn a_commit_of_two_waves_keeps_the_title_limit() {
+        let report = |wave: u64, summary: String| WaveReport {
+            wave,
+            delivered: "A onda saiu.".into(),
+            files: vec![format!("src/{wave}.rs")],
+            commit: Some(summary),
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+        };
+
+        let waves = [report(1, "a".repeat(43)), report(2, "a".repeat(43))];
+        let (title, body) = commit_message(&waves, Locale::PtBr)
+            .unwrap_or_else(|_| panic!("a 43-character summary fits the joint scope of two waves"))
+            .expect("a message");
+        assert_eq!(title.chars().count(), MESSAGE_TITLE_MAX, "{title}");
+        assert!(title.starts_with("feat(ondas-1-2): "), "{title}");
+        assert_eq!(body.lines().count(), 2, "{body}");
+
+        let waves = [report(1, "a".repeat(44)), report(2, "a".repeat(44))];
+        let (title, body) = commit_message(&waves, Locale::PtBr)
+            .unwrap_or_else(|_| {
+                panic!("a 44-character summary only overflows the joint scope, not the single-wave one")
+            })
+            .expect("a message");
+        assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
+        assert!(title.starts_with("feat(onda-1): "), "{title}");
+        assert_eq!(body.lines().count(), 2, "{body}");
     }
 
     /// A mensagem do commit é conferida antes de qualquer gravação: o

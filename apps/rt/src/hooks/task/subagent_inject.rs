@@ -115,7 +115,7 @@ impl Check for SubagentInject {
                 match tool_input.as_object_mut() {
                     Some(fields) => {
                         fields.insert("prompt".to_string(), Value::String(text));
-                        Verdict::Rewrite { tool_input }
+                        Verdict::Rewrite { tool_input, note: None }
                     }
                     None => Verdict::Allow,
                 }
@@ -226,7 +226,7 @@ mod tests {
         planned(root, 1);
         approve(root);
         match dispatch(root, "MUSTARD-WAVE: x 1") {
-            Verdict::Rewrite { tool_input } => {
+            Verdict::Rewrite { tool_input, .. } => {
                 assert_eq!(tool_input["prompt"], json!(assembled(root)));
                 let prompt = tool_input["prompt"].as_str().unwrap();
                 assert!(prompt.contains("- `waves`: MSTD-WAVE-0001, MSTD-TASK-0001\n"), "{prompt}");

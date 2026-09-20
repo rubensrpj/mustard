@@ -90,6 +90,19 @@ pub(crate) struct WriteContext {
     pub(crate) config_unreadable: bool,
     /// O idioma das mensagens.
     pub(crate) lang: Locale,
+    /// Onde os testes começam numa leitura inteira que os tem dentro do
+    /// arquivo ([`test_cut_line`]); `None` numa escrita, numa leitura que já
+    /// pede um trecho, ou num arquivo sem a marca de uma linguagem conhecida.
+    pub(crate) read_cut: Option<ReadCut>,
+}
+
+/// Onde a leitura inteira de um arquivo para, antes dos testes: o caminho
+/// exatamente como a ferramenta o mandou — para o pedido reescrito continuar
+/// válido — e a linha, contada a partir de 1, em que os testes começam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReadCut {
+    pub(crate) file_path: String,
+    pub(crate) line: u64,
 }
 
 impl WriteContext {
@@ -105,6 +118,7 @@ impl WriteContext {
             bases: ctx.config.git.declared_bases(),
             config_unreadable: ctx.config.unreadable,
             lang: ctx.config.language().text_or_default(),
+            read_cut: test_cut_line(root, input, target),
         };
         if target.access != Access::Write {
             return at;
@@ -141,9 +155,41 @@ pub(crate) trait WriteRule {
     fn judge(&self, target: &WriteTarget, at: &WriteContext) -> Option<Verdict>;
 }
 
-/// As regras, na ordem em que respondem.
+/// As regras, na ordem em que respondem. A leitura cortada vem por último:
+/// um segredo, ou a spec, decide primeiro se a leitura passa.
 pub(crate) const RULES: &[&dyn WriteRule] =
-    &[&SecretRule, &SpecFileRule, &ApprovalRule, &BranchRule, &BaseRule];
+    &[&SecretRule, &SpecFileRule, &ApprovalRule, &BranchRule, &BaseRule, &ReadCutRule];
+
+/// A marca que abre o módulo de testes de dentro do arquivo de código, pela
+/// extensão do arquivo. Lugar único: uma linguagem nova entra numa linha,
+/// sem mexer em [`test_cut_line`] nem em [`ReadCutRule`]. Onde o teste mora
+/// num arquivo separado, nenhuma extensão bate, e a leitura passa inteira.
+const TEST_MARKERS: &[(&str, &str)] = &[("rs", "#[cfg(test)]")];
+
+/// A linha, contada a partir de 1, em que os testes começam — quando `input`
+/// pede a leitura INTEIRA (sem `offset` nem `limit`) de um arquivo de código
+/// do projeto cuja extensão está em [`TEST_MARKERS`] e cujo conteúdo tem a
+/// marca. `None` numa leitura que já pede um trecho, numa escrita, num
+/// arquivo fora do projeto ou sem a marca — nesses casos a leitura passa
+/// como veio.
+fn test_cut_line(root: &str, input: &HookInput, target: &WriteTarget) -> Option<ReadCut> {
+    if target.access != Access::Read || target.class != PathClass::Production {
+        return None;
+    }
+    let ti = &input.tool_input;
+    if ti.get("offset").is_some() || ti.get("limit").is_some() {
+        return None;
+    }
+    let extension = Path::new(&target.path).extension()?.to_str()?;
+    let marker = TEST_MARKERS.iter().find(|(ext, _)| *ext == extension)?.1;
+    let content = std::fs::read_to_string(Path::new(root).join(&target.path)).ok()?;
+    let before = content.lines().position(|line| line.trim_start() == marker)?;
+    if before == 0 {
+        return None;
+    }
+    let file_path = input.file_path()?;
+    Some(ReadCut { file_path, line: before as u64 + 1 })
+}
 
 impl Check for WriteGate {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
@@ -288,6 +334,22 @@ impl WriteRule for BaseRule {
         let current = at.current_branch.as_deref().filter(|branch| at.bases.contains(*branch))?;
         let reason = say("write_gate.on_base", at.lang, &[("{branch}", current)]);
         Some(Verdict::Deny { reason })
+    }
+}
+
+/// A leitura inteira de um arquivo de código com os testes dentro dele
+/// ([`test_cut_line`]) para antes deles: o agente recebe só a produção, e um
+/// aviso, nos dois idiomas, com a linha onde os testes começam e como pedir
+/// esse trecho. Uma leitura que já pede um trecho, ou um arquivo sem a marca,
+/// passa inteira — a regra corrige, nunca recusa.
+pub(crate) struct ReadCutRule;
+
+impl WriteRule for ReadCutRule {
+    fn judge(&self, _target: &WriteTarget, at: &WriteContext) -> Option<Verdict> {
+        let cut = at.read_cut.as_ref()?;
+        let tool_input = serde_json::json!({ "file_path": cut.file_path, "limit": cut.line - 1 });
+        let note = say("write_gate.read_cut", at.lang, &[("{line}", &cut.line.to_string())]);
+        Some(Verdict::Rewrite { tool_input, note: Some(note) })
     }
 }
 
@@ -558,6 +620,7 @@ mod tests {
             bases: ["dev".to_string(), "main".to_string()].into(),
             config_unreadable: false,
             lang: Locale::PtBr,
+            read_cut: None,
         };
         let warned = judge(RULES, &target, &at("feature/y"));
         assert_eq!(
@@ -591,6 +654,7 @@ mod tests {
             bases: ["dev".to_string(), "main".to_string()].into(),
             config_unreadable: false,
             lang: Locale::PtBr,
+            read_cut: None,
         };
         assert_eq!(
             judge(RULES, &target, &at(Some("minha-branch"))),
@@ -675,6 +739,63 @@ mod tests {
         for path in [".claude/spec/x/spec.ndjson", ".claude/spec/lessons.ndjson", "src/lib.rs"] {
             assert_eq!(read(&abs(root, path)), Verdict::Allow, "reading {path} passes");
         }
+    }
+
+    /// A leitura inteira de um arquivo de código com o módulo de testes
+    /// dentro dele para antes deles: o pedido reescrito pede só até a linha
+    /// anterior, e o aviso, nos dois idiomas, nomeia a linha onde os testes
+    /// começam.
+    #[test]
+    fn the_whole_read_of_a_code_file_stops_before_its_tests() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let cfg = format!(r#"{{"language":{{"text":"{}"}}}}"#, if lang == Locale::PtBr { "pt-BR" } else { "en-US" });
+            let dir = project(&cfg);
+            let root = dir.path();
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/a.rs"), "fn soma() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
+            let path = abs(root, "src/a.rs");
+            match WriteGate.evaluate(&call(root, "Read", &path, None), &ctx(root)).expect("never errors") {
+                Verdict::Rewrite { tool_input, note } => {
+                    assert_eq!(tool_input, json!({ "file_path": path, "limit": 2 }), "{lang:?}");
+                    let note = note.expect("a note names the cut line");
+                    assert!(note.contains('3'), "{lang:?}: {note}");
+                }
+                other => panic!("{lang:?}: the read is cut, got {other:?}"),
+            }
+        }
+    }
+
+    /// Uma leitura que já pede um trecho (`offset` ou `limit`) passa inteira,
+    /// mesmo quando o arquivo tem o módulo de testes dentro dele.
+    #[test]
+    fn a_read_that_already_asks_for_an_excerpt_passes_whole() {
+        let dir = project("{}");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn soma() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
+        let path = abs(root, "src/a.rs");
+        for tool_input in [json!({ "file_path": path, "offset": 1 }), json!({ "file_path": path, "limit": 10 })] {
+            let input = HookInput {
+                tool_name: Some("Read".to_string()),
+                tool_input,
+                hook_event_name: Some("PreToolUse".to_string()),
+                cwd: Some(root.to_string_lossy().into_owned()),
+                ..HookInput::default()
+            };
+            assert_eq!(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"), Verdict::Allow);
+        }
+    }
+
+    /// Um arquivo de código sem o módulo de testes dentro dele passa inteiro:
+    /// a marca da linguagem não bate em lugar nenhum do conteúdo.
+    #[test]
+    fn a_code_file_with_no_tests_inside_passes_whole() {
+        let dir = project("{}");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn soma() {}\n").unwrap();
+        let path = abs(root, "src/a.rs");
+        assert_eq!(gate(root, "Read", &path), Verdict::Allow);
     }
 
     /// Um projeto que declara `develop` e `master` no `git.flow`, num

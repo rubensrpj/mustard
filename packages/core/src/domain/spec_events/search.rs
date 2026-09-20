@@ -14,8 +14,12 @@ use super::{render_line, type_spec, SpecEvent};
 
 /// As raízes das palavras de um texto: minúsculas, cada palavra reduzida à
 /// raiz pelo redutor de português e, depois, sem acento. "apagar",
-/// "apagando" e "apagou" dão a mesma raiz. Sem repetição, na ordem em que
-/// aparecem.
+/// "apagando" e "apagou" dão a mesma raiz. A palavra funcional de português
+/// ou de inglês pula o radical: fica só minúscula e sem acento, ela mesma,
+/// porque o redutor é sempre o de português, e a raiz que ele dá para uma
+/// palavra funcional inglesa pode coincidir com a de uma palavra de conteúdo
+/// parecida em português — a de "some" não pode ficar igual à de "somar".
+/// Sem repetição, na ordem em que aparecem.
 pub(super) fn roots<'a>(pieces: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let stemmer = Stemmer::create(Algorithm::Portuguese);
     let mut seen = BTreeSet::new();
@@ -23,7 +27,10 @@ pub(super) fn roots<'a>(pieces: impl IntoIterator<Item = &'a str>) -> Vec<String
     for piece in pieces {
         let lower = piece.to_lowercase();
         for word in text::words(&lower) {
-            let root = text::fold_accents(&stemmer.stem(word));
+            let is_function_word =
+                text::FUNCTION_WORDS_PT.contains(&word) || text::FUNCTION_WORDS_EN.contains(&word);
+            let stemmed = if is_function_word { word.into() } else { stemmer.stem(word) };
+            let root = text::fold_accents(&stemmed);
             if seen.insert(root.clone()) {
                 out.push(root);
             }

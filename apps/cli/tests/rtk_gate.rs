@@ -171,6 +171,59 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
     assert_eq!(home_entries(&home), Vec::<String>::new(), "the install wrote into $HOME");
 }
 
+/// The end-to-end proof for the code-tool install: a Rust project driven
+/// through the REAL binary, with `rustup` and `claude` shimmed alongside the
+/// rest of `shim_dir`. Deleting `init::ensure_code_tools(...)` from
+/// `cli::dispatch` — the same cut `the_library_half_of_init_calls_no_environment_installer`
+/// pins by source — makes every one of these log lines vanish; unlike that
+/// structural test, this one drives the actual command that goes out.
+#[test]
+#[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
+fn the_binary_installs_the_code_tool_of_a_detected_language() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log = tmp.path().join("spawn.log");
+    let bin = shim_dir(&log, true);
+    for tool in ["rustup", "claude"] {
+        let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit 0\n", log.display());
+        let path = bin.join(tool);
+        fs::write(&path, script).expect("write shim");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        }
+    }
+    let project = fresh_repo(tmp.path());
+    fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+
+    let out = run_init(&project, &bin, &home);
+
+    assert!(
+        out.status.success(),
+        "the install must still succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let spawned = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        spawned.lines().any(|l| l.starts_with("rustup component add rust-analyzer")),
+        "the install must run the code-tool program's install command; log was:\n{spawned}"
+    );
+    assert!(
+        spawned
+            .lines()
+            .any(|l| l.starts_with("claude plugin install rust-analyzer-lsp@claude-plugins-official")),
+        "the install must install the catalog plugin; log was:\n{spawned}"
+    );
+    assert!(
+        spawned
+            .lines()
+            .any(|l| l.starts_with("claude plugin enable rust-analyzer-lsp@claude-plugins-official")),
+        "the install must enable the catalog plugin; log was:\n{spawned}"
+    );
+}
+
 /// What is in `home`, by name. The install may leave nothing there.
 fn home_entries(home: &Path) -> Vec<String> {
     fs::read_dir(home)
@@ -239,7 +292,7 @@ fn the_library_half_of_init_calls_no_environment_installer() {
         source.push_str(&fs::read_to_string(dir.join(part)).expect("the init part is readable"));
     }
 
-    for call in ["ensure_ripgrep();", "probe_rtk();"] {
+    for call in ["ensure_ripgrep();", "probe_rtk();", "ensure_code_tools("] {
         assert!(
             !source.contains(call),
             "`{call}` is back inside the library half of init. These belong to \
@@ -255,7 +308,7 @@ fn the_library_half_of_init_calls_no_environment_installer() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
     )
     .expect("cli.rs is readable");
-    for call in ["init::ensure_ripgrep();", "init::probe_rtk();"] {
+    for call in ["init::ensure_ripgrep();", "init::probe_rtk();", "init::ensure_code_tools("] {
         assert!(
             dispatch.contains(call),
             "`{call}` vanished from cli::dispatch — the terminal user lost the tooling"

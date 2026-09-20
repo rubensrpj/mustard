@@ -158,12 +158,12 @@ impl Analyzer {
         // Declarations keyed by node start byte (so they emerge in document
         // order); supertypes keyed by the cleaned declaration name so a base
         // captured in a detached node attaches to the right decl.
-        let mut decls: BTreeMap<usize, (String, String, usize)> = BTreeMap::new();
+        let mut decls: BTreeMap<usize, (String, String, usize, usize)> = BTreeMap::new();
         let mut supers_by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
 
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
-            let mut def: Option<(usize, &str, usize)> = None;
+            let mut def: Option<(usize, &str, usize, usize)> = None;
             let mut name_text: Option<String> = None;
             let mut here_supers: Vec<String> = Vec::new();
 
@@ -198,14 +198,19 @@ impl Analyzer {
                             }
                     }
                     CapKind::Def(kind) => {
-                        def = Some((node.start_byte(), kind.as_str(), node.start_position().row + 1));
+                        def = Some((
+                            node.start_byte(),
+                            kind.as_str(),
+                            node.start_position().row + 1,
+                            node.end_position().row + 1,
+                        ));
                     }
                     CapKind::Ignore => {}
                 }
             }
 
-            if let (Some((sb, kind, line)), Some(name)) = (def, &name_text) {
-                decls.entry(sb).or_insert_with(|| (kind.to_string(), name.clone(), line));
+            if let (Some((sb, kind, line, end_line)), Some(name)) = (def, &name_text) {
+                decls.entry(sb).or_insert_with(|| (kind.to_string(), name.clone(), line, end_line));
             }
             if let Some(name) = &name_text
                 && !here_supers.is_empty() {
@@ -219,13 +224,13 @@ impl Analyzer {
 
         out.declarations = decls
             .into_values()
-            .map(|(kind, name, line)| {
+            .map(|(kind, name, line, end_line)| {
                 let key = simple_type_name(&name).unwrap_or_else(|| name.clone());
                 let supertypes = supers_by_name
                     .get(&key)
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
-                Decl { kind, name, line, supertypes }
+                Decl { kind, name, line, end_line, supertypes }
             })
             .collect();
 

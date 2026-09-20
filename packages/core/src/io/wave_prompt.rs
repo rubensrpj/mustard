@@ -1,6 +1,7 @@
 //! O pedido de cada onda, montado do disco: o arquivo de eventos da spec, o
-//! banco de lições, os arquivos das skills que as tarefas nomeiam e os
-//! comandos de compilar e testar que o projeto declara.
+//! banco de lições, os arquivos das skills que as tarefas nomeiam, os
+//! comandos de compilar e testar que o projeto declara e o mapa do projeto,
+//! que diz se ele tem uma parte Rust.
 //!
 //! A regra de escrever o pedido mora em `domain::wave_prompt`, sem disco;
 //! aqui ficam só as leituras. Os dois leitores do pedido — o passo do plano,
@@ -20,10 +21,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::domain::lessons::{defects_in_scope, in_scope, related_to_tasks, Scope};
-use crate::domain::project_map::{check_skill, file_history, MapRefusal, ProjectMap};
-use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
-use crate::domain::wave_prompt::{self, wave_files, Execution, Material, Skill, WaveCopy};
+use crate::domain::lessons::{in_scope, related_to_tasks, Scope};
+use crate::domain::project_map::{check_skill, file_history, has_rust_part, MapRefusal, ProjectMap};
+use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use crate::domain::wave_prompt::{self, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
 
 /// O pedido de uma onda, como o disco o entrega.
@@ -34,9 +35,6 @@ pub struct WavePrompt {
     /// O texto do pedido, sempre: a página mostra mesmo o pedido recusado,
     /// que é justamente o que precisa ser visto antes da aprovação.
     pub text: String,
-    /// O pedido do revisor da onda: a mesma lista de itens e os critérios que
-    /// ele confere, mais os defeitos já vistos nos arquivos da onda.
-    pub review: String,
     /// Quantas linhas ele tem.
     pub lines: usize,
     /// A recusa do teto de linhas, quando o pedido passa dele.
@@ -56,25 +54,56 @@ pub struct Flight {
     /// A cópia de cada onda que sai agora, que a rodada criou antes de gravar
     /// o envio. A cópia de uma onda que já saiu vem do envio gravado dela.
     pub copies: BTreeMap<u64, WaveCopy>,
+    /// A escolha do orquestrador antes do envio de cada onda que sai agora.
+    /// A de uma onda que já saiu vem do envio gravado dela.
+    pub choices: BTreeMap<u64, Choice>,
 }
 
 /// Os pedidos de todas as ondas do plano, em ordem de número, com as ondas
 /// que estão fora em `flight`.
 #[must_use]
 pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Flight) -> Vec<WavePrompt> {
-    let bank = crate::ClaudePaths::for_project(root)
-        .ok()
-        .and_then(|paths| crate::io::lessons::read(&paths.lessons_path()).ok().flatten());
+    let bank = lesson_bank(root);
     let map = crate::io::project_map::read(root).ok();
     let commands = crate::ProjectConfig::load(root).commands();
     let base = Execution {
         build: commands.build,
         test: commands.test,
         root: shown(root),
+        rust: has_rust_part(map.as_ref()),
         ..Execution::default()
     };
     let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, flight, lang };
     log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
+}
+
+/// O banco de lições do projeto `root`; `None` quando ele não existe ou não
+/// se lê.
+#[must_use]
+pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
+    let paths = crate::ClaudePaths::for_project(root).ok()?;
+    crate::io::lessons::read(&paths.lessons_path()).ok().flatten()
+}
+
+/// As lições do banco que casam com a onda `wave`: as que valem para os
+/// arquivos das tarefas dela ou para as skills que elas nomeiam e, de cada
+/// classe, só as mais ligadas ao texto das tarefas. Uma pasta com centenas
+/// delas passaria do teto de linhas, e a lição sem palavra em comum com a
+/// tarefa só ocupa o agente. São as que a rodada mostra ao orquestrador antes
+/// do envio, e as que o pedido leva, menos as que a escolha dele tirou.
+#[must_use]
+pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a SpecEvent> {
+    let files = wave_files(log, wave);
+    let mut found: Vec<&SpecEvent> = Vec::new();
+    for skill in std::iter::once(None).chain(skills_named(log, wave).into_iter().map(Some)) {
+        let scope = Scope { files: files.clone(), subproject: None, skill };
+        for lesson in in_scope(bank, &scope) {
+            if !found.iter().any(|seen| seen.id == lesson.id) {
+                found.push(lesson);
+            }
+        }
+    }
+    related_to_tasks(found, &tasks_text(log, wave))
 }
 
 /// A pasta da cópia separada da onda `wave` da spec `spec`, dentro das cópias
@@ -94,28 +123,55 @@ pub fn final_copy_path(root: &Path, spec: &str) -> PathBuf {
     crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(format!("mustard-{spec}-final-review"))
 }
 
-/// O pedido da revisão final do conjunto da spec `spec`: as ondas do plano
-/// com as tarefas, a entrega mais nova de cada onda, os critérios e a cópia
-/// do revisor, no commit mais novo da spec e na pasta de compilação que a
-/// última onda enviada usou.
+/// O pedido do agente de teste dedicado da spec `spec`, que o fechamento pede
+/// a toda obra, mesmo a de uma onda só, no lugar da revisão de cada onda: as
+/// ondas do plano com as tarefas, as emendas gravadas para elas, a entrega
+/// mais nova de cada onda, os critérios, os commits que já entraram na branch
+/// e a cópia do revisor, no commit mais novo da spec e na pasta de compilação
+/// que a última onda enviada usou.
+///
+/// Uma onda cuja última revisão reprovou e que já entregou o conserto (o
+/// fechamento só chega aqui depois disso: veja
+/// [`crate::domain::spec_events::SpecLog::last_rejected`]) restringe as
+/// ondas, as emendas e as entregas a ela: o agente confere só o conserto, sem
+/// reabrir a obra inteira.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> String {
     let planned = log.planned_waves();
+    let fixing: BTreeSet<u64> = log.last_rejected().into_keys().filter(|n| planned.contains(n)).collect();
+    let scope: &BTreeSet<u64> = if fixing.is_empty() { &planned } else { &fixing };
     let visible = log.block(BlockQuery::Block(Block::Waves));
     let block: Vec<&SpecEvent> = visible
         .iter()
         .copied()
-        .filter(|e| matches!(e.event_type.as_str(), "wave" | "task") && e.wave().is_some_and(|n| planned.contains(&n)))
+        .filter(|e| matches!(e.event_type.as_str(), "wave" | "task") && e.wave().is_some_and(|n| scope.contains(&n)))
         .collect();
     let newest = log.last_by_wave("delivered");
     let own_delivered: Vec<&SpecEvent> = visible
         .iter()
         .copied()
         .filter(|e| e.event_type == "delivered")
-        .filter(|e| e.wave().filter(|n| planned.contains(n)).and_then(|n| newest.get(&n)) == Some(&e.id))
+        .filter(|e| e.wave().filter(|n| scope.contains(n)).and_then(|n| newest.get(&n)) == Some(&e.id))
         .collect();
     let criteria: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").collect();
+    let mut agreed: Vec<&SpecEvent> = Vec::new();
+    for wave in scope {
+        for item in wave_prompt::agreed_for(log, *wave) {
+            if !agreed.iter().any(|seen| seen.id == item.id) {
+                agreed.push(item);
+            }
+        }
+    }
+    agreed.sort_by_key(|e| e.id);
+    let changes: Vec<&SpecEvent> =
+        log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit").collect();
+    let fix: Vec<&SpecEvent> = if fixing.is_empty() {
+        Vec::new()
+    } else {
+        let verdicts = log.verdicts_by_wave();
+        fixing.iter().filter_map(|n| verdicts.get(n).and_then(|v| v.last().copied())).collect()
+    };
     let commit = log
         .block(BlockQuery::Block(Block::Progress))
         .into_iter()
@@ -132,13 +188,17 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
             path: shown(&final_copy_path(root, spec)),
             build_dir: last_sent.and_then(|n| recorded_copy(log, n)).and_then(|copy| copy.build_dir),
         },
+        rust: has_rust_part(crate::io::project_map::read(root).ok().as_ref()),
         ..Execution::default()
     };
     let material = Material {
         spec: spec.to_string(),
         block,
         criteria,
+        agreed,
+        fix,
         own_delivered,
+        changes,
         execution,
         codes: log.codes(),
         ..Material::default()
@@ -155,6 +215,11 @@ pub fn recorded_copy(log: &SpecLog, wave: u64) -> Option<WaveCopy> {
     Some(WaveCopy { path, build_dir: sent.str_field("build_dir").map(str::to_string) })
 }
 
+/// O mapa do projeto marca alguma parte dele como `cargo`? Só então os
+/// pedidos mandam compilar na pasta de compilação da cópia, com o nome do
+/// Cargo. Sem mapa, o Mustard não sabe que o projeto é Rust, e a frase fica
+/// fora; a pasta continua escolhida, porque é ela a vaga das ondas que rodam
+/// juntas.
 /// Um caminho como o pedido e o envio gravado o mostram: sempre com barras
 /// normais, que o terminal e o controle de versão aceitam nos três sistemas.
 #[must_use]
@@ -177,7 +242,10 @@ struct Context<'a> {
 
 fn one(context: &Context, wave: u64) -> WavePrompt {
     let Context { root, spec, log, bank, map, lang, .. } = *context;
-    let read = log.step(&Step::Dispatch { wave });
+    // O que a montagem escolhe, com a escolha do orquestrador antes do envio:
+    // a que a rodada traz agora ou a gravada no envio da onda.
+    let fresh = context.flight.choices.get(&wave);
+    let read = wave_prompt::dispatch_items(log, wave, fresh);
     let of_type = |name: &str| -> Vec<&SpecEvent> {
         read.iter().copied().filter(|e| e.event_type == name).collect()
     };
@@ -215,36 +283,57 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         .collect();
 
     let files = wave_files(log, wave);
-    let named = skills_named(log, wave);
-    // Das lições que valem para a onda entram, de cada classe, só as mais
-    // ligadas ao texto das tarefas: uma pasta com centenas delas passaria do
-    // teto de linhas, e a lição sem palavra em comum com a tarefa só ocupa o
-    // agente. O pedido da revisão segue a mesma conta.
-    let tasks = tasks_text(log, wave);
-    let lessons = bank
-        .map(|bank| {
-            let mut found: Vec<&SpecEvent> = Vec::new();
-            for skill in std::iter::once(None).chain(named.iter().map(|s| Some(s.clone()))) {
-                let scope = Scope { files: files.clone(), subproject: None, skill };
-                for lesson in in_scope(bank, &scope) {
-                    if !found.iter().any(|seen| seen.id == lesson.id) {
-                        found.push(lesson);
-                    }
-                }
-            }
-            related_to_tasks(found, &tasks)
+    let choice = wave_prompt::choice_for(log, wave, fresh);
+    // As skills que as tarefas nomeiam de saída e as que a escolha antes do
+    // envio confirmou, juntas, sem repetir.
+    let mut named = skills_named(log, wave);
+    for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).flat_map(|t| t.skills.iter()) {
+        if !named.contains(chosen) {
+            named.push(chosen.clone());
+        }
+    }
+    named.sort();
+    // Os arquivos de leitura de cada tarefa: os que ela já declara em
+    // `must_read` — obrigatórios, sem passar pela escolha do orquestrador,
+    // como os itens que a onda já faz — e os que a escolha antes do envio
+    // confirmou. Um caminho que não existe no projeto (a parte antes do `#`,
+    // quando ele aponta uma função) fica de fora; a tarefa sem nenhum arquivo
+    // não entra.
+    let codes = log.codes();
+    let mut task_reads: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    for task in of_type("task") {
+        let must_read = task
+            .fields
+            .get("must_read")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|file| cited_exists(root, file));
+        task_reads.entry(task.id).or_default().extend(must_read.map(str::to_string));
+    }
+    for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).filter(|t| !t.files.is_empty()) {
+        task_reads.entry(chosen.task).or_default().extend(chosen.files.iter().cloned());
+    }
+    let task_reads: Vec<(String, Vec<String>)> = task_reads
+        .into_iter()
+        .filter(|(_, files)| !files.is_empty())
+        .map(|(task, mut files)| {
+            files.sort();
+            files.dedup();
+            let files = files.into_iter().map(|file| with_current_lines(map, file)).collect();
+            (codes.get(&task).cloned().unwrap_or_else(|| task.to_string()), files)
         })
-        .unwrap_or_default();
-
-    // O revisor recebe os defeitos já vistos nestes arquivos, que o agente da
-    // onda não recebe: é olhando o erro que já aconteceu ali que ele começa.
-    // Só os ligados às tarefas, como no pedido da onda.
-    let defects = bank
-        .map(|bank| {
-            let scope = Scope { files: files.clone(), subproject: None, skill: None };
-            related_to_tasks(defects_in_scope(bank, &scope), &tasks)
-        })
-        .unwrap_or_default();
+        .collect();
+    // As lições que casam com a onda, menos as que a escolha do orquestrador
+    // tirou. O pedido da revisão leva as mesmas.
+    let lessons: Vec<&SpecEvent> = bank
+        .map(|bank| wave_lessons(bank, log, wave))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|lesson| !choice.as_ref().is_some_and(|choice| choice.removes_lesson(lesson.id)))
+        .collect();
 
     let mut skills = Vec::new();
     let mut bad_skills = Vec::new();
@@ -273,20 +362,21 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         specification,
         agreed,
         delivered,
-        fix: wave_prompt::fix_lines(log, wave),
+        // A linha do conserto que a análise tirou do pedido sai também daqui.
+        fix: wave_prompt::fix_lines(log, wave).into_iter().filter(|line| read.iter().any(|e| e.id == line.id)).collect(),
         own_delivered,
         execution: execution(context, wave),
         lessons,
-        defects,
         skills,
-        codes: log.codes(),
+        task_reads,
+        changes: Vec::new(),
+        codes,
     };
     let text = wave_prompt::write(&material, lang);
-    let review = wave_prompt::write_review(&material, lang);
     let lines = wave_prompt::count_lines(&text);
     let too_long =
         (lines > wave_prompt::MAX_LINES).then(|| wave_prompt::too_long(&material, lines, lang));
-    WavePrompt { wave, text, review, lines, too_long, bad_skills, stale_skills }
+    WavePrompt { wave, text, lines, too_long, bad_skills, stale_skills }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -390,14 +480,46 @@ fn when_to_use(text: &str) -> String {
     front.description.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Um caminho citado pela skill existe? A skill pode citar só o fim do
-/// caminho, então a busca é pelo que o projeto tem.
+/// Um caminho citado (pela skill, ou pela leitura obrigatória de uma tarefa)
+/// existe? A conferência olha só a parte antes do `#`: a leitura obrigatória
+/// aceita `caminho#função`, e a função não é um arquivo. Pode citar só o fim
+/// do caminho, então a busca é pelo que o projeto tem.
 fn cited_exists(root: &Path, cited: &str) -> bool {
+    let cited = cited.split('#').next().unwrap_or(cited);
     if root.join(cited).exists() {
         return true;
     }
     crate::io::project_map::read(root)
         .is_ok_and(|map| map.modules.iter().any(|m| m.path.ends_with(cited)))
+}
+
+/// Um arquivo de leitura obrigatória `caminho#função`, com as linhas atuais
+/// da declaração anexadas ao fim (`@início-fim`, uma faixa por trecho,
+/// separadas por vírgula, para o nome que se repete no arquivo), achadas no
+/// mapa do projeto pelo caminho do módulo e pelo nome da declaração. Sem
+/// mapa, sem a função nele ou sem a linha final dela, o arquivo volta sem
+/// mudança: [`wave_prompt::WavePrompt::text`] então só manda ler a função
+/// pelo nome, como antes. Um caminho sozinho (sem `#`) também volta sem
+/// mudança.
+fn with_current_lines(map: Option<&ProjectMap>, file: String) -> String {
+    let Some((path, name)) = file.split_once('#') else { return file };
+    if path.is_empty() || name.is_empty() {
+        return file;
+    }
+    let Some(ranges) = decl_lines(map, path, name) else { return file };
+    let lines = ranges.iter().map(|(start, end)| format!("{start}-{end}")).collect::<Vec<_>>().join(", ");
+    format!("{file}@{lines}")
+}
+
+/// As faixas de linha (começo, fim) de cada declaração de nome `name` no
+/// módulo `path` — mais de uma quando o nome se repete no arquivo. `None`
+/// quando o mapa não tem o módulo, ou quando nenhuma ocorrência tem a linha
+/// final resolvida.
+fn decl_lines(map: Option<&ProjectMap>, path: &str, name: &str) -> Option<Vec<(u64, u64)>> {
+    let module = map?.modules.iter().find(|m| m.path == path || m.path.ends_with(path))?;
+    let ranges: Vec<(u64, u64)> =
+        module.declarations.iter().filter(|d| d.name == name && d.end_line > 0).map(|d| (d.line, d.end_line)).collect();
+    (!ranges.is_empty()).then_some(ranges)
 }
 
 /// Algum exemplo que a skill usou mudou no git depois de ela ter sido
@@ -461,6 +583,13 @@ mod tests {
         let dir = root.join(subproject).join(".claude").join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), text).unwrap();
+    }
+
+    /// O mapa de teste, gravado como o scan o grava: cria a pasta `.claude`
+    /// antes de escrever o arquivo do mapa.
+    fn write_map(root: &Path, model: &Value) {
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(crate::io::project_map::model_path(root), model.to_string()).unwrap();
     }
 
     /// A skill que a tarefa nomeia entra no pedido pelo caminho do arquivo e
@@ -564,14 +693,145 @@ mod tests {
         assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
     }
 
-    /// O pedido de uma onda e o da revisão dela, montados como a rodada os
-    /// monta — com a cópia que ela criou para a onda —, listam só os códigos:
-    /// cada parte traz uma linha por bloco da spec, com os códigos em
-    /// sequência (os da onda na ordem de execução que ela declara). O comando
-    /// de leitura aparece uma vez só, no exemplo, com o caminho do
-    /// repositório principal, e nenhum item repete o comando nem o código.
+    /// A leitura obrigatória de uma tarefa que aponta uma função
+    /// (`caminho#função`) manda ler só aquela função, não o arquivo inteiro;
+    /// e as regras de execução do pedido mandam ler por trecho, rodar só os
+    /// testes do que mudou e a suíte inteira uma vez no fim, em primeiro
+    /// plano.
     #[test]
-    fn the_wave_and_review_requests_list_only_the_codes_per_block_with_one_example() {
+    fn the_wave_request_asks_to_read_by_excerpt() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "fn soma() {}\n").unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["apps/rt/src/a.rs#soma"]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(built[0].text.contains("leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
+        assert!(!built[0].text.contains("`apps/rt/src/a.rs#soma`"), "{}", built[0].text);
+        for phrase in ["Leia por trecho", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
+            assert!(built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
+        }
+    }
+
+    /// A leitura obrigatória de uma tarefa que aponta uma função
+    /// (`caminho#função`) que o mapa do projeto conhece manda ler só as
+    /// linhas atuais dela, do começo ao fim — sem número que envelhece no
+    /// plano. Depois de um commit que desloca a função (linhas somadas
+    /// acima dela, entre uma montagem e a seguinte), o pedido novo traz as
+    /// linhas novas, lidas de novo do mapa a cada montagem.
+    #[test]
+    fn the_wave_request_reads_the_current_lines_of_each_function() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "fn antes() {}\n\nfn soma() {\n    1 + 1;\n}\n").unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["apps/rt/src/a.rs#soma"]})),
+        ]);
+        let write_model = |line: u64, end_line: u64| {
+            let model = json!({
+                "modules": [{
+                    "path": "apps/rt/src/a.rs",
+                    "declarations": [{"kind": "function", "name": "soma", "line": line, "end_line": end_line}],
+                }]
+            });
+            write_map(root, &model);
+        };
+
+        write_model(3, 5);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(
+            built[0].text.contains("leia só as linhas 3-5 de `soma` em `apps/rt/src/a.rs`"),
+            "{}",
+            built[0].text
+        );
+        assert!(
+            !built[0].text.contains("leia só `soma` em `apps/rt/src/a.rs`"),
+            "o texto sem linha não deve sobrar: {}",
+            built[0].text
+        );
+
+        // Um commit soma dez linhas antes da função: ela se desloca, e o
+        // mapa gravou as posições novas. O pedido seguinte traz as linhas
+        // novas, lidas de novo do disco — não as da montagem anterior.
+        write_model(13, 15);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(
+            built[0].text.contains("leia só as linhas 13-15 de `soma` em `apps/rt/src/a.rs`"),
+            "{}",
+            built[0].text
+        );
+        assert!(!built[0].text.contains("3-5"), "{}", built[0].text);
+    }
+
+    /// A leitura obrigatória de uma tarefa nunca chama de função uma
+    /// declaração que não é — uma estrutura ou uma constante ganham a mesma
+    /// frase genérica que uma função, em português e em inglês.
+    #[test]
+    fn the_request_never_calls_a_declaration_a_function() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "struct Coisa;\n").unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Ajustar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["apps/rt/src/a.rs#Coisa"]})),
+        ]);
+        let write_model = || {
+            let model = json!({
+                "modules": [{
+                    "path": "apps/rt/src/a.rs",
+                    "declarations": [{"kind": "struct", "name": "Coisa", "line": 1, "end_line": 1}],
+                }]
+            });
+            write_map(root, &model);
+        };
+        write_model();
+
+        let pt = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let pt_line = pt[0].text.lines().find(|l| l.contains("Coisa")).unwrap_or_default();
+        assert!(pt_line.ends_with("leia só as linhas 1-1 de `Coisa` em `apps/rt/src/a.rs`"), "{pt_line}");
+        assert!(!pt_line.contains("função"), "{pt_line}");
+
+        let en = prompts(root, "teste", &log, Locale::EnUs, &Flight::default());
+        let en_line = en[0].text.lines().find(|l| l.contains("Coisa")).unwrap_or_default();
+        assert!(en_line.ends_with("read only lines 1-1 of `Coisa` in `apps/rt/src/a.rs`"), "{en_line}");
+        assert!(!en_line.contains("function"), "{en_line}");
+    }
+
+    /// A leitura obrigatória de uma tarefa que aponta um arquivo que não
+    /// existe no projeto fica de fora do pedido — a conferência olha só a
+    /// parte antes do `#`, então um caminho de verdade seguido de uma função
+    /// inventada continua entrando.
+    #[test]
+    fn a_missing_must_read_path_is_left_out_of_the_request() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["apps/rt/src/nao-existe.rs"]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let part = crate::platform::i18n::translate("prompt.part.task_reads", Locale::PtBr);
+        assert!(!built[0].text.contains(part), "{}", built[0].text);
+    }
+
+    /// O pedido de uma onda, montado como a rodada o monta — com a cópia que
+    /// ela criou para ela —, lista só os códigos: cada parte traz uma linha
+    /// por bloco da spec, com os códigos em sequência (os da onda na ordem de
+    /// execução que ela declara). O comando de leitura aparece uma vez só, no
+    /// exemplo, com o caminho do repositório principal, e nenhum item repete
+    /// o comando nem o código.
+    #[test]
+    fn the_wave_request_lists_only_the_codes_per_block_with_one_example() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let everywhere = json!({"files": ["**"]});
@@ -588,7 +848,7 @@ mod tests {
             ("delivered", json!({"wave": 1, "text": "A lista saiu.", "files": ["src/a.rs"]})),
         ]);
         let copy = WaveCopy { path: "/c/um".into(), build_dir: Some("/t/a".into()) };
-        let flight = Flight { running: [1].into(), copies: [(1, copy)].into() };
+        let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
         let example = part("prompt.read")
@@ -596,7 +856,7 @@ mod tests {
             .replace("{spec}", "teste");
         let command = format!("`mustard-rt run read <bloco> --root {} --spec teste --term <código>`", shown(root));
         assert!(example.contains(&command), "{example}");
-        let (wave, review) = (&built[0].text, &built[0].review);
+        let wave = &built[0].text;
 
         let waves = ["`waves`: MSTD-TASK-0002, MSTD-TASK-0001, MSTD-WAVE-0001"];
         let criteria = ["`criteria`: MSTD-CRIT-0001"];
@@ -604,50 +864,14 @@ mod tests {
         assert_eq!(section_lines(wave, part("prompt.part.agreed")), ["`agreed`: MSTD-DEC-0001, MSTD-RULE-0001"], "{wave}");
         assert_eq!(section_lines(wave, part("prompt.part.wave")), waves, "{wave}");
         assert_eq!(section_lines(wave, part("prompt.part.criteria")), criteria, "{wave}");
-        assert_eq!(section_lines(review, part("prompt.part.wave")), waves, "{review}");
-        assert_eq!(section_lines(review, part("prompt.part.own_delivered")), ["`waves`: MSTD-DELIV-0001"], "{review}");
-        assert_eq!(section_lines(review, part("prompt.part.criteria")), criteria, "{review}");
 
-        for text in [wave, review] {
-            assert!(text.contains(&example), "{text}");
-            for once in ["mustard-rt run read", "--term", "--root", "MSTD-TASK-0001", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
-                assert_eq!(text.matches(once).count(), 1, "{once}: {text}");
-            }
-            for copied in ["O objetivo da obra.", "Montar a lista", "a lista sai curta", "A lista saiu."] {
-                assert!(!text.contains(copied), "{copied} foi copiado: {text}");
-            }
+        assert!(wave.contains(&example), "{wave}");
+        for once in ["mustard-rt run read", "--term", "--root", "MSTD-TASK-0001", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
+            assert_eq!(wave.matches(once).count(), 1, "{once}: {wave}");
         }
-    }
-
-    /// O pedido do revisor de uma onda leva os defeitos já vistos nos
-    /// arquivos dela; o pedido do agente da onda não os leva.
-    #[test]
-    fn the_reviewer_of_a_wave_gets_the_defects_already_seen_in_those_files() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let bank = root.join(".claude").join("spec");
-        std::fs::create_dir_all(&bank).unwrap();
-        std::fs::write(
-            bank.join("lessons.ndjson"),
-            [
-                bank_line(1, "defect", "Apagar a pasta perde trabalho.", "apps/rt/src/**"),
-                bank_line(2, "project_rule", "O comentário vai em português.", "apps/rt/src/**"),
-            ]
-            .concat(),
-        )
-        .unwrap();
-        let log = log_of(&[
-            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
-            ("task", json!({"wave": 1, "text": "Apagar a pasta velha e escrever o comentário.", "files": [{"path": "apps/rt/src/a.rs"}]})),
-        ]);
-
-        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let heading = crate::platform::i18n::translate("prompt.part.defects", Locale::PtBr);
-        let (before, defects) = built[0].review.split_once(heading).expect("a seção dos defeitos");
-        assert!(defects.contains("Apagar a pasta perde trabalho."), "{defects}");
-        assert!(!defects.contains("O comentário vai em português."), "só defeito entra: {defects}");
-        assert!(!before.contains("Apagar a pasta"), "{before}");
-        assert!(!built[0].text.contains(heading), "o pedido da onda não tem a seção: {}", built[0].text);
+        for copied in ["O objetivo da obra.", "Montar a lista", "a lista sai curta", "A lista saiu."] {
+            assert!(!wave.contains(copied), "{copied} foi copiado: {wave}");
+        }
     }
 
     /// As linhas de uma seção do pedido, sem o "- " do começo; vazio quando
@@ -659,12 +883,11 @@ mod tests {
     }
 
     /// Um banco com seis defeitos ligados às tarefas, dois sem palavra em
-    /// comum com elas e uma preferência também sem: o pedido da onda e o da
-    /// revisão levam só os cinco defeitos mais ligados. O sexto, que divide
-    /// uma palavra só, perde o lugar; os sem palavra em comum ficam fora dos
-    /// dois pedidos.
+    /// comum com elas e uma preferência também sem: o pedido da onda leva só
+    /// os cinco defeitos mais ligados. O sexto, que divide uma palavra só,
+    /// perde o lugar; os sem palavra em comum ficam fora do pedido.
     #[test]
-    fn the_wave_and_review_requests_carry_only_the_lessons_tied_to_the_tasks() {
+    fn the_wave_request_carries_only_the_lessons_tied_to_the_tasks() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let folder = "apps/rt/src/**";
@@ -698,10 +921,8 @@ mod tests {
         let expected: Vec<&str> = strong.iter().map(String::as_str).collect();
         let lessons = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.lessons", Locale::PtBr));
         assert_eq!(lessons, expected, "o pedido da onda: {}", built[0].text);
-        let defects = section_lines(&built[0].review, crate::platform::i18n::translate("prompt.part.defects", Locale::PtBr));
-        assert_eq!(defects, expected, "o pedido da revisão: {}", built[0].review);
         for out in [weak, loose[0], loose[1], "Resposta curta."] {
-            assert!(!built[0].text.contains(out) && !built[0].review.contains(out), "{out} ficou de fora dos dois pedidos");
+            assert!(!built[0].text.contains(out), "{out} ficou de fora do pedido");
         }
     }
 
@@ -757,13 +978,10 @@ mod tests {
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
         let lessons = section_lines(&built[0].text, part("prompt.part.lessons"));
-        let defects = section_lines(&built[0].review, part("prompt.part.defects"));
-        for shown in [&lessons, &defects] {
-            assert_eq!(shown.len(), 1, "{shown:?}");
-            assert!(shown[0].starts_with("O teste tem de falhar"), "{shown:?}");
-        }
+        assert_eq!(lessons.len(), 1, "{lessons:?}");
+        assert!(lessons[0].starts_with("O teste tem de falhar"), "{lessons:?}");
         for out in ["O pedido da onda vai INTEIRO", "Subagente nunca roda", "Quem tira uma proteção"] {
-            assert!(!built[0].text.contains(out) && !built[0].review.contains(out), "{out} fica fora dos dois pedidos");
+            assert!(!built[0].text.contains(out), "{out} fica fora do pedido");
         }
     }
 
@@ -830,18 +1048,15 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             write_skill(root, "apps/rt", "somar", "# O molde\n\nUm passo por linha.\n");
-            std::fs::create_dir_all(root.join(".claude")).unwrap();
-            std::fs::write(
-                crate::io::project_map::model_path(root),
-                json!({
+            write_map(
+                root,
+                &json!({
                     "history": {
                         "paths": ["apps/rt/src/exemplo.rs"],
                         "commits": [{"id": "abc1234", "at": moved, "changed": [0]}],
                     }
-                })
-                .to_string(),
-            )
-            .unwrap();
+                }),
+            );
             let mut events = vec![
                 ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
                 (
@@ -865,13 +1080,13 @@ mod tests {
 
     /// O pedido da onda que sai agora traz a cópia que a rodada escolheu; o da
     /// onda em andamento, a cópia gravada no envio dela, e o da onda que não
-    /// está fora não fala de cópia. O pedido do revisor traz a cópia dele,
-    /// dentro das cópias do checkout, e a pasta de compilação que a cópia da
-    /// onda usou.
+    /// está fora não fala de cópia. O projeto é Rust: o mapa marca a raiz
+    /// como `cargo`.
     #[test]
-    fn the_request_carries_the_copy_the_round_chose_or_recorded_and_the_review_its_build_folder() {
+    fn the_request_carries_the_copy_the_round_chose_or_recorded() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        write_map(root, &json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo"}]}));
         let log = log_of(&[
             ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
@@ -884,23 +1099,64 @@ mod tests {
             ),
         ]);
         let chosen = WaveCopy { path: "/c/dois".into(), build_dir: Some("/t/b".into()) };
-        let flight = Flight { running: [1, 2].into(), copies: [(2, chosen)].into() };
+        let flight = Flight { running: [1, 2].into(), copies: [(2, chosen)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
         let rule = |key: &str, from: &str, to: &str| crate::platform::i18n::translate(key, Locale::PtBr).replace(from, to);
         assert!(built[0].text.contains(&rule("prompt.execution.build_dir", "{dir}", "/t/a")), "{}", built[0].text);
         assert!(built[0].text.contains("`/c/um`"), "{}", built[0].text);
         assert!(built[1].text.contains("`/c/dois`") && built[1].text.contains("CARGO_TARGET_DIR=/t/b"), "{}", built[1].text);
-
-        let review = shown(&copy_path(root, "teste", 1, true));
-        assert!(review.ends_with("/.claude/worktrees/mustard-teste-1-review"), "{review}");
-        assert!(built[0].review.contains(&format!("--detach {review} HEAD`")), "{}", built[0].review);
-        assert!(built[0].review.contains("CARGO_TARGET_DIR=/t/a`"), "{}", built[0].review);
-        assert!(built[0].review.contains(&format!("--root {} --spec teste", shown(root))), "{}", built[0].review);
         assert!(built[0].text.contains(&format!("--root {} --spec teste", shown(root))), "{}", built[0].text);
 
         let still = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         assert!(!still[0].text.contains("/c/um") && !still[0].text.contains("CARGO_TARGET_DIR"), "{}", still[0].text);
         assert!(!still[0].text.contains("--root"), "sem cópia, o agente lê a spec de onde está: {}", still[0].text);
+    }
+
+    /// Os pedidos que a rodada monta — o da onda e o da revisão final — num
+    /// projeto sem mapa, num só com parte Node, num com
+    /// uma parte Node e uma Rust e num só Rust. A onda tem a cópia e a pasta
+    /// de compilação que a rodada escolheu nos quatro, mas só os dois com
+    /// parte `cargo` no mapa trazem a frase da pasta e citam o Cargo e a
+    /// pasta `target/copias`; a cópia aparece em todos.
+    #[test]
+    fn the_build_folder_rule_goes_only_to_rust_projects() {
+        let node = json!({"name": "web", "dir": "web", "kind": "npm", "code_files": 3});
+        let rust = json!({"name": "api", "dir": "api", "kind": "cargo", "code_files": 3});
+        for (map, cites) in [
+            (None, false),
+            (Some(json!([node])), false),
+            (Some(json!([node, rust])), true),
+            (Some(json!([rust])), true),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            if let Some(projects) = &map {
+                write_map(root, &json!({"projects": projects}));
+            }
+            let folder = shown(&root.join("target").join("copias").join("a"));
+            let copy = shown(&copy_path(root, "teste", 1, false));
+            let log = log_of(&[
+                ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+                ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+                (
+                    "send",
+                    json!({"wave": 1, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1],
+                           "mustard": "0", "author": "binary", "copy": copy, "build_dir": folder}),
+                ),
+            ]);
+            let flight = Flight { running: [1].into(), ..Flight::default() };
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                let built = prompts(root, "teste", &log, lang, &flight);
+                let last = final_review(root, "teste", &log, lang);
+                let sentence = crate::platform::i18n::translate("prompt.execution.build_dir", lang).replace("{dir}", &folder);
+                for (what, text) in [("wave", &built[0].text), ("final", &last)] {
+                    assert_eq!(text.contains(&sentence), cites, "{map:?} {lang:?} {what}: {text}");
+                    assert_eq!(text.contains("Cargo"), cites, "{map:?} {lang:?} {what}: {text}");
+                    assert_eq!(text.contains("target/copias"), cites, "{map:?} {lang:?} {what}: {text}");
+                }
+                assert!(built[0].text.contains(&format!("`{copy}`")), "{map:?} {lang:?}: {}", built[0].text);
+            }
+        }
     }
 
     /// A skill que a tarefa nomeia e que não está no disco é recusada, com o

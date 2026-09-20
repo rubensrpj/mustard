@@ -74,9 +74,6 @@ const PLANTED_ORCHESTRATOR: &str = ".claude/CLAUDE.md";
 /// is not one an older scan wrote into.
 const MAX_DEPTH: usize = 12;
 
-/// The class a guard becomes in the lesson bank.
-const PROJECT_RULE: &str = "project_rule";
-
 /// How many words of a guard become the keys of its lesson.
 const KEY_WORDS: usize = 6;
 
@@ -634,7 +631,7 @@ fn rewrite(root: &Path, rel: &str) -> Result<()> {
 /// (its subproject, or the whole project), born in the file it came from.
 fn lesson_draft(guard: &GuardLesson) -> Map<String, Value> {
     let draft = serde_json::json!({
-        "class": PROJECT_RULE,
+        "class": model::PROJECT_RULE,
         "author": "binary",
         "text": guard.text,
         "keys": lesson_keys(guard),
@@ -838,7 +835,7 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         let written: Vec<String> = bank
             .visible()
             .into_iter()
-            .filter(|l| l.event_type == PROJECT_RULE)
+            .filter(|l| l.event_type == model::PROJECT_RULE)
             .filter_map(|l| l.str_field("text").map(str::to_string))
             .collect();
         assert_eq!(written, expected);
@@ -931,7 +928,7 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         let widened = widened[0];
         assert_eq!(widened.int("replaces"), Some(handler));
         assert_eq!(widened.str_field("text"), Some("Não chame o banco de dentro do controlador."));
-        assert_eq!((widened.event_type.as_str(), widened.str_field("author")), (PROJECT_RULE, Some("assistant")));
+        assert_eq!((widened.event_type.as_str(), widened.str_field("author")), (model::PROJECT_RULE, Some("assistant")));
         assert_eq!(widened.fields.get("keys"), Some(&serde_json::json!(["controlador"])));
         assert_eq!(widened.fields.get("found_in"), Some(&serde_json::json!({"spec": "s"})));
         for file in ["apps/a/src/x.rs", "apps/b/src/x.rs"] {
@@ -1217,7 +1214,7 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
         let written = bank.visible();
         assert_eq!(written.len(), 2);
-        assert_eq!(written[0].event_type, PROJECT_RULE);
+        assert_eq!(written[0].event_type, model::PROJECT_RULE);
         assert_eq!(written[0].str_field("text"), Some("Never panic in a hook."));
     }
 }

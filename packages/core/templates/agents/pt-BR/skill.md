@@ -11,7 +11,7 @@ Você escreve uma skill: um guia curto que outro agente vai seguir para fazer um
 
 - Leia os exemplos inteiros e os testes deles. Escreva só o que os exemplos mostram; não invente padrão.
 - Grave em `.claude/skills/<tarefa>/SKILL.md`, dentro do subprojeto, com menos de 500 linhas.
-- O cabeçalho traz `name: <tarefa>` e `description: Use quando <a situação, nas palavras de quem pede>.`
+- O cabeçalho traz `name: <tarefa>` e `description: Use quando <o tipo de arquivo, a pasta e as palavras da tarefa>.` — um verbete de índice, não uma frase solta: é por ele que a busca acha a skill certa.
 - Depois, nesta ordem:
   1. Passos: cada um com o arquivo exato e o que muda nele.
   2. Um exemplo completo, copiado de um arquivo real.

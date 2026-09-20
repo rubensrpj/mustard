@@ -1,5 +1,6 @@
 //! The static seeds: Mustard's own texts — the session map under
-//! `.claude/mustard/` and the three agents under `.claude/agents/mustard/` —,
+//! `.claude/mustard/`, the two page templates under `.claude/mustard/pages/`
+//! and the three agents under `.claude/agents/mustard/` —,
 //! the `.claude/.gitignore` rule list, and the project-root `mustard.json`,
 //! with the migrations that bring an older `inject` list onto the session map.
 
@@ -10,6 +11,7 @@ use crate::domain::config::{Injectable, ProjectConfig, Runtime};
 use crate::io::fs;
 use crate::platform::error::Result;
 use crate::platform::i18n::Locale;
+use crate::platform::page_templates::{project_page_template, spec_page_template};
 use crate::platform::seeds::{agent_texts, session_map, AGENT_NAMES, CLAUDE_GITIGNORE, SESSION_MAP_NAME};
 
 use super::SeedOutcome;
@@ -17,21 +19,39 @@ use super::SeedOutcome;
 /// A pasta do mapa do início da sessão, a partir de `.claude/`.
 const SESSION_MAP_DIR: &str = "mustard";
 
+/// A pasta dos templates das páginas, a partir de `.claude/`.
+const PAGES_DIR: &str = "mustard/pages";
+
+/// O nome do template da página de uma spec, em [`PAGES_DIR`].
+const SPEC_PAGE_NAME: &str = "spec.html";
+
+/// O nome do template da página do projeto, em [`PAGES_DIR`].
+const PROJECT_PAGE_NAME: &str = "project.html";
+
 /// A pasta dos agentes do Mustard, a partir de `.claude/`. É uma subpasta
 /// própria dentro de `agents/`, que é uma pasta onde o projeto também escreve:
 /// os agentes do projeto ficam ao lado, e nenhum arquivo deles é tocado.
 const AGENTS_DIR: &str = "agents/mustard";
 
 /// Os textos do Mustard no projeto, a partir de `.claude/`, com o corpo no
-/// idioma `text`: o mapa do início da sessão e os três agentes, nessa ordem.
+/// idioma `text`: o mapa do início da sessão, os dois templates das páginas (a
+/// da spec e a do projeto) e os três agentes, nessa ordem.
 ///
 /// Os dois idiomas são molde do produto; o projeto recebe só o do
 /// `language.text`. O caminho não muda com o idioma, então trocar o idioma e
-/// rodar o instalador de novo troca o texto no mesmo arquivo.
+/// rodar o instalador de novo troca o texto no mesmo arquivo. Cada template
+/// vai com o catálogo já preenchido nesse idioma: é o arquivo que o assistente
+/// publica como está, uma vez só, quando a página nasce.
 #[must_use]
-pub fn harness_texts(text: Locale) -> Vec<(String, &'static str)> {
-    let mut out = vec![(format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"), session_map(text))];
-    out.extend(agent_texts(text).into_iter().map(|(name, body)| (format!("{AGENTS_DIR}/{name}.md"), body)));
+pub fn harness_texts(text: Locale) -> Vec<(String, String)> {
+    let mut out = vec![
+        (format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"), session_map(text).to_string()),
+        (format!("{PAGES_DIR}/{SPEC_PAGE_NAME}"), spec_page_template(text)),
+        (format!("{PAGES_DIR}/{PROJECT_PAGE_NAME}"), project_page_template(text)),
+    ];
+    out.extend(
+        agent_texts(text).into_iter().map(|(name, body)| (format!("{AGENTS_DIR}/{name}.md"), body.to_string())),
+    );
     out
 }
 
@@ -39,9 +59,21 @@ pub fn harness_texts(text: Locale) -> Vec<(String, &'static str)> {
 /// grava — os mesmos em qualquer idioma.
 #[must_use]
 pub fn harness_text_paths() -> Vec<String> {
-    let mut out = vec![format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}")];
+    let mut out = vec![
+        format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"),
+        format!("{PAGES_DIR}/{SPEC_PAGE_NAME}"),
+        format!("{PAGES_DIR}/{PROJECT_PAGE_NAME}"),
+    ];
     out.extend(AGENT_NAMES.iter().map(|name| format!("{AGENTS_DIR}/{name}.md")));
     out
+}
+
+/// O caminho do template da página do projeto, a partir da raiz do projeto:
+/// é o arquivo que o início da sessão manda publicar quando a página ainda
+/// não existe.
+#[must_use]
+pub fn project_page_template_path() -> String {
+    format!(".claude/{PAGES_DIR}/{PROJECT_PAGE_NAME}")
 }
 
 /// O caminho declarado do mapa do início da sessão, a partir da raiz do
@@ -74,7 +106,7 @@ pub fn seed_harness_texts(claude_dir: &Path, text: Locale) -> Result<Vec<(String
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
-        out.push((rel, seed_static_file(&dest, body, true)?));
+        out.push((rel, seed_static_file(&dest, &body, true)?));
     }
     Ok(out)
 }
@@ -256,13 +288,16 @@ pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<
 ///
 /// Mexe só no `mustard.json`, que é do Mustard, e nos arquivos que ele mesmo
 /// semeou antes: o estilo de resposta que virou estilo do plugin sai (com o
-/// arquivo órfão), e as três partes do roteador antigo dão lugar ao mapa do
-/// início da sessão. Idempotente e sem erro: uma configuração que não se lê ou
-/// não se grava vira "nada migrado".
+/// arquivo órfão), o mapa do início da sessão troca o nome antigo pelo novo, e
+/// as três partes do roteador antigo dão lugar ao mapa. Idempotente e sem
+/// erro: uma configuração que não se lê ou não se grava vira "nada migrado".
 pub fn migrate_inject_declarations(root: &Path, claude_dir: &Path) -> Vec<String> {
     let mut migrated = Vec::new();
     if retire_response_style_inject(root, claude_dir) {
         migrated.push("mustard.json (response-style → output-style)".to_string());
+    }
+    if rename_old_session_map(root, claude_dir) {
+        migrated.push(format!("session map ({OLD_SESSION_MAP_NAME} → {SESSION_MAP_NAME})"));
     }
     if retire_router_parts(root, claude_dir) {
         migrated.push("mustard.json (router injectables → session map)".to_string());
@@ -319,6 +354,51 @@ pub fn same_declared_path(a: &str, b: &str) -> bool {
         s.trim_end_matches('/').to_ascii_lowercase()
     }
     norm(a) == norm(b)
+}
+
+/// O nome que o mapa do início da sessão tinha antes de ganhar nome em inglês,
+/// na mesma pasta `.claude/mustard/`.
+const OLD_SESSION_MAP_NAME: &str = "mapa-inicio-sessao.md";
+
+/// Troca o nome antigo do mapa do início da sessão pelo novo.
+///
+/// No `mustard.json`, cada declaração do caminho antigo, em qualquer grafia
+/// que [`same_declared_path`] reconhece, passa a apontar para o caminho novo,
+/// com o mesmo evento, o mesmo `once` e o mesmo lugar na lista; o resto do
+/// arquivo fica como está. Uma declaração antiga cujo evento já entrega o
+/// caminho novo sai, para o mapa não chegar duas vezes. O arquivo de nome
+/// antigo sai do disco: o mapa é texto do próprio Mustard, e a instalação grava
+/// o de nome novo logo depois.
+///
+/// `true` quando algo mudou. Idempotente e sem erro.
+fn rename_old_session_map(root: &Path, claude_dir: &Path) -> bool {
+    let old_path = format!(".claude/{SESSION_MAP_DIR}/{OLD_SESSION_MAP_NAME}");
+    let map = session_map_declared_path();
+    let mut changed = false;
+    if ProjectConfig::exists(root) {
+        let mut config = ProjectConfig::load(root);
+        if config.inject.iter().any(|e| same_declared_path(&e.file, &old_path)) {
+            let before = std::mem::take(&mut config.inject);
+            for entry in &before {
+                if !same_declared_path(&entry.file, &old_path) {
+                    config.inject.push(entry.clone());
+                    continue;
+                }
+                let delivers_map =
+                    |e: &Injectable| e.on.eq_ignore_ascii_case(&entry.on) && same_declared_path(&e.file, &map);
+                if before.iter().any(delivers_map) || config.inject.iter().any(delivers_map) {
+                    continue;
+                }
+                config.inject.push(Injectable { file: map.clone(), ..entry.clone() });
+            }
+            changed = config.write(root).is_ok();
+        }
+    }
+    let orphan = claude_dir.join(SESSION_MAP_DIR).join(OLD_SESSION_MAP_NAME);
+    if orphan.is_file() && fs::remove_file(&orphan).is_ok() {
+        changed = true;
+    }
+    changed
 }
 
 /// Os três textos do roteador que instalações antigas semeavam e declaravam,
@@ -593,12 +673,12 @@ mod tests {
 
         let config = ProjectConfig::load(root);
         let files: Vec<&str> = config.inject.iter().map(|e| e.file.as_str()).collect();
-        assert_eq!(files, vec!["docs/my-rules.md", ".claude/mustard/mapa-inicio-sessao.md"], "{:?}", config.inject);
+        assert_eq!(files, vec!["docs/my-rules.md", ".claude/mustard/session-map.md"], "{:?}", config.inject);
         assert_eq!(config.inject[1].on, "sessionStart");
         for name in ["orchestrator.md", "dispatch.md", "material.md"] {
             assert!(!claude.join("mustard").join(name).exists(), "{name} stayed on disk");
         }
-        assert!(claude.join("mustard/mapa-inicio-sessao.md").is_file(), "the map is seeded");
+        assert!(claude.join("mustard/session-map.md").is_file(), "the map is seeded");
         assert!(report.migrated.iter().any(|m| m.contains("session map")), "{:?}", report.migrated);
 
         let again = upsert_project(root, None, InstallMode::Shared).unwrap();
@@ -625,6 +705,42 @@ mod tests {
         let config = ProjectConfig::load(root);
         assert_eq!(config.inject.len(), 1);
         assert_eq!(config.inject[0].file, "docs/my-rules.md");
+    }
+
+    /// Um `mustard.json` que já declara o mapa de nome novo e ainda traz o de
+    /// nome antigo no mesmo evento fica com uma declaração só, para o mapa não
+    /// chegar duas vezes. A de nome antigo em outro evento é trocada no lugar,
+    /// e a que só se parece com o caminho antigo fica como está.
+    #[test]
+    fn a_map_already_declared_by_the_new_name_is_not_declared_twice() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::write(
+            root.join("mustard.json"),
+            r#"{"inject":[
+                {"on":"sessionStart","file":".claude/mustard/session-map.md","once":false},
+                {"on":"SessionStart","file":"./.claude/mustard/mapa-inicio-sessao.md","once":true},
+                {"on":"userPromptSubmit","file":".claude/mustard/mapa-inicio-sessao.md","once":true},
+                {"on":"sessionStart","file":".claude/mustard/mapa-inicio-sessao.md.bak","once":false}
+            ]}"#,
+        )
+        .unwrap();
+
+        let migrated = migrate_inject_declarations(root, &root.join(".claude"));
+
+        let config = ProjectConfig::load(root);
+        let entries: Vec<(&str, &str, bool)> =
+            config.inject.iter().map(|e| (e.on.as_str(), e.file.as_str(), e.once)).collect();
+        assert_eq!(
+            entries,
+            [
+                ("sessionStart", ".claude/mustard/session-map.md", false),
+                ("userPromptSubmit", ".claude/mustard/session-map.md", true),
+                ("sessionStart", ".claude/mustard/mapa-inicio-sessao.md.bak", false),
+            ],
+        );
+        assert_eq!(migrated, ["session map (mapa-inicio-sessao.md → session-map.md)"]);
+        assert!(migrate_inject_declarations(root, &root.join(".claude")).is_empty(), "the rename converges");
     }
 
     /// Os textos do Mustard são sempre regravados: uma cópia editada volta ao
@@ -702,6 +818,6 @@ mod tests {
         assert_eq!(entries[0].on, "sessionStart");
         assert_eq!(entries[0].file, session_map_declared_path());
         assert!(!entries[0].once, "the session start only runs on a new window");
-        assert!(harness_text_paths().contains(&"mustard/mapa-inicio-sessao.md".to_string()));
+        assert!(harness_text_paths().contains(&"mustard/session-map.md".to_string()));
     }
 }

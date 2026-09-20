@@ -193,19 +193,34 @@ impl ClarityReport {
         for code in &self.internal_codes {
             out.push(translate("clarity.internal_code", lang).replace("{code}", code));
         }
-        if self.too_long {
-            out.push(
-                translate("clarity.too_long", lang)
+        // Longa e difícil de ler ao mesmo tempo: as duas viravam duas linhas,
+        // cada uma pedindo o próprio resumo curto, e o pedido se repetia. As
+        // duas se juntam numa linha só, com o pedido de resumo uma vez.
+        // Sozinha, cada uma continua como sempre.
+        match (self.too_long, self.hard_to_read, self.reading_ease) {
+            (true, true, Some(score)) => out.push(
+                translate("clarity.too_long_and_hard_to_read", lang)
                     .replace("{lines}", &self.lines.to_string())
-                    .replace("{limit}", &MAX_LINES.to_string()),
-            );
-        }
-        if let (true, Some(score)) = (self.hard_to_read, self.reading_ease) {
-            out.push(
-                translate("clarity.hard_to_read", lang)
+                    .replace("{limit}", &MAX_LINES.to_string())
                     .replace("{score}", &score.to_string())
                     .replace("{min}", &MIN_READING_EASE.to_string()),
-            );
+            ),
+            (too_long, hard_to_read, reading_ease) => {
+                if too_long {
+                    out.push(
+                        translate("clarity.too_long", lang)
+                            .replace("{lines}", &self.lines.to_string())
+                            .replace("{limit}", &MAX_LINES.to_string()),
+                    );
+                }
+                if let (true, Some(score)) = (hard_to_read, reading_ease) {
+                    out.push(
+                        translate("clarity.hard_to_read", lang)
+                            .replace("{score}", &score.to_string())
+                            .replace("{min}", &MIN_READING_EASE.to_string()),
+                    );
+                }
+            }
         }
         if let Some(wrong) = self.wrong_language {
             out.push(wrong.defect(lang));
@@ -1208,6 +1223,66 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         // Inglês e prosa curta não recebem nota.
         assert_eq!(measure(ENGLISH_REPLY, &[], Some(Locale::EnUs)).reading_ease, None);
         assert_eq!(measure("Frase curta.", &[], Some(Locale::PtBr)).reading_ease, None);
+    }
+
+    /// Longa e difícil de ler ao mesmo tempo: as duas linhas separadas viram
+    /// uma só, com o pedido de resumo curto uma vez. Sozinha, cada uma
+    /// continua como está.
+    #[test]
+    fn a_long_and_hard_answer_asks_for_one_short_summary() {
+        let dense = "A implementação da configuração automatizada da infraestrutura \
+                     organizacional exige documentação complementar significativamente \
+                     detalhada. A coordenação interdepartamental das especificações \
+                     técnicas necessárias demanda comunicação institucionalizada e \
+                     planejamento estratégico permanentemente atualizado. A parametrização \
+                     das integrações corporativas depende da homologação das funcionalidades \
+                     disponibilizadas pela arquitetura.";
+        let long_and_hard = vec![dense; MAX_LINES + 1].join("\n");
+        let report = measure(&long_and_hard, &[], Some(Locale::PtBr));
+        assert!(report.too_long && report.hard_to_read, "{report:?}");
+        let score = report.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {report:?}"));
+
+        let pt = report.defects(Locale::PtBr);
+        assert_eq!(pt.len(), 1, "uma linha só, não duas: {pt:?}");
+        assert_eq!(
+            pt[0],
+            format!(
+                "resposta com {} linhas (o limite é {MAX_LINES}) e difícil de ler: nota {score} no \
+                 índice de Flesch (o mínimo é {MIN_READING_EASE}); faça no chat um resumo curto, \
+                 em palavras simples, e o JSON, a tabela ou o documento pedido vai para a página \
+                 avulsa: `mustard-rt run page`",
+                report.lines
+            )
+        );
+        assert_eq!(pt[0].matches("resumo").count(), 1, "o pedido de resumo não se repete: {pt:?}");
+
+        let en = report.defects(Locale::EnUs);
+        assert_eq!(en.len(), 1, "{en:?}");
+        assert_eq!(en[0].matches("summary").count(), 1, "{en:?}");
+
+        // Sozinha, cada defeito continua com a própria linha e o próprio
+        // pedido, sem juntar nada.
+        let only_long = measure(&vec!["Uma linha curta."; MAX_LINES + 1].join("\n"), &[], Some(Locale::PtBr));
+        assert!(only_long.too_long && !only_long.hard_to_read, "{only_long:?}");
+        assert_eq!(
+            only_long.defects(Locale::PtBr),
+            vec![format!(
+                "resposta com {} linhas, e o limite é {MAX_LINES}; faça no chat um resumo curto, e \
+                 JSON, tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`",
+                only_long.lines
+            )]
+        );
+
+        let only_hard = measure(dense, &[], Some(Locale::PtBr));
+        assert!(!only_hard.too_long && only_hard.hard_to_read, "{only_hard:?}");
+        let hard_score = only_hard.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {only_hard:?}"));
+        assert_eq!(
+            only_hard.defects(Locale::PtBr),
+            vec![format!(
+                "texto difícil de ler: nota {hard_score} no índice de Flesch, e o mínimo é \
+                 {MIN_READING_EASE}; faça um resumo curto em palavras simples"
+            )]
+        );
     }
 
     /// Ênfase em maiúsculas não é sigla: nem a palavra comprida com vogais,

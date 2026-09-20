@@ -1,0 +1,1166 @@
+[
+  {
+    "id": "progress",
+    "heading": "Andamento",
+    "groups": [
+      {
+        "id": "progress-metrics",
+        "title": "Medição",
+        "summary": "",
+        "items": []
+      },
+      {
+        "id": "progress-state",
+        "title": "Fases e publicações",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-STATE-0001",
+            "anchored": true,
+            "title": "Fase: levantamento · Branch: feature/demo · Base: dev",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 08:40",
+            "fields": [
+              [
+                "Fase",
+                "levantamento"
+              ],
+              [
+                "Branch",
+                "feature/demo"
+              ],
+              [
+                "Base",
+                "dev"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-STATE-0002",
+            "anchored": true,
+            "title": "Fase: aprovada · Pergunta e resposta: Aprovar esta spec? → Aprovar",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-12 09:03",
+            "fields": [
+              [
+                "Fase",
+                "aprovada"
+              ],
+              [
+                "Pergunta e resposta",
+                "Aprovar esta spec? → Aprovar"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-PUB-0001",
+            "anchored": true,
+            "title": "Página: spec · Marco: aprovação · Deu certo: sim · Endereço: https://claude.ai/code/artifact/demo",
+            "who": null,
+            "mark": null,
+            "status": "sim",
+            "date": "2026-09-12 09:03",
+            "fields": [
+              [
+                "Página",
+                "spec"
+              ],
+              [
+                "Marco",
+                "aprovação"
+              ],
+              [
+                "Deu certo",
+                "sim"
+              ],
+              [
+                "Endereço",
+                "https://claude.ai/code/artifact/demo"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "progress-commits",
+        "title": "Commits",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-COMMIT-0001",
+            "anchored": true,
+            "title": "Identificador: 5e0c7a91 · Título: fix(write-gate): a aprovação sai do estado · Ondas: 2 · Arquivos: apps/rt/src/hooks/write/scope_guard.rs · Repositório: .",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-12 09:41",
+            "fields": [
+              [
+                "Identificador",
+                "5e0c7a91"
+              ],
+              [
+                "Título",
+                "fix(write-gate): a aprovação sai do estado"
+              ],
+              [
+                "Ondas",
+                "2"
+              ],
+              [
+                "Arquivos",
+                "apps/rt/src/hooks/write/scope_guard.rs"
+              ],
+              [
+                "Repositório",
+                "."
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-PRSUM-0001",
+            "anchored": true,
+            "title": "O portão de escrita passa a ler a aprovação do estado. Nada muda para quem usa.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-12 11:05",
+            "fields": []
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "specification",
+    "heading": "Especificação",
+    "groups": [
+      {
+        "id": "specification-context",
+        "title": "Contexto",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-CTX-0001",
+            "anchored": true,
+            "title": "O Rust roda rápido: 3 a 14 ms por gancho. O custo está nas rodadas do modelo.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:13",
+            "fields": [
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "specification-concern",
+        "title": "Preocupações",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-CONC-0001",
+            "anchored": true,
+            "title": "Cerca de 11 arquivos de teste prendem frases da prosa atual.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:14",
+            "fields": [
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "agreed",
+    "heading": "Combinado",
+    "groups": [
+      {
+        "id": "agreed-work_type",
+        "title": "Tipo de trabalho",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-WORK-0001",
+            "anchored": true,
+            "title": "Tipos: refatoração",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 08:41",
+            "fields": [
+              [
+                "Tipos",
+                "refatoração"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "agreed-point",
+        "title": "Pontos do levantamento",
+        "summary": "1 pendente",
+        "items": [
+          {
+            "code": "MSTD-POINT-0001",
+            "anchored": true,
+            "title": "Grupo de lacunas: limits · Lacuna: Tamanho do pedido de cada onda · De onde veio: lacuna · Situação: pendente · Fatos: A montagem do pedido não tem teto de tamanho. (apps/rt/src/commands/agent/render/mod.rs:798)",
+            "who": null,
+            "mark": null,
+            "status": "pendente",
+            "date": "2026-09-11 09:00",
+            "fields": [
+              [
+                "Grupo de lacunas",
+                "limits"
+              ],
+              [
+                "Lacuna",
+                "Tamanho do pedido de cada onda"
+              ],
+              [
+                "De onde veio",
+                "lacuna"
+              ],
+              [
+                "Situação",
+                "pendente"
+              ],
+              [
+                "Fatos",
+                "A montagem do pedido não tem teto de tamanho. (apps/rt/src/commands/agent/render/mod.rs:798)"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "agreed-rule",
+        "title": "Regras",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-RULE-0001",
+            "anchored": true,
+            "title": "A trava de comandos confere o programa, as opções e o caminho.",
+            "who": null,
+            "mark": "depois da aprovação",
+            "status": null,
+            "date": "2026-09-12 12:02",
+            "fields": [
+              [
+                "Exemplo",
+                "rm -rf pasta é barrado."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "agreed-limit",
+        "title": "Limites",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-LIMIT-0001",
+            "anchored": true,
+            "title": "Tamanho do pedido de cada onda.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:06",
+            "fields": [
+              [
+                "Valor",
+                "500 linhas"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "agreed-contract",
+        "title": "Contratos",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-CONTR-0001",
+            "anchored": true,
+            "title": "A barra de status tem duas linhas: a branch e a spec; a economia e o modelo.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:07",
+            "fields": [
+              [
+                "Exemplo",
+                "dev · demo · plano · onda 2/4"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "agreed-error",
+        "title": "Erros e mensagens",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-ERR-0001",
+            "anchored": true,
+            "title": "Título do pull request acima de 60 caracteres.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:08",
+            "fields": [
+              [
+                "Mensagem",
+                "O título tem 74 caracteres, e o limite é 60. Escreva uma frase mais curta."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "agreed-edge_case",
+        "title": "Casos de borda",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-EDGE-0001",
+            "anchored": true,
+            "title": "Duas sessões gravam a mesma spec ao mesmo tempo.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:09",
+            "fields": [
+              [
+                "O que acontece",
+                "A segunda espera a trava e grava com o número seguinte."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "agreed-out_of_scope",
+        "title": "Fora do escopo",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-SCOPE-0001",
+            "anchored": true,
+            "title": "Supabase.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:10",
+            "fields": [
+              [
+                "Motivo",
+                "As páginas publicadas já dão o acompanhamento de qualquer máquina."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "agreed-decision",
+        "title": "Decisões",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-DEC-0001",
+            "anchored": true,
+            "title": "A página é publicada só nos marcos, e a MSTD-RULE-0001 continua valendo.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:12",
+            "fields": [
+              [
+                "Por quê",
+                "Cada publicação gasta tokens."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "criteria",
+    "heading": "Critérios",
+    "groups": [
+      {
+        "id": "criteria-criterion",
+        "title": "Critérios de aceite",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-CRIT-0001",
+            "anchored": true,
+            "title": "Quando: O pedido montado de uma onda passa de 500 linhas. · Então: O binário recusa o despacho, com a mensagem do que passou. · Prova: cargo test -p mustard-rt --test wave_request_limit",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:15",
+            "fields": [
+              [
+                "Quando",
+                "O pedido montado de uma onda passa de 500 linhas."
+              ],
+              [
+                "Então",
+                "O binário recusa o despacho, com a mensagem do que passou."
+              ],
+              [
+                "Prova",
+                "cargo test -p mustard-rt --test wave_request_limit"
+              ],
+              [
+                "Rótulo no rascunho",
+                "C-12"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ],
+              [
+                "Última execução",
+                "passou (MSTD-CRUN-0001)"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "criteria-runs",
+        "title": "Execuções",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-CRUN-0001",
+            "anchored": true,
+            "title": "Critério: MSTD-CRIT-0001 · Resultado: passou · Código de saída: 0 · Tempo (ms): 5990",
+            "who": null,
+            "mark": null,
+            "status": "passou",
+            "date": "2026-09-12 11:00",
+            "fields": [
+              [
+                "Critério",
+                "MSTD-CRIT-0001"
+              ],
+              [
+                "Resultado",
+                "passou"
+              ],
+              [
+                "Código de saída",
+                "0"
+              ],
+              [
+                "Tempo (ms)",
+                "5990"
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "waves",
+    "heading": "Ondas",
+    "groups": [
+      {
+        "id": "waves-1",
+        "title": "Onda 1",
+        "summary": "a fazerA trava lê o comando como o terminal.",
+        "items": [
+          {
+            "code": "MSTD-WAVE-0001",
+            "anchored": true,
+            "title": "A trava lê o comando como o terminal.",
+            "who": null,
+            "mark": null,
+            "status": "a fazer",
+            "date": "2026-09-11 09:16",
+            "fields": [
+              [
+                "Critérios",
+                "MSTD-CRIT-0001"
+              ],
+              [
+                "Pronta quando",
+                "A suíte da trava passa."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ],
+              [
+                "Estado da onda",
+                "a fazer"
+              ],
+              [
+                "Recebe",
+                "A onda e as tarefas dela (1)"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "waves-2",
+        "title": "Onda 2",
+        "summary": "aprovadaA aprovação e as pendências leem o estado.",
+        "items": [
+          {
+            "code": "MSTD-WAVE-0002",
+            "anchored": true,
+            "title": "A aprovação e as pendências leem o estado.",
+            "who": null,
+            "mark": null,
+            "status": "aprovada",
+            "date": "2026-09-11 09:17",
+            "fields": [
+              [
+                "Critérios",
+                "MSTD-CRIT-0001"
+              ],
+              [
+                "Pronta quando",
+                "A suíte das travas passa lendo só o spec.ndjson."
+              ],
+              [
+                "Depende das ondas",
+                "1"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ],
+              [
+                "Estado da onda",
+                "aprovada"
+              ],
+              [
+                "Commit",
+                "5e0c7a91 (MSTD-COMMIT-0001)"
+              ],
+              [
+                "Recebe",
+                "A onda e as tarefas dela (2)"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-TASK-0001",
+            "anchored": true,
+            "title": "O portão de escrita lê a aprovação do estado.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:18",
+            "fields": [
+              [
+                "Arquivos",
+                "apps/rt/src/hooks/write/scope_guard.rs, apps/rt/src/hooks/write/rule.rs (novo)"
+              ],
+              [
+                "Skill",
+                "add-hook-rule"
+              ],
+              [
+                "Cobre",
+                "MSTD-RULE-0001"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-SEND-0001",
+            "anchored": true,
+            "title": "demo — onda 2",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-12 09:05",
+            "fields": [
+              [
+                "Papel",
+                "agente de onda"
+              ],
+              [
+                "Linhas",
+                "312"
+              ],
+              [
+                "Caracteres",
+                "21480"
+              ],
+              [
+                "Itens enviados",
+                "MSTD-CTX-0001, MSTD-CONC-0001, MSTD-RULE-0001, MSTD-WAVE-0002, MSTD-TASK-0001, MSTD-CRIT-0001"
+              ],
+              [
+                "Versão do Mustard",
+                "0.2.0"
+              ],
+              [
+                "Lições",
+                "7"
+              ],
+              [
+                "Skills",
+                "add-hook-rule (3f9a1c2e)"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-DELIV-0001",
+            "anchored": true,
+            "title": "O portão de escrita lê a aprovação do estado.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-12 09:40",
+            "fields": [
+              [
+                "Arquivos",
+                "apps/rt/src/hooks/write/scope_guard.rs"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "waves-3",
+        "title": "Onda 3",
+        "summary": "em andamentoOs templates leem o banco.",
+        "items": [
+          {
+            "code": "MSTD-WAVE-0003",
+            "anchored": true,
+            "title": "Os templates leem o banco.",
+            "who": null,
+            "mark": "depois da aprovação",
+            "status": "em andamento",
+            "date": "2026-09-12 12:00",
+            "fields": [
+              [
+                "Critérios",
+                "MSTD-CRIT-0001"
+              ],
+              [
+                "Pronta quando",
+                "A suíte passa."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ],
+              [
+                "Estado da onda",
+                "em andamento"
+              ],
+              [
+                "Recebe",
+                "Especificação (2), Combinado (2), Critérios (1)"
+              ],
+              [
+                "Soma das notas",
+                "8"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-TASK-0002",
+            "anchored": true,
+            "title": "Template da página da spec.",
+            "who": null,
+            "mark": "depois da aprovação",
+            "status": null,
+            "date": "2026-09-12 12:01",
+            "fields": [
+              [
+                "Arquivos",
+                "packages/core/templates/pages/spec.html (novo)"
+              ],
+              [
+                "Nota",
+                "8"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-SEND-0002",
+            "anchored": true,
+            "title": "demo — onda 3",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-12 12:03",
+            "fields": [
+              [
+                "Papel",
+                "agente de onda"
+              ],
+              [
+                "Linhas",
+                "13"
+              ],
+              [
+                "Caracteres",
+                "220"
+              ],
+              [
+                "Itens enviados",
+                "MSTD-CTX-0001, MSTD-CONC-0001, MSTD-RULE-0001, MSTD-DEC-0001, MSTD-CRIT-0001"
+              ],
+              [
+                "Versão do Mustard",
+                "0.2.1"
+              ],
+              [
+                "Análise antes do envio",
+                "Tirou do pedido: MSTD-RULE-0001 (A regra fala da trava, não da tabela desta onda.); lição 12 (A lição é de outra onda.) · Pôs no pedido: MSTD-CTX-0001 (O contexto explica por que a tabela nasce vazia.)"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "waves-4",
+        "title": "Onda 4",
+        "summary": "a fazerA instalação.",
+        "items": [
+          {
+            "code": "MSTD-WAVE-0004",
+            "anchored": true,
+            "title": "A instalação.",
+            "who": null,
+            "mark": "depois da aprovação",
+            "status": "a fazer",
+            "date": "2026-09-12 12:04",
+            "fields": [
+              [
+                "Critérios",
+                "MSTD-CRIT-0001"
+              ],
+              [
+                "Pronta quando",
+                "O instalador passa."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ],
+              [
+                "Estado da onda",
+                "a fazer"
+              ],
+              [
+                "Recebe",
+                "Combinado (1)"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "waves-skills",
+        "title": "Skills",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-SKILL-0001",
+            "anchored": true,
+            "title": "Passos para acrescentar uma regra ao portão de escrita, com o teste.",
+            "who": null,
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 09:19",
+            "fields": [
+              [
+                "Nome",
+                "add-hook-rule"
+              ],
+              [
+                "Ação",
+                "criação"
+              ],
+              [
+                "Identificador",
+                "3f9a1c2e"
+              ],
+              [
+                "Exemplos",
+                "apps/rt/src/hooks/write/scope_guard.rs: mesma pasta e mesmas importações, com teste"
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "review",
+    "heading": "Revisão e QA",
+    "groups": [
+      {
+        "id": "review-2",
+        "title": "Onda 2",
+        "summary": "1 aprovada",
+        "items": [
+          {
+            "code": "MSTD-VERD-0001",
+            "anchored": true,
+            "title": "Sem achados.",
+            "who": null,
+            "mark": null,
+            "status": "aprovada",
+            "date": "2026-09-12 10:10",
+            "fields": [
+              [
+                "Onda",
+                "2"
+              ],
+              [
+                "Resultado",
+                "aprovada"
+              ],
+              [
+                "Critérios",
+                "MSTD-CRIT-0001 (confere a regra)"
+              ],
+              [
+                "Lições",
+                "7 (não repetiu)"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "review-final",
+        "title": "Veredito final",
+        "summary": "1 aprovada",
+        "items": [
+          {
+            "code": "MSTD-VERD-0002",
+            "anchored": true,
+            "title": "As ondas se encaixam sem prova perdida.",
+            "who": null,
+            "mark": null,
+            "status": "aprovada",
+            "date": "2026-09-12 12:05",
+            "fields": [
+              [
+                "Onda",
+                "2"
+              ],
+              [
+                "Resultado",
+                "aprovada"
+              ],
+              [
+                "Revisão final",
+                "sim"
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "findings",
+    "heading": "O que o plano achou",
+    "groups": [
+      {
+        "id": "findings-tasks",
+        "title": "Sobre tarefas",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-NOTE-0003",
+            "anchored": true,
+            "title": "A tarefa MSTD-TASK-0001 cita src/fora.rs, que o git não guarda: um agente noutra sessão não o vê.",
+            "who": null,
+            "mark": "depois da aprovação",
+            "status": null,
+            "date": "2026-09-12 11:13",
+            "fields": [
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "notes",
+    "heading": "Anotações",
+    "groups": [
+      {
+        "id": "notes-all",
+        "title": "Anotações",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-REQ-0001",
+            "anchored": true,
+            "title": "Incluir o Windows no teste de duas gravações ao mesmo tempo.",
+            "who": null,
+            "mark": "depois da aprovação",
+            "status": null,
+            "date": "2026-09-12 11:06",
+            "fields": [
+              [
+                "Efeito",
+                "ajusta as ondas"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-DEFER-0001",
+            "anchored": true,
+            "title": "Medir o antivírus do Windows na verificação automática.",
+            "who": null,
+            "mark": "depois da aprovação",
+            "status": null,
+            "date": "2026-09-12 11:07",
+            "fields": [
+              [
+                "Pendência",
+                "3"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-NOTE-0002",
+            "anchored": true,
+            "title": "O pull request 276 corrigiu o Clippy no dev antes da primeira onda.",
+            "who": null,
+            "mark": "depois da aprovação",
+            "status": null,
+            "date": "2026-09-12 11:09",
+            "fields": [
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "conversation",
+    "heading": "Conversa",
+    "groups": [
+      {
+        "id": "conversation-2026-09-11",
+        "title": "Dia 11/09",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-MSG-0001",
+            "anchored": true,
+            "title": "Revise o Mustard inteiro.",
+            "who": "mensagem · usuário",
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 08:40",
+            "fields": []
+          },
+          {
+            "code": "MSTD-RESP-0001",
+            "anchored": true,
+            "title": "Comecei pelo levantamento.",
+            "who": "resposta · assistente",
+            "mark": null,
+            "status": null,
+            "date": "2026-09-11 08:42",
+            "fields": [
+              [
+                "Responde a",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-RULE-0001",
+            "anchored": false,
+            "title": "A trava de comandos confere o programa e as opções, nunca o texto entre aspas.",
+            "who": "regra",
+            "mark": "versão substituída",
+            "status": "versão antiga",
+            "date": "2026-09-11 09:05",
+            "fields": [
+              [
+                "Exemplo",
+                "git commit -m \"... rm -rf ...\" passa; rm -rf pasta é barrado."
+              ],
+              [
+                "Rótulo no rascunho",
+                "R19"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-DEC-0001",
+            "anchored": false,
+            "title": "A página é publicada a cada passo.",
+            "who": "decisão",
+            "mark": "versão substituída",
+            "status": "versão antiga",
+            "date": "2026-09-11 09:11",
+            "fields": [
+              [
+                "Por quê",
+                "Mostra tudo na hora."
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "conversation-2026-09-12",
+        "title": "Dia 12/09",
+        "summary": "",
+        "items": [
+          {
+            "code": "MSTD-RMV-0001",
+            "anchored": true,
+            "title": "Motivo: Colada por engano. · Itens: MSTD-NOTE-0001",
+            "who": "remoção · assistente",
+            "mark": null,
+            "status": null,
+            "date": "2026-09-12 11:10",
+            "fields": [
+              [
+                "Motivo",
+                "Colada por engano."
+              ],
+              [
+                "Itens",
+                "MSTD-NOTE-0001"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          },
+          {
+            "code": "MSTD-PURGE-0001",
+            "anchored": true,
+            "title": "Itens: MSTD-MSG-0002 · Motivo: segredo",
+            "who": "expurgo · assistente",
+            "mark": null,
+            "status": null,
+            "date": "2026-09-12 11:12",
+            "fields": [
+              [
+                "Itens",
+                "MSTD-MSG-0002"
+              ],
+              [
+                "Motivo",
+                "segredo"
+              ],
+              [
+                "Origem",
+                "MSTD-MSG-0001"
+              ]
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

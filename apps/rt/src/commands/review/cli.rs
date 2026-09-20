@@ -23,8 +23,9 @@ use crate::commands::{review};
 pub enum ReviewCmd {
     /// The `/mustard:pr` door's REVIEW step: resolve a pull request to its work
     /// unit and print the review brief — the spec the unit belongs to, the
-    /// subproject its `## Files` name, and that subproject's skill shelf (the
-    /// same molds the implementer was dispatched with). With `--verdict` it
+    /// subproject the unit's tasks name their files under, and that
+    /// subproject's skill shelf (the same molds the implementer was
+    /// dispatched with). With `--verdict` it
     /// refuses and records nothing: the verdict of each wave is recorded by
     /// the round.
     #[command(name = "pr-review")]

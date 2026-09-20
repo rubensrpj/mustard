@@ -142,12 +142,19 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
                 serde_json::Value::String(reason.clone()),
             );
         }
-        Verdict::Rewrite { tool_input } => {
+        Verdict::Rewrite { tool_input, note } => {
             hook_output.insert(
                 "permissionDecision".to_string(),
                 serde_json::Value::String("allow".to_string()),
             );
             hook_output.insert("updatedInput".to_string(), tool_input.clone());
+            // The rewrite's own explanation — e.g. why a read was cut short
+            // — reaches the agent the same way a warning does. The shared
+            // block below appends `outcome.warnings` to the SAME member, so
+            // a check that also warned is not silently dropped.
+            if let Some(note) = note {
+                hook_output.insert("additionalContext".to_string(), serde_json::Value::String(note.clone()));
+            }
         }
         Verdict::Inject { context } => {
             hook_output.insert(
@@ -176,10 +183,12 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     }
 
     if !outcome.warnings.is_empty() {
-        hook_output.insert(
-            "additionalContext".to_string(),
-            serde_json::Value::String(outcome.warnings.join("\n")),
-        );
+        let joined = outcome.warnings.join("\n");
+        let text = match hook_output.get("additionalContext").and_then(serde_json::Value::as_str) {
+            Some(note) => format!("{note}\n\n{joined}"),
+            None => joined,
+        };
+        hook_output.insert("additionalContext".to_string(), serde_json::Value::String(text));
     }
 
     let mut root = serde_json::Map::new();
@@ -228,6 +237,23 @@ mod tests {
         let json = hook_specific_output("SessionStart", &inject_outcome())
             .expect("SessionStart must emit output");
         assert!(json.contains("additionalContext"));
+    }
+
+    #[test]
+    fn a_rewrite_with_a_note_carries_both_the_updated_input_and_the_message() {
+        // A rewrite that needs an explanation (why the input changed) must
+        // reach the agent on the SAME response as the `updatedInput` — a
+        // second turn is too late to ask for the cut excerpt.
+        let outcome = Outcome {
+            verdict: Verdict::Rewrite {
+                tool_input: serde_json::json!({ "file_path": "/p/a.rs", "limit": 40 }),
+                note: Some("os testes começam na linha 41".to_string()),
+            },
+            warnings: Vec::new(),
+        };
+        let json = hook_specific_output("PreToolUse", &outcome).expect("PreToolUse must emit output");
+        assert!(json.contains(r#""updatedInput":{"file_path":"/p/a.rs","limit":40}"#), "{json}");
+        assert!(json.contains("os testes começam na linha 41"), "{json}");
     }
 
     #[test]

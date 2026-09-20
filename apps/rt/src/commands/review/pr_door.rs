@@ -21,7 +21,7 @@
 //!   number, title, whether the provider calls it mergeable, whether it is a
 //!   draft, and the head branch its unit lives on.
 //! - **`pr-review`** — resolves the PR to its unit and prints the review brief:
-//!   the spec the unit belongs to, the subproject its `## Files` name, and the
+//!   the spec the unit belongs to, the subproject its tasks' files name, and the
 //!   SAME skill shelf the implementer was dispatched with — so "reviewed
 //!   against the project patterns" means the very molds the work was written
 //!   to, never a second list that can drift. `--verdict` no longer records
@@ -31,17 +31,13 @@
 //!
 //! ## The spec is read out of the PR's OWN branch
 //!
-//! A review runs from an integration base — that is the door's design — and the
-//! spec no longer lives there: this unit's whole layout (`spec.md`, the waves,
-//! the ceremony) is materialized INSIDE the unit's own `{kind}/{slug}`. Reading
-//! `.claude/spec/{slug}/spec.md` off the checkout therefore finds NOTHING from a
-//! base, and the brief would come back with `spec_path`, `subproject` and
-//! `patterns` all null while `pr.md` promises them. So the text is read from the
-//! head ref itself — `git show {head}:.claude/spec/{slug}/spec.md` — with the
-//! remote-tracking ref and then the working tree as fallbacks
-//! ([`read_spec_text`]); `spec_source` reports which one answered, because "the
-//! spec is not in this checkout" and "the unit has no spec" are different facts
-//! and must not print the same.
+//! A review runs from an integration base — that is the door's design. The spec
+//! is its event file, `.claude/spec/{slug}/spec.ndjson`, never a rendered
+//! `spec.md`: the binary writes no `spec.md` any more. It is read from the head
+//! ref itself — `git show {head}:.claude/spec/{slug}/spec.ndjson` — for a
+//! project that commits its specs, with the remote-tracking ref and then the
+//! main checkout's own spec folder as fallbacks ([`spec_text_of_unit`]). The
+//! subproject comes from the files the spec's tasks name.
 //!
 //! The verdict the merge reads needs no such hop: `.claude/` is redirected
 //! state, resolved to the MAIN checkout from inside any linked worktree, so the
@@ -98,7 +94,6 @@ use std::process::Command;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::commands::agent::render::reference::files_section_paths;
 use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
 use crate::commands::event::work_branch::on_integration_base;
@@ -217,23 +212,19 @@ fn spec_of_branch(branch: &str, flow: &BaseFlow) -> Option<String> {
     flow.slug_of(branch)
 }
 
-/// Where a unit's spec lives, relative to the repository root.
+/// Where a unit's spec lives, relative to the repository root: its event file.
 fn spec_rel_path(slug: &str) -> String {
-    format!(".claude/spec/{slug}/spec.md")
+    format!(".claude/spec/{slug}/spec.ndjson")
 }
 
-/// The spec text of `slug` as the PR's OWN branch carries it.
+/// The event file of `slug`'s spec, as the PR's OWN branch carries it when the
+/// project commits its specs, else as this machine keeps it.
 ///
-/// `git show <head>:.claude/spec/<slug>/spec.md`, never the working tree. This
-/// spec moved the spec directory ONTO the work branch, and `pr-review` runs from
-/// an integration base by design — so the file is simply not in the checkout,
-/// and reading from disk answered `null` for `spec_path`, `subproject` AND
-/// `patterns` on every single review. The local ref is tried first (the author
-/// reviewing their own unit) and the remote-tracking ref second (the reviewer
-/// who only ever fetched it).
-///
-/// The on-disk read stays as the last fallback: for a unit checked out IN PLACE
-/// the tree and the branch are the same thing, and for a spec that was never
+/// `git show <head>:.claude/spec/<slug>/spec.ndjson` first — the local ref for
+/// the author reviewing their own unit, the remote-tracking ref for the
+/// reviewer who only ever fetched it — because `pr-review` runs from an
+/// integration base by design. The main checkout's own spec folder is the last
+/// fallback: specs usually stay out of git, and for a spec that was never
 /// committed it is the only copy there is.
 fn spec_text_of_unit(root: &Path, head: &str, slug: &str) -> Option<String> {
     let rel = spec_rel_path(slug);
@@ -245,7 +236,7 @@ fn spec_text_of_unit(root: &Path, head: &str, slug: &str) -> Option<String> {
     let on_disk = mustard_core::ClaudePaths::for_project(root)
         .ok()
         .and_then(|p| p.for_spec(slug).ok())
-        .map(|p| p.dir().join("spec.md"))?;
+        .map(|p| p.spec_ndjson_path())?;
     std::fs::read_to_string(on_disk).ok().filter(|t| !t.trim().is_empty())
 }
 
@@ -281,15 +272,25 @@ fn resolve_pr(root: &Path, pr: Option<u64>) -> Result<PrFacts, String> {
     })
 }
 
-/// The subproject a spec's `## Files` section names, relative to the repo root
-/// (`apps/rt`, `packages/core`, …). `None` when the paths disagree or name no
-/// `apps/<x>` / `packages/<x>` segment.
+/// The subproject the files of a spec's tasks name, relative to the repo root
+/// (`apps/rt`, `packages/core`, …), read from the spec's event file
+/// `spec_text`: every task the reading shows, each file once. `None` when the
+/// paths disagree or name no `apps/<x>` / `packages/<x>` segment.
 ///
 /// Derived through [`detect_subproject`], the ONE discovery the dispatch plan
 /// already uses — joined onto an empty root so the answer comes back relative,
 /// which is the form both the skill shelf and `review.result` want.
 fn spec_subproject(spec_text: &str) -> Option<String> {
-    let files = files_section_paths(spec_text);
+    let log = mustard_core::domain::spec_events::parse_log(spec_text);
+    let mut files: Vec<String> = Vec::new();
+    for task in log.visible().into_iter().filter(|e| e.event_type == "task") {
+        let declared = task.fields.get("files").and_then(Value::as_array).into_iter().flatten();
+        for path in declared.filter_map(|file| file.get("path").and_then(Value::as_str)) {
+            if !files.iter().any(|known| known == path) {
+                files.push(path.to_string());
+            }
+        }
+    }
     detect_subproject(&files, Path::new(""))
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .filter(|s| !s.is_empty())
@@ -1814,11 +1815,19 @@ mod tests {
         let root = dir.path();
         let spec_dir = root.join(".claude").join("spec").join("my-unit");
         std::fs::create_dir_all(&spec_dir).expect("spec dir");
-        std::fs::write(
-            spec_dir.join("spec.md"),
-            "# demo\n\n## Files\n\n- `apps/rt/src/lib.rs`\n- `apps/rt/src/main.rs`\n",
-        )
-        .expect("spec");
+        // A spec is its event file: the brief reads the files of its tasks,
+        // and a rendered `spec.md` that says otherwise is not read.
+        std::fs::write(spec_dir.join("spec.md"), "# demo\n\n## Files\n\n- `packages/core/src/lib.rs`\n")
+            .expect("an old spec.md");
+        let events = [
+            json!({"v": 1, "id": 1, "at": "2026-09-18T10:00:00-03:00", "type": "task", "author": "assistant",
+                "wave": 1, "text": "A.", "files": [{"path": "apps/rt/src/lib.rs"}], "origin": 1}),
+            json!({"v": 1, "id": 2, "at": "2026-09-18T10:00:01-03:00", "type": "task", "author": "assistant",
+                "wave": 2, "text": "B.", "files": [{"path": "apps/rt/src/main.rs"}, {"path": "apps/rt/src/lib.rs"}],
+                "origin": 1}),
+        ];
+        let lines: Vec<String> = events.iter().map(Value::to_string).collect();
+        std::fs::write(spec_dir.join("spec.ndjson"), format!("{}\n", lines.join("\n"))).expect("spec");
         let shelf = root.join("apps/rt/.claude/skills/rt-demo-pattern");
         std::fs::create_dir_all(&shelf).expect("shelf");
         std::fs::write(
@@ -1835,7 +1844,7 @@ mod tests {
         assert_eq!(brief.spec.as_deref(), Some("my-unit"));
         assert_eq!(brief.subproject.as_deref(), Some("apps/rt"));
         assert!(
-            brief.spec_path.unwrap_or_default().ends_with("my-unit/spec.md"),
+            brief.spec_path.unwrap_or_default().ends_with("my-unit/spec.ndjson"),
             "forward slashes on every platform"
         );
         assert!(

@@ -363,6 +363,12 @@ pub enum Verdict {
     Rewrite {
         /// The tool input that replaces the original.
         tool_input: Value,
+        /// A message shown to the agent alongside the rewrite, when the
+        /// change needs an explanation the new input does not carry on its
+        /// own (e.g. why a read was cut short). `None` when the rewrite
+        /// speaks for itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
 
     /// Permit the action and inject extra context for the agent
@@ -670,6 +676,7 @@ mod tests {
         let mut outcome = Outcome::allow();
         let rewrite = Verdict::Rewrite {
             tool_input: serde_json::json!({ "command": "rtk git status" }),
+            note: None,
         };
         outcome.fold(rewrite.clone());
         outcome.fold(Verdict::Allow);
@@ -697,7 +704,7 @@ mod tests {
             Verdict::Inject { context: "link do documento\n\nnota de clareza".into() }
         );
 
-        let rewrite = Verdict::Rewrite { tool_input: serde_json::json!({ "command": "ls" }) };
+        let rewrite = Verdict::Rewrite { tool_input: serde_json::json!({ "command": "ls" }), note: None };
         outcome.fold(rewrite.clone());
         assert_eq!(outcome.verdict, rewrite);
 

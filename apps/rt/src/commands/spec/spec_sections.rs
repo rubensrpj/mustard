@@ -121,7 +121,7 @@ pub fn is_heading(line: &str, key: &str) -> bool {
 ///
 /// The single owner of the "where does a `## ` section stop" scan — shared by
 /// [`section_blocks`], the render TASK-block cutters ([`super::super`]'s
-/// `cut_section_at`), `reference::files_section_paths`, and the `/scan`
+/// `cut_section_at`) and the `/scan`
 /// `## Guards` swap. Two callers deliberately keep their own boundary loop and
 /// must NOT be folded in: `close_gates::checklist_unmarked_in` also treats a
 /// bare `##` (no text after the hashes) as a boundary, and
