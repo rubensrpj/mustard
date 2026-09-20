@@ -34,7 +34,7 @@ A mistake that can happen again? Propose a short lesson. Did it come from a skil
 
 ## What to return
 
-In the project's language: the verdict, each finding with file, line and severity, and the proposals. End with one line, valid JSON:
-<VERDICT>{"final":true,"result":"approved","text":"the verdict in one sentence","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
+In the project's language: the verdict, each finding (file/line/severity) and the proposals, one per line in `text`. One line, valid JSON:
+<VERDICT>{"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
 
-`final` is always `true`; `result` is `approved` or `rejected`, with `wave` only when rejected; `criterion` is the item's code.
+`final` is always `true`; `result` is `approved`/`rejected`, with `wave` if rejected; `criterion` is the item's code.

@@ -39,8 +39,6 @@ pub(crate) enum RoundRefusal {
     Refused(Refusal),
     /// Uma linha do relatório não se entende.
     BadReport { detail: String },
-    /// O relatório não traz nenhuma linha de entrega nem de veredito.
-    LineMissing,
     /// Uma linha do relatório não traz um campo obrigatório.
     LineField { line: &'static str, field: &'static str },
     /// A entrega de uma onda conflita com o repositório principal: os
@@ -68,7 +66,6 @@ impl RoundRefusal {
         match self {
             Self::Refused(refusal) => refusal.reason().to_string(),
             Self::BadReport { .. } => "round-bad-report".into(),
-            Self::LineMissing => "round-line-missing".into(),
             Self::LineField { .. } => "round-line-field-missing".into(),
             Self::MergeConflict { .. } => "round-merge-conflict".into(),
             Self::FileUnknown { .. } => "round-file-unknown".into(),
@@ -88,7 +85,6 @@ impl RoundRefusal {
         match self {
             Self::Refused(refusal) => refusal.message(lang),
             Self::BadReport { detail } => fill("round.bad_report", &[("{detail}", detail.clone())]),
-            Self::LineMissing => fill("round.line_missing", &[]),
             Self::LineField { line, field } => {
                 fill("round.line_field", &[("{line}", (*line).to_string()), ("{field}", (*field).to_string())])
             }
@@ -987,6 +983,40 @@ mod tests {
         let back = round(root, "x", Some(&delivered(root, 1, "Teste acrescentado.", &["src/a.rs"])));
         assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");
         assert_eq!(waves_in(&back, "dispatch"), Vec::<u64>::new(), "{back}");
+    }
+
+    /// O texto da linha VERDICT traz o veredito e cada achado, um por
+    /// linha: o pedido de conserto aponta o código dela pelo mesmo
+    /// `fix_lines` de sempre, e ler por esse código devolve os quatro
+    /// achados inteiros, sem cortar nenhum.
+    #[test]
+    fn the_fix_request_carries_every_finding() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+
+        let findings = "aprovação recusada\n\
+            src/a.rs:12 crítico: falta o teste do sinal negativo\n\
+            src/a.rs:20 maior: repete a soma que já existe em src/util.rs\n\
+            src/a.rs:5 menor: nome da variável confuso";
+        assert_eq!(findings.lines().count(), 4, "quatro achados, um por linha");
+
+        let text = |out: &Value, field: &str, wave: u64| -> String {
+            let found = out[field].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
+            found.and_then(|d| d["prompt"].as_str()).unwrap_or_default().to_string()
+        };
+        let fix = text(&round(root, "x", Some(&verdict(1, "rejected", findings))), "dispatch", 1);
+        assert!(fix.contains("MSTD-VERD-0001"), "o pedido de conserto aponta o veredito: {fix}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let recorded = log.visible().into_iter().find(|e| e.event_type == "verdict").expect("o veredito gravado");
+        assert_eq!(
+            recorded.str_field("text"),
+            Some(findings),
+            "os quatro achados chegam inteiros, sem cortar nenhum: {fix}"
+        );
     }
 
     /// A rodada diz o próximo passo de cada situação: despachar o que saiu;

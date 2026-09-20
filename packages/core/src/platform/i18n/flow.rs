@@ -404,14 +404,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.bad_report", Locale::EnUs) => {
             "The round report cannot be read: {detail}. Nothing was recorded."
         }
-        ("round.line_missing", Locale::PtBr) => {
-            "O relatório não traz nenhuma linha `<DELIVERED>` nem `<VERDICT>`: passe a resposta de cada \
-             agente como ela veio, com a linha do fim. Nada foi gravado."
-        }
-        ("round.line_missing", Locale::EnUs) => {
-            "The report carries no `<DELIVERED>` or `<VERDICT>` line: pass each agent's answer as it \
-             came, with its closing line. Nothing was recorded."
-        }
         ("round.line_field", Locale::PtBr) => {
             "Uma linha `<{line}>` do relatório não traz o campo `{field}`: peça ao agente a linha \
              inteira, como o texto dele ensina. Nada foi gravado."
@@ -1008,8 +1000,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            133,
-            0x71be_dcd0_5c58_52ad,
+            132,
+            0x1b9c_27c8_8a83_fbaa,
         );
     }
 
@@ -1154,7 +1146,6 @@ mod tests {
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
             ("close.unowned_item", &["{code}", "{title}"][..]),
             ("round.bad_report", &["{detail}"][..]),
-            ("round.line_missing", &[][..]),
             ("round.line_field", &["{line}", "{field}"][..]),
             ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),
             ("round.copy_failed", &["{wave}", "{detail}"][..]),

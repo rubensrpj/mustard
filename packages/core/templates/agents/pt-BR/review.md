@@ -34,7 +34,7 @@ Erro que pode se repetir? Proponha uma lição curta. Veio de skill com passo er
 
 ## O que devolver
 
-No idioma do projeto: o veredito, cada achado com arquivo, linha e gravidade, e as propostas. Termine com uma linha só, JSON válido:
-<VERDICT>{"final":true,"result":"approved","text":"o veredito numa frase","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
+No idioma do projeto: o veredito, cada achado (arquivo/linha/gravidade) e propostas, um por linha no `text`. Uma linha, JSON válido:
+<VERDICT>{"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
 
-`final` é sempre `true`; `result` é `approved` ou `rejected`, com `wave` só na reprovação; `criterion` é o código do item.
+`final` é sempre `true`; `result` é `approved`/`rejected`, com `wave` se reprovado; `criterion` é o código do item.
