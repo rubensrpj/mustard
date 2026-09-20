@@ -183,8 +183,7 @@ fn wave_steps(log: &SpecLog, wave: u64, codes: &BTreeMap<u64, String>) -> Vec<St
 fn last_step(log: &SpecLog, wave: u64, sent: u64, codes: &BTreeMap<u64, String>) -> Option<(String, String)> {
     log.block(BlockQuery::Block(Block::Waves))
         .into_iter()
-        .filter(|e| e.event_type == "step" && e.wave() == Some(wave) && e.id > sent)
-        .next_back()
+        .rfind(|e| e.event_type == "step" && e.wave() == Some(wave) && e.id > sent)
         .map(|e| (ref_shown(e.fields.get("item"), codes), e.str_field("text").unwrap_or_default().to_string()))
 }
 

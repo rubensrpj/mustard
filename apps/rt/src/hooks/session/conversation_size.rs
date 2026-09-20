@@ -80,8 +80,7 @@ fn recorded_prompt(root: &Path, spec: &str, wave: u64) -> Option<String> {
     let log = mustard_core::io::spec_events::read(&path).ok()??;
     log.block(BlockQuery::Block(Block::Waves))
         .into_iter()
-        .filter(|e| e.event_type == "send" && e.wave() == Some(wave))
-        .next_back()
+        .rfind(|e| e.event_type == "send" && e.wave() == Some(wave))
         .and_then(|e| e.str_field("text").map(str::to_string))
 }
 
@@ -95,7 +94,7 @@ fn pick_subagent_file(dir: &Path, wanted: Option<&str>) -> Option<PathBuf> {
         .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("jsonl"))
         .filter_map(|e| e.metadata().ok().and_then(|m| m.modified().ok()).map(|t| (e.path(), t)))
         .collect();
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
     if let Some(wanted) = wanted {
         let wanted = wanted.trim();
         if let Some((path, _)) =
@@ -210,7 +209,7 @@ pub(crate) fn compact_notice(root: &Path, session: Option<&str>, tokens: u64) ->
     use mustard_core::domain::spec_state::SpecState;
 
     let degree = tokens / THRESHOLD;
-    let Some(path) = record_path(root, session) else { return None };
+    let path = record_path(root, session)?;
     let mut record = read_record(&path);
     if degree < record.warned {
         record.warned = degree;
@@ -269,7 +268,7 @@ mod tests {
     fn the_size_is_the_sum_of_the_last_recorded_usage() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
-        let lines = vec![
+        let lines = [
             write_usage_line(10, 20, 30),
             "not json".to_string(),
             write_usage_line(100_000, 50_000, 49_999),

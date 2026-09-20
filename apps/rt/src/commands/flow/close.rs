@@ -880,6 +880,8 @@ mod tests {
         ready_to_close(solo_root, "x", &["git --version"]);
         let asked_solo = close_for(&CloseOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None }, None);
         assert_eq!(asked_solo["review"]["final"], json!(true), "uma onda só também pede o agente: {asked_solo}");
+        let solo_prompt = asked_solo["review"]["prompt"].as_str().unwrap_or_default();
+        assert!(solo_prompt.contains("MSTD-DELIV-0001"), "a entrega da onda única está no pedido: {solo_prompt}");
         let round_solo =
             round_for(&RoundOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None }, None);
         assert!(round_solo.get("reviews").is_none(), "a rodada não pede revisão da onda: {round_solo}");

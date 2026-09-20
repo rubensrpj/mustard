@@ -421,7 +421,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let dispatched = first["dispatch"].as_array().cloned().unwrap_or_default();
     assert_eq!(dispatched.len(), 1, "{first}");
     let next = first["next"].as_str().unwrap_or_default();
-    assert!(next.contains(&translate("round.next.solo", Locale::PtBr)), "{next}");
+    assert!(next.contains(translate("round.next.solo", Locale::PtBr)), "{next}");
     let log = project.log();
     let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
     assert!(sent.str_field("copy").is_none(), "a obra de 1 ponto não ganha cópia separada");

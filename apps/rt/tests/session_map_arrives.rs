@@ -171,12 +171,19 @@ fn an_update_renames_the_session_map_and_its_declaration() {
         // mesmo nome numa pasta diferente fica no disco, intocado.
         std::fs::create_dir_all(root.join("docs")).unwrap();
         std::fs::write(root.join(NEIGHBOUR), "# a pagina da pessoa\n").unwrap();
-        Command::new("git").args(["add", "docs"]).current_dir(&root).status().unwrap();
-        Command::new("git")
-            .args(["commit", "-q", "-m", "docs"])
+        let added = Command::new("git").args(["add", "docs"]).current_dir(&root).status().unwrap().success();
+        assert!(added, "`{spelling}`: git add");
+        // A identidade e a assinatura vão na própria chamada: numa máquina sem
+        // nome e e-mail no git — a do servidor é assim —, o commit falharia em
+        // silêncio e o vizinho ficaria marcado como novo, derrubando a
+        // conferência lá embaixo por um motivo que não é o do teste.
+        let committed = Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "docs"])
             .current_dir(&root)
             .status()
-            .unwrap();
+            .unwrap()
+            .success();
+        assert!(committed, "`{spelling}`: git commit");
 
         let report: Value = serde_json::from_str(rt(&root, &home, &["run", "upsert"], "").trim()).unwrap();
 

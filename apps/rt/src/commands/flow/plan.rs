@@ -1900,6 +1900,13 @@ mod tests {
         let out = plan(root, "x");
         let next = out["next"].as_str().unwrap_or_default();
         assert!(!next.contains("acima de 13"), "3 pontos não passou de 13: {next}");
+        // A mesma guarda nos dois idiomas, no próprio catálogo: a frase cita
+        // o teto da onda uma vez só. A versão antiga dizia 13 duas vezes, e a
+        // primeira era a razão inventada — o inglês tinha a mesma mentira.
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let phrase = translate("plan.execution.many_waves", lang);
+            assert_eq!(phrase.matches("13").count(), 1, "a frase cita o teto uma vez só: {phrase}");
+        }
 
         // 4 pontos (3 + 1, porque a escala não tem o número 4 sozinho), a
         // divisa de cima da faixa do orquestrador: já é um agente numa onda
