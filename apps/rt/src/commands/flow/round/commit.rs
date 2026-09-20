@@ -40,7 +40,14 @@ pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Optio
     let scope_key = if numbers.len() == 1 { "round.commit.scope.one" } else { "round.commit.scope.many" };
     let scope = translate(scope_key, lang).replace("{waves}", &numbers.join("-"));
     let kind = if committed.iter().any(|(w, _)| !w.fixes.is_empty()) { "fix" } else { "feat" };
-    let title = format!("{kind}({scope}): {first}");
+    let mut title = format!("{kind}({scope}): {first}");
+    // O escopo com todas as ondas pode passar do teto do título quando há
+    // mais de uma; nesse caso, o título fica só com o começo da primeira
+    // onda, e o corpo — com uma linha por onda — segue como está.
+    if title.chars().count() > MESSAGE_TITLE_MAX && numbers.len() > 1 {
+        let scope = translate("round.commit.scope.one", lang).replace("{waves}", &numbers[0]);
+        title = format!("{kind}({scope}): {first}");
+    }
     let body: Vec<String> = committed
         .iter()
         .map(|(w, summary)| {
@@ -834,6 +841,42 @@ mod tests {
             };
             assert_eq!(over.reason(), "commit-too-long", "{lang:?}");
         }
+    }
+
+    /// Duas ondas no mesmo commit dão um título dentro do teto, mesmo quando
+    /// o escopo das duas juntas passaria de 60: na divisa, um resumo de 43
+    /// caracteres ainda cabe com o escopo das duas ondas, e um de 44 só cabe
+    /// porque o título cai para o começo da primeira onda só; o corpo
+    /// continua com uma linha por onda nos dois casos.
+    #[test]
+    fn a_commit_of_two_waves_keeps_the_title_limit() {
+        let report = |wave: u64, summary: String| WaveReport {
+            wave,
+            delivered: "A onda saiu.".into(),
+            files: vec![format!("src/{wave}.rs")],
+            commit: Some(summary),
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+        };
+
+        let waves = [report(1, "a".repeat(43)), report(2, "a".repeat(43))];
+        let (title, body) = commit_message(&waves, Locale::PtBr)
+            .unwrap_or_else(|_| panic!("a 43-character summary fits the joint scope of two waves"))
+            .expect("a message");
+        assert_eq!(title.chars().count(), MESSAGE_TITLE_MAX, "{title}");
+        assert!(title.starts_with("feat(ondas-1-2): "), "{title}");
+        assert_eq!(body.lines().count(), 2, "{body}");
+
+        let waves = [report(1, "a".repeat(44)), report(2, "a".repeat(44))];
+        let (title, body) = commit_message(&waves, Locale::PtBr)
+            .unwrap_or_else(|_| {
+                panic!("a 44-character summary only overflows the joint scope, not the single-wave one")
+            })
+            .expect("a message");
+        assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
+        assert!(title.starts_with("feat(onda-1): "), "{title}");
+        assert_eq!(body.lines().count(), 2, "{body}");
     }
 
     /// A mensagem do commit é conferida antes de qualquer gravação: o
