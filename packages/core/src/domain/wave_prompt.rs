@@ -36,6 +36,14 @@ use crate::platform::i18n::{translate, Locale};
 /// O teto de linhas de um pedido de onda.
 pub const MAX_LINES: usize = 500;
 
+/// O teto de tarefas de uma onda que ainda não foi entregue: acima dele, ela
+/// nasce grande demais e [`wave_size_refusal`] a recusa.
+pub const WAVE_TASKS_CAP: usize = 3;
+
+/// O teto de provas de critério de uma onda que ainda não foi entregue, pela
+/// mesma conta de [`WAVE_TASKS_CAP`].
+pub const WAVE_PROOFS_CAP: usize = 3;
+
 /// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
 /// não entra: a skill mora num arquivo do projeto, e o agente da onda o lê.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -587,6 +595,70 @@ fn agreed_items(log: &SpecLog) -> Vec<&SpecEvent> {
         .into_iter()
         .filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty()))
         .collect()
+}
+
+/// As tarefas ainda vigentes da onda `wave`, e quantas provas de critério a
+/// onda declara, pela mesma leitura que [`wave_files`] usa.
+fn wave_size(log: &SpecLog, wave: u64) -> (Vec<&SpecEvent>, usize) {
+    let block = log.block(BlockQuery::Block(Block::Waves));
+    let tasks: Vec<&SpecEvent> =
+        block.iter().copied().filter(|e| e.event_type == "task" && e.wave() == Some(wave)).collect();
+    let proofs = block
+        .iter()
+        .find(|e| e.event_type == "wave" && e.int("n") == Some(wave))
+        .map(|w| w.ints("criteria").len())
+        .unwrap_or(0);
+    (tasks, proofs)
+}
+
+/// A recusa da onda `wave`, quando ela passa do teto de tarefas
+/// ([`WAVE_TASKS_CAP`]) ou de provas de critério ([`WAVE_PROOFS_CAP`]);
+/// `None` quando ela cabe. A divisão sugerida corta a lista de tarefas ao
+/// meio, na ordem em que elas aparecem no arquivo.
+#[must_use]
+pub fn wave_size_refusal(log: &SpecLog, wave: u64) -> Option<Refusal> {
+    let (tasks, proofs) = wave_size(log, wave);
+    if tasks.len() <= WAVE_TASKS_CAP && proofs <= WAVE_PROOFS_CAP {
+        return None;
+    }
+    let codes = log.codes();
+    let code_of = |event: &SpecEvent| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
+    let wave_codes: Vec<String> = tasks.iter().map(|task| code_of(task)).collect();
+    let half = wave_codes.len().div_ceil(2);
+    let (first, second) = wave_codes.split_at(half);
+    Some(Refusal::WaveTooBig {
+        wave,
+        tasks: tasks.len(),
+        proofs,
+        first: first.join(", "),
+        second: second.join(", "),
+    })
+}
+
+/// A onda grande é recusada na hora de nascer, não depois de gravada: a
+/// tarefa ou a onda que faria uma onda ainda não entregue passar do teto de
+/// tarefas ou de provas de critério é recusada antes de ir para o arquivo.
+/// Olha só o evento que a gravação acabou de acrescentar a `after` — as
+/// gravações que não mexem em tarefa nem em onda passam sempre.
+///
+/// # Errors
+///
+/// [`Refusal::WaveTooBig`].
+pub fn wave_size_rule(after: &SpecLog) -> Result<(), Refusal> {
+    let Some(event) = after.get(after.max_id()) else { return Ok(()) };
+    let wave = match event.event_type.as_str() {
+        "task" => event.int("wave"),
+        "wave" => event.int("n"),
+        _ => None,
+    };
+    let Some(wave) = wave else { return Ok(()) };
+    if after.delivered_waves().contains(&wave) {
+        return Ok(());
+    }
+    match wave_size_refusal(after, wave) {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
+    }
 }
 
 /// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
