@@ -99,6 +99,26 @@ fn nothing_outside_and_no_silencer(root: &Path, home: &Path) {
     }
 }
 
+/// Um `spec.html` de uma instalação de 12/09, editado por fora: o `upsert`
+/// seguinte o troca pelo texto do binário de hoje, mesmo sem mudar nenhuma
+/// chave — os dois modelos de página são texto do Mustard, nunca do projeto.
+#[test]
+fn upsert_replaces_a_stale_page_template_with_no_switch_touched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (root, home) = installed(dir.path());
+    let page = root.join(".claude/mustard/pages/spec.html");
+    let stale = "<html><!-- installed 12/09, never touched since --></html>";
+    std::fs::write(&page, stale).expect("plant a stale template");
+
+    let report = upsert(&root, &home);
+
+    let updated = report["updated"].as_array().expect("updated is a list");
+    let names: Vec<&str> = updated.iter().filter_map(Value::as_str).collect();
+    assert!(names.contains(&".claude/mustard/pages/spec.html"), "{names:?}");
+    let rewritten = std::fs::read_to_string(&page).expect("the page still exists");
+    assert_ne!(rewritten, stale, "the stale copy from 12/09 survived the upsert");
+}
+
 /// A opção `rtk` do `mustard.json` desligada e religada: o gancho
 /// `rtk hook claude` sai e volta no `.claude/settings.local.json`, nada muda
 /// na pasta pessoal nem no arquivo da equipe, e, com os dois divergentes, o

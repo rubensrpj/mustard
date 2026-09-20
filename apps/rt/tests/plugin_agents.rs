@@ -6,12 +6,13 @@
 //! Os textos de agente do Mustard, pelo binário de verdade.
 //!
 //! O projeto recebe exatamente três agentes — `mustard-wave`,
-//! `mustard-review` e `mustard-skill` —, no idioma do `language.text` e com
-//! até 3.072 bytes cada; os dois idiomas existem como molde do produto; nenhum
-//! texto manda criar cópia do projeto por conta própria, e os de onda e de
-//! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
-//! indica; e cada comando do fluxo responde o próximo passo, que o modelo não
-//! escolhe sozinho.
+//! `mustard-review` e `mustard-skill` —, no idioma do `language.text`; os
+//! dois idiomas existem como molde do produto; nenhum texto manda criar
+//! cópia do projeto por conta própria, e os de onda e de revisão mandam
+//! trabalhar na cópia e na pasta de compilação que o pedido indica; e cada
+//! comando do fluxo responde o próximo passo, que o modelo não escolhe
+//! sozinho. O que prende o texto de um agente é o que ele diz, não quantos
+//! bytes ele tem.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -118,8 +119,8 @@ fn template(lang: &str, name: &str) -> String {
         .unwrap_or_else(|e| panic!("the {lang} `{name}` template is missing: {e}"))
 }
 
-/// O projeto recebe exatamente os três agentes, no idioma do `language.text`
-/// e com até 3.072 bytes cada; os dois idiomas existem como molde; e o
+/// O projeto recebe exatamente os três agentes, no idioma do `language.text`;
+/// os dois idiomas existem como molde; e o
 /// plugin não entrega agente nenhum, porque entregaria os dois idiomas. Os
 /// textos que o instalador escreve trazem as duas guardas desta obra: provar
 /// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
@@ -223,7 +224,7 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
 
 /// O agente de onda instalado proíbe usar o stash do git, na mesma frase que
 /// já proíbe comitar, enviar ao servidor e trocar de branch, nos dois
-/// idiomas, e continua dentro do teto de bytes do agente.
+/// idiomas.
 #[test]
 fn the_wave_agent_never_uses_the_git_stash() {
     for (lang, phrase) in [("pt-BR", "use o stash"), ("en-US", "or stash")] {
@@ -255,6 +256,72 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
                 text.contains(".claude/pending/"),
                 "the {lang} `{name}` agent does not say the pending ledger is not its to close"
             );
+        }
+    }
+}
+
+/// O molde da onda declara o modelo sonnet com esforço alto, o do revisor
+/// declara opus com esforço alto, e o da skill declara sonnet: cada agente
+/// sabe o próprio modelo, sem herdar o da sessão em silêncio. Nenhum teste
+/// desta obra recusa um molde pelo tamanho em bytes — o que prende o texto é
+/// o que ele diz.
+#[test]
+fn each_agent_template_declares_its_own_model_and_effort() {
+    for lang in ["pt-BR", "en-US"] {
+        let wave = template(lang, "wave");
+        assert!(wave.contains("\nmodel: sonnet\n"), "the {lang} wave agent does not declare the sonnet model:\n{wave}");
+        assert!(wave.contains("\neffort: high\n"), "the {lang} wave agent does not declare a high effort:\n{wave}");
+        assert!(wave.len() as u64 > 3_072, "the {lang} wave agent is not over the old byte cap, so it proves nothing");
+
+        let review = template(lang, "review");
+        assert!(review.contains("\nmodel: opus\n"), "the {lang} review agent does not declare the opus model:\n{review}");
+        assert!(review.contains("\neffort: high\n"), "the {lang} review agent does not declare a high effort:\n{review}");
+
+        let skill = template(lang, "skill");
+        assert!(skill.contains("\nmodel: sonnet\n"), "the {lang} skill agent does not declare the sonnet model:\n{skill}");
+        assert!(!skill.contains("model: inherit"), "the {lang} skill agent still inherits the session's model");
+    }
+}
+
+/// As regras de execução que valem em qualquer projeto — ler por trecho, não
+/// reler depois de editar, rodar só os testes do que mudou, a suíte inteira
+/// uma vez no fim pelo `rtk`, nada em segundo plano, não comitar nem usar
+/// `git add`, rodar cada comando de dentro da cópia e a pasta de compilação
+/// fixa — voltam para o molde da onda e do revisor, com as palavras inteiras
+/// do catálogo, nos dois idiomas.
+#[test]
+fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
+    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let from_catalog = [
+            "prompt.execution.excerpt",
+            "prompt.execution.no_reread",
+            "prompt.execution.changed_tests",
+            "prompt.execution.suite_once",
+            "prompt.execution.no_background",
+            "prompt.execution.no_commit",
+        ];
+        let hand_written: [&str; 3] = if text == Locale::PtBr {
+            [
+                "Rode cada comando de dentro da cópia",
+                "passa de uma cópia para a seguinte",
+                "o corte que mexe no mesmo trecho de outro vai sozinho",
+            ]
+        } else {
+            [
+                "Run every command from inside the copy",
+                "passes from one copy to the next",
+                "a cut that touches the same spot as another goes alone",
+            ]
+        };
+        for name in ["wave", "review"] {
+            let agent = template(lang, name);
+            for key in from_catalog {
+                let phrase = translate(key, text);
+                assert!(agent.contains(phrase), "the {lang} `{name}` agent lost the execution rule `{key}`: {phrase}");
+            }
+            for phrase in hand_written {
+                assert!(agent.contains(phrase), "the {lang} `{name}` agent lost the execution rule `{phrase}`");
+            }
         }
     }
 }
