@@ -532,18 +532,6 @@ fn check(
     if spec_parts.len() > 1 {
         out.push(PlanFinding::SpecShouldSplit { parts: listed(&spec_parts) });
     }
-    // A nota de cada tarefa, na mesma leitura do tamanho da onda: a tarefa
-    // sem nota numa onda que ainda não saiu segura a pergunta, como a tarefa
-    // sem arquivo, e a onda cuja soma passa do teto só avisa — o aviso nunca
-    // recusa nem divide a onda. A onda já entregue fica de fora das duas.
-    let points = wave_points(log, &delivered);
-    if !points.unrated.is_empty() {
-        out.push(PlanFinding::TasksWithoutPoints { tasks: points.unrated.join(", ") });
-    }
-    for (wave, points) in points.over_cap() {
-        out.push(PlanFinding::WavePointsOverCap { wave, points });
-    }
-
     // O comando de compilar e o de testar, do mesmo `mustard.json` que
     // `prompts` já leu para montar `built`: o campo ainda não declarado, ou
     // só com o provisório do `init`, sai como aviso, com o campo a
@@ -576,6 +564,18 @@ fn check(
         .into_iter()
         .filter(|e| e.event_type == "task")
         .collect();
+    // A nota de cada tarefa, na mesma leitura que acabou de montar `tasks`,
+    // sem refazer o filtro do bloco: a tarefa sem nota numa onda que ainda
+    // não saiu segura a pergunta, como a tarefa sem arquivo, e a onda cuja
+    // soma passa do teto só avisa — o aviso nunca recusa nem divide a onda.
+    // A onda já entregue fica de fora das duas.
+    let points = wave_points_of(&tasks, &delivered, &codes);
+    if !points.unrated.is_empty() {
+        out.push(PlanFinding::TasksWithoutPoints { tasks: points.unrated.join(", ") });
+    }
+    for (wave, points) in points.over_cap() {
+        out.push(PlanFinding::WavePointsOverCap { wave, points });
+    }
     // A conferência olha só o que ainda vem: a tarefa de onda que já tem
     // registro de entrega está provada pelo código que entrou, pelo commit
     // que a carrega e pela revisão que a aprovou, e conferir de novo o texto
@@ -727,12 +727,17 @@ impl WavePoints {
     }
 }
 
-/// A leitura das notas das tarefas do plano, a mesma da conferência do plano
-/// e da migração de uma spec antiga: a tarefa de uma onda em `skip` não conta.
-pub(crate) fn wave_points(log: &SpecLog, skip: &BTreeSet<u64>) -> WavePoints {
-    let codes = log.codes();
+/// A conta que soma e marca as tarefas sem nota, sobre uma lista de tarefas
+/// já lida do bloco de ondas: quem já tem as tarefas em mãos — como a
+/// conferência do plano, que as lê para as citações — acumula a nota no
+/// mesmo laço, sem pedir ao log uma segunda leitura do bloco.
+fn wave_points_of<'a>(
+    tasks: impl IntoIterator<Item = &'a &'a SpecEvent>,
+    skip: &BTreeSet<u64>,
+    codes: &BTreeMap<u64, String>,
+) -> WavePoints {
     let mut out = WavePoints::default();
-    for task in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task") {
+    for task in tasks {
         let Some(wave) = task.wave() else { continue };
         if skip.contains(&wave) {
             continue;
@@ -743,6 +748,15 @@ pub(crate) fn wave_points(log: &SpecLog, skip: &BTreeSet<u64>) -> WavePoints {
         }
     }
     out
+}
+
+/// A leitura das notas das tarefas do plano, a mesma da conferência do plano
+/// e da migração de uma spec antiga: a tarefa de uma onda em `skip` não conta.
+pub(crate) fn wave_points(log: &SpecLog, skip: &BTreeSet<u64>) -> WavePoints {
+    let codes = log.codes();
+    let tasks: Vec<&SpecEvent> =
+        log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task").collect();
+    wave_points_of(&tasks, skip, &codes)
 }
 
 /// As notas das tarefas das ondas que ainda não saíram, lidas na migração de
@@ -1781,6 +1795,33 @@ mod tests {
         let after = plan(root, "x");
         assert_eq!(after["ok"], json!(true), "com a nota, a tarefa não segura mais: {after}");
         assert!(hints_of(&after, "blocking", "task-without-points").is_empty(), "{after}");
+    }
+
+    /// Duas tarefas sem nota, em ondas diferentes: a recusa lista as duas,
+    /// pelo código, na mesma linha — não só a primeira que o laço encontra.
+    #[test]
+    fn two_tasks_without_points_are_both_listed_in_the_refusal() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        waves_of_code(root, said, 2);
+        rated(root, said, 1, "src/um.rs", Some(3));
+        rated(root, said, 2, "src/dois.rs", Some(3));
+        let first_unrated = rated(root, said, 1, "src/tres.rs", None);
+        let second_unrated = rated(root, said, 2, "src/quatro.rs", None);
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let first_code = codes[&id_of(&first_unrated)].clone();
+        let second_code = codes[&id_of(&second_unrated)].clone();
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let scale = translate("plan.points_scale", Locale::PtBr);
+        let expected = translate("plan.task_without_points", Locale::PtBr)
+            .replace("{tasks}", &format!("{first_code}, {second_code}"))
+            .replace("{scale}", scale);
+        assert_eq!(hints_of(&report, "blocking", "task-without-points"), vec![expected], "{report}");
     }
 
     /// Na divisa do teto: a onda que soma 13 passa sem aviso; a que soma 14

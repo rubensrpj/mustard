@@ -947,6 +947,34 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         assert!(plan(root).is_empty(), "a second install finds nothing");
     }
 
+    /// A mesma instrução em dois subprojetos vira uma guarda só, com os dois
+    /// lugares. Se o banco já guarda o texto, mas só para um dos dois, a
+    /// guarda não pode ser descartada — ela só sai quando o banco já vale
+    /// nos dois lugares dela, nunca quando vale só num.
+    #[test]
+    fn a_guard_in_two_subprojects_is_not_dropped_when_the_bank_only_holds_in_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let text = "Não chame o banco de dentro do controlador.";
+        let handler = kept_in_a(root, text, "controlador");
+        let body = "# Svc\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n";
+        write(root, "apps/a/CLAUDE.md", body);
+        write(root, "apps/b/CLAUDE.md", body);
+
+        let listed = plan(root);
+        assert_eq!(listed.lessons.len(), 1, "a guarda não pode sumir: {:?}", listed.lessons);
+        assert_eq!(listed.lessons[0].replaces, Some(handler), "o banco só vale em apps/a, não nos dois lugares da guarda");
+
+        let done = apply(root, &listed).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
+        let widened = kept_with(&bank, text);
+        assert_eq!(widened.len(), 1, "{widened:?}");
+        for file in ["apps/a/src/x.rs", "apps/b/src/x.rs"] {
+            assert!(holding_for(&bank, file).contains(&widened[0].id), "{file} keeps the rule");
+        }
+    }
+
     /// Duas limpezas ao mesmo tempo, cada uma dando à mesma lição do banco um
     /// lugar novo, não perdem regra nem repetem lição: com a trava presa, a
     /// gravação confere que a lição substituída ainda é a que a leitura mostra

@@ -12,6 +12,12 @@
 #   cópia do SISTEMA .... /usr/lib/mustard/ — a que o pacote oficial (.deb)
 #                        instala (ver packaging/linux/build-deb.sh)
 #
+# O instalador oficial (packaging/installer/plugin-step.sh) recusa escrever
+# direto no cache do plugin de propósito — aquele layout é interno e pode
+# mudar sem aviso. Este script FAZ ISSO, e só porque é uma ferramenta de
+# desenvolvimento: quem o roda já sabe da versão em uso e aceita o risco de um
+# layout que pode mudar.
+#
 # A versão que decide QUAL pasta do cache é a cópia do plugin vem do
 # manifesto desta branch (plugin/.claude-plugin/plugin.json), não de uma
 # variável — é assim que o script acerta a pasta certa mesmo sem a pessoa
@@ -202,20 +208,28 @@ swap_tree_root_owned() {
 }
 
 # --- o oposto de cada uma, para o --restore ----------------------------------
+# Sem backup, o destino não existia antes da troca — o desfazer tem de
+# APAGAR o que a troca criou, não deixá-lo para trás.
 restore_file() {
   backup=$1
   destino=$2
-  [ -f "$backup" ] || return 0
-  mkdir -p "$(dirname -- "$destino")"
-  cp -p "$backup" "$destino"
+  if [ -f "$backup" ]; then
+    mkdir -p "$(dirname -- "$destino")"
+    cp -p "$backup" "$destino"
+  else
+    rm -f "$destino"
+  fi
 }
 restore_tree() {
   backup_dir=$1
   destino_dir=$2
-  [ -d "$backup_dir" ] || return 0
-  rm -rf "$destino_dir"
-  mkdir -p "$(dirname -- "$destino_dir")"
-  cp -pR "$backup_dir" "$destino_dir"
+  if [ -d "$backup_dir" ]; then
+    rm -rf "$destino_dir"
+    mkdir -p "$(dirname -- "$destino_dir")"
+    cp -pR "$backup_dir" "$destino_dir"
+  else
+    rm -rf "$destino_dir"
+  fi
 }
 
 # --- --system-copy-only: só a cópia do sistema, sem compilar e sem procurar
@@ -279,35 +293,52 @@ if [ -z "$VERSAO" ]; then
   exit 1
 fi
 
-achar_copia_do_plugin() {
+# Lista, uma por linha, cada cópia do plugin na versão do manifesto. Mais de
+# uma linha é ambíguo — quem chama decide se isso é erro fatal (instalação)
+# ou só motivo para pular essa parte (desfazer).
+listar_copias_do_plugin() {
   raiz="$CLAUDE_DIR/plugins/cache"
   [ -d "$raiz" ] || return 0
-  find "$raiz" -maxdepth 3 -type d -path "*/mustard/$VERSAO" 2>/dev/null | head -n 1
+  find "$raiz" -maxdepth 3 -type d -path "*/mustard/$VERSAO" 2>/dev/null
 }
-PLUGIN_COPY=$(achar_copia_do_plugin)
-if [ -z "$PLUGIN_COPY" ]; then
-  echo "erro: não achei a cópia do plugin na versão $VERSAO, dentro de" >&2
-  echo "      $CLAUDE_DIR/plugins/cache — instale o plugin nesta versão antes:" >&2
-  echo "      /plugin marketplace add rubensrpj/mustard && /plugin install mustard@mustard-local" >&2
-  exit 1
-fi
+contar_copias_do_plugin() {
+  # `grep -c` sai com status 1 quando não acha nada — sob `set -e`, isso
+  # derrubaria o script antes de a chamada decidir o que fazer com zero.
+  printf '%s\n' "$1" | grep -c '.' || true
+}
 
 # --- --restore: desfaz uma troca anterior -----------------------------------
-# A cópia do plugin volta sempre, aqui mesmo. A cópia do sistema pede
-# administrador, como na instalação: só volta direto quando este processo já
-# é root; senão, o script não toca nela — imprime o comando pronto com sudo
-# (--restore-system-only, que não procura o plugin nem compila nada).
+# A cópia do plugin volta sempre que achada, aqui mesmo — a busca só roda
+# DEPOIS de saber que estamos desfazendo, e a ausência dela não é fatal: uma
+# pessoa pode desfazer depois de já ter desinstalado o plugin, e aí só a
+# cópia do sistema importa. A cópia do sistema pede administrador, como na
+# instalação: só volta direto quando este processo já é root; senão, o script
+# não toca nela — imprime o comando pronto com sudo (--restore-system-only,
+# que não procura o plugin nem compila nada).
 if [ -n "$RESTORE_DIR" ]; then
   [ -d "$RESTORE_DIR" ] || { echo "erro: pasta de backup inexistente: $RESTORE_DIR" >&2; exit 1; }
-  echo "==> Restaurando a cópia do plugin ($PLUGIN_COPY)…"
-  for b in mustard mustard-rt scan; do
-    restore_file "$RESTORE_DIR/plugin/bin/$b" "$PLUGIN_COPY/bin/$b"
-  done
-  restore_tree "$RESTORE_DIR/plugin/bin/templates" "$PLUGIN_COPY/bin/templates"
-  restore_tree "$RESTORE_DIR/plugin/commands" "$PLUGIN_COPY/commands"
-  restore_tree "$RESTORE_DIR/plugin/hooks" "$PLUGIN_COPY/hooks"
-  restore_tree "$RESTORE_DIR/plugin/output-styles" "$PLUGIN_COPY/output-styles"
-  echo "==> Restaurado a partir de $RESTORE_DIR."
+  PLUGIN_COPIES=$(listar_copias_do_plugin)
+  PLUGIN_COPY_COUNT=$(contar_copias_do_plugin "$PLUGIN_COPIES")
+  if [ "$PLUGIN_COPY_COUNT" -gt 1 ]; then
+    echo "erro: achei mais de uma cópia do plugin na versão $VERSAO:" >&2
+    printf '%s\n' "$PLUGIN_COPIES" >&2
+    echo "      apague a que não deve ser usada antes de desfazer." >&2
+    exit 1
+  fi
+  if [ "$PLUGIN_COPY_COUNT" -eq 1 ]; then
+    PLUGIN_COPY="$PLUGIN_COPIES"
+    echo "==> Restaurando a cópia do plugin ($PLUGIN_COPY)…"
+    for b in mustard mustard-rt scan; do
+      restore_file "$RESTORE_DIR/plugin/bin/$b" "$PLUGIN_COPY/bin/$b"
+    done
+    restore_tree "$RESTORE_DIR/plugin/bin/templates" "$PLUGIN_COPY/bin/templates"
+    restore_tree "$RESTORE_DIR/plugin/commands" "$PLUGIN_COPY/commands"
+    restore_tree "$RESTORE_DIR/plugin/hooks" "$PLUGIN_COPY/hooks"
+    restore_tree "$RESTORE_DIR/plugin/output-styles" "$PLUGIN_COPY/output-styles"
+    echo "==> Restaurado a partir de $RESTORE_DIR."
+  else
+    echo "==> Sem cópia do plugin na versão $VERSAO — pulando essa parte do desfazer." >&2
+  fi
   if [ -d "$RESTORE_DIR/system" ]; then
     if [ "$(id -u)" -eq 0 ]; then
       echo "==> Restaurando a cópia do sistema ($SYSTEM_DIR)…"
@@ -323,10 +354,41 @@ if [ -n "$RESTORE_DIR" ]; then
   exit 0
 fi
 
+# --- a cópia do plugin: obrigatória para instalar, e só procurada aqui, DEPOIS
+#     do ramo do desfazer acima — instalar precisa de um lugar para trocar os
+#     arquivos, então zero ou mais de uma cópia é erro fatal aqui (o desfazer,
+#     acima, trata os dois casos de outro jeito).
+PLUGIN_COPIES=$(listar_copias_do_plugin)
+PLUGIN_COPY_COUNT=$(contar_copias_do_plugin "$PLUGIN_COPIES")
+if [ "$PLUGIN_COPY_COUNT" -gt 1 ]; then
+  echo "erro: achei mais de uma cópia do plugin na versão $VERSAO:" >&2
+  printf '%s\n' "$PLUGIN_COPIES" >&2
+  echo "      apague a que não deve ser usada antes de rodar de novo." >&2
+  exit 1
+fi
+if [ "$PLUGIN_COPY_COUNT" -eq 0 ]; then
+  echo "erro: não achei a cópia do plugin na versão $VERSAO, dentro de" >&2
+  echo "      $CLAUDE_DIR/plugins/cache — instale o plugin nesta versão antes:" >&2
+  echo "      /plugin marketplace add rubensrpj/mustard && /plugin install mustard@mustard-local" >&2
+  exit 1
+fi
+PLUGIN_COPY="$PLUGIN_COPIES"
+
 # --- compila os três programas, no modo de entrega --------------------------
 echo "==> Compilando mustard, mustard-rt e scan (cargo build --release)…"
 ( cd "$REPO_ROOT" && cargo build --release --locked --bin scan --bin mustard-rt --bin mustard )
-RELEASE_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release"
+# $CARGO_TARGET_DIR relativo é resolvido contra a RAIZ DO REPOSITÓRIO — o
+# mesmo lugar de onde o `cargo build` acima rodou (o `cd "$REPO_ROOT"` do
+# subshell) — nunca contra a pasta de onde esta pessoa chamou o script.
+if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+  case "$CARGO_TARGET_DIR" in
+    /*) TARGET_DIR="$CARGO_TARGET_DIR" ;;
+    *) TARGET_DIR="$REPO_ROOT/$CARGO_TARGET_DIR" ;;
+  esac
+else
+  TARGET_DIR="$REPO_ROOT/target"
+fi
+RELEASE_DIR="$TARGET_DIR/release"
 for b in mustard mustard-rt scan; do
   [ -x "$RELEASE_DIR/$b" ] || { echo "erro: cargo build não deixou $RELEASE_DIR/$b" >&2; exit 1; }
 done
