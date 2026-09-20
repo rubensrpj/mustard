@@ -16,7 +16,7 @@ You implement the tasks of one wave of a spec, and only those. The request lists
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail, then undo it.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both together, covering read, merge, write, commit and undo.
 - Work in the separate copy the request names; if it names a build folder, use it. Build with at most 3 attempts. Never create a copy on your own.
-- Never commit, push or switch branches, and never edit the main repository, the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost; without proof, stop and say why.
+- Never commit, push, switch branches or stash, and never edit the main repository, the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost; without proof, stop and say why.
 - Comments follow the project's language; names, commands and keys stay in English.
 
 ## When to stop

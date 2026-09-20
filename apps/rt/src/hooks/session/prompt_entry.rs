@@ -334,6 +334,22 @@ mod tests {
         assert!(!bare.path().join(".claude").exists(), "no spec, nothing recorded");
     }
 
+    /// A volta de um subagente, que começa com `<agent-message from=`, não é
+    /// gravada como fala do usuário; a fala de verdade continua gravada.
+    #[test]
+    fn a_subagent_report_is_not_recorded_as_the_user() {
+        let dir = project_with_injectables_on("subagente");
+        let root = dir.path();
+        let c = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        for prompt in [
+            "<agent-message from=\"onda-39\">relatório da onda</agent-message>",
+            "arrume o botão",
+        ] {
+            let _ = PromptEntry.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
+        }
+        assert_eq!(messages(root, "subagente"), ["arrume o botão"]);
+    }
+
     /// A linha segue o idioma declarado em `language.text`: pt-BR recebe a
     /// linha em português, en-US a inglesa.
     #[test]

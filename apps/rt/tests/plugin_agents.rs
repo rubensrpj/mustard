@@ -225,6 +225,24 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
     }
 }
 
+/// O agente de onda instalado proíbe usar o stash do git, na mesma frase que
+/// já proíbe comitar, enviar ao servidor e trocar de branch, nos dois
+/// idiomas, e continua dentro do teto de bytes do agente.
+#[test]
+fn the_wave_agent_never_uses_the_git_stash() {
+    for (lang, phrase) in [("pt-BR", "use o stash"), ("en-US", "or stash")] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let wave = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        assert!(wave.len() <= AGENT_CAP, "the {lang} wave agent is {} bytes", wave.len());
+        let guard = wave
+            .lines()
+            .find(|l| l.contains("Nunca comite") || l.contains("Never commit"))
+            .unwrap_or_else(|| panic!("the {lang} wave agent lost its git guard line"));
+        assert!(guard.contains(phrase), "the {lang} wave agent does not forbid the stash: {guard}");
+    }
+}
+
 /// Nenhum texto de agente manda criar cópia do projeto por conta própria —
 /// nem os três que o projeto recebe, em cada idioma, nem as instruções fixas
 /// que o binário monta no pedido da onda e da revisão —; os de onda e de
