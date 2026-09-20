@@ -161,6 +161,23 @@ mod tests {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
 
+    /// A resposta do usuário à pergunta `question`, dada pela testemunha dos
+    /// gestos, como o harness a entrega depois do clique.
+    pub(super) fn click(root: &Path, session: &str, question: &str, answer: &str) {
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
+        let input = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            tool_name: Some("AskUserQuestion".to_string()),
+            session_id: Some(session.to_string()),
+            tool_input: json!({ "questions": [{ "question": question,
+                "options": [{ "label": "Aceitar" }, { "label": "Recusar" }] }] }),
+            raw: json!({ "tool_response": { "answers": { question: answer } } }),
+            ..HookInput::default()
+        };
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
+        crate::hooks::observe::approval_witness::ApprovalWitness.evaluate(&input, &ctx).expect("never errors");
+    }
+
     pub(super) fn git_at(root: &Path, args: &[&str]) {
         let out = Command::new("git")
             .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])

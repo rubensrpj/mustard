@@ -262,13 +262,18 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
             if has("result") || has("reason") { Ok(()) } else { Err(missing(event_type, "result")) }
         }
         // O entregou volta para a janela principal a cada onda: ele conta o
-        // que mudou, e não repete o pedido.
+        // que mudou, e não repete o pedido. Sem plano novo, exige a lista de
+        // arquivos; com ele, a onda pode ter voltado sem mexer em nenhum.
         "delivered" => {
             let chars = word("text").chars().count();
             if chars > DELIVERED_MAX_CHARS {
                 return Err(Refusal::DeliveredTooLong { chars, max: DELIVERED_MAX_CHARS });
             }
-            Ok(())
+            if has("replan") {
+                Ok(())
+            } else {
+                need("files")
+            }
         }
         "skill" if word("action") == "create" => {
             need("examples")?;

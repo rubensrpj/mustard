@@ -239,23 +239,6 @@ mod tests {
         assert_eq!(after["dispatch"], json!([]), "a onda 1 já entregou: {after}");
     }
 
-    /// A resposta do usuário à pergunta `question`, dada pela testemunha dos
-    /// gestos, como o harness a entrega depois do clique.
-    fn click(root: &Path, session: &str, question: &str, answer: &str) {
-        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
-        let input = HookInput {
-            hook_event_name: Some("PostToolUse".to_string()),
-            tool_name: Some("AskUserQuestion".to_string()),
-            session_id: Some(session.to_string()),
-            tool_input: json!({ "questions": [{ "question": question,
-                "options": [{ "label": "Aceitar" }, { "label": "Recusar" }] }] }),
-            raw: json!({ "tool_response": { "answers": { question: answer } } }),
-            ..HookInput::default()
-        };
-        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
-        crate::hooks::observe::approval_witness::ApprovalWitness.evaluate(&input, &ctx).expect("never errors");
-    }
-
     /// O agente que diz que o plano da onda não funciona para a rodada até o
     /// "sim" do usuário, e o "sim" é o clique em "Aceitar" na pergunta da
     /// mudança, gravado pela testemunha. A recusa mostra a mudança e a

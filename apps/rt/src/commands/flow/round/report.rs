@@ -299,15 +299,20 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         let field = |field| RoundRefusal::LineField { line: DELIVERED_LINE, field };
         let wave = wave.ok_or_else(|| field("wave"))?;
         let delivered = text(&fields, "text").ok_or_else(|| field("text"))?;
-        let files: Vec<String> = fields
-            .get("files")
-            .and_then(Value::as_array)
-            .ok_or_else(|| field("files"))?
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|f| f.trim().replace('\\', "/"))
-            .filter(|f| !f.is_empty())
-            .collect();
+        // Sem `files`, a entrega volta sem arquivo nenhum: a exigência de
+        // quando isso vale (só sem replanejamento) fica com a gravação, que
+        // já confere a mesma regra para o resto dos campos da situação.
+        let files: Vec<String> = match fields.get("files") {
+            None => Vec::new(),
+            Some(value) => value
+                .as_array()
+                .ok_or_else(|| field("files"))?
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|f| f.trim().replace('\\', "/"))
+                .filter(|f| !f.is_empty())
+                .collect(),
+        };
         let replan = text(&fields, "replan");
         let commit = text(&fields, "commit");
         // Arquivo entregue pede commit, e o commit sai do resumo.
@@ -429,15 +434,29 @@ fn check_reports(
             draft.insert("wave".into(), json!(wave));
             draft.insert("text".into(), json!(report.delivered));
             draft.insert("files".into(), json!(report.files));
+            if let Some(replan) = &report.replan {
+                draft.insert("replan".into(), json!(replan));
+            }
             draft.insert("author".into(), json!("wave"));
             check.record("delivered", draft.clone())?;
             deliveries.push((wave, draft));
         }
     }
-    let mut proofs = Vec::new();
+    // Mais de uma prova para o mesmo critério não vira uma versão por prova,
+    // em cadeia: junta todas num comando só, ligado por `&&`, na ordem e sem
+    // repetir, e o critério ganha uma versão só, mais abaixo.
+    let mut proofs: Vec<(u64, String)> = Vec::new();
     for wave in &report.waves {
         for (reference, proof) in &wave.proofs {
-            proofs.push((criterion_id(check.log(), reference)?, proof.clone()));
+            let id = criterion_id(check.log(), reference)?;
+            match proofs.iter_mut().find(|(existing, _)| *existing == id) {
+                Some((_, joined)) if joined.split(" && ").any(|part| part == proof) => {}
+                Some((_, joined)) => {
+                    joined.push_str(" && ");
+                    joined.push_str(proof);
+                }
+                None => proofs.push((id, proof.clone())),
+            }
         }
     }
     for (id, proof) in &proofs {
@@ -546,6 +565,77 @@ mod tests {
         assert_eq!(judged.len(), 1);
         let criterion = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
         assert_eq!(judged[0].fields["criteria"][0]["criterion"], json!(criterion), "the code became the number");
+    }
+
+    /// Quando a entrega traz mais de uma prova para o mesmo critério, elas
+    /// ficam todas: um comando só, ligado por `&&`, na ordem e sem repetir, e
+    /// o critério ganha uma versão só (não uma em cadeia por prova).
+    #[test]
+    fn several_proofs_of_one_criterion_all_stay() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        let spec_before = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap();
+        let criteria_before = spec_before.lines().filter(|l| l.contains("\"type\":\"criterion\"")).count();
+
+        let path = root.join("src/a.rs");
+        let file_before = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{file_before}// Saiu.\n")).unwrap();
+        let body = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu",
+            "proofs": [
+                {"criterion": "MSTD-CRIT-0001", "proof": "cargo test a"},
+                {"criterion": "MSTD-CRIT-0001", "proof": "cargo test b"},
+                {"criterion": "MSTD-CRIT-0001", "proof": "cargo test a"},
+                {"criterion": "MSTD-CRIT-0001", "proof": "cargo test c"},
+            ]});
+        let out = round(root, "x", Some(&line("DELIVERED", body)));
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let raw = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap();
+        let criteria_after = raw.lines().filter(|l| l.contains("\"type\":\"criterion\"")).count();
+        assert_eq!(criteria_after, criteria_before + 1, "one version only, not one per proof: {raw}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion");
+        assert_eq!(current.str_field("proof"), Some("cargo test a && cargo test b && cargo test c"), "{raw}");
+    }
+
+    /// Uma onda que volta com pedido de replanejamento e sem arquivo nenhum
+    /// tem a entrega gravada, sem recusa; sem o replanejamento, a falta de
+    /// arquivo continua recusada.
+    #[test]
+    fn a_replan_without_files_is_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let lines_before = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
+
+        let no_replan = line("DELIVERED", json!({"wave": 1, "text": "Parei sem mexer em arquivo."}));
+        let refused = round(root, "x", Some(&no_replan));
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        let lines_after = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
+        assert_eq!(lines_after, lines_before, "nothing was recorded: {refused}");
+
+        let change = "o plano não serve mais";
+        let with_replan = line("DELIVERED", json!({"wave": 1, "text": "Parei sem mexer em arquivo.", "replan": change}));
+        let stopped = round(root, "x", Some(&with_replan));
+        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let session = "s-replan-sem-arquivo";
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
+        let question = stopped["question"].as_str().unwrap_or_default().to_string();
+        assert_eq!(question, super::super::stops::change_question(&replan_code(1, change), Locale::PtBr), "{stopped}");
+        click(root, session, &question, "Aceitar");
+        let out = round(root, "x", Some(&with_replan));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(delivered_count(root), 1, "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let delivered = log.visible().into_iter().find(|e| e.event_type == "delivered").expect("the delivery");
+        let files = delivered.fields.get("files").and_then(Value::as_array).map_or(0, Vec::len);
+        assert_eq!(files, 0, "{:?}", delivered.fields);
+        assert_eq!(delivered.str_field("replan"), Some("o plano não serve mais"));
     }
 
     /// O que uma onda entregou acima do teto de caracteres é recusado, e nada
