@@ -18,7 +18,9 @@
 //! que não existe e não está marcado como novo; tarefa que mexe em código
 //! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere;
 //! tarefa sem nota de trabalho, que volta com a escala e o exemplo de cada
-//! nota; e tarefa cujo texto não casa com onda nenhuma do plano.
+//! nota; tarefa cujo texto não casa com onda nenhuma do plano; e onda que
+//! ainda vem com mais de três tarefas ou mais de três provas de critério,
+//! que volta com a divisão sugerida em duas ondas e as tarefas de cada uma.
 //!
 //! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
 //! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
@@ -582,6 +584,22 @@ fn check(
     // que a descreveu só acumula trava que ninguém vai consertar.
     let ahead: Vec<&SpecEvent> =
         tasks.iter().copied().filter(|task| !task.wave().is_some_and(|n| delivered.contains(&n))).collect();
+
+    // A onda nasce pequena: até três tarefas e até três provas de critério. A
+    // gravação já recusa a tarefa ou o critério que a levaria a passar do
+    // teto (`wave_prompt::wave_size_rule`); esta conferência é a rede, para
+    // a onda que cresceu por outro caminho — a já entregue não entra, porque
+    // o tamanho dela já foi decidido quando ela saiu.
+    for wave_event in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
+        let Some(n) = wave_event.int("n") else { continue };
+        if delivered.contains(&n) {
+            continue;
+        }
+        if let Some(refusal) = wave_prompt::wave_size_refusal(log, n) {
+            out.push(PlanFinding::Refused(refusal));
+        }
+    }
+
     let mut cited: Vec<String> = Vec::new();
     for task in &ahead {
         let code = code_of(task);
@@ -1050,29 +1068,84 @@ mod tests {
         }
     }
 
+    /// Uma linha crua, direto no arquivo da spec, sem passar pela gravação:
+    /// simula uma onda grande que já existia antes da onda nascer pequena, ou
+    /// uma edição feita fora do binário — o caso que a rede do plano cobre.
+    fn append_raw(root: &Path, spec: &str, event_type: &str, body: Value, id: u64) {
+        let mut map = mustard_core::domain::spec_events::normalize(
+            body.as_object().cloned().unwrap_or_default(),
+            event_type,
+        );
+        map.insert("type".into(), json!(event_type));
+        let line = mustard_core::domain::spec_events::render_line(
+            &mustard_core::domain::spec_events::stamp(map, id, None, "2026-09-20T10:00:00-03:00"),
+        );
+        use std::io::Write as _;
+        let path = store::spec_file(root, spec).unwrap();
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        writeln!(file, "{line}").unwrap();
+    }
+
     /// Um pedido acima do teto de linhas trava a pergunta, e a mensagem diz
-    /// quantas linhas ele tem.
+    /// quantas linhas ele tem. As 600 tarefas vêm direto no arquivo, sem
+    /// passar pela gravação: a onda nasce pequena agora, e uma onda com tantas
+    /// tarefas não seria mais gravada — mas o plano continua conferindo a que
+    /// já existe no arquivo, de antes da regra ou de uma edição de fora.
     #[test]
     fn a_request_over_the_line_cap_blocks_the_question() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        let wave = write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
         // Os códigos das tarefas cabem numa linha só: o que passa do teto é
         // uma parte de uma linha por item, como a das skills que elas nomeiam.
+        let mut next_id = id_of(&wave) + 1;
         for i in 0..600 {
             let skill = root.join(".claude").join("skills").join(format!("s{i}"));
             std::fs::create_dir_all(&skill).unwrap();
             std::fs::write(skill.join("SKILL.md"), format!("# s{i}\n")).unwrap();
-            write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
-                "skill": format!("s{i}"), "origin": said}));
+            append_raw(root, "x", "task", json!({"points": 1, "wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
+                "skill": format!("s{i}"), "origin": said}), next_id);
+            next_id += 1;
         }
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
         assert!(reasons(&report, "blocking").contains(&"wave-prompt-too-long".to_string()), "{report}");
         assert!(report["waves"][0]["lines"].as_u64().unwrap() > 500, "{report}");
+    }
+
+    /// A rede do plano: uma onda que já tem mais de três tarefas no arquivo —
+    /// nascida assim antes da regra, ou por uma edição de fora do binário —
+    /// é recusada pelo plano, com a mesma mensagem que a gravação usaria.
+    #[test]
+    fn a_wave_grown_big_outside_the_write_is_refused_by_the_plan_net() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        let wave = write(root, Some("x"), "wave",
+            json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        let mut next_id = id_of(&wave) + 1;
+        for i in 0..4 {
+            append_raw(root, "x", "task", json!({"points": 1, "wave": 1, "text": format!("Tarefa {i}."),
+                "files": [{"path": "src/a.rs"}], "origin": said}), next_id);
+            next_id += 1;
+        }
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        assert!(reasons(&report, "blocking").contains(&"wave-too-big".to_string()), "{report}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let expected = wave_prompt::wave_size_refusal(&log, 1).expect("a onda passou do teto").message(Locale::PtBr);
+        let found = report["blocking"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["reason"] == json!("wave-too-big"))
+            .unwrap_or_else(|| panic!("{report}"));
+        assert_eq!(found["hint"], json!(expected), "{report}");
     }
 
     /// As citações do plano passam pela mesma conferência do ponto do

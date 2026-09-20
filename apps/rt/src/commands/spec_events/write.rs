@@ -150,6 +150,13 @@
 //! `remove` dele é recusado. A passagem do levantamento para o plano, e a
 //! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
 //! de toda porta que grava o estado.
+//!
+//! A onda nasce pequena: a tarefa que seria a quarta de uma onda ainda não
+//! entregue, ou o critério que seria a quarta prova dela, é recusado antes de
+//! ir para o arquivo
+//! (`mustard_core::domain::wave_prompt::wave_size_rule`), com quantas tarefas
+//! e provas a onda já tem e a divisão sugerida em duas ondas. O plano usa a
+//! mesma recusa como rede, para a onda que cresceu por outro caminho.
 
 use std::path::{Path, PathBuf};
 
@@ -161,7 +168,7 @@ use mustard_core::domain::spec_state::{
     State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
-use mustard_core::domain::wave_prompt::owner_rule;
+use mustard_core::domain::wave_prompt::{owner_rule, wave_size_rule};
 use mustard_core::io::{lessons, project_map, spec_events as store};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
@@ -538,7 +545,8 @@ fn record_rules(
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
     survey_rule(spec, before, after)?;
-    owner_rule(before, after)
+    owner_rule(before, after)?;
+    wave_size_rule(after)
 }
 
 /// Gravações do binário na spec conferidas antes, sem gravar nada: cada uma
@@ -1456,6 +1464,66 @@ mod tests {
             let out = write(root, "decision", &decision(owner.clone()));
             assert_eq!(out["ok"], json!(true), "{owner}: {out}");
         }
+    }
+
+    /// A onda nasce pequena: a terceira tarefa ainda passa, mas a quarta é
+    /// recusada, e nada é gravado; do mesmo jeito, a onda com três provas de
+    /// critério passa, mas a revisão que a levaria à quarta prova é recusada.
+    #[test]
+    fn a_fourth_task_or_proof_is_refused_and_the_third_still_passes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let crit1 = write(root, "criterion",
+            &json!({"when": "a", "then": "b", "proof": "p1", "origin": said}).to_string())["id"].as_u64().unwrap();
+        let wave = write(root, "wave",
+            &json!({"n": 1, "text": "Onda 1.", "criteria": [crit1], "done_when": "passa", "origin": said}).to_string());
+        assert_eq!(wave["ok"], json!(true), "{wave}");
+        let wave_id = wave["id"].as_u64().unwrap();
+
+        // As três primeiras tarefas passam; a quarta é recusada, e nada é
+        // gravado por ela.
+        let task = |i: u64| json!({"wave": 1, "text": format!("Tarefa {i}."), "origin": said}).to_string();
+        for i in 1..=3 {
+            let out = write(root, "task", &task(i));
+            assert_eq!(out["ok"], json!(true), "tarefa {i}: {out}");
+        }
+        let before = lines(root);
+        let refused = write(root, "task", &task(4));
+        assert_eq!(refused["reason"], json!("wave-too-big"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap();
+        assert!(hint.contains('3'), "o teto de tarefas aparece na recusa: {hint}");
+        assert_eq!(lines(root), before, "a quarta tarefa não é gravada");
+
+        // Três provas de critério passam; a quarta, na mesma onda, é recusada
+        // do mesmo jeito, e a onda continua com três.
+        let crit = |proof: &str| {
+            write(root, "criterion", &json!({"when": "a", "then": "b", "proof": proof, "origin": said}).to_string())["id"]
+                .as_u64()
+                .unwrap()
+        };
+        let crit2 = crit("p2");
+        let revise = |criteria: &[u64], replaces: u64| {
+            json!({
+                "n": 1, "text": "Onda 1.", "criteria": criteria, "done_when": "passa",
+                "origin": said, "replaces": replaces,
+            })
+            .to_string()
+        };
+        let revised = write(root, "wave", &revise(&[crit1, crit2], wave_id));
+        assert_eq!(revised["ok"], json!(true), "{revised}");
+        let revised_id = revised["id"].as_u64().unwrap();
+        let crit3 = crit("p3");
+        let revised = write(root, "wave", &revise(&[crit1, crit2, crit3], revised_id));
+        assert_eq!(revised["ok"], json!(true), "a terceira prova passa: {revised}");
+        let revised_id = revised["id"].as_u64().unwrap();
+
+        let crit4 = crit("p4");
+        let before = lines(root);
+        let refused = write(root, "wave", &revise(&[crit1, crit2, crit3, crit4], revised_id));
+        assert_eq!(refused["reason"], json!("wave-too-big"), "{refused}");
+        assert_eq!(lines(root), before, "a onda que chegaria à quarta prova não é gravada");
     }
 
     /// A ponte do fechamento não fecha uma spec em plano: o fechamento só vem

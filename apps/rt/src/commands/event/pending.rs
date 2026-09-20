@@ -977,9 +977,6 @@ pub(crate) fn open_born_in(root: &Path, log: &SpecLog) -> Vec<OpenPending> {
 /// unidade — a que nasceu fora de toda unidade e a que um fechamento soltou.
 /// É a lista que a abertura de uma unidade nova apresenta.
 #[must_use]
-// A abertura da unidade ainda não a chama, e o alvo binário a vê parada; o
-// allow sai com o primeiro leitor de fora.
-#[allow(dead_code)]
 pub(crate) fn open_project_pending(root: &Path) -> Vec<OpenPending> {
     open_items_of(root).into_iter().filter(of_the_project).map(shown).collect()
 }

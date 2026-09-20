@@ -49,7 +49,7 @@ use mustard_core::{ClaudePaths, ProjectConfig, Scan};
 use serde_json::{json, Value};
 
 use crate::commands::event::census_settlement::{settle, CensusSettlement, CheckoutPosition};
-use crate::commands::event::pending::{mark_became, pending_id, pending_is_open};
+use crate::commands::event::pending::{mark_became, open_project_pending, pending_id, pending_is_open};
 use crate::commands::event::work_branch::{
     checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
     CheckoutWork, RefusalCause,
@@ -374,8 +374,35 @@ fn note_pending(root: &Path, pending: Option<&str>, spec: &str, lang: Locale) ->
         .then(|| translate("open.pending_note_failed", lang).replace("{spec}", spec).replace("{pending}", id))
 }
 
+/// O aviso das pendências abertas do projeto, sem dono de obra: quantas são
+/// e onde a lista inteira está — a página do projeto, quando ela já tem
+/// endereço gravado, ou o comando que a mostra, senão. `None` sem nenhuma. É
+/// aviso, nunca recusa: a abertura segue para a pergunta do objetivo mesmo
+/// sem resposta.
+fn pending_project_notice(root: &Path, lang: Locale) -> Option<String> {
+    let count = open_project_pending(root).len();
+    if count == 0 {
+        return None;
+    }
+    let list = match mustard_core::io::spec_index::project_page_url(root) {
+        Some(url) => translate("open.pending_project.list_page", lang).replace("{url}", &url),
+        None => translate("open.pending_project.list_command", lang).to_string(),
+    };
+    let key = if count == 1 { "open.pending_project.one" } else { "open.pending_project.many" };
+    Some(translate(key, lang).replace("{count}", &count.to_string()).replace("{list}", &list))
+}
+
 /// O relatório da spec aberta, que termina na pergunta do objetivo.
-fn opened(spec: &str, branch: &str, base: &str, kind: &WorkKind, map: Option<Value>, warnings: &[String], lang: Locale) -> Value {
+fn opened(
+    spec: &str,
+    branch: &str,
+    base: &str,
+    kind: &WorkKind,
+    map: Option<Value>,
+    warnings: &[String],
+    pending_project: Option<String>,
+    lang: Locale,
+) -> Value {
     let mut report = json!({
         "ok": true,
         "step": "ask_goal",
@@ -392,6 +419,9 @@ fn opened(spec: &str, branch: &str, base: &str, kind: &WorkKind, map: Option<Val
     }
     if !warnings.is_empty() {
         report["warnings"] = json!(warnings);
+    }
+    if let Some(pending_project) = pending_project {
+        report["pending_project"] = json!(pending_project);
     }
     report
 }
@@ -486,7 +516,8 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         let warnings: Vec<String> =
             note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
         let base = state.base.unwrap_or_default();
-        let mut report = opened(&name, &target, &base, &kind, None, &warnings, lang);
+        let pending_project = pending_project_notice(&project.root, lang);
+        let mut report = opened(&name, &target, &base, &kind, None, &warnings, pending_project, lang);
         report["already_open"] = json!(true);
         if let Some(id) = pending {
             report["pending"] = json!(id);
@@ -568,7 +599,8 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             None
         }
     };
-    let mut report = opened(&name, &target, &base, &kind, map, &warnings, lang);
+    let pending_project = pending_project_notice(&project.root, lang);
+    let mut report = opened(&name, &target, &base, &kind, map, &warnings, pending_project, lang);
     if let Some(id) = pending {
         report["pending"] = json!(id);
     }
@@ -1080,6 +1112,34 @@ use crate::shared::context::pending_branch::set_pending_branch;
             assert_eq!(report["hint"], json!(expected), "{report}");
             nothing_created(root, list.as_ref());
         }
+    }
+
+    /// Uma obra nova, aberta com a lista tendo pendência do projeto — mesmo
+    /// sem pedir nenhuma delas por `--pending` —, traz na resposta quantas
+    /// são e onde a lista inteira está, e segue para a pergunta do objetivo
+    /// sem esperar resposta a esse aviso.
+    #[test]
+    fn the_open_announces_the_project_pending() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["step"], json!("ask_goal"), "{report}");
+        let notice = report["pending_project"].as_str().expect("the notice is present");
+        assert!(notice.contains('1'), "{notice}");
+        assert!(notice.contains("mustard-rt run pending"), "{notice}");
+    }
+
+    /// Sem pendência nenhuma do projeto na lista, a resposta não traz o
+    /// aviso.
+    #[test]
+    fn open_with_no_project_pending_has_no_notice() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert!(report.get("pending_project").is_none(), "{report}");
     }
 
     /// Sem `--pending`, a lista de pendências fica com os mesmos bytes.

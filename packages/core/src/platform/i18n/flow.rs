@@ -864,6 +864,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              {pending}, so the merge will not close it by itself. Call open again with the same \
              arguments to record the note."
         }
+        // O aviso, na abertura, das pendências do projeto (sem dono de obra):
+        // quantas são e onde a lista inteira está. `{count}` e `{list}` vêm
+        // de quem chama; é aviso, nunca recusa.
+        ("open.pending_project.one", Locale::PtBr) => {
+            "1 pendência do projeto esperando. {list} Quer resolver alguma nesta obra?"
+        }
+        ("open.pending_project.one", Locale::EnUs) => {
+            "1 project pending item waiting. {list} Do you want to work on any of them in this unit?"
+        }
+        ("open.pending_project.many", Locale::PtBr) => {
+            "{count} pendências do projeto esperando. {list} Quer resolver alguma nesta obra?"
+        }
+        ("open.pending_project.many", Locale::EnUs) => {
+            "{count} project pending items waiting. {list} Do you want to work on any of them in this unit?"
+        }
+        // O trecho de onde a lista inteira está: com o endereço da página do
+        // projeto, quando ele já foi gravado, ou o comando que a mostra,
+        // senão. `{url}` vem de quem chama.
+        ("open.pending_project.list_page", Locale::PtBr) => {
+            "A lista inteira está na página do projeto: {url}."
+        }
+        ("open.pending_project.list_page", Locale::EnUs) => {
+            "The whole list is on the project page: {url}."
+        }
+        ("open.pending_project.list_command", Locale::PtBr) => {
+            "A lista inteira sai com `mustard-rt run pending`."
+        }
+        ("open.pending_project.list_command", Locale::EnUs) => {
+            "The whole list comes from `mustard-rt run pending`."
+        }
         ("retired.wait_round", Locale::PtBr) => {
             "O `{command}` não grava mais o veredito na spec: o veredito de cada onda é gravado \
              pelo `mustard-rt run round`. Nada foi gravado."
@@ -1001,8 +1031,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            132,
-            0xe608_ed03_04a5_3bcd,
+            136,
+            0x9d88_70e3_58cd_ff48,
         );
     }
 
@@ -1030,6 +1060,10 @@ mod tests {
             ("open.pending_unknown", &["{pending}"][..]),
             ("open.pending_closed", &["{pending}"][..]),
             ("open.pending_note_failed", &["{spec}", "{pending}"][..]),
+            ("open.pending_project.one", &["{list}"][..]),
+            ("open.pending_project.many", &["{count}", "{list}"][..]),
+            ("open.pending_project.list_page", &["{url}"][..]),
+            ("open.pending_project.list_command", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
