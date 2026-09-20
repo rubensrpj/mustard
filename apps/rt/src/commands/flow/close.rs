@@ -996,6 +996,41 @@ mod tests {
         assert_eq!(rejected, Vec::<u64>::new(), "{closed}");
     }
 
+    /// Um veredito de onda do fluxo antigo, sem o campo `final` — como o
+    /// round-review de antes gravava —, reprova a onda 2. Sem essa marca, ele
+    /// não pode pôr a spec em modo de conserto: a rodada não tem conserto
+    /// pendente, e o fechamento pede o agente de teste dedicado com o pedido
+    /// da obra inteira, não só da onda apontada.
+    #[test]
+    fn an_old_wave_verdict_never_turns_the_final_test_into_a_fix() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 2);
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let criterion_id = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+        let mut draft = Map::new();
+        draft.insert("wave".to_string(), json!(2));
+        draft.insert("result".to_string(), json!("rejected"));
+        draft.insert("text".to_string(), json!("faltou algo, gravado do jeito antigo"));
+        draft.insert("criteria".to_string(), json!([{"criterion": criterion_id, "tests_rule": true}]));
+        record(root, "x", "verdict", draft, PhaseWriter::Binary).expect("veredito antigo gravado");
+
+        // A rodada não vê conserto pendente: nada a despachar.
+        let round = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        assert_eq!(round["dispatch"].as_array().map(Vec::len).unwrap_or_default(), 0, "{round}");
+
+        // O fechamento pede o agente de teste dedicado com o pedido da obra
+        // inteira, sem entrar em modo de conserto.
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        assert!(!prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "não é modo de conserto: {prompt}");
+        for n in [1, 2] {
+            assert!(prompt.contains(&format!("MSTD-WAVE-000{n}")), "a onda {n} está no pedido: {prompt}");
+        }
+    }
+
     /// A resposta da rodada e a do fechamento, numa spec ainda sem páginas
     /// publicadas, mandam publicar a página da spec e a do projeto, dizem como
     /// gravar as duas publicações e mandam copiar os lotes, e nenhuma delas

@@ -309,9 +309,11 @@ mod tests {
         line("DELIVERED", json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")}))
     }
 
-    /// A linha `VERDICT` da onda `wave`, com o critério pelo código.
+    /// A linha `VERDICT` da onda `wave`, com o critério pelo código. `final:
+    /// true`, porque só o veredito final do agente de teste dedicado pode
+    /// reprovar ou aprovar uma onda.
     pub(super) fn verdict(wave: u64, result: &str, text: &str) -> String {
-        line("VERDICT", json!({"wave": wave, "result": result, "text": text,
+        line("VERDICT", json!({"wave": wave, "result": result, "final": true, "text": text,
             "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}))
     }
 

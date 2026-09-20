@@ -384,14 +384,20 @@ impl SpecLog {
         out
     }
 
-    /// As ondas do plano cuja última revisão reprovou, cada uma com o número
-    /// dessa reprovação. A rodada, o fechamento e o pedido leem daqui.
+    /// As ondas do plano cuja última revisão final reprovou, cada uma com o
+    /// número dessa reprovação. A rodada, o fechamento e o pedido leem
+    /// daqui. Um veredito sem o campo final não conta: só o veredito final
+    /// do agente de teste dedicado pode pôr uma onda em modo de conserto.
     #[must_use]
     pub fn last_rejected(&self) -> BTreeMap<u64, u64> {
         self.verdicts_by_wave()
             .into_iter()
             .filter_map(|(n, verdicts)| {
-                verdicts.last().filter(|v| v.str_field("result") == Some("rejected")).map(|v| (n, v.id))
+                verdicts
+                    .last()
+                    .filter(|v| v.fields.get("final") == Some(&Value::Bool(true)))
+                    .filter(|v| v.str_field("result") == Some("rejected"))
+                    .map(|v| (n, v.id))
             })
             .collect()
     }
