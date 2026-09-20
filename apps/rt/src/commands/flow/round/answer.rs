@@ -682,7 +682,9 @@ mod tests {
 
     /// Os campos de um envio já gravado, prontos para virar a base de um novo
     /// (mesmo texto, mesmos itens, mesma cópia): quem chama troca só o que
-    /// precisa.
+    /// precisa. Só os dois testes de onda órfã usam, e eles só valem no
+    /// Linux.
+    #[cfg(target_os = "linux")]
     fn resend_draft(sent: &SpecEvent) -> Value {
         json!({
             "wave": sent.wave().unwrap(),
@@ -697,7 +699,9 @@ mod tests {
     }
 
     /// Grava um envio à mão, com a hora `at`: supera o envio mais novo da
-    /// mesma onda, porque a leitura pega sempre o de maior número.
+    /// mesma onda, porque a leitura pega sempre o de maior número. Só os
+    /// dois testes de onda órfã usam, e eles só valem no Linux.
+    #[cfg(target_os = "linux")]
     fn seed_send_at(root: &Path, draft: Value, at: &str) {
         let path = store::spec_file(root, "x").unwrap();
         store::write_at(&path, "send", draft.as_object().cloned().unwrap(), &[], at).unwrap();
