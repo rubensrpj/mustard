@@ -568,7 +568,9 @@ pub struct MissingPaths {
 /// As lições que citam um caminho que o projeto já não tem, em ordem de
 /// número, cada uma com os caminhos que faltam. Conta o arquivo citado entre
 /// crases no texto e o lugar em que a lição vale: o subprojeto e cada
-/// caminho sem `*` dos arquivos dela. A pasta citada no texto não conta: a
+/// caminho dos arquivos dela. O caminho com curinga (`hooks/**`) é conferido
+/// pelo prefixo literal antes do `*`; sem prefixo (`**`, o projeto todo),
+/// nada é conferido. A pasta citada no texto não conta: a
 /// lição cita justamente a pasta que não deve existir, como a que a
 /// instalação de dependências cria. Quem responde se o caminho existe é
 /// `found`, com o subprojeto da lição, porque a lição de um subprojeto pode
@@ -593,7 +595,10 @@ pub fn citing_missing_paths(bank: &SpecLog, found: impl Fn(&str, Option<&str>) -
                 .iter()
                 .filter_map(Value::as_str)
                 .map(clean_path)
-                .filter(|p| !p.is_empty() && !p.contains('*')),
+                .filter_map(|p| {
+                    let prefix = p.split('*').next().unwrap_or_default().trim_end_matches('/');
+                    (!prefix.is_empty()).then(|| prefix.to_string())
+                }),
         );
         let mut paths: Vec<String> = Vec::new();
         for path in cited {
@@ -949,6 +954,30 @@ mod tests {
                 MissingPaths { id: 4, paths: vec!["apps/mcp".into()] },
             ]
         );
+    }
+
+    /// O `files` com curinga (`apps/rt/src/hooks/**`) não escapa mais da
+    /// conferência: é conferido pelo prefixo literal antes do `*`. O curinga
+    /// sozinho (`**`, a lição do projeto todo) continua fora, porque não
+    /// sobra prefixo nenhum para conferir.
+    #[test]
+    fn a_lesson_citing_a_wildcard_files_pattern_is_checked_by_its_literal_prefix() {
+        let bank = parse_log(&lesson(1, base(json!({"files": ["apps/rt/src/hooks/**"]}))));
+        let prefix_exists = |path: &str, _inside: Option<&str>| path == "apps/rt/src/hooks";
+        assert_eq!(citing_missing_paths(&bank, prefix_exists), vec![], "o prefixo existe, a lição fica");
+
+        let nothing_exists = |_path: &str, _inside: Option<&str>| false;
+        assert_eq!(
+            citing_missing_paths(&bank, nothing_exists),
+            vec![MissingPaths { id: 1, paths: vec!["apps/rt/src/hooks".into()] }],
+            "o prefixo não existe, o curinga é apontado como caminho que falta"
+        );
+
+        let whole_project = parse_log(&lesson(
+            2,
+            json!({"class": "user_preference", "text": "t", "keys": ["k"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}),
+        ));
+        assert_eq!(citing_missing_paths(&whole_project, nothing_exists), vec![], "sem prefixo, nada para conferir");
     }
 
     /// A retirada é o rascunho sem classe com as lições em `targets` e o

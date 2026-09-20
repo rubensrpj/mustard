@@ -176,6 +176,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Ainda não há dados: o Mustard ainda não copiou nada para o banco de dados desta página."
         }
         ("page.no_data", Locale::EnUs) => "No data yet: Mustard has not copied anything to this page's database.",
+        // O banco já tem o documento calculado (uma cópia já rodou), mas
+        // nenhum item aparece: o modelo instalado está velho, lendo uma
+        // coleção que a cópia de agora não usa mais.
+        ("page.stale_template", Locale::PtBr) => {
+            "O modelo desta página está desatualizado: rode `mustard-rt run upsert` no projeto para atualizá-lo."
+        }
+        ("page.stale_template", Locale::EnUs) => {
+            "This page's template is outdated: run `mustard-rt run upsert` in the project to update it."
+        }
         ("page.watch_failed", Locale::PtBr) => "Não deu para conferir se há dados novos. Recarregue a página.",
         ("page.watch_failed", Locale::EnUs) => "Could not check for new data. Reload the page.",
         ("page.filter.label", Locale::PtBr) => "Filtrar por tipo",
@@ -830,8 +839,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            322,
-            0xd0a2_833c_8e8e_9d1c,
+            323,
+            0xbd45_0022_6f88_fb50,
         );
     }
 

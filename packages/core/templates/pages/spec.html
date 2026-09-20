@@ -1157,13 +1157,23 @@ tr:last-child td{border-bottom:0}
     apply();
   }
   function noData() {
+    emptyState('empty', t('page.no_data'));
+  }
+  // O documento calculado já tem dado (uma cópia já rodou), mas nenhum item
+  // veio da coleção de faixas: o modelo instalado está velho, lendo uma
+  // coleção que a cópia de agora não usa mais — dizer isso vale mais do que
+  // repetir a linha de banco vazio, que aqui seria falsa.
+  function staleTemplate() {
+    emptyState('stale', t('page.stale_template'));
+  }
+  function emptyState(state, message) {
     ITEMS = []; EXTRAS = []; GROUPS = []; SECTIONS = []; OVERVIEWS = []; MODEL = null;
     box.textContent = '';
     nav.textContent = '';
-    statusEl.textContent = t('page.no_data');
+    statusEl.textContent = message;
     statusEl.hidden = false;
     RENDERS++;
-    app.setAttribute('data-state', 'empty');
+    app.setAttribute('data-state', state);
     app.setAttribute('data-renders', String(RENDERS));
   }
 
@@ -1275,7 +1285,15 @@ tr:last-child td{border-bottom:0}
   function reload(db) {
     return Promise.all([readItems(db), readComputed(db)]).then(function (got) {
       SEEN.computed = JSON.stringify(got[1]);
-      if (!got[0].length) { SEEN.top = null; noData(); return; }
+      if (!got[0].length) {
+        SEEN.top = null;
+        // Um documento calculado com dado é a marca de que uma cópia já
+        // rodou; sem nenhum item na coleção de faixas mesmo assim, a coleção
+        // que o modelo lê não é a que a cópia de agora escreve.
+        var copied = got[1] && (isInt(got[1].last) || typeof got[1].spec === 'string');
+        if (copied) staleTemplate(); else noData();
+        return;
+      }
       var model = build(got[0], got[1]);
       SEEN.top = model.top;
       render(model);

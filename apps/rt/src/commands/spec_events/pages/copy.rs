@@ -84,8 +84,8 @@ use mustard_core::domain::spec_index::{is_template, project_page, published_to, 
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::platform::page_templates::{
-    project_page_template, spec_page_template, COMPUTED, PROJECT_CAPABILITIES, RANGES, RANGE_MAX_BYTES, RANGE_WIDTH,
-    SPECS, SPEC_CAPABILITIES,
+    project_page_template, spec_page_template, template_version, COMPUTED, PROJECT_CAPABILITIES, RANGES,
+    RANGE_MAX_BYTES, RANGE_WIDTH, SPECS, SPEC_CAPABILITIES,
 };
 use mustard_core::view::document::{RtkDay, WaveState};
 use mustard_core::ClaudePaths;
@@ -645,11 +645,17 @@ fn clear(folder: &Path) -> Result<(), Refusal> {
     mustard_core::io::fs::remove_dir_all(folder).map_err(|e| Refusal::Io { detail: e.to_string() })
 }
 
-/// Deixa no projeto o template que a ordem manda publicar, quando ele falta.
+/// Deixa no projeto o template que a ordem manda publicar: escreve quando ele
+/// falta, e também quando a versão gravada no começo dele — o selo que
+/// [`spec_page_template`] e [`project_page_template`] deixam ([`template_version`]) —
+/// não é a do binário rodando. O modelo velho ficaria lendo uma coleção que a
+/// cópia de agora não escreve mais, e a página abriria sem dizer por quê.
 fn ensure_template(root: &Path, template: &str, body: impl FnOnce() -> String) -> Result<(), Refusal> {
     let path = root.join(template);
-    if path.is_file() {
-        return Ok(());
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if template_version(&existing) == Some(mustard_core::harness_version().as_str()) {
+            return Ok(());
+        }
     }
     write(&path, &body())
 }
@@ -1625,5 +1631,47 @@ mod tests {
         let starts: BTreeSet<u64> = final_log.events.iter().map(|e| range_start(e.id)).collect();
         let expected: Vec<u64> = starts.iter().flat_map(|&s| range_items(&final_log, s)).map(|(id, _)| id).collect();
         assert_eq!(got, expected, "the page shows every item, in order, as before");
+    }
+
+    /// Um modelo velho já instalado no projeto — de antes do selo da versão,
+    /// sem catálogo nenhum — é reescrito pelo modelo de agora antes do
+    /// primeiro marco publicar a página: o passo confere o selo contra a
+    /// versão do binário, e a diferença manda gravar o modelo fresco, não o
+    /// deixar como estava.
+    #[test]
+    fn an_old_installed_template_is_rewritten_before_the_first_publish() {
+        let dir = approved_project();
+        let root = dir.path();
+        let path = root.join(SPEC_TEMPLATE);
+        std::fs::create_dir_all(path.parent().expect("a pasta do modelo")).unwrap();
+        std::fs::write(&path, "<!doctype html><html>modelo velho, sem selo</html>").unwrap();
+
+        let first = round(root);
+        assert_eq!(first["publish"], json!(["spec", "project"]), "{first}");
+
+        let installed = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            template_version(&installed),
+            Some(mustard_core::harness_version().as_str()),
+            "o modelo velho foi trocado pelo de agora antes de publicar: {installed}"
+        );
+        assert_eq!(installed, spec_page_template(Locale::PtBr), "o mesmo conteúdo que um modelo fresco teria");
+    }
+
+    /// O modelo já com o selo da versão rodando não é reescrito: a conferência
+    /// só troca o que está diferente, e um modelo já em dia fica como está —
+    /// sem chamar `body` de novo.
+    #[test]
+    fn a_template_already_at_the_running_version_is_left_alone() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join(SPEC_TEMPLATE);
+        std::fs::create_dir_all(path.parent().expect("a pasta do modelo")).unwrap();
+        let current = format!("<!-- mustard: {} -->\nmodelo já em dia", mustard_core::harness_version());
+        std::fs::write(&path, &current).unwrap();
+
+        ensure_template(root, SPEC_TEMPLATE, || panic!("a mesma versão não pede um modelo novo")).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), current, "o arquivo continua como estava");
     }
 }

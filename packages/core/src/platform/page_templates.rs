@@ -72,6 +72,7 @@ use serde_json::{json, Value};
 
 use crate::domain::spec_events::{Block, Kind, AUTHORS, PHASES, PURGED_MARK, TYPES};
 use crate::domain::spec_state::is_approved_phase;
+use crate::platform::harness::harness_version;
 use crate::platform::i18n::{translate, Locale};
 
 /// O template da página da spec, como mora no repositório.
@@ -145,7 +146,32 @@ pub fn project_page_template(lang: Locale) -> String {
 fn fill(template: &str, catalog: &Value) -> String {
     let json = catalog.to_string().replace('<', "\\u003c");
     let filled = format!(r#"<script type="application/json" id="mustard-catalog">{json}</script>"#);
-    template.replacen(CATALOG_SLOT, &filled, 1)
+    let body = template.replacen(CATALOG_SLOT, &filled, 1);
+    stamp(&body)
+}
+
+/// O que vem antes da versão na marca do começo do modelo, na primeira linha
+/// dele.
+const VERSION_MARK_PREFIX: &str = "<!-- mustard:";
+
+/// O que vem depois da versão na marca do começo do modelo.
+const VERSION_MARK_SUFFIX: &str = "-->";
+
+/// `body` com o selo da versão do Mustard rodando na frente, numa linha só: é
+/// por ele que o passo que publica compara o modelo instalado no projeto com
+/// a versão do binário, sem reconstruir o catálogo inteiro.
+fn stamp(body: &str) -> String {
+    format!("{VERSION_MARK_PREFIX} {} {VERSION_MARK_SUFFIX}\n{body}", harness_version())
+}
+
+/// A versão do Mustard que gerou o modelo `text`, lida do selo da primeira
+/// linha. `None` quando o selo não está lá — um modelo de antes dele, ou
+/// qualquer outro texto.
+#[must_use]
+pub fn template_version(text: &str) -> Option<&str> {
+    let line = text.lines().next()?;
+    let rest = line.strip_prefix(VERSION_MARK_PREFIX)?.trim();
+    rest.strip_suffix(VERSION_MARK_SUFFIX).map(str::trim)
 }
 
 /// Cada tipo de evento como o template o lê: o nome, a sigla do código, o
@@ -249,6 +275,24 @@ mod tests {
     use crate::domain::spec_events::parse_log;
     use crate::domain::spec_index::ProjectRow;
     use crate::view::document::{RtkDay, WaveState, WaveStates};
+
+    /// O modelo gerado leva o selo da versão do binário rodando, na primeira
+    /// linha: é essa marca que o passo que publica confere contra a versão de
+    /// agora para saber se o modelo instalado no projeto está velho.
+    #[test]
+    fn the_generated_template_is_stamped_with_the_running_version() {
+        for html in [spec_page_template(Locale::PtBr), project_page_template(Locale::PtBr)] {
+            assert_eq!(template_version(&html), Some(harness_version().as_str()), "{html}");
+        }
+    }
+
+    /// Um modelo sem o selo — de antes dele, ou qualquer outro texto — não
+    /// tem versão nenhuma: a leitura não inventa uma.
+    #[test]
+    fn a_template_without_the_stamp_has_no_version() {
+        assert_eq!(template_version("<!doctype html><html></html>"), None);
+        assert_eq!(template_version(""), None);
+    }
 
     /// O apoio que roda um template no Node, com o DOM e as capacidades do
     /// claude.ai imitados.
@@ -891,6 +935,35 @@ mod tests {
                 assert_eq!(got["page"]["statusHidden"], json!(false), "{page} {db:?}");
             }
         }
+    }
+
+    /// O documento calculado já tem dado — uma cópia já rodou —, mas a
+    /// coleção de faixas está vazia: o modelo lido não é o que a cópia de
+    /// agora escreve, e a página diz que o modelo está velho, com o comando
+    /// que o atualiza, em vez da linha de banco vazio.
+    #[test]
+    fn a_populated_computed_doc_with_no_range_items_names_the_stale_template() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let stale = translate("page.stale_template", Locale::PtBr);
+        let db = json!({"computed": [{"id": "current", "data": {"spec": "demo", "last": 9}}]});
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        assert_eq!(got["page"]["state"], json!("stale"), "{got}");
+        assert_eq!(got["page"]["status"], json!(stale), "{got}");
+        assert_eq!(got["page"]["statusHidden"], json!(false), "{got}");
+    }
+
+    /// Sem a cópia ter rodado ainda — o documento calculado vazio —, a
+    /// coleção de faixas vazia continua a leitura genuína de uma spec nova: a
+    /// linha é a de banco vazio, não a de modelo velho, mesmo com o
+    /// documento calculado presente e vazio.
+    #[test]
+    fn an_empty_computed_doc_with_no_range_items_still_says_no_data() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let no_data = translate("page.no_data", Locale::PtBr);
+        let db = json!({"computed": [{"id": "current", "data": {}}]});
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        assert_eq!(got["page"]["state"], json!("empty"), "{got}");
+        assert_eq!(got["page"]["status"], json!(no_data), "{got}");
     }
 
     /// Uma cópia nova chega com a página aberta: o item novo aparece, o item

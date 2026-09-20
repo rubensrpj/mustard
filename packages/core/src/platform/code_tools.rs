@@ -165,6 +165,13 @@ pub fn detect_project_languages(project_dir: &Path) -> Vec<&'static str> {
         stacks.push("java");
     }
 
+    // Dart: pubspec.yaml. Sem entrada no catálogo (o `code_tool_for_language`
+    // continua sem ele), mas precisa entrar na lista para o aviso de
+    // `ensure_code_tools` sair.
+    if project_dir.join("pubspec.yaml").is_file() {
+        stacks.push("dart");
+    }
+
     stacks
 }
 
@@ -225,5 +232,17 @@ mod tests {
         let model_path = dir.path().join(".claude").join("grain.model.json");
         let langs = detect_code_languages(dir.path(), &model_path);
         assert!(langs.contains("rust"), "{langs:?}");
+    }
+
+    /// Um projeto Dart sem mapa ainda (o caso comum: `mustard init` roda antes
+    /// de qualquer scan) é achado pelo `pubspec.yaml`, como os outros
+    /// manifestos já são — sem isso, "dart" nunca entra na lista, e o aviso de
+    /// `ensure_code_tools` de que o catálogo ainda não cobre a linguagem nunca
+    /// sai.
+    #[test]
+    fn detect_project_languages_finds_dart_by_its_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pubspec.yaml"), "name: app\n").unwrap();
+        assert!(detect_project_languages(dir.path()).contains(&"dart"), "{:?}", detect_project_languages(dir.path()));
     }
 }
