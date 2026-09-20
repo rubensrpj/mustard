@@ -1497,9 +1497,18 @@ mod tests {
         // O teto libera a vaga, sem nenhum commit da própria rodada: só o
         // mapa desatualizado explica a releitura a seguir.
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+
+        // Com a busca casando "somar" a um item da spec, a rodada pede a
+        // escolha antes de soltar a onda: nada despacha ainda.
         let second = round_with_mine(root, "x", None, &mine_refreshed);
-        assert_eq!(waves_in(&second, "dispatch"), vec![1], "{second}");
-        let prompt = second["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert_eq!(waves_in(&second, "dispatch"), Vec::<u64>::new(), "{second}");
+        assert!(second.get("analysis").is_some(), "{second}");
+
+        // Com a linha da escolha, a onda sai, e o pedido segue o mapa do
+        // commit atual.
+        let third = round_with_mine(root, "x", Some(&analysis(json!([]), json!([]))), &mine_refreshed);
+        assert_eq!(waves_in(&third, "dispatch"), vec![1], "{third}");
+        let prompt = third["dispatch"][0]["prompt"].as_str().unwrap_or_default();
         assert!(
             prompt.contains("leia só as linhas 13-15 de `soma` em `src/a.rs`"),
             "o pedido segue o commit atual: {prompt}"
