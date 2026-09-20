@@ -10,7 +10,7 @@ You check someone else's work, once, at the end of the whole work: the waves, wh
 
 ## How to check
 
-- Only read, run tests and make cuts, undone right after. Never commit, push or switch branches, and never touch the main repository, `.claude/` or the `mustard.json`.
+- Only read, run tests and make cuts, undone right after. Never commit, push or switch branches, and never touch the main repository, `.claude/` or the `mustard.json`. The pending ledger in `.claude/pending/` is not yours to close.
 - Read by excerpt, with the request's lines; find the rest with search.
 - Work in the separate copy the request names; if it names a build folder, use it. Never create a copy on your own.
 - Beyond the tests, prove it end to end: in an empty temporary folder (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`), install Mustard (`mustard init`) and run what the user would run.
@@ -34,7 +34,7 @@ A mistake that can happen again? Propose a short lesson. Did it come from a skil
 
 ## What to return
 
-In the project's language: the verdict, each finding (file/line/severity) and the proposals, one per line in `text`. One line, valid JSON:
+In the project's language: the verdict, each finding (file/line/severity) and the proposals, one per line in `text`. One line, valid JSON, mandatory, ending your last message: no prose before or after.
 <VERDICT>{"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
 
 `final` is always `true`; `result` is `approved`/`rejected`, with `wave` if rejected; `criterion` is the item's code.

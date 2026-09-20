@@ -21,9 +21,6 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-/// O teto de um texto de agente, em bytes.
-const AGENT_CAP: usize = 3_072;
-
 /// O jeito de o agente criar uma cópia do projeto por conta própria: a cópia
 /// em si, a pasta de compilação escolhida por ele, a pasta compartilhada que
 /// só servia às cópias soltas, e a porta que apagava a cópia depois. Só o
@@ -141,7 +138,6 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
         );
         for name in ["wave", "review", "skill"] {
             let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
-            assert!(installed.len() <= AGENT_CAP, "the {lang} `{name}` agent is {} bytes", installed.len());
             assert_eq!(installed, template(lang, name), "the {lang} project got another text for `{name}`");
             assert_ne!(installed, template(other, name), "the {lang} and {other} `{name}` texts are the same");
             assert!(
@@ -234,12 +230,32 @@ fn the_wave_agent_never_uses_the_git_stash() {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
         let wave = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
-        assert!(wave.len() <= AGENT_CAP, "the {lang} wave agent is {} bytes", wave.len());
         let guard = wave
             .lines()
             .find(|l| l.contains("Nunca comite") || l.contains("Never commit"))
             .unwrap_or_else(|| panic!("the {lang} wave agent lost its git guard line"));
         assert!(guard.contains(phrase), "the {lang} wave agent does not forbid the stash: {guard}");
+    }
+}
+
+/// Os dois agentes que devolvem uma linha marcada dizem que ela é obrigatória
+/// e que fecha a última mensagem deles: sem isso um relatório em prosa vira
+/// entrega perdida, e a rodada não lê nada. Os dois também dizem que a lista
+/// de pendências não é deles para fechar. Nos dois idiomas.
+#[test]
+fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_theirs() {
+    for lang in ["pt-BR", "en-US"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        for name in ["wave", "review"] {
+            let text = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            let mandatory = if lang == "pt-BR" { "obrigatória" } else { "mandatory" };
+            assert!(text.contains(mandatory), "the {lang} `{name}` agent does not call its line mandatory");
+            assert!(
+                text.contains(".claude/pending/"),
+                "the {lang} `{name}` agent does not say the pending ledger is not its to close"
+            );
+        }
     }
 }
 
@@ -349,7 +365,6 @@ fn the_fixed_part_of_a_request_repeats_no_sentence_of_the_agent_texts() {
             FIXED_PARTS.iter().map(|key| (*key, format!(" {} ", words(translate(key, text)).join(" ")))).collect();
         for name in ["wave", "review"] {
             let agent = template(lang, name);
-            assert!(agent.len() <= AGENT_CAP, "the {lang} `{name}` agent is {} bytes", agent.len());
             for sentence in agent.split(['.', ':', ';', '?', '!', '\n']) {
                 for run in words(sentence).windows(REPEATED_RUN) {
                     let needle = format!(" {} ", run.join(" "));

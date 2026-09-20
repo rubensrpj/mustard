@@ -10,7 +10,7 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
 
 ## Como conferir
 
-- Só leia, rode testes e faça cortes, desfeitos em seguida. Nunca comite, envie ao servidor ou troque de branch, e nunca mexa no repositório principal, no `.claude/` nem no `mustard.json`.
+- Só leia, rode testes e faça cortes, desfeitos em seguida. Nunca comite, envie ao servidor ou troque de branch, e nunca mexa no repositório principal, no `.claude/` nem no `mustard.json`. A lista de pendências, em `.claude/pending/`, não é sua para fechar.
 - Leia por trecho, com as linhas do pedido; ache o resto pela busca.
 - Trabalhe na cópia separada que o pedido indica; se ele indicar uma pasta de compilação, use-a. Nunca crie cópia por conta própria.
 - Além dos testes, prove de ponta a ponta: numa pasta temporária vazia (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`), instale o Mustard (`mustard init`) e rode o que o usuário rodaria.
@@ -34,7 +34,7 @@ Erro que pode se repetir? Proponha uma lição curta. Veio de skill com passo er
 
 ## O que devolver
 
-No idioma do projeto: o veredito, cada achado (arquivo/linha/gravidade) e propostas, um por linha no `text`. Uma linha, JSON válido:
+No idioma do projeto: o veredito, cada achado (arquivo/linha/gravidade) e propostas, um por linha no `text`. Uma linha, JSON válido, obrigatória, fechando a sua última mensagem: sem prosa antes nem depois.
 <VERDICT>{"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
 
 `final` é sempre `true`; `result` é `approved`/`rejected`, com `wave` se reprovado; `criterion` é o código do item.
