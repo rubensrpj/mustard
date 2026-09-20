@@ -133,6 +133,12 @@ pub struct Material<'a> {
     /// cada tarefa, pelo código dela: o mapa sugeriu, e ele manteve. As
     /// skills confirmadas entram por [`Material::skills`], não aqui.
     pub task_reads: Vec<(String, Vec<String>)>,
+    /// Os arquivos de teste que o mapa do projeto conhece para cada arquivo
+    /// que uma tarefa cita, pelo caminho dele: a linha da tarefa os lista
+    /// logo abaixo do arquivo. Um arquivo que o mapa não conhece, ou sem
+    /// teste conhecido, fica de fora — a linha continua como antes, sem
+    /// inventar nada.
+    pub file_tests: BTreeMap<String, Vec<String>>,
     /// Os commits da rodada: as mudanças que já entraram na branch, que o
     /// agente de teste dedicado confere no pedido da revisão final.
     pub changes: Vec<&'a SpecEvent>,
@@ -1123,7 +1129,8 @@ impl Writer<'_> {
     /// uma linha por tarefa, com o código, os arquivos que ela cita e — para
     /// a que ganhou leitura obrigatória ou escolhida pelo orquestrador — o
     /// que precisa ler antes, pelo mesmo trecho que [`Self::task_reads`]
-    /// calcula.
+    /// calcula. Abaixo da linha, um arquivo que o mapa do projeto conhece os
+    /// testes ([`Material::file_tests`]) ganha uma linha própria com eles.
     fn tasks(&self, out: &mut String) {
         let tasks: Vec<&SpecEvent> = self.wave_items().into_iter().filter(|e| e.event_type == "task").collect();
         if tasks.is_empty() {
@@ -1132,7 +1139,7 @@ impl Writer<'_> {
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.tasks"));
         for task in tasks {
             let code = self.material.codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
-            let files: Vec<String> = task
+            let paths: Vec<&str> = task
                 .fields
                 .get("files")
                 .and_then(Value::as_array)
@@ -1140,8 +1147,8 @@ impl Writer<'_> {
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|file| file.get("path").and_then(Value::as_str))
-                .map(|path| format!("`{path}`"))
                 .collect();
+            let files: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
             let _ = write!(out, "- `{code}`");
             if !files.is_empty() {
                 let _ = write!(out, ": {}", files.join(", "));
@@ -1151,6 +1158,12 @@ impl Writer<'_> {
                 let _ = write!(out, " — {}: {}", self.t("prompt.task.read_before"), parts.join(", "));
             }
             let _ = writeln!(out);
+            for path in paths {
+                let Some(tests) = self.material.file_tests.get(path) else { continue };
+                let list = tests.iter().map(|test| format!("`{test}`")).collect::<Vec<_>>().join(", ");
+                let line = self.t("prompt.task.tested_by").replace("{file}", path).replace("{tests}", &list);
+                let _ = writeln!(out, "  - {line}");
+            }
         }
         out.push('\n');
     }

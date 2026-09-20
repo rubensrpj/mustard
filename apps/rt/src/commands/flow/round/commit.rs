@@ -645,22 +645,57 @@ fn merge_texts(dir: &Path, ours: Option<&[u8]>, base: Option<&str>, theirs: Opti
     Err(out.stdout.lines().enumerate().filter(|(_, line)| line.starts_with("<<<<<<< ")).map(|(at, _)| at + 1).collect())
 }
 
+/// Os arquivos que a cópia `copy` mudou de fato, pelo `git status` dela, com
+/// o arquivo de dentro de um submódulo prefixado pelo caminho dele: é o dono
+/// de verdade do que entra no commit da rodada, e não a lista que a entrega
+/// citou, que vira só conferência.
+fn copy_changed(copy: &Path, subs: &[String]) -> Vec<String> {
+    let status = ["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=all"];
+    let mut changed = changed_paths(&git(copy, &status).unwrap_or_default());
+    for sub in subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()) {
+        let theirs = changed_paths(&git(&copy.join(sub), &status).unwrap_or_default());
+        changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
+    }
+    changed
+}
+
+/// Os arquivos que a onda `wave` mudou de fato, pela cópia gravada no envio
+/// mais novo dela; `None` sem cópia gravada, ou sem ela mais no disco. É o
+/// conjunto que a rodada comita, mesmo quando a linha de entrega cita outro.
+pub(super) fn real_changed_files(root: &Path, log: &SpecLog, wave: u64) -> Option<Vec<String>> {
+    let copy = copy_of(log, wave)?;
+    let subs = submodules_of(root);
+    Some(copy_changed(&copy, &subs))
+}
+
+/// Compila o repositório principal com o comando de compilação do projeto, o
+/// mesmo que o pedido de cada onda já ensina; sem ele declarado, nada é
+/// rodado, porque não há como compilar sem saber o comando. A rodada não
+/// comita nada quando a compilação falha.
+pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
+    let Some(build) = mustard_core::ProjectConfig::load(root).commands().build else {
+        return Ok(());
+    };
+    let out = crate::commands::review::qa_run::run_command(&build, root);
+    if out.result == "pass" {
+        return Ok(());
+    }
+    Err(RoundRefusal::BuildFailed { command: build, output: out.output })
+}
+
 /// Apaga a cópia de cada onda do relatório, depois do commit, com a cópia de
-/// cada submódulo dentro dela. A cópia com mudança fora da lista de arquivos
-/// entregue fica, e o aviso diz quais: ela se perderia com a cópia.
+/// cada submódulo dentro dela. A lista de arquivos de cada onda já foi
+/// trocada, antes do commit, pelo que a cópia mudou de fato — por isso a
+/// cópia só fica quando o próprio git não deixa removê-la, e o aviso mostra
+/// qual é.
 pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<Value> {
     let subs = submodules_of(root);
     let mut warnings = Vec::new();
     for wave in waves {
         let Some(copy) = copy_of(log, wave.wave) else { continue };
         let shown = copy.to_string_lossy().replace('\\', "/");
-        let status = ["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=all"];
-        let mut changed = changed_paths(&git(&copy, &status).unwrap_or_default());
+        let changed = copy_changed(&copy, &subs);
         let inner: Vec<&String> = subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()).collect();
-        for sub in &inner {
-            let theirs = changed_paths(&git(&copy.join(sub), &status).unwrap_or_default());
-            changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
-        }
         let left: Vec<String> = changed.into_iter().filter(|path| !wave.files.contains(path)).collect();
         let removed = left.is_empty()
             && git_lock(root).is_ok_and(|_held| {
@@ -967,11 +1002,11 @@ mod tests {
     }
 
     /// A junção leva ao repositório principal o arquivo que a cópia apagou, e
-    /// o commit leva a remoção. A cópia com uma mudança fora da lista
-    /// entregue fica no disco, e o aviso diz qual arquivo e qual cópia; a que
-    /// só mudou o que entregou é apagada.
+    /// o commit leva a remoção. O arquivo que a cópia mudou e a entrega não
+    /// citou entra no commit do mesmo jeito, com um aviso de divergência; as
+    /// duas cópias somem, porque tudo o que cada uma mudou já foi comitado.
     #[test]
-    fn a_file_deleted_in_the_copy_is_deleted_and_a_copy_with_more_changes_stays_with_a_warning() {
+    fn a_file_deleted_in_the_copy_is_deleted_and_an_undeclared_file_enters_the_commit_with_a_warning() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[]), (2, &["src/c.rs"], &[])]);
@@ -988,18 +1023,24 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(!root.join("src/a.rs").exists());
         assert_eq!(std::fs::read_to_string(root.join("src/c.rs")).unwrap(), "fn um() {}\nfn c() {}\n");
-        assert!(!root.join("src/esquecido.rs").exists(), "only the delivered files are merged");
+        assert_eq!(std::fs::read_to_string(root.join("src/esquecido.rs")).unwrap(), "fn esquecido() {}\n",
+            "o arquivo fora da lista entra no commit mesmo assim");
         let shown = Command::new("git").args(["show", "--name-status", "--format=", "HEAD"]).current_dir(root).output();
         let shown = String::from_utf8_lossy(&shown.unwrap().stdout).to_string();
-        assert_eq!(shown.lines().collect::<Vec<_>>(), ["D\tsrc/a.rs", "M\tsrc/b.rs", "M\tsrc/c.rs"], "{out}");
+        assert_eq!(
+            shown.lines().collect::<Vec<_>>(),
+            ["D\tsrc/a.rs", "M\tsrc/b.rs", "M\tsrc/c.rs", "A\tsrc/esquecido.rs"],
+            "{out}"
+        );
 
         assert!(!copy(1).exists(), "the copy with only delivered changes is gone");
-        assert!(copy(2).join("src/esquecido.rs").is_file(), "the copy with more changes stays");
-        let kept = translate("round.copy_kept", Locale::PtBr)
+        assert!(!copy(2).exists(), "the copy whose extra file already entered the commit is gone too");
+        let hint = translate("round.files_diverged", Locale::PtBr)
             .replace("{wave}", "2")
-            .replace("{copy}", &mustard_core::io::wave_prompt::shown(&copy(2)))
-            .replace("{files}", "src/esquecido.rs");
-        assert_eq!(out["warnings"], json!([{"reason": "copy-kept", "wave": 2, "hint": kept}]), "{out}");
+            .replace("{changed}", "2")
+            .replace("{declared}", "1")
+            .replace("{missing}", "src/esquecido.rs");
+        assert_eq!(out["warnings"], json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
     }
 
     /// Cada relatório de `wrong` é recusado pelo git, com o motivo que o git

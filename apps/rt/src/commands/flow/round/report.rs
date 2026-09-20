@@ -3,6 +3,7 @@
 //! cada onda e gravado pela mesma porta das outras gravações, com o commit no
 //! meio.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use mustard_core::domain::scan::ScanReport;
@@ -16,8 +17,8 @@ use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::commit::{
-    close_copies, commit_draft, commit_message, format_round_files, git_lock, head, join_copies, make_commit,
-    record_commit, refresh_map, round_repos, unknown_file, write_joined, UNMADE_SHA,
+    close_copies, commit_draft, commit_message, ensure_builds, format_round_files, git_lock, head, join_copies,
+    make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file, write_joined, UNMADE_SHA,
 };
 use super::stops::{change_accepted, replan_code};
 use crate::commands::spec_events::write::{record, RecordCheck};
@@ -157,6 +158,37 @@ pub(crate) fn take_report_with_mine(
     // ainda não comitou nem põe a mudança dela no commit desta. A trava solta
     // antes de as cópias serem apagadas, que a pegam de novo.
     let held_lock = git_lock(root)?;
+    // A lista que a entrega cita vira só conferência: o que entra no commit é
+    // o que a cópia da onda mudou de fato, pelo `git status` dela — inclusive
+    // o arquivo que a entrega não citou. A divergência entre as duas vira
+    // aviso, com quantos arquivos mudaram, quantos a onda citou e quais
+    // ficaram de fora da citação.
+    let mut warnings: Vec<Value> = Vec::new();
+    for wave in &mut report.waves {
+        let Some(actual) = real_changed_files(root, log, wave.wave) else { continue };
+        // Cópia sem diff nenhum (comum nos testes, que escrevem direto na
+        // raiz do checkout em vez da cópia da onda) não conta como
+        // divergência nem apaga a lista declarada: sem nada de real para
+        // comparar, a conferência não tem o que dizer.
+        if actual.is_empty() {
+            continue;
+        }
+        let declared: BTreeSet<&str> = wave.files.iter().map(String::as_str).collect();
+        let actual_set: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
+        if declared != actual_set {
+            let left_out: Vec<String> = actual_set.difference(&declared).map(|s| (*s).to_string()).collect();
+            warnings.push(json!({
+                "reason": "files-diverged",
+                "wave": wave.wave,
+                "hint": translate("round.files_diverged", lang)
+                    .replace("{wave}", &wave.wave.to_string())
+                    .replace("{changed}", &actual.len().to_string())
+                    .replace("{declared}", &declared.len().to_string())
+                    .replace("{missing}", &left_out.join(", ")),
+            }));
+        }
+        wave.files = actual;
+    }
     unknown_file(root, log, &report.waves)?;
     // A junção de cada cópia é decidida antes de qualquer gravação. A entrega
     // com um trecho que ela não resolve fica de fora, com o repositório
@@ -196,7 +228,6 @@ pub(crate) fn take_report_with_mine(
     };
     let checked = check_reports(start, root, spec, &report, planned).map_err(RoundRefusal::Refused)?;
 
-    let mut warnings: Vec<Value> = Vec::new();
     if let Err(refused) = write_joined(root, &joined, true) {
         let _ = write_joined(root, &joined, false);
         return Err(refused);
@@ -208,6 +239,15 @@ pub(crate) fn take_report_with_mine(
             "reason": "formatter-not-found",
             "hint": translate("round.formatter_missing", lang).replace("{name}", &name),
         }));
+    }
+    // O repositório principal compila antes do commit, com o mesmo comando
+    // que o pedido de cada onda já ensina: não compilou, o disco volta ao que
+    // era e nada é comitado.
+    if message.is_some() {
+        if let Err(refusal) = ensure_builds(root) {
+            let _ = write_joined(root, &joined, false);
+            return Err(refusal);
+        }
     }
     // A recusa do git volta o índice e o disco antes de sair, com a trava ainda
     // presa.

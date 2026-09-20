@@ -497,6 +497,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The conversation passed 200 thousand tokens: this tool call was refused. Run `/compact` \
              and paste back the resume block: {block} After, {command}. {next}"
         }
+        ("round.files_diverged", Locale::PtBr) => {
+            "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
+             fora {missing}. Todos entraram no commit mesmo assim."
+        }
+        ("round.files_diverged", Locale::EnUs) => {
+            "Wave {wave}'s copy changed {changed} file(s) and the delivery cited {declared}: {missing} \
+             was left out. All of it went into the commit anyway."
+        }
+        ("round.build_failed", Locale::PtBr) => {
+            "O repositório principal não compilou com `{command}`, e a rodada não comitou nada: {output}"
+        }
+        ("round.build_failed", Locale::EnUs) => {
+            "The main repository did not build with `{command}`, and the round committed nothing: {output}"
+        }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
              levar. Peça ao agente o caminho certo. Nada foi gravado."
@@ -1049,8 +1063,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            138,
-            0x9e0c_ba91_3624_bc50,
+            140,
+            0x6218_c11f_7469_98cb,
         );
     }
 
@@ -1216,6 +1230,8 @@ mod tests {
             ("conversation_size.compact", &["{block}", "{command}", "{next}"][..]),
             ("conversation_size.blocked", &["{block}", "{command}", "{next}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
+            ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
+            ("round.build_failed", &["{command}", "{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
             ("round.commit.scope.many", &["{waves}"][..]),

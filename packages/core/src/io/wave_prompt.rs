@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::domain::lessons::{in_scope, related_to_tasks, Scope};
-use crate::domain::project_map::{check_skill, file_history, has_rust_part, MapRefusal, ProjectMap};
+use crate::domain::project_map::{check_skill, file_history, has_rust_part, tests_for, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{self, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
@@ -326,6 +326,12 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             (codes.get(&task).cloned().unwrap_or_else(|| task.to_string()), files)
         })
         .collect();
+    // Os arquivos de teste que o mapa do projeto conhece para cada arquivo
+    // que uma tarefa cita: a linha da tarefa os lista logo abaixo do
+    // arquivo, para o agente não sair procurando um por um no código. Um
+    // arquivo que o mapa não conhece, ou sem teste externo conhecido, fica
+    // de fora — a linha continua como hoje, sem inventar nada.
+    let file_tests = task_file_tests(map, &of_type("task"));
     // As lições que casam com a onda, menos as que a escolha do orquestrador
     // tirou. O pedido da revisão leva as mesmas.
     let lessons: Vec<&SpecEvent> = bank
@@ -369,6 +375,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         lessons,
         skills,
         task_reads,
+        file_tests,
         changes: Vec::new(),
         codes,
     };
@@ -509,6 +516,29 @@ fn with_current_lines(map: Option<&ProjectMap>, file: String) -> String {
     let Some(ranges) = decl_lines(map, path, name) else { return file };
     let lines = ranges.iter().map(|(start, end)| format!("{start}-{end}")).collect::<Vec<_>>().join(", ");
     format!("{file}@{lines}")
+}
+
+/// Os arquivos de teste que o mapa do projeto conhece para cada arquivo
+/// citado pelas tarefas `tasks`, pelo caminho como a tarefa o escreve. Sem
+/// mapa, ou para um arquivo que ele não conhece ou sem teste externo
+/// conhecido, o arquivo fica de fora.
+fn task_file_tests(map: Option<&ProjectMap>, tasks: &[&SpecEvent]) -> BTreeMap<String, Vec<String>> {
+    let Some(map) = map else { return BTreeMap::new() };
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for task in tasks {
+        let paths = task.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        for path in paths.iter().filter_map(|file| file.get("path").and_then(Value::as_str)) {
+            if out.contains_key(path) {
+                continue;
+            }
+            if let Ok(coverage) = tests_for(map, path) {
+                if !coverage.files.is_empty() {
+                    out.insert(path.to_string(), coverage.files);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// As faixas de linha (começo, fim) de cada declaração de nome `name` no
@@ -691,6 +721,35 @@ mod tests {
         assert_eq!(agreed, ["`agreed`: MSTD-LIMIT-0001"], "{}", built[0].text);
         assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 1, "{}", built[0].text);
         assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
+    }
+
+    /// O arquivo que uma tarefa cita, e cujos testes o mapa do projeto
+    /// conhece, ganha logo abaixo da linha da tarefa quem o testa — o
+    /// agente não sai procurando um por um no código. O outro arquivo da
+    /// mesma tarefa, sem teste conhecido no mapa, não ganha linha nenhuma.
+    #[test]
+    fn the_wave_request_lists_the_tests_the_map_knows_for_each_task_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let model = json!({
+            "modules": [
+                {"path": "apps/rt/src/a.rs", "tests": ["apps/rt/tests/a_test.rs"]},
+                {"path": "apps/rt/src/b.rs", "tests": []},
+            ]
+        });
+        write_map(root, &model);
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar",
+                            "files": [{"path": "apps/rt/src/a.rs"}, {"path": "apps/rt/src/b.rs"}]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(
+            built[0].text.contains("  - quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"),
+            "{}",
+            built[0].text
+        );
+        assert!(!built[0].text.contains("quem testa `apps/rt/src/b.rs`"), "{}", built[0].text);
     }
 
     /// A leitura obrigatória de uma tarefa que aponta uma função

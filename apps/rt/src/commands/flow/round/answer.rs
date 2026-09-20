@@ -59,6 +59,8 @@ pub(crate) enum RoundRefusal {
     Replan { wave: u64, change: String, code: String },
     /// O git recusou o commit.
     Git { detail: String },
+    /// O repositório principal não compilou antes do commit da rodada.
+    BuildFailed { command: String, output: String },
 }
 
 impl RoundRefusal {
@@ -75,6 +77,7 @@ impl RoundRefusal {
             Self::CommitForbidden { .. } => "commit-forbidden-text".into(),
             Self::Replan { .. } => "wave-plan-does-not-work".into(),
             Self::Git { .. } => "git-refused".into(),
+            Self::BuildFailed { .. } => "round-build-failed".into(),
         }
     }
 
@@ -127,6 +130,9 @@ impl RoundRefusal {
                 ],
             ),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
+            Self::BuildFailed { command, output } => {
+                fill("round.build_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
+            }
         }
     }
 
@@ -958,6 +964,10 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"buildCommand":"make","testCommand":"make test"}"#).unwrap();
+        // `make` é o comando de compilação de verdade agora: a rodada roda
+        // ele antes de comitar, e sem um Makefile de verdade o teste
+        // pegaria a recusa de build em vez do fluxo que ele testa.
+        std::fs::write(root.join("Makefile"), "default:\n\t@true\n").unwrap();
         let text = |out: &Value, field: &str, wave: u64| -> String {
             let found = out[field].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
             found.and_then(|d| d["prompt"].as_str()).unwrap_or_default().to_string()

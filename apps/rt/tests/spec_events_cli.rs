@@ -284,6 +284,96 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     assert_eq!(stdout_json(&block)["reason"], json!("unknown-block"));
 }
 
+/// O commit da rodada nunca depende da lista de arquivos que a onda
+/// declara: ele lê da cópia dela o que mudou de fato. A onda 1 muda o
+/// arquivo que declarou e outro que não citou, o repositório continua
+/// compilando, e o commit leva os dois, com um aviso da divergência. A onda
+/// 2 deixa o comando de compilação quebrado, e a rodada não comita nada
+/// dela: o repositório volta ao que era, e a recusa mostra o erro.
+#[test]
+fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_build_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    let head = || {
+        let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().expect("git rev-parse");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+    for (n, files) in [(1u64, ["a1.rs"].as_slice()), (2u64, ["Makefile"].as_slice())] {
+        seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+            "done_when": "x", "origin": said}));
+        let declared: Vec<Value> = files.iter().map(|f| json!({"path": f})).collect();
+        seed_binary(root, "task", &json!({"wave": n, "text": format!("Tarefa {n}."), "files": declared, "origin": said}));
+    }
+    seed_state(root, &json!({"author": "user", "phase": "approved",
+        "witness": {"question": "Aprovar esta spec?", "answer": "Aprovar"}}));
+
+    std::fs::write(root.join("mustard.json"), br#"{"buildCommand":"make"}"#).expect("mustard.json");
+    std::fs::write(root.join("a1.rs"), "fn um() {}\n").expect("a1.rs");
+    std::fs::write(root.join("Makefile"), "default:\n\t@true\n").expect("Makefile");
+    git(&["init", "-q"]);
+    std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "semente"]);
+
+    // Despacha as duas ondas: cria a cópia separada de cada uma.
+    let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
+    assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
+
+    let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "teste", wave, false);
+
+    // Onda 1: muda o arquivo declarado e um outro que a entrega não cita; o
+    // repositório continua compilando com o Makefile que já está lá.
+    std::fs::write(copy(1).join("a1.rs"), "fn um() {}\n// muda\n").expect("a1 muda");
+    std::fs::write(copy(1).join("extra.rs"), "fn extra() {}\n").expect("extra");
+    let one = json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"});
+    let report_one = format!("<DELIVERED>{one}</DELIVERED>");
+    let out = rt(root, &["round", "--spec", "teste", "--report", &report_one]).output().expect("round 1");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let body = stdout_json(&out);
+    assert_eq!(body["ok"], json!(true), "{body}");
+    assert!(body["commit"]["sha"].as_str().is_some(), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("extra.rs")).unwrap(),
+        "fn extra() {}\n",
+        "o arquivo que a onda não citou entra no commit quando o repositório compila"
+    );
+    let hint = mustard_core::platform::i18n::translate("round.files_diverged", mustard_core::platform::i18n::Locale::PtBr)
+        .replace("{wave}", "1")
+        .replace("{changed}", "2")
+        .replace("{declared}", "1")
+        .replace("{missing}", "extra.rs");
+    assert_eq!(body["warnings"], json!([{"reason": "files-diverged", "wave": 1, "hint": hint}]), "{body}");
+
+    // Onda 2: a cópia dela deixa o comando de compilação quebrado.
+    let before = head();
+    std::fs::write(copy(2).join("Makefile"), "default:\n\texit 1\n").expect("Makefile quebrado");
+    let two = json!({"wave": 2, "text": "Saiu.", "files": ["Makefile"], "commit": "makefile sai"});
+    let report_two = format!("<DELIVERED>{two}</DELIVERED>");
+    let out = rt(root, &["round", "--spec", "teste", "--report", &report_two]).output().expect("round 2");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    let body = stdout_json(&out);
+    assert_eq!(body["reason"], json!("round-build-failed"), "{body}");
+    assert_eq!(head(), before, "nada foi comitado com o repositório quebrado");
+    assert_eq!(
+        std::fs::read_to_string(root.join("Makefile")).unwrap(),
+        "default:\n\t@true\n",
+        "o repositório principal volta ao que era: nada da onda 2 entrou"
+    );
+}
+
 fn index_file(root: &Path) -> std::path::PathBuf {
     root.join(".claude").join("spec").join("index.ndjson")
 }

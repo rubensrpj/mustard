@@ -58,6 +58,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.tasks", Locale::EnUs) => "Tasks, in the order they are done",
         ("prompt.task.read_before", Locale::PtBr) => "leia antes",
         ("prompt.task.read_before", Locale::EnUs) => "read before",
+        // O mapa do projeto conhece os arquivos de teste de um arquivo que a
+        // tarefa cita: a linha do arquivo ganha, logo abaixo, quem o testa,
+        // para o agente não sair procurando um por um no código.
+        ("prompt.task.tested_by", Locale::PtBr) => "quem testa `{file}`: {tests}",
+        ("prompt.task.tested_by", Locale::EnUs) => "who tests `{file}`: {tests}",
         ("prompt.fixed", Locale::PtBr) => {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
              binário a partir da spec. Nenhum texto vem copiado: cada parte traz só os códigos dos \
@@ -245,8 +250,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            40,
-            0x93ea_020e_327d_3a41,
+            41,
+            0xfe96_5c03_e53c_2a36,
         );
     }
 }
