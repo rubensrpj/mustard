@@ -72,10 +72,8 @@ pub enum Refusal {
     /// O pedido adiado aponta uma pendência já fechada ou descartada.
     DeferredClosedPending { pending: String },
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
-    /// aponta uma mensagem do usuário, ou não repete, inteira e palavra por
-    /// palavra, nem o texto dela, nem uma frase dela, nem a sugestão das
-    /// respostas que ela respondeu.
-    GoalNotVerbatim { spec: String, origin: String },
+    /// aponta em `origin` uma mensagem do usuário.
+    GoalOriginNotUser { spec: String, origin: String },
     /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
     /// ou reveria o tipo de trabalho: quem o grava é o `grill`.
     WorkTypeByGrill,
@@ -158,7 +156,7 @@ impl Refusal {
             Self::OldFormatSpec { .. } => "old-format-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
-            Self::GoalNotVerbatim { .. } => "goal-not-verbatim",
+            Self::GoalOriginNotUser { .. } => "goal-origin-not-user",
             Self::WorkTypeByGrill => "work-type-by-grill",
             Self::SurveyOpen { .. } => "survey-open",
             Self::SurveyNotStarted { .. } => "survey-not-started",
@@ -310,8 +308,8 @@ impl Refusal {
             Self::DeferredClosedPending { pending } => {
                 fill("spec_events.deferred_closed_pending", &[("{pending}", pending.clone())])
             }
-            Self::GoalNotVerbatim { spec, origin } => fill(
-                "spec_events.goal_not_verbatim",
+            Self::GoalOriginNotUser { spec, origin } => fill(
+                "spec_events.goal_origin_not_user",
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
             Self::WorkTypeByGrill => fill("grill.work_type_by_grill", &[]),

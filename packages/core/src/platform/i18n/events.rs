@@ -115,19 +115,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.waves_grew", Locale::PtBr) => "A spec tinha {approved} ondas aprovadas, agora tem {now}.",
         ("spec_events.waves_grew", Locale::EnUs) => "The spec had {approved} approved waves, now it has {now}.",
-        ("spec_events.goal_not_verbatim", Locale::PtBr) => {
-            "O primeiro `context` da spec {spec} é o objetivo: a frase do usuário, palavra por \
-             palavra, ou a sugestão que ele aprovou, palavra por palavra como está na resposta do \
-             assistente que ele respondeu. Grave essa frase em `text` e, em `origin`, o número da \
-             mensagem dele; {origin} não é uma mensagem do usuário com esse texto, nem a que \
-             respondeu uma sugestão com ele. Nada foi gravado."
+        ("spec_events.goal_origin_not_user", Locale::PtBr) => {
+            "O primeiro `context` da spec {spec} é o objetivo, e ele aponta em `origin` a mensagem \
+             do usuário que o define. Grave o objetivo em `text` e, em `origin`, o número dessa \
+             mensagem; {origin} não é uma mensagem do usuário. Nada foi gravado."
         }
-        ("spec_events.goal_not_verbatim", Locale::EnUs) => {
-            "The first `context` of spec {spec} is the goal: the user's sentence, word for word, or \
-             the suggestion they approved, word for word as it stands in the assistant reply they \
-             answered. Put that sentence in `text` and their message's number in `origin`; {origin} \
-             is not a user message with that text, nor one that answered a suggestion with it. \
-             Nothing was written."
+        ("spec_events.goal_origin_not_user", Locale::EnUs) => {
+            "The first `context` of spec {spec} is the goal, and it points in `origin` to the user \
+             message that defines it. Put the goal in `text` and that message's number in `origin`; \
+             {origin} is not a user message. Nothing was written."
         }
         ("spec_events.survey_open", Locale::PtBr) => {
             "A spec {spec} ainda tem pontos abertos no levantamento ({count}): {points}. Feche cada um, \
@@ -547,7 +543,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             75,
-            0x8d16_b266_0821_7123,
+            0xacd9_fe1e_14ee_87a2,
         );
     }
 
@@ -568,7 +564,7 @@ mod tests {
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.waves_grew", &["{approved}", "{now}"][..]),
-            ("spec_events.goal_not_verbatim", &["{spec}", "{origin}"][..]),
+            ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
             ("spec_events.survey_not_started", &["{spec}"][..]),
             ("spec_events.survey_gaps_unrecorded", &["{spec}", "{count}", "{gaps}"][..]),

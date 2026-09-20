@@ -373,8 +373,8 @@ mod tests {
         std::fs::File::create(&path).expect("the event file");
     }
 
-    /// Uma spec em levantamento, com o objetivo gravado palavra por palavra.
-    /// Devolve o número da mensagem do objetivo.
+    /// Uma spec em levantamento, com o objetivo gravado apontando a mensagem
+    /// do usuário. Devolve o número da mensagem do objetivo.
     fn surveyed(root: &Path, spec: &str) -> u64 {
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, Some(spec), "message", json!({"author": "user", "text": GOAL})));

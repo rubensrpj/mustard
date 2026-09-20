@@ -745,19 +745,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("open.next_goal", Locale::PtBr) => {
             "A spec {spec} nasceu na branch {branch}. Faça ao usuário a pergunta de `question` e \
-             espere a resposta. O objetivo da spec é uma frase inteira dele, palavra por palavra, ou \
-             a que você sugeriu e ele aprovou, palavra por palavra como está nas suas respostas a \
-             que ele respondeu; grave-o como o primeiro `context`, com `origin` na mensagem dele. O \
-             card, os critérios de aceite e os documentos antigos que vierem junto vão logo depois, \
-             como `context`, com o mesmo `origin`."
+             espere a resposta. O objetivo da spec é uma frase que diz o que ele pediu, a dele ou a \
+             que você sugeriu e ele aprovou; grave-o como o primeiro `context`, com `origin` na \
+             mensagem dele. O card, os critérios de aceite e os documentos antigos que vierem junto \
+             vão logo depois, como `context`, com o mesmo `origin`."
         }
         ("open.next_goal", Locale::EnUs) => {
             "Spec {spec} was born on branch {branch}. Ask the user the question in `question` and \
-             wait for the answer. The spec's goal is one whole sentence of theirs, word for word, or \
-             the one you suggested and they approved, word for word as it stands in your replies \
-             they answered; record it as the first `context`, with `origin` on their message. The \
-             card, the acceptance criteria and the old documents that come along go right after it, \
-             as `context`, with the same `origin`."
+             wait for the answer. The spec's goal is one sentence saying what they asked for, theirs \
+             or the one you suggested and they approved; record it as the first `context`, with \
+             `origin` on their message. The card, the acceptance criteria and the old documents that \
+             come along go right after it, as `context`, with the same `origin`."
         }
         ("open.no_flow", Locale::PtBr) => {
             "O mustard.json não declara as bases (git.flow): as candidatas são as branches do \
@@ -1004,7 +1002,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             132,
-            0x9a41_d6b8_a70d_6b15,
+            0xe608_ed03_04a5_3bcd,
         );
     }
 

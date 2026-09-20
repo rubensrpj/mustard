@@ -1253,7 +1253,7 @@ use crate::shared::context::pending_branch::set_pending_branch;
                 DEV_MAIN,
                 "Qual o objetivo, numa frase? Pode ser a sua ou a que eu sugerir, se você aprovar. Junto \
                  dele, mande o card, os critérios de aceite e os documentos antigos, se tiver.",
-                "uma frase inteira dele, palavra por palavra",
+                "uma frase que diz o que ele pediu",
                 "ou a que você sugeriu e ele aprovou",
                 "O card, os critérios de aceite e os documentos antigos que vierem junto vão logo depois",
             ),
@@ -1262,7 +1262,7 @@ use crate::shared::context::pending_branch::set_pending_branch;
                 "What is the goal, in one sentence? It can be yours, or the one I suggest, if you approve \
                  it. Along with it, send the card, the acceptance criteria and the old documents, if you \
                  have them.",
-                "one whole sentence of theirs, word for word",
+                "one sentence saying what they asked for",
                 "or the one you suggested and they approved",
                 "The card, the acceptance criteria and the old documents that come along go right after it",
             ),
@@ -1284,8 +1284,8 @@ use crate::shared::context::pending_branch::set_pending_branch;
     /// frase e, junto, o card, os critérios de aceite e os documentos
     /// antigos. O `run write` grava como objetivo a primeira frase, com
     /// `origin` na mensagem, e o card como `context` logo depois; o índice
-    /// mostra a primeira frase. Um pedaço dela, ou a frase com a maiúscula
-    /// trocada, é recusado, e nada é gravado.
+    /// mostra a primeira frase. O objetivo que não aponta uma mensagem do
+    /// usuário é recusado, e nada é gravado.
     #[test]
     fn the_goal_is_the_first_sentence_of_an_answer_that_brings_the_card() {
         use crate::commands::spec_events::write::write_at;
@@ -1316,9 +1316,15 @@ use crate::shared::context::pending_branch::set_pending_branch;
         };
         let events = || std::fs::read_to_string(spec_dir(root, "x").join("spec.ndjson")).unwrap().lines().count();
         let before = events();
-        for piece in ["Travar o merge", "travar o merge enquanto houver pendência aberta."] {
-            assert_eq!(context(piece)["reason"], json!("goal-not-verbatim"), "{piece}");
-        }
+        let state = log.visible().into_iter().find(|e| e.event_type == "state").map(|e| e.id);
+        let state = state.expect("the spec was born with its state");
+        let refused = write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".into()),
+            event_type: "context".into(),
+            json: json!({ "text": goal, "origin": state }).to_string(),
+        });
+        assert_eq!(refused["reason"], json!("goal-origin-not-user"), "{refused}");
         assert_eq!(events(), before, "a refusal writes nothing");
         assert_eq!(context(goal)["ok"], json!(true));
         assert_eq!(context(card)["ok"], json!(true));

@@ -131,6 +131,11 @@ pub enum FlowCmd {
         /// a linha do agente de teste dedicado.
         #[arg(long)]
         report: Option<String>,
+        /// A resposta "fica para depois" do usuário a uma pendência desta
+        /// obra, uma por item (`--pending-later "P-83=o motivo"`): a
+        /// pendência solta da obra e passa a ser do projeto.
+        #[arg(long = "pending-later", value_name = "ID=MOTIVO")]
+        pending_later: Vec<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -214,8 +219,8 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::round::RoundOpts { root, spec, report };
             flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts));
         }
-        FlowCmd::Close { spec, report, root } => {
-            let opts = flow::close::CloseOpts { root, spec, report };
+        FlowCmd::Close { spec, report, pending_later, root } => {
+            let opts = flow::close::CloseOpts { root, spec, report, pending_later };
             flow::answer("close", &opts.root, opts.spec.as_deref(), started, &flow::close::close_at(&opts));
         }
         FlowCmd::Resume { spec, root } => {

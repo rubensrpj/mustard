@@ -349,13 +349,10 @@ mod tests {
     /// responde de novo e o usuário manda a terceira mensagem. A primeira
     /// resposta fica gravada inteira, antes da segunda, e as duas antes do
     /// sim. O `run write` do objetivo grava a frase sugerida com `origin` no
-    /// sim: o sim a acha na primeira resposta, e não só na segunda, a última.
-    /// Fora da volta do sim nada vale, e nada é gravado: a sugestão da
-    /// abertura, anterior à mensagem que pediu outra; a frase da resposta que
-    /// veio depois do sim; e a sugestão aprovada, apontada na terceira
-    /// mensagem, que está duas voltas atrás dela.
+    /// sim, a mensagem do usuário que o define. Apontando uma resposta do
+    /// assistente, e não a mensagem, o objetivo é recusado e nada é gravado.
     #[test]
-    fn each_response_is_recorded_in_order_and_the_goal_only_accepts_its_own_origin_verbatim() {
+    fn each_response_is_recorded_in_order_and_the_goal_points_at_the_users_message() {
         let dir = project_on("barrada");
         let root = dir.path();
         let hook_call = |event: &str, raw: Value| HookInput {
@@ -414,7 +411,7 @@ mod tests {
         );
         let messages: Vec<u64> =
             log.visible().into_iter().filter(|e| e.event_type == "message").map(|e| e.id).collect();
-        let (yes, third) = (messages[1], messages[2]);
+        let yes = messages[1];
 
         let goal = |text: &str, origin: u64| {
             crate::commands::spec_events::write::write_at(&crate::commands::spec_events::write::WriteOpts {
@@ -426,14 +423,9 @@ mod tests {
         };
         let spec_file = || std::fs::read_to_string(root.join(".claude/spec/barrada/spec.ndjson")).expect("spec file");
         let before = spec_file();
-        for (text, origin, why) in [
-            (opening_suggestion, yes, "the opening suggestion, before the message that asked for another"),
-            ("Travar tudo, sempre.", yes, "the answer after the yes"),
-            (suggestion, third, "the approved suggestion, two turns before the third message"),
-        ] {
-            let refused = goal(text, origin);
-            assert_eq!(refused["reason"], json!("goal-not-verbatim"), "{why}: {refused}");
-        }
+        let replied = log.visible().into_iter().find(|e| e.event_type == "response").map(|e| e.id).expect("a response");
+        let refused = goal(suggestion, replied);
+        assert_eq!(refused["reason"], json!("goal-origin-not-user"), "the goal points at a reply: {refused}");
         assert_eq!(spec_file(), before, "a refusal writes nothing");
         let written = goal(suggestion, yes);
         assert_eq!(written["ok"], json!(true), "{written}");

@@ -200,30 +200,26 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
     }
 }
 
-/// O objetivo de uma spec em levantamento é a frase do usuário, palavra por
-/// palavra, ou a sugestão que ele aprovou. O objetivo é o que
-/// [`crate::domain::survey::goal`] acha, a mesma leitura do índice: o
+/// O objetivo de uma spec em levantamento é a frase que o assistente grava
+/// apontando em `origin` a mensagem do usuário que a define. O objetivo é o
+/// que [`crate::domain::survey::goal`] acha, a mesma leitura do índice: o
 /// primeiro `context` gravado, na versão vigente.
 ///
 /// A regra olha o arquivo antes e depois de uma gravação. Numa spec em
 /// levantamento, toda gravação que troca o objetivo — o primeiro `context`, a
 /// revisão dele com `replaces` e a remoção que passa o lugar para outro
-/// `context` — deixa como objetivo um `context` que aponta em `origin` uma
-/// mensagem do usuário e repete o texto inteiro dela, ou uma frase dela, ou
-/// uma frase de uma das respostas do assistente que essa mensagem respondeu
-/// ([`answered_responses`]), onde o assistente sugeriu o objetivo que o
-/// usuário aprovou com um sim. A frase vale inteira e palavra por palavra: a
-/// mensagem que traz o objetivo numa frase e o card nas seguintes grava só a
-/// frase do objetivo, e um pedaço da frase, com palavra ou maiúscula trocada,
-/// não vale ([`holds_whole_phrase`]). Tirar o objetivo sem outro `context`
-/// deixa a vaga aberta para a próxima resposta. A gravação que não troca o
-/// objetivo passa, e fora do levantamento qualquer `context` passa.
+/// `context` — deixa como objetivo um `context` cujo `origin` é uma mensagem
+/// do usuário. O texto não é conferido: quem grava é o assistente, e a frase
+/// dele resume o que o usuário pediu na mensagem apontada. Exigir a frase
+/// repetida palavra por palavra custava uma recusa atrás da outra e não
+/// melhorava o objetivo gravado. Tirar o objetivo sem outro `context` deixa a
+/// vaga aberta para a próxima resposta. A gravação que não troca o objetivo
+/// passa, e fora do levantamento qualquer `context` passa.
 ///
 /// # Errors
 ///
-/// [`Refusal::GoalNotVerbatim`] quando o objetivo novo não aponta uma
-/// mensagem do usuário, ou não repete nem o texto dela, nem uma frase inteira
-/// dela, nem uma frase inteira das respostas que ela respondeu.
+/// [`Refusal::GoalOriginNotUser`] quando o objetivo novo não aponta em
+/// `origin` uma mensagem do usuário.
 pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     use crate::domain::survey::goal;
     if State::from_log(before).phase != Some("survey") {
@@ -236,38 +232,13 @@ pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Re
         return Ok(());
     }
     let origin = now.int("origin");
-    let said = origin.and_then(|id| after.get(id)).filter(|m| is_user_message(m));
-    let text = now.str_field("text").map(str::trim).filter(|t| !t.is_empty());
-    if let (Some(said), Some(text)) = (said, text) {
-        let message = said.str_field("text").unwrap_or_default();
-        if message.trim() == text || holds_whole_phrase(message, text) {
-            return Ok(());
-        }
-        let suggested = answered_responses(after, said.id)
-            .into_iter()
-            .filter_map(|reply| reply.str_field("text"))
-            .any(|reply| holds_whole_phrase(reply, text));
-        if suggested {
-            return Ok(());
-        }
+    if origin.and_then(|id| after.get(id)).is_some_and(is_user_message) {
+        return Ok(());
     }
-    Err(Refusal::GoalNotVerbatim {
+    Err(Refusal::GoalOriginNotUser {
         spec: spec.trim().to_string(),
         origin: origin.map_or_else(|| "-".to_string(), |id| id.to_string()),
     })
-}
-
-/// As respostas do assistente que a mensagem `message` respondeu: as
-/// `response` visíveis gravadas depois da mensagem do usuário anterior a ela,
-/// ou desde o começo quando não há outra, e antes dela. Quando a regra das
-/// pendências barra a resposta, a volta tem duas, a barrada e o complemento
-/// que o bloqueio pediu, e a sugestão pode estar em qualquer uma. Vale também
-/// a do turno em que a spec nasceu, gravada sem `reply_to` ([`reply_rule`]).
-/// A resposta de uma volta mais antiga fica de fora.
-fn answered_responses(log: &SpecLog, message: u64) -> Vec<&SpecEvent> {
-    let visible = log.visible();
-    let previous = visible.iter().rev().find(|e| e.id < message && is_user_message(e)).map_or(0, |e| e.id);
-    visible.into_iter().filter(|e| e.event_type == "response" && e.id > previous && e.id < message).collect()
 }
 
 /// O evento é uma mensagem do usuário.
@@ -305,83 +276,6 @@ pub fn reply_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
         return Err(Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() });
     }
     Ok(())
-}
-
-/// Os sinais que abrem ou fecham um destaque na resposta: aspas, negrito,
-/// código e parênteses.
-const MARKS: &[char] = &['"', '“', '”', '«', '»', '*', '`', '(', ')', '[', ']'];
-
-/// Os sinais que abrem um item de lista ou um título numa linha.
-const BULLETS: &[char] = &['-', '•', '>', '#'];
-
-/// Os sinais que terminam uma frase.
-const SENTENCE_END: &[char] = &['.', '!', '?'];
-
-/// Os sinais depois dos quais começa a frase que eles apresentam.
-const INTRODUCERS: &[char] = &[':', '—', '–'];
-
-/// `phrase` está em `text` inteira e palavra por palavra: as mesmas palavras,
-/// na mesma ordem, com a mesma pontuação e as mesmas maiúsculas, começando no
-/// começo de uma frase e acabando no fim dela. O começo é o do texto, o de
-/// uma linha, o que vem depois de um ponto final, de exclamação, de
-/// interrogação ou de dois-pontos, ou o que vem logo depois de um sinal que
-/// abre um destaque, como aspas e negrito. O fim é o do texto, o de uma
-/// linha, um desses pontos, ou um sinal que fecha um destaque. Assim um
-/// pedaço da frase sugerida, cortado no meio dela ou no meio de uma palavra,
-/// não passa. Os espaços entre as palavras contam como um só, dos dois lados,
-/// e a quebra de linha do texto continua quebra.
-fn holds_whole_phrase(text: &str, phrase: &str) -> bool {
-    let text = squeeze(text);
-    let phrase = phrase.split_whitespace().collect::<Vec<_>>().join(" ");
-    let Some(last) = phrase.trim_end_matches(MARKS).chars().next_back() else {
-        return false;
-    };
-    text.match_indices(phrase.as_str())
-        .any(|(at, _)| opens_sentence(&text[..at]) && closes_sentence(last, &text[at + phrase.len()..]))
-}
-
-/// O texto com cada sequência de espaços trocada por um espaço só, ou por uma
-/// quebra de linha quando ela tinha uma; sem espaço nas pontas.
-fn squeeze(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut gap = None;
-    for c in text.chars() {
-        if c.is_whitespace() {
-            gap = Some(if c == '\n' || gap == Some('\n') { '\n' } else { ' ' });
-            continue;
-        }
-        if let Some(space) = gap.take().filter(|_| !out.is_empty()) {
-            out.push(space);
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// O trecho que vem depois de `before` começa uma frase.
-fn opens_sentence(before: &str) -> bool {
-    let mut back = before.chars().rev();
-    match back.next() {
-        None | Some('\n') => true,
-        Some(c) if MARKS.contains(&c) => true,
-        Some(' ') => back
-            .find(|c| *c != ' ' && !MARKS.contains(c) && !BULLETS.contains(c))
-            .is_none_or(|c| c == '\n' || SENTENCE_END.contains(&c) || INTRODUCERS.contains(&c)),
-        Some(_) => false,
-    }
-}
-
-/// O trecho que termina com `last`, fora os sinais de destaque, e é seguido
-/// de `after` acaba uma frase.
-fn closes_sentence(last: char, after: &str) -> bool {
-    let mut next = after.chars();
-    match next.next() {
-        None | Some('\n') => true,
-        Some(c) if MARKS.contains(&c) => true,
-        Some(' ') => SENTENCE_END.contains(&last),
-        Some(c) if SENTENCE_END.contains(&c) => next.next().is_none_or(|c| !c.is_alphanumeric()),
-        Some(_) => false,
-    }
 }
 
 /// Os pontos do levantamento na mudança de fase, sobre o arquivo antes e
@@ -559,11 +453,48 @@ impl Review {
     }
 }
 
+/// O número da última mudança da obra: a entrega ou o commit mais novo, ou
+/// zero numa spec que ainda não mudou nada. É daqui que o fechamento e o
+/// portão do merge medem o que a aprovação final já viu.
+#[must_use]
+pub fn last_change(log: &SpecLog) -> u64 {
+    log.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "commit")).map(|e| e.id).max().unwrap_or(0)
+}
+
+/// A aprovação final da obra: o veredito do agente de teste dedicado
+/// (`final`) que aprovou depois da última mudança ([`last_change`]). Ela
+/// confere o encaixe do que a obra inteira entregou — por isso não aponta
+/// onda nenhuma, e uma obra sem onda também a tem. `None` enquanto ela não
+/// veio, ou quando uma entrega nova chegou depois dela.
+///
+/// O fechamento e o portão do merge leem daqui, com a mesma regra: o
+/// fechamento não fecha sem ela, e o merge não pode pedir confirmação por uma
+/// reprovação que ela já quitou.
+#[must_use]
+pub fn final_approval(log: &SpecLog) -> Option<&SpecEvent> {
+    let since = last_change(log);
+    log.block(BlockQuery::Block(Block::Review))
+        .into_iter()
+        .filter(|e| e.event_type == "verdict" && e.id > since)
+        .filter(|e| e.fields.get("final") == Some(&Value::Bool(true)))
+        .filter(|e| e.str_field("result").map(str::trim) == Some("approved"))
+        .max_by_key(|e| e.id)
+}
+
 /// O veredito de uma spec, pelos eventos `verdict` que a leitura mostra: o
 /// mais novo de cada onda decide, e uma aprovação de uma onda não esconde a
 /// reprovação de outra.
+///
+/// A aprovação final da obra ([`final_approval`]) quita as reprovações
+/// anteriores a ela: é a mesma leitura com que o fechamento deixa a obra
+/// fechar, e o agente de teste dedicado que a deu conferiu o conserto de cada
+/// onda reprovada antes. Sem essa quitação os dois leitores discordavam, e o
+/// merge de uma obra já fechada parava para uma confirmação por causa da
+/// reprovação de uma onda antiga. A reprovação gravada DEPOIS da aprovação
+/// final continua valendo: nada a quitou ainda.
 #[must_use]
 pub fn review(log: &SpecLog) -> Review {
+    let quittance = final_approval(log).map_or(0, |event| event.id);
     // O veredito mais novo de cada onda: (número, reprovou).
     let mut last: BTreeMap<u64, (u64, bool)> = BTreeMap::new();
     for verdict in log.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
@@ -576,7 +507,10 @@ pub fn review(log: &SpecLog) -> Review {
             *entry = (verdict.id, rejected);
         }
     }
-    Review { any: !last.is_empty(), rejected: last.values().any(|(_, rejected)| *rejected) }
+    Review {
+        any: !last.is_empty() || quittance > 0,
+        rejected: last.values().any(|(id, rejected)| *rejected && *id > quittance),
+    }
 }
 
 /// Os pedidos (`request`) que a leitura mostra e que vieram depois do evento
@@ -1113,43 +1047,6 @@ mod tests {
         assert_eq!(waves_grown_by(&log(&lines), 8), None);
     }
 
-    /// A sugestão vale inteira: entre aspas, em negrito, numa linha própria,
-    /// num item de lista, depois de dois-pontos ou depois de outra frase, e
-    /// também sem o ponto final. Um pedaço dela, cortado no meio da frase ou
-    /// de uma palavra, com a maiúscula trocada ou com palavras trocadas, a
-    /// frase que no texto é parte de outra e o número cortado no ponto não
-    /// valem.
-    #[test]
-    fn only_the_whole_suggested_sentence_is_held() {
-        let goal = "Um sim aprova o objetivo sugerido.";
-        for text in [
-            "Sugiro: \"Um sim aprova o objetivo sugerido.\" Serve?",
-            "Sugiro o objetivo “Um sim aprova o objetivo sugerido.”",
-            "**Objetivo sugerido:** Um sim aprova o objetivo sugerido.",
-            "Sugiro este objetivo:\n\n- Um sim aprova o objetivo sugerido.\n\nServe?",
-            "Sugiro **Um sim aprova o objetivo sugerido.**",
-            "Travar o envio. Um sim aprova o objetivo sugerido. Serve?",
-            "Sugestão:\nUm  sim aprova\to objetivo sugerido.",
-        ] {
-            assert!(holds_whole_phrase(text, goal), "{text}");
-        }
-        let quoted = "Sugiro: \"Um sim aprova o objetivo sugerido.\" Serve?";
-        assert!(holds_whole_phrase(quoted, "Um sim aprova o objetivo sugerido"), "without the final period");
-        for piece in [
-            "Um sim aprova o objetivo",
-            "o objetivo sugerido.",
-            "um sim aprova o objetivo sugerido.",
-            "Um sim aprova o objetivo suger",
-            "m sim aprova o objetivo sugerido.",
-            "Um sim aprova o sugerido objetivo.",
-            "",
-        ] {
-            assert!(!holds_whole_phrase(quoted, piece), "{piece}");
-        }
-        assert!(!holds_whole_phrase("Acho que um sim aprova o objetivo sugerido.", "um sim aprova o objetivo sugerido."));
-        assert!(!holds_whole_phrase("A versão 1.5 sai hoje.", "A versão 1."));
-    }
-
     /// Uma spec em levantamento com a conversa `talk`, cada evento com o
     /// número da posição dele mais um, depois do `state` de número 1.
     fn surveyed_with(talk: &[Value]) -> Vec<Value> {
@@ -1180,62 +1077,34 @@ mod tests {
         goal_rule("teste", &before, &log(&after))
     }
 
-    /// O objetivo pode ser a mensagem inteira do usuário ou uma frase inteira
-    /// dela: a mensagem que traz o objetivo na primeira frase e o card, os
-    /// critérios e os documentos antigos nas seguintes grava a primeira
-    /// frase, com o ponto final ou sem ele. Um pedaço da frase, a frase com
-    /// uma palavra ou uma maiúscula trocada, e a frase que passa do ponto
-    /// para a seguinte, são recusados.
+    /// O objetivo é o texto que o assistente escreve apontando a mensagem do
+    /// usuário: a mensagem inteira, uma frase dela, um resumo com outras
+    /// palavras e até a frase que o assistente sugeriu e o usuário aprovou
+    /// com um sim passam, todas apontando a mensagem. Só o `origin` é
+    /// conferido: o objetivo que aponta uma resposta do assistente, um evento
+    /// que não é mensagem nenhuma ou nada é recusado, e a recusa diz qual
+    /// `origin` veio.
     #[test]
-    fn the_goal_may_be_one_whole_sentence_of_the_users_message() {
-        let message = "Travar o merge com pendência aberta. Card MUS-12: o merge espera a revisão.\n\
-                       Critérios: o merge barrado mostra a pendência. Documentos antigos: docs/merge.md.";
-        let lines = surveyed_with(&[user(message)]);
-        for goal in [message, "Travar o merge com pendência aberta.", "Travar o merge com pendência aberta"] {
-            assert_eq!(goal_with(&lines, goal, 2), Ok(()), "{goal}");
-        }
+    fn the_goal_is_any_text_pointing_at_the_users_message() {
+        let message = "Travar o merge com pendência aberta. Card MUS-12: o merge espera a revisão.";
+        let lines = surveyed_with(&[answer("Sugiro: \"Travar o envio com pendência aberta.\" Serve?"), user(message)]);
+        let (said, reply) = (3, 2);
         for goal in [
-            "Travar o merge",
-            "Travar o merge com pendência aberta. Card",
-            "travar o merge com pendência aberta.",
+            message,
+            "Travar o merge com pendência aberta.",
+            "travar o merge",
+            "O merge espera a revisão da pendência aberta.",
             "Travar o envio com pendência aberta.",
-            "ravar o merge com pendência aberta.",
         ] {
-            assert!(matches!(goal_with(&lines, goal, 2), Err(Refusal::GoalNotVerbatim { .. })), "{goal}");
+            assert_eq!(goal_with(&lines, goal, said), Ok(()), "{goal}");
         }
-    }
-
-    /// O sim acha a sugestão em qualquer resposta da volta que ele responde:
-    /// na resposta que a regra das pendências barrou e no complemento que
-    /// veio depois dela, não só na última. A volta começa depois da mensagem
-    /// anterior do usuário: a primeira resposta dela vale, e a última resposta
-    /// antes daquela mensagem, de uma volta mais antiga, já não; nem a
-    /// resposta que veio depois do sim. Com três mensagens, a terceira não
-    /// acha a sugestão da volta do sim, duas voltas atrás: a volta começa na
-    /// mensagem logo anterior, e não na primeira. Sem mensagem anterior, a
-    /// volta começa no começo da spec.
-    #[test]
-    fn the_yes_finds_the_suggestion_in_every_answer_of_its_turn_and_no_older_one() {
-        let lines = surveyed_with(&[
-            answer("Sugiro: \"Travar o envio com pendência aberta.\" Serve?"),
-            user("Não, outra."),
-            answer("Então sugiro: \"Um sim aprova o objetivo sugerido.\" E uma frase longa que a conferência barra."),
-            answer("Resumo: a sugestão está acima."),
-            user("pode usar essa"),
-            answer("Gravo: \"Travar tudo, sempre.\""),
-            user("grave"),
-        ]);
-        let (yes, third) = (6, 8);
-        assert_eq!(goal_with(&lines, "Um sim aprova o objetivo sugerido.", yes), Ok(()), "the barred answer");
-        assert_eq!(goal_with(&lines, "Resumo: a sugestão está acima.", yes), Ok(()), "the complement");
-        for goal in ["Travar o envio com pendência aberta.", "Travar tudo, sempre.", "Um sim aprova o objetivo"] {
-            assert!(matches!(goal_with(&lines, goal, yes), Err(Refusal::GoalNotVerbatim { .. })), "{goal}");
+        for (origin, why) in [(reply, "a resposta do assistente"), (1, "o state"), (99, "um número que não existe")] {
+            let refused = goal_with(&lines, "Travar o merge com pendência aberta.", origin);
+            assert_eq!(
+                refused,
+                Err(Refusal::GoalOriginNotUser { spec: "teste".to_string(), origin: origin.to_string() }),
+                "{why}",
+            );
         }
-        for goal in ["Um sim aprova o objetivo sugerido.", "Resumo: a sugestão está acima."] {
-            let refused = goal_with(&lines, goal, third);
-            assert!(matches!(refused, Err(Refusal::GoalNotVerbatim { .. })), "two turns back: {goal}");
-        }
-        assert_eq!(goal_with(&lines, "Travar tudo, sempre.", third), Ok(()), "the third message's own turn");
-        assert_eq!(goal_with(&lines, "Travar o envio com pendência aberta.", 3), Ok(()), "the opening turn");
     }
 }
