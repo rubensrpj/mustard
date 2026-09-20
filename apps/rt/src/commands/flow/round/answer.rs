@@ -377,11 +377,10 @@ pub(super) fn run_round_with_mine(
         .iter()
         .map(|(wave, sent)| (*wave, (codes.get(sent).cloned().unwrap_or_else(|| sent.to_string()), *sent)))
         .collect();
-    // O processo do Claude Code por trás desta rodada: gravado em todo envio,
-    // novo ou reenviado, para a rodada seguinte saber se este ainda está
-    // aberto. Sem achar um (fora do Linux, ou sem pai de nome `claude`), o
-    // envio sai sem o par, e conta como fechado só onde isso faz sentido.
-    let claude = crate::commands::flow::stuck::claude_ancestor();
+    // O processo por trás desta rodada — o Claude Code que a chamou ou, sem
+    // um por cima, ela mesma: gravado em todo envio, novo ou reenviado, para
+    // a rodada seguinte saber se aquele ainda está aberto.
+    let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
     for wave in &next {
         let Some(prompt) = built.iter().find(|p| p.wave == *wave) else { continue };
         let mut draft = Map::new();
@@ -403,10 +402,8 @@ pub(super) fn run_round_with_mine(
                 draft.insert("build_dir".into(), json!(dir));
             }
         }
-        if let Some((pid, started)) = claude {
-            draft.insert("claude_pid".into(), json!(pid));
-            draft.insert("claude_started".into(), json!(started));
-        }
+        draft.insert("claude_pid".into(), json!(claude_pid));
+        draft.insert("claude_started".into(), json!(claude_started));
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
@@ -438,10 +435,8 @@ pub(super) fn run_round_with_mine(
             draft.insert("build_dir".into(), json!(dir));
         }
         draft.insert("resends".into(), json!(previous));
-        if let Some((pid, started)) = claude {
-            draft.insert("claude_pid".into(), json!(pid));
-            draft.insert("claude_started".into(), json!(started));
-        }
+        draft.insert("claude_pid".into(), json!(claude_pid));
+        draft.insert("claude_started".into(), json!(claude_started));
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
@@ -716,7 +711,10 @@ mod tests {
     /// `/clear`, que não muda o processo do sistema — não é reenviada; e a
     /// onda viva sem sinal por 40 minutos sai como aviso, enquanto a de 39
     /// minutos não sai (`MSTD-TASK-0042`, `MSTD-CRIT-0031`).
+    /// Só roda no Linux: fora dele nenhum processo é dado como morto, então
+    /// onda órfã não existe para ser provada.
     #[test]
+    #[cfg(target_os = "linux")]
     fn the_wave_resumes_from_its_steps_in_a_new_agent() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -734,7 +732,7 @@ mod tests {
         let first_prompt = first["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
 
         let path = store::spec_file(root, "x").unwrap();
-        let claude = crate::commands::flow::stuck::claude_ancestor();
+        let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
         let (draft2, draft3, draft4) = {
             let log = store::read(&path).unwrap().unwrap();
             let sent_of = |wave: u64| -> Value {
@@ -759,10 +757,8 @@ mod tests {
         // As ondas 3 e 4 seguem com o mesmo Claude Code, vivo de verdade, mas
         // sem sinal de vida há 39 e 40 minutos.
         for (mut draft, minutes_ago) in [(draft3, 39), (draft4, 40)] {
-            if let Some((pid, started)) = claude {
-                draft["claude_pid"] = json!(pid);
-                draft["claude_started"] = json!(started);
-            }
+            draft["claude_pid"] = json!(claude_pid);
+            draft["claude_started"] = json!(claude_started);
             let at = (chrono::Local::now() - chrono::Duration::minutes(minutes_ago)).to_rfc3339();
             seed_send_at(root, draft, &at);
         }
@@ -822,7 +818,10 @@ mod tests {
     /// A onda órfã segue ocupando a vaga e a cópia dela até o reenvio: com o
     /// teto de compilação em 1, uma onda fresca não sai por cima da órfã na
     /// mesma rodada em que ela é reenviada.
+    /// Só roda no Linux: fora dele nenhum processo é dado como morto, então
+    /// onda órfã não existe para ser provada.
     #[test]
+    #[cfg(target_os = "linux")]
     fn an_orphaned_wave_keeps_holding_its_slot_until_it_is_resent() {
         let dir = tempdir().unwrap();
         let root = dir.path();

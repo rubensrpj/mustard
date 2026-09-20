@@ -687,9 +687,7 @@ mod tests {
         // segue vivo durante o teste: é assim que `waves_in_progress` conta
         // a onda como em andamento, sem depender de um Claude Code de
         // verdade.
-        let pid = std::process::id();
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("read this process's own stat");
-        let started: u64 = stat.rsplit_once(')').unwrap().1.split_whitespace().collect::<Vec<_>>()[19].parse().unwrap();
+        let (pid, started) = crate::commands::flow::stuck::this_process();
         crate::shared::spec_state::seed_event(
             root,
             "x",
@@ -739,9 +737,7 @@ mod tests {
             serde_json::json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "x", "origin": said}),
         );
         crate::shared::spec_state::seed_event(root, "x", "state", serde_json::json!({"phase": "running", "author": "binary"}));
-        let pid = std::process::id();
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("read this process's own stat");
-        let started: u64 = stat.rsplit_once(')').unwrap().1.split_whitespace().collect::<Vec<_>>()[19].parse().unwrap();
+        let (pid, started) = crate::commands::flow::stuck::this_process();
         crate::shared::spec_state::seed_event(
             root,
             "x",

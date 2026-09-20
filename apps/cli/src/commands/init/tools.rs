@@ -236,15 +236,18 @@ fn find_in_conventional_dirs(program: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// Write a fake executable script named `name` under `dir` that appends
-    /// its own argv to `log` — the "programs used in fake temp dir, log
-    /// arguments instead of installing anything real" shape the proof needs.
+    /// Write a fake executable named `name` under `dir` that appends its own
+    /// argv to `log` — the "programs used in fake temp dir, log arguments
+    /// instead of installing anything real" shape the proof needs. On Windows
+    /// it is a `.cmd` batch file, the extension `on_path` looks for there; a
+    /// shell script under a bare name is found on Unix only.
     fn write_fake_program(dir: &Path, name: &str, log: &Path) {
-        let script = format!(
-            "#!/bin/sh\necho \"$0 $*\" >> \"{}\"\nexit 0\n",
-            log.display()
-        );
-        let path = dir.join(name);
+        let path = if cfg!(windows) { dir.join(format!("{name}.cmd")) } else { dir.join(name) };
+        let script = if cfg!(windows) {
+            format!("@echo off\r\necho %0 %* >> \"{}\"\r\nexit /b 0\r\n", log.display())
+        } else {
+            format!("#!/bin/sh\necho \"$0 $*\" >> \"{}\"\nexit 0\n", log.display())
+        };
         std::fs::write(&path, script).unwrap();
         #[cfg(unix)]
         {
@@ -258,7 +261,12 @@ mod tests {
     /// `rust-analyzer` nor the fake `rustup`/`claude` install anything real —
     /// the log file proves the install command and both plugin commands ran,
     /// with the exact plugin id the table declares for rust.
+    ///
+    /// Unix only: the install spawns each program by its bare name, and
+    /// Windows starts a `.cmd` through the shell, not through the direct
+    /// spawn this fake program relies on.
     #[test]
+    #[cfg(unix)]
     fn the_install_sets_up_the_code_tool_of_each_language() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();

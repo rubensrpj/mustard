@@ -172,31 +172,51 @@ fn stat_of(pid: u32) -> Option<(u32, u64)> {
     Some((ppid, starttime))
 }
 
-/// O processo Claude Code que está por trás do processo atual: sobe pelos
-/// pais em `/proc` até achar um de nome `claude`, e devolve o número dele e a
-/// hora de início — o par que [`process_alive`] confere depois. `None` sem
-/// achar nenhum, com um limite de 64 subidas para nunca entrar em laço.
+/// O processo que responde por este envio, com o número e a hora de início —
+/// o par que [`process_alive`] confere depois. Sobe pelos pais em `/proc` até
+/// achar um de nome `claude` e devolve esse, com um limite de 64 subidas para
+/// nunca entrar em laço. Sem nenhum pai `claude` — uma rodada tocada por um
+/// script, por um teste ou pela linha de comando —, devolve o processo atual,
+/// que é quem manda a onda ali. O envio nunca sai sem o par: quem lê depois
+/// compara um processo com o relógio, em vez de ler ausência de dado como
+/// prova de morte.
 #[cfg(target_os = "linux")]
-pub(crate) fn claude_ancestor() -> Option<(u32, u64)> {
+pub(crate) fn sender_process() -> (u32, u64) {
     let mut pid = std::process::id();
     for _ in 0..64 {
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-        let (ppid, starttime) = stat_of(pid)?;
-        if comm.trim() == "claude" {
-            return Some((pid, starttime));
+        let Some((ppid, starttime)) = stat_of(pid) else { break };
+        if std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|comm| comm.trim() == "claude") {
+            return (pid, starttime);
         }
         if ppid == 0 || ppid == pid {
-            return None;
+            break;
         }
         pid = ppid;
     }
-    None
+    this_process()
 }
 
-/// Fora do Linux não há `/proc`: nenhum processo Claude Code é achado.
+/// Fora do Linux não há `/proc`: o envio leva o processo atual, e lá
+/// [`process_alive`] não confere nenhum dos dois números.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn claude_ancestor() -> Option<(u32, u64)> {
-    None
+pub(crate) fn sender_process() -> (u32, u64) {
+    this_process()
+}
+
+/// O número e a hora de início do processo atual — o par de quem está
+/// rodando agora. Serve ao envio sem Claude Code por cima e aos testes, que
+/// assim não dependem de quem lançou a suíte.
+#[cfg(target_os = "linux")]
+pub(crate) fn this_process() -> (u32, u64) {
+    let pid = std::process::id();
+    (pid, stat_of(pid).map_or(0, |(_, starttime)| starttime))
+}
+
+/// Fora do Linux, sem `/proc`, a hora de início não é legível: vai zerada, e
+/// [`process_alive`] não olha para ela.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn this_process() -> (u32, u64) {
+    (std::process::id(), 0)
 }
 
 /// `true` quando o processo `pid`, nascido em `started` (a mesma hora de
@@ -357,12 +377,16 @@ mod tests {
     }
 
     /// Sem achar nenhum pai de nome `claude`, ou achando um, nunca entra em
-    /// laço nem devolve um número que já não está vivo: o achado, quando há
-    /// um, sempre bate com [`process_alive`].
+    /// laço e sempre devolve um processo vivo: com pai `claude`, ele; sem
+    /// nenhum, o processo atual. Vale rodando por baixo do Claude Code e
+    /// rodando solto, e é o que faz a suíte não mudar de resultado conforme
+    /// quem a lançou.
     #[test]
-    fn claude_ancestor_never_loops_and_is_alive_when_found() {
-        if let Some((pid, started)) = claude_ancestor() {
-            assert!(process_alive(pid, started), "the ancestor found must still be running");
-        }
+    fn the_sender_process_is_always_a_living_one() {
+        let (pid, started) = sender_process();
+        assert!(process_alive(pid, started), "the sender process must still be running");
+        let (own_pid, own_started) = this_process();
+        assert_eq!(own_pid, std::process::id(), "this_process reports the running process");
+        assert!(process_alive(own_pid, own_started), "the running process is alive");
     }
 }
