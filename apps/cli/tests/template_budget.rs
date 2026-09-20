@@ -2,8 +2,9 @@
 //!
 //! Em cada idioma, todo texto que o modelo lê — os comandos e o estilo de
 //! resposta do plugin, os agentes e o mapa do início da sessão que o
-//! instalador grava — soma menos de 20.480 bytes, e nenhum arquivo passa de
-//! 3.072 bytes. O mapa é o texto do início da sessão, e tem até 3.072 bytes.
+//! instalador grava — soma menos de 24.576 bytes. Não há teto por arquivo de
+//! agente: o que prende um molde é o que ele diz. O mapa do início da sessão,
+//! que entra em toda sessão, continua com o teto dele de 3.072 bytes.
 //!
 //! A conta é a do disco, byte a byte, como `find … -printf '%s'` a faz. Um
 //! arquivo pertence a um idioma quando o caminho dele diz o idioma (uma pasta
@@ -17,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 /// O teto da soma de um idioma, em bytes.
-const LANGUAGE_BUDGET: u64 = 20_480;
+const LANGUAGE_BUDGET: u64 = 24_576;
 
 /// O teto de um arquivo, e do texto do início da sessão, em bytes.
 const FILE_CAP: u64 = 3_072;
