@@ -46,6 +46,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
+        // O modelo em que a onda roda, dito no cabeçalho do próprio pedido —
+        // do mesmo jeito que ele já diz a cópia e a pasta de compilação —,
+        // porque o molde do agente sozinho não bastou: em 20/09 a onda saiu
+        // em Opus por herdar o modelo da sessão.
+        ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: Sonnet 5.",
+        ("prompt.model.wave", Locale::EnUs) => "This wave's model: Sonnet 5.",
+        ("prompt.part.delivers", Locale::PtBr) => "O que a onda entrega",
+        ("prompt.part.delivers", Locale::EnUs) => "What the wave delivers",
+        ("prompt.part.tasks", Locale::PtBr) => "Tarefas, na ordem em que se faz",
+        ("prompt.part.tasks", Locale::EnUs) => "Tasks, in the order they are done",
+        ("prompt.task.read_before", Locale::PtBr) => "leia antes",
+        ("prompt.task.read_before", Locale::EnUs) => "read before",
+        // O mapa do projeto conhece os arquivos de teste de um arquivo que a
+        // tarefa cita: a linha do arquivo ganha, logo abaixo, quem o testa,
+        // para o agente não sair procurando um por um no código.
+        ("prompt.task.tested_by", Locale::PtBr) => "quem testa `{file}`: {tests}",
+        ("prompt.task.tested_by", Locale::EnUs) => "who tests `{file}`: {tests}",
         ("prompt.fixed", Locale::PtBr) => {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
              binário a partir da spec. Nenhum texto vem copiado: cada parte traz só os códigos dos \
@@ -113,10 +130,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.lessons", Locale::EnUs) => "Lessons",
         ("prompt.part.skills", Locale::PtBr) => "Skills das tarefas",
         ("prompt.part.skills", Locale::EnUs) => "Task skills",
-        // Os arquivos de leitura que a escolha antes do envio confirmou, por
-        // tarefa: o mapa sugeriu, e o orquestrador manteve.
-        ("prompt.part.task_reads", Locale::PtBr) => "Leitura por tarefa",
-        ("prompt.part.task_reads", Locale::EnUs) => "Per-task reading",
         ("prompt.part.delivered", Locale::PtBr) => "O que as ondas anteriores entregaram",
         ("prompt.part.delivered", Locale::EnUs) => "What the earlier waves delivered",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
@@ -156,10 +169,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.execution.build", Locale::EnUs) => "Build with `{command}`.",
         ("prompt.execution.test", Locale::PtBr) => "Teste com `{command}`.",
         ("prompt.execution.test", Locale::EnUs) => "Test with `{command}`.",
-        ("prompt.execution.no_commit", Locale::PtBr) => "Não comite e não use `git add`: o commit é da rodada.",
-        ("prompt.execution.no_commit", Locale::EnUs) => {
-            "Do not commit and do not use `git add`: the commit belongs to the round."
-        }
         ("prompt.execution.running", Locale::PtBr) => {
             "Ondas em andamento, cada uma na sua cópia: o arquivo que você dividir com elas é juntado \
              na volta, e o trecho que conflitar para a rodada até ser resolvido."
@@ -170,35 +179,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("prompt.execution.wave", Locale::PtBr) => "Onda {n}",
         ("prompt.execution.wave", Locale::EnUs) => "Wave {n}",
-        // O consumo do agente: ler por trecho, não reler depois de editar,
-        // rodar só os testes do que mudou e a suíte inteira uma vez no fim,
-        // em primeiro plano. Uma linha por regra.
-        ("prompt.execution.excerpt", Locale::PtBr) => {
-            "Leia por trecho: ache a função com a busca e leia só ela; o arquivo inteiro, só quando for mudar boa parte dele."
-        }
-        ("prompt.execution.excerpt", Locale::EnUs) => {
-            "Read by excerpt: find the function with search and read only it; the whole file only when you are going to change a large part of it."
-        }
-        ("prompt.execution.no_reread", Locale::PtBr) => {
-            "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado."
-        }
-        ("prompt.execution.no_reread", Locale::EnUs) => {
-            "Do not reread the file after editing: the edit already shows the changed excerpt."
-        }
-        ("prompt.execution.changed_tests", Locale::PtBr) => "Durante o trabalho, rode só os testes do que mudou.",
-        ("prompt.execution.changed_tests", Locale::EnUs) => "During the work, run only the tests of what changed.",
-        ("prompt.execution.suite_once", Locale::PtBr) => {
-            "A suíte inteira roda uma vez no fim, em primeiro plano, com o teto de tempo do comando e pelo `rtk`, que mostra só as falhas."
-        }
-        ("prompt.execution.suite_once", Locale::EnUs) => {
-            "The whole suite runs once at the end, in the foreground, with the command's time limit and through `rtk`, which shows only the failures."
-        }
-        ("prompt.execution.no_background", Locale::PtBr) => {
-            "Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço."
-        }
-        ("prompt.execution.no_background", Locale::EnUs) => {
-            "Never send a build or test to the background, and never wait on another process in a loop."
-        }
         // A leitura obrigatória de uma tarefa, quando ela aponta uma
         // declaração (`caminho#declaração`), função, estrutura ou constante:
         // o pedido manda ler só aquela declaração, não o arquivo inteiro, e
@@ -270,8 +250,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            43,
-            0x30e2_640f_5315_9b9b,
+            41,
+            0xfe96_5c03_e53c_2a36,
         );
     }
 }

@@ -207,9 +207,13 @@ pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublis
 /// provedor não respondeu.
 ///
 /// A mesma pergunta de [`open_or_edit`], feita de uma vez só para as duas
-/// portas: a branch em jogo é quem aponta o pull request.
+/// portas: a branch em jogo é quem aponta o pull request, e só o estado ABERTO
+/// é reescrito. A busca pela branch devolve também o pull request já juntado
+/// ou fechado — o provedor não esquece o histórico dela —, e reescrever o
+/// corpo dele mexia num pedido que já saiu. Aqui não há o que abrir no lugar:
+/// a rodada só refaz o que está aberto, e sem isso ela não para.
 pub(crate) fn rewrite_body(provider: &dyn PrProvider, head: &str, body: &str) -> Option<u64> {
-    let view = provider.view(PrRef::Head(head)).ok()?;
+    let view = provider.view(PrRef::Head(head)).ok().filter(|view| view.status == PrStatus::Open)?;
     provider.edit_body(view.number, body).ok().map(|()| view.number)
 }
 
@@ -768,12 +772,17 @@ mod tests {
         );
     }
 
-    /// Um pull request já juntado nunca é editado de novo — a busca pela
-    /// branch pode devolvê-lo mesmo depois de fechado, e a porta não pode
-    /// tratar isso como "a branch tem um pull request aberto".
+    /// Um pull request já juntado nunca é editado de novo, nas DUAS portas —
+    /// a da abertura e a da rodada, lado a lado: a busca pela branch pode
+    /// devolvê-lo mesmo depois de fechado, e nenhuma delas pode tratar isso
+    /// como "a branch tem um pull request aberto". A porta da abertura abre um
+    /// pedido novo no lugar; a da rodada, que não abre nada, responde `None` e
+    /// não reescreve nada. Aberto, as duas reescrevem, e o número que volta é
+    /// o dele.
     ///
-    /// Em 18/09 a versão anterior reescreveu o texto do pedido 278, já
-    /// juntado. O mesmo vale para um pull request fechado sem juntar.
+    /// Em 18/09 a porta da abertura reescreveu o texto do pedido 278, já
+    /// juntado; a porta da rodada ficou com o mesmo defeito de pé. O mesmo
+    /// vale para um pull request fechado sem juntar.
     #[test]
     fn a_merged_pull_request_is_never_edited() {
         let pr = to_open();
@@ -791,7 +800,26 @@ mod tests {
                 "o pedido já juntado foi reescrito: {:?}",
                 fake.seen.borrow(),
             );
+
+            // A porta da rodada, pela mesma branch e com o mesmo estado.
+            let fake = FakePub::with_landed_pr("github", "feature/my-unit", 278, status);
+            assert_eq!(
+                rewrite_body(&fake, "feature/my-unit", "outro corpo"),
+                None,
+                "a rodada reescreveu o corpo de um pull request {status:?}",
+            );
+            assert!(
+                !fake.seen.borrow().iter().any(|call| call.starts_with("edit 278")),
+                "o pedido {status:?} foi reescrito pela rodada: {:?}",
+                fake.seen.borrow(),
+            );
         }
+
+        // Aberto, a rodada reescreve: é a divisa entre o que ela toca e o que
+        // não toca.
+        let fake = FakePub::with_open_pr("github", "feature/my-unit", 278);
+        assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(278));
+        assert!(fake.seen.borrow().iter().any(|call| call == "edit 278 body=outro corpo"), "{:?}", fake.seen.borrow());
     }
 
     /// Every failure — table-driven over the two actions — degrades into the

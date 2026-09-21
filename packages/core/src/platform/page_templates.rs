@@ -72,6 +72,7 @@ use serde_json::{json, Value};
 
 use crate::domain::spec_events::{Block, Kind, AUTHORS, PHASES, PURGED_MARK, TYPES};
 use crate::domain::spec_state::is_approved_phase;
+use crate::platform::harness::harness_version;
 use crate::platform::i18n::{translate, Locale};
 
 /// O template da página da spec, como mora no repositório.
@@ -145,7 +146,32 @@ pub fn project_page_template(lang: Locale) -> String {
 fn fill(template: &str, catalog: &Value) -> String {
     let json = catalog.to_string().replace('<', "\\u003c");
     let filled = format!(r#"<script type="application/json" id="mustard-catalog">{json}</script>"#);
-    template.replacen(CATALOG_SLOT, &filled, 1)
+    let body = template.replacen(CATALOG_SLOT, &filled, 1);
+    stamp(&body)
+}
+
+/// O que vem antes da versão na marca do começo do modelo, na primeira linha
+/// dele.
+const VERSION_MARK_PREFIX: &str = "<!-- mustard:";
+
+/// O que vem depois da versão na marca do começo do modelo.
+const VERSION_MARK_SUFFIX: &str = "-->";
+
+/// `body` com o selo da versão do Mustard rodando na frente, numa linha só: é
+/// por ele que o passo que publica compara o modelo instalado no projeto com
+/// a versão do binário, sem reconstruir o catálogo inteiro.
+fn stamp(body: &str) -> String {
+    format!("{VERSION_MARK_PREFIX} {} {VERSION_MARK_SUFFIX}\n{body}", harness_version())
+}
+
+/// A versão do Mustard que gerou o modelo `text`, lida do selo da primeira
+/// linha. `None` quando o selo não está lá — um modelo de antes dele, ou
+/// qualquer outro texto.
+#[must_use]
+pub fn template_version(text: &str) -> Option<&str> {
+    let line = text.lines().next()?;
+    let rest = line.strip_prefix(VERSION_MARK_PREFIX)?.trim();
+    rest.strip_suffix(VERSION_MARK_SUFFIX).map(str::trim)
 }
 
 /// Cada tipo de evento como o template o lê: o nome, a sigla do código, o
@@ -249,6 +275,24 @@ mod tests {
     use crate::domain::spec_events::parse_log;
     use crate::domain::spec_index::ProjectRow;
     use crate::view::document::{RtkDay, WaveState, WaveStates};
+
+    /// O modelo gerado leva o selo da versão do binário rodando, na primeira
+    /// linha: é essa marca que o passo que publica confere contra a versão de
+    /// agora para saber se o modelo instalado no projeto está velho.
+    #[test]
+    fn the_generated_template_is_stamped_with_the_running_version() {
+        for html in [spec_page_template(Locale::PtBr), project_page_template(Locale::PtBr)] {
+            assert_eq!(template_version(&html), Some(harness_version().as_str()), "{html}");
+        }
+    }
+
+    /// Um modelo sem o selo — de antes dele, ou qualquer outro texto — não
+    /// tem versão nenhuma: a leitura não inventa uma.
+    #[test]
+    fn a_template_without_the_stamp_has_no_version() {
+        assert_eq!(template_version("<!doctype html><html></html>"), None);
+        assert_eq!(template_version(""), None);
+    }
 
     /// O apoio que roda um template no Node, com o DOM e as capacidades do
     /// claude.ai imitados.
@@ -674,6 +718,94 @@ mod tests {
         assert_eq!(link[2], json!(r#"<a href="https://claude.ai/code/artifact/busca" target="_blank" rel="noopener">busca</a>"#));
     }
 
+    /// A regra combinada de uma onda na página: nada se repete na mesma
+    /// tela — nem o título no corpo aberto, nem os campos que já formam o
+    /// título de um item sem texto corrido, nem o estado da onda em mais de
+    /// um lugar, nem a contagem por situação ao lado da contagem geral —, a
+    /// hierarquia de títulos pára em três níveis, e a página mostra o pedido
+    /// inteiro que a onda recebeu (o molde e o texto, nessa ordem) com o
+    /// consumo dela.
+    #[test]
+    fn a_wave_shows_its_whole_request_once_and_in_order() {
+        let lines = vec![
+            json!({"v":1,"id":1,"at":"2026-09-19T09:00:00-03:00","type":"wave","author":"assistant",
+                "n":9,"text":"A onda nove.","criteria":[1],"done_when":"A suíte passa.","origin":1}),
+            json!({"v":1,"id":2,"at":"2026-09-19T09:01:00-03:00","type":"send","author":"binary","wave":9,
+                "role":"wave","template":"# molde\n\nTexto do molde.","text":"# pedido\n\nTexto do pedido.",
+                "lines":2,"chars":40,"items":[1],"mustard":"0.2.1",
+                "model":"sonnet","model_used":"sonnet","steps":12,"tokens":3400,"origin":1}),
+            json!({"v":1,"id":3,"at":"2026-09-19T09:02:00-03:00","type":"verdict","author":"review",
+                "wave":9,"result":"approved","final":false,"text":"A onda fecha certo.","origin":1}),
+        ];
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        // O gasto total já vem pronto do binário (`copy::spend_line`); a
+        // página só o mostra, junto do painel de acompanhamento, sem montar
+        // a frase de novo do lado do cliente.
+        let mut db = spec_database(&lines);
+        db["computed"][0]["data"]["spend"] = json!("Gasto total: 3400 tokens de onda + 0 tokens de quem despachou = 3400 tokens.");
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        let page = &got["page"];
+
+        // O painel de acompanhamento, no topo da página, mostra o gasto
+        // total, exatamente como o binário o compôs.
+        let progress = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("progress")).expect("progress section");
+        assert_eq!(
+            progress["overview"]["spend"],
+            json!("Gasto total: 3400 tokens de onda + 0 tokens de quem despachou = 3400 tokens."),
+            "{progress}"
+        );
+
+        // A hierarquia de títulos pára em três níveis: página (h1), seção
+        // (h2) e item (h3) — nenhum h4 (ou mais fundo) aparece na página.
+        let headings: Vec<&str> = page["headings"].as_array().expect("headings").iter().map(|h| h.as_str().unwrap_or_default()).collect();
+        assert!(!headings.is_empty(), "the page has headings");
+        assert!(headings.iter().all(|h| ["H1", "H2", "H3"].contains(h)), "only three heading levels: {headings:?}");
+
+        let waves = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("waves")).expect("waves section");
+        let wave_group = waves["groups"].as_array().expect("groups").iter().find(|g| g["id"] == json!("waves-9")).expect("waves-9 group");
+        let items = wave_group["items"].as_array().expect("items");
+
+        // O item da onda não repete o nome dela (já no cabeçalho do grupo)
+        // nem o estado (já na marca do cabeçalho): título vazio e sem
+        // status próprio.
+        let wave_item = items.iter().find(|i| i["type"] == json!("wave")).expect("the wave item");
+        assert_eq!((&wave_item["title"], &wave_item["status"]), (&json!(""), &json!(null)), "{wave_item}");
+
+        // O item do envio mostra, na tabela dele, o consumo que a onda
+        // gastou: modelo pedido, modelo usado, passos e tokens.
+        let send_item = items.iter().find(|i| i["type"] == json!("send")).expect("the send item");
+        let field_labels: Vec<Value> = send_item["fields"].as_array().expect("fields").iter().map(|f| f[0].clone()).collect();
+        for key in ["page.field.model", "page.field.model_used", "page.field.steps", "page.field.tokens"] {
+            let label = json!(translate(key, Locale::PtBr));
+            assert!(field_labels.contains(&label), "{key} ({label}) is not shown among {field_labels:?}");
+        }
+        // O corpo aberto do envio não repete o primeiro parágrafo do texto,
+        // que já é o título do item.
+        assert!(send_item["text"].as_str().unwrap_or_default().is_empty(), "{send_item}");
+
+        // O pedido inteiro que a onda recebeu: o molde primeiro, o texto
+        // depois, na mesma ordem em que o agente os recebe, os dois presos
+        // ao mesmo item de envio.
+        let prompts = wave_group["prompts"].as_array().expect("prompts");
+        let owner = send_item["code"].clone();
+        let template_at = prompts.iter().position(|p| p["owner"] == owner && p["summary"].as_str().unwrap_or_default().contains("Molde recebido"))
+            .unwrap_or_else(|| panic!("no template block: {prompts:?}"));
+        let text_at = prompts.iter().position(|p| p["owner"] == owner && p["summary"].as_str().unwrap_or_default().contains("Pedido enviado"))
+            .unwrap_or_else(|| panic!("no text block: {prompts:?}"));
+        assert!(template_at < text_at, "the template comes before the text: {prompts:?}");
+
+        // Na revisão da mesma onda, a contagem por situação e a contagem
+        // geral não aparecem lado a lado: uma delas basta.
+        let review = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("review")).expect("review section");
+        let review_group = review["groups"].as_array().expect("groups").iter().find(|g| g["id"] == json!("review-9")).expect("review-9 group");
+        assert!(!review_group["summary"].as_str().unwrap_or_default().is_empty(), "{review_group}");
+        assert_eq!(review_group["count"], json!(""), "the tally already sums the total: {review_group}");
+
+        // A seção da revisão usa um rótulo próprio para a onda, diferente
+        // do cabeçalho da seção das ondas.
+        assert_ne!(wave_group["title"], review_group["title"], "waves and review do not share the same wave label");
+    }
+
     /// O ponto do levantamento respondido ganha a marca de fechado. `byType`
     /// já mostrava a linha "Fechado por" quando `surveyPoints` achava o par,
     /// mas a marca ao lado do ponto continuava de aberta, porque `statusOf`
@@ -694,9 +826,11 @@ mod tests {
         let points = agreed["groups"].as_array().expect("groups").iter().find(|g| g["id"] == json!("agreed-point")).expect("the points group");
         let items = points["items"].as_array().expect("items");
         assert_eq!(items.len(), 2, "the open point and the one that closes it: {items:?}");
+        // O ponto não tem texto corrido: a lacuna vira o título dele, não uma
+        // linha repetida na tabela de campos.
         let open_point = items
             .iter()
-            .find(|i| i["fields"].as_array().expect("fields").iter().any(|f| f[1] == json!("Tamanho do pedido de cada onda")))
+            .find(|i| i["title"].as_str().unwrap_or_default().contains("Tamanho do pedido de cada onda"))
             .expect("the open point");
         assert_eq!(
             open_point["status"],
@@ -769,19 +903,22 @@ mod tests {
         assert_eq!(
             entries,
             [
+                // O texto aberto só mostra o que vem depois do primeiro parágrafo: quando
+                // é só um parágrafo (ou a marca do expurgo), ele já é o título, e o corpo
+                // aberto fica vazio em vez de repeti-lo.
                 json!({"code": code(34), "who": "anotação", "mark": "removido",
-                    "title": "Anotação colada por engano.", "text": "Anotação colada por engano.",
+                    "title": "Anotação colada por engano.", "text": "",
                     "fields": [["Removido por", "assistente"], ["Removido em", "2026-09-12 11:10"],
                         ["Motivo", "Colada por engano."], ["Registro", code(36)]]}),
-                json!({"code": code(37), "who": "mensagem", "mark": "expurgado", "title": "…", "text": "…",
+                json!({"code": code(37), "who": "mensagem", "mark": "expurgado", "title": "…", "text": "",
                     "fields": [["Expurgado por", "assistente"], ["Expurgado em", "2026-09-12 11:12"],
                         ["Motivo", "segredo"], ["Registro", code(38)]]}),
                 json!({"code": code(42), "who": "regra", "mark": "removido",
                     "title": "A trava de comandos confere o programa, as opções e o caminho.",
-                    "text": "A trava de comandos confere o programa, as opções e o caminho.vale para o Bash;vale para o PowerShell.",
+                    "text": "vale para o Bash;vale para o PowerShell.",
                     "fields": [["Removido por", "usuário"], ["Removido em", "2026-09-12 14:02"],
                         ["Motivo", "A trava mudou de lugar."], ["Registro", code(52)]]}),
-                json!({"code": code(50), "who": "anotação", "mark": "expurgado", "title": "…", "text": "…",
+                json!({"code": code(50), "who": "anotação", "mark": "expurgado", "title": "…", "text": "",
                     "fields": [["Expurgado por", "usuário"], ["Expurgado em", "2026-09-12 14:01"],
                         ["Motivo", "segredo"], ["Registro", code(51)]]}),
             ],
@@ -792,7 +929,8 @@ mod tests {
         // anotações com o resto do texto, e a seção dos removidos não o repete.
         let notes = sections.iter().find(|s| s["id"] == json!("notes")).expect("notes");
         let kept = notes["groups"][0]["items"].as_array().expect("notes").iter().find(|i| i["code"] == json!(code(50)));
-        assert_eq!(kept.map(|i| i["text"].clone()), Some(json!("A chave … fica no cofre do time.")));
+        // Um parágrafo só: ele vira o título do item, sem repetir no corpo aberto.
+        assert_eq!(kept.map(|i| i["title"].clone()), Some(json!("A chave … fica no cofre do time.")));
         assert!(!last.to_string().contains("cofre"), "the purged text stays out of the removed section: {last}");
 
         // O .md baixado tem a mesma seção, no fim.
@@ -891,6 +1029,35 @@ mod tests {
                 assert_eq!(got["page"]["statusHidden"], json!(false), "{page} {db:?}");
             }
         }
+    }
+
+    /// O documento calculado já tem dado — uma cópia já rodou —, mas a
+    /// coleção de faixas está vazia: o modelo lido não é o que a cópia de
+    /// agora escreve, e a página diz que o modelo está velho, com o comando
+    /// que o atualiza, em vez da linha de banco vazio.
+    #[test]
+    fn a_populated_computed_doc_with_no_range_items_names_the_stale_template() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let stale = translate("page.stale_template", Locale::PtBr);
+        let db = json!({"computed": [{"id": "current", "data": {"spec": "demo", "last": 9}}]});
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        assert_eq!(got["page"]["state"], json!("stale"), "{got}");
+        assert_eq!(got["page"]["status"], json!(stale), "{got}");
+        assert_eq!(got["page"]["statusHidden"], json!(false), "{got}");
+    }
+
+    /// Sem a cópia ter rodado ainda — o documento calculado vazio —, a
+    /// coleção de faixas vazia continua a leitura genuína de uma spec nova: a
+    /// linha é a de banco vazio, não a de modelo velho, mesmo com o
+    /// documento calculado presente e vazio.
+    #[test]
+    fn an_empty_computed_doc_with_no_range_items_still_says_no_data() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let no_data = translate("page.no_data", Locale::PtBr);
+        let db = json!({"computed": [{"id": "current", "data": {}}]});
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        assert_eq!(got["page"]["state"], json!("empty"), "{got}");
+        assert_eq!(got["page"]["status"], json!(no_data), "{got}");
     }
 
     /// Uma cópia nova chega com a página aberta: o item novo aparece, o item

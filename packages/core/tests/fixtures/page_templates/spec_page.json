@@ -22,20 +22,7 @@
             "mark": null,
             "status": null,
             "date": "2026-09-11 08:40",
-            "fields": [
-              [
-                "Fase",
-                "levantamento"
-              ],
-              [
-                "Branch",
-                "feature/demo"
-              ],
-              [
-                "Base",
-                "dev"
-              ]
-            ]
+            "fields": []
           },
           {
             "code": "MSTD-STATE-0002",
@@ -45,16 +32,7 @@
             "mark": null,
             "status": null,
             "date": "2026-09-12 09:03",
-            "fields": [
-              [
-                "Fase",
-                "aprovada"
-              ],
-              [
-                "Pergunta e resposta",
-                "Aprovar esta spec? → Aprovar"
-              ]
-            ]
+            "fields": []
           },
           {
             "code": "MSTD-PUB-0001",
@@ -64,24 +42,7 @@
             "mark": null,
             "status": "sim",
             "date": "2026-09-12 09:03",
-            "fields": [
-              [
-                "Página",
-                "spec"
-              ],
-              [
-                "Marco",
-                "aprovação"
-              ],
-              [
-                "Deu certo",
-                "sim"
-              ],
-              [
-                "Endereço",
-                "https://claude.ai/code/artifact/demo"
-              ]
-            ]
+            "fields": []
           }
         ]
       },
@@ -98,28 +59,7 @@
             "mark": null,
             "status": null,
             "date": "2026-09-12 09:41",
-            "fields": [
-              [
-                "Identificador",
-                "5e0c7a91"
-              ],
-              [
-                "Título",
-                "fix(write-gate): a aprovação sai do estado"
-              ],
-              [
-                "Ondas",
-                "2"
-              ],
-              [
-                "Arquivos",
-                "apps/rt/src/hooks/write/scope_guard.rs"
-              ],
-              [
-                "Repositório",
-                "."
-              ]
-            ]
+            "fields": []
           },
           {
             "code": "MSTD-PRSUM-0001",
@@ -204,10 +144,6 @@
             "date": "2026-09-11 08:41",
             "fields": [
               [
-                "Tipos",
-                "refatoração"
-              ],
-              [
                 "Origem",
                 "MSTD-MSG-0001"
               ]
@@ -229,26 +165,6 @@
             "status": "pendente",
             "date": "2026-09-11 09:00",
             "fields": [
-              [
-                "Grupo de lacunas",
-                "limits"
-              ],
-              [
-                "Lacuna",
-                "Tamanho do pedido de cada onda"
-              ],
-              [
-                "De onde veio",
-                "lacuna"
-              ],
-              [
-                "Situação",
-                "pendente"
-              ],
-              [
-                "Fatos",
-                "A montagem do pedido não tem teto de tamanho. (apps/rt/src/commands/agent/render/mod.rs:798)"
-              ],
               [
                 "Origem",
                 "MSTD-MSG-0001"
@@ -460,18 +376,6 @@
             "date": "2026-09-11 09:15",
             "fields": [
               [
-                "Quando",
-                "O pedido montado de uma onda passa de 500 linhas."
-              ],
-              [
-                "Então",
-                "O binário recusa o despacho, com a mensagem do que passou."
-              ],
-              [
-                "Prova",
-                "cargo test -p mustard-rt --test wave_request_limit"
-              ],
-              [
                 "Rótulo no rascunho",
                 "C-12"
               ],
@@ -500,24 +404,7 @@
             "mark": null,
             "status": "passou",
             "date": "2026-09-12 11:00",
-            "fields": [
-              [
-                "Critério",
-                "MSTD-CRIT-0001"
-              ],
-              [
-                "Resultado",
-                "passou"
-              ],
-              [
-                "Código de saída",
-                "0"
-              ],
-              [
-                "Tempo (ms)",
-                "5990"
-              ]
-            ]
+            "fields": []
           }
         ]
       }
@@ -535,10 +422,10 @@
           {
             "code": "MSTD-WAVE-0001",
             "anchored": true,
-            "title": "A trava lê o comando como o terminal.",
+            "title": "",
             "who": null,
             "mark": null,
-            "status": "a fazer",
+            "status": null,
             "date": "2026-09-11 09:16",
             "fields": [
               [
@@ -552,10 +439,6 @@
               [
                 "Origem",
                 "MSTD-MSG-0001"
-              ],
-              [
-                "Estado da onda",
-                "a fazer"
               ],
               [
                 "Recebe",
@@ -573,10 +456,10 @@
           {
             "code": "MSTD-WAVE-0002",
             "anchored": true,
-            "title": "A aprovação e as pendências leem o estado.",
+            "title": "",
             "who": null,
             "mark": null,
-            "status": "aprovada",
+            "status": null,
             "date": "2026-09-11 09:17",
             "fields": [
               [
@@ -594,10 +477,6 @@
               [
                 "Origem",
                 "MSTD-MSG-0001"
-              ],
-              [
-                "Estado da onda",
-                "aprovada"
               ],
               [
                 "Commit",
@@ -700,10 +579,10 @@
           {
             "code": "MSTD-WAVE-0003",
             "anchored": true,
-            "title": "Os templates leem o banco.",
+            "title": "",
             "who": null,
             "mark": "depois da aprovação",
-            "status": "em andamento",
+            "status": null,
             "date": "2026-09-12 12:00",
             "fields": [
               [
@@ -717,10 +596,6 @@
               [
                 "Origem",
                 "MSTD-MSG-0001"
-              ],
-              [
-                "Estado da onda",
-                "em andamento"
               ],
               [
                 "Recebe",
@@ -800,10 +675,10 @@
           {
             "code": "MSTD-WAVE-0004",
             "anchored": true,
-            "title": "A instalação.",
+            "title": "",
             "who": null,
             "mark": "depois da aprovação",
-            "status": "a fazer",
+            "status": null,
             "date": "2026-09-12 12:04",
             "fields": [
               [
@@ -817,10 +692,6 @@
               [
                 "Origem",
                 "MSTD-MSG-0001"
-              ],
-              [
-                "Estado da onda",
-                "a fazer"
               ],
               [
                 "Recebe",
@@ -872,7 +743,7 @@
     "groups": [
       {
         "id": "review-2",
-        "title": "Onda 2",
+        "title": "Revisão da onda 2",
         "summary": "1 aprovada",
         "items": [
           {
@@ -1123,14 +994,6 @@
             "date": "2026-09-12 11:10",
             "fields": [
               [
-                "Motivo",
-                "Colada por engano."
-              ],
-              [
-                "Itens",
-                "MSTD-NOTE-0001"
-              ],
-              [
                 "Origem",
                 "MSTD-MSG-0001"
               ]
@@ -1145,14 +1008,6 @@
             "status": null,
             "date": "2026-09-12 11:12",
             "fields": [
-              [
-                "Itens",
-                "MSTD-MSG-0002"
-              ],
-              [
-                "Motivo",
-                "segredo"
-              ],
               [
                 "Origem",
                 "MSTD-MSG-0001"

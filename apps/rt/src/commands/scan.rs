@@ -192,21 +192,40 @@ fn next_step(similar: &[Vec<u64>], missing: &[MissingPaths], lang: Locale) -> St
     parts.join(" ")
 }
 
-/// O caminho que uma lição cita existe no projeto: no disco, a partir da raiz
-/// ou de uma das pastas do subprojeto da lição (`inside`) até ela, ou no mapa
-/// que o scan acabou de gravar, que aceita só o fim do caminho.
+/// O caminho que uma lição cita existe no projeto: a partir da raiz ou de uma
+/// das pastas do subprojeto da lição (`inside`) até ela, ou no mapa que o
+/// scan acabou de gravar, que aceita só o fim do caminho.
 fn path_found(root: &Path, map: &ProjectMap, cited: &str, inside: Option<&str>) -> bool {
-    if root.join(cited).exists() {
+    if located(root, &root.join(cited)) {
         return true;
     }
     let mut folder = inside.map(|sub| root.join(sub));
     while let Some(dir) = folder {
-        if dir.join(cited).exists() {
+        if located(root, &dir.join(cited)) {
             return true;
         }
         folder = dir.parent().filter(|up| up.starts_with(root) && *up != root).map(Path::to_path_buf);
     }
     project_map::map_knows(map, cited)
+}
+
+/// `candidate` é uma parte real, versionada, do projeto — não só um caminho
+/// que o disco responde que existe. Sem repositório para perguntar (fora de
+/// um `git`, ou com `vcs` desligado), o disco continua sendo a resposta
+/// inteira, como sempre foi. Dentro de um repositório, um caminho que só
+/// existe porque uma compilação o deixou lá — e que o próprio git ignora, sem
+/// nunca tê-lo rastreado — não conta: é resto, não parte do projeto.
+fn located(root: &Path, candidate: &Path) -> bool {
+    if !candidate.exists() {
+        return false;
+    }
+    let git_ok = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;
+    if !git_ok(&["rev-parse", "--is-inside-work-tree"]) {
+        return true;
+    }
+    let Ok(rel) = candidate.strip_prefix(root) else { return true };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    git_ok(&["ls-files", "--error-unmatch", "--", &rel]) || !git_ok(&["check-ignore", "-q", "--", &rel])
 }
 
 /// Submodule paths declared in `.gitmodules` whose working directory holds no
@@ -398,6 +417,37 @@ mod tests {
         assert!(
             failed.get("lessons").is_none(),
             "o arquivo já existe, e sem mapa nada é dado como faltando: {failed}"
+        );
+    }
+
+    /// Roda `git <args>` em `root`, ignorando o resultado: só monta o
+    /// repositório de teste (`init`, `add`), sem checar saída.
+    fn run_git(root: &Path, args: &[&str]) {
+        let _ = mustard_core::platform::git::run(root, args);
+    }
+
+    /// O disco sozinho não decide mais se o caminho citado existe: dentro de
+    /// um repositório, um resto de compilação (existe no disco, mas o git
+    /// ignora e nunca rastreou) não conta, e o arquivo rastreado continua
+    /// contando — os dois lados da mesma conferência.
+    #[test]
+    fn path_found_asks_the_versioned_files_not_only_the_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        run_git(root, &["init", "-q"]);
+        write(&root.join(".gitignore"), "build/\n");
+        write(&root.join("packages/core/build/estimator.rs"), "// resto de compilação\n");
+        write(&root.join("packages/core/src/lib.rs"), "pub fn lib() {}\n");
+        run_git(root, &["add", "packages/core/src/lib.rs"]);
+
+        let map = ProjectMap::default();
+        assert!(
+            !path_found(root, &map, "packages/core/build/estimator.rs", None),
+            "resto de compilação, ignorado pelo git e nunca rastreado, não conta como existente"
+        );
+        assert!(
+            path_found(root, &map, "packages/core/src/lib.rs", None),
+            "arquivo rastreado continua contando"
         );
     }
 

@@ -235,19 +235,19 @@ pub fn init_with_templates(
     };
     let outcome = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
         .with_context(|| format!("seeding {settings_name}"))?;
-    seeding::report_seed(settings_name, outcome);
+    seeding::report_seed(settings_name, outcome, false);
     // Mustard's own texts — so the answer to "merge or overwrite?" does not
     // reach them: the seeder takes no such argument and always lays the
     // shipped text down again, in the text language.
     for (rel, outcome) in mustard_core::seed_harness_texts(&claude_path, text)
         .context("seeding Mustard's texts under .claude/")?
     {
-        seeding::report_seed(&format!(".claude/{rel}"), outcome);
+        seeding::report_seed(&format!(".claude/{rel}"), outcome, true);
     }
     // The ephemeral-state .gitignore.
     let outcome = mustard_core::seed_gitignore(&claude_path, overwrite)
         .context("seeding .claude/.gitignore")?;
-    seeding::report_seed(".claude/.gitignore", outcome);
+    seeding::report_seed(".claude/.gitignore", outcome, false);
 
     // Project-root `.github/` scaffolding (PR template) — skipped by a private
     // install: it lands outside `.claude/`, where nothing else covers it, and

@@ -84,8 +84,8 @@ use mustard_core::domain::spec_index::{is_template, project_page, published_to, 
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::platform::page_templates::{
-    project_page_template, spec_page_template, COMPUTED, PROJECT_CAPABILITIES, RANGES, RANGE_MAX_BYTES, RANGE_WIDTH,
-    SPECS, SPEC_CAPABILITIES,
+    project_page_template, spec_page_template, template_version, COMPUTED, PROJECT_CAPABILITIES, RANGES,
+    RANGE_MAX_BYTES, RANGE_WIDTH, SPECS, SPEC_CAPABILITIES,
 };
 use mustard_core::view::document::{RtkDay, WaveState};
 use mustard_core::ClaudePaths;
@@ -551,7 +551,47 @@ fn computed(place: &Place, log: &SpecLog, rtk: &[RtkDay], lang: Locale) -> Value
         .iter()
         .map(|day| json!({ "date": day.date, "commands": day.commands, "input": day.input, "saved": day.saved }))
         .collect();
-    redacted(json!({ "spec": place.spec, "last": log.max_id(), "waves": waves, "prompts": prompts, "rtk": rtk }))
+    let spend = spend_line(log, lang);
+    redacted(json!({ "spec": place.spec, "last": log.max_id(), "waves": waves, "prompts": prompts, "rtk": rtk, "spend": spend }))
+}
+
+/// Uma linha só com o gasto da obra inteira: os tokens de toda onda somados
+/// ao que quem despachou já gastou, contra a régua do projeto — tokens por
+/// arquivo tocado. `None` sem nenhum arquivo entregue ainda, sem régua para
+/// comparar.
+fn spend_line(log: &SpecLog, lang: Locale) -> Option<String> {
+    const TOKENS_PER_FILE: u64 = 2_300_000;
+    let visible = log.visible();
+    let wave_tokens: u64 = visible
+        .iter()
+        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("wave"))
+        .filter_map(|e| e.int("tokens"))
+        .sum();
+    let caller_tokens: u64 =
+        visible.iter().filter(|e| e.event_type == "send").filter_map(|e| e.int("caller_tokens")).max().unwrap_or(0);
+    let total_tokens = wave_tokens + caller_tokens;
+    let files: BTreeSet<&str> = visible
+        .iter()
+        .filter(|e| e.event_type == "delivered")
+        .flat_map(|e| e.fields.get("files").and_then(Value::as_array).into_iter().flatten())
+        .filter_map(Value::as_str)
+        .collect();
+    if files.is_empty() || total_tokens == 0 {
+        return None;
+    }
+    let expected = TOKENS_PER_FILE * files.len() as u64;
+    let ratio = total_tokens as f64 / expected as f64;
+    let verdict = translate(if ratio > 1.0 { "round.spend.expensive" } else { "round.spend.cheap" }, lang);
+    Some(
+        translate("round.spend.line", lang)
+            .replace("{waves}", &wave_tokens.to_string())
+            .replace("{caller}", &caller_tokens.to_string())
+            .replace("{total}", &total_tokens.to_string())
+            .replace("{expected}", &expected.to_string())
+            .replace("{files}", &files.len().to_string())
+            .replace("{ratio}", &format!("{ratio:.2}"))
+            .replace("{verdict}", verdict),
+    )
 }
 
 /// O nome do estado de uma onda no documento das coisas calculadas.
@@ -645,11 +685,17 @@ fn clear(folder: &Path) -> Result<(), Refusal> {
     mustard_core::io::fs::remove_dir_all(folder).map_err(|e| Refusal::Io { detail: e.to_string() })
 }
 
-/// Deixa no projeto o template que a ordem manda publicar, quando ele falta.
+/// Deixa no projeto o template que a ordem manda publicar: escreve quando ele
+/// falta, e também quando a versão gravada no começo dele — o selo que
+/// [`spec_page_template`] e [`project_page_template`] deixam ([`template_version`]) —
+/// não é a do binário rodando. O modelo velho ficaria lendo uma coleção que a
+/// cópia de agora não escreve mais, e a página abriria sem dizer por quê.
 fn ensure_template(root: &Path, template: &str, body: impl FnOnce() -> String) -> Result<(), Refusal> {
     let path = root.join(template);
-    if path.is_file() {
-        return Ok(());
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if template_version(&existing) == Some(mustard_core::harness_version().as_str()) {
+            return Ok(());
+        }
     }
     write(&path, &body())
 }
@@ -1625,5 +1671,112 @@ mod tests {
         let starts: BTreeSet<u64> = final_log.events.iter().map(|e| range_start(e.id)).collect();
         let expected: Vec<u64> = starts.iter().flat_map(|&s| range_items(&final_log, s)).map(|(id, _)| id).collect();
         assert_eq!(got, expected, "the page shows every item, in order, as before");
+    }
+
+    /// Um modelo velho já instalado no projeto — de antes do selo da versão,
+    /// sem catálogo nenhum — é reescrito pelo modelo de agora antes do
+    /// primeiro marco publicar a página: o passo confere o selo contra a
+    /// versão do binário, e a diferença manda gravar o modelo fresco, não o
+    /// deixar como estava.
+    #[test]
+    fn an_old_installed_template_is_rewritten_before_the_first_publish() {
+        let dir = approved_project();
+        let root = dir.path();
+        let path = root.join(SPEC_TEMPLATE);
+        std::fs::create_dir_all(path.parent().expect("a pasta do modelo")).unwrap();
+        std::fs::write(&path, "<!doctype html><html>modelo velho, sem selo</html>").unwrap();
+
+        let first = round(root);
+        assert_eq!(first["publish"], json!(["spec", "project"]), "{first}");
+
+        let installed = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            template_version(&installed),
+            Some(mustard_core::harness_version().as_str()),
+            "o modelo velho foi trocado pelo de agora antes de publicar: {installed}"
+        );
+        assert_eq!(installed, spec_page_template(Locale::PtBr), "o mesmo conteúdo que um modelo fresco teria");
+    }
+
+    /// O modelo já com o selo da versão rodando não é reescrito: a conferência
+    /// só troca o que está diferente, e um modelo já em dia fica como está —
+    /// sem chamar `body` de novo.
+    #[test]
+    fn a_template_already_at_the_running_version_is_left_alone() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join(SPEC_TEMPLATE);
+        std::fs::create_dir_all(path.parent().expect("a pasta do modelo")).unwrap();
+        let current = format!("<!-- mustard: {} -->\nmodelo já em dia", mustard_core::harness_version());
+        std::fs::write(&path, &current).unwrap();
+
+        ensure_template(root, SPEC_TEMPLATE, || panic!("a mesma versão não pede um modelo novo")).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), current, "o arquivo continua como estava");
+    }
+
+    /// A linha do gasto soma os tokens de toda onda enviada, toma o maior
+    /// gasto de quem despachou entre as ondas, conta os arquivos únicos que
+    /// as entregas trouxeram e compara a soma com a régua do projeto — 2,3
+    /// milhões de tokens por arquivo tocado —, dizendo se a obra saiu cara
+    /// ou barata.
+    #[test]
+    fn the_spend_line_sums_tokens_against_the_project_ruler() {
+        let log = mustard_core::domain::spec_events::parse_log(
+            "{\"v\":1,\"id\":1,\"at\":\"2026-09-19T09:00:00-03:00\",\"type\":\"send\",\"author\":\"binary\",\
+             \"wave\":1,\"role\":\"wave\",\"text\":\"t\",\"lines\":1,\"chars\":1,\"items\":[],\
+             \"mustard\":\"0.2.1\",\"tokens\":1000000,\"caller_tokens\":200000}\n\
+             {\"v\":1,\"id\":2,\"at\":\"2026-09-19T09:01:00-03:00\",\"type\":\"send\",\"author\":\"binary\",\
+             \"wave\":2,\"role\":\"wave\",\"text\":\"t\",\"lines\":1,\"chars\":1,\"items\":[],\
+             \"mustard\":\"0.2.1\",\"tokens\":500000,\"caller_tokens\":900000}\n\
+             {\"v\":1,\"id\":3,\"at\":\"2026-09-19T09:02:00-03:00\",\"type\":\"delivered\",\"author\":\"assistant\",\
+             \"wave\":1,\"text\":\"d\",\"files\":[\"src/a.rs\"]}\n\
+             {\"v\":1,\"id\":4,\"at\":\"2026-09-19T09:03:00-03:00\",\"type\":\"delivered\",\"author\":\"assistant\",\
+             \"wave\":2,\"text\":\"d\",\"files\":[\"src/a.rs\",\"src/b.rs\"]}\n",
+        );
+        // Tokens de onda: 1_000_000 + 500_000 = 1_500_000. Tokens de quem
+        // despachou: máximo entre 200_000 e 900_000 = 900_000. Total:
+        // 2_400_000. Arquivos únicos entregues: src/a.rs e src/b.rs = 2.
+        // Régua esperada: 2 × 2.300.000 = 4.600.000. Razão: ≈ 0,52 (barata).
+        let line = spend_line(&log, Locale::PtBr).expect("the spend line");
+        assert!(line.contains("1500000"), "{line}");
+        assert!(line.contains("900000"), "{line}");
+        assert!(line.contains("2400000"), "{line}");
+        assert!(line.contains("4600000"), "{line}");
+        assert!(line.contains("0.52"), "{line}");
+        assert!(line.contains("barata"), "{line}");
+    }
+
+    /// Sem nenhum arquivo entregue ainda, a régua não tem o que comparar: a
+    /// linha do gasto fica de fora em vez de dividir por zero arquivo.
+    #[test]
+    fn the_spend_line_stays_out_without_a_delivered_file() {
+        let log = mustard_core::domain::spec_events::parse_log(
+            "{\"v\":1,\"id\":1,\"at\":\"2026-09-19T09:00:00-03:00\",\"type\":\"send\",\"author\":\"binary\",\
+             \"wave\":1,\"role\":\"wave\",\"text\":\"t\",\"lines\":1,\"chars\":1,\"items\":[],\
+             \"mustard\":\"0.2.1\",\"tokens\":1000000}\n",
+        );
+        assert_eq!(spend_line(&log, Locale::PtBr), None);
+    }
+
+    /// O marco de verdade também leva a linha do gasto: depois do envio da
+    /// onda (com o consumo dela) e da entrega (com o arquivo tocado), o
+    /// documento das coisas calculadas que a cópia grava traz `spend`
+    /// preenchida, pelo mesmo caminho que a página lê.
+    #[test]
+    fn a_real_round_carries_the_spend_line_to_the_computed_document() {
+        let dir = approved_project();
+        let root = dir.path();
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": 1, "role": "wave", "text": "t",
+            "lines": 1, "chars": 1, "items": [1], "mustard": "0.2.1", "tokens": 1_000_000, "caller_tokens": 200_000}));
+        crate::shared::spec_state::seed_event(root, "x", "delivered", json!({"wave": 1, "text": "d", "files": ["src/a.rs"]}));
+
+        let report = round(root);
+        let bodies = sent(root, &report, "spec");
+        let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
+        let spend = computed["body"]["spend"].as_str().unwrap_or_default();
+        assert!(spend.contains("1000000"), "{spend}");
+        assert!(spend.contains("200000"), "{spend}");
+        assert!(spend.contains("1200000"), "{spend}");
     }
 }

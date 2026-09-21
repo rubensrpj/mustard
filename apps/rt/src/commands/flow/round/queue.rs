@@ -16,7 +16,7 @@ use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::{copy_path, lesson_bank, recorded_copy, shown, wave_lessons};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use super::report::{has_agent_lines, tagged};
 use super::stops::waves_replanned;
@@ -329,11 +329,15 @@ fn chosen(
     Choice { judged: found.ids(), removed, added, judged_lessons: found.lesson_ids(), removed_lessons, tasks }
 }
 
-/// O aviso da entrada da linha da escolha que ficou como estava.
+/// O aviso da entrada da linha da escolha que ficou como estava: a frase diz
+/// lição quando o número ignorado é de uma lição do banco, não de um item da
+/// spec.
 fn ignored(wave: u64, entry: &Value, lang: Locale) -> Value {
+    let lesson = entry.get("lesson").is_some();
     let said = entry.get("item").or_else(|| entry.get("lesson")).or_else(|| entry.get("task")).unwrap_or(entry);
     let shown = said.as_str().map_or_else(|| said.to_string(), str::to_string);
-    let hint = translate("round.analysis_ignored", lang).replace("{wave}", &wave.to_string()).replace("{item}", &shown);
+    let key = if lesson { "round.analysis_ignored_lesson" } else { "round.analysis_ignored" };
+    let hint = translate(key, lang).replace("{wave}", &wave.to_string()).replace("{item}", &shown);
     json!({ "reason": "analysis-item-ignored", "wave": wave, "hint": hint })
 }
 
@@ -542,6 +546,27 @@ pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
             !ids.iter().any(|id| id < sent) || judged_before == Some("rejected")
         })
         .collect()
+}
+
+/// A versão nova do envio mais recente da onda `wave`: os campos dele, tirando
+/// `v`, `id`, `code`, `at`, `type` e `search`, com `replaces` apontando para
+/// ele e os campos de `extra` somados por cima. Usado quando a volta de uma
+/// onda traz o consumo — o modelo usado de verdade, os passos e os tokens —,
+/// que só se sabe depois do envio já gravado. `None` sem envio para a onda.
+pub(crate) fn send_revision(log: &SpecLog, wave: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+    let id = *log.last_by_wave("send").get(&wave)?;
+    let event = log.get(id)?;
+    let mut draft: Map<String, Value> = event
+        .fields
+        .iter()
+        .filter(|(key, _)| !["v", "id", "code", "at", "type", "search"].contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    draft.insert("replaces".into(), json!(id));
+    for (key, value) in extra {
+        draft.insert(key, value);
+    }
+    Some(draft)
 }
 
 /// `true` quando o processo do Claude Code que mandou o envio `sent` ainda
@@ -845,8 +870,7 @@ mod tests {
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "the replanned fix goes out again: {again}");
         let prompt = again["dispatch"][0]["prompt"].as_str().unwrap_or_default();
-        let mut waves_lines = prompt.lines().filter_map(|l| l.strip_prefix("- `waves`: "));
-        assert!(waves_lines.any(|codes| codes.split(", ").any(|code| code == task_code)), "{prompt}");
+        assert!(prompt.lines().any(|l| l.starts_with(&format!("- `{task_code}`"))), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let newest = log.visible().into_iter().rfind(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).unwrap();
@@ -1170,8 +1194,12 @@ mod tests {
             "tasks": []});
         assert_eq!(sent[0].fields.get("analysis"), Some(&recorded), "the send records the choice: {out}");
         let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
-        assert!(prompt.contains("A tabela nova precisa de migração."), "{prompt}");
-        for out_of_it in ["O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
+        // Lições vão só pelo número, sem o texto delas no pedido.
+        assert!(prompt.lines().any(|l| l == format!("- `lessons`: {kept}")), "{prompt}");
+        for out_of_it in [dropped, far] {
+            assert!(!prompt.contains(&format!("- `lessons`: {out_of_it}")), "{out_of_it}: {prompt}");
+        }
+        for out_of_it in ["A tabela nova precisa de migração.", "O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
             assert!(!prompt.contains(out_of_it), "{out_of_it}: {prompt}");
         }
         assert!(prompt.contains("- `agreed`: MSTD-RULE-0001, MSTD-RULE-0003, MSTD-DEC-0001, MSTD-DEC-0003\n"), "{prompt}");
@@ -1279,6 +1307,97 @@ mod tests {
         let sent = sends();
         assert!(sent[2]["analysis"]["judged"].as_array().unwrap().contains(&json!(newer)), "{out}");
         assert_eq!(sent[2]["analysis"]["removed"], json!([]), "{out}");
+    }
+
+    /// A lição nova, sozinha, faz o conserto pedir a escolha de novo: com os
+    /// mesmos itens do projeto todo e sem dono, o conserto reusa a escolha
+    /// gravada; mas uma lição do banco que passa a casar com a onda — sem
+    /// nenhum item novo do projeto — já basta para a escolha gravada não
+    /// cobrir mais os candidatos, e o conserto volta a perguntar
+    /// (`MSTD-TASK-0016`, `MSTD-DEC-0009`).
+    #[test]
+    fn a_new_lesson_alone_makes_the_fix_ask_for_the_choice_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        with_items_to_judge(root);
+        let kept = id_of(&write(root, "x", "lesson", json!({"class": "defect",
+            "text": "A tabela nova precisa de migração.", "keys": ["tabela"], "applies_to": {"files": ["**"]}})));
+        let sends = || {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            log.visible().into_iter().filter(|e| e.event_type == "send").map(|e| e.fields.clone()).collect::<Vec<_>>()
+        };
+
+        // A primeira rodada pede a escolha; com ela, a onda sai.
+        let asked = round(root, "x", None);
+        assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
+        assert_eq!(asked["analysis"][0]["lessons"], json!([{"lesson": kept, "title": "A tabela nova precisa de migração."}]), "{asked}");
+        let out = round(root, "x", Some(&analysis(json!([]), json!([]))));
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert_eq!(sends().len(), 1, "{out}");
+
+        // O conserto, com os mesmos candidatos — a mesma lição, nenhuma nova
+        // —, reusa a escolha gravada, sem perguntar de novo.
+        round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
+        let fix = round(root, "x", Some(&verdict(1, "rejected", "faltou algo")));
+        assert_eq!(waves_in(&fix, "dispatch"), vec![1], "o conserto com os mesmos candidatos reusa a escolha: {fix}");
+        let sent = sends();
+        assert_eq!(sent.len(), 2, "{fix}");
+        assert_eq!(sent[1]["analysis"], sent[0]["analysis"], "{fix}");
+
+        // Uma lição nova passa a casar com a onda — nenhum item do projeto
+        // mudou. O conserto seguinte não reusa a escolha: ele pergunta de
+        // novo, com a lição nova entre os candidatos.
+        let newer = id_of(&write(root, "x", "lesson", json!({"class": "defect",
+            "text": "O índice novo evita busca lenta.", "keys": ["índice"], "applies_to": {"files": ["**"]}})));
+        round(root, "x", Some(&delivered(root, 1, "O índice entrou.", &["src/a.rs"])));
+        let again = round(root, "x", Some(&verdict(1, "rejected", "faltou o nome")));
+        assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "a lição nova pede a escolha de novo: {again}");
+        let lessons: Vec<u64> = again["analysis"][0]["lessons"].as_array().unwrap_or(&Vec::new())
+            .iter().filter_map(|l| l["lesson"].as_u64()).collect();
+        assert!(lessons.contains(&kept) && lessons.contains(&newer), "{again}");
+        assert_eq!(sends().len(), 2, "sem escolha, nenhum envio novo sai: {again}");
+    }
+
+    /// A lição posta em `added` na linha da escolha vira aviso e nunca entra
+    /// no pedido por essa via: a lição que casa com a onda já vai por conta
+    /// própria, e pedir para "acrescentar" ela não a soma de novo nem some
+    /// nenhum item sem dono que a mesma linha acrescente de verdade
+    /// (`MSTD-TASK-0016`, `MSTD-DEC-0009`).
+    #[test]
+    fn a_lesson_put_in_added_becomes_a_warning() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let ids = with_items_to_judge(root);
+        let kept = id_of(&write(root, "x", "lesson", json!({"class": "defect",
+            "text": "A tabela nova precisa de migração.", "keys": ["tabela"], "applies_to": {"files": ["**"]}})));
+
+        let removed = json!([]);
+        let added = json!([{"item": "MSTD-DEC-0001", "why": "A tabela nova nasce vazia."}, {"lesson": kept, "why": "Vale para esta onda também."}]);
+        let out = round(root, "x", Some(&analysis(removed, added)));
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let ignored: Vec<&str> = out["warnings"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter(|w| w["reason"] == json!("analysis-item-ignored"))
+            .filter_map(|w| w["hint"].as_str())
+            .collect();
+        assert_eq!(ignored.len(), 1, "só a lição em `added` vira aviso: {out}");
+        assert!(ignored[0].contains(&kept.to_string()) && ignored[0].contains("lição"), "{ignored:?}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
+        let analysis_field = sent.fields.get("analysis").cloned().unwrap_or_default();
+        // O item sem dono, de verdade acrescentado, entra; a lição, que só
+        // vai pelo caminho automático, não aparece em `added`.
+        assert_eq!(analysis_field["added"], json!([{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}]),
+            "a lição não entra por `added`: {analysis_field}");
+        // Ela segue candidata, e vai pelo caminho automático — não por ter
+        // sido posta em `added`.
+        assert_eq!(analysis_field["judged_lessons"], json!([kept]), "{analysis_field}");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.lines().any(|l| l == format!("- `lessons`: {kept}")), "{prompt}");
     }
 
     /// Duas rodadas ao mesmo tempo, com a mesma linha da análise. As duas

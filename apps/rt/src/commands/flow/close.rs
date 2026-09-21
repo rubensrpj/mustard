@@ -29,6 +29,14 @@
 //! recusa traz o comando e o número que ela leu. Cada recusa diz qual onda
 //! refazer — não basta os testes passarem.
 //!
+//! **As pendências da obra.** A resposta traz cada pendência aberta nascida
+//! na obra, com a pergunta de destino e a linha que grava a resposta do
+//! usuário. `--pending-later "P-<n>=<o motivo>"` é o "fica para depois": a
+//! pendência solta da obra e passa a ser do projeto, com o motivo. A resposta
+//! vale na chamada que fecha e nas de depois — é lendo a pergunta que o
+//! usuário responde, e obra fechada não pergunta de novo. É aviso, nunca
+//! recusa: sem resposta nenhuma, a obra fecha do mesmo jeito.
+//!
 //! O fechamento não chama a função antiga de fechar, que grava arquivos do
 //! formato velho: ela ficou onde estava, e a fase `closed` passa a sair só por
 //! aqui.
@@ -38,7 +46,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_index::title_of;
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
+use mustard_core::domain::spec_state::{final_approval, last_change, PhaseWriter, SpecState, State};
 use mustard_core::domain::wave_prompt::{recorded_choice, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -48,6 +56,7 @@ use crate::commands::spec_events::{self, read::checkout, write::record};
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// As opções de `mustard-rt run close`.
+#[derive(Default)]
 pub struct CloseOpts {
     /// Qualquer pasta dentro do repositório.
     pub root: PathBuf,
@@ -55,6 +64,10 @@ pub struct CloseOpts {
     pub spec: Option<String>,
     /// O relatório da última rodada, em JSON, no mesmo formato da rodada.
     pub report: Option<String>,
+    /// A resposta "fica para depois" do usuário a uma pendência desta obra,
+    /// uma por item, `P-83=o motivo`. Cada uma solta a pendência da obra e a
+    /// passa ao projeto; o motivo, depois do `=`, é opcional.
+    pub pending_later: Vec<String>,
 }
 
 /// Por que a spec não fechou.
@@ -167,8 +180,17 @@ fn run_close(
     };
     let log = read(&path)?;
 
+    // A resposta que o usuário deu a cada pendência desta obra é gravada
+    // antes de qualquer conferência: ela vale tanto na chamada que fecha
+    // quanto na volta, com a obra já fechada — é depois de ler as perguntas
+    // do fechamento que ele responde, e obra fechada não pergunta de novo.
+    let left_for_later = hand_pending_to_project(root, &spec, &log, &opts.pending_later);
+
     let phase = State::from_log(&log).phase.unwrap_or_default().to_string();
     if phase != "running" {
+        if !left_for_later.is_empty() {
+            return Ok(json!({ "ok": true, "spec": spec, "phase": phase, "pending_released": left_for_later }));
+        }
         return Err(CloseRefusal::NotRunning { phase });
     }
 
@@ -240,7 +262,8 @@ fn run_close(
         spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
     }
     // As pendências abertas nascidas nesta spec vão ao usuário na hora, para
-    // ele decidir o destino de cada uma; é aviso, nunca recusa — o fechamento
+    // ele decidir o destino de cada uma, e cada uma vai com a linha que grava
+    // a resposta "fica para depois"; é aviso, nunca recusa — o fechamento
     // segue mesmo sem resposta.
     let born_open = crate::commands::event::pending::open_pending_born_in(root, &spec);
     if !born_open.is_empty() {
@@ -251,10 +274,14 @@ fn run_close(
                     "id": item.id,
                     "title": item.title,
                     "question": crate::commands::event::pending::destination_question(&item.id, &item.title, &spec, lang),
+                    "command": later_command(&spec, &item.id),
                 })
             })
             .collect();
         out["pending"] = json!(items);
+    }
+    if !left_for_later.is_empty() {
+        out["pending_released"] = json!(left_for_later);
     }
     // O item combinado sem dono que nenhum envio levou para o pedido de
     // onda nenhuma fica fora do código para sempre, sem que nada avise; a
@@ -284,6 +311,52 @@ fn run_close(
         out["command"] = command;
     }
     Ok(out)
+}
+
+/// A linha que grava a resposta "fica para depois" da pendência `id`, pronta
+/// para o assistente rodar assim que o usuário responder: ela sai junto com a
+/// pergunta, e o motivo entra no lugar do `…`.
+fn later_command(spec: &str, id: &str) -> String {
+    format!("mustard-rt run close --spec {spec} --pending-later \"{id}=…\"")
+}
+
+/// Grava a resposta "fica para depois" de cada pendência desta obra: a
+/// pendência solta da obra e passa a ser do projeto, com o motivo que o
+/// usuário deu. Devolve o que saiu, na ordem em que ele respondeu.
+///
+/// Só sai a pendência ABERTA que nasceu nesta obra e ainda é dela — a mesma
+/// leitura que fez a pergunta. Um número de fora, já resolvido ou já solto é
+/// ignorado em silêncio: o aviso do fechamento é aviso, nunca recusa, e uma
+/// resposta torta não pode segurar a obra.
+fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[String]) -> Vec<Value> {
+    if answers.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for answer in answers {
+        let (id, later) = match answer.split_once('=') {
+            Some((id, reason)) => (id.trim(), reason.trim()),
+            None => (answer.trim(), ""),
+        };
+        let Some(id) = crate::commands::event::pending::pending_id(id) else {
+            continue;
+        };
+        // A leitura da obra é refeita a cada resposta: a anterior já mudou a
+        // lista, e é ela que diz quem ainda é da obra.
+        let Some(item) = crate::commands::event::pending::open_born_in(root, log).into_iter().find(|i| i.id == id)
+        else {
+            continue;
+        };
+        let reason = Some(later).filter(|r| !r.is_empty());
+        if crate::commands::event::pending::hand_to_project(root, &id, spec, reason) {
+            let mut released = json!({ "id": item.id, "title": item.title, "owner": "project" });
+            if let Some(reason) = reason {
+                released["later"] = json!(reason);
+            }
+            out.push(released);
+        }
+    }
+    out
 }
 
 /// A máquina do fechamento: o lint do projeto inteiro, quando o
@@ -344,11 +417,6 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog) -> Result<V
     }
 }
 
-/// O número da última mudança da obra: a entrega ou o commit mais novo.
-fn last_change(log: &SpecLog) -> u64 {
-    log.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "commit")).map(|e| e.id).max().unwrap_or(0)
-}
-
 /// A máquina já passou depois da última mudança: cada critério vigente tem,
 /// depois dela, uma execução, e a mais nova passou. O critério só roda com o
 /// lint verde, então a mesma leitura diz que o lint passou.
@@ -367,15 +435,12 @@ fn proved_since_last_change(log: &SpecLog) -> bool {
 }
 
 /// O agente de teste dedicado voltou aprovado depois da última mudança da
-/// obra.
+/// obra. A leitura é a do domínio
+/// (`mustard_core::domain::spec_state::final_approval`), a mesma que o portão
+/// do merge usa para não pedir confirmação por uma reprovação que esta
+/// aprovação já quitou.
 fn final_approved(log: &SpecLog) -> bool {
-    let since = last_change(log);
-    log.block(BlockQuery::Block(Block::Review)).into_iter().any(|e| {
-        e.event_type == "verdict"
-            && e.id > since
-            && e.fields.get("final") == Some(&Value::Bool(true))
-            && e.str_field("result") == Some("approved")
-    })
+    final_approval(log).is_some()
 }
 
 /// A obra terminou? Recusa enquanto houver onda sem commit, onda com o
@@ -543,10 +608,10 @@ mod tests {
     /// Os testes que conferem o pedido dele por dentro chamam `close_for`
     /// direto.
     fn close(root: &Path, spec: &str) -> Value {
-        let out = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: None }, None);
+        let out = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: None, ..Default::default() }, None);
         if out["review"]["final"] == json!(true) {
             return close_for(
-                &CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: Some(final_approval()) },
+                &CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: Some(final_approval()), ..Default::default() },
                 None,
             );
         }
@@ -563,7 +628,7 @@ mod tests {
         let root = dir.path();
         ready_to_close(root, "x", &["git --version", "git --help"]);
 
-        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["ok"], json!(true), "{asked}");
         assert_eq!(asked["phase"], json!("running"), "{asked}");
         assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(2), "os dois critérios rodaram: {asked}");
@@ -609,7 +674,7 @@ mod tests {
         ready_to_close(root, "x", &["echo running 1 test"]);
 
         let asked =
-            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["ok"], json!(true), "{asked}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -631,7 +696,7 @@ mod tests {
         ready_to_close(root, "x", &["git --version"]);
 
         // Antes de qualquer pendência nascer na spec: nenhum campo `pending`.
-        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
         assert!(asked.get("pending").is_none(), "{asked}");
 
@@ -645,8 +710,8 @@ mod tests {
         });
         assert_eq!(added["ok"], json!(true), "{added}");
         // O `deferred` liga a pendência pela porta do binário, direto — a
-        // mesma que `link_to_active_spec` usa; o `run write` da CLI recusa o
-        // autor `binary`, que é só de gravações de dentro do binário.
+        // mesma que a gravação da pendência usa; o `run write` da CLI recusa
+        // o autor `binary`, que é só de gravações de dentro do binário.
         let mut draft = Map::new();
         draft.insert("text".to_string(), json!("pedido"));
         draft.insert("keys".to_string(), json!(["pedido"]));
@@ -661,9 +726,136 @@ mod tests {
             crate::commands::event::pending::destination_question("P-1", "Medir o antivírus", "x", Locale::PtBr);
         assert_eq!(
             out["pending"],
-            json!([{"id": "P-1", "title": "Medir o antivírus", "question": question}]),
+            json!([{"id": "P-1", "title": "Medir o antivírus", "question": question,
+                    "command": "mustard-rt run close --spec x --pending-later \"P-1=…\""}]),
             "{out}",
         );
+    }
+
+    /// A pendência que nasceu na obra e que o usuário, no fechamento, mandou
+    /// ficar para depois deixa de pertencer à obra e passa a ser pendência do
+    /// projeto, sem dono de obra: a leitura da obra não a traz mais, a do
+    /// projeto passa a trazer, e a lista guarda a obra em que ela nasceu, o
+    /// dono novo e o motivo que ele deu. A que ele não citou continua da obra.
+    #[test]
+    fn a_pending_left_for_later_becomes_a_project_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        // A branch de trabalho da obra: é dela que a pendência nasce, e é por
+        // ela que a gravação sabe a obra dona.
+        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
+
+        // Duas pendências nascidas na obra `x`: a própria gravação as liga a
+        // ela e devolve a pergunta de destino.
+        for title in ["Medir o antivírus", "Trocar o relógio"] {
+            let added = crate::commands::event::pending::pending_at(&crate::commands::event::pending::PendingOpts {
+                root: root.to_path_buf(),
+                add: true,
+                title: Some(title.into()),
+                detail: Some("achado durante a spec x".into()),
+                ..Default::default()
+            });
+            assert_eq!(added["ok"], json!(true), "{added}");
+            assert!(added["pending_question"].is_string(), "a pendência nasce ligada à obra: {added}");
+        }
+        let ids = |items: Vec<crate::commands::event::pending::OpenPending>| -> Vec<String> {
+            items.into_iter().map(|item| item.id).collect()
+        };
+        assert_eq!(ids(crate::commands::event::pending::open_pending_born_in(root, "x")), ["P-1", "P-2"]);
+        assert!(
+            ids(crate::commands::event::pending::open_project_pending(root)).is_empty(),
+            "nenhuma é do projeto enquanto a obra corre",
+        );
+
+        // O fechamento pede o agente de teste dedicado e faz as perguntas; o
+        // usuário responde "fica para depois" só à primeira, com o motivo.
+        let asked = close_for(
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() },
+            None,
+        );
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let out = close_for(
+            &CloseOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                report: Some(final_approval()),
+                pending_later: vec!["P-1=o antivírus é de outra obra".into()],
+            },
+            None,
+        );
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+        assert_eq!(
+            out["pending_released"],
+            json!([{"id": "P-1", "title": "Medir o antivírus", "owner": "project",
+                    "later": "o antivírus é de outra obra"}]),
+            "{out}",
+        );
+
+        // A leitura da obra fica só com a que ele não soltou, e a do projeto
+        // passa a trazer a solta.
+        assert_eq!(ids(crate::commands::event::pending::open_pending_born_in(root, "x")), ["P-2"]);
+        assert_eq!(ids(crate::commands::event::pending::open_project_pending(root)), ["P-1"]);
+        // E a pergunta do fechamento já sai sem ela.
+        assert_eq!(
+            out["pending"],
+            json!([{
+                "id": "P-2",
+                "title": "Trocar o relógio",
+                "question": crate::commands::event::pending::destination_question(
+                    "P-2", "Trocar o relógio", "x", Locale::PtBr),
+                "command": "mustard-rt run close --spec x --pending-later \"P-2=…\"",
+            }]),
+            "{out}",
+        );
+
+        // A lista guarda a obra em que ela nasceu, o dono novo e o motivo; a
+        // outra continua sem dono novo nenhum.
+        let ledger: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join(".claude/pending/ledger.json")).expect("ledger"),
+        )
+        .expect("ledger json");
+        let item = |id: &str| -> Value {
+            ledger["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .find(|item| item["id"] == json!(id))
+                .cloned()
+                .expect("item")
+        };
+        assert_eq!(item("P-1")["owner"], json!("project"), "{ledger}");
+        assert_eq!(item("P-1")["born"], json!("x"), "{ledger}");
+        assert_eq!(item("P-1")["later"], json!("o antivírus é de outra obra"), "{ledger}");
+        assert_eq!(item("P-1")["status"], json!("open"), "solta não é fechada: {ledger}");
+        assert!(item("P-2").get("owner").is_none(), "a que ele não soltou continua da obra: {ledger}");
+
+        // A obra já fechada ainda grava a resposta: é depois de ler a
+        // pergunta que o usuário responde, e o fechamento não pergunta duas
+        // vezes.
+        let late = close_for(
+            &CloseOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                report: None,
+                pending_later: vec!["P-2".into()],
+            },
+            None,
+        );
+        assert_eq!(late["ok"], json!(true), "{late}");
+        assert_eq!(late["pending_released"], json!([{"id": "P-2", "title": "Trocar o relógio", "owner": "project"}]));
+        assert!(ids(crate::commands::event::pending::open_pending_born_in(root, "x")).is_empty());
+        assert_eq!(ids(crate::commands::event::pending::open_project_pending(root)), ["P-1", "P-2"]);
+
+        // Sem resposta nenhuma, a obra fechada segue recusando como sempre: a
+        // porta não abriu, só a resposta passa por ela.
+        let again = close_for(
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() },
+            None,
+        );
+        assert_eq!(again["ok"], json!(false), "{again}");
+        assert_eq!(again["reason"], json!("close-not-running"), "{again}");
     }
 
     /// O item combinado sem dono que nenhum envio de onda levou fica fora do
@@ -739,7 +931,7 @@ mod tests {
     /// O fechamento com um `mustard.json` que declara o lint.
     fn close_with_lint(root: &Path, lint: &str, report: Option<String>) -> Value {
         std::fs::write(root.join("mustard.json"), json!({ "lintCommand": lint }).to_string()).unwrap();
-        close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None)
+        close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
     }
 
     /// Quantas execuções de critério a spec tem.
@@ -867,7 +1059,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_with_waves(root, "x", &["git --version"], 2);
-        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
         let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
         for n in [1, 2] {
@@ -878,7 +1070,7 @@ mod tests {
         let solo = tempdir().unwrap();
         let solo_root = solo.path();
         ready_to_close(solo_root, "x", &["git --version"]);
-        let asked_solo = close_for(&CloseOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let asked_solo = close_for(&CloseOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked_solo["review"]["final"], json!(true), "uma onda só também pede o agente: {asked_solo}");
         let solo_prompt = asked_solo["review"]["prompt"].as_str().unwrap_or_default();
         assert!(solo_prompt.contains("MSTD-DELIV-0001"), "a entrega da onda única está no pedido: {solo_prompt}");
@@ -889,7 +1081,7 @@ mod tests {
         // De volta à obra de duas ondas: o agente aponta um problema na onda
         // 2. O conserto sai pela rodada, sem revisão nenhuma pedida por ela.
         let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
-        let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
+        let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None);
         let reject = |text: &str| {
             let body = json!({"final": true, "wave": 2, "result": "rejected", "text": text});
             format!("<VERDICT>{body}</VERDICT>")
@@ -946,7 +1138,7 @@ mod tests {
         let root = dir.path();
         ready_with_waves(root, "x", &["git --version"], 2);
         let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
-        let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
+        let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None);
 
         // O agente de teste dedicado aponta a onda 1, não a última.
         let reject = json!({"final": true, "wave": 1, "result": "rejected", "text": "Falta o teste da onda 1."});
@@ -1024,7 +1216,7 @@ mod tests {
 
         // O fechamento pede o agente de teste dedicado com o pedido da obra
         // inteira, sem entrar em modo de conserto.
-        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
         let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
         assert!(!prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "não é modo de conserto: {prompt}");
@@ -1210,11 +1402,11 @@ mod tests {
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
         assert_eq!(close_for(
-            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None },
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() },
             Some("s-fecha"),
         )["review"]["final"], json!(true));
         let closed = close_for(
-            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: Some(final_approval()) },
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: Some(final_approval()), ..Default::default() },
             Some("s-fecha"),
         );
         assert_eq!(closed["ok"], json!(true), "{closed}");

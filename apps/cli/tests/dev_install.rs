@@ -430,10 +430,26 @@ fn the_printed_sudo_command_swaps_the_system_copy_without_cargo_or_the_real_home
     assert_eq!(read(&backup_dir.join("system/templates/OLD.txt")), "old system templates");
 }
 
-/// A linha "Para desfazer" tem de rodar como ela sai — o arquivo do script
-/// está no git sem permissão de execução (`100644`), então uma linha que
-/// invocasse o caminho do script direto, sem `sh` na frente, daria
-/// `Permission denied` na mão de quem só copia e cola.
+/// Desfaz, no fim do escopo, a permissão original de um arquivo — mesmo que
+/// o teste dê panic no meio do caminho.
+struct RestorePermissions {
+    path: PathBuf,
+    original: fs::Permissions,
+}
+
+impl Drop for RestorePermissions {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.path, self.original.clone());
+    }
+}
+
+/// A linha "Para desfazer" tem de rodar como ela sai, e essa prova não pode
+/// depender da permissão que o checkout do git DEU ao arquivo do script:
+/// aqui a permissão de execução é tirada de propósito, ainda que o arquivo já
+/// esteja assim (`100644`) — sem isso, um checkout com `core.fileMode=false`
+/// ou um `chmod +x` local escondia o defeito que este teste existe para
+/// pegar (uma linha que invocasse o caminho do script direto, sem `sh` na
+/// frente, daria `Permission denied` na mão de quem só copia e cola).
 #[test]
 #[cfg_attr(not(unix), ignore = "o script é sh")]
 fn the_printed_undo_line_runs_as_is() {
@@ -446,6 +462,15 @@ fn the_printed_undo_line_runs_as_is() {
     let shim = tmp.path().join("shim");
     fs::create_dir_all(&shim).expect("mkdir shim");
     shim_cargo(&shim);
+
+    #[cfg(unix)]
+    let _no_exec_guard = {
+        use std::os::unix::fs::PermissionsExt as _;
+        let script_path = repo_root().join("scripts/dev-install.sh");
+        let original = fs::metadata(&script_path).expect("stat script").permissions();
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o644)).expect("chmod 644 the script");
+        RestorePermissions { path: script_path, original }
+    };
 
     let version = plugin_version();
     let plugin_copy = seed_plugin_copy(&claude_dir, &version);
@@ -601,10 +626,10 @@ fn the_printed_system_restore_command_runs_and_restores_the_system_copy() {
     assert_eq!(read(&system_dir.join("templates/OLD.txt")), "old system templates");
 }
 
-/// `--system-copy-only` exige root (linha ~175 do script). Sem essa
-/// exigência, quem roda sem privilégio tentaria escrever direto na pasta do
-/// sistema (real, fora do teste, dona de root) e ficaria com um erro
-/// confuso de permissão, em vez da recusa clara de hoje.
+/// `--system-copy-only` exige root (o script recusa com o texto "precisa
+/// rodar como root"). Sem essa exigência, quem roda sem privilégio tentaria
+/// escrever direto na pasta do sistema (real, fora do teste, dona de root) e
+/// ficaria com um erro confuso de permissão, em vez da recusa clara de hoje.
 #[test]
 #[cfg_attr(not(unix), ignore = "o script é sh")]
 fn system_copy_only_refuses_without_root() {
@@ -647,9 +672,10 @@ fn system_copy_only_refuses_without_root() {
 }
 
 /// A pasta de backup do `--system-copy-only` recusa colisão em vez de
-/// sobrescrever (linhas ~180-183). Sem essa recusa, uma segunda rodada com o
-/// mesmo destino gravaria por cima do backup da primeira o binário que a
-/// primeira já trocou, perdendo o original de verdade.
+/// sobrescrever (o script recusa com o texto "a pasta de backup já existe").
+/// Sem essa recusa, uma segunda rodada com o mesmo destino gravaria por cima
+/// do backup da primeira o binário que a primeira já trocou, perdendo o
+/// original de verdade.
 #[test]
 #[cfg_attr(not(unix), ignore = "o script é sh")]
 fn system_copy_only_refuses_when_backup_dir_already_exists() {
@@ -854,4 +880,198 @@ fn the_system_backup_belongs_to_the_caller() {
         log.contains("4242:4343") && log.contains(backup_dir.to_str().expect("utf8 path")),
         "o script tem de devolver as pastas do backup a quem chamou o sudo (SUDO_UID:SUDO_GID): log={log}"
     );
+}
+
+/// `--restore-system-only` exige root, do mesmo jeito que `--system-copy-only`
+/// (o script recusa com o texto "precisa rodar como root"). Sem essa recusa,
+/// quem roda sem privilégio tentaria escrever direto na pasta do sistema
+/// (real, fora do teste, dona de root).
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn restore_system_only_refuses_without_root() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let system_dir = tmp.path().join("system");
+    let backup_dir = tmp.path().join("backups/system-only");
+    write(&backup_dir.join("bin/mustard"), "seria-restaurado-se-nao-recusasse");
+    seed_system_copy(&system_dir);
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_fixed_output(&shim, "id", "1000");
+
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    let out = Command::new("sh")
+        .arg(repo_root().join("scripts/dev-install.sh"))
+        .args(["--restore-system-only", backup_dir.to_str().expect("utf8 path")])
+        .env_clear()
+        .env("PATH", format!("{}:{real_path}", shim.display()))
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("MUSTARD_DEV_INSTALL_SYSTEM_DIR", &system_dir)
+        .output()
+        .expect("the script runs");
+
+    assert!(!out.status.success(), "sem root, --restore-system-only tem de recusar");
+    assert_eq!(read(&system_dir.join("bin/mustard")), "old-system-mustard", "recusou antes de tocar na cópia do sistema");
+}
+
+/// Rodando `--restore` já como administrador (o mesmo `id -u` que a
+/// instalação usa para decidir o ramo), a cópia do sistema volta DIRETO,
+/// sem imprimir o comando pronto com sudo — o ramo espelha o da instalação,
+/// só que para o desfazer.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn restore_as_root_restores_the_system_copy_directly() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+
+    let root_shim = tmp.path().join("root-shim");
+    fs::create_dir_all(&root_shim).expect("mkdir root shim");
+    shim_cargo(&root_shim);
+    shim_fixed_output(&root_shim, "id", "0");
+
+    let version = plugin_version();
+    let plugin_copy = seed_plugin_copy(&claude_dir, &version);
+    seed_system_copy(&system_dir);
+
+    let install = run_script(&[], &root_shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(install.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&install.stdout), String::from_utf8_lossy(&install.stderr));
+    let backup_dir = the_dated_backup(&backup_root);
+    assert!(backup_dir.join("system").is_dir(), "a instalação como root guarda o backup da cópia do sistema");
+
+    let restore = run_script(&["--restore", backup_dir.to_str().expect("utf8 path")], &root_shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(restore.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&restore.stdout), String::from_utf8_lossy(&restore.stderr));
+
+    // A cópia do sistema já voltou ao original, sem sudo nenhum.
+    assert_eq!(read(&system_dir.join("bin/mustard")), "old-system-mustard");
+    assert_eq!(read(&system_dir.join("bin/mustard-rt")), "old-system-mustard-rt");
+    assert_eq!(read(&system_dir.join("bin/scan")), "old-system-scan");
+    assert_eq!(read(&system_dir.join("templates/OLD.txt")), "old system templates");
+    let stdout = String::from_utf8_lossy(&restore.stdout);
+    assert!(!stdout.contains("sudo"), "como root, o desfazer não deve imprimir comando com sudo: {stdout}");
+
+    // E o plugin também voltou, no mesmo desfazer.
+    assert_eq!(read(&plugin_copy.join("bin/mustard")), "old-mustard");
+}
+
+/// `--restore` não pode morrer procurando a cópia do plugin: uma pessoa pode
+/// desfazer depois de já ter desinstalado o plugin (a pasta do cache não
+/// existe mais), e nesse caso só a cópia do sistema importa.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn restore_runs_without_a_plugin_copy_present() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+
+    let root_shim = tmp.path().join("root-shim");
+    fs::create_dir_all(&root_shim).expect("mkdir root shim");
+    shim_cargo(&root_shim);
+    shim_fixed_output(&root_shim, "id", "0");
+
+    let version = plugin_version();
+    let plugin_copy = seed_plugin_copy(&claude_dir, &version);
+    seed_system_copy(&system_dir);
+
+    let install = run_script(&[], &root_shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(install.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&install.stdout), String::from_utf8_lossy(&install.stderr));
+    let backup_dir = the_dated_backup(&backup_root);
+
+    // O plugin é desinstalado — a pasta do cache some — antes do desfazer.
+    fs::remove_dir_all(&plugin_copy).expect("remove plugin copy");
+
+    let restore = run_script(&["--restore", backup_dir.to_str().expect("utf8 path")], &root_shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(
+        restore.status.success(),
+        "sem a cópia do plugin, o desfazer ainda tem de rodar: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&restore.stdout),
+        String::from_utf8_lossy(&restore.stderr)
+    );
+
+    // A cópia do sistema, que ainda existe, volta ao original mesmo assim.
+    assert_eq!(read(&system_dir.join("bin/mustard")), "old-system-mustard");
+    assert_eq!(read(&system_dir.join("bin/mustard-rt")), "old-system-mustard-rt");
+    assert_eq!(read(&system_dir.join("bin/scan")), "old-system-scan");
+}
+
+/// Duas cópias do plugin na MESMA versão são ambíguas — o script não pode
+/// escolher a primeira que aparecer em silêncio, tem de recusar e apontar as
+/// duas, antes de compilar ou tocar em qualquer arquivo.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn refuses_when_there_is_more_than_one_matching_plugin_copy() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_cargo(&shim);
+
+    let version = plugin_version();
+    seed_plugin_copy(&claude_dir, &version);
+    // Uma segunda cópia, de outro marketplace, na MESMA versão.
+    write(&claude_dir.join(format!("plugins/cache/mustard-other/mustard/{version}/bin/mustard")), "old-mustard-2");
+    seed_system_copy(&system_dir);
+
+    let out = run_script(&[], &shim, &home, &system_dir, &cargo_target, &backup_root);
+
+    assert!(!out.status.success(), "com duas cópias do plugin na mesma versão, o script tem de recusar");
+    assert!(!cargo_target.join("release").exists(), "recusou antes de compilar");
+    assert!(!backup_root.exists(), "recusou antes de guardar qualquer backup");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("mais de uma cópia"), "a recusa tem de dizer o motivo: {stderr}");
+}
+
+/// O desfazer apaga o que a instalação criou do zero — quando o destino não
+/// existia antes (sem backup, porque `swap_tree` só faz backup do que já
+/// estava lá), a volta não pode deixar a pasta nova para trás.
+#[test]
+#[cfg_attr(not(unix), ignore = "o script é sh")]
+fn restore_deletes_what_did_not_exist_before_the_swap() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let claude_dir = home.join(".claude");
+    let system_dir = tmp.path().join("system");
+    let cargo_target = tmp.path().join("cargo-target");
+    let backup_root = tmp.path().join("backups");
+    let shim = tmp.path().join("shim");
+    fs::create_dir_all(&shim).expect("mkdir shim");
+    shim_cargo(&shim);
+
+    // Uma cópia do plugin nova: só os três binários, sem moldes, comandos,
+    // ganchos nem estilo de resposta — como uma cópia recém-instalada, antes
+    // de qualquer dev-install rodar nela.
+    let version = plugin_version();
+    let plugin_copy = claude_dir.join(format!("plugins/cache/mustard-local/mustard/{version}"));
+    write(&plugin_copy.join("bin/mustard"), "old-mustard");
+    write(&plugin_copy.join("bin/mustard-rt"), "old-mustard-rt");
+    write(&plugin_copy.join("bin/scan"), "old-scan");
+    seed_system_copy(&system_dir);
+
+    let install = run_script(&[], &shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(install.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&install.stdout), String::from_utf8_lossy(&install.stderr));
+
+    // O script criou as pastas que não existiam, sem backup para elas.
+    assert!(plugin_copy.join("bin/templates").is_dir(), "o script cria os moldes que não existiam");
+    let backup_dir = the_dated_backup(&backup_root);
+    assert!(!backup_dir.join("plugin/bin/templates").exists(), "sem original, não há o que guardar em backup");
+
+    let restore = run_script(&["--restore", backup_dir.to_str().expect("utf8 path")], &shim, &home, &system_dir, &cargo_target, &backup_root);
+    assert!(restore.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&restore.stdout), String::from_utf8_lossy(&restore.stderr));
+
+    assert!(!plugin_copy.join("bin/templates").exists(), "o desfazer tem de apagar os moldes que a instalação criou do zero");
+    assert!(!plugin_copy.join("commands").exists(), "o desfazer tem de apagar os comandos que a instalação criou do zero");
+    assert!(!plugin_copy.join("hooks").exists(), "o desfazer tem de apagar os ganchos que a instalação criou do zero");
+    assert!(!plugin_copy.join("output-styles").exists(), "o desfazer tem de apagar o estilo que a instalação criou do zero");
 }

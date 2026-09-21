@@ -2,16 +2,20 @@
 //!
 //! Uma leitura só: o tamanho é a soma de `input_tokens`,
 //! `cache_read_input_tokens` e `cache_creation_input_tokens` do último uso
-//! gravado no arquivo de transcrição. Dois usos, os dois em `prompt_entry` e
-//! no gancho de onda: (1) o agente de onda, depois de cada ferramenta,
+//! gravado no arquivo de transcrição. Dois usos, os dois no gancho
+//! [`WavePauseCheck`]: (1) o agente de onda, depois de cada ferramenta,
 //! passando de 200 mil, recebe a ordem de gravar o passo e parar com
 //! `<PAUSED>{"wave":n}</PAUSED>`, e a ordem repete a cada ferramenta até ele
-//! parar; (2) o orquestrador, na entrada de cada mensagem, ganha o aviso a
-//! cada novo degrau de 200 mil — sem onda em andamento, com o comando
-//! `/compact` pronto e o resumo do que fica; com onda em andamento, dizendo
-//! quais ondas estão rodando e que a volta delas chega pela rodada. O degrau
-//! guardado acompanha a conversa que encolheu, então um `/compact` de
-//! verdade não cala o próximo aviso.
+//! parar; (2) o orquestrador, antes de cada ferramenta, passando de 200 mil,
+//! tem a chamada recusada — com ou sem onda em andamento —, e o motivo da
+//! recusa traz o bloco de retomada pronto para colar: a spec, a fase, as
+//! ondas entregues, as em andamento, o que falta e o próximo passo. A recusa
+//! repete a cada ferramenta, sem controle de "já avisado", porque um aviso
+//! que pode ser ignorado já foi tentado e não bastou. Ainda em
+//! `prompt_entry`, a entrada de cada mensagem carrega o mesmo bloco, uma vez
+//! por novo degrau de 200 mil, como aviso que não barra — o degrau guardado
+//! acompanha a conversa que encolheu, então um `/compact` de verdade não
+//! cala o próximo aviso.
 //!
 //! Qual conversa: a do agente de onda quando a chamada é da cópia de uma
 //! onda, pela mesma leitura de [`wave_of_call`], do observador do sinal de
@@ -19,8 +23,8 @@
 //! com o `agent_id` do registro quando ele vier, e sem ele o arquivo mais
 //! recente da pasta cuja primeira mensagem é o pedido daquela onda. Fora da
 //! cópia, a conversa principal, em `transcript_path`. Sem arquivo legível,
-//! nada acontece: [`Verdict::Allow`], porque o gancho só avisa e nunca trava
-//! a resposta por conta própria.
+//! nada acontece: [`Verdict::Allow`], porque sem tamanho conhecido não há
+//! como decidir.
 
 use std::path::{Path, PathBuf};
 
@@ -131,16 +135,29 @@ fn pause_text(wave: u64, lang: mustard_core::platform::i18n::Locale) -> String {
     translate("conversation_size.pause", lang).replace("{wave}", &wave.to_string())
 }
 
-/// O gancho de onda: depois de cada ferramenta, na cópia de uma onda, passando
-/// de [`THRESHOLD`], manda o agente gravar o passo e parar. Repete a cada
-/// ferramenta, porque nada aqui grava se o aviso já foi dado.
+/// O gancho do tamanho da conversa: no agente de onda, depois de cada
+/// ferramenta, na cópia dela, passando de [`THRESHOLD`], manda gravar o passo
+/// e parar. Em quem conduz, antes de cada ferramenta, no mesmo teto, recusa a
+/// chamada com o bloco de retomada pronto para colar. Os dois repetem a cada
+/// ferramenta, porque nada aqui grava se o aviso já foi dado — a recusa que
+/// pode ser ignorada já foi tentada, e não bastou.
 pub struct WavePauseCheck;
 
 impl Check for WavePauseCheck {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        if ctx.trigger != Some(Trigger::PostToolUse) {
-            return Ok(Verdict::Allow);
+        let root = ctx.workspace_root.clone().unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
+        match ctx.trigger {
+            Some(Trigger::PostToolUse) => Self::wave_pause(input, &root),
+            Some(Trigger::PreToolUse) => Self::orchestrator_block(input, &root),
+            _ => Ok(Verdict::Allow),
         }
+    }
+}
+
+impl WavePauseCheck {
+    /// O agente de onda, depois de cada ferramenta na cópia dela, passando de
+    /// [`THRESHOLD`], é mandado gravar o passo e parar.
+    fn wave_pause(input: &HookInput, root: &Path) -> Result<Verdict, Error> {
         // Só a própria chamada do agente de onda pausa: o orquestrador pode
         // citar o caminho da cópia (um `git -C`, por exemplo) sem ser dela —
         // `wave_of_call` casaria pelo comando, e a ordem de pausa vazaria para
@@ -149,15 +166,32 @@ impl Check for WavePauseCheck {
         if !input.is_subagent() {
             return Ok(Verdict::Allow);
         }
-        let root = ctx.workspace_root.clone().unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
-        let Some((_, wave)) = wave_of_call(&root, input) else { return Ok(Verdict::Allow) };
-        let Some(path) = conversation_path(&root, input) else { return Ok(Verdict::Allow) };
+        let Some((_, wave)) = wave_of_call(root, input) else { return Ok(Verdict::Allow) };
+        let Some(path) = conversation_path(root, input) else { return Ok(Verdict::Allow) };
         let Some(tokens) = tokens_in(&path) else { return Ok(Verdict::Allow) };
         if tokens < THRESHOLD {
             return Ok(Verdict::Allow);
         }
-        let lang = ProjectConfig::load(&root).language().text_or_default();
+        let lang = ProjectConfig::load(root).language().text_or_default();
         Ok(Verdict::Inject { context: pause_text(wave, lang) })
+    }
+
+    /// Quem conduz, antes de cada ferramenta da própria conversa (nunca a de
+    /// um subagente), passando de [`THRESHOLD`], tem a chamada recusada, com
+    /// o bloco de retomada no motivo.
+    fn orchestrator_block(input: &HookInput, root: &Path) -> Result<Verdict, Error> {
+        if input.is_subagent() {
+            return Ok(Verdict::Allow);
+        }
+        let Some(transcript) = input.raw.get("transcript_path").and_then(Value::as_str) else {
+            return Ok(Verdict::Allow);
+        };
+        let Some(tokens) = tokens_in(Path::new(transcript)) else { return Ok(Verdict::Allow) };
+        if tokens < THRESHOLD {
+            return Ok(Verdict::Allow);
+        }
+        let Some(reason) = resume_block(root, input.session_id.as_deref()) else { return Ok(Verdict::Allow) };
+        Ok(Verdict::Deny { reason })
     }
 }
 
@@ -191,14 +225,84 @@ fn write_record(path: &Path, record: &CompactRecord) {
     }
 }
 
-/// O aviso ao orquestrador, com o comando `/compact` pronto e o resumo do que
-/// fica — a spec, a fase, o próximo passo e o que espera o usuário, pela
-/// mesma leitura do comando `resume` — quando a conversa em `root`, na sessão
-/// `session`, passou de um novo degrau de [`THRESHOLD`]. Com onda em
-/// andamento, o resumo não se aplica (o próximo passo é dela, não do
-/// orquestrador): o aviso sai do mesmo jeito, dizendo quais ondas estão
-/// rodando e que a volta delas chega pela rodada. `None` sem novo degrau ou
-/// sem o que resumir.
+/// As ondas entregues, as em andamento e as que faltam — planejadas, nem
+/// entregues nem em andamento — da spec de `log`.
+fn wave_lists(log: &mustard_core::domain::spec_events::SpecLog) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
+    let delivered = log.delivered_waves();
+    let running: std::collections::BTreeSet<u64> =
+        crate::commands::flow::round::waves_in_progress(log).into_keys().collect();
+    let planned: std::collections::BTreeSet<u64> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "wave")
+        .filter_map(|e| e.wave())
+        .collect();
+    let missing: Vec<u64> =
+        planned.into_iter().filter(|n| !delivered.contains(n) && !running.contains(n)).collect();
+    (delivered.into_iter().collect(), running.into_iter().collect(), missing)
+}
+
+/// `waves`, separadas por vírgula, ou "nenhuma"/"none" quando vazia.
+fn join_waves(waves: &[u64], lang: mustard_core::platform::i18n::Locale) -> String {
+    if waves.is_empty() {
+        return translate("resume.none", lang).to_string();
+    }
+    waves.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+}
+
+/// O bloco de retomada: spec, fase, ondas entregues, ondas em andamento e o
+/// que falta — a mesma peça que entra tanto no aviso de compactar quanto no
+/// motivo da recusa a quem conduz.
+fn resume_block_text(
+    spec: &str,
+    phase: &str,
+    log: &mustard_core::domain::spec_events::SpecLog,
+    lang: mustard_core::platform::i18n::Locale,
+) -> String {
+    let (delivered, running, missing) = wave_lists(log);
+    translate("conversation_size.block", lang)
+        .replace("{spec}", spec)
+        .replace("{phase}", phase)
+        .replace("{delivered}", &join_waves(&delivered, lang))
+        .replace("{running}", &join_waves(&running, lang))
+        .replace("{missing}", &join_waves(&missing, lang))
+}
+
+/// A spec atual, a fase dela e o log lido, para `session` sob `root`. `None`
+/// sem spec atual ou sem arquivo de eventos legível.
+fn active_spec_log(
+    root: &Path,
+    session: Option<&str>,
+) -> Option<(crate::commands::spec_events::Project, String, mustard_core::domain::spec_events::SpecLog)> {
+    use mustard_core::domain::spec_state::SpecState;
+
+    let project = crate::commands::spec_events::project(root);
+    let spec = crate::shared::spec_state::DiskSpecState::new(&crate::commands::spec_events::read::checkout(root))
+        .active(session)?;
+    let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(&project.root, &spec).ok()?)
+        .ok()??;
+    Some((project, spec, log))
+}
+
+/// O `command` e o `next` do passo seguinte da spec `spec`, pela mesma
+/// leitura do comando `resume`.
+fn next_step(root: &Path, spec: &str, session: Option<&str>) -> (String, String) {
+    let resume = crate::commands::flow::resume::resume_for(
+        &crate::commands::flow::resume::ResumeOpts { root: root.to_path_buf(), spec: Some(spec.to_string()) },
+        session,
+    );
+    (
+        resume["command"].as_str().unwrap_or_default().to_string(),
+        resume["next"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
+/// O aviso ao orquestrador, com o comando `/compact` pronto e o bloco de
+/// retomada — spec, fase, ondas entregues, em andamento, o que falta e o
+/// próximo passo —, quando a conversa em `root`, na sessão `session`, passou
+/// de um novo degrau de [`THRESHOLD`]. O bloco sai sempre, com onda em
+/// andamento ou sem: a linha das ondas no ar é uma parte dele, não um
+/// substituto. `None` sem novo degrau ou sem o que resumir.
 ///
 /// O degrau guardado acompanha a conversa que encolheu (depois de um
 /// `/compact` de verdade): quando o tamanho atual já está abaixo do degrau
@@ -206,8 +310,6 @@ fn write_record(path: &Path, record: &CompactRecord) {
 /// isso, um degrau avisado antes da compactação calava o aviso para sempre,
 /// mesmo a conversa voltando a crescer.
 pub(crate) fn compact_notice(root: &Path, session: Option<&str>, tokens: u64) -> Option<String> {
-    use mustard_core::domain::spec_state::SpecState;
-
     let degree = tokens / THRESHOLD;
     let path = record_path(root, session)?;
     let mut record = read_record(&path);
@@ -218,31 +320,34 @@ pub(crate) fn compact_notice(root: &Path, session: Option<&str>, tokens: u64) ->
     if degree == 0 || degree <= record.warned {
         return None;
     }
-    let project = crate::commands::spec_events::project(root);
-    let spec = crate::shared::spec_state::DiskSpecState::new(&crate::commands::spec_events::read::checkout(root))
-        .active(session)?;
-    let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(&project.root, &spec).ok()?)
-        .ok()??;
+    let (project, spec, log) = active_spec_log(root, session)?;
     record.warned = degree;
     write_record(&path, &record);
-    let running = crate::commands::flow::round::waves_in_progress(&log);
-    if !running.is_empty() {
-        let waves: Vec<String> = running.keys().map(u64::to_string).collect();
-        return Some(translate("conversation_size.compact_running", project.lang).replace("{waves}", &waves.join(", ")));
-    }
-    let resume = crate::commands::flow::resume::resume_for(
-        &crate::commands::flow::resume::ResumeOpts { root: project.root.clone(), spec: Some(spec.clone()) },
-        session,
-    );
-    let phase = resume["phase"].as_str().unwrap_or_default();
-    let next = resume["next"].as_str().unwrap_or_default();
-    let command = resume["command"].as_str().unwrap_or_default();
+    let phase = mustard_core::domain::spec_state::State::from_log(&log).phase.unwrap_or("survey");
+    let block = resume_block_text(&spec, phase, &log, project.lang);
+    let (command, next) = next_step(&project.root, &spec, session);
     Some(
         translate("conversation_size.compact", project.lang)
-            .replace("{spec}", &spec)
-            .replace("{phase}", phase)
-            .replace("{command}", command)
-            .replace("{next}", next),
+            .replace("{block}", &block)
+            .replace("{command}", &command)
+            .replace("{next}", &next),
+    )
+}
+
+/// O bloco de retomada pronto para colar, sempre — sem o controle de "já
+/// avisado" do aviso de compactar: a recusa a quem conduz não pode ser
+/// ignorada, então repete a cada ferramenta enquanto a conversa segue acima
+/// do teto. `None` sem spec atual ou sem arquivo de eventos.
+pub(crate) fn resume_block(root: &Path, session: Option<&str>) -> Option<String> {
+    let (project, spec, log) = active_spec_log(root, session)?;
+    let phase = mustard_core::domain::spec_state::State::from_log(&log).phase.unwrap_or("survey");
+    let block = resume_block_text(&spec, phase, &log, project.lang);
+    let (command, next) = next_step(&project.root, &spec, session);
+    Some(
+        translate("conversation_size.blocked", project.lang)
+            .replace("{block}", &block)
+            .replace("{command}", &command)
+            .replace("{next}", &next),
     )
 }
 
@@ -393,5 +498,138 @@ mod tests {
             Verdict::Allow,
             "o orquestrador não é a onda 35, mesmo citando a cópia dela no comando",
         );
+    }
+
+    /// Um projeto instalado, com a spec `spec` aprovada e o checkout parado
+    /// na branch dela — o mesmo que a chamada de quem conduz vê.
+    fn open_project(spec: &str) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, spec);
+        crate::commands::spec_events::write::record_open(root, spec, &format!("feature/{spec}"), "dev")
+            .expect("open");
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+        dir
+    }
+
+    /// Grava a onda 1 da spec `spec`, em `root`, em andamento — o mesmo
+    /// pedido que a rodada grava, com o pid deste processo, que segue vivo
+    /// durante o teste, para que `waves_in_progress` a conte como rodando.
+    fn seed_running_wave(root: &Path, spec: &str) {
+        let said =
+            crate::shared::spec_state::seed_event(root, spec, "message", serde_json::json!({"author": "user", "text": "o plano"}));
+        let crit = crate::shared::spec_state::seed_event(
+            root,
+            spec,
+            "criterion",
+            serde_json::json!({"when": "a", "then": "b", "proof": "p", "origin": said}),
+        );
+        crate::shared::spec_state::seed_event(
+            root,
+            spec,
+            "wave",
+            serde_json::json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "x", "origin": said}),
+        );
+        crate::shared::spec_state::seed_event(root, spec, "state", serde_json::json!({"phase": "running", "author": "binary"}));
+        let (pid, started) = crate::commands::flow::stuck::this_process();
+        crate::shared::spec_state::seed_event(
+            root,
+            spec,
+            "send",
+            serde_json::json!({"wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+                "items": [crit], "mustard": "0", "author": "binary",
+                "claude_pid": pid, "claude_started": started}),
+        );
+    }
+
+    /// A chamada de ferramenta de quem conduz, com a transcrição `transcript`.
+    fn conductor_call(root: &Path, transcript: &Path) -> HookInput {
+        HookInput {
+            hook_event_name: Some("PreToolUse".to_string()),
+            tool_name: Some("Bash".to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            agent_id: None,
+            tool_input: serde_json::json!({ "command": "ls" }),
+            raw: serde_json::json!({ "transcript_path": transcript.to_string_lossy() }),
+            ..HookInput::default()
+        }
+    }
+
+    /// Abaixo do teto, a próxima chamada de ferramenta de quem conduz passa;
+    /// acima dele, é recusada com `Verdict::Deny`, e o motivo traz o bloco de
+    /// retomada — spec, fase e o próximo passo —, com onda rodando ou sem: a
+    /// linha das ondas em andamento é uma parte do bloco, não um substituto
+    /// que o silencia. O gancho é o mesmo dos dois lados: o próprio
+    /// `WavePauseCheck.evaluate`, no `PreToolUse`.
+    #[test]
+    fn the_conductor_is_denied_with_the_resume_block_whether_or_not_a_wave_runs() {
+        let dir = open_project("x");
+        let root = dir.path();
+        let transcript = root.join("t.jsonl");
+        let ctx = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::PreToolUse));
+
+        std::fs::write(&transcript, write_usage_line(199_999, 0, 0)).unwrap();
+        assert_eq!(
+            WavePauseCheck.evaluate(&conductor_call(root, &transcript), &ctx).unwrap(),
+            Verdict::Allow,
+            "abaixo do degrau, a chamada passa",
+        );
+
+        std::fs::write(&transcript, write_usage_line(200_000, 0, 0)).unwrap();
+        let Verdict::Deny { reason } = WavePauseCheck.evaluate(&conductor_call(root, &transcript), &ctx).unwrap()
+        else {
+            panic!("no degrau, a próxima chamada de quem conduz é recusada");
+        };
+        assert!(reason.contains('x'), "o bloco traz a spec: {reason}");
+        assert!(reason.contains("fase"), "o bloco traz a fase: {reason}");
+
+        // Com uma onda em andamento, o bloco continua saindo, com a onda
+        // citada — antes do conserto, só a frase curta das ondas no ar saía,
+        // e o bloco de retomada nunca aparecia neste caso, que é o de sempre.
+        seed_running_wave(root, "x");
+        let Verdict::Deny { reason } = WavePauseCheck.evaluate(&conductor_call(root, &transcript), &ctx).unwrap()
+        else {
+            panic!("com onda em andamento, a recusa e o bloco continuam saindo");
+        };
+        assert!(reason.contains("fase"), "o bloco não vira só a frase das ondas no ar: {reason}");
+        assert!(reason.contains('1'), "o bloco cita a onda em andamento: {reason}");
+    }
+
+    /// Uma linha de uso por ferramenta, como um `transcript_path` de verdade
+    /// acumula — texto sem uso misturado no meio, e o tamanho é o do último
+    /// uso gravado, não uma soma. A mesma recusa sai desta transcrição
+    /// inteira de sessão, não só de um arquivo de uma linha só.
+    #[test]
+    fn the_conductor_is_denied_with_a_full_session_transcript() {
+        let dir = open_project("y");
+        let root = dir.path();
+        let transcript = root.join("t.jsonl");
+        let ctx = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::PreToolUse));
+
+        let session_below = [
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": "oi"}}).to_string(),
+            write_usage_line(40_000, 10_000, 5_000),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": "ok"}}).to_string(),
+            write_usage_line(90_000, 40_000, 20_000),
+            write_usage_line(120_000, 50_000, 29_999),
+        ];
+        std::fs::write(&transcript, session_below.join("\n")).unwrap();
+        assert_eq!(
+            WavePauseCheck.evaluate(&conductor_call(root, &transcript), &ctx).unwrap(),
+            Verdict::Allow,
+            "199.999 no total, ainda abaixo do degrau",
+        );
+
+        let session_above: Vec<String> =
+            session_below.iter().cloned().chain(std::iter::once(write_usage_line(120_000, 50_000, 30_000))).collect();
+        std::fs::write(&transcript, session_above.join("\n")).unwrap();
+        let Verdict::Deny { reason } = WavePauseCheck.evaluate(&conductor_call(root, &transcript), &ctx).unwrap()
+        else {
+            panic!("200.000 no total: a chamada é recusada, com a transcrição inteira da sessão");
+        };
+        assert!(reason.contains('y'), "o bloco traz a spec: {reason}");
+        assert!(reason.contains("fase"), "o bloco traz a fase: {reason}");
     }
 }

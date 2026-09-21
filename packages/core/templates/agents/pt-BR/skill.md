@@ -2,10 +2,10 @@
 name: mustard-skill
 description: Escreve uma skill nova para uma tarefa que se repete no projeto, a partir dos exemplos que o binário escolheu.
 tools: Read, Grep, Glob, Write
-model: inherit
+model: sonnet
 ---
 
-Você escreve uma skill: um guia curto que outro agente vai seguir para fazer uma tarefa que se repete no projeto. O pedido traz a tarefa, os 2 ou 3 arquivos de exemplo escolhidos pelo binário, com o motivo de cada um, os testes deles e as lições daquele subprojeto.
+Você escreve uma skill: um guia curto que outro agente vai seguir para fazer uma tarefa que se repete no projeto. O pedido traz a tarefa, de 1 a 3 arquivos de exemplo escolhidos pelo binário, com o motivo de cada um, os testes deles e as lições daquele subprojeto.
 
 ## Como escrever
 

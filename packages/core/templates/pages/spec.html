@@ -41,8 +41,14 @@ blockquote{margin:0 0 10px;padding-left:12px;border-left:3px solid var(--mustard
 button,select,input{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--mustard);outline-offset:2px}
 .muted{color:var(--muted)}
-.shell{display:grid;grid-template-columns:260px minmax(0,1fr);height:100vh}
-.side{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--rule)}
+/* O menu lateral fica escondido por trás do conteúdo em qualquer largura, e só
+   aparece por cima dele quando o botão de menu abre: assim o nome de uma
+   seção nunca está no menu e no cabeçalho do conteúdo ao mesmo tempo. */
+.shell{display:block;height:100vh}
+.side{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--rule);
+  position:fixed;z-index:10;inset:0 auto 0 0;width:min(300px,86vw);background:var(--paper);
+  transform:translateX(-100%);transition:transform .2s;box-shadow:0 0 0 9999px rgba(0,0,0,0)}
+body.nav-open .side{transform:none;box-shadow:0 0 0 9999px rgba(0,0,0,.25)}
 .brand{font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0;padding:22px 24px 18px}
 .brand b{color:var(--mustard-text);font-weight:600}
 .side nav{flex:1;min-height:0;overflow:auto;padding:0 12px 16px 14px}
@@ -59,7 +65,7 @@ ol.nav a:hover{color:var(--mustard-text);background:var(--mustard-soft)}
 .btn.main{background:var(--charcoal);color:#F3F1E9;border-color:var(--charcoal)}
 #content{overflow:auto;height:100vh;min-width:0}
 .bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;min-height:56px;padding:8px 40px;background:var(--paper);border-bottom:1px solid var(--rule);flex-wrap:wrap}
-.menu-btn{display:none}
+.menu-btn{display:inline-flex}
 .search{position:relative;flex:1 1 280px;min-width:0}
 .search input{width:100%;height:36px;padding:0 90px 0 12px;border:1px solid var(--rule);border-radius:8px;background:var(--surface)}
 .search input:focus,select:focus{outline:none;border-color:var(--mustard);box-shadow:0 0 0 3px var(--mustard-soft)}
@@ -79,6 +85,7 @@ section.block>h2{display:flex;align-items:baseline;gap:12px;font-size:22px;font-
 .overview{margin:18px 0 8px}
 .ov-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:13px;font-weight:600;margin:0 0 10px}
 .ov-head span{font-weight:400;color:var(--muted)}
+.ov-spend{font-size:12.5px;color:var(--muted);margin:0 0 10px}
 .wgrid{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px}
 .wgrid li{margin:0}
 .w{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border-radius:8px;border:1px solid var(--rule);background:var(--surface);color:var(--ink);text-decoration:none}
@@ -100,6 +107,10 @@ details.group[open]>summary::before{transform:rotate(45deg) translate(-2px,-1px)
 details.item{border-top:1px solid var(--rule-soft)}
 details.item>summary{list-style:none;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:baseline;gap:14px;padding:8px 10px;margin:0 -10px;border-radius:7px;cursor:pointer}
 details.item>summary:hover{background:var(--surface)}
+/* O título do item é um h3 (a hierarquia de página/seção/item pede um
+   heading aqui), mas ele fica de fora do grid: o código e o texto do
+   título continuam nas duas primeiras colunas, como antes. */
+details.item>summary h3.sh{display:contents;font:inherit;margin:0}
 .c{background:none;padding:0;font:500 12px var(--mono);color:var(--mustard-text);white-space:nowrap}
 .t{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14.5px}
 .tail{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
@@ -129,10 +140,6 @@ th{font-weight:500;font-size:12.5px;color:var(--muted);white-space:nowrap}
 tr:last-child td{border-bottom:0}
 [hidden]{display:none!important}
 @media (max-width:900px){
-  .shell{grid-template-columns:minmax(0,1fr)}
-  .side{position:fixed;z-index:10;inset:0 auto 0 0;width:min(300px,86vw);background:var(--paper);transform:translateX(-100%);transition:transform .2s}
-  body.nav-open .side{transform:none}
-  .menu-btn{display:block}
   .bar{padding:8px 16px}
   .page{padding:0 16px 40vh}
   details.item>summary{grid-template-columns:minmax(0,1fr) auto;gap:4px 10px}
@@ -446,8 +453,13 @@ tr:last-child td{border-bottom:0}
     function fieldsOf(e) {
       var ty = TYPES[e.type], out = [];
       if (!ty) return out;
+      // O molde do agente e o pedido exato viram um bloco próprio, na ordem
+      // em que a onda os recebe; o gasto de quem despacha entra só na conta
+      // única do topo da página, não onda a onda.
+      var shownElsewhere = ['template', 'caller_steps', 'caller_tokens'];
       ty.fields.forEach(function (f) {
-        if (f.name === 'text' || f.name === 'keys' || inHeading(ty.name, f.name) || !has(e, f.name)) return;
+        if (f.name === 'text' || f.name === 'keys' || shownElsewhere.indexOf(f.name) >= 0 ||
+          inHeading(ty.name, f.name) || !has(e, f.name)) return;
         var shown = value(f.name, f.kind, e[f.name]);
         if (shown) out.push([t('page.field.' + f.name), shown]);
       });
@@ -470,12 +482,19 @@ tr:last-child td{border-bottom:0}
       return t('page.after_approval');
     }
     function item(e, anchored) {
-      var text = (str(e.text) || '').trim(), fields = fieldsOf(e);
+      var text = (str(e.text) || '').trim(), all = fieldsOf(e);
       var origin = t('page.field.origin'), label = t('page.field.label');
-      var title = text ? firstParagraph(text) : fields.filter(function (f) { return f[0] !== origin && f[0] !== label; })
-        .map(function (f) { return f[0] + ': ' + f[1]; }).join(' · ');
+      // Os campos que formam o título de um item sem texto corrido: sem eles,
+      // o mesmo dado não aparece de novo na tabela do item aberto.
+      var core = all.filter(function (f) { return f[0] !== origin && f[0] !== label; });
+      var title = text ? firstParagraph(text) : core.map(function (f) { return f[0] + ': ' + f[1]; }).join(' · ');
+      var fields = text ? all : all.filter(function (f) { return f[0] === origin || f[0] === label; });
+      // O corpo aberto mostra só o que vem depois do primeiro parágrafo: ele
+      // já virou o título, e não precisa aparecer de novo.
+      var paras = text ? text.split('\n\n') : [];
+      var body = paras.length > 1 ? paras.slice(1).join('\n\n') : '';
       return { kind: 'item', id: e.id, type: e.type, code: code(e.id), anchored: anchored, title: title, status: statusOf(e),
-        who: null, mark: afterApproval(e), date: when(e), text: text, fields: fields };
+        who: null, mark: afterApproval(e), date: when(e), text: text, body: body, fields: fields };
     }
     function section(anchor, heading, body) {
       return { kind: 'section', anchor: anchor, heading: heading,
@@ -497,6 +516,9 @@ tr:last-child td{border-bottom:0}
         if (hit) hit[1]++; else tally.push([it.status.label, 1]);
       });
       g.summary = tally.map(function (x) { return x[1] + ' ' + x[0]; }).join(' · ');
+      // A soma da contagem por situação já é a contagem geral: o grupo não
+      // mostra as duas lado a lado.
+      g.hideCount = !!g.summary;
       return g;
     }
     function waveState(n) { var s = str(waves[String(n)]); return s && has(STATES, s) ? s : 'todo'; }
@@ -521,7 +543,9 @@ tr:last-child td{border-bottom:0}
       });
       tally = tally.map(function (x, i) { return [x[0], x[1], i]; }).sort(function (a, b) { return b[1] - a[1] || a[2] - b[2]; });
       var legend = tally.map(function (x) { return x[1] + ' ' + t(STATES[x[0]][x[1] > 1 ? 1 : 0]); }).join(' · ');
-      return { kind: 'overview', title: t('page.block.waves'), legend: legend, cards: cards };
+      // O gasto já sai pronto, na língua da página: o painel só mostra.
+      var spend = str(computed && computed.spend);
+      return { kind: 'overview', title: t('page.block.waves'), legend: legend, cards: cards, spend: spend };
     }
     function surveyPoints() {
       var pairs = new Map();
@@ -704,9 +728,10 @@ tr:last-child td{border-bottom:0}
         events.filter(function (e) { return waveOf(e) === n; }).forEach(function (e) {
           var it = item(e, true);
           if (e.type === 'wave') {
-            var st = waveStatus(n);
-            it.fields.push([t('page.field.wave_state'), st.label]);
-            it.status = st;
+            // O nome da onda já está no cabeçalho do grupo, e o estado dela já
+            // é a marca do cabeçalho: o item da onda não repete nenhum dos
+            // dois.
+            it.title = '';
             var commits = join(ofType('commit').filter(function (c) { return ints(c.waves).indexOf(n) >= 0; })
               .map(function (c) { return codeSpan(str(c.sha) || '') + ' (' + code(c.id) + ')'; }));
             if (commits) it.fields.push([t('page.field.wave_commit'), commits]);
@@ -716,11 +741,17 @@ tr:last-child td{border-bottom:0}
             if (points.length) it.fields.push([t('page.field.wave_points'), String(points.reduce(function (s, k) { return s + k.points; }, 0))]);
           }
           if (e.type === 'send') {
-            var text = it.text;
-            it.text = '';
+            var text = it.text, template = str(e.template) || '';
+            it.text = ''; it.body = '';
             out.push(it);
+            var role = str(e.role) ? t('page.value.' + e.role) : '';
+            // O molde do agente vem primeiro, na mesma ordem em que a onda o
+            // recebe, e só depois o pedido exato injetado.
+            if (template) {
+              out.push({ kind: 'details', owner: it.code, markdown: template,
+                summary: say('page.wave.template', { role: role, lines: countLines(template) }) + ' · ' + t('page.wave.full') });
+            }
             if (text) {
-              var role = str(e.role) ? t('page.value.' + e.role) : '';
               out.push({ kind: 'details', owner: it.code, markdown: fullPrompt(text),
                 summary: say('page.wave.sent', { role: role, lines: countLines(text) }) + ' · ' + t('page.wave.full') });
             }
@@ -754,8 +785,10 @@ tr:last-child td{border-bottom:0}
       numbers.sort(function (a, b) { return a === null ? -1 : b === null ? 1 : a - b; });
       var body = numbers.map(function (n) {
         var of = waveEvents.filter(function (e) { return waveOf(e) === n; });
+        // O grupo da revisão usa um rótulo próprio, diferente do cabeçalho
+        // da seção das ondas: o mesmo texto não nomeia as duas seções.
         return n === null ? tallied('review-others', t('page.findings.others'), of)
-          : tallied('review-' + n, say('page.wave.heading', { n: n }), of);
+          : tallied('review-' + n, say('page.review.wave', { n: n }), of);
       }).filter(Boolean);
       var finalGroup = tallied('review-final', t('page.review.final'), finals);
       if (finalGroup) body.push(finalGroup);
@@ -823,10 +856,10 @@ tr:last-child td{border-bottom:0}
     function removedItem(id, taken) {
       var e = byId.get(id), by = taken.by, purged = taken.purged;
       var it = e ? item(e, false) : { kind: 'item', id: id, type: '', code: code(id), anchored: false, title: '',
-        status: null, who: null, mark: null, date: null, text: '', fields: [] };
+        status: null, who: null, mark: null, date: null, text: '', body: '', fields: [] };
       if (e) it.who = kindAnd(e, null);
       it.mark = t(purged ? 'page.removed.purged' : 'page.removed.removed');
-      if (purged) { it.title = MARK; it.text = MARK; } else if (!it.text) it.text = it.title;
+      if (purged) { it.title = MARK; it.text = MARK; it.body = ''; } else if (!it.text) { it.text = it.title; it.body = ''; }
       it.fields = [];
       if (!by) return it;
       if (str(by.author) !== null) {
@@ -978,6 +1011,7 @@ tr:last-child td{border-bottom:0}
     else if (node.kind === 'heading') out.push(new Array(level + 1).join('#') + ' ' + node.text, '');
     else if (node.kind === 'overview') {
       out.push('**' + node.title + '**: ' + node.legend, '');
+      if (node.spend) out.push(node.spend, '');
       node.cards.forEach(function (c) { out.push('- ' + c.label + ': ' + c.status.label + ' — ' + c.hint); });
       out.push('');
     } else if (node.kind === 'group') {
@@ -1054,7 +1088,7 @@ tr:last-child td{border-bottom:0}
     h('main', { id: 'content' }, [
       h('div', { class: 'bar' }, [menu, h('label', { class: 'search' }, [q, hits]), kind, download]),
       h('div', { class: 'page' }, [
-        h('header', { class: 'top' }, [h('p', { class: 'eyebrow', text: 'Mustard · ' + t('page.kind.spec') }), titleEl, metaEl]),
+        h('header', { class: 'top' }, [h('p', { class: 'eyebrow', text: t('page.kind.spec') }), titleEl, metaEl]),
         statusEl, notFound, box])])]));
   app.setAttribute('data-state', 'loading');
 
@@ -1069,8 +1103,8 @@ tr:last-child td{border-bottom:0}
       return [h('dt', { text: f[0] }), h('dd', { html: inline(f[1]) })];
     }))) : null;
     var el = h('details', { class: 'item' + (it.anchored ? '' : ' old'), id: it.anchored ? it.code : null, 'data-code': it.code, 'data-type': it.type }, [
-      h('summary', null, [h('code', { class: 'c', text: it.code }), h('span', { class: 't', html: inline(it.title) }), tail]),
-      h('div', { class: 'body' }, [it.text ? h('div', { class: 'prose', html: markdown(it.text) }) : null, fields])]);
+      h('summary', null, [h('h3', { class: 'sh' }, [h('code', { class: 'c', text: it.code }), h('span', { class: 't', html: inline(it.title) })]), tail]),
+      h('div', { class: 'body' }, [it.body ? h('div', { class: 'prose', html: markdown(it.body) }) : null, fields])]);
     var words = [it.code, it.title, it.text, it.who || ''].concat([].concat.apply([], it.fields)).join(' ');
     var entry = { el: el, code: fold(it.code), type: it.type, text: fold(words) };
     ITEMS.push(entry);
@@ -1079,7 +1113,9 @@ tr:last-child td{border-bottom:0}
   }
   function renderNode(node, ctx) {
     if (node.kind === 'paragraph') return h('p', { class: 'muted', html: inline(node.text) });
-    if (node.kind === 'heading') return h('h3', { text: node.text });
+    // Não é um item nem uma seção: fica um parágrafo em destaque, não um
+    // quarto nível de título.
+    if (node.kind === 'heading') return h('p', { class: 'mh', text: node.text });
     if (node.kind === 'item') return renderItem(node, ctx);
     if (node.kind === 'table') {
       return h('div', { class: 'table' }, [h('table', null, [
@@ -1094,6 +1130,7 @@ tr:last-child td{border-bottom:0}
     if (node.kind === 'overview') {
       var ov = h('div', { class: 'overview' }, [
         h('div', { class: 'ov-head' }, [h('b', { text: node.title }), h('span', { text: node.legend })]),
+        node.spend ? h('p', { class: 'ov-spend', text: node.spend }) : null,
         h('ol', { class: 'wgrid' }, node.cards.map(function (c) {
           return h('li', null, [h('a', { class: 'w ' + c.status.tone, href: '#' + c.target, title: c.hint }, [h('b', { text: c.label }), h('span', { text: c.status.label })])]);
         }))]);
@@ -1109,7 +1146,7 @@ tr:last-child td{border-bottom:0}
             node.summary ? h('span', { html: inline(node.summary) }) : null]),
           count]),
         h('div', { class: 'gbody' }, node.body.map(function (n) { return renderNode(n, own); }))]);
-      count.textContent = own.items.length ? plural(own.items.length) : '';
+      count.textContent = !node.hideCount && own.items.length ? plural(own.items.length) : '';
       var entry = { el: g, items: own.items, open: node.open };
       GROUPS.push(entry);
       if (ctx) { ctx.items.push.apply(ctx.items, own.items); ctx.groups.push(entry); }
@@ -1157,13 +1194,23 @@ tr:last-child td{border-bottom:0}
     apply();
   }
   function noData() {
+    emptyState('empty', t('page.no_data'));
+  }
+  // O documento calculado já tem dado (uma cópia já rodou), mas nenhum item
+  // veio da coleção de faixas: o modelo instalado está velho, lendo uma
+  // coleção que a cópia de agora não usa mais — dizer isso vale mais do que
+  // repetir a linha de banco vazio, que aqui seria falsa.
+  function staleTemplate() {
+    emptyState('stale', t('page.stale_template'));
+  }
+  function emptyState(state, message) {
     ITEMS = []; EXTRAS = []; GROUPS = []; SECTIONS = []; OVERVIEWS = []; MODEL = null;
     box.textContent = '';
     nav.textContent = '';
-    statusEl.textContent = t('page.no_data');
+    statusEl.textContent = message;
     statusEl.hidden = false;
     RENDERS++;
-    app.setAttribute('data-state', 'empty');
+    app.setAttribute('data-state', state);
     app.setAttribute('data-renders', String(RENDERS));
   }
 
@@ -1275,7 +1322,15 @@ tr:last-child td{border-bottom:0}
   function reload(db) {
     return Promise.all([readItems(db), readComputed(db)]).then(function (got) {
       SEEN.computed = JSON.stringify(got[1]);
-      if (!got[0].length) { SEEN.top = null; noData(); return; }
+      if (!got[0].length) {
+        SEEN.top = null;
+        // Um documento calculado com dado é a marca de que uma cópia já
+        // rodou; sem nenhum item na coleção de faixas mesmo assim, a coleção
+        // que o modelo lê não é a que a cópia de agora escreve.
+        var copied = got[1] && (isInt(got[1].last) || typeof got[1].spec === 'string');
+        if (copied) staleTemplate(); else noData();
+        return;
+      }
       var model = build(got[0], got[1]);
       SEEN.top = model.top;
       render(model);

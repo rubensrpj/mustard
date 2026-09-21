@@ -2,7 +2,7 @@
 //! an older Mustard's own leftover, so the upsert takes it out with no
 //! question and says what left.
 //!
-//! Three kinds of file carry it:
+//! Four kinds of file carry it:
 //!
 //! - the instruction files (`CLAUDE.md` and `CLAUDE.local.md`), where an older
 //!   scan wrote the `@.claude/scan-map.md` import, the `> Parent: … |
@@ -11,7 +11,12 @@
 //! - the team's `.claude/settings.json`, where an older install wrote the lines
 //!   of its seed (its deny rules stay: a protection rule never leaves the
 //!   team's file unless someone asks);
-//! - `.claude/CLAUDE.md`, the orchestrator an older install planted.
+//! - `.claude/CLAUDE.md`, the orchestrator an older install planted;
+//! - a spec's own `spec.md` and `spec.html`, left behind by an older binary
+//!   that rendered the page to disk beside `spec.ndjson`, which is the ONLY
+//!   file of a spec that lives in the project ([`stale_spec_pages`]). A
+//!   folder with no `spec.ndjson` is the older format instead, whose
+//!   `spec.md` IS the document, and is never touched.
 //!
 //! [`plan`] only reads, and says what would leave; [`apply`] does it. Nothing
 //! is staged or committed: the commit is the person's.
@@ -42,6 +47,7 @@ use crate::domain::spec_events::{SpecEvent, SpecLog};
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs::{self, PRUNE_DIRS};
 use crate::io::lessons;
+use crate::io::spec_index::DISCARDED_DIR;
 use crate::platform::error::Result;
 
 use super::settings::{parse_json_object, team_settings_path, without_seed_lines, TEAM_SETTINGS};
@@ -230,7 +236,43 @@ pub fn plan(root: &Path) -> CleanupPlan {
         out.files.push(change);
     }
 
+    out.files.extend(stale_spec_pages(root));
+
     out.lessons = new_lessons(root, guards);
+    out
+}
+
+/// `spec.md`/`spec.html` left inside a spec's OWN folder, back when the
+/// binary rendered the page to disk instead of publishing it — see
+/// `SpecPaths::spec_md_path` and `spec_html_path`, whose own doc calls both
+/// "projections" of `spec.ndjson`, never a second copy on disk. A folder
+/// counts only with its `spec.ndjson` present: that is what tells this
+/// leftover apart from the OLDER format, whose `spec.md` IS the document and
+/// has no `spec.ndjson` beside it — that one is never touched here.
+fn stale_spec_pages(root: &Path) -> Vec<FileChange> {
+    let Ok(paths) = ClaudePaths::for_project(root) else { return Vec::new() };
+    let spec_dir = paths.spec_dir();
+    let Ok(entries) = fs::read_dir(&spec_dir) else { return Vec::new() };
+    let mut names: Vec<String> =
+        entries.into_iter().filter(|e| e.is_dir && e.file_name != DISCARDED_DIR).map(|e| e.file_name).collect();
+    names.sort();
+
+    let mut out = Vec::new();
+    for name in names {
+        let Ok(spec) = paths.for_spec(&name) else { continue };
+        if !spec.spec_ndjson_path().is_file() {
+            continue;
+        }
+        for (path, name_in_dir) in [(spec.spec_md_path(), "spec.md"), (spec.spec_html_path(), "spec.html")] {
+            if path.is_file() {
+                out.push(FileChange {
+                    path: format!(".claude/spec/{name}/{name_in_dir}"),
+                    action: Action::Delete,
+                    removes: vec!["an older Mustard rendered this to disk beside spec.ndjson".to_string()],
+                });
+            }
+        }
+    }
     out
 }
 
@@ -947,6 +989,34 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         assert!(plan(root).is_empty(), "a second install finds nothing");
     }
 
+    /// A mesma instrução em dois subprojetos vira uma guarda só, com os dois
+    /// lugares. Se o banco já guarda o texto, mas só para um dos dois, a
+    /// guarda não pode ser descartada — ela só sai quando o banco já vale
+    /// nos dois lugares dela, nunca quando vale só num.
+    #[test]
+    fn a_guard_in_two_subprojects_is_not_dropped_when_the_bank_only_holds_in_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let text = "Não chame o banco de dentro do controlador.";
+        let handler = kept_in_a(root, text, "controlador");
+        let body = "# Svc\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n";
+        write(root, "apps/a/CLAUDE.md", body);
+        write(root, "apps/b/CLAUDE.md", body);
+
+        let listed = plan(root);
+        assert_eq!(listed.lessons.len(), 1, "a guarda não pode sumir: {:?}", listed.lessons);
+        assert_eq!(listed.lessons[0].replaces, Some(handler), "o banco só vale em apps/a, não nos dois lugares da guarda");
+
+        let done = apply(root, &listed).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
+        let widened = kept_with(&bank, text);
+        assert_eq!(widened.len(), 1, "{widened:?}");
+        for file in ["apps/a/src/x.rs", "apps/b/src/x.rs"] {
+            assert!(holding_for(&bank, file).contains(&widened[0].id), "{file} keeps the rule");
+        }
+    }
+
     /// Duas limpezas ao mesmo tempo, cada uma dando à mesma lição do banco um
     /// lugar novo, não perdem regra nem repetem lição: com a trava presa, a
     /// gravação confere que a lição substituída ainda é a que a leitura mostra
@@ -1158,6 +1228,45 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         assert_eq!(plan.lessons.len(), 2, "the local twin repeats the same guards: {:?}", plan.lessons);
         assert!(plan.lessons.iter().all(|l| l.source == "apps/rt/CLAUDE.md"), "{:?}", plan.lessons);
         assert_eq!(plan.lessons[0].subproject.as_deref(), Some("apps/rt"));
+    }
+
+    /// O plano tira `spec.md` e `spec.html` de dentro de uma pasta de spec que
+    /// já tem `spec.ndjson` — resto de quando o binário desenhava a página no
+    /// disco — e apagar não toca no arquivo de eventos. Uma pasta sem
+    /// `spec.ndjson` é o formato antigo, cujo `spec.md` é o próprio
+    /// documento, e fica intocada, provando que a regra depende do
+    /// `spec.ndjson` estar presente, não só do nome da pasta.
+    #[test]
+    fn stale_spec_pages_leave_only_beside_an_ndjson() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, ".claude/spec/zerar-as-pendencias/spec.ndjson", "{}\n");
+        write(root, ".claude/spec/zerar-as-pendencias/spec.md", "# old render\n");
+        write(root, ".claude/spec/zerar-as-pendencias/spec.html", "<html></html>");
+        write(root, ".claude/spec/an-old-format-unit/spec.md", "# the document itself\n");
+
+        let listed = plan(root);
+        let paths: Vec<&str> = listed.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [".claude/spec/zerar-as-pendencias/spec.md", ".claude/spec/zerar-as-pendencias/spec.html"],
+            "{paths:?}",
+        );
+        assert!(listed.files.iter().all(|f| f.action == Action::Delete), "{listed:?}");
+
+        let done = apply(root, &listed).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert!(!root.join(".claude/spec/zerar-as-pendencias/spec.md").exists());
+        assert!(!root.join(".claude/spec/zerar-as-pendencias/spec.html").exists());
+        assert!(
+            root.join(".claude/spec/zerar-as-pendencias/spec.ndjson").exists(),
+            "the event file is the one that stays"
+        );
+        assert!(
+            root.join(".claude/spec/an-old-format-unit/spec.md").exists(),
+            "the older format's own document, with no spec.ndjson beside it, is untouched"
+        );
+        assert!(plan(root).is_empty(), "nothing left to clean");
     }
 
     /// As regras de bloqueio ficam no `settings.json` da equipe, mesmo iguais

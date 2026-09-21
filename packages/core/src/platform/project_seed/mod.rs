@@ -670,4 +670,38 @@ mod tests {
         assert_eq!(read(blocked.path(), "apps/web/CLAUDE.md"), only_ours.as_bytes());
         assert_eq!(read(blocked.path(), SETTINGS_JSON), team_settings.as_bytes());
     }
+
+    /// O `upsert` tira, na mesma chamada, o `spec.md` e o `spec.html` que um
+    /// binário mais antigo deixou dentro de uma pasta de spec que já tem o seu
+    /// `spec.ndjson`: nenhuma pasta de obra guarda a página nem o texto dela
+    /// depois da instalação. O arquivo de eventos, que é o único que deveria
+    /// morar ali, fica como estava.
+    #[test]
+    fn upsert_takes_out_a_spec_folders_stale_page_and_document() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::create_dir_all(root.join(".claude/spec/arestas-da-suzano")).unwrap();
+        std_fs::write(root.join(".claude/spec/arestas-da-suzano/spec.ndjson"), "{}\n").unwrap();
+        std_fs::write(root.join(".claude/spec/arestas-da-suzano/spec.md"), "# old render\n").unwrap();
+        std_fs::write(root.join(".claude/spec/arestas-da-suzano/spec.html"), "<html></html>").unwrap();
+
+        let report = upsert_project(root, None, InstallMode::Shared).unwrap();
+
+        let done = report.cleaned.expect("the report says what the cleanup did");
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(
+            done.deleted,
+            [".claude/spec/arestas-da-suzano/spec.md", ".claude/spec/arestas-da-suzano/spec.html"],
+        );
+        assert!(!root.join(".claude/spec/arestas-da-suzano/spec.md").exists());
+        assert!(!root.join(".claude/spec/arestas-da-suzano/spec.html").exists());
+        assert!(
+            root.join(".claude/spec/arestas-da-suzano/spec.ndjson").exists(),
+            "the event file is the one that stays"
+        );
+
+        // A segunda rodada não acha mais nada: a limpeza converge.
+        let again = upsert_project(root, None, InstallMode::Shared).unwrap();
+        assert!(again.cleanup.is_none(), "nothing left to clean the second time: {:?}", again.cleanup);
+    }
 }

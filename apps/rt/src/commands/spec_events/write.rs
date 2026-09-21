@@ -119,14 +119,12 @@
 //! revendo um `state`.
 //!
 //! Numa spec em levantamento, o objetivo, o primeiro `context` como o índice
-//! o lê, é a frase do usuário palavra por palavra, ou a sugestão que ele
-//! aprovou. Toda gravação que troca o objetivo (o primeiro `context`, a
+//! o lê, é a frase que o assistente escreve apontando a mensagem do usuário
+//! que a define. Toda gravação que troca o objetivo (o primeiro `context`, a
 //! revisão dele e a remoção que passa o lugar para outro `context`) deixa um
-//! objetivo que aponta em `origin` uma mensagem do usuário e repete o texto
-//! dela, ou uma frase inteira dela, ou uma frase inteira de uma das respostas
-//! do assistente da volta que o usuário respondeu, a barrada pela
-//! conferência de escrita inclusive
-//! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência. A
+//! objetivo que aponta em `origin` uma mensagem do usuário
+//! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência; o
+//! texto dele não é conferido. A
 //! resposta do turno em que a spec nasce conta: ela é gravada sem `reply_to`,
 //! porque ainda não há mensagem do usuário a que responder, e só ela pode
 //! faltar o campo (`mustard_core::domain::spec_state::reply_rule`).
@@ -152,6 +150,13 @@
 //! `remove` dele é recusado. A passagem do levantamento para o plano, e a
 //! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
 //! de toda porta que grava o estado.
+//!
+//! A onda nasce pequena: a tarefa que seria a quarta de uma onda ainda não
+//! entregue, ou o critério que seria a quarta prova dela, é recusado antes de
+//! ir para o arquivo
+//! (`mustard_core::domain::wave_prompt::wave_size_rule`), com quantas tarefas
+//! e provas a onda já tem e a divisão sugerida em duas ondas. O plano usa a
+//! mesma recusa como rede, para a onda que cresceu por outro caminho.
 
 use std::path::{Path, PathBuf};
 
@@ -163,7 +168,7 @@ use mustard_core::domain::spec_state::{
     State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
-use mustard_core::domain::wave_prompt::owner_rule;
+use mustard_core::domain::wave_prompt::{owner_rule, wave_size_rule};
 use mustard_core::io::{lessons, project_map, spec_events as store};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
@@ -540,7 +545,8 @@ fn record_rules(
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
     survey_rule(spec, before, after)?;
-    owner_rule(before, after)
+    owner_rule(before, after)?;
+    wave_size_rule(after)
 }
 
 /// Gravações do binário na spec conferidas antes, sem gravar nada: cada uma
@@ -1103,6 +1109,7 @@ mod tests {
             spec: Some("teste".to_string()),
             report: None,
             root: root.to_path_buf(),
+            ..Default::default()
         });
         assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
     }
@@ -1457,6 +1464,66 @@ mod tests {
             let out = write(root, "decision", &decision(owner.clone()));
             assert_eq!(out["ok"], json!(true), "{owner}: {out}");
         }
+    }
+
+    /// A onda nasce pequena: a terceira tarefa ainda passa, mas a quarta é
+    /// recusada, e nada é gravado; do mesmo jeito, a onda com três provas de
+    /// critério passa, mas a revisão que a levaria à quarta prova é recusada.
+    #[test]
+    fn a_fourth_task_or_proof_is_refused_and_the_third_still_passes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let crit1 = write(root, "criterion",
+            &json!({"when": "a", "then": "b", "proof": "p1", "origin": said}).to_string())["id"].as_u64().unwrap();
+        let wave = write(root, "wave",
+            &json!({"n": 1, "text": "Onda 1.", "criteria": [crit1], "done_when": "passa", "origin": said}).to_string());
+        assert_eq!(wave["ok"], json!(true), "{wave}");
+        let wave_id = wave["id"].as_u64().unwrap();
+
+        // As três primeiras tarefas passam; a quarta é recusada, e nada é
+        // gravado por ela.
+        let task = |i: u64| json!({"wave": 1, "text": format!("Tarefa {i}."), "origin": said}).to_string();
+        for i in 1..=3 {
+            let out = write(root, "task", &task(i));
+            assert_eq!(out["ok"], json!(true), "tarefa {i}: {out}");
+        }
+        let before = lines(root);
+        let refused = write(root, "task", &task(4));
+        assert_eq!(refused["reason"], json!("wave-too-big"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap();
+        assert!(hint.contains('3'), "o teto de tarefas aparece na recusa: {hint}");
+        assert_eq!(lines(root), before, "a quarta tarefa não é gravada");
+
+        // Três provas de critério passam; a quarta, na mesma onda, é recusada
+        // do mesmo jeito, e a onda continua com três.
+        let crit = |proof: &str| {
+            write(root, "criterion", &json!({"when": "a", "then": "b", "proof": proof, "origin": said}).to_string())["id"]
+                .as_u64()
+                .unwrap()
+        };
+        let crit2 = crit("p2");
+        let revise = |criteria: &[u64], replaces: u64| {
+            json!({
+                "n": 1, "text": "Onda 1.", "criteria": criteria, "done_when": "passa",
+                "origin": said, "replaces": replaces,
+            })
+            .to_string()
+        };
+        let revised = write(root, "wave", &revise(&[crit1, crit2], wave_id));
+        assert_eq!(revised["ok"], json!(true), "{revised}");
+        let revised_id = revised["id"].as_u64().unwrap();
+        let crit3 = crit("p3");
+        let revised = write(root, "wave", &revise(&[crit1, crit2, crit3], revised_id));
+        assert_eq!(revised["ok"], json!(true), "a terceira prova passa: {revised}");
+        let revised_id = revised["id"].as_u64().unwrap();
+
+        let crit4 = crit("p4");
+        let before = lines(root);
+        let refused = write(root, "wave", &revise(&[crit1, crit2, crit3, crit4], revised_id));
+        assert_eq!(refused["reason"], json!("wave-too-big"), "{refused}");
+        assert_eq!(lines(root), before, "a onda que chegaria à quarta prova não é gravada");
     }
 
     /// A ponte do fechamento não fecha uma spec em plano: o fechamento só vem
@@ -2154,12 +2221,13 @@ mod tests {
         write(root, "context", &json!({ "text": text, "origin": origin }).to_string())
     }
 
-    /// O primeiro `context` de uma spec em levantamento é a resposta do
-    /// usuário palavra por palavra: outro texto, ou a mensagem que não é do
-    /// usuário, é recusado, e nada é gravado; a resposta igual entra, e o
-    /// `context` seguinte já não é o objetivo.
+    /// O primeiro `context` de uma spec em levantamento aponta em `origin` a
+    /// mensagem do usuário: o texto é o que o assistente escreve, com outras
+    /// palavras se for o caso, e só o `origin` é conferido. Apontando a
+    /// mensagem que não é do usuário, é recusado, a recusa diz qual `origin`
+    /// veio e nada é gravado; o `context` seguinte já não é o objetivo.
     #[test]
-    fn the_first_context_of_a_survey_is_the_users_answer_word_for_word() {
+    fn the_first_context_of_a_survey_points_at_the_users_message() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root);
@@ -2167,13 +2235,13 @@ mod tests {
         let said = message(root, "user", answer);
         let reply = message(root, "assistant", answer);
         let before = lines(root);
-        let reworded = context(root, "Travar o merge.", said);
-        assert_eq!(reworded["reason"], json!("goal-not-verbatim"), "{reworded}");
-        assert!(reworded["hint"].as_str().unwrap().contains(&said.to_string()), "{reworded}");
         let from_reply = context(root, answer, reply);
-        assert_eq!(from_reply["reason"], json!("goal-not-verbatim"), "{from_reply}");
+        assert_eq!(from_reply["reason"], json!("goal-origin-not-user"), "{from_reply}");
+        assert!(from_reply["hint"].as_str().unwrap().contains(&reply.to_string()), "{from_reply}");
         assert_eq!(lines(root), before, "a refusal writes nothing");
-        assert_eq!(context(root, answer, said)["ok"], json!(true));
+        let reworded = context(root, "Travar o merge.", said);
+        assert_eq!(reworded["ok"], json!(true), "o objetivo com outras palavras entra: {reworded}");
+        assert_eq!(index_goal(root).as_deref(), Some("Travar o merge."));
         assert_eq!(context(root, "Outro contexto, livre.", said)["ok"], json!(true));
     }
 
@@ -2205,11 +2273,10 @@ mod tests {
     /// gancho do fim da resposta, sem mensagem a que responder; o sim entra
     /// pelo gancho da entrada da mensagem; e o `run write` do objetivo grava a
     /// frase sugerida, com `origin` na mensagem do usuário, que o índice
-    /// mostra. A frase só em parte, com a maiúscula trocada, cortada no fim
-    /// ou no começo de uma palavra, e a de uma resposta que veio depois do
-    /// sim, são recusadas, e nada é gravado.
+    /// mostra. O objetivo que aponta uma resposta do assistente, e não a
+    /// mensagem do usuário, é recusado, e nada é gravado.
     #[test]
-    fn a_yes_to_the_suggested_goal_records_the_suggestion_word_for_word() {
+    fn a_yes_to_the_suggested_goal_records_it_pointing_at_the_users_message() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
@@ -2239,18 +2306,10 @@ mod tests {
         );
 
         let before = lines(root);
-        for goal in [
-            "Um sim aprova o objetivo",
-            "o objetivo sugerido.",
-            "um sim aprova o objetivo sugerido.",
-            "Um sim aprova o objetivo suger",
-            "m sim aprova o objetivo sugerido.",
-            "Travar tudo, sempre.",
-        ] {
-            let refused = context(root, goal, yes);
-            assert_eq!(refused["reason"], json!("goal-not-verbatim"), "{goal}: {refused}");
-            assert!(refused["hint"].as_str().unwrap().contains("a sugestão que ele aprovou"), "{refused}");
-        }
+        let said = log.visible().into_iter().find(|e| e.event_type == "response").map(|e| e.id).unwrap();
+        let refused = context(root, suggestion, said);
+        assert_eq!(refused["reason"], json!("goal-origin-not-user"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap().contains("mensagem do usuário"), "{refused}");
         assert_eq!(lines(root), before, "a refusal writes nothing");
 
         let written = context(root, suggestion, yes);
@@ -2261,49 +2320,9 @@ mod tests {
         assert_eq!(index_goal(root).as_deref(), Some(suggestion));
     }
 
-    /// Com a conversa já andando, vale só a frase que está inteira, palavra
-    /// por palavra, na última resposta antes do sim: a frase com palavras a
-    /// mais ou trocadas, a sugestão de uma resposta mais antiga, a de uma
-    /// resposta que veio depois da mensagem e a que aponta em `origin` uma
-    /// resposta do assistente, e não a mensagem do usuário, são recusadas, e
-    /// nada é gravado; a sugestão da resposta respondida passa.
-    #[test]
-    fn only_the_answered_response_lends_its_suggestion() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        surveyed(root);
-        let asked = message(root, "user", "Quero que o sim baste.");
-        response(root, "Sugiro: \"Travar o envio com pendência aberta.\" Serve?", asked);
-        let other = message(root, "user", "Não, outra.");
-        let suggestion = "Um sim aprova o objetivo sugerido.";
-        response(root, &format!("Então sugiro: \"{suggestion}\" Pode ser?"), other);
-        let yes = message(root, "user", "pode usar essa");
-        let later = response(root, "Gravo: \"Travar tudo, sempre.\"", yes);
-        let before = lines(root);
-        for (goal, origin) in [
-            ("Um sim aprova o objetivo sugerido e a barra fica limpa.", yes),
-            ("Um sim aprova o sugerido objetivo.", yes),
-            ("m sim aprova o objetivo sugerido.", yes),
-            ("Travar o envio com pendência aberta.", yes),
-            ("Travar tudo, sempre.", yes),
-            (suggestion, later),
-        ] {
-            let refused = context(root, goal, origin);
-            assert_eq!(refused["reason"], json!("goal-not-verbatim"), "{goal}: {refused}");
-            assert!(refused["hint"].as_str().unwrap().contains("a sugestão que ele aprovou"), "{refused}");
-        }
-        assert_eq!(lines(root), before, "a refusal writes nothing");
-
-        let written = context(root, suggestion, yes);
-        assert_eq!(written["ok"], json!(true), "{written}");
-        let log = DiskSpecState::new(root).log("teste").unwrap();
-        let goal = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");
-        assert_eq!((goal.str_field("text"), goal.int("origin")), (Some(suggestion), Some(yes)));
-        assert_eq!(index_goal(root).as_deref(), Some(suggestion));
-    }
-
-    /// O objetivo errado sai com `remove`, e a próxima resposta do usuário
-    /// vira o objetivo, também palavra por palavra.
+    /// O objetivo errado sai com `remove`, e o próximo `context` apontando a
+    /// resposta nova do usuário vira o objetivo; apontando a resposta do
+    /// assistente, não.
     #[test]
     fn a_removed_goal_lets_the_next_answer_become_the_goal() {
         let dir = tempdir().unwrap();
@@ -2318,8 +2337,10 @@ mod tests {
         );
         assert_eq!(removal["ok"], json!(true), "{removal}");
         let second = message(root, "user", "Travar o merge com pendência aberta.");
-        assert_eq!(context(root, "Qualquer coisa.", second)["reason"], json!("goal-not-verbatim"));
-        assert_eq!(context(root, "Travar o merge com pendência aberta.", second)["ok"], json!(true));
+        let reply = response(root, "Anotado.", second);
+        assert_eq!(context(root, "Travar o merge.", reply)["reason"], json!("goal-origin-not-user"));
+        assert_eq!(context(root, "Travar o merge.", second)["ok"], json!(true));
+        assert_eq!(index_goal(root).as_deref(), Some("Travar o merge."));
     }
 
     /// O objetivo que a linha da spec no índice mostra.
@@ -2340,37 +2361,40 @@ mod tests {
         write(root, "remove", &json!({ "targets": [id], "reason": "não vale" }).to_string())
     }
 
-    /// Revisar o objetivo com outras palavras é recusado, e nada é gravado; a
-    /// revisão que repete uma resposta nova do usuário passa.
+    /// Rever o objetivo com outras palavras passa, apontando a mensagem do
+    /// usuário; apontando a resposta do assistente é recusado, e nada é
+    /// gravado.
     #[test]
-    fn revising_the_goal_takes_a_new_answer_word_for_word() {
+    fn revising_the_goal_keeps_it_pointing_at_a_users_message() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root);
         let said = message(root, "user", "Travar o merge.");
         let goal = context(root, "Travar o merge.", said)["id"].as_u64().unwrap();
+        let reply = response(root, "Anotado.", said);
         let before = lines(root);
-        let reworded = revise(root, goal, "Travar tudo, sempre.", said);
-        assert_eq!(reworded["reason"], json!("goal-not-verbatim"), "{reworded}");
+        let from_reply = revise(root, goal, "Travar tudo, sempre.", reply);
+        assert_eq!(from_reply["reason"], json!("goal-origin-not-user"), "{from_reply}");
         assert_eq!(lines(root), before);
-        let again = message(root, "user", "Travar o merge e o envio.");
+        let again = message(root, "user", "Trave o merge e o envio também.");
         assert_eq!(revise(root, goal, "Travar o merge e o envio.", again)["ok"], json!(true));
         assert_eq!(index_goal(root).as_deref(), Some("Travar o merge e o envio."));
     }
 
-    /// Tirar o objetivo não promove um `context` que o usuário não escreveu:
-    /// a remoção que passaria o lugar para ele é recusada. Tirado o outro
-    /// antes, o objetivo sai, e a vaga fica aberta.
+    /// Tirar o objetivo não promove um `context` que não aponta uma mensagem
+    /// do usuário: a remoção que passaria o lugar para ele é recusada. Tirado
+    /// o outro antes, o objetivo sai, e a vaga fica aberta.
     #[test]
-    fn removing_the_goal_never_promotes_a_context_the_user_did_not_write() {
+    fn removing_the_goal_never_promotes_a_context_without_a_users_message() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root);
         let said = message(root, "user", "Travar o merge.");
         let goal = context(root, "Travar o merge.", said)["id"].as_u64().unwrap();
-        let free = context(root, "Uma nota do assistente.", said)["id"].as_u64().unwrap();
+        let reply = response(root, "Anotado.", said);
+        let free = context(root, "Uma nota do assistente.", reply)["id"].as_u64().unwrap();
         let promoted = remove(root, goal);
-        assert_eq!(promoted["reason"], json!("goal-not-verbatim"), "{promoted}");
+        assert_eq!(promoted["reason"], json!("goal-origin-not-user"), "{promoted}");
         assert_eq!(index_goal(root).as_deref(), Some("Travar o merge."));
         assert_eq!(remove(root, free)["ok"], json!(true));
         assert_eq!(remove(root, goal)["ok"], json!(true));
@@ -2379,8 +2403,8 @@ mod tests {
 
     /// O índice e a regra do objetivo leem o mesmo objetivo: em cada caminho
     /// que troca o objetivo, aceito ou recusado, o que a linha do índice
-    /// mostra é o objetivo que a regra conferiu, e ele é sempre uma mensagem
-    /// do usuário palavra por palavra.
+    /// mostra é o objetivo que a regra conferiu, e ele sempre aponta uma
+    /// mensagem do usuário.
     #[test]
     fn the_index_and_the_goal_rule_see_the_same_goal() {
         let dir = tempdir().unwrap();
@@ -2393,8 +2417,7 @@ mod tests {
             match mustard_core::domain::survey::goal(&log) {
                 Some(goal) => {
                     let said = goal.int("origin").and_then(|id| log.get(id)).expect("the goal has its origin");
-                    assert_eq!(said.str_field("author"), Some("user"));
-                    assert_eq!(said.str_field("text"), goal.str_field("text"));
+                    assert_eq!((said.event_type.as_str(), said.str_field("author")), ("message", Some("user")));
                     assert_eq!(shown.as_deref(), goal.str_field("text"));
                 }
                 None => assert_eq!(shown, None),
@@ -2402,13 +2425,14 @@ mod tests {
             shown
         };
         let first = message(root, "user", "Travar o merge.");
-        assert_eq!(context(root, "Outra coisa.", first)["reason"], json!("goal-not-verbatim"));
+        let reply = response(root, "Anotado.", first);
+        assert_eq!(context(root, "Outra coisa.", reply)["reason"], json!("goal-origin-not-user"));
         assert_eq!(seen(root), None);
         let goal = context(root, "Travar o merge.", first)["id"].as_u64().unwrap();
         assert_eq!(seen(root).as_deref(), Some("Travar o merge."));
-        assert_eq!(revise(root, goal, "Outra coisa.", first)["reason"], json!("goal-not-verbatim"));
-        let other = context(root, "Uma nota.", first)["id"].as_u64().unwrap();
-        assert_eq!(remove(root, goal)["reason"], json!("goal-not-verbatim"));
+        assert_eq!(revise(root, goal, "Outra coisa.", reply)["reason"], json!("goal-origin-not-user"));
+        let other = context(root, "Uma nota.", reply)["id"].as_u64().unwrap();
+        assert_eq!(remove(root, goal)["reason"], json!("goal-origin-not-user"));
         assert_eq!(seen(root).as_deref(), Some("Travar o merge."));
         let second = message(root, "user", "Travar o envio.");
         assert_eq!(revise(root, other, "Travar o envio.", second)["ok"], json!(true));

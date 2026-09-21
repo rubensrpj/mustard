@@ -1521,25 +1521,41 @@ mod tests {
         assert_eq!(merges.get(), 0);
     }
 
-    /// The merge reads the verdict from `spec.ndjson`: one wave's rejection is
-    /// not hidden by another's approval, and the merge asks before
-    /// integrating; once the rejected wave is approved again, it goes on.
+    /// O merge lê o veredito do `spec.ndjson` com a mesma regra do
+    /// fechamento. A reprovação de uma onda faz o merge perguntar antes de
+    /// juntar; a aprovação final da obra, gravada pelo agente de teste
+    /// dedicado depois da entrega do conserto, quita essa reprovação, e o
+    /// merge segue sem perguntar — é a mesma aprovação que deixou a obra
+    /// fechar. Uma reprovação gravada DEPOIS dessa aprovação volta a fazer o
+    /// merge perguntar: nada a quitou ainda.
+    ///
+    /// Em 20/09 o merge do pedido 281 parou para uma confirmação manual por
+    /// causa da reprovação de uma onda antiga que a aprovação final da obra
+    /// já tinha quitado.
     #[test]
-    fn the_merge_asks_for_confirmation_when_any_wave_verdict_was_rejected() {
-        use crate::shared::spec_state::{seed_runs, seed_verdict};
+    fn the_final_approval_of_the_work_pays_off_an_older_wave_rejection() {
+        use crate::shared::spec_state::{seed_event, seed_runs, seed_verdict};
+        use mustard_core::domain::spec_state::{final_approval, SpecState as _};
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         assert_eq!(recorded_verdict(root, "unit-a"), None, "nothing recorded yet");
+        // A leitura do fechamento, ao lado da do portão: as duas vêem a mesma
+        // quitação, ou nenhuma.
+        let closing = || {
+            let log = crate::shared::spec_state::DiskSpecState::new(root).log("unit-a").expect("the spec file");
+            final_approval(&log).map(|event| event.id)
+        };
 
         let criteria = seed_runs(root, "unit-a", &[None]);
-        seed_verdict(root, "unit-a", 1, "approved", criteria[0]);
-        assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("approved"));
-        seed_verdict(root, "unit-a", 2, "rejected", criteria[0]);
-        assert_eq!(
-            recorded_verdict(root, "unit-a").as_deref(),
-            Some("rejected"),
-            "one wave's rejection is not buried by another's approval"
-        );
+        let delivery = |wave: u64| {
+            let line = json!({ "wave": wave, "text": "a onda saiu", "files": ["src/unit.rs"] });
+            seed_event(root, "unit-a", "delivered", line)
+        };
+        delivery(1);
+        delivery(2);
+        seed_verdict(root, "unit-a", 1, "rejected", criteria[0]);
+        assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("rejected"), "a onda 1 reprovou");
+        assert_eq!(closing(), None, "sem conserto, o fechamento também não vê quitação");
 
         let merges = Cell::new(0u32);
         let merge = |_: &Path, _: u64| {
@@ -1548,15 +1564,64 @@ mod tests {
         };
         let settle = |_: &Path, _: &str| json!({ "ok": true });
         let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
-        let facts = PrFacts { number: 240, head: "dev_unit-a".to_string() };
-        let asked = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
-        assert_eq!(asked.action, "confirm");
-        assert_eq!(asked.reason, Some("review-not-approved"));
-        assert_eq!(merges.get(), 0, "a rejected wave is never merged without asking");
+        let facts = PrFacts { number: 281, head: "dev_unit-a".to_string() };
+        let door = || merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        let asked = door();
+        assert_eq!((asked.action, asked.reason), ("confirm", Some("review-not-approved")), "{asked:?}");
+        assert_eq!(merges.get(), 0, "a onda reprovada nunca é juntada sem perguntar");
 
-        seed_verdict(root, "unit-a", 2, "approved", criteria[0]);
-        let merged = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
-        assert_eq!(merged.action, "merged", "every wave approved, nothing to ask");
+        // O conserto sai pela rodada e o agente de teste dedicado aprova a
+        // obra: a aprovação fica na última onda, como o fechamento a grava.
+        delivery(1);
+        let quittance = seed_verdict(root, "unit-a", 2, "approved", criteria[0]);
+        assert_eq!(closing(), Some(quittance), "o fechamento lê a aprovação final");
+        assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("approved"), "e o portão lê a mesma");
+        let merged = door();
+        assert_eq!(merged.action, "merged", "a reprovação quitada não pede confirmação: {merged:?}");
+        assert_eq!(merges.get(), 1);
+
+        // A reprovação que chega depois da aprovação final ainda barra.
+        seed_verdict(root, "unit-a", 1, "rejected", criteria[0]);
+        assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("rejected"));
+        let again = door();
+        assert_eq!((again.action, again.reason), ("confirm", Some("review-not-approved")), "{again:?}");
+        assert_eq!(merges.get(), 1, "e nada mais foi juntado");
+    }
+
+    /// A obra sem onda nenhuma — a de até três pontos, que o orquestrador faz
+    /// — fecha com a aprovação final do agente de teste dedicado, que não
+    /// aponta onda nenhuma. O portão do merge lê essa aprovação como
+    /// veredito da obra, em vez de perguntar por falta de veredito.
+    #[test]
+    fn the_merge_reads_the_final_approval_of_a_work_with_no_waves() {
+        use crate::shared::spec_state::seed_event;
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        seed_event(root, "unit-b", "delivered", json!({ "wave": 1, "text": "a obra saiu", "files": ["src/unit.rs"] }));
+        assert_eq!(recorded_verdict(root, "unit-b"), None, "sem veredito nenhum");
+
+        let merges = Cell::new(0u32);
+        let merge = |_: &Path, _: u64| {
+            merges.set(merges.get() + 1);
+            Ok(())
+        };
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let facts = PrFacts { number: 282, head: "dev_unit-b".to_string() };
+        let door = || merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        let asked = door();
+        assert_eq!((asked.action, asked.reason), ("confirm", Some("no-review-verdict")), "{asked:?}");
+        assert_eq!(merges.get(), 0);
+
+        seed_event(
+            root,
+            "unit-b",
+            "verdict",
+            json!({ "final": true, "result": "approved", "text": "a obra está pronta" }),
+        );
+        assert_eq!(recorded_verdict(root, "unit-b").as_deref(), Some("approved"));
+        let merged = door();
+        assert_eq!(merged.action, "merged", "{merged:?}");
         assert_eq!(merges.get(), 1);
     }
 
