@@ -445,22 +445,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              delivery. Bring what is useful to the main repository and delete the copy with \
              `git worktree remove --force {copy}`."
         }
-        // O gasto da obra inteira, contra a régua de tokens por arquivo
-        // tocado (`apps/rt/src/commands/spec_events/pages/copy.rs`).
+        // O gasto da obra inteira (`apps/rt/src/commands/spec_events/pages/copy.rs`).
         ("round.spend.line", Locale::PtBr) => {
-            "Gasto total: {waves} tokens de onda + {caller} tokens de quem despachou = {total} tokens. \
-             Régua do projeto: {expected} tokens para {files} arquivo(s) tocado(s) — {ratio}× o \
-             previsto, obra {verdict}."
+            "Gasto total: {waves} tokens de onda + {caller} tokens de quem despachou = {total} tokens."
         }
         ("round.spend.line", Locale::EnUs) => {
-            "Total spend: {waves} wave tokens + {caller} orchestrator tokens = {total} tokens. Project \
-             ruler: {expected} tokens for {files} file(s) touched — {ratio}× the expected, the work came \
-             out {verdict}."
+            "Total spend: {waves} wave tokens + {caller} orchestrator tokens = {total} tokens."
         }
-        ("round.spend.cheap", Locale::PtBr) => "barata",
-        ("round.spend.cheap", Locale::EnUs) => "cheap",
-        ("round.spend.expensive", Locale::PtBr) => "cara",
-        ("round.spend.expensive", Locale::EnUs) => "expensive",
         // O que um agente deixou preso, encerrado no início da sessão, em
         // cada rodada e no fechamento (`apps/rt/src/commands/flow/stuck.rs`).
         ("stuck.ended", Locale::PtBr) => "Processo(s) preso(s) encerrado(s): {list}.",
@@ -1068,8 +1059,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            142,
-            0xa76f_c887_61d9_45cd,
+            140,
+            0xc297_5e9e_0f09_2eef,
         );
     }
 

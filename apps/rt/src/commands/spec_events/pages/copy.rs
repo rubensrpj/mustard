@@ -556,11 +556,9 @@ fn computed(place: &Place, log: &SpecLog, rtk: &[RtkDay], lang: Locale) -> Value
 }
 
 /// Uma linha só com o gasto da obra inteira: os tokens de toda onda somados
-/// ao que quem despachou já gastou, contra a régua do projeto — tokens por
-/// arquivo tocado. `None` sem nenhum arquivo entregue ainda, sem régua para
-/// comparar.
+/// ao que quem despachou já gastou. `None` sem nenhum token registrado
+/// ainda.
 fn spend_line(log: &SpecLog, lang: Locale) -> Option<String> {
-    const TOKENS_PER_FILE: u64 = 2_300_000;
     let visible = log.visible();
     let wave_tokens: u64 = visible
         .iter()
@@ -570,27 +568,14 @@ fn spend_line(log: &SpecLog, lang: Locale) -> Option<String> {
     let caller_tokens: u64 =
         visible.iter().filter(|e| e.event_type == "send").filter_map(|e| e.int("caller_tokens")).max().unwrap_or(0);
     let total_tokens = wave_tokens + caller_tokens;
-    let files: BTreeSet<&str> = visible
-        .iter()
-        .filter(|e| e.event_type == "delivered")
-        .flat_map(|e| e.fields.get("files").and_then(Value::as_array).into_iter().flatten())
-        .filter_map(Value::as_str)
-        .collect();
-    if files.is_empty() || total_tokens == 0 {
+    if total_tokens == 0 {
         return None;
     }
-    let expected = TOKENS_PER_FILE * files.len() as u64;
-    let ratio = total_tokens as f64 / expected as f64;
-    let verdict = translate(if ratio > 1.0 { "round.spend.expensive" } else { "round.spend.cheap" }, lang);
     Some(
         translate("round.spend.line", lang)
             .replace("{waves}", &wave_tokens.to_string())
             .replace("{caller}", &caller_tokens.to_string())
-            .replace("{total}", &total_tokens.to_string())
-            .replace("{expected}", &expected.to_string())
-            .replace("{files}", &files.len().to_string())
-            .replace("{ratio}", &format!("{ratio:.2}"))
-            .replace("{verdict}", verdict),
+            .replace("{total}", &total_tokens.to_string()),
     )
 }
 
@@ -1720,13 +1705,11 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), current, "o arquivo continua como estava");
     }
 
-    /// A linha do gasto soma os tokens de toda onda enviada, toma o maior
-    /// gasto de quem despachou entre as ondas, conta os arquivos únicos que
-    /// as entregas trouxeram e compara a soma com a régua do projeto — 2,3
-    /// milhões de tokens por arquivo tocado —, dizendo se a obra saiu cara
-    /// ou barata.
+    /// A linha do gasto soma os tokens de toda onda enviada e toma o maior
+    /// gasto de quem despachou entre as ondas, sem comparar a soma com
+    /// régua nenhuma por arquivo tocado.
     #[test]
-    fn the_spend_line_sums_tokens_against_the_project_ruler() {
+    fn the_spend_line_sums_tokens_without_a_file_ruler() {
         let log = mustard_core::domain::spec_events::parse_log(
             "{\"v\":1,\"id\":1,\"at\":\"2026-09-19T09:00:00-03:00\",\"type\":\"send\",\"author\":\"binary\",\
              \"wave\":1,\"role\":\"wave\",\"text\":\"t\",\"lines\":1,\"chars\":1,\"items\":[],\
@@ -1741,26 +1724,35 @@ mod tests {
         );
         // Tokens de onda: 1_000_000 + 500_000 = 1_500_000. Tokens de quem
         // despachou: máximo entre 200_000 e 900_000 = 900_000. Total:
-        // 2_400_000. Arquivos únicos entregues: src/a.rs e src/b.rs = 2.
-        // Régua esperada: 2 × 2.300.000 = 4.600.000. Razão: ≈ 0,52 (barata).
+        // 2_400_000. Nenhuma régua de tokens por arquivo entra na conta: a
+        // linha não traz "régua", "×" nem os vereditos "barata"/"cara".
         let line = spend_line(&log, Locale::PtBr).expect("the spend line");
         assert!(line.contains("1500000"), "{line}");
         assert!(line.contains("900000"), "{line}");
         assert!(line.contains("2400000"), "{line}");
-        assert!(line.contains("4600000"), "{line}");
-        assert!(line.contains("0.52"), "{line}");
-        assert!(line.contains("barata"), "{line}");
+        assert!(!line.contains("égua"), "{line}");
+        assert!(!line.contains("barata"), "{line}");
+        assert!(!line.contains("cara"), "{line}");
     }
 
-    /// Sem nenhum arquivo entregue ainda, a régua não tem o que comparar: a
-    /// linha do gasto fica de fora em vez de dividir por zero arquivo.
+    /// A linha do gasto continua aparecendo mesmo sem nenhum arquivo
+    /// entregue ainda: sem régua por arquivo, não há mais divisão por zero
+    /// arquivo a evitar, e o que importa é ter algum token registrado.
     #[test]
-    fn the_spend_line_stays_out_without_a_delivered_file() {
+    fn the_spend_line_shows_up_without_a_delivered_file() {
         let log = mustard_core::domain::spec_events::parse_log(
             "{\"v\":1,\"id\":1,\"at\":\"2026-09-19T09:00:00-03:00\",\"type\":\"send\",\"author\":\"binary\",\
              \"wave\":1,\"role\":\"wave\",\"text\":\"t\",\"lines\":1,\"chars\":1,\"items\":[],\
              \"mustard\":\"0.2.1\",\"tokens\":1000000}\n",
         );
+        let line = spend_line(&log, Locale::PtBr).expect("the spend line");
+        assert!(line.contains("1000000"), "{line}");
+    }
+
+    /// Sem nenhum token registrado ainda, a linha do gasto fica de fora.
+    #[test]
+    fn the_spend_line_stays_out_without_any_token() {
+        let log = mustard_core::domain::spec_events::parse_log("");
         assert_eq!(spend_line(&log, Locale::PtBr), None);
     }
 
