@@ -17,6 +17,7 @@ use std::path::Path;
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog, DELIVERED_MAX_CHARS};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
+use mustard_core::domain::wave_prompt::wave_files;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -253,17 +254,57 @@ fn running_state(root: &Path, spec: &str, log: &SpecLog, codes: &BTreeMap<u64, S
     out
 }
 
-/// O texto do reenvio: o pedido gravado no envio anterior, palavra por
-/// palavra, mais os passos já gravados desta onda e o aviso de começar vendo
-/// o que mudou na cópia. Sem passo nenhum, só o aviso.
-fn resend_text(previous: &str, steps: &[String], lang: Locale) -> String {
-    let mut parts = vec![previous.to_string()];
+/// O texto do reenvio: o pedido gravado no envio anterior, com a parte das
+/// ondas em andamento recalculada para as `running` de agora — a gravada
+/// fica velha assim que outra onda entrega, entra ou sai de cena —, mais os
+/// passos já gravados desta onda e o aviso de começar vendo o que mudou na
+/// cópia. Sem passo nenhum, só o aviso.
+fn resend_text(previous: &str, running: &[(u64, Vec<String>)], steps: &[String], lang: Locale) -> String {
+    let mut parts = vec![refresh_running(previous, running, lang)];
     if !steps.is_empty() {
         parts.push(translate("round.resume.steps", lang).to_string());
         parts.push(steps.join("\n"));
     }
     parts.push(translate("round.resume.notice", lang).to_string());
     parts.join("\n\n")
+}
+
+/// A parte das ondas em andamento do pedido anterior (`## Execução`), trocada
+/// pela de agora: a marca é a linha do rótulo
+/// (`prompt.execution.running`) e as linhas indentadas logo depois dela, uma
+/// por onda, no mesmo formato que o primeiro envio escreve. Sem onda em
+/// andamento nenhuma agora, a linha do rótulo e as dela somem; sem elas no
+/// texto anterior e com onda em andamento agora, elas nascem no fim da
+/// seção. Sem a seção `## Execução` no texto anterior, nada muda.
+fn refresh_running(previous: &str, running: &[(u64, Vec<String>)], lang: Locale) -> String {
+    let header = format!("## {}", translate("prompt.part.execution", lang));
+    let label = format!("- {}", translate("prompt.execution.running", lang));
+    let lines: Vec<&str> = previous.lines().collect();
+    let Some(head) = lines.iter().position(|line| *line == header) else { return previous.to_string() };
+    // A linha em branco logo depois do título abre a seção; o fim dela é a
+    // próxima linha em branco, ou o fim do texto, quando é a última seção.
+    let content_at = head + 2;
+    let stop = lines[content_at..].iter().position(|line| line.is_empty()).map_or(lines.len(), |n| content_at + n);
+    let old_at = lines[content_at..stop].iter().position(|line| *line == label).map(|n| content_at + n);
+    let old_end = old_at.map_or(stop, |at| {
+        lines[at + 1..stop].iter().position(|line| !line.starts_with("  - ")).map_or(stop, |n| at + 1 + n)
+    });
+    let fresh: Vec<String> = running
+        .iter()
+        .map(|(wave, files)| {
+            let name = translate("prompt.execution.wave", lang).replace("{n}", &wave.to_string());
+            let files: Vec<String> = files.iter().map(|file| format!("`{file}`")).collect();
+            if files.is_empty() { format!("  - {name}") } else { format!("  - {name}: {}", files.join(", ")) }
+        })
+        .collect();
+    let cut_at = old_at.unwrap_or(stop);
+    let mut out: Vec<String> = lines[..cut_at].iter().map(|l| (*l).to_string()).collect();
+    if !fresh.is_empty() {
+        out.push(label);
+        out.extend(fresh);
+    }
+    out.extend(lines[old_end..].iter().map(|l| (*l).to_string()));
+    out.join("\n")
 }
 
 pub(super) fn run_round(
@@ -437,7 +478,11 @@ pub(super) fn run_round_with_mine(
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
-        let text = resend_text(prior.str_field("text").unwrap_or_default(), &steps, lang);
+        // As ondas em andamento de agora, e não as do envio anterior: a
+        // rodada que reenvia já sabe quem está em curso ([`flight`]).
+        let running: Vec<(u64, Vec<String>)> =
+            flight.running.iter().filter(|n| **n != wave).map(|n| (*n, wave_files(&log, *n))).collect();
+        let text = resend_text(prior.str_field("text").unwrap_or_default(), &running, &steps, lang);
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
@@ -838,6 +883,62 @@ mod tests {
         // andamento, e a rodada seguinte não a reenvia nem a 1, recém-saída.
         let waiting = round(root, "x", None);
         assert!(waves_in(&waiting, "dispatch").is_empty(), "{waiting}");
+    }
+
+    /// O reenvio de uma onda pausada traz as ondas em andamento de agora, não
+    /// as do primeiro envio: a onda 2, em andamento no primeiro envio da onda
+    /// 1, entrega no mesmo relatório que pausa a 1, e a vaga dela libera a
+    /// onda 4; o pedido reenviado à onda 1 mostra a 3 e a 4 em andamento, e
+    /// não mais a 2 (`MSTD-TASK-0017`, `MSTD-WAVE-0007`).
+    #[test]
+    fn a_resend_shows_the_waves_in_flight_now_not_the_ones_from_the_first_send() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(
+            root,
+            "x",
+            &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[])],
+        );
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
+
+        let first = round(root, "x", None);
+        let mut started = waves_in(&first, "dispatch");
+        started.sort_unstable();
+        assert_eq!(started, vec![1, 2, 3], "só 3 vagas: a onda 4 espera: {first}");
+        let first_prompt = first["dispatch"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["wave"].as_u64() == Some(1))
+            .and_then(|d| d["prompt"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(first_prompt.contains("Onda 2") && first_prompt.contains("Onda 3"), "{first_prompt}");
+
+        // A onda 2 entrega — libera a vaga dela, que a 4 assume — no mesmo
+        // relatório que pausa a onda 1.
+        let report = format!("{}\n{}", delivered(root, 2, "Saiu.", &["src/b.rs"]), line("PAUSED", json!({"wave": 1})));
+        let out = round(root, "x", Some(&report));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let mut sent_now = waves_in(&out, "dispatch");
+        sent_now.sort_unstable();
+        assert_eq!(sent_now, vec![1, 4], "a 4 assume a vaga da 2, e a 1 reenvia: {out}");
+
+        let resent = out["dispatch"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["wave"].as_u64() == Some(1))
+            .and_then(|d| d["prompt"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(resent.contains("Onda 3") && resent.contains("Onda 4"), "a 3 segue e a 4 entrou: {resent}");
+        assert!(!resent.contains("Onda 2"), "a 2 já entregou: a lista velha não segue no reenvio: {resent}");
+
+        // O resto do pedido, antes da seção de execução, não mudou.
+        let header = format!("## {}", translate("prompt.part.execution", Locale::PtBr));
+        let before = |text: &str| text.split(&header).next().unwrap_or_default().to_string();
+        assert_eq!(before(&resent), before(&first_prompt), "{resent}");
     }
 
     /// A onda órfã segue ocupando a vaga e a cópia dela até o reenvio: com o

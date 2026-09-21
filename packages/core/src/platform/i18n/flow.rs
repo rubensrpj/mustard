@@ -707,6 +707,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "In the choice for wave {wave}, item {item} stayed as it was: it is not among the \
              wave's candidates, a lesson can only go out and not in, or it came without a reason."
         }
+        ("round.analysis_ignored_lesson", Locale::PtBr) => {
+            "Na escolha da onda {wave}, a lição {item} ficou como estava: ela não está entre as \
+             lições dela, a lição só sai e não entra, ou ela veio sem motivo."
+        }
+        ("round.analysis_ignored_lesson", Locale::EnUs) => {
+            "In the choice for wave {wave}, lesson {item} stayed as it was: it is not among the \
+             wave's lessons, a lesson can only go out and not in, or it came without a reason."
+        }
         ("round.analysis_unreadable", Locale::PtBr) => {
             "Uma linha `<ANALYSIS>` não se leu e ficou de fora ({detail}): a onda dela pede a \
              escolha de novo."
@@ -1063,8 +1071,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            140,
-            0x6218_c11f_7469_98cb,
+            141,
+            0xa198_d522_1692_d85e,
         );
     }
 
@@ -1255,6 +1263,7 @@ mod tests {
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.analysis", &["{waves}"][..]),
             ("round.analysis_ignored", &["{wave}", "{item}"][..]),
+            ("round.analysis_ignored_lesson", &["{wave}", "{item}"][..]),
             ("round.analysis_unreadable", &["{detail}"][..]),
             ("round.resume.steps", &[][..]),
             ("round.resume.notice", &[][..]),
@@ -1290,6 +1299,19 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+    }
+
+    /// O aviso da entrada que ficou como estava chama de lição o que é lição,
+    /// não de item: o número ignorado é de uma lição do banco, e a frase, nos
+    /// dois idiomas, diz "lição" (`lesson` em inglês), nunca "item"
+    /// (`MSTD-TASK-0018`, `MSTD-WAVE-0007`).
+    #[test]
+    fn the_ignored_choice_hint_says_lesson_when_the_number_is_a_lesson() {
+        for (lang, lesson_word, item_word) in [(Locale::PtBr, "lição", "item"), (Locale::EnUs, "lesson", "item")] {
+            let hint = translate("round.analysis_ignored_lesson", lang).replace("{wave}", "7").replace("{item}", "96");
+            assert!(hint.contains(lesson_word), "{lang:?}: não diz lição: {hint}");
+            assert!(!hint.contains(&format!("{item_word} 96")), "{lang:?}: chamou a lição de item: {hint}");
         }
     }
 

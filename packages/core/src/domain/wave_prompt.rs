@@ -1418,6 +1418,28 @@ mod tests {
         }
     }
 
+    /// A leitura de um envio antigo, gravado antes de a lição entrar na
+    /// escolha: o campo `analysis` dele não tem `judged_lessons` nem
+    /// `removed_lessons`, e a leitura vale mesmo assim, com as duas listas de
+    /// lição vazias — não é lido como envio quebrado, e a onda não pede a
+    /// escolha de novo só por causa do formato antigo (`MSTD-TASK-0016`,
+    /// `MSTD-DEC-0009`).
+    #[test]
+    fn from_value_reads_an_old_send_without_the_lesson_fields() {
+        let old = json!({
+            "judged": [1, 2],
+            "removed": [{"item": 2, "why": "Fala de outra coisa."}],
+            "added": [{"item": 3, "why": "Vale para esta onda."}],
+        });
+        let choice = Choice::from_value(&old).expect("o envio antigo se lê");
+        assert_eq!(choice.judged, BTreeSet::from([1, 2]), "{choice:?}");
+        assert_eq!(choice.removed, vec![(2, "Fala de outra coisa.".to_string())], "{choice:?}");
+        assert_eq!(choice.added, vec![(3, "Vale para esta onda.".to_string())], "{choice:?}");
+        assert!(choice.judged_lessons.is_empty(), "sem o campo, nenhuma lição julgada: {choice:?}");
+        assert!(choice.removed_lessons.is_empty(), "sem o campo, nenhuma lição tirada: {choice:?}");
+        assert!(choice.tasks.is_empty(), "{choice:?}");
+    }
+
     /// O pedido leva a lista, não o texto: cada parte traz uma linha por
     /// bloco da spec, com o nome do bloco e os códigos dos itens em
     /// sequência, e o comando de leitura aparece uma vez só, no exemplo. As
