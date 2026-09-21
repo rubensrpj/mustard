@@ -243,6 +243,12 @@ fn run_close(
     if let Some(sid) = session {
         crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
     }
+    // A troca do binário instalado do próprio Mustard acontece uma vez só,
+    // aqui: depois da aprovação final, nunca a cada rodada. Sem onda
+    // entregue na spec inteira, sem comando de teste declarado, ou fora da
+    // raiz que constrói o próprio `mustard-rt`, nada roda.
+    let reinstall_warning =
+        crate::commands::flow::round::reinstall_binary(root, !log.delivered_waves().is_empty(), lang);
     // O fechamento é um marco: a cópia para o banco da página sai aqui, com a
     // fase fechada na linha da spec da página do projeto.
     let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, &spec, lang);
@@ -260,6 +266,10 @@ fn run_close(
     });
     if let Some(hint) = &stuck_hint {
         spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
+    }
+    if let Some(warning) = &reinstall_warning {
+        let hint = warning["hint"].as_str().unwrap_or_default();
+        spec_events::pages::push_warning(&mut out, "binary-not-reinstalled", hint);
     }
     // As pendências abertas nascidas nesta spec vão ao usuário na hora, para
     // ele decidir o destino de cada uma, e cada uma vai com a linha que grava
@@ -665,6 +675,43 @@ mod tests {
         names.sort();
         assert_eq!(names, ["copy", "spec.ndjson"], "a pasta fechada tem o arquivo de eventos e a cópia, e nenhuma página");
         assert!(!root.join(".claude/spec/project.html").exists(), "nem a página do projeto");
+    }
+
+    /// A troca do binário instalado do próprio Mustard acontece uma vez só,
+    /// aqui: a resposta que ainda pede o agente de teste dedicado — antes da
+    /// aprovação final — nunca tenta reinstalar nada, mesmo com a onda já
+    /// entregue e comitada. Só a chamada que fecha de fato, depois do
+    /// veredito aprovado, chama a reinstalação; com a suíte do projeto
+    /// vermelha, o aviso de que o binário instalado continua o de antes é a
+    /// prova de que ela rodou.
+    #[test]
+    fn a_troca_do_binario_acontece_uma_vez_so_no_fechamento_depois_da_aprovacao_final() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        std::fs::create_dir_all(root.join("apps/rt")).unwrap();
+        std::fs::write(root.join("apps/rt/Cargo.toml"), b"[package]\nname=\"mustard-rt\"\n").unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"testCommand":"exit 1"}"#).unwrap();
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["ok"], json!(true), "{asked}");
+        assert_eq!(asked["phase"], json!("running"), "{asked}");
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let warnings_before = asked["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(
+            warnings_before.iter().all(|w| w["reason"] != json!("binary-not-reinstalled")),
+            "a onda entregue e comitada, mas ainda sem aprovação final, não mexe no binário instalado: {asked}"
+        );
+
+        let out = close(root, "x");
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(
+            warnings.iter().any(|w| w["reason"] == json!("binary-not-reinstalled")),
+            "aprovada a obra, o fechamento tenta reinstalar uma vez, e a suíte vermelha vira aviso: {out}"
+        );
     }
 
     /// O motor do comando `qa-run` saiu de `qa_run/mod.rs` e

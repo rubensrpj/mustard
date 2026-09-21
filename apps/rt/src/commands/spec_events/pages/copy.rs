@@ -78,7 +78,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Hidden, Refusal, SpecEvent, SpecLog, PURGED_MARK};
+use mustard_core::domain::spec_events::{BlockQuery, Hidden, Refusal, SpecEvent, SpecLog, PURGED_MARK};
 use mustard_core::domain::spec_index::{is_template, project_page, published_to, ProjectRow, PROJECT_PAGE, SPEC_PAGE};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -546,14 +546,23 @@ fn computed(place: &Place, log: &SpecLog, rtk: &[RtkDay], lang: Locale) -> Value
 }
 
 /// Uma linha só com o gasto da obra inteira: os tokens de toda onda somados
-/// ao que quem despachou já gastou. `None` sem nenhum token registrado
+/// ao que quem despachou já gastou, e os turnos por tarefa de quem entregou
+/// onda (o total de turnos de cada envio de onda, dividido pelo total de
+/// tarefas das ondas que enviaram). `None` sem nenhum token registrado
 /// ainda.
 fn spend_line(log: &SpecLog, lang: Locale) -> Option<String> {
     let visible = log.visible();
-    let wave_tokens: u64 = visible
+    let wave_sends: Vec<&SpecEvent> = visible
         .iter()
+        .copied()
         .filter(|e| e.event_type == "send" && e.str_field("role") == Some("wave"))
-        .filter_map(|e| e.int("tokens"))
+        .collect();
+    let wave_tokens: u64 = wave_sends.iter().filter_map(|e| e.int("tokens")).sum();
+    let wave_turns: u64 = wave_sends.iter().filter_map(|e| e.int("steps")).sum();
+    let waves_sent: BTreeSet<u64> = wave_sends.iter().filter_map(|e| e.wave()).collect();
+    let task_count: u64 = waves_sent
+        .into_iter()
+        .map(|wave| log.block(BlockQuery::Wave(wave)).into_iter().filter(|e| e.event_type == "task").count() as u64)
         .sum();
     let caller_tokens: u64 =
         visible.iter().filter(|e| e.event_type == "send").filter_map(|e| e.int("caller_tokens")).max().unwrap_or(0);
@@ -561,11 +570,13 @@ fn spend_line(log: &SpecLog, lang: Locale) -> Option<String> {
     if total_tokens == 0 {
         return None;
     }
+    let turns_per_task = if task_count == 0 { 0 } else { wave_turns / task_count };
     Some(
         translate("round.spend.line", lang)
             .replace("{waves}", &wave_tokens.to_string())
             .replace("{caller}", &caller_tokens.to_string())
-            .replace("{total}", &total_tokens.to_string()),
+            .replace("{total}", &total_tokens.to_string())
+            .replace("{turns}", &turns_per_task.to_string()),
     )
 }
 
@@ -1709,6 +1720,23 @@ mod tests {
         );
         let line = spend_line(&log, Locale::PtBr).expect("the spend line");
         assert!(line.contains("1000000"), "{line}");
+    }
+
+    /// A linha do gasto também mostra os turnos por tarefa: uma rodada com
+    /// 3 tarefas e 24 turnos aparece como 8 turnos por tarefa.
+    #[test]
+    fn a_linha_de_gasto_mostra_turnos_por_tarefa() {
+        let log = mustard_core::domain::spec_events::parse_log(
+            "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"wave\",\"n\":1,\"text\":\"Onda 1.\"}\n\
+             {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"task\",\"wave\":1,\"text\":\"Tarefa 1.\"}\n\
+             {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"task\",\"wave\":1,\"text\":\"Tarefa 2.\"}\n\
+             {\"v\":1,\"id\":4,\"at\":\"t\",\"type\":\"task\",\"wave\":1,\"text\":\"Tarefa 3.\"}\n\
+             {\"v\":1,\"id\":5,\"at\":\"t\",\"type\":\"send\",\"wave\":1,\"role\":\"wave\",\"text\":\"t\",\
+             \"lines\":1,\"chars\":1,\"items\":[],\"mustard\":\"0.2.1\",\"tokens\":1000,\"steps\":24}\n",
+        );
+        let line = spend_line(&log, Locale::PtBr).expect("the spend line");
+        assert!(line.contains('8'), "{line}");
+        assert!(!line.contains("24 turnos por tarefa"), "{line}");
     }
 
     /// Sem nenhum token registrado ainda, a linha do gasto fica de fora.

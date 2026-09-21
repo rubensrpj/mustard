@@ -403,9 +403,9 @@ fn calls(project: &Project) -> BTreeMap<String, usize> {
 /// cada rodada 1 e pull request 1; a escolha antes do envio da primeira onda
 /// é uma rodada a mais, a que traz a escolha do orquestrador, e o fechamento
 /// é duas chamadas — o pedido do agente de teste dedicado e a aprovação dele
-/// —, mesmo com uma onda só. A tarefa vale 1 ponto: a obra fica com o
-/// orquestrador, sem cópia separada, e ele edita direto no checkout
-/// principal.
+/// —, mesmo com uma onda só. A onda tem uma tarefa só e ainda assim ganha
+/// cópia separada, como qualquer outra: o orquestrador edita na cópia, e a
+/// rodada leva a mudança de volta ao checkout principal.
 #[test]
 fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let project = Project::new();
@@ -416,24 +416,25 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     plan(&project);
     approve(&project);
 
-    // Primeira rodada: a análise antes do envio, e a onda de 1 ponto fica com
-    // o orquestrador, sem cópia separada.
+    // Primeira rodada: a análise antes do envio, e a onda ganha cópia
+    // separada, mesmo com uma tarefa só.
     let first = first_round(&project);
     let dispatched = first["dispatch"].as_array().cloned().unwrap_or_default();
     assert_eq!(dispatched.len(), 1, "{first}");
     let next = first["next"].as_str().unwrap_or_default();
-    assert!(next.contains(translate("round.next.solo", Locale::PtBr)), "{next}");
+    assert!(next.contains(translate("round.next", Locale::PtBr)), "{next}");
     let log = project.log();
     let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
-    assert!(sent.str_field("copy").is_none(), "a obra de 1 ponto não ganha cópia separada");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
 
-    // O orquestrador muda o arquivo no checkout principal e devolve a linha
-    // do fim. A rodada não pede revisão nenhuma dela.
-    std::fs::write(project.root.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    // O orquestrador muda o arquivo na cópia da onda e devolve a linha do
+    // fim. A rodada não pede revisão nenhuma dela.
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá"});
     let second = project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
     assert!(second.get("reviews").is_none(), "{second}");
+    assert!(!copy.exists(), "the copy is removed once the round takes the change back: {second}");
     assert_eq!(std::fs::read_to_string(project.root.join("src/main.rs")).unwrap(), "fn main() {\n    println!(\"olá\");\n}\n");
 
     // O fechamento roda o lint e o critério e pede o agente de teste

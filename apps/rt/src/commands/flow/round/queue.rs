@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::State;
+use mustard_core::domain::spec_state::{PhaseWriter, State};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, TaskChoice, WaveCopy};
 use mustard_core::io::fs::lock::LockedFile;
@@ -22,6 +22,7 @@ use super::report::{has_agent_lines, tagged};
 use super::stops::waves_replanned;
 use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
+use crate::commands::spec_events::write::record;
 use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
@@ -799,6 +800,152 @@ fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet
     reached
 }
 
+/// Os arquivos que uma tarefa declara: cada item de `files` é o caminho, seja
+/// como texto solto ou como `{"path": ...}`.
+fn task_files(task: &SpecEvent) -> BTreeSet<String> {
+    task.fields
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str)))
+        .map(|path| path.trim().replace('\\', "/"))
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+/// A tarefa que `value` aponta, pelo número do evento ou pelo código, na
+/// versão vigente dela — a mesma resolução que a gravação de uma tarefa nova
+/// já faz para conferir o `depends_on` dela, só que lida aqui, não repetida à
+/// parte por acaso: uma referência que não bate com tarefa nenhuma some.
+fn basket_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
+    let raw = match EventRef::from_value(value)? {
+        EventRef::Id(id) => id,
+        EventRef::Code(code) => log
+            .visible()
+            .into_iter()
+            .filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code))
+            .map(|event| event.id)
+            .next_back()?,
+    };
+    log.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
+}
+
+/// A versão nova da tarefa `id`: os campos dela, tirando `v`, `id`, `code`,
+/// `at`, `type` e `search`, com `replaces` apontando para ela e os campos de
+/// `extra` somados por cima — a mesma forma de [`send_revision`], para a
+/// tarefa em vez do envio.
+fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+    let event = log.get(id)?;
+    let mut draft: Map<String, Value> = event
+        .fields
+        .iter()
+        .filter(|(key, _)| !["v", "id", "code", "at", "type", "search"].contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    draft.insert("replaces".into(), json!(id));
+    for (key, value) in extra {
+        draft.insert(key, value);
+    }
+    Some(draft)
+}
+
+/// Forma os lotes prontos da cesta — as tarefas sem onda própria ainda — e
+/// grava o evento de onda de cada um, com autor binário: os critérios são a
+/// união do que as tarefas do lote cobrem (`covers`), o pronta-quando é a
+/// prova desses critérios, ligadas por " && " quando são mais de uma, e a
+/// ordem de despacho do lote fica no campo que a onda já reservava para isso
+/// (`order`). Cada tarefa do lote ganha, na mesma passada, uma versão nova
+/// com o número da onda formada — é o que liga o lote ao resto da leitura,
+/// que só conhece onda pelo `n`/`wave` gravado em cada evento.
+///
+/// A prontidão e o empacotamento são o mesmo motor de [`crate::shared::dag`]
+/// que já prova, sozinho, o desempate e a régua de arquivos: esta função só
+/// lê a spec, monta a população de tarefas e grava o que ele decidiu.
+/// `Ok(vec![])` sem tarefa pronta na cesta.
+///
+/// Ainda não é chamada pelo despacho de verdade: quem decide as ondas
+/// prontas para o pedido ([`next_waves`], acima) lê só o evento de onda já
+/// gravado, e ligar as duas pontas é `run_round_with_mine`
+/// (`apps/rt/src/commands/flow/round/answer.rs`), fora do alcance desta
+/// tarefa.
+///
+/// # Errors
+///
+/// A recusa da primeira gravação que falhar.
+pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
+    use crate::shared::dag::{pack_batches, ready_tasks, BasketTask, BASKET_CAPACITY};
+
+    let running = waves_in_progress(log);
+    let done_waves = waves_done(log, &running);
+    let codes = log.codes();
+    let all_tasks: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "task").collect();
+    let by_id: BTreeMap<u64, &SpecEvent> = all_tasks.iter().map(|t| (t.id, *t)).collect();
+
+    let population: Vec<BasketTask<u64>> = all_tasks
+        .iter()
+        .map(|task| {
+            let depends_on: BTreeSet<u64> = task
+                .fields
+                .get("depends_on")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| basket_task_ref(log, &codes, value))
+                .collect();
+            let done = task.wave().is_some_and(|w| done_waves.contains(&w));
+            BasketTask { id: task.id, depends_on, files: task_files(task), done }
+        })
+        .collect();
+
+    let basket_ids: BTreeSet<u64> = all_tasks.iter().filter(|t| t.wave().is_none()).map(|t| t.id).collect();
+    let order: Vec<u64> = ready_tasks(&population).into_iter().filter(|id| basket_ids.contains(id)).collect();
+    if order.is_empty() {
+        return Ok(Vec::new());
+    }
+    let batches = pack_batches(&population, &order, BASKET_CAPACITY);
+
+    let mut next_n = log.planned_waves().into_iter().max().unwrap_or(0);
+    let mut written = Vec::new();
+    for batch in &batches {
+        next_n += 1;
+        let mut criteria: BTreeSet<u64> = BTreeSet::new();
+        let mut text_parts: Vec<String> = Vec::new();
+        for id in &batch.tasks {
+            if let Some(task) = by_id.get(id) {
+                criteria.extend(task.ints("covers"));
+                if let Some(text) = task.str_field("text") {
+                    text_parts.push(text.to_string());
+                }
+            }
+        }
+        let criteria: Vec<u64> = criteria.into_iter().collect();
+        let done_when = criteria
+            .iter()
+            .filter_map(|id| log.get(*id))
+            .filter_map(|event| event.str_field("proof"))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        let draft = json!({
+            "n": next_n,
+            "text": text_parts.join(" "),
+            "criteria": criteria,
+            "done_when": done_when,
+            "order": batch.tasks,
+            "author": "binary",
+        });
+        let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
+        record(start, spec, "wave", draft, PhaseWriter::Binary)?;
+        for id in &batch.tasks {
+            if let Some(revised) = task_revision(log, *id, Map::from_iter([("wave".to_string(), json!(next_n))])) {
+                record(start, spec, "task", revised, PhaseWriter::Binary)?;
+            }
+        }
+        written.push(next_n);
+    }
+    Ok(written)
+}
+
 /// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
 /// rodada despacha: em andamento, reprovada na última revisão ou entregue e
 /// aprovada — a rodada não pede revisão de onda nenhuma, então a entrega já
@@ -838,6 +985,47 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let copy = mustard_core::io::wave_prompt::recorded_copy(&log, wave).unwrap_or_else(|| panic!("wave {wave}"));
         (copy.path, copy.build_dir.unwrap_or_default())
+    }
+
+    /// O log lido de `root`/`spec`, para conferir o que uma gravação deixou.
+    fn read_log(root: &Path, spec: &str) -> SpecLog {
+        store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap()
+    }
+
+    /// Tarefas soltas na cesta, sem onda própria, formam um lote sozinhas: o
+    /// binário grava o evento de onda com o autor binário, as tarefas do
+    /// lote na ordem de despacho, os critérios que são a união do que elas
+    /// cobrem e o pronta-quando tirado das provas desses critérios.
+    #[test]
+    fn o_binario_grava_o_evento_de_onda_do_lote() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let before = read_log(root, "x");
+        let crit = before.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+        let said = before.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+
+        let declared = [json!({"path": "src/b.rs"})];
+        let t1 = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Tarefa solta um.", "files": declared, "depends_on": [], "covers": [crit], "origin": said}),
+        ));
+
+        let log = read_log(root, "x");
+        let written = dispatch_basket(root, "x", &log).expect("gravou o lote");
+        assert_eq!(written, vec![2], "o próximo número livre de onda: {written:?}");
+
+        let after = read_log(root, "x");
+        let wave2 = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(2)).unwrap();
+        assert_eq!(wave2.str_field("author"), Some("binary"), "onda de lote é do binário: {:?}", wave2.fields);
+        assert_eq!(wave2.ints("order"), vec![t1], "as tarefas do lote, na ordem de despacho");
+        assert_eq!(wave2.ints("criteria"), vec![crit], "os critérios são a união do que as tarefas cobrem");
+        assert_eq!(wave2.str_field("done_when"), Some("cargo test"), "a prova do critério coberto");
+
+        let task_now = after.current(t1).unwrap();
+        assert_eq!(task_now.wave(), Some(2), "a tarefa ganha a onda do lote que a levou");
     }
 
     /// Duas ondas sem dependência e sem arquivo em comum saem juntas, cada

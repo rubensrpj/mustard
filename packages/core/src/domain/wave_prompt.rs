@@ -208,8 +208,44 @@ pub struct Prompt {
     pub lines: usize,
 }
 
+/// O teto de tokens do pedido de uma onda: acima dele, quem despacha recusa
+/// e diz o tamanho medido e o teto, para dividir o lote em dois. O teto é
+/// de despachar, não de montar — [`build`] e [`write`] continuam escrevendo
+/// o pedido inteiro, do tamanho que for, porque é esse texto que a página
+/// mostra antes da aprovação; ninguém corta linha para caber.
+pub const WAVE_REQUEST_TOKEN_CAP: u64 = 25_000;
+
+/// Uma estimativa do tamanho de `text` em tokens: perto de um token a cada
+/// quatro caracteres, a mesma conta grosseira usada para orçar prompt de
+/// modelo sem o tokenizador dele à mão. Erra para cima com texto técnico
+/// cheio de pontuação — o bastante para um teto de segurança, não para
+/// cobrar por token de verdade.
+#[must_use]
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.chars().count() as u64).div_ceil(4)
+}
+
+/// O pedido da onda `wave`, medido em `tokens` tokens (de
+/// [`estimate_tokens`]), passa do teto de [`WAVE_REQUEST_TOKEN_CAP`]? `None`
+/// quando cabe; a mensagem, pronta para a recusa, diz o tamanho medido e o
+/// teto.
+#[must_use]
+pub fn token_cap_message(wave: u64, tokens: u64, lang: Locale) -> Option<String> {
+    if tokens <= WAVE_REQUEST_TOKEN_CAP {
+        return None;
+    }
+    Some(
+        translate("wave_prompt.token_cap", lang)
+            .replace("{wave}", &wave.to_string())
+            .replace("{tokens}", &tokens.to_string())
+            .replace("{cap}", &WAVE_REQUEST_TOKEN_CAP.to_string()),
+    )
+}
+
 /// Monta o pedido da onda a partir do material já lido. Sem teto de linhas:
-/// o pedido sai inteiro, do tamanho que a onda pedir.
+/// o pedido sai inteiro, do tamanho que a onda pedir. O teto de tokens
+/// ([`token_cap_message`]) é conferido à parte, por quem decide despachar,
+/// depois de medir este texto.
 #[must_use]
 pub fn build(material: &Material, lang: Locale) -> Prompt {
     let text = write(material, lang);
@@ -1542,6 +1578,33 @@ mod tests {
         assert!(prompt.lines > 600, "{}", prompt.text);
         let last_id = bank.visible().last().expect("banco com lição").id;
         assert!(prompt.text.contains(&format!("- `lessons`: {last_id}")), "{}", prompt.text);
+    }
+
+    /// O pedido da onda 3, medido em 27.412 tokens, passa do teto de 25.000:
+    /// a recusa diz os dois números. No teto exato (25.000) ele ainda cabe;
+    /// um token a mais (25.001) já passa. O teto não mexe na montagem: é
+    /// [`build`]/[`write`] que continuam saindo inteiros, sem linha cortada
+    /// — quem decide despachar é que confere esta mensagem à parte.
+    #[test]
+    fn o_pedido_acima_de_vinte_e_cinco_mil_tokens_e_recusado() {
+        let over = token_cap_message(3, 27_412, Locale::PtBr).expect("acima do teto: recusa");
+        assert!(over.contains("27412"), "{over}");
+        assert!(over.contains("25000"), "{over}");
+        assert!(over.contains('3'), "a onda 3: {over}");
+
+        assert!(token_cap_message(3, 25_000, Locale::PtBr).is_none(), "no teto exato, ainda cabe");
+        assert!(token_cap_message(3, 25_001, Locale::PtBr).is_some(), "um token a mais já passa do teto");
+    }
+
+    /// A estimativa é perto de um token a cada quatro caracteres, sempre
+    /// arredondada para cima: um texto que não é múltiplo de quatro não passa
+    /// por baixo do teto real.
+    #[test]
+    fn a_estimativa_de_tokens_conta_perto_de_um_a_cada_quatro_caracteres() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcde"), 2, "cinco caracteres arredondam para cima");
+        assert_eq!(estimate_tokens(&"a".repeat(100_000)), 25_000, "cem mil caracteres batem exatos no teto");
     }
 
     /// Cada skill nomeada entra no pedido como uma linha — nome, quando usar e

@@ -714,7 +714,9 @@ pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
 /// cada submódulo dentro dela. A lista de arquivos de cada onda já foi
 /// trocada, antes do commit, pelo que a cópia mudou de fato — por isso a
 /// cópia só fica quando o próprio git não deixa removê-la, e o aviso mostra
-/// qual é.
+/// qual é. Não reinstala mais o binário: a rodada só comita e limpa a
+/// cópia, e a reinstalação passou a acontecer uma vez só, no fechamento,
+/// depois da aprovação final (`close.rs`).
 pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<Value> {
     let subs = submodules_of(root);
     let mut warnings = Vec::new();
@@ -740,7 +742,6 @@ pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lan
             warnings.push(json!({ "reason": "copy-kept", "wave": wave.wave, "hint": hint }));
         }
     }
-    warnings.extend(reinstall_binary(root, waves, lang));
     warnings
 }
 
@@ -750,20 +751,24 @@ pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lan
 /// errado nunca deixa o binário instalado pela metade.
 const REINSTALL_COMMAND: &str = "cargo install --path apps/rt --force";
 
-/// Recompila e reinstala o binário do próprio Mustard ao fim da rodada, pela
-/// decisão registrada na spec: a obra do Mustard é conduzida pelo próprio
-/// Mustard, e por isso cada rodada passa a usar a versão que ela mesma
-/// acabou de construir. A compilação de antes do commit ([`ensure_builds`])
-/// já provou que o repositório principal compila com o que a rodada comitou;
-/// falta a suíte inteira, que só ela prova de verdade. Sem onda comitada
-/// nesta rodada, sem comando de teste declarado no `mustard.json`, ou fora
-/// da raiz que constrói o próprio `mustard-rt` (sem `apps/rt/Cargo.toml`),
-/// nada roda: a rodada de outro projeto nunca tenta instalar o binário de
-/// ninguém, e uma rodada vazia não reinstala à toa. Com a suíte vermelha, ou
-/// com a instalação em si falhando depois da suíte verde, o binário
-/// instalado continua o de antes e o aviso mostra o comando e a saída.
-pub(super) fn reinstall_binary(root: &Path, waves: &[WaveReport], lang: Locale) -> Option<Value> {
-    reinstall_with(root, waves, lang, &|command, cwd| crate::commands::review::qa_run::run_command(command, cwd))
+/// Recompila e reinstala o binário do próprio Mustard, pela decisão
+/// registrada na spec: a obra do Mustard é conduzida pelo próprio Mustard, e
+/// por isso a troca do binário instalado passa a acontecer uma vez só, no
+/// fechamento, depois da aprovação final — nunca a cada rodada. A
+/// compilação de antes do commit ([`ensure_builds`]) já provou que o
+/// repositório principal compila com o que a rodada comitou; falta a suíte
+/// inteira, que só ela prova de verdade. Sem nenhuma onda entregue na spec
+/// inteira (`has_delivered`), sem comando de teste declarado no
+/// `mustard.json`, ou fora da raiz que constrói o próprio `mustard-rt` (sem
+/// `apps/rt/Cargo.toml`), nada roda: o fechamento de outro projeto nunca
+/// tenta instalar o binário de ninguém, e uma spec sem nada entregue não
+/// reinstala à toa. Com a suíte vermelha, ou com a instalação em si
+/// falhando depois da suíte verde, o binário instalado continua o de antes
+/// e o aviso mostra o comando e a saída.
+pub(crate) fn reinstall_binary(root: &Path, has_delivered: bool, lang: Locale) -> Option<Value> {
+    reinstall_with(root, has_delivered, lang, &|command, cwd| {
+        crate::commands::review::qa_run::run_command(command, cwd)
+    })
 }
 
 /// [`reinstall_binary`] com o executor recebido, que é como um teste prova a
@@ -772,11 +777,11 @@ pub(super) fn reinstall_binary(root: &Path, waves: &[WaveReport], lang: Locale) 
 /// de verdade nem tocar no binário instalado desta máquina.
 fn reinstall_with(
     root: &Path,
-    waves: &[WaveReport],
+    has_delivered: bool,
     lang: Locale,
     exec: &dyn Fn(&str, &Path) -> crate::commands::review::qa_run::ProofRun,
 ) -> Option<Value> {
-    if waves.is_empty() || !root.join("apps/rt/Cargo.toml").is_file() {
+    if !has_delivered || !root.join("apps/rt/Cargo.toml").is_file() {
         return None;
     }
     let test = mustard_core::ProjectConfig::load(root).commands().test?;
@@ -1452,12 +1457,12 @@ mod tests {
         }
     }
 
-    /// Sem onda comitada nesta rodada, ou fora da raiz que constrói o
+    /// Sem nenhuma onda entregue na spec, ou fora da raiz que constrói o
     /// próprio `mustard-rt` (sem `apps/rt/Cargo.toml`), a reinstalação nunca
     /// chama o executor: nenhum projeto alheio tenta instalar o binário de
-    /// ninguém, e uma rodada vazia não reinstala à toa.
+    /// ninguém, e uma spec sem nada entregue não reinstala à toa.
     #[test]
-    fn reinstall_never_calls_the_executor_without_a_committed_wave_or_outside_mustards_own_repo() {
+    fn reinstall_never_calls_the_executor_without_a_delivered_wave_or_outside_mustards_own_repo() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let calls = std::cell::Cell::new(0);
@@ -1466,14 +1471,14 @@ mod tests {
             proof("pass", "")
         };
 
-        // Com apps/rt/Cargo.toml, mas sem nenhuma onda comitada nesta rodada.
+        // Com apps/rt/Cargo.toml, mas sem nenhuma onda entregue na spec.
         mustard_like_root(root, "exit 0");
-        assert!(reinstall_with(root, &[], Locale::PtBr, &counting).is_none());
-        assert_eq!(calls.get(), 0, "rodada vazia: o executor nunca é chamado");
+        assert!(reinstall_with(root, false, Locale::PtBr, &counting).is_none());
+        assert_eq!(calls.get(), 0, "sem entrega: o executor nunca é chamado");
 
-        // Com onda, mas fora da raiz que constrói o mustard-rt.
+        // Com entrega, mas fora da raiz que constrói o mustard-rt.
         std::fs::remove_file(root.join("apps/rt/Cargo.toml")).unwrap();
-        assert!(reinstall_with(root, &[minimal_wave(1)], Locale::PtBr, &counting).is_none());
+        assert!(reinstall_with(root, true, Locale::PtBr, &counting).is_none());
         assert_eq!(calls.get(), 0, "fora do próprio Mustard: o executor nunca é chamado");
     }
 
@@ -1493,7 +1498,7 @@ mod tests {
             }
             proof("fail", "3 testes falharam")
         };
-        let warning = reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).expect("aviso de suíte vermelha");
+        let warning = reinstall_with(root, true, Locale::PtBr, &exec).expect("aviso de suíte vermelha");
         assert_eq!(warning["reason"], json!("binary-not-reinstalled"), "{warning}");
         let hint = warning["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("a suíte de teste"), "{warning}");
@@ -1514,7 +1519,7 @@ mod tests {
             commands.borrow_mut().push(command.to_string());
             proof("pass", "")
         };
-        assert!(reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).is_none(), "suíte e instalação verdes: sem aviso");
+        assert!(reinstall_with(root, true, Locale::PtBr, &exec).is_none(), "suíte e instalação verdes: sem aviso");
         assert_eq!(commands.into_inner(), vec!["a suíte de teste".to_string(), REINSTALL_COMMAND.to_string()]);
     }
 
@@ -1531,7 +1536,7 @@ mod tests {
             if command == REINSTALL_COMMAND { proof("fail", "disco cheio") } else { proof("pass", "") }
         };
         let warning =
-            reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).expect("aviso de instalação vermelha");
+            reinstall_with(root, true, Locale::PtBr, &exec).expect("aviso de instalação vermelha");
         assert_eq!(warning["reason"], json!("binary-not-reinstalled"), "{warning}");
         let hint = warning["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(REINSTALL_COMMAND), "{warning}");
@@ -1539,32 +1544,21 @@ mod tests {
         assert!(!hint.contains("a suíte de teste"), "o aviso é da instalação, não da suíte: {warning}");
     }
 
-    /// A trilha que a rodada usa de verdade: `close_copies`, chamada depois
-    /// do commit, já traz o aviso de reinstalação — sem precisar montar a
-    /// rodada inteira. Prova a ligação, não só a função auxiliar.
+    /// A rodada não troca mais o binário instalado: `close_copies`, chamada
+    /// depois de cada commit, nunca avisa de reinstalação — mesmo com uma
+    /// onda entregue e a suíte do projeto vermelha, o caso que antes fazia
+    /// a rodada tentar reinstalar e avisar. A troca passou para o
+    /// fechamento, depois da aprovação final ([`super::super::close`]).
     #[test]
-    fn close_copies_warns_when_the_suite_fails_to_reinstall_the_binary() {
+    fn a_rodada_nao_troca_o_binario_instalado() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         mustard_like_root(root, "exit 1");
         let log = SpecLog::default();
         let warnings = close_copies(root, &log, &[minimal_wave(9)], Locale::PtBr);
-        let warning = warnings
-            .iter()
-            .find(|w| w["reason"] == json!("binary-not-reinstalled"))
-            .unwrap_or_else(|| panic!("nenhum aviso de reinstalação: {warnings:?}"));
-        assert!(warning["hint"].as_str().unwrap_or_default().contains("exit 1"), "{warning}");
-    }
-
-    /// Sem onda comitada nesta rodada, `close_copies` nunca tenta reinstalar
-    /// nada — nem o aviso de suíte vermelha aparece.
-    #[test]
-    fn close_copies_never_warns_about_reinstalling_without_a_wave_this_round() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        mustard_like_root(root, "exit 1");
-        let log = SpecLog::default();
-        let warnings = close_copies(root, &log, &[], Locale::PtBr);
-        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            warnings.iter().all(|w| w["reason"] != json!("binary-not-reinstalled")),
+            "a rodada não tenta mais reinstalar: {warnings:?}"
+        );
     }
 }

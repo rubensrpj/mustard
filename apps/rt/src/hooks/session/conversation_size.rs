@@ -23,7 +23,14 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::{Block, BlockQuery};
 use mustard_core::platform::error::Error;
+use mustard_core::platform::i18n::Locale;
 use mustard_core::translate;
+
+/// O valor de compactação que esta versão instalada do Mustard recomenda —
+/// verificado contra o binário do Claude Code 2.1.278, que ainda honra
+/// `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+/// (`docs/2026-07-25-revisao-portoes-pipeline-ondas.md`, seção 9).
+const RECOMMENDED_AUTOCOMPACT_PCT: &str = "15";
 
 /// O aviso, antes de compactar: o bloco de retomada pronto para colar.
 /// Dispara em toda compactação, manual ou automática, sem controle de "já
@@ -58,6 +65,22 @@ fn wave_lists(log: &mustard_core::domain::spec_events::SpecLog) -> (Vec<u64>, Ve
     let missing: Vec<u64> =
         planned.into_iter().filter(|n| !delivered.contains(n) && !running.contains(n)).collect();
     (delivered.into_iter().collect(), running.into_iter().collect(), missing)
+}
+
+/// A linha que compara o valor de compactação configurado na máquina (a
+/// variável `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, quando presente) com o que
+/// esta versão instalada do Mustard recomenda, dizendo os dois valores e o
+/// que fazer quando divergem. `machine` chega como parâmetro, e não por
+/// `std::env::var` direto aqui dentro, para o teste poder variá-lo sem
+/// `std::env::set_var` — `unsafe` no Rust 2024 e vedado neste crate.
+fn autocompact_line(machine: Option<&str>, lang: Locale) -> String {
+    let machine_display = match machine {
+        Some(value) if !value.is_empty() => value.to_string(),
+        _ => translate("resume.none", lang).to_string(),
+    };
+    translate("conversation_size.autocompact", lang)
+        .replace("{machine}", &machine_display)
+        .replace("{installed}", RECOMMENDED_AUTOCOMPACT_PCT)
 }
 
 /// `waves`, separadas por vírgula, ou "nenhuma"/"none" quando vazia.
@@ -122,11 +145,14 @@ pub(crate) fn resume_block(root: &Path, session: Option<&str>) -> Option<String>
     let phase = mustard_core::domain::spec_state::State::from_log(&log).phase.unwrap_or("survey");
     let block = resume_block_text(&spec, phase, &log, project.lang);
     let (command, next) = next_step(&project.root, &spec, session);
+    let machine = std::env::var("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").ok();
+    let autocompact = autocompact_line(machine.as_deref(), project.lang);
     Some(
         translate("conversation_size.precompact", project.lang)
             .replace("{block}", &block)
             .replace("{command}", &command)
-            .replace("{next}", &next),
+            .replace("{next}", &next)
+            .replace("{autocompact}", &autocompact),
     )
 }
 
@@ -191,6 +217,23 @@ mod tests {
         }
     }
 
+    /// Numa máquina configurada para `33`, que não bate com o `15` que a
+    /// versão instalada recomenda, o aviso diz os dois valores e o que
+    /// fazer. Sem nada configurado, a máquina aparece como "nenhum", nunca
+    /// como um número inventado.
+    #[test]
+    fn o_aviso_compara_o_valor_de_compactacao_com_a_versao_instalada() {
+        let line = autocompact_line(Some("33"), Locale::PtBr);
+        assert!(line.contains("33"), "{line}");
+        assert!(line.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{line}");
+        assert!(line.contains("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"), "{line}");
+        assert!(line.contains("settings.json"), "{line}");
+
+        let unset = autocompact_line(None, Locale::PtBr);
+        assert!(unset.contains("nenhum"), "{unset}");
+        assert!(unset.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{unset}");
+    }
+
     /// O aviso de compactar chega pelo gancho de `PreCompact`, com o bloco de
     /// retomada — spec, fase e o próximo passo —, com onda rodando ou sem: a
     /// linha das ondas em andamento é uma parte do bloco, não um substituto.
@@ -217,6 +260,14 @@ mod tests {
         };
         assert!(context.contains('x'), "o bloco traz a spec: {context}");
         assert!(context.contains("fase"), "o bloco traz a fase: {context}");
+        assert!(
+            context.contains(RECOMMENDED_AUTOCOMPACT_PCT),
+            "o aviso cita o valor de compactação que a versão instalada recomenda: {context}"
+        );
+        assert!(
+            context.contains("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"),
+            "o aviso diz o que fazer quando o valor da máquina não bate: {context}"
+        );
 
         // Com uma onda em andamento, o bloco continua saindo, com a onda
         // citada.

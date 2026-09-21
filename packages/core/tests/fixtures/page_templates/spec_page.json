@@ -600,10 +600,6 @@
               [
                 "Recebe",
                 "Especificação (2), Combinado (2), Critérios (1)"
-              ],
-              [
-                "Soma das notas",
-                "8"
               ]
             ]
           },
@@ -619,10 +615,6 @@
               [
                 "Arquivos",
                 "packages/core/templates/pages/spec.html (novo)"
-              ],
-              [
-                "Nota",
-                "8"
               ],
               [
                 "Origem",

@@ -12,7 +12,7 @@ use super::Locale;
 /// responde. Nenhum deles é de outra parte.
 pub(super) const PREFIXES: &[&str] = &[
     "open", "plan", "round", "close", "resume", "reopen", "discard", "request", "message", "pr", "approve_spec",
-    "retired", "banner", "stuck", "conversation_size",
+    "retired", "banner", "stuck", "conversation_size", "wave_prompt",
 ];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
@@ -377,10 +377,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // O gasto da obra inteira (`apps/rt/src/commands/spec_events/pages/copy.rs`).
         ("round.spend.line", Locale::PtBr) => {
-            "Gasto total: {waves} tokens de onda + {caller} tokens de quem despachou = {total} tokens."
+            "Gasto total: {waves} tokens de onda + {caller} tokens de quem despachou = {total} tokens \
+             ({turns} turnos por tarefa)."
         }
         ("round.spend.line", Locale::EnUs) => {
-            "Total spend: {waves} wave tokens + {caller} orchestrator tokens = {total} tokens."
+            "Total spend: {waves} wave tokens + {caller} orchestrator tokens = {total} tokens \
+             ({turns} turns per task)."
+        }
+        // O teto de tokens do pedido de uma onda (`packages/core/src/domain/wave_prompt.rs`).
+        ("wave_prompt.token_cap", Locale::PtBr) => {
+            "O pedido da onda {wave} tem {tokens} tokens, acima do teto de {cap}. Divida o lote em dois."
+        }
+        ("wave_prompt.token_cap", Locale::EnUs) => {
+            "Wave {wave}'s request has {tokens} tokens, above the {cap} cap. Split the batch in two."
         }
         // O que um agente deixou preso, encerrado no início da sessão, em
         // cada rodada e no fechamento (`apps/rt/src/commands/flow/stuck.rs`).
@@ -401,11 +410,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("conversation_size.precompact", Locale::PtBr) => {
             "Esta conversa vai ser compactada agora. Depois, cole de volta o bloco de retomada: \
-             {block} Depois, {command}. {next}"
+             {block} Depois, {command}. {next} {autocompact}"
         }
         ("conversation_size.precompact", Locale::EnUs) => {
             "This conversation is about to be compacted. After, paste back the resume block: \
-             {block} After, {command}. {next}"
+             {block} After, {command}. {next} {autocompact}"
+        }
+        // O valor de compactação configurado na máquina contra o que esta
+        // versão instalada do Mustard recomenda, no mesmo aviso.
+        ("conversation_size.autocompact", Locale::PtBr) => {
+            "Valor de compactação: a máquina está configurada para {machine}; a versão instalada do \
+             Mustard recomenda {installed}. Se os dois não baterem, ajuste \
+             CLAUDE_AUTOCOMPACT_PCT_OVERRIDE em ~/.claude/settings.json para {installed} e recarregue \
+             a sessão."
+        }
+        ("conversation_size.autocompact", Locale::EnUs) => {
+            "Compaction value: the machine is configured for {machine}; the installed Mustard version \
+             recommends {installed}. If the two disagree, set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in \
+             ~/.claude/settings.json to {installed} and reload the session."
         }
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
@@ -995,8 +1017,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            133,
-            0x682a_53ba_9a24_171c,
+            135,
+            0x0d15_96b0_9f6a_b863,
         );
     }
 
@@ -1137,7 +1159,8 @@ mod tests {
             ("stuck.reason.waiting_loop", &[][..]),
             ("stuck.reason.deleted_copy", &[][..]),
             ("conversation_size.block", &["{spec}", "{phase}", "{delivered}", "{running}", "{missing}"][..]),
-            ("conversation_size.precompact", &["{block}", "{command}", "{next}"][..]),
+            ("conversation_size.precompact", &["{block}", "{command}", "{next}", "{autocompact}"][..]),
+            ("conversation_size.autocompact", &["{machine}", "{installed}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),

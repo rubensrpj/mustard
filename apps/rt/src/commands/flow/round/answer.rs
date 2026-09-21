@@ -4,13 +4,6 @@
 //! escolha, despachar as ondas prontas e dizer o que fazer em seguida. A
 //! rodada não pede a revisão de onda nenhuma: quem confere o trabalho é o
 //! agente de teste dedicado que o fechamento pede, uma vez por obra.
-//!
-//! A obra de até 3 pontos ([`crate::commands::flow::plan::is_solo_work`]), com
-//! nota em cada tarefa, não vai para um agente: a rodada não cria cópia
-//! separada, e o próximo passo manda o orquestrador fazer a onda na própria
-//! janela, no checkout principal, com o mesmo pedido montado. A entrega dele
-//! volta pela mesma linha `<DELIVERED>` de um agente, e a rodada grava e
-//! comita como a de qualquer onda.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -26,7 +19,7 @@ use serde_json::{json, Map, Value};
 use super::commit::git_lock;
 use super::queue::{
     analyse, analysis_lines, first_unfinished, max_parallel, next_waves, only_analysis, open_copies, open_sends,
-    orphaned_waves, sent_items, silent_minutes, touches_a_submodule, waves_in_progress, Analysed,
+    orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
 };
 use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
@@ -415,16 +408,9 @@ pub(super) fn run_round_with_mine(
     // para a rodada que trouxer a escolha.
     let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &log, &ready, &given, lang);
     warnings.extend(ignored);
-    // A obra de até 3 pontos, com nota em cada tarefa, fica com o
-    // orquestrador: ele faz a onda na própria janela, no checkout principal,
-    // sem cópia separada nem agente — a mesma soma de `plan::who_executes`,
-    // pela mesma leitura, para as duas nunca discordarem de quem executa. A
-    // que toca submódulo continua com a cópia, mesmo pequena: é ela quem põe
-    // o submódulo na branch certa antes de editar.
-    let solo = crate::commands::flow::plan::is_solo_work(&log) && !touches_a_submodule(root, &log, &go);
-    let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, &occupied, solo, lang);
+    let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, &occupied, false, lang);
     warnings.extend(not_copied);
-    let next: Vec<u64> = if solo { go } else { go.into_iter().filter(|wave| copies.contains_key(wave)).collect() };
+    let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as que
     // saem junto com ela nesta rodada, e traz a cópia dela e a escolha do
     // orquestrador.
@@ -561,8 +547,7 @@ pub(super) fn run_round_with_mine(
     let report_back = translate("round.report", lang);
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() {
-        let next_key = if solo { "round.next.solo" } else { "round.next" };
-        format!("{} {report_back}", translate(next_key, lang))
+        format!("{} {report_back}", translate("round.next", lang))
     } else if !asked.is_empty() {
         String::new()
     } else if !running.is_empty() {
@@ -1099,102 +1084,6 @@ mod tests {
 
         let second = round(root, "x", None);
         assert_eq!(waves_in(&second, "dispatch"), vec![1], "a onda 2 não usa a vaga da órfã: {second}");
-    }
-
-    /// A tarefa da onda `wave` da spec `x` ganha (ou troca) a nota `points`:
-    /// uma versão nova, com a mesma origem, que substitui a mais nova dela.
-    fn rate_task(root: &Path, wave: u64, points: u64) {
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let task = log
-            .visible()
-            .into_iter()
-            .find(|e| e.event_type == "task" && e.wave() == Some(wave))
-            .unwrap_or_else(|| panic!("sem tarefa da onda {wave}"));
-        let mut fields = task.fields.clone();
-        for key in ["v", "id", "code", "at", "search", "type", "author"] {
-            fields.remove(key);
-        }
-        fields.insert("points".into(), json!(points));
-        fields.insert("replaces".into(), json!(task.id));
-        write(root, "x", "task", Value::Object(fields));
-    }
-
-    /// A obra de até 3 pontos, numa onda só, com nota na tarefa dela, fica com
-    /// o orquestrador: a rodada não cria cópia nenhuma, o próximo passo manda
-    /// fazer a onda na própria janela, no checkout principal — sem falar do
-    /// agente `mustard-wave` —, e o envio gravado não leva cópia. A entrega
-    /// dele, pela mesma linha `<DELIVERED>` de um agente, é gravada e
-    /// comitada como a de qualquer onda, e a obra termina mandando fechar. Na
-    /// divisa: com 4 pontos, um a mais que o teto, a rodada volta a criar a
-    /// cópia e a pedir o agente, como antes; e com os mesmos 3 pontos (1 + 2),
-    /// mas já em duas ondas, cada uma também volta a ganhar cópia e agente —
-    /// o orquestrador só fica com a obra de uma onda só.
-    #[test]
-    fn the_orchestrator_does_a_work_of_up_to_three_points() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        rate_task(root, 1, 3);
-
-        let out = round(root, "x", None);
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
-        assert_eq!(dispatched.len(), 1, "{out}");
-        assert!(dispatched[0]["prompt"].as_str().is_some_and(|p| !p.is_empty()), "{out}");
-        assert!(
-            !mustard_core::io::wave_prompt::copy_path(root, "x", 1, false).exists(),
-            "a obra pequena não ganha cópia separada"
-        );
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent = log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
-        assert!(sent.fields.get("copy").is_none(), "{:?}", sent.fields);
-
-        let solo = translate("round.next.solo", Locale::PtBr);
-        let report_back = translate("round.report", Locale::PtBr);
-        assert!(out["next"].as_str().unwrap_or_default().ends_with(&format!("{solo} {report_back}")), "{out}");
-        assert!(!out["next"].as_str().unwrap_or_default().contains("mustard-wave"), "{out}");
-
-        // A entrega, sem cópia nenhuma para juntar, vira commit e a obra
-        // termina mandando fechar, como qualquer onda.
-        let done = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
-        assert_eq!(done["ok"], json!(true), "{done}");
-        assert_eq!(done["command"], json!("mustard-rt run close --spec x"), "{done}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 1, "{done}");
-
-        // Na divisa: 4 pontos, um a mais que o teto do orquestrador, voltam a
-        // pedir a cópia separada e o agente da onda.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        rate_task(root, 1, 4);
-
-        let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        assert!(mustard_core::io::wave_prompt::copy_path(root, "x", 1, false).join(".git").is_file(), "{out}");
-        let normal = translate("round.next", Locale::PtBr);
-        assert!(out["next"].as_str().unwrap_or_default().ends_with(&format!("{normal} {report_back}")), "{out}");
-        assert!(out["next"].as_str().unwrap_or_default().contains("mustard-wave"), "{out}");
-
-        // Na outra divisa: os mesmos 3 pontos, mas em duas ondas (1 + 2). O
-        // orquestrador só faz a obra de uma onda só; com duas, cada uma volta
-        // a sair numa cópia separada, para o agente da onda.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        rate_task(root, 1, 1);
-        rate_task(root, 2, 2);
-
-        let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
-        for wave in [1, 2] {
-            assert!(
-                mustard_core::io::wave_prompt::copy_path(root, "x", wave, false).join(".git").is_file(),
-                "a onda {wave} ganha cópia: {out}"
-            );
-        }
-        assert!(out["next"].as_str().unwrap_or_default().ends_with(&format!("{normal} {report_back}")), "{out}");
-        assert!(out["next"].as_str().unwrap_or_default().contains("mustard-wave"), "{out}");
     }
 
     /// O pedido da onda nova traz os comandos do projeto e a outra onda que

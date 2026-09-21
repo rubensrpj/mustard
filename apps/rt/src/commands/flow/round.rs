@@ -85,7 +85,7 @@ mod queue;
 mod report;
 mod stops;
 
-pub(crate) use commit::refresh_map_if_stale;
+pub(crate) use commit::{reinstall_binary, refresh_map_if_stale};
 
 use std::path::PathBuf;
 

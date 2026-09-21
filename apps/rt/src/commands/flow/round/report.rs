@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use mustard_core::domain::scan::ScanReport;
-use mustard_core::domain::spec_events::{Refusal, SpecLog, DELIVERED_MAX_CHARS};
+use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog, DELIVERED_MAX_CHARS};
 use mustard_core::domain::spec_state::{PhaseWriter, State};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt;
@@ -129,7 +129,25 @@ pub(crate) fn take_report_with_mine(
     lang: Locale,
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
 ) -> Result<Taken, RoundRefusal> {
-    let mut report = parse_report(raw)?;
+    let mut report = match parse_report(raw) {
+        Ok(report) => report,
+        // Sem marca nenhuma, o texto é o que o corte da plataforma no meio da
+        // escrita deixa para trás: o agente não chegou a fechar a linha
+        // obrigatória. Onda de lote — a que o binário formou a partir da
+        // cesta — em andamento cujo Claude Code já fechou é a onda cortada;
+        // as tarefas dela voltam à cesta soltas, sem a onda que as levou, e a
+        // rodada segue sem gravar entrega nem commit nenhum. Onda combinada à
+        // mão, ou ainda com o Claude Code aberto, não é o que o corte
+        // descreve, e o relatório sem marca continua recusado, como sempre.
+        Err(refusal) if without_any_mark(raw) => {
+            let recorded = return_cut_baskets(start, spec, log).map_err(RoundRefusal::Refused)?;
+            if recorded.is_empty() {
+                return Err(refusal);
+            }
+            return Ok(Taken { recorded, formatted: Vec::new(), warnings: Vec::new(), commit: None, paused: Vec::new() });
+        }
+        Err(refusal) => return Err(refusal),
+    };
     // O caminho absoluto que a onda devolveu, quando começa pela cópia dela
     // mesma, vira o caminho relativo ao repositório: o resto do relatório —
     // a conferência do arquivo, a junção e o commit — lê sempre o caminho
@@ -470,6 +488,51 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     Ok(Report { waves, verdicts, paused })
 }
 
+/// `true` quando `raw` não traz marca nenhuma dos agentes: nem entrega, nem
+/// veredito, nem pausa. É a forma que um corte da plataforma no meio da
+/// escrita da onda deixa para trás, sem a linha obrigatória fechada.
+fn without_any_mark(raw: &str) -> bool {
+    tagged(raw, DELIVERED_LINE).is_empty() && tagged(raw, VERDICT_LINE).is_empty() && tagged(raw, PAUSED_LINE).is_empty()
+}
+
+/// A versão nova da tarefa `task`, devolvida à cesta: os mesmos campos dela,
+/// tirando a onda que a levou — sem `wave`, ela volta a nascer solta, pronta
+/// para o lote que a cesta formar na rodada seguinte.
+fn cesta_return(task: &SpecEvent) -> Map<String, Value> {
+    let mut draft: Map<String, Value> = task
+        .fields
+        .iter()
+        .filter(|(key, _)| !["v", "id", "code", "at", "type", "search", "wave"].contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    draft.insert("replaces".into(), json!(task.id));
+    draft
+}
+
+/// A onda `n` é de lote — o binário a formou a partir da cesta, com autor
+/// binário — e não a combinação à mão do plano: só a de lote devolve tarefa
+/// à cesta quando cortada, porque só ela é o que a cesta empacota de novo.
+fn basket_wave(log: &SpecLog, n: u64) -> bool {
+    log.visible().into_iter().any(|event| {
+        event.event_type == "wave" && event.wave() == Some(n) && event.str_field("author") == Some("binary")
+    })
+}
+
+/// As tarefas das ondas de lote em andamento cujo Claude Code já fechou — o
+/// corte que a plataforma deu nelas: cada uma ganha uma versão sem a onda que
+/// a levou. Onda combinada à mão, ou ainda com o Claude Code aberto, fica de
+/// fora: só a onda de lote órfã perde a tarefa que carregava.
+fn return_cut_baskets(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<Value>, Refusal> {
+    let mut recorded = Vec::new();
+    for wave in super::queue::orphaned_waves(log).keys().copied().filter(|n| basket_wave(log, *n)) {
+        for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)) {
+            let written = record(start, spec, "task", cesta_return(task), PhaseWriter::Binary)?;
+            recorded.push(json!({ "wave": wave, "type": "task", "id": written.written.id }));
+        }
+    }
+    Ok(recorded)
+}
+
 /// O número do critério `reference`, dado pelo código que a página mostra ou
 /// pelo número, na versão mais nova. Um critério que a spec não tem é
 /// recusado.
@@ -704,7 +767,7 @@ mod tests {
     use mustard_core::domain::spec_events::SpecEvent;
     use tempfile::tempdir;
 
-    use crate::commands::flow::round::queue::waves_to_redo;
+    use crate::commands::flow::round::queue::{dispatch_basket, waves_to_redo};
 
     use super::*;
     use crate::commands::flow::round::tests::*;
@@ -963,6 +1026,104 @@ mod tests {
 
         let lines_after = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
         assert_eq!(lines_after, lines_before, "nothing was recorded");
+    }
+
+    /// A onda de lote — formada pelo binário a partir da cesta — cujo Claude
+    /// Code fecha no meio do trabalho, sem deixar a marca obrigatória no
+    /// relatório final, devolve as tarefas dela à cesta, soltas de novo, sem a
+    /// onda que as levou: a rodada segue sem recusar nada e sem gravar
+    /// entrega, veredito ou commit nenhum.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_onda_cortada_devolve_as_tarefas_nao_feitas() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+        let t1 = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Tarefa solta.", "files": [{"path": "src/b.rs"}], "depends_on": [],
+                "covers": [crit], "origin": said}),
+        ));
+        let log = store::read(&path).unwrap().unwrap();
+        let formed = dispatch_basket(root, "x", &log).expect("formou o lote");
+        assert_eq!(formed, vec![2], "o lote da cesta virou a onda 2: {formed:?}");
+
+        let out = round(root, "x", None);
+        assert!(waves_in(&out, "dispatch").contains(&2), "a onda de lote sai como qualquer outra: {out}");
+
+        // O Claude Code que a levou fecha no meio do trabalho: o pedido
+        // continua aberto, mas o processo por trás dele já morreu.
+        let log = store::read(&path).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.wave() == Some(2) && e.event_type == "send").unwrap();
+        let mut draft = sent.fields.clone();
+        for key in ["v", "id", "code", "at", "type", "search"] {
+            draft.remove(key);
+        }
+        drop(log);
+        let mut dead = Command::new("true").spawn().expect("spawn the fixture process");
+        let dead_pid = dead.id();
+        dead.wait().expect("reap the fixture process");
+        draft.insert("claude_pid".into(), json!(dead_pid));
+        draft.insert("claude_started".into(), json!(1));
+        store::write_at(&path, "send", draft, &[], &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+            .unwrap();
+
+        let cut = round(root, "x", Some("Texto corrido, sem marca nenhuma — o corte chegou no meio da escrita."));
+        assert_eq!(cut["ok"], json!(true), "o corte da onda de lote não recusa a rodada: {cut}");
+
+        let after = store::read(&path).unwrap().unwrap();
+        assert!(
+            after.current(t1).unwrap().wave().is_none(),
+            "a tarefa que a onda de lote levava volta solta, sem a onda: {:?}",
+            after.current(t1).unwrap().fields
+        );
+        assert!(
+            after.visible().iter().all(|e| e.event_type != "delivered" || e.wave() != Some(2)),
+            "nenhuma entrega da onda cortada foi gravada"
+        );
+    }
+
+    /// A mesma onda de lote, mas com o Claude Code ainda aberto por trás do
+    /// pedido — o processo deste próprio teste: sem processo morto, não há
+    /// corte a reconhecer, e o relatório sem marca nenhuma segue recusado como
+    /// antes, sem devolver tarefa nenhuma à cesta.
+    #[test]
+    fn uma_onda_de_lote_ainda_viva_nao_devolve_tarefa_com_relatorio_sem_marca() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+        let t1 = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Tarefa solta.", "files": [{"path": "src/b.rs"}], "depends_on": [],
+                "covers": [crit], "origin": said}),
+        ));
+        let log = store::read(&path).unwrap().unwrap();
+        let formed = dispatch_basket(root, "x", &log).expect("formou o lote");
+        assert_eq!(formed, vec![2], "o lote da cesta virou a onda 2: {formed:?}");
+
+        let out = round(root, "x", None);
+        assert!(waves_in(&out, "dispatch").contains(&2), "a onda de lote sai como qualquer outra: {out}");
+
+        let lines_before = std::fs::read_to_string(&path).unwrap().lines().count();
+        let refused = round(root, "x", Some("Texto corrido, sem marca nenhuma."));
+        assert_eq!(refused["reason"], json!("round-bad-report"), "{refused}");
+
+        let lines_after = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines_after, lines_before, "nada foi gravado sem o corte de verdade");
+        let after = store::read(&path).unwrap().unwrap();
+        assert_eq!(after.current(t1).unwrap().wave(), Some(2), "a tarefa segue com a onda, sem processo morto");
     }
 
     /// Tudo é conferido antes da primeira gravação. O caminho que não está no
@@ -1681,5 +1842,41 @@ mod tests {
         assert_eq!(sends[0].id, sent.id, "the send is still the original one");
         assert!(sends[0].str_field("model_used").is_none(), "{sends:?}");
         assert!(sends[0].int("tokens").is_none(), "{sends:?}");
+    }
+
+    /// O agente de onda digita números de consumo dentro do corpo de
+    /// `DELIVERED` — sem a linha `USAGE` do orquestrador. A rodada lê o
+    /// consumo só da linha própria; sem ela, o envio da onda não ganha versão
+    /// nova nenhuma, mesmo com o nome do campo batendo dentro da entrega.
+    #[test]
+    fn o_consumo_vem_so_da_linha_propria() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
+        std::fs::write(root.join(".claude/agents/mustard/wave.md"), "molde da onda").unwrap();
+        std::fs::write(root.join(".claude/agents/mustard/wave-solo.md"), "molde da onda solo").unwrap();
+        round(root, "x", None);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        // O corpo da entrega traz `tokens` e `steps` como se fossem consumo,
+        // mas dentro do próprio JSON de `DELIVERED`, sem a linha `USAGE`: a
+        // rodada nunca lê esses dois campos daqui.
+        let delivery = line(
+            "DELIVERED",
+            json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu",
+                "tokens": 999_999, "steps": 1}),
+        );
+        let out = round(root, "x", Some(&delivery));
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sends: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).collect();
+        assert_eq!(sends.len(), 1, "sem a linha própria, o envio não ganha versão nova: {sends:?}");
+        assert_eq!(sends[0].id, sent.id, "o envio segue o mesmo de antes");
+        assert!(sends[0].int("tokens").is_none(), "o número dentro da entrega não vira consumo: {sends:?}");
+        assert!(sends[0].int("steps").is_none(), "o número dentro da entrega não vira consumo: {sends:?}");
     }
 }
