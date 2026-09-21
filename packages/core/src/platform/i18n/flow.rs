@@ -479,16 +479,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("stuck.reason.waiting_loop", Locale::EnUs) => "waiting loop",
         ("stuck.reason.deleted_copy", Locale::PtBr) => "cópia de onda apagada",
         ("stuck.reason.deleted_copy", Locale::EnUs) => "deleted wave copy",
-        // O tamanho da conversa: a ordem de pausa ao agente de onda e o
-        // aviso de compactar ao orquestrador.
-        ("conversation_size.pause", Locale::PtBr) => {
-            "A conversa passou de 200 mil tokens. Grave o passo da onda {wave} na spec e pare com a \
-             linha `<PAUSED>{\"wave\":{wave}}</PAUSED>`."
-        }
-        ("conversation_size.pause", Locale::EnUs) => {
-            "The conversation passed 200 thousand tokens. Save the step of wave {wave} on the spec and \
-             stop with the line `<PAUSED>{\"wave\":{wave}}</PAUSED>`."
-        }
+        // O bloco de retomada antes de compactar, no gancho `PreCompact`.
         ("conversation_size.block", Locale::PtBr) => {
             "spec {spec}, fase {phase}. Ondas entregues: {delivered}. Ondas em andamento: {running}. \
              Falta: {missing}."
@@ -497,21 +488,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "spec {spec}, phase {phase}. Delivered waves: {delivered}. Waves in flight: {running}. \
              Missing: {missing}."
         }
-        ("conversation_size.compact", Locale::PtBr) => {
-            "Esta conversa passou de mais um degrau de 200 mil tokens. Rode `/compact` e, depois, \
-             {command}. O que fica: {block} {next}"
+        ("conversation_size.precompact", Locale::PtBr) => {
+            "Esta conversa vai ser compactada agora. Depois, cole de volta o bloco de retomada: \
+             {block} Depois, {command}. {next}"
         }
-        ("conversation_size.compact", Locale::EnUs) => {
-            "This conversation passed another 200-thousand-token step. Run `/compact` and, after, \
-             {command}. What stays: {block} {next}"
-        }
-        ("conversation_size.blocked", Locale::PtBr) => {
-            "A conversa passou de 200 mil tokens: esta chamada de ferramenta foi recusada. Rode \
-             `/compact` e cole de volta o bloco de retomada: {block} Depois, {command}. {next}"
-        }
-        ("conversation_size.blocked", Locale::EnUs) => {
-            "The conversation passed 200 thousand tokens: this tool call was refused. Run `/compact` \
-             and paste back the resume block: {block} After, {command}. {next}"
+        ("conversation_size.precompact", Locale::EnUs) => {
+            "This conversation is about to be compacted. After, paste back the resume block: \
+             {block} After, {command}. {next}"
         }
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
@@ -1087,8 +1070,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            144,
-            0x8951_35ff_9848_0946,
+            142,
+            0x5587_50b9_485e_cfa4,
         );
     }
 
@@ -1249,10 +1232,8 @@ mod tests {
             ("stuck.ended", &["{list}"][..]),
             ("stuck.reason.waiting_loop", &[][..]),
             ("stuck.reason.deleted_copy", &[][..]),
-            ("conversation_size.pause", &["{wave}"][..]),
             ("conversation_size.block", &["{spec}", "{phase}", "{delivered}", "{running}", "{missing}"][..]),
-            ("conversation_size.compact", &["{block}", "{command}", "{next}"][..]),
-            ("conversation_size.blocked", &["{block}", "{command}", "{next}"][..]),
+            ("conversation_size.precompact", &["{block}", "{command}", "{next}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
