@@ -432,11 +432,15 @@ fn the_printed_sudo_command_swaps_the_system_copy_without_cargo_or_the_real_home
 
 /// Desfaz, no fim do escopo, a permissão original de um arquivo — mesmo que
 /// o teste dê panic no meio do caminho.
+/// Só existe no Unix: quem a constrói é a guarda de permissão do teste
+/// abaixo, que no Windows nem compila.
+#[cfg(unix)]
 struct RestorePermissions {
     path: PathBuf,
     original: fs::Permissions,
 }
 
+#[cfg(unix)]
 impl Drop for RestorePermissions {
     fn drop(&mut self) {
         let _ = fs::set_permissions(&self.path, self.original.clone());
