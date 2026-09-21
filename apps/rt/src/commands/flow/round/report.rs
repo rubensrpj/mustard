@@ -29,6 +29,13 @@ const DELIVERED_LINE: &str = "DELIVERED";
 const VERDICT_LINE: &str = "VERDICT";
 /// A linha da pausa, do agente de onda ou do orquestrador em nome dele.
 const PAUSED_LINE: &str = "PAUSED";
+/// A linha do consumo de uma onda, que só o orquestrador escreve: a
+/// plataforma entrega a ele o total de tokens e o número de idas e voltas do
+/// agente quando este termina, e é ele quem os copia para esta linha ao
+/// remandar a rodada. O molde do agente de onda nunca pede esse número, e o
+/// corpo de `DELIVERED` que o agente escreve não é lido para isso: um valor
+/// que apareça lá, digitado pelo agente, não vira consumo.
+const USAGE_LINE: &str = "USAGE";
 
 /// O que a linha `DELIVERED` de uma onda trouxe.
 pub(crate) struct WaveReport {
@@ -42,14 +49,15 @@ pub(crate) struct WaveReport {
     /// As ondas que este conserto fecha.
     pub fixes: Vec<u64>,
     pub replan: Option<String>,
-    /// O consumo da onda, que só quem despacha sabe dizer, junto da entrega:
-    /// o modelo que o agente usou de verdade, os passos que deu e os tokens
-    /// que gastou.
+    /// O consumo da onda, que só quem despacha sabe dizer: o modelo que o
+    /// agente usou de verdade, os passos que deu e os tokens que gastou,
+    /// vindos da linha `USAGE` que o orquestrador escreve à parte, nunca do
+    /// corpo que o agente devolve.
     pub model_used: Option<String>,
     pub steps: Option<u64>,
     pub tokens: Option<u64>,
     /// O consumo de quem despacha até esta rodada — a conversa do
-    /// orquestrador, não a da onda —, informado junto da mesma entrega.
+    /// orquestrador, não a da onda —, vindo da mesma linha `USAGE`.
     pub caller_steps: Option<u64>,
     pub caller_tokens: Option<u64>,
 }
@@ -358,6 +366,7 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     let verdict_bodies = tagged(raw, VERDICT_LINE);
     let paused_bodies = tagged(raw, PAUSED_LINE);
     let delivered_bodies = tagged(raw, DELIVERED_LINE);
+    let usage_bodies = tagged(raw, USAGE_LINE);
     // Sem marca nenhuma, o relatório inteiro é a entrega: um objeto JSON com
     // `wave`, `text` e, quando há arquivo, `files`, como o agente de onda
     // devolveria dentro de `<DELIVERED>`. O texto corrido, que não é um
@@ -404,14 +413,9 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect())
             .unwrap_or_default();
-        // O consumo, que só quem despacha sabe: o modelo que a onda usou de
-        // verdade, os passos e os tokens dela, e os do orquestrador até esta
-        // rodada. Vêm juntos da mesma entrega; sem eles, o envio não ganha
-        // versão nova.
-        let model_used = text(&fields, "model");
-        let as_u64 = |key: &str| fields.get(key).and_then(Value::as_u64);
-        let (steps, tokens) = (as_u64("steps"), as_u64("tokens"));
-        let (caller_steps, caller_tokens) = (as_u64("caller_steps"), as_u64("caller_tokens"));
+        // O consumo não vem daqui: o corpo que o agente devolve nunca é lido
+        // para isso, mesmo quando ele traz um campo com esses nomes. Fica
+        // como veio até a linha `USAGE`, mais abaixo, preenchê-lo.
         waves.push(WaveReport {
             wave,
             delivered,
@@ -420,12 +424,30 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
             proofs,
             fixes,
             replan,
-            model_used,
-            steps,
-            tokens,
-            caller_steps,
-            caller_tokens,
+            model_used: None,
+            steps: None,
+            tokens: None,
+            caller_steps: None,
+            caller_tokens: None,
         });
+    }
+    // O consumo, que só quem despacha sabe: o modelo que a onda usou de
+    // verdade, os passos e os tokens dela, e os do orquestrador até esta
+    // rodada. Vêm só da linha `USAGE`, que o agente de onda nunca escreve;
+    // sem ela, o envio não ganha versão nova.
+    for body in usage_bodies {
+        let (wave, fields) = line_object(body, USAGE_LINE)?;
+        let field = |field| RoundRefusal::LineField { line: USAGE_LINE, field };
+        let wave = wave.ok_or_else(|| field("wave"))?;
+        let Some(target) = waves.iter_mut().find(|w| w.wave == wave) else {
+            return Err(RoundRefusal::BadReport { detail: format!("{USAGE_LINE}: onda {wave} sem entrega nesta rodada") });
+        };
+        target.model_used = text(&fields, "model");
+        let as_u64 = |key: &str| fields.get(key).and_then(Value::as_u64);
+        target.steps = as_u64("steps");
+        target.tokens = as_u64("tokens");
+        target.caller_steps = as_u64("caller_steps");
+        target.caller_tokens = as_u64("caller_tokens");
     }
     let mut verdicts = Vec::new();
     for body in verdict_bodies {
@@ -1583,12 +1605,13 @@ mod tests {
     }
 
     /// O envio da onda guarda o molde do agente e o modelo pedido, na hora do
-    /// despacho; quando a entrega volta com o modelo usado, os passos, os
-    /// tokens e o consumo de quem despacha, o envio ganha uma versão nova com
-    /// esses cinco campos, apontando para o envio original e mantendo o
+    /// despacho; quando a rodada traz, além da entrega do agente, a linha
+    /// `USAGE` que só o orquestrador escreve, com o modelo usado, os passos,
+    /// os tokens e o consumo de quem despacha, o envio ganha uma versão nova
+    /// com esses cinco campos, apontando para o envio original e mantendo o
     /// molde e o modelo que já estavam lá.
     #[test]
-    fn a_waves_delivery_with_usage_fields_records_a_new_version_of_its_send() {
+    fn a_rounds_usage_line_records_a_new_version_of_the_waves_send() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -1603,10 +1626,13 @@ mod tests {
         assert_eq!(sent.str_field("model"), Some("Sonnet 5"), "the send carries the requested model");
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        // A entrega é só o que o agente devolve, sem número nenhum de
+        // consumo: quem sabe o consumo é o orquestrador, numa linha à parte.
         let delivery = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
-            "commit": "a onda 1 saiu", "model": "Sonnet 5", "steps": 42, "tokens": 123_456,
+            "commit": "a onda 1 saiu"}));
+        let usage = line("USAGE", json!({"wave": 1, "model": "Sonnet 5", "steps": 42, "tokens": 123_456,
             "caller_steps": 7, "caller_tokens": 89_000}));
-        let out = round(root, "x", Some(&delivery));
+        let out = round(root, "x", Some(&format!("{delivery}\n{usage}")));
         assert_eq!(out["ok"], json!(true), "{out}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1619,5 +1645,36 @@ mod tests {
         assert_eq!(revised.int("caller_tokens"), Some(89_000), "{revised:?}");
         assert_eq!(revised.str_field("template"), Some("molde da onda"), "keeps what was already there");
         assert_eq!(revised.str_field("model"), Some("Sonnet 5"), "keeps what was already there");
+    }
+
+    /// Um número de consumo que o próprio agente escreve dentro do corpo de
+    /// `DELIVERED` — sem a linha `USAGE` do orquestrador — não vira consumo
+    /// nenhum: o envio da onda não ganha versão nova, porque só a linha que o
+    /// orquestrador escreve conta.
+    #[test]
+    fn a_number_typed_by_the_agent_inside_delivered_is_not_accepted_as_usage() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
+        std::fs::write(root.join(".claude/agents/mustard/wave.md"), "molde da onda").unwrap();
+        round(root, "x", None);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        // O agente devolve os mesmos nomes de campo, mas dentro do corpo da
+        // própria entrega, sem a linha `USAGE`: nada mais tem esse consumo.
+        let delivery = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a onda 1 saiu", "model": "Sonnet 5", "steps": 42, "tokens": 123_456}));
+        let out = round(root, "x", Some(&delivery));
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sends: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).collect();
+        assert_eq!(sends.len(), 1, "no new version of the send was recorded: {sends:?}");
+        assert_eq!(sends[0].id, sent.id, "the send is still the original one");
+        assert!(sends[0].str_field("model_used").is_none(), "{sends:?}");
+        assert!(sends[0].int("tokens").is_none(), "{sends:?}");
     }
 }

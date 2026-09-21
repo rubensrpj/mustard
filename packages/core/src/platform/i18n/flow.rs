@@ -500,6 +500,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.build_failed", Locale::EnUs) => {
             "The main repository did not build with `{command}`, and the round committed nothing: {output}"
         }
+        ("round.binary_not_reinstalled", Locale::PtBr) => {
+            "O binário do Mustard não foi reinstalado — `{command}` não passou, e o binário instalado \
+             continua o de antes: {output}"
+        }
+        ("round.binary_not_reinstalled", Locale::EnUs) => {
+            "Mustard's binary was not reinstalled — `{command}` did not pass, and the installed binary \
+             stays the one from before: {output}"
+        }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
              levar. Peça ao agente o caminho certo. Nada foi gravado."
@@ -1060,8 +1068,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            141,
-            0x0f3d_e168_a7a9_7b38,
+            142,
+            0xa76f_c887_61d9_45cd,
         );
     }
 
@@ -1226,6 +1234,7 @@ mod tests {
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
+            ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
             ("round.commit.scope.many", &["{waves}"][..]),
