@@ -283,6 +283,23 @@ fn each_agent_template_declares_its_own_model_and_effort() {
     }
 }
 
+/// O molde da onda, nos dois idiomas, tem exatamente quatro itens de
+/// segundo nível — objetivo, orientação sobre ferramentas, fronteira da
+/// tarefa e formato de saída, nas palavras da documentação da Anthropic —, e
+/// nada além deles: a contagem de `## ` é quatro, sem um quinto item.
+#[test]
+fn the_wave_agent_template_has_exactly_four_items() {
+    let headers: [(&str, [&str; 4]); 2] = [
+        ("pt-BR", ["## Objetivo", "## Orientação sobre ferramentas", "## Fronteira da tarefa", "## Formato de saída"]),
+        ("en-US", ["## Goal", "## Tool guidance", "## Task boundary", "## Output format"]),
+    ];
+    for (lang, items) in headers {
+        let wave = template(lang, "wave");
+        let found: Vec<&str> = wave.lines().filter(|line| line.starts_with("## ")).collect();
+        assert_eq!(found, items, "the {lang} wave agent does not have exactly these four items: {wave}");
+    }
+}
+
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
 /// reler depois de editar, rodar só os testes do que mudou, a suíte inteira
 /// uma vez no fim pelo `rtk`, nada em segundo plano, não comitar nem usar
