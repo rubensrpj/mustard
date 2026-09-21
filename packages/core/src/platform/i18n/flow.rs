@@ -600,15 +600,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Quando voltarem, rode a rodada de novo com a linha do fim de cada agente, como ela veio, \
              uma por linha, todas no mesmo `--report '…'`: a do agente de onda é \
              `<DELIVERED>{\"wave\":1,\"text\":\"…\",\"files\":[\"…\"],\"commit\":\"…\"}</DELIVERED>`, e a do revisor, \
-             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. A rodada lê só \
-             essas linhas e monta o commit do `commit` de cada entrega."
+             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. Junto delas, \
+             acrescente, para cada onda que voltou, o consumo que a plataforma entregou a você quando \
+             o agente terminou, numa linha `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\
+             \"caller_steps\":…,\"caller_tokens\":…}</USAGE>` — nunca um número que o agente tenha digitado. \
+             A rodada lê essas linhas e monta o commit do `commit` de cada entrega."
         }
         ("round.report", Locale::EnUs) => {
             "When they come back, run the round again with each agent's closing line, as it came, one \
              per line, all in the same `--report '…'`: the wave agent's is \
              `<DELIVERED>{\"wave\":1,\"text\":\"…\",\"files\":[\"…\"],\"commit\":\"…\"}</DELIVERED>`, and the reviewer's, \
-             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. The round reads \
-             only those lines and builds the commit from each delivery's `commit`."
+             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. Along with \
+             those, add, for each wave that came back, the usage the platform handed you when the agent \
+             finished, in one `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\"caller_steps\":…,\
+             \"caller_tokens\":…}</USAGE>` line — never a number the agent typed itself. The round reads \
+             those lines and builds the commit from each delivery's `commit`."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -1060,7 +1066,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             140,
-            0xc297_5e9e_0f09_2eef,
+            0x5a67_047c_8a76_02c4,
         );
     }
 

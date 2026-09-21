@@ -42,6 +42,11 @@ pub(crate) enum RoundRefusal {
     BadReport { detail: String },
     /// Uma linha do relatório não traz um campo obrigatório.
     LineField { line: &'static str, field: &'static str },
+    /// Ondas que dependem umas das outras em círculo: nenhuma pôde ser
+    /// escolhida para sair. A aprovação do plano já recusa isso antes de a
+    /// rodada rodar — chegar aqui é a mesma leitura do grafo pegando um
+    /// defeito que passou por outra porta, não uma segunda conta à parte.
+    WaveLoop(Vec<u64>),
     /// A entrega de uma onda conflita com o repositório principal: os
     /// trechos, a cópia em que se resolve e o commit atual.
     MergeConflict { wave: u64, copy: String, conflicts: Vec<String>, head: String },
@@ -68,6 +73,7 @@ impl RoundRefusal {
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::Refused(refusal) => refusal.reason().to_string(),
+            Self::WaveLoop(_) => "waves-loop".into(),
             Self::BadReport { .. } => "round-bad-report".into(),
             Self::LineField { .. } => "round-line-field-missing".into(),
             Self::MergeConflict { .. } => "round-merge-conflict".into(),
@@ -88,6 +94,14 @@ impl RoundRefusal {
         };
         match self {
             Self::Refused(refusal) => refusal.message(lang),
+            // A mesma chave da recusa que já trava a aprovação do plano
+            // ([`crate::commands::flow::plan::PlanFinding::WaveLoop`]): uma
+            // recusa só, com a mesma leitura do ciclo e a mesma mensagem, não
+            // duas contas que pudessem discordar entre si.
+            Self::WaveLoop(cycle) => fill(
+                "plan.wave_loop",
+                &[("{waves}", cycle.iter().map(u64::to_string).collect::<Vec<_>>().join(", "))],
+            ),
             Self::BadReport { detail } => fill("round.bad_report", &[("{detail}", detail.clone())]),
             Self::LineField { line, field } => {
                 fill("round.line_field", &[("{line}", (*line).to_string()), ("{field}", (*field).to_string())])
@@ -394,7 +408,7 @@ pub(super) fn run_round_with_mine(
     // vivas e órfãs, e só a viva entra no "esperando" da resposta.
     let occupied = open_sends(&log);
     let stuck = waves_stuck(&log);
-    let ready = next_waves(&log, max_parallel(root), &occupied, &stuck);
+    let ready = next_waves(&log, max_parallel(root), &occupied, &stuck).map_err(RoundRefusal::WaveLoop)?;
     // A escolha antes do envio, antes da cópia: a onda com item do projeto
     // todo, item sem dono ou lição a julgar só sai com a escolha do
     // orquestrador; sem ela, a resposta traz os candidatos dela, e a onda fica

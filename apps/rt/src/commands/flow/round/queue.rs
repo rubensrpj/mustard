@@ -22,7 +22,7 @@ use super::report::{has_agent_lines, tagged};
 use super::stops::waves_replanned;
 use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
-use crate::commands::wave::wave_overlap_check::wave_graph;
+use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
 /// é quanto a máquina aguenta compilando ao mesmo tempo agora que é o arquivo
@@ -44,12 +44,18 @@ pub(super) fn max_parallel(root: &Path) -> usize {
 /// entrarem, porque ela não está compilando nada; a cópia dela é limpa à
 /// parte, em [`open_copies`]. A onda parada pelo limite de consertos
 /// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda.
+///
+/// Uma dependência em círculo entre ondas já é recusada na aprovação do
+/// plano ([`crate::commands::flow::plan`]), pela mesma leitura do grafo
+/// ([`wave_graph`]) que esta função reaproveita — nunca uma conta própria à
+/// parte. Se, mesmo assim, uma chegar aqui, a rodada devolve os números do
+/// ciclo em vez de escolher uma ordem às cegas.
 pub(super) fn next_waves(
     log: &SpecLog,
     limit: usize,
     running: &BTreeMap<u64, u64>,
     stuck: &BTreeMap<u64, Vec<&SpecEvent>>,
-) -> Vec<u64> {
+) -> Result<Vec<u64>, Vec<u64>> {
     let graph = wave_graph(log);
     // A onda reprovada volta para a fila: sem isso o ciclo de conserto não
     // fecha, porque o fechamento recusa e diz qual refazer e a rodada nunca a
@@ -97,7 +103,7 @@ pub(super) fn next_waves(
     // mesma leva.
     let mut taken: BTreeSet<&String> = running.keys().flat_map(|n| graph.files.get(n).into_iter().flatten()).collect();
     let mut go = Vec::new();
-    for n in ready_in_order(&depends, &already_out, &delivered, &done) {
+    for n in ready_in_order(&depends, &graph, &already_out, &delivered, &done)? {
         if go.len() >= slots {
             break;
         }
@@ -111,7 +117,7 @@ pub(super) fn next_waves(
         taken.extend(files);
         go.push(n);
     }
-    go
+    Ok(go)
 }
 
 // ---------------------------------------------------------------------------
@@ -714,21 +720,28 @@ pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
-/// As ondas prontas para sair, na ordem que [`task_order`] dá para a mesma
-/// cesta de dependências — por nível e, entre as do mesmo nível, por quantas
-/// ondas cada uma destrava, da maior para a menor, e por último pelo número.
-/// `already_out` são as ondas que já saíram da fila e `delivered` as que já
-/// entregaram, que é o que solta as ondas dependentes delas. A onda que
-/// depende de todas as outras só sai com as dependências entregues e
-/// aprovadas (`done`). Uma dependência de onda em círculo nunca chega aqui —
-/// o plano já recusa isso antes da aprovação —, mas a cesta com ciclo não
-/// prende a rodada: sem ordem nenhuma escolhida, nenhuma onda sai.
+/// As ondas prontas para sair, na ordem do grafo de dependências que
+/// [`wave_graph`] já leu (`graph`) — por nível ([`WaveGraph::level`]) e,
+/// entre as do mesmo nível, por quantas ondas cada uma destrava, direta ou
+/// por outra, da maior para a menor, e por último pelo número. `already_out`
+/// são as ondas que já saíram da fila e `delivered` as que já entregaram,
+/// que é o que solta as ondas dependentes delas. A onda que depende de todas
+/// as outras só sai com as dependências entregues e aprovadas (`done`).
+///
+/// Uma dependência em círculo é recusada com os números do ciclo
+/// (`graph.cycle`) — a mesma leitura que já trava a aprovação do plano
+/// ([`crate::commands::flow::plan`]), não uma segunda conta à parte que
+/// pudesse discordar dela.
 fn ready_in_order(
     depends: &BTreeMap<u64, Vec<u64>>,
+    graph: &WaveGraph,
     already_out: &BTreeSet<u64>,
     delivered: &BTreeSet<u64>,
     done: &BTreeSet<u64>,
-) -> Vec<u64> {
+) -> Result<Vec<u64>, Vec<u64>> {
+    if !graph.cycle.is_empty() {
+        return Err(graph.cycle.clone());
+    }
     let candidates: BTreeSet<u64> = depends
         .iter()
         .filter(|(n, _)| !already_out.contains(n))
@@ -738,18 +751,17 @@ fn ready_in_order(
         })
         .map(|(n, _)| *n)
         .collect();
-    let tasks: Vec<TaskDep> = depends.iter().map(|(n, on)| TaskDep { n: *n, depends_on: on.clone() }).collect();
-    match task_order(&tasks) {
-        Ok(order) => order.into_iter().filter(|n| candidates.contains(n)).collect(),
-        // O plano já recusa a onda com dependência em círculo antes da
-        // aprovação: chegar aqui é um defeito em outra camada, não um caso de
-        // uso — daí o alarme só em depuração, e a fila vazia, nunca um
-        // panic, para quem roda instalado.
-        Err(cycle) => {
-            debug_assert!(false, "{}", cycle.message());
-            Vec::new()
-        }
-    }
+    let deps: BTreeMap<u64, BTreeSet<u64>> =
+        depends.iter().map(|(n, on)| (*n, on.iter().copied().collect())).collect();
+    let unlocks = task_unlocks(&deps);
+    let mut order: Vec<(u32, std::cmp::Reverse<usize>, u64)> = depends
+        .keys()
+        .map(|&n| {
+            (graph.level.get(&n).copied().unwrap_or(0), std::cmp::Reverse(unlocks.get(&n).copied().unwrap_or(0)), n)
+        })
+        .collect();
+    order.sort_unstable();
+    Ok(order.into_iter().map(|(_, _, n)| n).filter(|n| candidates.contains(n)).collect())
 }
 
 /// Os itens que o pedido de uma onda leva: os números de tudo que entrou
@@ -759,74 +771,12 @@ pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> V
 }
 
 // ---------------------------------------------------------------------------
-// A ordem de uma cesta de tarefas, pelo grafo de dependências que cada uma
-// declara
+// O desempate de [`ready_in_order`] entre ondas do mesmo nível: quantas
+// outras cada uma destrava
 // ---------------------------------------------------------------------------
 
-/// Uma tarefa da cesta, pelo número que a identifica e pelos números das
-/// tarefas de que ela depende. É o formato mínimo que [`task_order`] precisa
-/// — sem o resto do evento — para que a mesma cesta, montada de novo em
-/// outra ordem de declaração, produza sempre a mesma saída.
-#[derive(Debug, Clone)]
-pub(crate) struct TaskDep {
-    pub(crate) n: u64,
-    pub(crate) depends_on: Vec<u64>,
-}
-
-/// A cesta recusada por ter tarefas que dependem umas das outras em
-/// círculo: o caminho do ciclo, tarefa por tarefa, voltando ao número em
-/// que começou.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TaskCycle(pub(crate) Vec<u64>);
-
-impl TaskCycle {
-    /// A recusa em prosa: as tarefas do ciclo em ordem, com "e" antes da
-    /// última — que é a mesma com que ele começou, fechando a volta.
-    pub(crate) fn message(&self) -> String {
-        let mut out = String::new();
-        let last = self.0.len().saturating_sub(1);
-        for (i, n) in self.0.iter().enumerate() {
-            if i == 0 {
-                out.push_str(&n.to_string());
-            } else if i == last {
-                out.push_str(" e ");
-                out.push_str(&n.to_string());
-            } else {
-                out.push_str(", ");
-                out.push_str(&n.to_string());
-            }
-        }
-        format!("As tarefas {out} dependem umas das outras em círculo: nenhuma onda foi montada.")
-    }
-}
-
-/// A ordem de execução de uma cesta de tarefas: ordenação topológica sobre
-/// as dependências que cada uma declara ([`crate::shared::dag::assign_levels`]),
-/// com desempate, entre as prontas ao mesmo tempo, por quantas tarefas cada
-/// uma destrava — direta ou por outra —, da maior para a menor, e por
-/// último pelo número. A mesma cesta produz sempre a mesma ordem, não
-/// importa em que ordem a lista de entrada a declara.
-///
-/// Uma dependência em círculo é recusada: nenhuma ordem é escolhida, e
-/// [`TaskCycle`] nomeia o ciclo.
-pub(crate) fn task_order(tasks: &[TaskDep]) -> Result<Vec<u64>, TaskCycle> {
-    let deps: BTreeMap<u64, BTreeSet<u64>> =
-        tasks.iter().map(|t| (t.n, t.depends_on.iter().copied().collect())).collect();
-    let levels = crate::shared::dag::assign_levels(&deps);
-    if !levels.cycle.is_empty() {
-        return Err(TaskCycle(task_cycle_path(&deps, &levels.cycle)));
-    }
-    let unlocks = task_unlocks(&deps);
-    let mut order: Vec<(u32, std::cmp::Reverse<usize>, u64)> = deps
-        .keys()
-        .map(|&n| (levels.level.get(&n).copied().unwrap_or(0), std::cmp::Reverse(unlocks.get(&n).copied().unwrap_or(0)), n))
-        .collect();
-    order.sort_unstable();
-    Ok(order.into_iter().map(|(_, _, n)| n).collect())
-}
-
-/// Quantas tarefas cada uma destrava: o tamanho do fecho transitivo de quem
-/// depende dela, direta ou por outra tarefa da cesta.
+/// Quantas ondas cada uma destrava: o tamanho do fecho transitivo de quem
+/// depende dela, direta ou por outra onda da cesta.
 fn task_unlocks(deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeMap<u64, usize> {
     let mut unlocks: BTreeMap<u64, usize> = deps.keys().map(|&n| (n, 0)).collect();
     for &m in deps.keys() {
@@ -837,7 +787,7 @@ fn task_unlocks(deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeMap<u64, usize> {
     unlocks
 }
 
-/// As tarefas de que `n` depende, diretas ou por outra, dentro de `deps`.
+/// As ondas de que `n` depende, diretas ou por outra, dentro de `deps`.
 fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet<u64> {
     let mut reached: BTreeSet<u64> = BTreeSet::new();
     let mut stack: Vec<u64> = deps.get(&n).cloned().unwrap_or_default().into_iter().collect();
@@ -847,37 +797,6 @@ fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet
         }
     }
     reached
-}
-
-/// Um caminho dentro do ciclo `members`, voltando ao início: a partir do
-/// menor número do ciclo, anda pelas dependências dentro do próprio ciclo
-/// até fechar de volta nele. Determinístico — fecha assim que uma
-/// dependência aponta para o início e, quando isso não dá, segue para o
-/// próximo número mais baixo ainda não visitado.
-fn task_cycle_path(deps: &BTreeMap<u64, BTreeSet<u64>>, members: &[u64]) -> Vec<u64> {
-    let set: BTreeSet<u64> = members.iter().copied().collect();
-    let Some(&start) = set.iter().next() else { return Vec::new() };
-    let mut path = vec![start];
-    let mut visited: BTreeSet<u64> = [start].into_iter().collect();
-    loop {
-        let current = *path.last().unwrap_or(&start);
-        let candidates: Vec<u64> =
-            deps.get(&current).into_iter().flatten().copied().filter(|d| set.contains(d)).collect();
-        if candidates.contains(&start) {
-            path.push(start);
-            return path;
-        }
-        match candidates.into_iter().find(|d| !visited.contains(d)) {
-            Some(next) => {
-                path.push(next);
-                visited.insert(next);
-            }
-            None => {
-                path.push(start);
-                return path;
-            }
-        }
-    }
 }
 
 /// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
@@ -1967,43 +1886,66 @@ mod tests {
         assert_eq!(one["files"], json!(["src/a.rs"]), "{one}");
     }
 
-    /// A ordem de uma cesta de tarefas sai do grafo de dependências que cada
-    /// uma declara, com desempate pela quantidade de tarefas que cada uma
-    /// destrava — direta ou por outra —, da maior para a menor, e só depois
-    /// pelo número: a tarefa 21 destrava a 22 e a 20 não destrava nada, então
-    /// a 21 sai primeiro mesmo tendo o número maior. A mesma cesta, montada
-    /// duas vezes com as tarefas em ordem diferente na lista de entrada,
-    /// produz sempre a mesma ordem.
+    /// A ordem de despacho sai do grafo de dependências que cada onda
+    /// declara, com desempate pela quantidade de ondas que cada uma destrava
+    /// — direta ou por outra —, da maior para a menor, e só depois pelo
+    /// número: a onda 21 destrava a 22 e a 20 não destrava nada, então a 21
+    /// sai primeiro mesmo tendo o número maior. A mesma cesta, aprovada duas
+    /// vezes com as ondas declaradas em ordem diferente, despacha sempre na
+    /// mesma sequência através das rodadas — a prova atravessa `round`, o
+    /// comando de verdade, não a função auxiliar que só ordena.
     #[test]
-    fn ordem_das_ondas_por_grafo_com_desempate_por_quem_destrava_mais() {
-        let basket_a = vec![
-            TaskDep { n: 10, depends_on: vec![] },
-            TaskDep { n: 20, depends_on: vec![10] },
-            TaskDep { n: 21, depends_on: vec![10] },
-            TaskDep { n: 22, depends_on: vec![21] },
+    fn a_mesma_cesta_de_ondas_produz_sempre_a_mesma_ordem_de_despacho() {
+        let plan_a: [(u64, &[&str], &[u64]); 4] = [
+            (10, &["src/a.rs"], &[]),
+            (20, &["src/b.rs"], &[10]),
+            (21, &["src/c.rs"], &[10]),
+            (22, &["src/d.rs"], &[21]),
         ];
-        let basket_b = vec![
-            TaskDep { n: 22, depends_on: vec![21] },
-            TaskDep { n: 21, depends_on: vec![10] },
-            TaskDep { n: 20, depends_on: vec![10] },
-            TaskDep { n: 10, depends_on: vec![] },
+        let plan_b: [(u64, &[&str], &[u64]); 4] = [
+            (22, &["src/d.rs"], &[21]),
+            (21, &["src/c.rs"], &[10]),
+            (20, &["src/b.rs"], &[10]),
+            (10, &["src/a.rs"], &[]),
         ];
-        let expected = vec![10, 21, 20, 22];
-        assert_eq!(task_order(&basket_a), Ok(expected.clone()), "a cesta montada numa ordem");
-        assert_eq!(task_order(&basket_b), Ok(expected), "a mesma cesta, montada noutra ordem, sai igual");
+        let mut sequences = Vec::new();
+        for plan in [plan_a.as_slice(), plan_b.as_slice()] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            approved(root, "x", plan);
+            let first = round(root, "x", None);
+            let second = round(root, "x", Some(&delivered(root, 10, "Saiu.", &["src/a.rs"])));
+            let third = round(
+                root,
+                "x",
+                Some(&format!(
+                    "{}\n{}",
+                    delivered(root, 21, "Saiu.", &["src/c.rs"]),
+                    delivered(root, 20, "Saiu.", &["src/b.rs"])
+                )),
+            );
+            sequences.push(vec![waves_in(&first, "dispatch"), waves_in(&second, "dispatch"), waves_in(&third, "dispatch")]);
+        }
+        let expected = vec![vec![10], vec![21, 20], vec![22]];
+        assert_eq!(sequences[0], expected, "a cesta declarada numa ordem: {sequences:?}");
+        assert_eq!(sequences[1], expected, "a mesma cesta, declarada noutra ordem, despacha igual: {sequences:?}");
     }
 
-    /// Tarefas que dependem umas das outras em círculo são recusadas: nenhuma
-    /// ordem é escolhida, e o erro mostra o ciclo, voltando ao número em que
-    /// começou.
+    /// Ondas que dependem umas das outras em círculo são recusadas pela
+    /// própria rodada, mostrando o ciclo: nenhuma sai, e a resposta não é uma
+    /// fila vazia muda. A cesta nunca passa pela aprovação do plano — o
+    /// fixture grava o ciclo direto, como um evento gravado à mão poderia —
+    /// e a prova atravessa `round`, o comando de verdade.
     #[test]
-    fn ordem_das_ondas_recusa_cesta_com_dependencia_em_circulo_mostrando_o_ciclo() {
-        let basket = vec![TaskDep { n: 4, depends_on: vec![7] }, TaskDep { n: 7, depends_on: vec![4] }];
-        let refusal = task_order(&basket).expect_err("o ciclo é recusado");
-        assert_eq!(refusal.0, vec![4, 7, 4], "o caminho do ciclo volta ao início: {refusal:?}");
-        assert_eq!(
-            refusal.message(),
-            "As tarefas 4, 7 e 4 dependem umas das outras em círculo: nenhuma onda foi montada.",
-        );
+    fn cesta_de_ondas_com_dependencia_em_circulo_e_recusada_pela_rodada_mostrando_o_ciclo() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(4, &["src/a.rs"], &[7]), (7, &["src/b.rs"], &[4])]);
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("waves-loop"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains('4') && hint.contains('7'), "o ciclo aparece na recusa: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "nenhuma onda sai com o ciclo: {out}");
     }
 }

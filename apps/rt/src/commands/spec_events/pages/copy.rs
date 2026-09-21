@@ -881,12 +881,13 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger};
+    use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict};
     use mustard_core::domain::spec_state::SpecState as _;
     use serde_json::{json, Value};
     use tempfile::tempdir;
 
     use super::*;
+    use crate::commands::flow::plan::{plan_for, PlanOpts};
     use crate::commands::flow::round::{round_for, RoundOpts};
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
     use crate::shared::spec_state::DiskSpecState;
@@ -1775,5 +1776,104 @@ mod tests {
         assert!(spend.contains("1000000"), "{spend}");
         assert!(spend.contains("200000"), "{spend}");
         assert!(spend.contains("1200000"), "{spend}");
+    }
+
+    /// As cinco réguas do motor antigo, seguradas juntas: se qualquer uma
+    /// delas voltar ao código de produção, esta prova sozinha cai. Cada
+    /// trecho passa pela porta de verdade que a régua usava — a gravação, o
+    /// plano, a rodada e o despacho do gancho —, nunca por uma função
+    /// auxiliar isolada.
+    #[test]
+    fn the_five_old_economy_caps_stay_out_of_the_real_paths() {
+        // 1) e 2) O teto de três tarefas e o de três provas de critério: a
+        // quarta tarefa e a quarta prova são gravadas como a primeira, sem a
+        // recusa `wave-too-big` que a gravação usava antes desta obra.
+        let (dir, said, crit1) = project_with(&["src/a.rs"]);
+        let root = dir.path();
+        let wave = write(root, "wave",
+            json!({"n": 1, "text": "Onda 1.", "criteria": [crit1], "done_when": "passa", "origin": said}));
+        for i in 1..=4 {
+            let out = write(root, "task", json!({"wave": 1, "text": format!("Tarefa {i}."),
+                "files": [{"path": "src/a.rs"}], "origin": said}));
+            assert_eq!(out["ok"], json!(true), "tarefa {i}: {out}");
+        }
+        let mut criteria = vec![crit1];
+        let mut wave_id = id_of(&wave);
+        for proof in ["p2", "p3", "p4"] {
+            let crit =
+                id_of(&write(root, "criterion", json!({"when": "a", "then": "b", "proof": proof, "origin": said})));
+            criteria.push(crit);
+            let revised = write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": criteria.clone(),
+                "done_when": "passa", "origin": said, "replaces": wave_id}));
+            assert_eq!(revised["ok"], json!(true), "prova {proof}: {revised}");
+            wave_id = id_of(&revised);
+        }
+
+        // 3) O teto de 500 linhas do pedido: mais 600 tarefas, escritas
+        // direto no arquivo — como a onda que já nasceu grande antes da
+        // regra, ou uma edição de fora do binário — e o plano não barra a
+        // pergunta nem por linha nem por contagem de tarefa.
+        let mut next_id = wave_id + 1;
+        for i in 0..600 {
+            let skill = root.join(".claude").join("skills").join(format!("s{i}"));
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(skill.join("SKILL.md"), format!("# s{i}\n")).unwrap();
+            let mut map = mustard_core::domain::spec_events::normalize(
+                json!({"points": 1, "wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
+                    "skill": format!("s{i}"), "origin": said})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                "task",
+            );
+            map.insert("type".into(), json!("task"));
+            let line = mustard_core::domain::spec_events::render_line(
+                &mustard_core::domain::spec_events::stamp(map, next_id, None, "2026-09-21T10:00:00-03:00"),
+            );
+            use std::io::Write as _;
+            let path = store::spec_file(root, "x").unwrap();
+            let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(file, "{line}").unwrap();
+            next_id += 1;
+        }
+        let plan_report = plan_for(&PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) }, None);
+        let blocking: Vec<String> = plan_report["blocking"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|f| f["reason"].as_str().map(str::to_string))
+            .collect();
+        assert!(!blocking.contains(&"wave-prompt-too-long".to_string()), "{plan_report}");
+        assert!(!blocking.contains(&"wave-too-big".to_string()), "{plan_report}");
+        assert!(plan_report["waves"][0]["lines"].as_u64().unwrap_or(0) > 500, "{plan_report}");
+
+        // 4) A régua de 2,3 milhões de tokens por arquivo: a linha do gasto
+        // de uma rodada de verdade não traz régua, multiplicador nem
+        // veredito de obra barata ou cara.
+        let round_dir = approved_project();
+        let round_root = round_dir.path();
+        crate::shared::spec_state::seed_event(round_root, "x", "send", json!({"wave": 1, "role": "wave", "text": "t",
+            "lines": 1, "chars": 1, "items": [1], "mustard": "0.2.1", "tokens": 1_000_000, "caller_tokens": 200_000}));
+        crate::shared::spec_state::seed_event(round_root, "x", "delivered",
+            json!({"wave": 1, "text": "d", "files": ["src/a.rs"]}));
+        let round_report = round(round_root);
+        let bodies = sent(round_root, &round_report, "spec");
+        let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("o item calculado");
+        let spend = computed["body"]["spend"].as_str().unwrap_or_default();
+        assert!(!spend.contains("égua"), "{spend}");
+        assert!(!spend.contains("barata"), "{spend}");
+        assert!(!spend.contains("cara"), "{spend}");
+
+        // 5) O degrau de 200 mil tokens de conversa: a mesma transcrição que
+        // o recusava antes não barra mais nenhuma chamada de ferramenta de
+        // quem conduz.
+        let transcript = round_root.join("t.jsonl");
+        std::fs::write(&transcript, json!({"message": {"usage": {
+            "input_tokens": 200_000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+        }}}).to_string()).unwrap();
+        let outcome = hook_event(round_root, "PreToolUse", Some("Bash"), json!({"command": "ls"}),
+            json!({"transcript_path": transcript.to_string_lossy()}));
+        assert_eq!(outcome.verdict, Verdict::Allow, "sem degrau de tokens, nada barra mais a chamada");
     }
 }
