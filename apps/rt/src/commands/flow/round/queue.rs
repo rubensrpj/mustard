@@ -710,6 +710,128 @@ pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> V
     dispatch_items(log, wave, choice).into_iter().map(|e| e.id).collect()
 }
 
+// ---------------------------------------------------------------------------
+// A ordem de uma cesta de tarefas, pelo grafo de dependências que cada uma
+// declara
+// ---------------------------------------------------------------------------
+
+/// Uma tarefa da cesta, pelo número que a identifica e pelos números das
+/// tarefas de que ela depende. É o formato mínimo que [`task_order`] precisa
+/// — sem o resto do evento — para que a mesma cesta, montada de novo em
+/// outra ordem de declaração, produza sempre a mesma saída.
+#[derive(Debug, Clone)]
+pub(crate) struct TaskDep {
+    pub(crate) n: u64,
+    pub(crate) depends_on: Vec<u64>,
+}
+
+/// A cesta recusada por ter tarefas que dependem umas das outras em
+/// círculo: o caminho do ciclo, tarefa por tarefa, voltando ao número em
+/// que começou.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskCycle(pub(crate) Vec<u64>);
+
+impl TaskCycle {
+    /// A recusa em prosa: as tarefas do ciclo em ordem, com "e" antes da
+    /// última — que é a mesma com que ele começou, fechando a volta.
+    pub(crate) fn message(&self) -> String {
+        let mut out = String::new();
+        let last = self.0.len().saturating_sub(1);
+        for (i, n) in self.0.iter().enumerate() {
+            if i == 0 {
+                out.push_str(&n.to_string());
+            } else if i == last {
+                out.push_str(" e ");
+                out.push_str(&n.to_string());
+            } else {
+                out.push_str(", ");
+                out.push_str(&n.to_string());
+            }
+        }
+        format!("As tarefas {out} dependem umas das outras em círculo: nenhuma onda foi montada.")
+    }
+}
+
+/// A ordem de execução de uma cesta de tarefas: ordenação topológica sobre
+/// as dependências que cada uma declara ([`crate::shared::dag::assign_levels`]),
+/// com desempate, entre as prontas ao mesmo tempo, por quantas tarefas cada
+/// uma destrava — direta ou por outra —, da maior para a menor, e por
+/// último pelo número. A mesma cesta produz sempre a mesma ordem, não
+/// importa em que ordem a lista de entrada a declara.
+///
+/// Uma dependência em círculo é recusada: nenhuma ordem é escolhida, e
+/// [`TaskCycle`] nomeia o ciclo.
+pub(crate) fn task_order(tasks: &[TaskDep]) -> Result<Vec<u64>, TaskCycle> {
+    let deps: BTreeMap<u64, BTreeSet<u64>> =
+        tasks.iter().map(|t| (t.n, t.depends_on.iter().copied().collect())).collect();
+    let levels = crate::shared::dag::assign_levels(&deps);
+    if !levels.cycle.is_empty() {
+        return Err(TaskCycle(task_cycle_path(&deps, &levels.cycle)));
+    }
+    let unlocks = task_unlocks(&deps);
+    let mut order: Vec<(u32, std::cmp::Reverse<usize>, u64)> = deps
+        .keys()
+        .map(|&n| (levels.level.get(&n).copied().unwrap_or(0), std::cmp::Reverse(unlocks.get(&n).copied().unwrap_or(0)), n))
+        .collect();
+    order.sort_unstable();
+    Ok(order.into_iter().map(|(_, _, n)| n).collect())
+}
+
+/// Quantas tarefas cada uma destrava: o tamanho do fecho transitivo de quem
+/// depende dela, direta ou por outra tarefa da cesta.
+fn task_unlocks(deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeMap<u64, usize> {
+    let mut unlocks: BTreeMap<u64, usize> = deps.keys().map(|&n| (n, 0)).collect();
+    for &m in deps.keys() {
+        for on in task_transitive_deps(m, deps) {
+            *unlocks.entry(on).or_insert(0) += 1;
+        }
+    }
+    unlocks
+}
+
+/// As tarefas de que `n` depende, diretas ou por outra, dentro de `deps`.
+fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet<u64> {
+    let mut reached: BTreeSet<u64> = BTreeSet::new();
+    let mut stack: Vec<u64> = deps.get(&n).cloned().unwrap_or_default().into_iter().collect();
+    while let Some(on) = stack.pop() {
+        if reached.insert(on) {
+            stack.extend(deps.get(&on).cloned().unwrap_or_default());
+        }
+    }
+    reached
+}
+
+/// Um caminho dentro do ciclo `members`, voltando ao início: a partir do
+/// menor número do ciclo, anda pelas dependências dentro do próprio ciclo
+/// até fechar de volta nele. Determinístico — fecha assim que uma
+/// dependência aponta para o início e, quando isso não dá, segue para o
+/// próximo número mais baixo ainda não visitado.
+fn task_cycle_path(deps: &BTreeMap<u64, BTreeSet<u64>>, members: &[u64]) -> Vec<u64> {
+    let set: BTreeSet<u64> = members.iter().copied().collect();
+    let Some(&start) = set.iter().next() else { return Vec::new() };
+    let mut path = vec![start];
+    let mut visited: BTreeSet<u64> = [start].into_iter().collect();
+    loop {
+        let current = *path.last().unwrap_or(&start);
+        let candidates: Vec<u64> =
+            deps.get(&current).into_iter().flatten().copied().filter(|d| set.contains(d)).collect();
+        if candidates.contains(&start) {
+            path.push(start);
+            return path;
+        }
+        match candidates.into_iter().find(|d| !visited.contains(d)) {
+            Some(next) => {
+                path.push(next);
+                visited.insert(next);
+            }
+            None => {
+                path.push(start);
+                return path;
+            }
+        }
+    }
+}
+
 /// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
 /// rodada despacha: em andamento, reprovada na última revisão ou entregue e
 /// aprovada — a rodada não pede revisão de onda nenhuma, então a entrega já
@@ -1701,5 +1823,45 @@ mod tests {
         let running = second["running"].as_array().cloned().unwrap_or_default();
         let one = running.iter().find(|r| r["wave"] == json!(1)).cloned().unwrap_or_else(|| panic!("wave 1: {running:?}"));
         assert_eq!(one["files"], json!(["src/a.rs"]), "{one}");
+    }
+
+    /// A ordem de uma cesta de tarefas sai do grafo de dependências que cada
+    /// uma declara, com desempate pela quantidade de tarefas que cada uma
+    /// destrava — direta ou por outra —, da maior para a menor, e só depois
+    /// pelo número: a tarefa 21 destrava a 22 e a 20 não destrava nada, então
+    /// a 21 sai primeiro mesmo tendo o número maior. A mesma cesta, montada
+    /// duas vezes com as tarefas em ordem diferente na lista de entrada,
+    /// produz sempre a mesma ordem.
+    #[test]
+    fn ordem_das_ondas_por_grafo_com_desempate_por_quem_destrava_mais() {
+        let basket_a = vec![
+            TaskDep { n: 10, depends_on: vec![] },
+            TaskDep { n: 20, depends_on: vec![10] },
+            TaskDep { n: 21, depends_on: vec![10] },
+            TaskDep { n: 22, depends_on: vec![21] },
+        ];
+        let basket_b = vec![
+            TaskDep { n: 22, depends_on: vec![21] },
+            TaskDep { n: 21, depends_on: vec![10] },
+            TaskDep { n: 20, depends_on: vec![10] },
+            TaskDep { n: 10, depends_on: vec![] },
+        ];
+        let expected = vec![10, 21, 20, 22];
+        assert_eq!(task_order(&basket_a), Ok(expected.clone()), "a cesta montada numa ordem");
+        assert_eq!(task_order(&basket_b), Ok(expected), "a mesma cesta, montada noutra ordem, sai igual");
+    }
+
+    /// Tarefas que dependem umas das outras em círculo são recusadas: nenhuma
+    /// ordem é escolhida, e o erro mostra o ciclo, voltando ao número em que
+    /// começou.
+    #[test]
+    fn ordem_das_ondas_recusa_cesta_com_dependencia_em_circulo_mostrando_o_ciclo() {
+        let basket = vec![TaskDep { n: 4, depends_on: vec![7] }, TaskDep { n: 7, depends_on: vec![4] }];
+        let refusal = task_order(&basket).expect_err("o ciclo é recusado");
+        assert_eq!(refusal.0, vec![4, 7, 4], "o caminho do ciclo volta ao início: {refusal:?}");
+        assert_eq!(
+            refusal.message(),
+            "As tarefas 4, 7 e 4 dependem umas das outras em círculo: nenhuma onda foi montada.",
+        );
     }
 }
