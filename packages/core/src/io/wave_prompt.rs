@@ -574,10 +574,10 @@ fn task_file_tests(map: Option<&ProjectMap>, tasks: &[&SpecEvent]) -> BTreeMap<S
             if out.contains_key(path) {
                 continue;
             }
-            if let Ok(coverage) = tests_for(map, path) {
-                if !coverage.files.is_empty() {
-                    out.insert(path.to_string(), coverage.files);
-                }
+            if let Ok(coverage) = tests_for(map, path)
+                && !coverage.files.is_empty()
+            {
+                out.insert(path.to_string(), coverage.files);
             }
         }
     }

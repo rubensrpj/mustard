@@ -677,10 +677,10 @@ fn clear(folder: &Path) -> Result<(), Refusal> {
 /// cópia de agora não escreve mais, e a página abriria sem dizer por quê.
 fn ensure_template(root: &Path, template: &str, body: impl FnOnce() -> String) -> Result<(), Refusal> {
     let path = root.join(template);
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        if template_version(&existing) == Some(mustard_core::harness_version().as_str()) {
-            return Ok(());
-        }
+    if let Ok(existing) = std::fs::read_to_string(&path)
+        && template_version(&existing) == Some(mustard_core::harness_version().as_str())
+    {
+        return Ok(());
     }
     write(&path, &body())
 }
@@ -1813,7 +1813,7 @@ mod tests {
         // direto no arquivo — como a onda que já nasceu grande antes da
         // regra, ou uma edição de fora do binário — e o plano não barra a
         // pergunta nem por linha nem por contagem de tarefa.
-        let mut next_id = wave_id + 1;
+        let first_id = wave_id + 1;
         for i in 0..600 {
             let skill = root.join(".claude").join("skills").join(format!("s{i}"));
             std::fs::create_dir_all(&skill).unwrap();
@@ -1828,13 +1828,12 @@ mod tests {
             );
             map.insert("type".into(), json!("task"));
             let line = mustard_core::domain::spec_events::render_line(
-                &mustard_core::domain::spec_events::stamp(map, next_id, None, "2026-09-21T10:00:00-03:00"),
+                &mustard_core::domain::spec_events::stamp(map, first_id + i, None, "2026-09-21T10:00:00-03:00"),
             );
             use std::io::Write as _;
             let path = store::spec_file(root, "x").unwrap();
             let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
             writeln!(file, "{line}").unwrap();
-            next_id += 1;
         }
         let plan_report = plan_for(&PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) }, None);
         let blocking: Vec<String> = plan_report["blocking"]

@@ -261,11 +261,11 @@ pub(crate) fn take_report_with_mine(
     // O repositório principal compila antes do commit, com o mesmo comando
     // que o pedido de cada onda já ensina: não compilou, o disco volta ao que
     // era e nada é comitado.
-    if message.is_some() {
-        if let Err(refusal) = ensure_builds(root) {
-            let _ = write_joined(root, &joined, false);
-            return Err(refusal);
-        }
+    if message.is_some()
+        && let Err(refusal) = ensure_builds(root)
+    {
+        let _ = write_joined(root, &joined, false);
+        return Err(refusal);
     }
     // A recusa do git volta o índice e o disco antes de sair, com a trava ainda
     // presa.
@@ -1128,7 +1128,9 @@ mod tests {
     /// Duas rodadas ao mesmo tempo, cada uma com a entrega de uma onda que
     /// mexeu no mesmo arquivo, em trechos diferentes — a cópia da 2 já
     /// existia, de um pedido anterior à trava por arquivo, na mesma base da
-    /// 1. Enquanto outro passo do git segura a trava, nenhuma das duas junta
+    /// 1.
+    ///
+    /// Enquanto outro passo do git segura a trava, nenhuma das duas junta
     /// nada no repositório principal; solta a trava, cada uma junta, comita e
     /// grava na sua vez. O arquivo termina com as duas mudanças, cada commit
     /// leva só a da sua onda, cada entrega é gravada uma vez e as duas cópias

@@ -1408,7 +1408,7 @@ mod tests {
 
         // Abre pelo que a onda entrega, antes das tarefas.
         let delivers_at = text.find("a suíte passa").expect("o done_when abre o pedido");
-        let tasks_at = text.find(&translate("prompt.part.tasks", Locale::PtBr)).expect("as tarefas aparecem");
+        let tasks_at = text.find(translate("prompt.part.tasks", Locale::PtBr)).expect("as tarefas aparecem");
         assert!(delivers_at < tasks_at, "{text}");
 
         // Diz o modelo da onda.

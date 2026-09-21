@@ -346,7 +346,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     assert_eq!(body["ok"], json!(true), "{body}");
     assert!(body["commit"]["sha"].as_str().is_some(), "{body}");
     assert_eq!(
-        std::fs::read_to_string(root.join("extra.rs")).unwrap(),
+        std::fs::read_to_string(root.join("extra.rs")).expect("o arquivo nao citado"),
         "fn extra() {}\n",
         "o arquivo que a onda não citou entra no commit quando o repositório compila"
     );
@@ -368,7 +368,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     assert_eq!(body["reason"], json!("round-build-failed"), "{body}");
     assert_eq!(head(), before, "nada foi comitado com o repositório quebrado");
     assert_eq!(
-        std::fs::read_to_string(root.join("Makefile")).unwrap(),
+        std::fs::read_to_string(root.join("Makefile")).expect("o Makefile do principal"),
         "default:\n\t@true\n",
         "o repositório principal volta ao que era: nada da onda 2 entrou"
     );

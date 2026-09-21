@@ -1097,14 +1097,13 @@ mod tests {
         // Os códigos das tarefas cabem numa linha só: o que passa do teto
         // antigo é uma parte de uma linha por item, como a das skills que
         // elas nomeiam.
-        let mut next_id = id_of(&wave) + 1;
+        let first_id = id_of(&wave) + 1;
         for i in 0..600 {
             let skill = root.join(".claude").join("skills").join(format!("s{i}"));
             std::fs::create_dir_all(&skill).unwrap();
             std::fs::write(skill.join("SKILL.md"), format!("# s{i}\n")).unwrap();
             append_raw(root, "x", "task", json!({"points": 1, "wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
-                "skill": format!("s{i}"), "origin": said}), next_id);
-            next_id += 1;
+                "skill": format!("s{i}"), "origin": said}), first_id + i);
         }
 
         let report = plan(root, "x");
@@ -1125,11 +1124,10 @@ mod tests {
         let crit = criterion(root, "x", said);
         let wave = write(root, Some("x"), "wave",
             json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        let mut next_id = id_of(&wave) + 1;
+        let first_id = id_of(&wave) + 1;
         for i in 0..4 {
             append_raw(root, "x", "task", json!({"points": 1, "wave": 1, "text": format!("Tarefa {i}."),
-                "files": [{"path": "src/a.rs"}], "origin": said}), next_id);
-            next_id += 1;
+                "files": [{"path": "src/a.rs"}], "origin": said}), first_id + i);
         }
 
         let report = plan(root, "x");
