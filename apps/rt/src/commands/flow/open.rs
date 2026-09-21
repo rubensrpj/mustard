@@ -1131,6 +1131,22 @@ use crate::shared::context::pending_branch::set_pending_branch;
         assert!(notice.contains("mustard-rt run pending"), "{notice}");
     }
 
+    /// Com a página do projeto já publicada, o aviso da pendência do projeto
+    /// traz o endereço dela, em vez do comando de recuo.
+    #[test]
+    fn the_open_announces_the_project_pending_with_the_page_url() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        let index_path = ClaudePaths::for_project(root).unwrap().spec_index_path();
+        mustard_core::io::spec_index::set_project_url(&index_path, "https://mustard.example/p", true).unwrap();
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let notice = report["pending_project"].as_str().expect("the notice is present");
+        assert!(notice.contains("https://mustard.example/p"), "{notice}");
+        assert!(!notice.contains("mustard-rt run pending"), "{notice}");
+    }
+
     /// Sem pendência nenhuma do projeto na lista, a resposta não traz o
     /// aviso.
     #[test]
