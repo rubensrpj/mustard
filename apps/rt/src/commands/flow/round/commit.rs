@@ -464,6 +464,33 @@ fn copy_of(log: &SpecLog, wave: u64) -> Option<PathBuf> {
     recorded_copy(log, wave).map(|copy| PathBuf::from(copy.path)).filter(|path| path.is_dir())
 }
 
+/// Limpa a cópia da onda órfã `wave` — um Claude Code que fechou no meio do
+/// trabalho: o que ele deixou sem commitar, na cópia da onda e na cópia de
+/// cada submódulo dentro dela, volta ao commit atual, sem esperar o reenvio
+/// pedir isso — quem falhou no meio não deixou uma retomada em curso, deixou
+/// só o resto do que não terminou. A cópia que nunca existiu, ou que já não é
+/// mais um checkout ligado ao repositório, não faz nada.
+pub(super) fn clean_orphan_copy(root: &Path, log: &SpecLog, wave: u64) -> bool {
+    let Some(copy) = copy_of(log, wave) else { return false };
+    let subs = submodules_of(root);
+    let inner: Vec<&String> = subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()).collect();
+    let mut ok = reset_copy(&copy, &head(root));
+    for sub in inner {
+        ok = reset_copy(&copy.join(sub), &head(&root.join(sub))) && ok;
+    }
+    ok
+}
+
+/// Volta o checkout ligado `dir` ao commit `head`, descartando qualquer
+/// mudança sem commitar e qualquer arquivo novo. A pasta que não é um
+/// checkout ligado, ou sem commit para onde voltar, não faz nada.
+fn reset_copy(dir: &Path, head: &str) -> bool {
+    if !dir.join(".git").is_file() || head.is_empty() {
+        return false;
+    }
+    git(dir, &["checkout", "--detach", "--force", head]).is_ok() && git(dir, &["clean", "-fdx"]).is_ok()
+}
+
 /// Um arquivo que a junção muda no repositório principal: o que ele era e o
 /// que passa a ser. `None` é o arquivo que não existe.
 pub(super) struct Joined {

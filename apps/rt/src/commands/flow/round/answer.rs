@@ -795,7 +795,7 @@ mod tests {
     /// Linux.
     #[cfg(target_os = "linux")]
     fn resend_draft(sent: &SpecEvent) -> Value {
-        json!({
+        let mut draft = json!({
             "wave": sent.wave().unwrap(),
             "role": "wave",
             "text": sent.str_field("text").unwrap_or_default(),
@@ -804,7 +804,14 @@ mod tests {
             "items": sent.fields.get("items").cloned().unwrap_or_else(|| json!([])),
             "mustard": "0",
             "copy": sent.str_field("copy").unwrap_or_default(),
-        })
+        });
+        // A pasta de compilação segue com o pedido: sem ela, a rodada
+        // seguinte acha a vaga livre mesmo com a cópia desta onda ainda lá,
+        // e deixa duas ondas dividirem a mesma pasta.
+        if let Some(dir) = sent.str_field("build_dir") {
+            draft["build_dir"] = json!(dir);
+        }
+        draft
     }
 
     /// Grava um envio à mão, com a hora `at`: supera o envio mais novo da
@@ -985,7 +992,8 @@ mod tests {
 
     /// A onda órfã segue ocupando a vaga e a cópia dela até o reenvio: com o
     /// teto de compilação em 1, uma onda fresca não sai por cima da órfã na
-    /// mesma rodada em que ela é reenviada.
+    /// mesma rodada em que ela é reenviada — a pasta de compilação é a mesma,
+    /// e o reenvio a reocupa mesmo antes de outra onda tentar.
     /// Só roda no Linux: fora dele nenhum processo é dado como morto, então
     /// onda órfã não existe para ser provada.
     #[test]

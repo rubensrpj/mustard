@@ -24,9 +24,10 @@ use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 
-/// Quantas ondas saem juntas quando o projeto não diz outra coisa: duas, que é
-/// quanto a máquina aguenta compilando ao mesmo tempo.
-const DEFAULT_PARALLEL: usize = 2;
+/// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
+/// é quanto a máquina aguenta compilando ao mesmo tempo agora que é o arquivo
+/// declarado, e não a vaga de compilação, quem trava o paralelo de verdade.
+const DEFAULT_PARALLEL: usize = 4;
 
 /// Quantas ondas o projeto deixa compilar ao mesmo tempo.
 pub(super) fn max_parallel(root: &Path) -> usize {
@@ -36,10 +37,13 @@ pub(super) fn max_parallel(root: &Path) -> usize {
 /// As ondas que saem nesta rodada: as que ainda não saíram nem entregaram,
 /// cujas dependências já foram entregues, no máximo `limit` junto com as que
 /// estão em andamento (`running`). Duas ondas que declaram o mesmo arquivo
-/// saem juntas: cada uma trabalha na sua cópia, e a volta junta os arquivos.
-/// A onda em andamento conta como uma que já saiu nesta rodada e ocupa uma
-/// vaga. A onda parada pelo limite de consertos (`stuck`) não sai, nem a que
-/// depende dela, direta ou por outra onda.
+/// nunca saem juntas, nem uma delas sai por cima de uma onda em andamento que
+/// já declarou aquele arquivo: a que perde a vez volta para a fila e espera
+/// quem está com o arquivo entregar. A onda órfã — em andamento sem o
+/// processo que a mandou — não conta como vaga ocupada para as outras
+/// entrarem, porque ela não está compilando nada; a cópia dela é limpa à
+/// parte, em [`open_copies`]. A onda parada pelo limite de consertos
+/// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda.
 pub(super) fn next_waves(
     log: &SpecLog,
     limit: usize,
@@ -79,12 +83,35 @@ pub(super) fn next_waves(
         }
     }
     let done = waves_done(log, running);
-    let slots = limit.saturating_sub(running.len());
-    ready_in_order(&graph, &depends, &already_out, &delivered, &done)
-        .into_iter()
-        .filter(|n| !stuck.contains_key(n) && !dependencies_of(*n, &depends).iter().any(|d| stuck.contains_key(d)))
-        .take(slots)
-        .collect()
+    // A onda órfã segue com o pedido aberto, mas não está compilando nada: a
+    // vaga que ela guardava sozinha volta a valer para uma onda pronta de
+    // verdade. Quem trava de fato quantas cópias saem é [`open_copies`], pela
+    // pasta de compilação livre de verdade — este número é só o teto de
+    // quantas ondas prontas entram na disputa por elas.
+    let orphans = orphaned_waves(log);
+    let effective_running = running.keys().filter(|n| !orphans.contains_key(n)).count();
+    let slots = limit.saturating_sub(effective_running);
+    // O arquivo que cada onda em andamento já declarou trava a vaga dela: uma
+    // onda pronta que declara o mesmo arquivo espera, mesmo com vaga livre —
+    // e a que sai primeiro nesta rodada tranca o arquivo para a próxima da
+    // mesma leva.
+    let mut taken: BTreeSet<&String> = running.keys().flat_map(|n| graph.files.get(n).into_iter().flatten()).collect();
+    let mut go = Vec::new();
+    for n in ready_in_order(&depends, &already_out, &delivered, &done) {
+        if go.len() >= slots {
+            break;
+        }
+        if stuck.contains_key(&n) || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d)) {
+            continue;
+        }
+        let files: Vec<&String> = graph.files.get(&n).into_iter().flatten().collect();
+        if files.iter().any(|f| taken.contains(f)) {
+            continue;
+        }
+        taken.extend(files);
+        go.push(n);
+    }
+    go
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +448,13 @@ pub(super) fn open_copies(
     if solo {
         return (BTreeMap::new(), Vec::new());
     }
+    // A cópia da onda órfã — em andamento sem o processo que a mandou — volta
+    // ao commit atual sozinha, nesta rodada, sem esperar o reenvio pedir
+    // isso: a onda falhou no meio do trabalho, e o que ela deixou para trás
+    // não é uma retomada em curso.
+    for wave in orphaned_waves(log).keys() {
+        super::commit::clean_orphan_copy(root, log, *wave);
+    }
     let dir_of = |n: &u64| recorded_copy(log, *n).and_then(|copy| copy.build_dir);
     let held: BTreeSet<String> = running.keys().filter_map(dir_of).collect();
     let mut free: Vec<String> =
@@ -680,28 +714,42 @@ pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
-/// As ondas prontas para sair, em ordem de nível e de número. `already_out`
-/// são as ondas que já saíram da fila e `delivered` as que já entregaram, que
-/// é o que solta as ondas dependentes delas. A onda que depende de todas as
-/// outras só sai com as dependências entregues e aprovadas (`done`).
+/// As ondas prontas para sair, na ordem que [`task_order`] dá para a mesma
+/// cesta de dependências — por nível e, entre as do mesmo nível, por quantas
+/// ondas cada uma destrava, da maior para a menor, e por último pelo número.
+/// `already_out` são as ondas que já saíram da fila e `delivered` as que já
+/// entregaram, que é o que solta as ondas dependentes delas. A onda que
+/// depende de todas as outras só sai com as dependências entregues e
+/// aprovadas (`done`). Uma dependência de onda em círculo nunca chega aqui —
+/// o plano já recusa isso antes da aprovação —, mas a cesta com ciclo não
+/// prende a rodada: sem ordem nenhuma escolhida, nenhuma onda sai.
 fn ready_in_order(
-    graph: &crate::commands::wave::wave_overlap_check::WaveGraph,
     depends: &BTreeMap<u64, Vec<u64>>,
     already_out: &BTreeSet<u64>,
     delivered: &BTreeSet<u64>,
     done: &BTreeSet<u64>,
 ) -> Vec<u64> {
-    let mut ready: Vec<(u32, u64)> = depends
+    let candidates: BTreeSet<u64> = depends
         .iter()
         .filter(|(n, _)| !already_out.contains(n))
         .filter(|(n, on)| {
             let released = if depends_on_all(**n, depends, done) { done } else { delivered };
             on.iter().all(|d| released.contains(d))
         })
-        .map(|(n, _)| (graph.level.get(n).copied().unwrap_or(0), *n))
+        .map(|(n, _)| *n)
         .collect();
-    ready.sort_unstable();
-    ready.into_iter().map(|(_, n)| n).collect()
+    let tasks: Vec<TaskDep> = depends.iter().map(|(n, on)| TaskDep { n: *n, depends_on: on.clone() }).collect();
+    match task_order(&tasks) {
+        Ok(order) => order.into_iter().filter(|n| candidates.contains(n)).collect(),
+        // O plano já recusa a onda com dependência em círculo antes da
+        // aprovação: chegar aqui é um defeito em outra camada, não um caso de
+        // uso — daí o alarme só em depuração, e a fila vazia, nunca um
+        // panic, para quem roda instalado.
+        Err(cycle) => {
+            debug_assert!(false, "{}", cycle.message());
+            Vec::new()
+        }
+    }
 }
 
 /// Os itens que o pedido de uma onda leva: os números de tudo que entrou
@@ -873,23 +921,24 @@ mod tests {
         (copy.path, copy.build_dir.unwrap_or_default())
     }
 
-    /// Duas ondas sem dependência que mexem no mesmo arquivo saem juntas,
-    /// cada uma na sua cópia, criada no commit atual, e com a sua pasta de
+    /// Duas ondas sem dependência e sem arquivo em comum saem juntas, cada
+    /// uma na sua cópia, criada no commit atual, e com a sua pasta de
     /// compilação, uma das fixas do projeto, porque a pasta é também a vaga
     /// das ondas que rodam juntas. O pedido de cada uma traz a cópia; a pasta,
     /// com o nome do Cargo, só quando o mapa marca o projeto como Rust, e não
     /// num projeto Node. O teto de compilações do projeto limita quantas
     /// saem.
     #[test]
-    fn two_waves_on_the_same_file_go_out_together_each_in_its_own_copy_and_the_cap_holds() {
+    fn two_waves_without_a_shared_file_go_out_together_each_in_its_own_copy_and_the_cap_holds() {
         for (kind, cites) in [("npm", false), ("cargo", true)] {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
+            approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[])]);
+            std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
             mapped(root, kind);
 
             let out = round(root, "x", None);
-            assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "a onda 2 divide arquivo com a 1 e sai junto: {out}");
+            assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "sem arquivo em comum, as duas saem juntas: {out}");
             let head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap();
             let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
             let target = mustard_core::io::wave_prompt::shown(&root.join("target").join("copias"));
@@ -919,6 +968,97 @@ mod tests {
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         let out = round(root, "x", None);
         assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
+    }
+
+    /// Duas ondas sem dependência entre si, mas com o mesmo arquivo
+    /// declarado, não saem juntas mesmo com vaga livre: quem chegou depois
+    /// espera a que já está em andamento entregar, e só então sai sozinha.
+    /// Quatro ondas sem arquivo em comum saem juntas, até o novo teto de
+    /// quatro; a quinta espera a vaga.
+    #[test]
+    fn trava_por_arquivo_impede_ondas_com_arquivo_em_comum_e_libera_ate_quatro_sem_cruzar() {
+        // Duas ondas com o mesmo arquivo: só a que já está em andamento sai,
+        // mesmo com vaga livre para a outra.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 3], "a onda 2 divide arquivo com a 1 e espera: {out}");
+
+        let again = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(waves_in(&again, "dispatch"), vec![2], "livre o arquivo, a onda 2 sai sozinha: {again}");
+
+        // Quatro ondas sem arquivo em comum saem juntas, até o teto de
+        // quatro; a quinta espera.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(
+            root,
+            "x",
+            &[
+                (1, &["src/a.rs"], &[]),
+                (2, &["src/b.rs"], &[]),
+                (3, &["src/c.rs"], &[]),
+                (4, &["src/d.rs"], &[]),
+                (5, &["src/e.rs"], &[]),
+            ],
+        );
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2, 3, 4], "sem cruzar arquivo, as quatro saem: {out}");
+    }
+
+    /// A cópia da onda órfã — pedido aberto sem o processo que mandou —
+    /// volta suja ao commit atual sozinha, na mesma rodada em que a rodada
+    /// nota a órfã, sem que ninguém peça o reenvio primeiro: quem falhou no
+    /// meio do trabalho não deixou uma retomada em curso.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn copia_orfa_volta_limpa_ao_commit_atual_sem_esperar_reenvio() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+
+        let (copy_path, _) = sent_copy(root, 1);
+        let copy = Path::new(&copy_path);
+        std::fs::write(copy.join("src/a.rs"), "fn retomada() {}\n").unwrap();
+        std::fs::write(copy.join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        assert_ne!(git_text(copy, &["status", "--porcelain"]), "", "a cópia precisa estar suja antes da rodada");
+
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.wave() == Some(1) && e.event_type == "send").unwrap();
+        let mut draft = json!({
+            "wave": 1, "role": "wave", "text": sent.str_field("text").unwrap_or_default(),
+            "lines": sent.int("lines").unwrap_or(1), "chars": sent.int("chars").unwrap_or(1),
+            "items": sent.fields.get("items").cloned().unwrap_or_else(|| json!([])),
+            "mustard": "0", "author": "binary", "copy": sent.str_field("copy").unwrap_or_default(),
+        });
+        if let Some(build) = sent.str_field("build_dir") {
+            draft["build_dir"] = json!(build);
+        }
+        drop(log);
+
+        let mut dead = Command::new("true").spawn().expect("spawn the fixture process");
+        let dead_pid = dead.id();
+        dead.wait().expect("reap the fixture process");
+        draft["claude_pid"] = json!(dead_pid);
+        draft["claude_started"] = json!(1);
+        store::write_at(
+            &path,
+            "send",
+            draft.as_object().cloned().unwrap(),
+            &[],
+            &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+        )
+        .unwrap();
+
+        round(root, "x", None);
+
+        assert_eq!(git_text(copy, &["status", "--porcelain"]), "", "a cópia órfã volta limpa sem pedir reenvio");
+        let head = git_text(root, &["rev-parse", "HEAD"]);
+        assert_eq!(git_text(copy, &["rev-parse", "HEAD"]), head, "a cópia volta ao commit atual: {head}");
     }
 
     /// A onda que já entregou não é despachada de novo, mesmo sem pedido
@@ -1108,12 +1248,13 @@ mod tests {
         // A onda 2 volta; a 3 sai no lugar dela, enquanto a 1 segue.
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
         let (_, held) = sent_copy(root, 1);
         let (_, freed) = sent_copy(root, 2);
-        let out = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/a.rs"])));
+        let out = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(waves_in(&out, "dispatch"), vec![3], "a vaga da 2 ficou livre: {out}");
         assert_eq!(sent_copy(root, 3).1, freed, "a 3 compila na pasta que a 2 deixou, e não na da 1 ({held})");
@@ -1137,6 +1278,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         let full = round(root, "x", None);
         assert_eq!(waves_in(&full, "dispatch"), Vec::<u64>::new(), "as duas vagas estão ocupadas: {full}");
