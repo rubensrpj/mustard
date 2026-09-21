@@ -83,6 +83,18 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on PreCompact",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }

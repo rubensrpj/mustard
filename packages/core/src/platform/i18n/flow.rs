@@ -107,16 +107,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} has parts that share no file with each other ({parts}): it goes out split, \
              one wave per part, and the parts run in parallel."
         }
-        ("plan.wave_too_big", Locale::PtBr) => {
-            "A onda {wave} tem {tasks} tarefas e {proofs} provas de critério, acima do teto de \
-             {cap}: ela sai dividida em duas ondas antes da aprovação — a primeira leva {first}, \
-             e a segunda leva {second}."
-        }
-        ("plan.wave_too_big", Locale::EnUs) => {
-            "Wave {wave} has {tasks} tasks and {proofs} criteria to prove, over the cap of {cap}: \
-             it goes out split into two waves before approval — the first takes {first}, and the \
-             second takes {second}."
-        }
         ("plan.spec_should_split", Locale::PtBr) => {
             "A spec tem partes que não dividem arquivo entre si ({parts}): ela pode ser dividida, \
              uma spec por parte."
@@ -455,22 +445,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              delivery. Bring what is useful to the main repository and delete the copy with \
              `git worktree remove --force {copy}`."
         }
-        // O gasto da obra inteira, contra a régua de tokens por arquivo
-        // tocado (`apps/rt/src/commands/spec_events/pages/copy.rs`).
+        // O gasto da obra inteira (`apps/rt/src/commands/spec_events/pages/copy.rs`).
         ("round.spend.line", Locale::PtBr) => {
-            "Gasto total: {waves} tokens de onda + {caller} tokens de quem despachou = {total} tokens. \
-             Régua do projeto: {expected} tokens para {files} arquivo(s) tocado(s) — {ratio}× o \
-             previsto, obra {verdict}."
+            "Gasto total: {waves} tokens de onda + {caller} tokens de quem despachou = {total} tokens."
         }
         ("round.spend.line", Locale::EnUs) => {
-            "Total spend: {waves} wave tokens + {caller} orchestrator tokens = {total} tokens. Project \
-             ruler: {expected} tokens for {files} file(s) touched — {ratio}× the expected, the work came \
-             out {verdict}."
+            "Total spend: {waves} wave tokens + {caller} orchestrator tokens = {total} tokens."
         }
-        ("round.spend.cheap", Locale::PtBr) => "barata",
-        ("round.spend.cheap", Locale::EnUs) => "cheap",
-        ("round.spend.expensive", Locale::PtBr) => "cara",
-        ("round.spend.expensive", Locale::EnUs) => "expensive",
         // O que um agente deixou preso, encerrado no início da sessão, em
         // cada rodada e no fechamento (`apps/rt/src/commands/flow/stuck.rs`).
         ("stuck.ended", Locale::PtBr) => "Processo(s) preso(s) encerrado(s): {list}.",
@@ -479,16 +460,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("stuck.reason.waiting_loop", Locale::EnUs) => "waiting loop",
         ("stuck.reason.deleted_copy", Locale::PtBr) => "cópia de onda apagada",
         ("stuck.reason.deleted_copy", Locale::EnUs) => "deleted wave copy",
-        // O tamanho da conversa: a ordem de pausa ao agente de onda e o
-        // aviso de compactar ao orquestrador.
-        ("conversation_size.pause", Locale::PtBr) => {
-            "A conversa passou de 200 mil tokens. Grave o passo da onda {wave} na spec e pare com a \
-             linha `<PAUSED>{\"wave\":{wave}}</PAUSED>`."
-        }
-        ("conversation_size.pause", Locale::EnUs) => {
-            "The conversation passed 200 thousand tokens. Save the step of wave {wave} on the spec and \
-             stop with the line `<PAUSED>{\"wave\":{wave}}</PAUSED>`."
-        }
+        // O bloco de retomada antes de compactar, no gancho `PreCompact`.
         ("conversation_size.block", Locale::PtBr) => {
             "spec {spec}, fase {phase}. Ondas entregues: {delivered}. Ondas em andamento: {running}. \
              Falta: {missing}."
@@ -497,21 +469,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "spec {spec}, phase {phase}. Delivered waves: {delivered}. Waves in flight: {running}. \
              Missing: {missing}."
         }
-        ("conversation_size.compact", Locale::PtBr) => {
-            "Esta conversa passou de mais um degrau de 200 mil tokens. Rode `/compact` e, depois, \
-             {command}. O que fica: {block} {next}"
+        ("conversation_size.precompact", Locale::PtBr) => {
+            "Esta conversa vai ser compactada agora. Depois, cole de volta o bloco de retomada: \
+             {block} Depois, {command}. {next}"
         }
-        ("conversation_size.compact", Locale::EnUs) => {
-            "This conversation passed another 200-thousand-token step. Run `/compact` and, after, \
-             {command}. What stays: {block} {next}"
-        }
-        ("conversation_size.blocked", Locale::PtBr) => {
-            "A conversa passou de 200 mil tokens: esta chamada de ferramenta foi recusada. Rode \
-             `/compact` e cole de volta o bloco de retomada: {block} Depois, {command}. {next}"
-        }
-        ("conversation_size.blocked", Locale::EnUs) => {
-            "The conversation passed 200 thousand tokens: this tool call was refused. Run `/compact` \
-             and paste back the resume block: {block} After, {command}. {next}"
+        ("conversation_size.precompact", Locale::EnUs) => {
+            "This conversation is about to be compacted. After, paste back the resume block: \
+             {block} After, {command}. {next}"
         }
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
@@ -526,6 +490,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.build_failed", Locale::EnUs) => {
             "The main repository did not build with `{command}`, and the round committed nothing: {output}"
+        }
+        ("round.binary_not_reinstalled", Locale::PtBr) => {
+            "O binário do Mustard não foi reinstalado — `{command}` não passou, e o binário instalado \
+             continua o de antes: {output}"
+        }
+        ("round.binary_not_reinstalled", Locale::EnUs) => {
+            "Mustard's binary was not reinstalled — `{command}` did not pass, and the installed binary \
+             stays the one from before: {output}"
         }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
@@ -628,15 +600,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Quando voltarem, rode a rodada de novo com a linha do fim de cada agente, como ela veio, \
              uma por linha, todas no mesmo `--report '…'`: a do agente de onda é \
              `<DELIVERED>{\"wave\":1,\"text\":\"…\",\"files\":[\"…\"],\"commit\":\"…\"}</DELIVERED>`, e a do revisor, \
-             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. A rodada lê só \
-             essas linhas e monta o commit do `commit` de cada entrega."
+             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. Junto delas, \
+             acrescente, para cada onda que voltou, o consumo que a plataforma entregou a você quando \
+             o agente terminou, numa linha `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\
+             \"caller_steps\":…,\"caller_tokens\":…}</USAGE>` — nunca um número que o agente tenha digitado. \
+             A rodada lê essas linhas e monta o commit do `commit` de cada entrega."
         }
         ("round.report", Locale::EnUs) => {
             "When they come back, run the round again with each agent's closing line, as it came, one \
              per line, all in the same `--report '…'`: the wave agent's is \
              `<DELIVERED>{\"wave\":1,\"text\":\"…\",\"files\":[\"…\"],\"commit\":\"…\"}</DELIVERED>`, and the reviewer's, \
-             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. The round reads \
-             only those lines and builds the commit from each delivery's `commit`."
+             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. Along with \
+             those, add, for each wave that came back, the usage the platform handed you when the agent \
+             finished, in one `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\"caller_steps\":…,\
+             \"caller_tokens\":…}</USAGE>` line — never a number the agent typed itself. The round reads \
+             those lines and builds the commit from each delivery's `commit`."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -1087,8 +1065,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            144,
-            0x8951_35ff_9848_0946,
+            140,
+            0x5a67_047c_8a76_02c4,
         );
     }
 
@@ -1191,7 +1169,6 @@ mod tests {
             ("plan.task_without_wave", &["{task}", "{wave}"][..]),
             ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
             ("plan.wave_should_split", &["{wave}", "{parts}"][..]),
-            ("plan.wave_too_big", &["{wave}", "{tasks}", "{proofs}", "{cap}", "{first}", "{second}"][..]),
             ("plan.spec_should_split", &["{parts}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
@@ -1249,13 +1226,12 @@ mod tests {
             ("stuck.ended", &["{list}"][..]),
             ("stuck.reason.waiting_loop", &[][..]),
             ("stuck.reason.deleted_copy", &[][..]),
-            ("conversation_size.pause", &["{wave}"][..]),
             ("conversation_size.block", &["{spec}", "{phase}", "{delivered}", "{running}", "{missing}"][..]),
-            ("conversation_size.compact", &["{block}", "{command}", "{next}"][..]),
-            ("conversation_size.blocked", &["{block}", "{command}", "{next}"][..]),
+            ("conversation_size.precompact", &["{block}", "{command}", "{next}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
+            ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
             ("round.commit.scope.many", &["{waves}"][..]),
@@ -1292,12 +1268,9 @@ mod tests {
             ("prompt.read", &["{root}", "{spec}"][..]),
             ("prompt.part.waves", &[][..]),
             ("prompt.part.each_delivered", &[][..]),
-            ("prompt.part.specification", &[][..]),
             ("prompt.part.agreed", &[][..]),
-            ("prompt.part.wave", &[][..]),
+            ("prompt.part.items", &[][..]),
             ("prompt.part.criteria", &[][..]),
-            ("prompt.part.lessons", &[][..]),
-            ("prompt.part.skills", &[][..]),
             ("prompt.part.delivered", &[][..]),
             ("prompt.skill.stale", &[][..]),
             ("prompt.skill.read", &[][..]),

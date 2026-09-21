@@ -107,7 +107,11 @@ pub enum FlowCmd {
         spec: Option<String>,
         /// O relatório da rodada anterior: a linha do fim de cada agente,
         /// como ela veio — `<DELIVERED>{…}</DELIVERED>` do agente de onda e
-        /// `<VERDICT>{…}</VERDICT>` do revisor, uma por linha.
+        /// `<VERDICT>{…}</VERDICT>` do revisor, uma por linha. Junto delas,
+        /// quem despacha acrescenta, para cada onda que voltou, a linha
+        /// `<USAGE>{…}</USAGE>` com o consumo que a plataforma entregou —
+        /// nunca digitado pelo agente: `wave`, `model`, `steps`, `tokens`,
+        /// `caller_steps` e `caller_tokens`.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.

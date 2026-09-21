@@ -225,9 +225,9 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": msg}));
     let c2 = write(root, "criterion", &json!({"when": "c", "then": "d", "proof": "q", "origin": msg}));
     write(root, "wave", &json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
-    write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "origin": msg}));
+    write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
     write(root, "wave", &json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "depends_on": [1], "origin": msg}));
-    write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": msg}));
+    write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": msg}));
     seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
     seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
 
@@ -324,6 +324,11 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     std::fs::write(root.join("a1.rs"), "fn um() {}\n").expect("a1.rs");
     std::fs::write(root.join("Makefile"), "default:\n\t@true\n").expect("Makefile");
     git(&["init", "-q"]);
+    // Quem comita a rodada é o binário, não o `git` deste teste: sem
+    // identidade gravada no repositório temporário ele cai no nome do
+    // sistema, que numa máquina de integração vem vazio e faz o git recusar.
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
     std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "semente"]);
@@ -346,7 +351,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     assert_eq!(body["ok"], json!(true), "{body}");
     assert!(body["commit"]["sha"].as_str().is_some(), "{body}");
     assert_eq!(
-        std::fs::read_to_string(root.join("extra.rs")).unwrap(),
+        std::fs::read_to_string(root.join("extra.rs")).expect("o arquivo nao citado"),
         "fn extra() {}\n",
         "o arquivo que a onda não citou entra no commit quando o repositório compila"
     );
@@ -368,7 +373,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     assert_eq!(body["reason"], json!("round-build-failed"), "{body}");
     assert_eq!(head(), before, "nada foi comitado com o repositório quebrado");
     assert_eq!(
-        std::fs::read_to_string(root.join("Makefile")).unwrap(),
+        std::fs::read_to_string(root.join("Makefile")).expect("o Makefile do principal"),
         "default:\n\t@true\n",
         "o repositório principal volta ao que era: nada da onda 2 entrou"
     );

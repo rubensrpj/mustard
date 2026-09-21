@@ -42,6 +42,11 @@ pub(crate) enum RoundRefusal {
     BadReport { detail: String },
     /// Uma linha do relatório não traz um campo obrigatório.
     LineField { line: &'static str, field: &'static str },
+    /// Ondas que dependem umas das outras em círculo: nenhuma pôde ser
+    /// escolhida para sair. A aprovação do plano já recusa isso antes de a
+    /// rodada rodar — chegar aqui é a mesma leitura do grafo pegando um
+    /// defeito que passou por outra porta, não uma segunda conta à parte.
+    WaveLoop(Vec<u64>),
     /// A entrega de uma onda conflita com o repositório principal: os
     /// trechos, a cópia em que se resolve e o commit atual.
     MergeConflict { wave: u64, copy: String, conflicts: Vec<String>, head: String },
@@ -68,6 +73,7 @@ impl RoundRefusal {
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::Refused(refusal) => refusal.reason().to_string(),
+            Self::WaveLoop(_) => "waves-loop".into(),
             Self::BadReport { .. } => "round-bad-report".into(),
             Self::LineField { .. } => "round-line-field-missing".into(),
             Self::MergeConflict { .. } => "round-merge-conflict".into(),
@@ -88,6 +94,14 @@ impl RoundRefusal {
         };
         match self {
             Self::Refused(refusal) => refusal.message(lang),
+            // A mesma chave da recusa que já trava a aprovação do plano
+            // ([`crate::commands::flow::plan::PlanFinding::WaveLoop`]): uma
+            // recusa só, com a mesma leitura do ciclo e a mesma mensagem, não
+            // duas contas que pudessem discordar entre si.
+            Self::WaveLoop(cycle) => fill(
+                "plan.wave_loop",
+                &[("{waves}", cycle.iter().map(u64::to_string).collect::<Vec<_>>().join(", "))],
+            ),
             Self::BadReport { detail } => fill("round.bad_report", &[("{detail}", detail.clone())]),
             Self::LineField { line, field } => {
                 fill("round.line_field", &[("{line}", (*line).to_string()), ("{field}", (*field).to_string())])
@@ -394,7 +408,7 @@ pub(super) fn run_round_with_mine(
     // vivas e órfãs, e só a viva entra no "esperando" da resposta.
     let occupied = open_sends(&log);
     let stuck = waves_stuck(&log);
-    let ready = next_waves(&log, max_parallel(root), &occupied, &stuck);
+    let ready = next_waves(&log, max_parallel(root), &occupied, &stuck).map_err(RoundRefusal::WaveLoop)?;
     // A escolha antes do envio, antes da cópia: a onda com item do projeto
     // todo, item sem dono ou lição a julgar só sai com a escolha do
     // orquestrador; sem ela, a resposta traz os candidatos dela, e a onda fica
@@ -715,6 +729,48 @@ mod tests {
         assert_eq!(sent[0].wave(), Some(1));
     }
 
+    /// O molde do agente instalado em `root`, com o frontmatter que os
+    /// moldes de verdade trazem.
+    fn write_agent_template(root: &Path) {
+        std::fs::create_dir_all(root.join(".claude").join("agents").join("mustard")).unwrap();
+        std::fs::write(
+            root.join(".claude").join("agents").join("mustard").join("wave.md"),
+            "---\nname: mustard-wave\nmodel: sonnet\n---\n\nCorpo do agente.\n",
+        )
+        .unwrap();
+    }
+
+    /// O envio grava, no cabeçalho do molde despachado, o teto de turnos que
+    /// a plataforma aplica: dez para a onda de uma tarefa só, quinze para a
+    /// de várias — os dois números combinados desta onda.
+    #[test]
+    fn the_dispatched_template_carries_ten_or_fifteen_turns_by_task_count() {
+        let solo_dir = tempdir().unwrap();
+        let solo_root = solo_dir.path();
+        write_agent_template(solo_root);
+        approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(solo_root, "x", None);
+        let solo_log = store::read(&store::spec_file(solo_root, "x").unwrap()).unwrap().unwrap();
+        let solo_sent = solo_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
+        let solo_template = solo_sent.str_field("template").unwrap_or_default();
+        assert!(solo_template.contains("maxTurns: 10"), "{solo_template}");
+        assert!(!solo_template.contains("maxTurns: 15"), "{solo_template}");
+
+        let multi_dir = tempdir().unwrap();
+        let multi_root = multi_dir.path();
+        write_agent_template(multi_root);
+        approved_with(multi_root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            write(multi_root, "x", "task", json!({"wave": 1, "text": "Tarefa 2 da onda 1.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": said}));
+        });
+        round(multi_root, "x", None);
+        let multi_log = store::read(&store::spec_file(multi_root, "x").unwrap()).unwrap().unwrap();
+        let multi_sent = multi_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
+        let multi_template = multi_sent.str_field("template").unwrap_or_default();
+        assert!(multi_template.contains("maxTurns: 15"), "{multi_template}");
+        assert!(!multi_template.contains("maxTurns: 10"), "{multi_template}");
+    }
+
     /// A instrução de publicar e copiar a página, por extenso, fica só no
     /// arquivo sob a pasta de lotes da spec: a resposta da rodada leva uma
     /// linha curta que manda lê-lo, sem o texto que cita a ferramenta
@@ -753,7 +809,7 @@ mod tests {
     /// Linux.
     #[cfg(target_os = "linux")]
     fn resend_draft(sent: &SpecEvent) -> Value {
-        json!({
+        let mut draft = json!({
             "wave": sent.wave().unwrap(),
             "role": "wave",
             "text": sent.str_field("text").unwrap_or_default(),
@@ -762,7 +818,14 @@ mod tests {
             "items": sent.fields.get("items").cloned().unwrap_or_else(|| json!([])),
             "mustard": "0",
             "copy": sent.str_field("copy").unwrap_or_default(),
-        })
+        });
+        // A pasta de compilação segue com o pedido: sem ela, a rodada
+        // seguinte acha a vaga livre mesmo com a cópia desta onda ainda lá,
+        // e deixa duas ondas dividirem a mesma pasta.
+        if let Some(dir) = sent.str_field("build_dir") {
+            draft["build_dir"] = json!(dir);
+        }
+        draft
     }
 
     /// Grava um envio à mão, com a hora `at`: supera o envio mais novo da
@@ -943,7 +1006,8 @@ mod tests {
 
     /// A onda órfã segue ocupando a vaga e a cópia dela até o reenvio: com o
     /// teto de compilação em 1, uma onda fresca não sai por cima da órfã na
-    /// mesma rodada em que ela é reenviada.
+    /// mesma rodada em que ela é reenviada — a pasta de compilação é a mesma,
+    /// e o reenvio a reocupa mesmo antes de outra onda tentar.
     /// Só roda no Linux: fora dele nenhum processo é dado como morto, então
     /// onda órfã não existe para ser provada.
     #[test]
@@ -1093,13 +1157,14 @@ mod tests {
         for line in ["- Compile com `make`.", "- Teste com `make test`.", "  - Onda 2: `src/b.rs`"] {
             assert!(first.contains(line), "{line}: {first}");
         }
-        assert!(!first.contains("## Conserto"), "{first}");
+        assert!(!first.contains(translate("prompt.fix.wave", Locale::PtBr)), "{first}");
 
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
         write(root, "x", "decision", json!({"author": "user", "text": "A soma aceita negativos.", "keys": ["soma"],
             "why": "o usuário pediu", "waves": [1]}));
         let fix = text(&round(root, "x", Some(&verdict(1, "rejected", "faltou o teste"))), "dispatch", 1);
-        let heading = format!("## Conserto\n\n{}", translate("prompt.fix.wave", Locale::PtBr));
+        let heading =
+            format!("## {}\n\n{}", translate("prompt.part.items", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");
         let fix_lines = |text: &str| -> Vec<String> {
             let part = text.split("\n## ").nth(1).unwrap_or_default();

@@ -283,6 +283,23 @@ fn each_agent_template_declares_its_own_model_and_effort() {
     }
 }
 
+/// O molde da onda, nos dois idiomas, tem exatamente quatro itens de
+/// segundo nível — objetivo, orientação sobre ferramentas, fronteira da
+/// tarefa e formato de saída, nas palavras da documentação da Anthropic —, e
+/// nada além deles: a contagem de `## ` é quatro, sem um quinto item.
+#[test]
+fn the_wave_agent_template_has_exactly_four_items() {
+    let headers: [(&str, [&str; 4]); 2] = [
+        ("pt-BR", ["## Objetivo", "## Orientação sobre ferramentas", "## Fronteira da tarefa", "## Formato de saída"]),
+        ("en-US", ["## Goal", "## Tool guidance", "## Task boundary", "## Output format"]),
+    ];
+    for (lang, items) in headers {
+        let wave = template(lang, "wave");
+        let found: Vec<&str> = wave.lines().filter(|line| line.starts_with("## ")).collect();
+        assert_eq!(found, items, "the {lang} wave agent does not have exactly these four items: {wave}");
+    }
+}
+
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
 /// reler depois de editar, rodar só os testes do que mudou, a suíte inteira
 /// uma vez no fim pelo `rtk`, nada em segundo plano, não comitar nem usar
@@ -374,9 +391,12 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     let put = |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
     let said = put("message", json!({"author": "user", "text": "o objetivo"}));
     let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+    // Cada onda declara o arquivo dela: a trava por arquivo tira da rodada
+    // as ondas que dividem um mesmo arquivo, e este teste prova as duas
+    // saindo juntas, sem cruzar arquivo nenhuma com a outra.
     for n in [1, 2] {
         put("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "passa", "origin": said}));
-        put("task", json!({"wave": n, "text": "Mexer no mesmo arquivo.", "files": [{"path": "src/main.rs"}], "origin": said}));
+        put("task", json!({"wave": n, "text": "Mexer no arquivo dela.", "files": [{"path": format!("src/onda{n}.rs")}], "origin": said}));
     }
     put("state", json!({"phase": "running", "branch": "feature/copia"}));
     // O mapa marca o projeto como Rust, como o scan o grava.
@@ -386,7 +406,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     let round = rt(&root, &home, &["run", "round", "--spec", "copia"], None);
     assert_eq!(round["ok"], json!(true), "{round}");
     let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
-    assert_eq!(dispatched.len(), 2, "the two waves on the same file go out together: {round}");
+    assert_eq!(dispatched.len(), 2, "the two waves, each on its own file, go out together: {round}");
     let log = store::read(&file).unwrap().unwrap();
     let mut dirs = Vec::new();
     for sent in dispatched {

@@ -19,9 +19,8 @@
 //! inteira fica no pedido, porque é ela que mostra o escopo todo de uma vez.
 //! As lições entram pelo número delas no banco, como todo o resto — `run read
 //! lessons --term <número>` devolve o texto — e cada skill entra como
-//! recomendação de uma linha. O teto de [`MAX_LINES`] linhas continua
-//! conferido aqui; como o número de itens não soma mais linhas, só as
-//! lições, as skills e as ondas em andamento o fazem crescer.
+//! recomendação de uma linha. O pedido não tem teto de linhas: o que cresce é
+//! sempre lista, nunca texto de item.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -36,16 +35,26 @@ use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecE
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
-/// O teto de linhas de um pedido de onda.
-pub const MAX_LINES: usize = 500;
+/// O teto de turnos de uma onda com uma tarefa só: uma ida e volta do
+/// modelo, que pode conter várias chamadas de ferramenta.
+pub const SOLO_TASK_TURNS_CAP: u32 = 10;
 
-/// O teto de tarefas de uma onda que ainda não foi entregue: acima dele, ela
-/// nasce grande demais e [`wave_size_refusal`] a recusa.
-pub const WAVE_TASKS_CAP: usize = 3;
+/// O teto de turnos de uma onda com mais de uma tarefa.
+pub const MULTI_TASK_TURNS_CAP: u32 = 15;
 
-/// O teto de provas de critério de uma onda que ainda não foi entregue, pela
-/// mesma conta de [`WAVE_TASKS_CAP`].
-pub const WAVE_PROOFS_CAP: usize = 3;
+/// O teto de turnos da onda com `tasks` tarefas, para o cabeçalho do agente:
+/// [`SOLO_TASK_TURNS_CAP`] com uma tarefa só, [`MULTI_TASK_TURNS_CAP`] com
+/// mais de uma. O corte é da própria plataforma, pelo campo `maxTurns` do
+/// molde do agente — o binário só escolhe o número e o escreve lá; o que
+/// sobrou quando ela corta volta para a fila como tarefa nova.
+#[must_use]
+pub fn requested_turns(tasks: usize) -> u32 {
+    if tasks <= 1 {
+        SOLO_TASK_TURNS_CAP
+    } else {
+        MULTI_TASK_TURNS_CAP
+    }
+}
 
 /// O modelo pedido para o papel `role` (`wave`, `review` ou `skill`) no
 /// envio: a onda que implementa sai em Sonnet 5; a revisão e o agente de
@@ -168,32 +177,13 @@ pub struct Prompt {
     pub lines: usize,
 }
 
-/// Monta o pedido da onda a partir do material já lido.
-///
-/// # Errors
-///
-/// [`Refusal::WavePromptTooLong`] quando o pedido passa de [`MAX_LINES`]
-/// linhas mesmo com o combinado reduzido a ponteiros: a onda precisa ser
-/// dividida antes de ser despachada, e a recusa diz o que ficou inteiro.
-pub fn build(material: &Material, lang: Locale) -> Result<Prompt, Refusal> {
+/// Monta o pedido da onda a partir do material já lido. Sem teto de linhas:
+/// o pedido sai inteiro, do tamanho que a onda pedir.
+#[must_use]
+pub fn build(material: &Material, lang: Locale) -> Prompt {
     let text = write(material, lang);
     let lines = count_lines(&text);
-    if lines > MAX_LINES {
-        return Err(too_long(material, lines, lang));
-    }
-    Ok(Prompt { text, lines })
-}
-
-/// A recusa do teto de linhas, com as partes do pedido e o tamanho de cada
-/// uma: quem divide a onda precisa saber de onde vêm as linhas.
-#[must_use]
-pub fn too_long(material: &Material, lines: usize, lang: Locale) -> Refusal {
-    Refusal::WavePromptTooLong {
-        wave: material.wave,
-        lines,
-        max: MAX_LINES,
-        parts: parts(material, lang),
-    }
+    Prompt { text, lines }
 }
 
 /// O texto do pedido, sem medir nem recusar: a página mostra mesmo o pedido
@@ -214,30 +204,6 @@ pub fn write(material: &Material, lang: Locale) -> String {
 #[must_use]
 pub fn write_final_review(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.final_review_text()
-}
-
-/// As partes do pedido, cada uma com quantas linhas ocupa, separadas por
-/// vírgula.
-fn parts(material: &Material, lang: Locale) -> String {
-    let w = Writer { material, lang };
-    let mut out: Vec<String> = Vec::new();
-    let mut named = |key: &str, lines: usize| {
-        if lines > 0 {
-            out.push(format!("{} ({lines})", translate(key, lang)));
-        }
-    };
-    named("prompt.part.fix", w.lines_of(|out| w.fix(out, "prompt.fix.wave")));
-    named("prompt.part.delivers", w.lines_of(|out| w.delivers(out)));
-    named("prompt.part.tasks", w.lines_of(|out| w.tasks(out)));
-    named("prompt.part.wave", w.part_lines("prompt.part.wave", &w.wave_only()));
-    named("prompt.part.criteria", w.part_lines("prompt.part.criteria", &material.criteria));
-    named("prompt.part.specification", w.part_lines("prompt.part.specification", &material.specification));
-    named("prompt.part.agreed", w.part_lines("prompt.part.agreed", &material.agreed));
-    named("prompt.part.lessons", w.lessons_lines());
-    named("prompt.part.skills", w.skills_lines());
-    named("prompt.part.delivered", w.part_lines("prompt.part.delivered", &material.delivered));
-    named("prompt.part.execution", w.lines_of(|out| w.execution(out)));
-    out.join(", ")
 }
 
 // ---------------------------------------------------------------------------
@@ -620,70 +586,6 @@ fn agreed_items(log: &SpecLog) -> Vec<&SpecEvent> {
         .collect()
 }
 
-/// As tarefas ainda vigentes da onda `wave`, e quantas provas de critério a
-/// onda declara, pela mesma leitura que [`wave_files`] usa.
-fn wave_size(log: &SpecLog, wave: u64) -> (Vec<&SpecEvent>, usize) {
-    let block = log.block(BlockQuery::Block(Block::Waves));
-    let tasks: Vec<&SpecEvent> =
-        block.iter().copied().filter(|e| e.event_type == "task" && e.wave() == Some(wave)).collect();
-    let proofs = block
-        .iter()
-        .find(|e| e.event_type == "wave" && e.int("n") == Some(wave))
-        .map(|w| w.ints("criteria").len())
-        .unwrap_or(0);
-    (tasks, proofs)
-}
-
-/// A recusa da onda `wave`, quando ela passa do teto de tarefas
-/// ([`WAVE_TASKS_CAP`]) ou de provas de critério ([`WAVE_PROOFS_CAP`]);
-/// `None` quando ela cabe. A divisão sugerida corta a lista de tarefas ao
-/// meio, na ordem em que elas aparecem no arquivo.
-#[must_use]
-pub fn wave_size_refusal(log: &SpecLog, wave: u64) -> Option<Refusal> {
-    let (tasks, proofs) = wave_size(log, wave);
-    if tasks.len() <= WAVE_TASKS_CAP && proofs <= WAVE_PROOFS_CAP {
-        return None;
-    }
-    let codes = log.codes();
-    let code_of = |event: &SpecEvent| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
-    let wave_codes: Vec<String> = tasks.iter().map(|task| code_of(task)).collect();
-    let half = wave_codes.len().div_ceil(2);
-    let (first, second) = wave_codes.split_at(half);
-    Some(Refusal::WaveTooBig {
-        wave,
-        tasks: tasks.len(),
-        proofs,
-        first: first.join(", "),
-        second: second.join(", "),
-    })
-}
-
-/// A onda grande é recusada na hora de nascer, não depois de gravada: a
-/// tarefa ou a onda que faria uma onda ainda não entregue passar do teto de
-/// tarefas ou de provas de critério é recusada antes de ir para o arquivo.
-/// Olha só o evento que a gravação acabou de acrescentar a `after` — as
-/// gravações que não mexem em tarefa nem em onda passam sempre.
-///
-/// # Errors
-///
-/// [`Refusal::WaveTooBig`].
-pub fn wave_size_rule(after: &SpecLog) -> Result<(), Refusal> {
-    let Some(event) = after.get(after.max_id()) else { return Ok(()) };
-    let wave = match event.event_type.as_str() {
-        "task" => event.int("wave"),
-        "wave" => event.int("n"),
-        _ => None,
-    };
-    let Some(wave) = wave else { return Ok(()) };
-    if after.delivered_waves().contains(&wave) {
-        return Ok(());
-    }
-    match wave_size_refusal(after, wave) {
-        Some(refusal) => Err(refusal),
-        None => Ok(()),
-    }
-}
-
 /// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
 #[must_use]
 pub fn wave_files(log: &SpecLog, wave: u64) -> Vec<String> {
@@ -1051,15 +953,9 @@ impl Writer<'_> {
         out.push_str(self.t("prompt.fixed"));
         out.push_str("\n\n");
         self.read_example(&mut out, m.execution.copy.is_some());
-        self.fix(&mut out, "prompt.fix.wave");
         self.delivers(&mut out);
+        self.items(&mut out);
         self.tasks(&mut out);
-        self.part(&mut out, "prompt.part.wave", &self.wave_only());
-        self.part(&mut out, "prompt.part.criteria", &m.criteria);
-        self.part(&mut out, "prompt.part.specification", &m.specification);
-        self.part(&mut out, "prompt.part.agreed", &m.agreed);
-        self.lessons(&mut out);
-        self.skills(&mut out);
         self.part(&mut out, "prompt.part.delivered", &m.delivered);
         self.execution(&mut out);
         while out.ends_with("\n\n") {
@@ -1127,15 +1023,74 @@ impl Writer<'_> {
 
     /// O que a onda entrega: a frase do `done_when` do evento da onda, texto
     /// original — é o único texto de item que este pedido copia, porque é
-    /// justamente o que abre o trabalho. Sem onda no material, nada.
+    /// justamente o que abre o trabalho. Vem como parágrafo de abertura, sem
+    /// título próprio, antes dos itens da onda. Sem onda no material, nada.
     fn delivers(&self, out: &mut String) {
         let Some(wave) = self.material.block.iter().copied().find(|e| e.event_type == "wave") else { return };
         let done_when = wave.str_field("done_when").unwrap_or_default().trim();
         if done_when.is_empty() {
             return;
         }
-        let _ = writeln!(out, "## {}\n", self.t("prompt.part.delivers"));
         let _ = writeln!(out, "{done_when}\n");
+    }
+
+    /// Os itens da onda, todos sob um único título: o conserto pendente
+    /// (quando a onda volta reprovada), a própria onda, os critérios, a
+    /// especificação, o combinado, as lições e as skills que as tarefas
+    /// nomeiam. Cada bloco da spec sai em sua própria linha de códigos, como
+    /// [`codes_by_block`] os agrupa; lições e skills mantêm a listagem
+    /// própria, uma linha por item, porque carregam mais que um código. Nem
+    /// o texto do item nem o comando de leitura entram aqui — o comando está
+    /// uma vez só no pedido, em [`Self::read_example`].
+    fn items(&self, out: &mut String) {
+        let m = self.material;
+        let wave_only = self.wave_only();
+        let has_content = !m.fix.is_empty()
+            || !wave_only.is_empty()
+            || !m.criteria.is_empty()
+            || !m.specification.is_empty()
+            || !m.agreed.is_empty()
+            || !m.lessons.is_empty()
+            || !m.skills.is_empty();
+        if !has_content {
+            return;
+        }
+        let _ = writeln!(out, "## {}\n", self.t("prompt.part.items"));
+        if !m.fix.is_empty() {
+            let _ = writeln!(out, "{}\n", self.t("prompt.fix.wave"));
+            for line in codes_by_block(m, &m.fix) {
+                let _ = writeln!(out, "{line}");
+            }
+        }
+        for line in codes_by_block(m, &wave_only) {
+            let _ = writeln!(out, "{line}");
+        }
+        for line in codes_by_block(m, &m.criteria) {
+            let _ = writeln!(out, "{line}");
+        }
+        for line in codes_by_block(m, &m.specification) {
+            let _ = writeln!(out, "{line}");
+        }
+        for line in codes_by_block(m, &m.agreed) {
+            let _ = writeln!(out, "{line}");
+        }
+        for lesson in &m.lessons {
+            let _ = writeln!(out, "- `lessons`: {}", lesson.id);
+        }
+        if !m.skills.is_empty() {
+            let _ = writeln!(out, "{}", self.t("prompt.skill.read"));
+            for skill in &m.skills {
+                let _ = write!(out, "- **{}**", skill.name);
+                if skill.stale {
+                    let _ = write!(out, " ({})", self.t("prompt.skill.stale"));
+                }
+                if !skill.when.trim().is_empty() {
+                    let _ = write!(out, " — {}", skill.when.trim());
+                }
+                let _ = writeln!(out, " — `{}`", skill.path);
+            }
+        }
+        out.push('\n');
     }
 
     /// As tarefas da onda, na ordem de execução dela ([`Self::wave_items`]):
@@ -1203,20 +1158,6 @@ impl Writer<'_> {
             let _ = writeln!(out, "{line}");
         }
         out.push('\n');
-    }
-
-    /// Quantas linhas uma parte ocupa sozinha.
-    fn part_lines(&self, key: &str, events: &[&SpecEvent]) -> usize {
-        let mut out = String::new();
-        self.part(&mut out, key, events);
-        count_lines(&out)
-    }
-
-    /// Quantas linhas uma parte escrita por `write` ocupa sozinha.
-    fn lines_of(&self, write: impl Fn(&mut String)) -> usize {
-        let mut out = String::new();
-        write(&mut out);
-        count_lines(&out)
     }
 
     /// As linhas do conserto: o título, o que fazer com elas (`intro`: o do
@@ -1305,56 +1246,6 @@ impl Writer<'_> {
         }
     }
 
-    /// Quantas linhas as lições ocupam.
-    fn lessons_lines(&self) -> usize {
-        let mut out = String::new();
-        self.lessons(&mut out);
-        count_lines(&out)
-    }
-
-    /// Quantas linhas as skills ocupam.
-    fn skills_lines(&self) -> usize {
-        let mut out = String::new();
-        self.skills(&mut out);
-        count_lines(&out)
-    }
-
-    /// As lições, pelo número delas no banco — como todo o resto do pedido,
-    /// nenhum texto de lição é copiado aqui. `mustard-rt run read lessons
-    /// --term <número>` devolve a lição, do banco em
-    /// `.claude/spec/lessons.ndjson`, fora da spec.
-    fn lessons(&self, out: &mut String) {
-        if self.material.lessons.is_empty() {
-            return;
-        }
-        let _ = writeln!(out, "## {}\n", self.t("prompt.part.lessons"));
-        for lesson in &self.material.lessons {
-            let _ = writeln!(out, "- `lessons`: {}", lesson.id);
-        }
-        out.push('\n');
-    }
-
-    /// Uma linha por skill que uma tarefa nomeia: o nome, o quando usar e o
-    /// caminho do arquivo. O texto não vem junto — o agente da onda lê a skill
-    /// no disco pelo caminho recomendado aqui.
-    fn skills(&self, out: &mut String) {
-        if self.material.skills.is_empty() {
-            return;
-        }
-        let _ = writeln!(out, "## {}\n", self.t("prompt.part.skills"));
-        let _ = writeln!(out, "{}\n", self.t("prompt.skill.read"));
-        for skill in &self.material.skills {
-            let _ = write!(out, "- **{}**", skill.name);
-            if skill.stale {
-                let _ = write!(out, " ({})", self.t("prompt.skill.stale"));
-            }
-            if !skill.when.trim().is_empty() {
-                let _ = write!(out, " — {}", skill.when.trim());
-            }
-            let _ = writeln!(out, " — `{}`", skill.path);
-        }
-        out.push('\n');
-    }
 
     /// Um arquivo da leitura por tarefa: `caminho#declaração` manda ler só
     /// aquela declaração, função, estrutura ou constante — nunca chamada de
@@ -1462,18 +1353,17 @@ mod tests {
             ("task", json!({"wave": 1, "text": "Escrever a página", "files": [{"path": "src/b.rs"}]})),
         ]);
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let prompt = build(&material(&log, 1), lang).expect("cabe nas 500 linhas");
+            let prompt = build(&material(&log, 1), lang);
             for text in ["Primeira onda", "Escrever o motor", "Escrever a página", "a suíte passa", "cargo test"] {
                 assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
             }
             assert!(prompt.text.contains("a onda termina"), "o done_when abre o pedido: {}", prompt.text);
             assert_eq!(
-                listed(&prompt.text, translate("prompt.part.wave", lang)),
-                ["- `waves`: MSTD-WAVE-0001"],
+                listed(&prompt.text, translate("prompt.part.items", lang)),
+                ["- `waves`: MSTD-WAVE-0001", "- `criteria`: MSTD-CRIT-0001"],
                 "{}",
                 prompt.text
             );
-            assert_eq!(listed(&prompt.text, translate("prompt.part.criteria", lang)), ["- `criteria`: MSTD-CRIT-0001"]);
             let tasks = section(&prompt.text, translate("prompt.part.tasks", lang));
             assert!(tasks.contains("MSTD-TASK-0001") && tasks.contains("`src/a.rs`"), "{tasks}");
             assert!(tasks.contains("MSTD-TASK-0002") && tasks.contains("`src/b.rs`"), "{tasks}");
@@ -1513,12 +1403,12 @@ mod tests {
             copy: Some(WaveCopy { path: "/copia".into(), build_dir: Some("/build".into()) }),
             ..Execution::default()
         };
-        let prompt = build(&m, Locale::PtBr).expect("cabe nas 500 linhas");
+        let prompt = build(&m, Locale::PtBr);
         let text = &prompt.text;
 
         // Abre pelo que a onda entrega, antes das tarefas.
         let delivers_at = text.find("a suíte passa").expect("o done_when abre o pedido");
-        let tasks_at = text.find(&translate("prompt.part.tasks", Locale::PtBr)).expect("as tarefas aparecem");
+        let tasks_at = text.find(translate("prompt.part.tasks", Locale::PtBr)).expect("as tarefas aparecem");
         assert!(delivers_at < tasks_at, "{text}");
 
         // Diz o modelo da onda.
@@ -1570,12 +1460,12 @@ mod tests {
     }
 
     /// Cada tarefa ganhou linha própria — o arquivo dela e o que precisa ler
-    /// antes —, então o número de tarefas volta a somar linhas ao pedido. Não
-    /// é problema: a onda nasce pequena, no máximo [`WAVE_TASKS_CAP`]
-    /// tarefas, e uma onda no teto continua cabendo longe do limite de
-    /// linhas.
+    /// antes —, então o número de tarefas soma linhas ao pedido, sem teto: o
+    /// pedido não corta onda grande, quem corta é o teto de turnos do
+    /// próprio agente.
     #[test]
-    fn each_task_adds_one_line_but_the_wave_cap_keeps_it_small() {
+    fn each_task_adds_one_line_and_the_request_has_no_task_count_cap() {
+        const MANY: usize = 6;
         let wave = |tasks: usize| {
             let mut events: Vec<(&str, Value)> =
                 vec![("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))];
@@ -1584,20 +1474,19 @@ mod tests {
             }
             log(&events)
         };
-        let (one, capped) = (wave(1), wave(WAVE_TASKS_CAP));
-        let small = build(&material(&one, 1), Locale::PtBr).unwrap();
-        let big = build(&material(&capped, 1), Locale::PtBr).expect("uma onda no teto cabe nas 500 linhas");
+        let (one, many) = (wave(1), wave(MANY));
+        let small = build(&material(&one, 1), Locale::PtBr);
+        let big = build(&material(&many, 1), Locale::PtBr);
         assert!(big.lines > small.lines, "cada tarefa soma linha: {}", big.text);
-        assert!(big.lines < MAX_LINES, "{}", big.text);
-        assert!(big.text.contains(&format!("MSTD-TASK-{:04}", WAVE_TASKS_CAP)), "{}", big.text);
+        assert!(big.text.contains(&format!("MSTD-TASK-{MANY:04}")), "{}", big.text);
     }
 
     /// O mesmo material escrito duas vezes dá os mesmos bytes.
     #[test]
     fn the_same_material_always_gives_the_same_bytes() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
-        let first = build(&material(&log, 1), Locale::PtBr).unwrap();
-        let again = build(&material(&log, 1), Locale::PtBr).unwrap();
+        let first = build(&material(&log, 1), Locale::PtBr);
+        let again = build(&material(&log, 1), Locale::PtBr);
         assert_eq!(first, again);
     }
 
@@ -1609,35 +1498,19 @@ mod tests {
         log(&events)
     }
 
-    /// Um pedido acima do teto de linhas continua sendo recusado no mesmo
-    /// lugar, e a mensagem diz quantas linhas ele tem e qual é o teto. Com os
-    /// códigos numa linha por bloco, são as partes de uma linha por lição,
-    /// skill ou onda em andamento que chegam lá.
+    /// Um pedido com centenas de lições — bem além do antigo teto de 500
+    /// linhas — sai inteiro, sem recusa nenhuma: o teto não existe mais, e
+    /// cada lição continua saindo como uma linha própria.
     #[test]
-    fn a_request_over_the_line_limit_is_refused_saying_how_far_it_went() {
+    fn a_request_far_past_the_old_line_cap_is_never_refused_and_carries_every_lesson() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
-        let bank = lesson_bank(MAX_LINES);
+        let bank = lesson_bank(600);
         let mut m = material(&log, 1);
         m.lessons = bank.visible();
-        let refused = build(&m, Locale::PtBr).unwrap_err();
-        assert_eq!(refused.reason(), "wave-prompt-too-long");
-        let message = refused.message(Locale::PtBr);
-        assert!(message.contains(&MAX_LINES.to_string()), "{message}");
-        let written = count_lines(&write(&m, Locale::PtBr));
-        assert!(written > MAX_LINES);
-        assert!(message.contains(&written.to_string()), "{message}");
-        assert!(!refused.message(Locale::EnUs).is_empty());
-        // A página ainda mostra o pedido grande: é ele que precisa ser visto.
-        assert!(write(&m, Locale::PtBr).contains("- `lessons`: 500"));
-        // Na divisa: as lições que deixam o pedido com as 500 linhas passam,
-        // e uma a mais já é recusada.
-        let fits = MAX_LINES - (written - MAX_LINES);
-        let bank = lesson_bank(fits);
-        m.lessons = bank.visible();
-        assert_eq!(build(&m, Locale::PtBr).map(|p| p.lines), Ok(MAX_LINES));
-        let bank = lesson_bank(fits + 1);
-        m.lessons = bank.visible();
-        assert_eq!(build(&m, Locale::PtBr).map_err(|r| r.reason()), Err("wave-prompt-too-long"));
+        let prompt = build(&m, Locale::PtBr);
+        assert!(prompt.lines > 600, "{}", prompt.text);
+        let last_id = bank.visible().last().expect("banco com lição").id;
+        assert!(prompt.text.contains(&format!("- `lessons`: {last_id}")), "{}", prompt.text);
     }
 
     /// Cada skill nomeada entra no pedido como uma linha — nome, quando usar e
@@ -1661,7 +1534,7 @@ mod tests {
                 stale: true,
             },
         ];
-        let prompt = build(&m, Locale::PtBr).unwrap();
+        let prompt = build(&m, Locale::PtBr);
         assert!(
             prompt.text.contains("`apps/rt/.claude/skills/add-run-command/SKILL.md`"),
             "{}",
@@ -1687,7 +1560,7 @@ mod tests {
         let mut m = material(&log, 1);
         let lesson = bank.visible()[0];
         m.lessons = vec![lesson];
-        let prompt = build(&m, Locale::PtBr).unwrap();
+        let prompt = build(&m, Locale::PtBr);
         assert!(!prompt.text.contains("Apagar a pasta quebra o cache"), "{}", prompt.text);
         let search = lesson.str_field("search").unwrap_or_default().to_string();
         assert!(!search.is_empty(), "a linha da lição guarda o campo de busca");
@@ -1755,7 +1628,7 @@ mod tests {
         let unowned: Vec<u64> = unowned(&plan).iter().map(|e| e.id).collect();
         assert_eq!(unowned, [2]);
         for wave in [1, 2] {
-            let prompt = build(&with_agreed(&plan, wave), Locale::PtBr).unwrap();
+            let prompt = build(&with_agreed(&plan, wave), Locale::PtBr);
             assert!(!prompt.text.contains("MSTD-RULE-0002"), "onda {wave}: {}", prompt.text);
         }
     }
@@ -1962,13 +1835,13 @@ mod tests {
     #[test]
     fn every_agreed_item_comes_as_a_line_and_never_as_text() {
         let plan = plan();
-        let prompt = build(&with_agreed(&plan, 1), Locale::PtBr).unwrap();
+        let prompt = build(&with_agreed(&plan, 1), Locale::PtBr);
         for text in ["A barra de status mostra o link", "duas linhas", "A página do relatório", "um motor só"] {
             assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
         }
-        assert_eq!(
-            listed(&prompt.text, translate("prompt.part.agreed", Locale::PtBr)),
-            ["- `agreed`: MSTD-RULE-0003, MSTD-RULE-0005"],
+        assert!(
+            listed(&prompt.text, translate("prompt.part.items", Locale::PtBr))
+                .contains(&"- `agreed`: MSTD-RULE-0003, MSTD-RULE-0005"),
             "{}",
             prompt.text
         );
@@ -1990,9 +1863,9 @@ mod tests {
             ("task", json!({"wave": 2, "text": "Gravar a página", "files": [{"path": "src/b.rs"}]})),
         ]);
         for wave in [1, 2] {
-            let prompt = build(&with_agreed(&log, wave), Locale::PtBr).unwrap();
-            let agreed = listed(&prompt.text, translate("prompt.part.agreed", Locale::PtBr));
-            assert_eq!(agreed, ["- `agreed`: MSTD-RULE-0001"], "onda {wave}: {}", prompt.text);
+            let prompt = build(&with_agreed(&log, wave), Locale::PtBr);
+            let agreed = listed(&prompt.text, translate("prompt.part.items", Locale::PtBr));
+            assert!(agreed.contains(&"- `agreed`: MSTD-RULE-0001"), "onda {wave}: {}", prompt.text);
             assert!(!prompt.text.contains("suíte vermelha"), "onda {wave}: {}", prompt.text);
         }
     }
@@ -2020,34 +1893,33 @@ mod tests {
         };
 
         let declared = log(&events(json!([4, 2])));
-        let prompt = build(&material(&declared, 1), Locale::PtBr).unwrap();
+        let prompt = build(&material(&declared, 1), Locale::PtBr);
         assert_eq!(codes_in_order(&prompt.text), ["0003", "0001", "0002"], "{}", prompt.text);
 
         let plain = log(&events(json!([])));
-        let prompt = build(&material(&plain, 1), Locale::PtBr).unwrap();
+        let prompt = build(&material(&plain, 1), Locale::PtBr);
         assert_eq!(codes_in_order(&prompt.text), ["0001", "0002", "0003"], "{}", prompt.text);
     }
 
-    /// Quando o pedido não cabe, a recusa diz de onde vêm as linhas: cada
-    /// parte, com quantas ela ocupa.
+    /// Regra, onda, tarefa e uma lista grande de lições juntas: nada no
+    /// pedido obriga a cortar nenhuma parte por causa do tamanho, o pedido
+    /// sai com todas elas.
     #[test]
-    fn a_request_that_does_not_fit_is_refused_saying_where_the_lines_come_from() {
+    fn a_request_that_mixes_every_kind_of_content_is_never_cut_for_its_size() {
         let log = log(&[
-            ("rule", json!({"text": "Uma regra qualquer", "keys": ["regra"], "example": "exemplo"})),
+            ("rule", json!({"text": "Uma regra qualquer", "keys": ["regra"], "example": "exemplo", "waves": [1]})),
             ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
             ("task", json!({"wave": 1, "text": "Fazer", "files": [{"path": "src/a.rs"}]})),
         ]);
-        let bank = lesson_bank(MAX_LINES);
+        let bank = lesson_bank(600);
         let mut m = with_agreed(&log, 1);
         m.lessons = bank.visible();
-        let refused = build(&m, Locale::PtBr).unwrap_err();
-        assert_eq!(refused.reason(), "wave-prompt-too-long");
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let message = build(&m, lang).unwrap_err().message(lang);
-            assert!(message.contains(&format!("{} (4)", translate("prompt.part.wave", lang))), "{message}");
-            assert!(message.contains(&format!("{} ({})", translate("prompt.part.lessons", lang), MAX_LINES + 3)), "{message}");
-            assert!(!message.contains("{parts}"), "{message}");
-        }
+        let prompt = build(&m, Locale::PtBr);
+        assert!(prompt.text.contains("MSTD-WAVE-0001"), "{}", prompt.text);
+        assert!(prompt.text.contains("MSTD-TASK-0001"), "{}", prompt.text);
+        assert!(prompt.text.contains("MSTD-RULE-0001"), "{}", prompt.text);
+        let last_id = bank.visible().last().expect("banco com lição").id;
+        assert!(prompt.text.contains(&format!("- `lessons`: {last_id}")), "{}", prompt.text);
     }
 
     /// As instruções fixas abrem todo pedido, no idioma do projeto.
@@ -2055,7 +1927,7 @@ mod tests {
     fn every_request_opens_with_the_same_fixed_instructions() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let prompt = build(&material(&log, 1), lang).unwrap();
+            let prompt = build(&material(&log, 1), lang);
             assert!(prompt.text.contains(translate("prompt.fixed", lang)), "{lang:?}");
         }
     }
@@ -2193,37 +2065,44 @@ mod tests {
 
     /// O pedido do conserto (o da própria onda) e o do agente de teste final
     /// trazem as mesmas linhas do conserto, cada um com o que fazer com elas:
-    /// consertar só isso, e olhar só o conserto. Sem revisão por onda, o
-    /// agente de teste final é o único que confere o conserto, e o pedido
-    /// dele não muda: as mesmas linhas de antes, num lugar só. Fora de um
-    /// conserto, os dois pedidos não têm a parte.
+    /// consertar só isso, e olhar só o conserto. O pedido da onda leva essas
+    /// linhas dentro dos itens da onda, sem título próprio — junto com o
+    /// resto que abre o trabalho; o do agente de teste final mantém o título
+    /// próprio de antes, porque é onde ele confere o conserto sozinho, sem
+    /// pedir a obra inteira outra vez. Fora de um conserto, nenhum dos dois
+    /// pedidos traz a frase de abertura do conserto.
     #[test]
     fn the_final_review_request_is_unchanged() {
         let log = rejected(false);
         let mut m = material(&log, 1);
         m.fix = fix_lines(&log, 1);
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let heading = translate("prompt.part.fix", lang);
+            let fix_intro = translate("prompt.fix.wave", lang);
+            let items_heading = translate("prompt.part.items", lang);
+            let fix_heading = translate("prompt.part.fix", lang);
             let wave = write(&m, lang);
             let last = write_final_review(&m, lang);
-            assert!(section(&wave, heading).contains(translate("prompt.fix.wave", lang)), "{wave}");
-            assert!(section(&last, heading).contains(translate("prompt.fix.final", lang)), "{last}");
-            for text in [&wave, &last] {
-                let fix = section(text, heading);
-                assert_eq!(
-                    listed(text, heading),
-                    [
-                        "- `review`: MSTD-VERD-0001",
-                        "- `waves`: MSTD-DELIV-0001",
-                        "- `agreed`: MSTD-DEC-0003, MSTD-RULE-0001",
-                    ],
-                    "{fix}"
-                );
-                assert!(!fix.contains("Falta o teste"), "nenhum texto é copiado: {fix}");
+            let items = section(&wave, items_heading);
+            assert!(items.contains(fix_intro), "{wave}");
+            for code in ["MSTD-VERD-0001", "MSTD-DELIV-0001", "MSTD-DEC-0003", "MSTD-RULE-0001"] {
+                assert!(items.contains(code), "{code}: {wave}");
             }
+            assert!(!items.contains("Falta o teste"), "nenhum texto é copiado: {items}");
+            assert!(section(&last, fix_heading).contains(translate("prompt.fix.final", lang)), "{last}");
+            let fix = section(&last, fix_heading);
+            assert_eq!(
+                listed(&last, fix_heading),
+                [
+                    "- `review`: MSTD-VERD-0001",
+                    "- `waves`: MSTD-DELIV-0001",
+                    "- `agreed`: MSTD-DEC-0003, MSTD-RULE-0001",
+                ],
+                "{fix}"
+            );
+            assert!(!fix.contains("Falta o teste"), "nenhum texto é copiado: {fix}");
         }
         let plain = material(&log, 1);
-        assert!(section(&write(&plain, Locale::PtBr), "Conserto").is_empty());
+        assert!(!write(&plain, Locale::PtBr).contains(translate("prompt.fix.wave", Locale::PtBr)));
         assert!(section(&write_final_review(&plain, Locale::PtBr), "Conserto").is_empty());
     }
 

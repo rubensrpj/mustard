@@ -36,10 +36,10 @@
 //!    puts the merged work into the local tree, so it is the ONE authorisation
 //!    for the three irreversible steps. A base left behind answers
 //!    `{ok:false, reason:"base-behind"}` and prunes NOTHING —
-//!    worktree, local branch and remote branch all survive, so the failing path's
+//!    local branch and remote branch both survive, so the failing path's
 //!    worst outcome is "I did not advance, your unit is still here". Authorised,
-//!    the unit's worktree is removed and its local branch deleted (`-D` — merge
-//!    is already proven), then the remote branch deleted best-effort — only
+//!    the local branch is deleted (`-D` — merge is already proven), then the
+//!    remote branch deleted best-effort — only
 //!    when `git.deleteRemoteBranch` is on in `mustard.json`; without the key
 //!    the server branch is never touched — all three behind the same floor
 //!    guard, because a settle that could not free the LOCAL floor has no business
@@ -1100,15 +1100,21 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             // below — now without having spent the branch to say so.
             ("partial", false, false, false)
         } else {
-            let (worktree_removed, floor_clear) = match unit_entry {
-                Some(e) => {
-                    let removed = git_ok(&main, &["worktree", "remove", &e.path]);
-                    (removed, removed)
-                }
+            // The work-branch gate cuts every unit IN PLACE — no worktree of
+            // its own — so a `Some(e)` here can only be a leftover copy from
+            // the removed `work-unit-open` command (`apps/rt/src/commands/mod.rs`),
+            // never something this pass created. We no longer remove it —
+            // that removal served a command that no longer exists — so the
+            // floor is clear only when there is no such copy to begin with.
+            // `worktreeRemoved` stays in the report, permanently `false`, so
+            // a caller reading the old field shape keeps reading valid JSON.
+            let worktree_removed = false;
+            let floor_clear = match unit_entry {
+                Some(_) => false,
                 // In-place: the "floor" is the unit branch checked out on the
                 // MAIN checkout — clear only once the exit above landed.
-                None if in_place => (false, in_place_exited),
-                None => (false, true), // never removed by us, but already free to delete
+                None if in_place => in_place_exited,
+                None => true, // no copy in the way — already free to delete
             };
             let branch_deleted = floor_clear && git_ok(&main, &["branch", "-D", &unit_branch]);
             // The server branch goes only where the project turned
@@ -1431,10 +1437,9 @@ mod tests {
     /// Building it once and copying the tree costs 0,28s (measured 2026-08-14,
     /// 4,2× faster); the two calls below are what makes the copy INDEPENDENT.
     ///
-    /// Why the rewiring is not optional: git records the remote URL and every
-    /// worktree registration as an ABSOLUTE path, so a raw copy still resolves
-    /// to the template — and `git worktree repair` stays silent about it while
-    /// the template exists, because nothing is broken from git's point of view.
+    /// Why the remote rewrite is not optional: git records the remote URL as
+    /// an ABSOLUTE path, so a raw copy still pushes into the template's own
+    /// origin — every test process's clones racing on ONE shared bare repo.
     /// `a_cloned_fixture_is_independent_of_its_template` holds this honest.
     fn fixture() -> (tempfile::TempDir, PathBuf) {
         static TEMPLATE: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
@@ -1445,39 +1450,18 @@ mod tests {
         });
         let dir = crate::shared::test_fixture::clone_of(template.path());
         let main = dir.path().join("repo");
-        // 1. The remote points at the TEMPLATE's origin until told otherwise.
+        // The remote points at the TEMPLATE's origin until told otherwise.
         let own_origin = dir.path().join("origin.git");
         git(&main, &["remote", "set-url", "origin", own_origin.to_string_lossy().as_ref()]);
-        // 2. Each worktree's TWO pointer files are rewritten to the clone —
-        //    directly, never via `git worktree repair`. The clone's pointers
-        //    still name the TEMPLATE, so a repair here follows them and writes
-        //    into the template's own `.git/worktrees/` — every test process's
-        //    clones racing on ONE shared directory, which is exactly the
-        //    intermittent `git … failed` this suite carried (4 tests flaky in
-        //    parallel, 30/30 single-threaded, measured 2026-08-19 on CI and
-        //    local alike). Two plain file writes are deterministic and touch
-        //    nothing shared.
         for unit in ["dev_done", "dev_open"] {
             // What makes these branches UNITS is the record this project holds
             // for them, not the shape of their names — the fixture created only
-            // the branch and the worktree, so every door here could be satisfied
-            // by a name that merely looked like a unit, which is how a real
-            // release line ended up being read as one.
+            // the branch, so every door here could be satisfied by a name that
+            // merely looked like a unit, which is how a real release line ended
+            // up being read as one.
             let slug = unit.strip_prefix("dev_").unwrap_or(unit);
             std::fs::create_dir_all(main.join(".claude").join("spec").join(slug))
                 .expect("unit record");
-            let wt = main.join(".claude").join("worktrees").join(unit);
-            let admin = main.join(".git").join("worktrees").join(unit);
-            std::fs::write(
-                wt.join(".git"),
-                format!("gitdir: {}\n", admin.to_string_lossy().replace('\\', "/")),
-            )
-            .expect("rewire worktree gitfile");
-            std::fs::write(
-                admin.join("gitdir"),
-                format!("{}\n", wt.join(".git").to_string_lossy().replace('\\', "/")),
-            )
-            .expect("rewire admin gitdir");
         }
         (dir, main)
     }
@@ -1506,20 +1490,26 @@ mod tests {
         git(&main, &["remote", "add", "origin", bare.to_string_lossy().as_ref()]);
         git(&main, &["push", "-u", "origin", "dev"]);
 
-        git(&main, &["worktree", "add", ".claude/worktrees/dev_done", "-b", "dev_done"]);
-        let wt1 = main.join(".claude").join("worktrees").join("dev_done");
-        std::fs::write(wt1.join("done.txt"), "x").expect("wt file");
-        git(&wt1, &["add", "-A"]);
-        git(&wt1, &["commit", "-m", "done work"]);
+        // dev_done: cut IN PLACE — the work-branch gate never gives a unit a
+        // worktree of its own — merged into origin/dev, then left as an
+        // ORDINARY local branch, checked out nowhere: exactly what a merged
+        // unit looks like once no command opens one into its own worktree.
+        git(&main, &["checkout", "-b", "dev_done"]);
+        std::fs::write(main.join("done.txt"), "x").expect("branch file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "done work"]);
+        git(&main, &["checkout", "dev"]);
         git(&main, &["merge", "--no-ff", "dev_done", "-m", "merge dev_done"]);
         git(&main, &["push", "origin", "dev"]);
         git(&main, &["reset", "--hard", "HEAD~1"]);
 
-        git(&main, &["worktree", "add", ".claude/worktrees/dev_open", "-b", "dev_open"]);
-        let wt2 = main.join(".claude").join("worktrees").join("dev_open");
-        std::fs::write(wt2.join("open.txt"), "y").expect("wt file");
-        git(&wt2, &["add", "-A"]);
-        git(&wt2, &["commit", "-m", "open work"]);
+        // dev_open: cut IN PLACE too, never merged, also checked out nowhere
+        // by the time the template is done.
+        git(&main, &["checkout", "-b", "dev_open"]);
+        std::fs::write(main.join("open.txt"), "y").expect("branch file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "open work"]);
+        git(&main, &["checkout", "dev"]);
     }
 
     /// The fixture a test receives was CLONED, not rebuilt.
@@ -1582,15 +1572,13 @@ mod tests {
             "clone B sees a branch pushed into A's origin — they SHARE it: {seen_by_b:?}",
         );
 
-        // And a commit made in A's worktree must not appear in B's.
-        let wt_a = main_a.join(".claude").join("worktrees").join("dev_open");
-        std::fs::write(wt_a.join("only-a.txt"), "a").expect("write in A's worktree");
-        git(&wt_a, &["add", "-A"]);
-        git(&wt_a, &["commit", "-m", "only in a"]);
-        let wt_b = main_b.join(".claude").join("worktrees").join("dev_open");
+        // And a commit made in A's checkout must not appear in B's.
+        std::fs::write(main_a.join("only-a.txt"), "a").expect("write in A's checkout");
+        git(&main_a, &["add", "-A"]);
+        git(&main_a, &["commit", "-m", "only in a"]);
         assert!(
-            !wt_b.join("only-a.txt").exists(),
-            "clone B's worktree received a file written into A's — same directory",
+            !main_b.join("only-a.txt").exists(),
+            "clone B received a file written into A's checkout — same directory",
         );
     }
 
@@ -1647,13 +1635,13 @@ mod tests {
         git(&main, &["commit", "-m", "add submodule"]);
         git(&main, &["push", "origin", "dev"]);
 
-        // The unit in the PARENT: worked in its worktree, merged into origin/dev,
-        // local dev rewound one merge so settle has something to fast-forward.
-        git(&main, &["worktree", "add", ".claude/worktrees/dev_done", "-b", "dev_done"]);
-        let wt = main.join(".claude").join("worktrees").join("dev_done");
-        std::fs::write(wt.join("done.txt"), "x").expect("wt file");
-        git(&wt, &["add", "-A"]);
-        git(&wt, &["commit", "-m", "done work"]);
+        // The unit in the PARENT: cut IN PLACE, merged into origin/dev, local
+        // dev rewound one merge so settle has something to fast-forward.
+        git(&main, &["checkout", "-b", "dev_done"]);
+        std::fs::write(main.join("done.txt"), "x").expect("branch file");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "done work"]);
+        git(&main, &["checkout", "dev"]);
         git(&main, &["merge", "--no-ff", "dev_done", "-m", "merge dev_done"]);
         git(&main, &["push", "origin", "dev"]);
         git(&main, &["reset", "--hard", "HEAD~1"]);
@@ -1674,7 +1662,7 @@ mod tests {
 
     /// The user's contract, end to end: bare settle on a base REFUSES; settle
     /// of an UNMERGED unit refuses touching nothing; `--unit` of the merged
-    /// one prunes worktree + branch and fast-forwards the base.
+    /// one prunes the branch and fast-forwards the base.
     #[test]
     fn contract_refuses_on_base_blocks_unmerged_and_settles_merged_unit() {
         let (_dir, main) = fixture();
@@ -1685,22 +1673,19 @@ mod tests {
         assert_eq!(v["ok"], json!(false), "{v}");
         assert_eq!(v["reason"], json!("on-integration-base"));
 
-        // (2) The open unit, from ITS worktree — not merged → hard stop,
-        // nothing touched.
-        let wt2 = main.join(".claude").join("worktrees").join("dev_open");
-        let v = settle_at(&wt2, None);
+        // (2) The open unit — not merged → hard stop, nothing touched.
+        let v = settle_at(&main, Some("dev_open"));
         assert_eq!(v["reason"], json!("not-merged"), "{v}");
-        assert!(wt2.exists(), "unmerged worktree untouched");
 
         // (3) The merged unit via --unit from the base (the finish step) →
-        // worktree pruned, branch gone, base fast-forwarded to origin.
+        // branch gone, base fast-forwarded to origin. No worktree of its own
+        // to prune — the unit was cut in place.
         let v = settle_at(&main, Some("dev_done"));
         assert_eq!(v["ok"], json!(true), "{v}");
         assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
-        assert_eq!(v["unit"]["worktreeRemoved"], json!(true));
+        assert_eq!(v["unit"]["worktreeRemoved"], json!(false));
         assert_eq!(v["unit"]["branchDeleted"], json!(true));
         assert_eq!(v["baseCheckout"]["updated"], json!(true), "base ff'd: {v}");
-        assert!(!main.join(".claude").join("worktrees").join("dev_done").exists());
         assert!(
             git_out(&main, &["branch", "--list", "dev_done"]).unwrap_or_default().is_empty(),
             "merged local branch deleted"
@@ -1722,8 +1707,8 @@ mod tests {
     ///
     /// Many teams may not delete a branch on the server: the merge is done by
     /// another area and the branch is theirs. A settle without the key prunes
-    /// the worktree and the local branch and never issues the delete on the
-    /// server; the same settle with the key on removes the server branch too.
+    /// the local branch and never issues the delete on the server; the same
+    /// settle with the key on removes the server branch too.
     #[test]
     fn the_server_branch_goes_only_with_the_key_on() {
         let (_dir, main) = fixture();
@@ -1749,25 +1734,26 @@ mod tests {
         );
     }
 
-    /// An exit that could NOT free the local floor (here a LOCKED worktree,
-    /// a stand-in for the OS still holding the folder open) leaves the REMOTE
-    /// branch alone too.
+    /// A COPY of the unit — exactly the shape the removed `work-unit-open`
+    /// command used to leave behind (no live command makes one anymore, so
+    /// this pass builds one by hand) — permanently blocks the local floor.
     ///
-    /// The remote delete used to run outside the floor guard, on the reasoning
-    /// that a locked folder must not strand the server branch. It has the sign
-    /// backwards: once the local worktree and the local branch both survive, the
-    /// server branch is the one ref of the unit this pass is sure it did not
-    /// strand — and it is the only one of the three no rerun can bring back.
-    ///
-    /// Both halves, so the guard cannot become "never delete": unlock the very
-    /// same worktree and the very same command deletes the remote branch.
+    /// Settle used to free such a floor itself, with `git worktree remove`;
+    /// that removal served a command that no longer exists and is gone. A
+    /// leftover copy now blocks the prune FOREVER, not just until unlocked —
+    /// a rerun with the copy still there answers the exact same `partial`,
+    /// no matter how many times it runs. Only removing the copy BY HAND, never
+    /// settle, frees the branch — and the very same command then prunes the
+    /// local and the remote branch together, since the BASE advanced already.
     #[test]
-    fn a_blocked_exit_leaves_the_remote_branch_alone() {
+    fn a_leftover_worktree_copy_blocks_the_prune_until_removed_by_hand() {
         let (_dir, main) = fixture();
         delete_remote_branch_on(&main);
         git(&main, &["push", "origin", "dev_done"]);
+        // A copy exactly like the one `work-unit-open` used to leave behind —
+        // nothing alive makes one; this stands in for a relic on disk.
+        git(&main, &["worktree", "add", ".claude/worktrees/dev_done", "dev_done"]);
         let wt = main.join(".claude").join("worktrees").join("dev_done");
-        git(&main, &["worktree", "lock", wt.to_string_lossy().as_ref()]);
 
         let v = settle_at(&main, Some("dev_done"));
         assert_eq!(v["unit"]["action"], json!("partial"), "{v}");
@@ -1779,10 +1765,10 @@ mod tests {
         assert_eq!(v["unit"]["worktreeRemoved"], json!(false), "{v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
         assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
-        assert!(wt.exists(), "leftover worktree preserved (removal really failed)");
+        assert!(wt.exists(), "settle never touches the copy — it survives untouched");
         assert!(
             !git_out(&main, &["branch", "--list", "dev_done"]).unwrap_or_default().is_empty(),
-            "local branch kept (worktree still holds it checked out)"
+            "local branch kept (the copy still holds it checked out)"
         );
         assert!(
             !git_out(&main, &["ls-remote", "--heads", "origin", "dev_done"])
@@ -1791,16 +1777,24 @@ mod tests {
             "…and the REMOTE branch with it: the half of the prune no rerun can undo",
         );
 
-        // The other half: free the floor and the same pass prunes all three.
-        git(&main, &["worktree", "unlock", wt.to_string_lossy().as_ref()]);
+        // A rerun with the copy still there changes nothing: settle does not
+        // retry the removal on its own, no matter how many times it runs.
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["unit"]["action"], json!("partial"), "{v}");
+        assert!(wt.exists(), "still there — a rerun alone never clears it");
+
+        // The other half: remove the copy BY HAND — never settle — and the
+        // very same command prunes the local and the remote branch together.
+        git(&main, &["worktree", "remove", wt.to_string_lossy().as_ref()]);
         let v = settle_at(&main, Some("dev_done"));
         assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
         assert_eq!(v["unit"]["remoteDeleted"], json!(true), "{v}");
         assert!(
             git_out(&main, &["ls-remote", "--heads", "origin", "dev_done"])
                 .unwrap_or_default()
                 .is_empty(),
-            "the remote branch goes once the floor really is clear",
+            "the remote branch goes once the copy is gone: {v}",
         );
     }
 
@@ -2291,10 +2285,8 @@ mod tests {
             "…and the remote ref really carries commits the merge never saw: {contained:?}",
         );
 
-        let wt = main.join(".claude").join("worktrees").join("dev_done");
         let v = settle_at(&main, Some("dev_done"));
         assert_eq!(v["reason"], json!("not-merged"), "a ref beyond the merge is not settled: {v}");
-        assert!(wt.exists(), "nothing touched: the worktree survives");
         assert!(
             !git_out(&main, &["branch", "--list", "dev_done"]).unwrap_or_default().is_empty(),
             "nothing touched: the local branch survives",
@@ -2430,7 +2422,6 @@ mod tests {
         let (_dir, main) = fixture();
         delete_remote_branch_on(&main);
         git(&main, &["push", "origin", "dev_done"]);
-        let wt = main.join(".claude").join("worktrees").join("dev_done");
         block_the_advance(&main);
 
         let v = settle_at(&main, Some("dev_done"));
@@ -2447,8 +2438,7 @@ mod tests {
         );
         assert!(!v.to_string().contains("git-settle"), "nothing in the report names the cut command: {v}");
 
-        // The EFFECT, not the report: all three refs of the unit are still there.
-        assert!(wt.exists(), "the worktree survives: {v}");
+        // The EFFECT, not the report: both refs of the unit are still there.
         assert!(
             git_ok(&main, &["rev-parse", "--verify", "dev_done"]),
             "the local branch survives — it is the tree's only handle on the merged work",

@@ -509,7 +509,12 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
 
-    fn write(root: &Path, spec: &str, event_type: &str, body: Value) -> Value {
+    fn write(root: &Path, spec: &str, event_type: &str, mut body: Value) -> Value {
+        if event_type == "task" {
+            let map = body.as_object_mut().expect("a tarefa é um objeto");
+            map.entry("files").or_insert_with(|| json!([]));
+            map.entry("depends_on").or_insert_with(|| json!([]));
+        }
         seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some(spec.to_string()),

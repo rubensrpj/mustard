@@ -546,11 +546,8 @@ fn check(
         out.push(PlanFinding::CommandNotDeclared { field: "testCommand" });
     }
 
-    // Cada pedido cabe no teto de linhas, e cada skill nomeada passa.
+    // Cada skill nomeada passa. O pedido não tem mais teto de linhas.
     for prompt in built {
-        if let Some(refusal) = &prompt.too_long {
-            out.push(PlanFinding::Refused(refusal.clone()));
-        }
         for (name, refusal) in &prompt.bad_skills {
             out.push(PlanFinding::Skill { name: name.clone(), refusal: refusal.clone() });
         }
@@ -584,21 +581,6 @@ fn check(
     // que a descreveu só acumula trava que ninguém vai consertar.
     let ahead: Vec<&SpecEvent> =
         tasks.iter().copied().filter(|task| !task.wave().is_some_and(|n| delivered.contains(&n))).collect();
-
-    // A onda nasce pequena: até três tarefas e até três provas de critério. A
-    // gravação já recusa a tarefa ou o critério que a levaria a passar do
-    // teto (`wave_prompt::wave_size_rule`); esta conferência é a rede, para
-    // a onda que cresceu por outro caminho — a já entregue não entra, porque
-    // o tamanho dela já foi decidido quando ela saiu.
-    for wave_event in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
-        let Some(n) = wave_event.int("n") else { continue };
-        if delivered.contains(&n) {
-            continue;
-        }
-        if let Some(refusal) = wave_prompt::wave_size_refusal(log, n) {
-            out.push(PlanFinding::Refused(refusal));
-        }
-    }
 
     let mut cited: Vec<String> = Vec::new();
     for task in &ahead {
@@ -867,8 +849,21 @@ mod tests {
             root: root.to_path_buf(),
             spec: spec.map(str::to_string),
             event_type: event_type.into(),
-            json: body.to_string(),
+            json: with_task_declarations(event_type, body).to_string(),
         })
+    }
+
+    /// Os testes deste arquivo escrevem a tarefa pelo que ela importa para
+    /// eles (pontos, arquivos, ondas); as duas declarações que a gravação
+    /// agora exige sempre (`files`, `depends_on`) entram vazias quando o
+    /// teste não as deu, sem mudar o que ele já afirma.
+    fn with_task_declarations(event_type: &str, mut body: Value) -> Value {
+        if event_type == "task" {
+            let map = body.as_object_mut().expect("a tarefa é um objeto");
+            map.entry("files").or_insert_with(|| json!([]));
+            map.entry("depends_on").or_insert_with(|| json!([]));
+        }
+        body
     }
 
     fn id_of(report: &Value) -> u64 {
@@ -1086,66 +1081,57 @@ mod tests {
         writeln!(file, "{line}").unwrap();
     }
 
-    /// Um pedido acima do teto de linhas trava a pergunta, e a mensagem diz
-    /// quantas linhas ele tem. As 600 tarefas vêm direto no arquivo, sem
-    /// passar pela gravação: a onda nasce pequena agora, e uma onda com tantas
-    /// tarefas não seria mais gravada — mas o plano continua conferindo a que
-    /// já existe no arquivo, de antes da regra ou de uma edição de fora.
+    /// Um pedido bem além do antigo teto de 500 linhas não trava mais a
+    /// pergunta: o teto não existe. As 600 tarefas vêm direto no arquivo,
+    /// sem passar pela gravação, porque a onda nasce pequena agora e uma
+    /// onda com tantas tarefas não seria mais gravada — mas o plano continua
+    /// conferindo a que já existe no arquivo, de antes da regra ou de uma
+    /// edição de fora.
     #[test]
-    fn a_request_over_the_line_cap_blocks_the_question() {
+    fn a_request_far_past_the_old_line_cap_does_not_block_the_question() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         let wave = write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        // Os códigos das tarefas cabem numa linha só: o que passa do teto é
-        // uma parte de uma linha por item, como a das skills que elas nomeiam.
-        let mut next_id = id_of(&wave) + 1;
+        // Os códigos das tarefas cabem numa linha só: o que passa do teto
+        // antigo é uma parte de uma linha por item, como a das skills que
+        // elas nomeiam.
+        let first_id = id_of(&wave) + 1;
         for i in 0..600 {
             let skill = root.join(".claude").join("skills").join(format!("s{i}"));
             std::fs::create_dir_all(&skill).unwrap();
             std::fs::write(skill.join("SKILL.md"), format!("# s{i}\n")).unwrap();
             append_raw(root, "x", "task", json!({"points": 1, "wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
-                "skill": format!("s{i}"), "origin": said}), next_id);
-            next_id += 1;
+                "skill": format!("s{i}"), "origin": said}), first_id + i);
         }
 
         let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        assert!(reasons(&report, "blocking").contains(&"wave-prompt-too-long".to_string()), "{report}");
+        assert!(!reasons(&report, "blocking").contains(&"wave-prompt-too-long".to_string()), "{report}");
         assert!(report["waves"][0]["lines"].as_u64().unwrap() > 500, "{report}");
     }
 
-    /// A rede do plano: uma onda que já tem mais de três tarefas no arquivo —
-    /// nascida assim antes da regra, ou por uma edição de fora do binário —
-    /// é recusada pelo plano, com a mesma mensagem que a gravação usaria.
+    /// O plano não tem mais rede de tamanho: uma onda com mais de três
+    /// tarefas no arquivo — nascida assim antes da regra sair, ou por uma
+    /// edição de fora do binário — passa sem bloqueio nenhum. É o caso que a
+    /// recusa `wave-too-big` bloqueava antes desta onda; quem corta o custo
+    /// agora é o teto de turnos do agente, fora do plano.
     #[test]
-    fn a_wave_grown_big_outside_the_write_is_refused_by_the_plan_net() {
+    fn a_wave_grown_big_outside_the_write_is_not_blocked_by_the_plan() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         let wave = write(root, Some("x"), "wave",
             json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        let mut next_id = id_of(&wave) + 1;
+        let first_id = id_of(&wave) + 1;
         for i in 0..4 {
             append_raw(root, "x", "task", json!({"points": 1, "wave": 1, "text": format!("Tarefa {i}."),
-                "files": [{"path": "src/a.rs"}], "origin": said}), next_id);
-            next_id += 1;
+                "files": [{"path": "src/a.rs"}], "origin": said}), first_id + i);
         }
 
         let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        assert!(reasons(&report, "blocking").contains(&"wave-too-big".to_string()), "{report}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let expected = wave_prompt::wave_size_refusal(&log, 1).expect("a onda passou do teto").message(Locale::PtBr);
-        let found = report["blocking"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|f| f["reason"] == json!("wave-too-big"))
-            .unwrap_or_else(|| panic!("{report}"));
-        assert_eq!(found["hint"], json!(expected), "{report}");
+        assert!(!reasons(&report, "blocking").contains(&"wave-too-big".to_string()), "{report}");
     }
 
     /// As citações do plano passam pela mesma conferência do ponto do
@@ -2090,7 +2076,7 @@ mod tests {
                 spec: Some("x".into()),
                 event_type: "task".into(),
                 json: json!({"wave": 1, "text": "Mexer no código.", "files": [{"path": "src/a.rs"}],
-                    "points": points, "origin": said})
+                    "depends_on": [], "points": points, "origin": said})
                 .to_string(),
             })
         };

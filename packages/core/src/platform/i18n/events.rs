@@ -38,6 +38,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Required fields of the {type} event that are missing or empty: {field}. Nothing was \
              written."
         }
+        ("spec_events.task_declaration_missing", Locale::PtBr) => {
+            "A tarefa precisa declarar: {missing}. Nada foi gravado."
+        }
+        ("spec_events.task_declaration_missing", Locale::EnUs) => {
+            "The task must declare: {missing}. Nothing was written."
+        }
+        ("spec_events.task_declaration_what", Locale::PtBr) => "o que ela faz",
+        ("spec_events.task_declaration_what", Locale::EnUs) => "what it does",
+        ("spec_events.task_declaration_files", Locale::PtBr) => "os arquivos que toca",
+        ("spec_events.task_declaration_files", Locale::EnUs) => "the files it touches",
+        ("spec_events.task_declaration_depends_on", Locale::PtBr) => "de quais tarefas depende",
+        ("spec_events.task_declaration_depends_on", Locale::EnUs) => "which tasks it depends on",
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -211,16 +223,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Point {code} closes a point whose original text is already gone, and it is the only \
              record of it: it does not leave with `remove`. To take sensitive data out of it, use \
              `purge`, which only hides the excerpt. Nothing was written."
-        }
-        ("spec_events.wave_prompt_too_long", Locale::PtBr) => {
-            "O pedido da onda {wave} tem {lines} linhas, e o teto é {max}, já com o combinado \
-             reduzido a ponteiros. Tire da onda o que ainda vai inteiro, cada parte com as linhas \
-             dela: {parts}. Divida a onda antes de levar o plano para a aprovação."
-        }
-        ("spec_events.wave_prompt_too_long", Locale::EnUs) => {
-            "Wave {wave}'s request has {lines} lines, and the cap is {max}, with the agreed items \
-             already cut down to pointers. Take out of the wave what still goes whole, each part \
-             with its line count: {parts}. Split the wave before taking the plan to approval."
         }
         ("spec_events.delivered_too_long", Locale::PtBr) => {
             "O entregou tem {chars} caracteres, e o teto é {max}. Ele volta para a janela principal: \
@@ -542,8 +544,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            75,
-            0xacd9_fe1e_14ee_87a2,
+            78,
+            0x0d1e_d00a_cd1b_9a07,
         );
     }
 
@@ -555,6 +557,10 @@ mod tests {
             ("spec_events.not_an_object", &["{detail}"][..]),
             ("spec_events.unknown_type", &["{type}", "{types}"][..]),
             ("spec_events.missing_field", &["{type}", "{field}"][..]),
+            ("spec_events.task_declaration_missing", &["{missing}"][..]),
+            ("spec_events.task_declaration_what", &[][..]),
+            ("spec_events.task_declaration_files", &[][..]),
+            ("spec_events.task_declaration_depends_on", &[][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),
@@ -575,7 +581,6 @@ mod tests {
             ("spec_events.open_point_removed", &["{code}"][..]),
             ("spec_events.purge_excerpt_not_found", &["{code}"][..]),
             ("spec_events.closing_point_last_record", &["{code}"][..]),
-            ("spec_events.wave_prompt_too_long", &["{wave}", "{lines}", "{max}", "{parts}"][..]),
             ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),
             ("approve_spec.open_points", &["{count}", "{points}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),

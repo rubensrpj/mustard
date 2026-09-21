@@ -9,10 +9,9 @@
 //! - `session` — a entrada da mensagem (`prompt_entry`), o início da sessão
 //!   (`session_start_inject`), o conserto da barra de status
 //!   (`statusline_heal_observer`), a faxina do fim da sessão
-//!   (`session_cleanup_observer`) e o tamanho da conversa
-//!   (`conversation_size::WavePauseCheck`): no agente de onda, depois de
-//!   cada ferramenta, manda gravar o passo e parar; em quem conduz, antes de
-//!   cada ferramenta, recusa a chamada com o bloco de retomada.
+//!   (`session_cleanup_observer`) e o aviso antes de compactar
+//!   (`conversation_size::PrecompactNotice`): em toda compactação, manual ou
+//!   automática, injeta o bloco de retomada pronto para colar.
 //! - `task` — a conferência do fim da resposta (`end_of_turn_check`, com as
 //!   regras dela) e o pedido do subagente (`subagent_inject`).
 //!

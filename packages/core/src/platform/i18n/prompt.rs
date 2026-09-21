@@ -52,8 +52,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // em Opus por herdar o modelo da sessão.
         ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: Sonnet 5.",
         ("prompt.model.wave", Locale::EnUs) => "This wave's model: Sonnet 5.",
-        ("prompt.part.delivers", Locale::PtBr) => "O que a onda entrega",
-        ("prompt.part.delivers", Locale::EnUs) => "What the wave delivers",
+        ("prompt.part.items", Locale::PtBr) => "Itens da onda",
+        ("prompt.part.items", Locale::EnUs) => "Wave items",
         ("prompt.part.tasks", Locale::PtBr) => "Tarefas, na ordem em que se faz",
         ("prompt.part.tasks", Locale::EnUs) => "Tasks, in the order they are done",
         ("prompt.task.read_before", Locale::PtBr) => "leia antes",
@@ -118,18 +118,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.each_delivered", Locale::EnUs) => "What each wave delivered",
         ("prompt.part.branch_changes", Locale::PtBr) => "Mudanças já na branch",
         ("prompt.part.branch_changes", Locale::EnUs) => "Changes already on the branch",
-        ("prompt.part.specification", Locale::PtBr) => "Especificação",
-        ("prompt.part.specification", Locale::EnUs) => "Specification",
         ("prompt.part.agreed", Locale::PtBr) => "Combinado",
         ("prompt.part.agreed", Locale::EnUs) => "Agreed",
-        ("prompt.part.wave", Locale::PtBr) => "A onda e as tarefas dela",
-        ("prompt.part.wave", Locale::EnUs) => "The wave and its tasks",
         ("prompt.part.criteria", Locale::PtBr) => "Critérios",
         ("prompt.part.criteria", Locale::EnUs) => "Criteria",
-        ("prompt.part.lessons", Locale::PtBr) => "Lições",
-        ("prompt.part.lessons", Locale::EnUs) => "Lessons",
-        ("prompt.part.skills", Locale::PtBr) => "Skills das tarefas",
-        ("prompt.part.skills", Locale::EnUs) => "Task skills",
         ("prompt.part.delivered", Locale::PtBr) => "O que as ondas anteriores entregaram",
         ("prompt.part.delivered", Locale::EnUs) => "What the earlier waves delivered",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
@@ -250,8 +242,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            41,
-            0xfe96_5c03_e53c_2a36,
+            37,
+            0x389f_4cd0_34ea_c872,
         );
     }
 }
