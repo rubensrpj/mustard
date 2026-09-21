@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use crate::domain::lessons::{in_scope, related_to_tasks, Scope};
 use crate::domain::project_map::{check_skill, file_history, has_rust_part, tests_for, MapRefusal, ProjectMap};
-use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{self, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
 
@@ -44,8 +44,6 @@ pub struct WavePrompt {
     pub text: String,
     /// Quantas linhas ele tem.
     pub lines: usize,
-    /// A recusa do teto de linhas, quando o pedido passa dele.
-    pub too_long: Option<Refusal>,
     /// As skills que a conferência recusou, pelo nome.
     pub bad_skills: Vec<(String, MapRefusal)>,
     /// As skills que a onda usa e que precisam de revisão, pelo nome.
@@ -398,11 +396,9 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
-    let too_long =
-        (lines > wave_prompt::MAX_LINES).then(|| wave_prompt::too_long(&material, lines, lang));
     let template = agent_template(root, "wave");
     let model = wave_prompt::requested_model("wave").to_string();
-    WavePrompt { wave, template, model, text, lines, too_long, bad_skills, stale_skills }
+    WavePrompt { wave, template, model, text, lines, bad_skills, stale_skills }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -736,8 +732,8 @@ mod tests {
             ),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let agreed = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.agreed", Locale::PtBr));
-        assert_eq!(agreed, ["`agreed`: MSTD-LIMIT-0001"], "{}", built[0].text);
+        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
+        assert!(items.contains(&"`agreed`: MSTD-LIMIT-0001"), "{}", built[0].text);
         assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 1, "{}", built[0].text);
         assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
     }
@@ -939,13 +935,18 @@ mod tests {
 
         // A onda tem `order: [8, 7]`: a tarefa 2 (id 8) vem antes da 1 (id 7).
         let tasks = ["`MSTD-TASK-0002`: `src/b.rs`", "`MSTD-TASK-0001`: `src/a.rs`"];
-        let waves = ["`waves`: MSTD-WAVE-0001"];
-        let criteria = ["`criteria`: MSTD-CRIT-0001"];
-        assert_eq!(section_lines(wave, part("prompt.part.specification")), ["`specification`: MSTD-CTX-0001, MSTD-CTX-0002"], "{wave}");
-        assert_eq!(section_lines(wave, part("prompt.part.agreed")), ["`agreed`: MSTD-DEC-0001, MSTD-RULE-0001"], "{wave}");
+        // Onda, critérios, especificação e combinado saem juntos, sob um
+        // título só: "Itens da onda".
+        let items = section_lines(wave, part("prompt.part.items"));
+        for code in [
+            "`waves`: MSTD-WAVE-0001",
+            "`criteria`: MSTD-CRIT-0001",
+            "`specification`: MSTD-CTX-0001, MSTD-CTX-0002",
+            "`agreed`: MSTD-DEC-0001, MSTD-RULE-0001",
+        ] {
+            assert!(items.contains(&code), "{code}: {wave}");
+        }
         assert_eq!(section_lines(wave, part("prompt.part.tasks")), tasks, "{wave}");
-        assert_eq!(section_lines(wave, part("prompt.part.wave")), waves, "{wave}");
-        assert_eq!(section_lines(wave, part("prompt.part.criteria")), criteria, "{wave}");
 
         assert!(wave.contains(&example), "{wave}");
         for once in ["mustard-rt run read", "--term", "--root", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
@@ -954,6 +955,43 @@ mod tests {
         for copied in ["O objetivo da obra.", "Montar a lista", "a lista sai curta", "A lista saiu."] {
             assert!(!wave.contains(copied), "{copied} foi copiado: {wave}");
         }
+    }
+
+    /// O pedido cai de quinze seções para quatro: os itens da onda (a
+    /// própria onda, os critérios, a especificação e o combinado, tudo sob
+    /// um título só), as tarefas, o que as ondas anteriores entregaram e as
+    /// regras da execução — nenhum título a mais, e nenhum dos antigos
+    /// (onda, critérios, especificação e combinado, cada um com o título
+    /// próprio) sobra.
+    #[test]
+    fn the_wave_request_has_four_sections_not_fifteen() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let everywhere = json!({"files": ["**"]});
+        let log = log_of(&[
+            ("context", json!({"text": "O objetivo.", "keys": ["objetivo"], "label": "objetivo"})),
+            ("decision", json!({"text": "Uma decisão.", "keys": ["decisão"], "why": "w", "applies_to": everywhere})),
+            ("criterion", json!({"when": "a onda roda", "then": "a lista sai curta", "proof": "cargo test"})),
+            ("wave", json!({"n": 1, "text": "A primeira onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Fazer o primeiro passo", "files": [{"path": "src/a.rs"}]})),
+            ("delivered", json!({"wave": 1, "text": "Entregue.", "files": ["src/a.rs"]})),
+            ("wave", json!({"n": 2, "text": "A onda", "criteria": [3], "done_when": "passa", "depends_on": [1]})),
+            ("task", json!({"wave": 2, "text": "Fazer", "files": [{"path": "src/b.rs"}]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let wave = &built.iter().find(|p| p.wave == 2).expect("onda 2 no plano").text;
+        let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
+        let headings: Vec<String> = wave.lines().filter(|line| line.starts_with("## ")).map(String::from).collect();
+        assert_eq!(
+            headings,
+            [
+                format!("## {}", part("prompt.part.items")),
+                format!("## {}", part("prompt.part.tasks")),
+                format!("## {}", part("prompt.part.delivered")),
+                format!("## {}", part("prompt.part.execution")),
+            ],
+            "{wave}"
+        );
     }
 
     /// As linhas de uma seção do pedido, sem o "- " do começo; vazio quando
@@ -1005,7 +1043,8 @@ mod tests {
         // entraram — `loose[0]` ocupa o 1, e o sexto e o oitavo (o fraco e o
         // outro solto) ficam fora.
         let expected: Vec<String> = (2u64..=6).map(|id| format!("`lessons`: {id}")).collect();
-        let lessons = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.lessons", Locale::PtBr));
+        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
+        let lessons: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
         assert_eq!(lessons, expected.iter().map(String::as_str).collect::<Vec<_>>(), "o pedido da onda: {}", built[0].text);
         for out in strong.iter().map(String::as_str).chain([weak, loose[0], loose[1], "Resposta curta."]) {
             assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
@@ -1063,7 +1102,8 @@ mod tests {
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
-        let lessons = section_lines(&built[0].text, part("prompt.part.lessons"));
+        let items = section_lines(&built[0].text, part("prompt.part.items"));
+        let lessons: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
         assert_eq!(lessons, ["`lessons`: 96"], "{lessons:?}");
         for out in [DISPATCH_LESSON, "Subagente nunca roda", "Quem tira uma proteção", "O teste tem de falhar"] {
             assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
@@ -1079,9 +1119,9 @@ mod tests {
 
     /// Uma pasta com 500 regras do projeto, e a onda mexe num arquivo dela: o
     /// pedido leva no máximo 5 regras, as mais ligadas ao texto das tarefas,
-    /// pelo número delas no banco, e fica abaixo do teto de linhas. A regra
-    /// que só divide uma palavra com a tarefa perde o lugar para as que
-    /// dividem quatro; das outras classes entra só a lição ligada à tarefa.
+    /// pelo número delas no banco. A regra que só divide uma palavra com a
+    /// tarefa perde o lugar para as que dividem quatro; das outras classes
+    /// entra só a lição ligada à tarefa.
     #[test]
     fn a_folder_with_hundreds_of_rules_sends_at_most_the_five_closest_to_the_tasks() {
         let dir = tempdir().unwrap();
@@ -1114,9 +1154,8 @@ mod tests {
         ]);
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        assert!(built[0].too_long.is_none(), "{} linhas", built[0].lines);
-        assert!(built[0].lines <= wave_prompt::MAX_LINES, "{} linhas", built[0].lines);
-        let shown = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.lessons", Locale::PtBr));
+        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
+        let shown: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
         // Ids 501 a 505: as cinco regras fortes, gravadas depois das 500
         // "Regra N"; id 509: a preferência, cujo texto também divide
         // "total" e "fatura" com a tarefa. Id 508, o defeito sem palavra em

@@ -224,16 +224,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              record of it: it does not leave with `remove`. To take sensitive data out of it, use \
              `purge`, which only hides the excerpt. Nothing was written."
         }
-        ("spec_events.wave_prompt_too_long", Locale::PtBr) => {
-            "O pedido da onda {wave} tem {lines} linhas, e o teto é {max}, já com o combinado \
-             reduzido a ponteiros. Tire da onda o que ainda vai inteiro, cada parte com as linhas \
-             dela: {parts}. Divida a onda antes de levar o plano para a aprovação."
-        }
-        ("spec_events.wave_prompt_too_long", Locale::EnUs) => {
-            "Wave {wave}'s request has {lines} lines, and the cap is {max}, with the agreed items \
-             already cut down to pointers. Take out of the wave what still goes whole, each part \
-             with its line count: {parts}. Split the wave before taking the plan to approval."
-        }
         ("spec_events.delivered_too_long", Locale::PtBr) => {
             "O entregou tem {chars} caracteres, e o teto é {max}. Ele volta para a janela principal: \
              conte o que mudou, sem repetir o pedido. Nada foi gravado."
@@ -554,8 +544,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            79,
-            0xe913_eb45_f724_e659,
+            78,
+            0x0d1e_d00a_cd1b_9a07,
         );
     }
 
@@ -591,7 +581,6 @@ mod tests {
             ("spec_events.open_point_removed", &["{code}"][..]),
             ("spec_events.purge_excerpt_not_found", &["{code}"][..]),
             ("spec_events.closing_point_last_record", &["{code}"][..]),
-            ("spec_events.wave_prompt_too_long", &["{wave}", "{lines}", "{max}", "{parts}"][..]),
             ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),
             ("approve_spec.open_points", &["{count}", "{points}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),

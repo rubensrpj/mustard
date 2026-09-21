@@ -60,8 +60,7 @@ fn ticket_of(prompt: &str) -> Ticket {
 
 /// O pedido da onda `wave` da spec `spec`, montado do disco a partir de
 /// `start`, ou o motivo de não despachar: a spec sem arquivo de eventos, a
-/// spec que não está aprovada, a onda que o plano não tem e o pedido acima do
-/// teto de linhas.
+/// spec que não está aprovada e a onda que o plano não tem.
 fn assemble(start: &Path, spec: &str, wave: u64) -> Result<String, String> {
     let project = crate::commands::spec_events::project(start);
     let lang = project.lang;
@@ -83,10 +82,7 @@ fn assemble(start: &Path, spec: &str, wave: u64) -> Result<String, String> {
         .into_iter()
         .find(|built| built.wave == wave)
         .ok_or_else(|| say("subagent.no_wave", lang, &[("{spec}", spec), ("{wave}", &wanted)]))?;
-    match prompt.too_long {
-        Some(refusal) => Err(refused(refusal)),
-        None => Ok(prompt.text),
-    }
+    Ok(prompt.text)
 }
 
 /// O texto da tarefa, no `tool_input.prompt`.
@@ -264,9 +260,9 @@ mod tests {
         }
     }
 
-    /// Sem aprovação, sem a onda no plano, com o pedido acima do teto ou com
-    /// o bilhete estragado, o despacho é barrado com o motivo, e o motivo
-    /// nunca manda ler um arquivo.
+    /// Sem aprovação, sem a onda no plano ou com o bilhete estragado, o
+    /// despacho é barrado com o motivo, e o motivo nunca manda ler um
+    /// arquivo.
     #[test]
     fn the_dispatch_is_refused_with_the_reason_and_never_points_to_a_file() {
         let dir = tempdir().unwrap();
@@ -287,14 +283,26 @@ mod tests {
             assert_eq!(got, expected);
             assert!(!got.contains(".md") && !got.to_lowercase().contains("leia"), "{got}");
         }
+    }
 
-        // Os códigos das tarefas cabem numa linha só: o que passa do teto é
-        // uma parte de uma linha por item, como a das skills.
+    /// Uma onda com 500 tarefas e 500 skills — bem além do antigo teto de
+    /// 500 linhas do pedido — é despachada do mesmo jeito, com o pedido
+    /// inteiro: nada é recusado por causa do tamanho.
+    #[test]
+    fn a_wave_far_past_the_old_line_cap_is_dispatched_whole() {
         let big = tempdir().unwrap();
-        planned_with(big.path(), mustard_core::domain::wave_prompt::MAX_LINES, true);
+        planned_with(big.path(), 500, true);
         approve(big.path());
-        let long = denied(dispatch(big.path(), "MUSTARD-WAVE: x 1"));
-        assert!(long.contains(&mustard_core::domain::wave_prompt::MAX_LINES.to_string()), "{long}");
+        match dispatch(big.path(), "MUSTARD-WAVE: x 1") {
+            Verdict::Rewrite { tool_input, .. } => {
+                let prompt = tool_input["prompt"].as_str().unwrap().to_string();
+                assert!(prompt.lines().count() > 500, "{prompt}");
+                let task_lines = prompt.lines().filter(|l| l.starts_with("- `MSTD-TASK-")).count();
+                assert_eq!(task_lines, 500, "{prompt}");
+                assert!(prompt.contains("s499"), "{prompt}");
+            }
+            other => panic!("the wave is dispatched whole, got {other:?}"),
+        }
     }
 
     /// Uma tarefa sem bilhete passa como veio, e o gancho não age fora do

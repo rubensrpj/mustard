@@ -1093,13 +1093,14 @@ mod tests {
         for line in ["- Compile com `make`.", "- Teste com `make test`.", "  - Onda 2: `src/b.rs`"] {
             assert!(first.contains(line), "{line}: {first}");
         }
-        assert!(!first.contains("## Conserto"), "{first}");
+        assert!(!first.contains(&translate("prompt.fix.wave", Locale::PtBr)), "{first}");
 
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
         write(root, "x", "decision", json!({"author": "user", "text": "A soma aceita negativos.", "keys": ["soma"],
             "why": "o usuário pediu", "waves": [1]}));
         let fix = text(&round(root, "x", Some(&verdict(1, "rejected", "faltou o teste"))), "dispatch", 1);
-        let heading = format!("## Conserto\n\n{}", translate("prompt.fix.wave", Locale::PtBr));
+        let heading =
+            format!("## {}\n\n{}", translate("prompt.part.items", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");
         let fix_lines = |text: &str| -> Vec<String> {
             let part = text.split("\n## ").nth(1).unwrap_or_default();

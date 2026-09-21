@@ -546,11 +546,8 @@ fn check(
         out.push(PlanFinding::CommandNotDeclared { field: "testCommand" });
     }
 
-    // Cada pedido cabe no teto de linhas, e cada skill nomeada passa.
+    // Cada skill nomeada passa. O pedido não tem mais teto de linhas.
     for prompt in built {
-        if let Some(refusal) = &prompt.too_long {
-            out.push(PlanFinding::Refused(refusal.clone()));
-        }
         for (name, refusal) in &prompt.bad_skills {
             out.push(PlanFinding::Skill { name: name.clone(), refusal: refusal.clone() });
         }
@@ -1099,20 +1096,22 @@ mod tests {
         writeln!(file, "{line}").unwrap();
     }
 
-    /// Um pedido acima do teto de linhas trava a pergunta, e a mensagem diz
-    /// quantas linhas ele tem. As 600 tarefas vêm direto no arquivo, sem
-    /// passar pela gravação: a onda nasce pequena agora, e uma onda com tantas
-    /// tarefas não seria mais gravada — mas o plano continua conferindo a que
-    /// já existe no arquivo, de antes da regra ou de uma edição de fora.
+    /// Um pedido bem além do antigo teto de 500 linhas não trava mais a
+    /// pergunta: o teto não existe. As 600 tarefas vêm direto no arquivo,
+    /// sem passar pela gravação, porque a onda nasce pequena agora e uma
+    /// onda com tantas tarefas não seria mais gravada — mas o plano continua
+    /// conferindo a que já existe no arquivo, de antes da regra ou de uma
+    /// edição de fora.
     #[test]
-    fn a_request_over_the_line_cap_blocks_the_question() {
+    fn a_request_far_past_the_old_line_cap_does_not_block_the_question() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         let wave = write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        // Os códigos das tarefas cabem numa linha só: o que passa do teto é
-        // uma parte de uma linha por item, como a das skills que elas nomeiam.
+        // Os códigos das tarefas cabem numa linha só: o que passa do teto
+        // antigo é uma parte de uma linha por item, como a das skills que
+        // elas nomeiam.
         let mut next_id = id_of(&wave) + 1;
         for i in 0..600 {
             let skill = root.join(".claude").join("skills").join(format!("s{i}"));
@@ -1124,8 +1123,7 @@ mod tests {
         }
 
         let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        assert!(reasons(&report, "blocking").contains(&"wave-prompt-too-long".to_string()), "{report}");
+        assert!(!reasons(&report, "blocking").contains(&"wave-prompt-too-long".to_string()), "{report}");
         assert!(report["waves"][0]["lines"].as_u64().unwrap() > 500, "{report}");
     }
 
