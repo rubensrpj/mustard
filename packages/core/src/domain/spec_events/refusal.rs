@@ -72,10 +72,8 @@ pub enum Refusal {
     /// O pedido adiado aponta uma pendência já fechada ou descartada.
     DeferredClosedPending { pending: String },
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
-    /// aponta uma mensagem do usuário, ou não repete, inteira e palavra por
-    /// palavra, nem o texto dela, nem uma frase dela, nem a sugestão das
-    /// respostas que ela respondeu.
-    GoalNotVerbatim { spec: String, origin: String },
+    /// aponta em `origin` uma mensagem do usuário.
+    GoalOriginNotUser { spec: String, origin: String },
     /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
     /// ou reveria o tipo de trabalho: quem o grava é o `grill`.
     WorkTypeByGrill,
@@ -107,11 +105,6 @@ pub enum Refusal {
     /// Um `remove` que tiraria o ponto que fecha outro cujo original já saiu:
     /// ele é o único registro do ponto.
     ClosingPointLastRecord { code: String },
-    /// O pedido montado de uma onda passa do teto de linhas mesmo com o
-    /// combinado reduzido a ponteiros: a onda precisa ser dividida antes de o
-    /// plano ir para a aprovação, e `parts` diz o que ficou inteiro nela,
-    /// cada parte com quantas linhas ocupa.
-    WavePromptTooLong { wave: u64, lines: usize, max: usize, parts: String },
     /// O texto do entregou de uma onda passa do teto de caracteres: ele volta
     /// para a janela principal e precisa caber nela.
     DeliveredTooLong { chars: usize, max: usize },
@@ -119,7 +112,34 @@ pub enum Refusal {
     /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
     /// todo.
     OwnerMissing { event_type: String },
+    /// Uma tarefa gravada sem uma das três declarações obrigatórias: o que
+    /// ela faz, os arquivos que toca e de quais tarefas depende. Nada é
+    /// gravado, e a mensagem nomeia exatamente qual (ou quais) faltou.
+    TaskDeclarationMissing { missing: Vec<TaskDeclaration> },
     Io { detail: String },
+}
+
+/// Uma das três declarações que toda tarefa precisa trazer na gravação.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskDeclaration {
+    /// O que a tarefa faz, em uma frase (`text`).
+    What,
+    /// Os arquivos que a tarefa toca (`files`), mesmo que a lista fique
+    /// vazia.
+    Files,
+    /// As tarefas de que esta depende (`depends_on`), mesmo que a lista
+    /// fique vazia.
+    DependsOn,
+}
+
+impl TaskDeclaration {
+    fn label(self, lang: Locale) -> &'static str {
+        match self {
+            Self::What => translate("spec_events.task_declaration_what", lang),
+            Self::Files => translate("spec_events.task_declaration_files", lang),
+            Self::DependsOn => translate("spec_events.task_declaration_depends_on", lang),
+        }
+    }
 }
 
 impl Refusal {
@@ -158,7 +178,7 @@ impl Refusal {
             Self::OldFormatSpec { .. } => "old-format-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
-            Self::GoalNotVerbatim { .. } => "goal-not-verbatim",
+            Self::GoalOriginNotUser { .. } => "goal-origin-not-user",
             Self::WorkTypeByGrill => "work-type-by-grill",
             Self::SurveyOpen { .. } => "survey-open",
             Self::SurveyNotStarted { .. } => "survey-not-started",
@@ -170,9 +190,9 @@ impl Refusal {
             Self::OpenPointRemoved { .. } => "open-point-removed",
             Self::PurgeExcerptNotFound { .. } => "purge-excerpt-not-found",
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
-            Self::WavePromptTooLong { .. } => "wave-prompt-too-long",
             Self::DeliveredTooLong { .. } => "delivered-too-long",
             Self::OwnerMissing { .. } => "owner-missing",
+            Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -310,8 +330,8 @@ impl Refusal {
             Self::DeferredClosedPending { pending } => {
                 fill("spec_events.deferred_closed_pending", &[("{pending}", pending.clone())])
             }
-            Self::GoalNotVerbatim { spec, origin } => fill(
-                "spec_events.goal_not_verbatim",
+            Self::GoalOriginNotUser { spec, origin } => fill(
+                "spec_events.goal_origin_not_user",
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
             Self::WorkTypeByGrill => fill("grill.work_type_by_grill", &[]),
@@ -344,15 +364,6 @@ impl Refusal {
             Self::ClosingPointLastRecord { code } => {
                 fill("spec_events.closing_point_last_record", &[("{code}", code.clone())])
             }
-            Self::WavePromptTooLong { wave, lines, max, parts } => fill(
-                "spec_events.wave_prompt_too_long",
-                &[
-                    ("{wave}", wave.to_string()),
-                    ("{lines}", lines.to_string()),
-                    ("{max}", max.to_string()),
-                    ("{parts}", parts.clone()),
-                ],
-            ),
             Self::DeliveredTooLong { chars, max } => fill(
                 "spec_events.delivered_too_long",
                 &[("{chars}", chars.to_string()), ("{max}", max.to_string())],
@@ -360,6 +371,13 @@ impl Refusal {
             Self::OwnerMissing { event_type } => {
                 fill("plan.owner_missing", &[("{type}", event_type.clone())])
             }
+            Self::TaskDeclarationMissing { missing } => fill(
+                "spec_events.task_declaration_missing",
+                &[(
+                    "{missing}",
+                    missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
+                )],
+            ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }

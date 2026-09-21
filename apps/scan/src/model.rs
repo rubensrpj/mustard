@@ -214,6 +214,12 @@ pub struct Decl {
     pub kind: String,
     pub name: String,
     pub line: usize,
+    /// The last line of the declaration's node — so a caller can point to the
+    /// current start..end of the whole function/struct/etc without
+    /// recomputing it. `0` when the extractor could not resolve it (older
+    /// models default here too; additive field).
+    #[serde(default)]
+    pub end_line: usize,
     /// Names this declaration builds on — base classes, implemented interfaces,
     /// embedded structs, implemented traits. Language-specific to capture,
     /// generic to mine: a base name shared by many entities is a shared contract.

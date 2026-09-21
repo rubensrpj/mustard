@@ -6,12 +6,13 @@
 //! Os textos de agente do Mustard, pelo binário de verdade.
 //!
 //! O projeto recebe exatamente três agentes — `mustard-wave`,
-//! `mustard-review` e `mustard-skill` —, no idioma do `language.text` e com
-//! até 3.072 bytes cada; os dois idiomas existem como molde do produto; nenhum
-//! texto manda criar cópia do projeto por conta própria, e os de onda e de
-//! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
-//! indica; e cada comando do fluxo responde o próximo passo, que o modelo não
-//! escolhe sozinho.
+//! `mustard-review` e `mustard-skill` —, no idioma do `language.text`; os
+//! dois idiomas existem como molde do produto; nenhum texto manda criar
+//! cópia do projeto por conta própria, e os de onda e de revisão mandam
+//! trabalhar na cópia e na pasta de compilação que o pedido indica; e cada
+//! comando do fluxo responde o próximo passo, que o modelo não escolhe
+//! sozinho. O que prende o texto de um agente é o que ele diz, não quantos
+//! bytes ele tem.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -20,9 +21,6 @@ use std::process::{Command, Stdio};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
-
-/// O teto de um texto de agente, em bytes.
-const AGENT_CAP: usize = 3_072;
 
 /// O jeito de o agente criar uma cópia do projeto por conta própria: a cópia
 /// em si, a pasta de compilação escolhida por ele, a pasta compartilhada que
@@ -121,8 +119,8 @@ fn template(lang: &str, name: &str) -> String {
         .unwrap_or_else(|e| panic!("the {lang} `{name}` template is missing: {e}"))
 }
 
-/// O projeto recebe exatamente os três agentes, no idioma do `language.text`
-/// e com até 3.072 bytes cada; os dois idiomas existem como molde; e o
+/// O projeto recebe exatamente os três agentes, no idioma do `language.text`;
+/// os dois idiomas existem como molde; e o
 /// plugin não entrega agente nenhum, porque entregaria os dois idiomas. Os
 /// textos que o instalador escreve trazem as duas guardas desta obra: provar
 /// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
@@ -141,7 +139,6 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
         );
         for name in ["wave", "review", "skill"] {
             let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
-            assert!(installed.len() <= AGENT_CAP, "the {lang} `{name}` agent is {} bytes", installed.len());
             assert_eq!(installed, template(lang, name), "the {lang} project got another text for `{name}`");
             assert_ne!(installed, template(other, name), "the {lang} and {other} `{name}` texts are the same");
             assert!(
@@ -225,12 +222,132 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
     }
 }
 
+/// O agente de onda instalado proíbe usar o stash do git, na mesma frase que
+/// já proíbe comitar, enviar ao servidor e trocar de branch, nos dois
+/// idiomas.
+#[test]
+fn the_wave_agent_never_uses_the_git_stash() {
+    for (lang, phrase) in [("pt-BR", "use o stash"), ("en-US", "or stash")] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let wave = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        let guard = wave
+            .lines()
+            .find(|l| l.contains("Nunca comite") || l.contains("Never commit"))
+            .unwrap_or_else(|| panic!("the {lang} wave agent lost its git guard line"));
+        assert!(guard.contains(phrase), "the {lang} wave agent does not forbid the stash: {guard}");
+    }
+}
+
+/// Os dois agentes que devolvem uma linha marcada dizem que ela é obrigatória
+/// e que fecha a última mensagem deles: sem isso um relatório em prosa vira
+/// entrega perdida, e a rodada não lê nada. Os dois também dizem que a lista
+/// de pendências não é deles para fechar. Nos dois idiomas.
+#[test]
+fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_theirs() {
+    for lang in ["pt-BR", "en-US"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        for name in ["wave", "review"] {
+            let text = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            let mandatory = if lang == "pt-BR" { "obrigatória" } else { "mandatory" };
+            assert!(text.contains(mandatory), "the {lang} `{name}` agent does not call its line mandatory");
+            assert!(
+                text.contains(".claude/pending/"),
+                "the {lang} `{name}` agent does not say the pending ledger is not its to close"
+            );
+        }
+    }
+}
+
+/// O molde da onda declara o modelo sonnet com esforço alto, o do revisor
+/// declara opus com esforço alto, e o da skill declara sonnet: cada agente
+/// sabe o próprio modelo, sem herdar o da sessão em silêncio. Nenhum teste
+/// desta obra recusa um molde pelo tamanho em bytes — o que prende o texto é
+/// o que ele diz.
+#[test]
+fn each_agent_template_declares_its_own_model_and_effort() {
+    for lang in ["pt-BR", "en-US"] {
+        let wave = template(lang, "wave");
+        assert!(wave.contains("\nmodel: sonnet\n"), "the {lang} wave agent does not declare the sonnet model:\n{wave}");
+        assert!(wave.contains("\neffort: high\n"), "the {lang} wave agent does not declare a high effort:\n{wave}");
+        assert!(wave.len() as u64 > 3_072, "the {lang} wave agent is not over the old byte cap, so it proves nothing");
+
+        let review = template(lang, "review");
+        assert!(review.contains("\nmodel: opus\n"), "the {lang} review agent does not declare the opus model:\n{review}");
+        assert!(review.contains("\neffort: high\n"), "the {lang} review agent does not declare a high effort:\n{review}");
+
+        let skill = template(lang, "skill");
+        assert!(skill.contains("\nmodel: sonnet\n"), "the {lang} skill agent does not declare the sonnet model:\n{skill}");
+        assert!(!skill.contains("model: inherit"), "the {lang} skill agent still inherits the session's model");
+    }
+}
+
+/// O molde da onda, nos dois idiomas, tem exatamente quatro itens de
+/// segundo nível — objetivo, orientação sobre ferramentas, fronteira da
+/// tarefa e formato de saída, nas palavras da documentação da Anthropic —, e
+/// nada além deles: a contagem de `## ` é quatro, sem um quinto item.
+#[test]
+fn the_wave_agent_template_has_exactly_four_items() {
+    let headers: [(&str, [&str; 4]); 2] = [
+        ("pt-BR", ["## Objetivo", "## Orientação sobre ferramentas", "## Fronteira da tarefa", "## Formato de saída"]),
+        ("en-US", ["## Goal", "## Tool guidance", "## Task boundary", "## Output format"]),
+    ];
+    for (lang, items) in headers {
+        let wave = template(lang, "wave");
+        let found: Vec<&str> = wave.lines().filter(|line| line.starts_with("## ")).collect();
+        assert_eq!(found, items, "the {lang} wave agent does not have exactly these four items: {wave}");
+    }
+}
+
+/// As regras de execução que valem em qualquer projeto — ler por trecho, não
+/// reler depois de editar, rodar só os testes do que mudou, a suíte inteira
+/// uma vez no fim pelo `rtk`, nada em segundo plano, não comitar nem usar
+/// `git add`, rodar cada comando de dentro da cópia e a pasta de compilação
+/// fixa — moram só no molde do agente, escritas à mão: o catálogo não guarda
+/// mais essas frases (onda 11), e o molde da onda e do revisor levam as
+/// mesmas palavras, nos dois idiomas.
+#[test]
+fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
+    let pt_br = [
+        "Leia por trecho: ache a função com a busca e leia só ela",
+        "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado",
+        "Durante o trabalho, rode só os testes do que mudou",
+        "A suíte inteira roda uma vez no fim, em primeiro plano",
+        "Nunca mande compilação ou teste para segundo plano",
+        "Não comite e não use `git add`: o commit é da rodada",
+        "Rode cada comando de dentro da cópia",
+        "passa de uma cópia para a seguinte",
+        "o corte que mexe no mesmo trecho de outro vai sozinho",
+    ];
+    let en_us = [
+        "Read by excerpt: find the function with search and read only it",
+        "Do not reread the file after editing: the edit already shows the changed excerpt",
+        "During the work, run only the tests of what changed",
+        "The whole suite runs once at the end, in the foreground",
+        "Never send a build or test to the background",
+        "Do not commit and do not use `git add`: the commit belongs to the round",
+        "Run every command from inside the copy",
+        "passes from one copy to the next",
+        "a cut that touches the same spot as another goes alone",
+    ];
+    for (lang, phrases) in [("pt-BR", pt_br), ("en-US", en_us)] {
+        for name in ["wave", "review"] {
+            let agent = template(lang, name);
+            for phrase in phrases {
+                assert!(agent.contains(phrase), "the {lang} `{name}` agent lost the execution rule `{phrase}`");
+            }
+        }
+    }
+}
+
 /// Nenhum texto de agente manda criar cópia do projeto por conta própria —
 /// nem os três que o projeto recebe, em cada idioma, nem as instruções fixas
 /// que o binário monta no pedido da onda e da revisão —; os de onda e de
-/// revisão mandam trabalhar na cópia separada e na pasta de compilação que o
-/// pedido indica. O pedido que a rodada monta, pelo binário, traz a cópia que
-/// ela criou e a pasta de compilação. O aviso das sobras no disco continua no
+/// revisão mandam trabalhar na cópia separada que o pedido indica e usar a
+/// pasta de compilação quando ele indicar uma. O pedido que a rodada monta,
+/// pelo binário, num projeto que o mapa marca como Rust, traz a cópia que ela
+/// criou e a pasta de compilação. O aviso das sobras no disco continua no
 /// catálogo do início da sessão, com o comando que as limpa.
 #[test]
 fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_the_build_folder() {
@@ -246,9 +363,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
             }
         }
         let said: [&str; 3] = if text == Locale::PtBr {
-            ["cópia separada que o pedido indica", "pasta de compilação que ele indica", "Nunca crie cópia por conta própria"]
+            ["cópia separada que o pedido indica", "se ele indicar uma pasta de compilação, use-a", "Nunca crie cópia por conta própria"]
         } else {
-            ["separate copy the request names", "build folder it names", "Never create a copy on your own"]
+            ["separate copy the request names", "if it names a build folder, use it", "Never create a copy on your own"]
         };
         for name in ["wave", "review"] {
             for line in said {
@@ -274,16 +391,22 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     let put = |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
     let said = put("message", json!({"author": "user", "text": "o objetivo"}));
     let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+    // Cada onda declara o arquivo dela: a trava por arquivo tira da rodada
+    // as ondas que dividem um mesmo arquivo, e este teste prova as duas
+    // saindo juntas, sem cruzar arquivo nenhuma com a outra.
     for n in [1, 2] {
         put("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "passa", "origin": said}));
-        put("task", json!({"wave": n, "text": "Mexer no mesmo arquivo.", "files": [{"path": "src/main.rs"}], "origin": said}));
+        put("task", json!({"wave": n, "text": "Mexer no arquivo dela.", "files": [{"path": format!("src/onda{n}.rs")}], "origin": said}));
     }
     put("state", json!({"phase": "running", "branch": "feature/copia"}));
+    // O mapa marca o projeto como Rust, como o scan o grava.
+    let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo", "code_files": 1}]});
+    std::fs::write(mustard_core::io::project_map::model_path(&root), model.to_string()).unwrap();
 
     let round = rt(&root, &home, &["run", "round", "--spec", "copia"], None);
     assert_eq!(round["ok"], json!(true), "{round}");
     let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
-    assert_eq!(dispatched.len(), 2, "the two waves on the same file go out together: {round}");
+    assert_eq!(dispatched.len(), 2, "the two waves, each on its own file, go out together: {round}");
     let log = store::read(&file).unwrap().unwrap();
     let mut dirs = Vec::new();
     for sent in dispatched {
@@ -304,9 +427,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
 }
 
-/// A parte fixa de cada pedido que o binário monta: o da onda, o da revisão
-/// dela e o da revisão final do conjunto.
-const FIXED_PARTS: [&str; 3] = ["prompt.fixed", "prompt.review.fixed", "prompt.final.fixed"];
+/// A parte fixa de cada pedido que o binário monta: o da onda e o da revisão
+/// final do conjunto.
+const FIXED_PARTS: [&str; 2] = ["prompt.fixed", "prompt.final.fixed"];
 
 /// Quantas palavras seguidas fazem uma frase repetida.
 const REPEATED_RUN: usize = 6;
@@ -327,7 +450,6 @@ fn the_fixed_part_of_a_request_repeats_no_sentence_of_the_agent_texts() {
             FIXED_PARTS.iter().map(|key| (*key, format!(" {} ", words(translate(key, text)).join(" ")))).collect();
         for name in ["wave", "review"] {
             let agent = template(lang, name);
-            assert!(agent.len() <= AGENT_CAP, "the {lang} `{name}` agent is {} bytes", agent.len());
             for sentence in agent.split(['.', ':', ';', '?', '!', '\n']) {
                 for run in words(sentence).windows(REPEATED_RUN) {
                     let needle = format!(" {} ", run.join(" "));
@@ -352,11 +474,12 @@ fn run_returned(root: &Path, home: &Path, report: &Value) -> Value {
 
 /// Cada comando do fluxo responde o próximo passo, e o comando que ele
 /// devolve roda inteiro, sem o parser recusar opção nenhuma: a retomada no
-/// levantamento devolve o levantamento; a rodada sem nada a despachar, sem
-/// revisão pendente e com tudo entregue e aprovado devolve o fechamento; o
-/// fechamento devolve o pull request com a base e a branch da spec; e a
-/// retomada da spec fechada devolve a mesma linha. O que o modelo roda a
-/// seguir vem dessa resposta, nunca de um texto do Mustard.
+/// levantamento devolve o levantamento; a rodada sem nada a despachar e com
+/// tudo entregue devolve o fechamento; o fechamento, mesmo sem onda nenhuma,
+/// pede o agente de teste dedicado, e aprovado ele devolve o pull request com
+/// a base e a branch da spec; e a retomada da spec fechada devolve a mesma
+/// linha. O que o modelo roda a seguir vem dessa resposta, nunca de um texto
+/// do Mustard.
 #[test]
 fn every_flow_command_answers_its_next_step() {
     let dir = tempfile::tempdir().unwrap();
@@ -393,7 +516,16 @@ fn every_flow_command_answers_its_next_step() {
     let close = translate("round.close", Locale::PtBr).replace("{command}", "mustard-rt run close --spec passo");
     assert!(round["next"].as_str().is_some_and(|next| next.ends_with(&close)), "{round}");
 
-    let closed = run_returned(&root, &home, &round);
+    // Mesmo sem onda nenhuma, o fechamento pede o agente de teste dedicado.
+    let asked = run_returned(&root, &home, &round);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let approved = json!({"final": true, "result": "approved", "text": "Está pronto."});
+    let closed = rt(
+        &root,
+        &home,
+        &["run", "close", "--spec", "passo", "--report", &format!("<VERDICT>{approved}</VERDICT>")],
+        None,
+    );
     assert_eq!(closed["ok"], json!(true), "{closed}");
     let pr_open = "mustard-rt run pr-open --base dev --head feature/passo --spec passo";
     assert_eq!(closed["command"], json!(pr_open), "{closed}");

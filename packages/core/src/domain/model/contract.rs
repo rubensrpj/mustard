@@ -134,22 +134,6 @@ pub struct HookInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 
-    /// Worktree path to REMOVE — `WorktreeRemove` only. The isolation events do
-    /// NOT share a payload: `WorktreeRemove` carries this path, while
-    /// `WorktreeCreate` carries only [`Self::worktree_name`] and expects the
-    /// hook to decide the path and echo it. Reading this field on a create is
-    /// always `None` — the mistake that left worktree isolation dead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<String>,
-
-    /// Worktree NAME to create (harness field `name`) — `WorktreeCreate` only.
-    /// A name, never a path: a configured hook REPLACES Claude Code's native
-    /// `git worktree add`, so it chooses where the worktree lands (the harness
-    /// convention is `.claude/worktrees/{name}`), creates it, and echoes the
-    /// absolute path on stdout. A non-zero exit aborts the creation.
-    #[serde(default, rename = "name", skip_serializing_if = "Option::is_none")]
-    pub worktree_name: Option<String>,
-
     /// Session identifier (`session_id`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -363,6 +347,12 @@ pub enum Verdict {
     Rewrite {
         /// The tool input that replaces the original.
         tool_input: Value,
+        /// A message shown to the agent alongside the rewrite, when the
+        /// change needs an explanation the new input does not carry on its
+        /// own (e.g. why a read was cut short). `None` when the rewrite
+        /// speaks for itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
 
     /// Permit the action and inject extra context for the agent
@@ -608,6 +598,20 @@ mod tests {
     }
 
     #[test]
+    fn worktree_isolation_fields_are_no_longer_typed() {
+        // The dead `WorktreeCreate`/`WorktreeRemove` payload fields were removed
+        // from `HookInput` — a harness that still sends `worktree_path` or
+        // `name` (the two keys those never-registered hooks used) now finds
+        // them only inside `raw`, unconsumed by any typed field. Before the
+        // removal a typed field ate the key out of the JSON before `#[serde(
+        // flatten)]` saw it, so this same JSON left `raw` WITHOUT the key.
+        let raw = r#"{"worktree_path":"/tmp/wt","name":"onda-2"}"#;
+        let input: HookInput = serde_json::from_str(raw).expect("lenient parse");
+        assert_eq!(input.raw["worktree_path"], serde_json::json!("/tmp/wt"));
+        assert_eq!(input.raw["name"], serde_json::json!("onda-2"));
+    }
+
+    #[test]
     fn ctx_for_test_sets_only_the_directory_and_the_trigger() {
         let ctx = Ctx::for_test("/p", Some(Trigger::Stop));
         assert_eq!(ctx.project_dir, "/p");
@@ -670,6 +674,7 @@ mod tests {
         let mut outcome = Outcome::allow();
         let rewrite = Verdict::Rewrite {
             tool_input: serde_json::json!({ "command": "rtk git status" }),
+            note: None,
         };
         outcome.fold(rewrite.clone());
         outcome.fold(Verdict::Allow);
@@ -697,7 +702,7 @@ mod tests {
             Verdict::Inject { context: "link do documento\n\nnota de clareza".into() }
         );
 
-        let rewrite = Verdict::Rewrite { tool_input: serde_json::json!({ "command": "ls" }) };
+        let rewrite = Verdict::Rewrite { tool_input: serde_json::json!({ "command": "ls" }), note: None };
         outcome.fold(rewrite.clone());
         assert_eq!(outcome.verdict, rewrite);
 

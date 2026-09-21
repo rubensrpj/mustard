@@ -1,6 +1,7 @@
 //! Os portões: o de escrita, a testemunha da aprovação e da mudança, a branch
-//! de trabalho e a base, a trava de comandos, os defeitos de clareza do fim da
-//! resposta e os rótulos do antigo portão de regressão.
+//! de trabalho e a base, a trava de comandos, a trava de instalação, os
+//! defeitos de clareza do fim da resposta e os rótulos do antigo portão de
+//! regressão.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -10,7 +11,8 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["write_gate", "approval", "change", "workbranch", "base", "command_guard", "clarity", "gate"];
+pub(super) const PREFIXES: &[&str] =
+    &["write_gate", "approval", "change", "workbranch", "base", "command_guard", "install_lock", "clarity", "gate"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -220,6 +222,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("write_gate.other_branch", Locale::EnUs) => {
             "[Mustard] The spec {spec} lives on the branch {branch}, and this edit is on {current}."
         }
+        // A leitura inteira de um arquivo de código com os testes dentro dele
+        // para antes deles ([`ReadCutRule`]): o aviso diz a linha e como
+        // pedir o trecho que ficou de fora.
+        ("write_gate.read_cut", Locale::PtBr) => {
+            "[Mustard] A leitura parou antes dos testes: eles começam na linha {line}. Para lê-los, \
+             peça esse trecho com `offset: {line}`."
+        }
+        ("write_gate.read_cut", Locale::EnUs) => {
+            "[Mustard] The read stopped before the tests: they start on line {line}. To read them, \
+             ask for that excerpt with `offset: {line}`."
+        }
 
         // The approval witness: what it tells the assistant after recording
         // the approval, or when nothing was recorded.
@@ -348,19 +361,37 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.restore_all", Locale::EnUs) => "discarding every change with `git restore .`",
         ("command_guard.delete_base", Locale::PtBr) => "apagar a branch de integração `{branch}`",
         ("command_guard.delete_base", Locale::EnUs) => "deleting the integration branch `{branch}`",
-        ("command_guard.windows_path", Locale::PtBr) => {
-            "Comando barrado: o destino `{target}` é um caminho do Windows, e o terminal do Bash não \
-             entende esse formato (no Windows vira um arquivo de nome estranho na pasta atual; no \
-             Linux e no macOS, um arquivo chamado `{target}`).\nNo Windows, use a forma \
-             `/c/pasta/arquivo`; no Linux e no macOS, um caminho absoluto de verdade. Caminho \
-             relativo funciona em todos.\nComando: {command}"
+        ("command_guard.windows_path_rewritten", Locale::PtBr) => {
+            "O destino `{original}` é um caminho do Windows, e o terminal do Bash não entende esse \
+             formato; o comando segue com `{posix}`, a forma que o shell entende."
         }
-        ("command_guard.windows_path", Locale::EnUs) => {
-            "Command blocked: the target `{target}` is a Windows path, and the Bash terminal does not \
-             understand that form (on Windows it becomes an oddly named file in the current folder; \
-             on Linux and macOS, a file named `{target}`).\nOn Windows, use the `/c/folder/file` \
-             form; on Linux and macOS, a real absolute path. A relative path works everywhere.\n\
-             Command: {command}"
+        ("command_guard.windows_path_rewritten", Locale::EnUs) => {
+            "The target `{original}` is a Windows path, and the Bash terminal does not understand \
+             that form; the command continues with `{posix}`, the form the shell understands."
+        }
+        ("command_guard.waiting_loop", Locale::PtBr) => {
+            "Comando barrado: espera outro processo num laço, checando com `pgrep`, `pidof` ou `ps`. \
+             O laço e o processo que ele espera podem citar o texto de busca um do outro e nunca \
+             terminar.\nComando: {command}\nRode o comando em primeiro plano, com o teto de tempo \
+             dele, e leia o resultado antes de seguir."
+        }
+        ("command_guard.waiting_loop", Locale::EnUs) => {
+            "Command blocked: it waits for another process in a loop, checking with `pgrep`, `pidof` \
+             or `ps`. The loop and the process it waits for can name each other's own search text and \
+             never end.\nCommand: {command}\nRun the command in the foreground, with its own time \
+             limit, and read the result before moving on."
+        }
+        // A trava de instalação (`apps/rt/src/hooks/session/prompt_entry.rs`):
+        // um comando `/mustard:` num projeto sem `mustard.json` na raiz. Sem
+        // esse arquivo o idioma do projeto ainda não é conhecido, então o
+        // chamador imprime este texto UMA VEZ EM CADA IDIOMA, um por linha.
+        ("install_lock.not_installed", Locale::PtBr) => {
+            "O Mustard não está instalado neste projeto: não há `mustard.json` na raiz. Rode \
+             `/mustard:upsert` para instalar; o resto fica desligado até lá."
+        }
+        ("install_lock.not_installed", Locale::EnUs) => {
+            "Mustard is not installed in this project: there is no `mustard.json` at the root. Run \
+             `/mustard:upsert` to install it; everything else stays off until then."
         }
         ("base.unmeasured", Locale::PtBr) => {
             "Não dá para saber de qual branch cortar: este projeto não declara base nenhuma em \
@@ -375,12 +406,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `git.flow`. Nothing was cut."
         }
 
-        // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
-        // uma linha curta do bloqueio do fim da resposta, que diz o defeito e
-        // o que o complemento explica sobre ele. Sem parênteses: o tom técnico
-        // os apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`,
-        // `{lines}`, `{limit}`, `{score}`, `{min}`, `{found}` e `{expected}` vêm
-        // do chamador.
+        // Defeitos de clareza de um texto (`domain::clarity`) — cada um é uma
+        // linha curta que abre com o erro e fecha, depois dos dois-pontos ou
+        // do ponto e vírgula, com o jeito de consertar. A recusa de uma lição
+        // leva a linha inteira; a mensagem seguinte a uma resposta leva só o
+        // erro, o trecho antes da primeira pontuação dessas
+        // (`clarity_check::error_of`). Sem parênteses: o tom técnico os
+        // apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`, `{lines}`,
+        // `{limit}`, `{score}`, `{min}`, `{found}` e `{expected}` vêm do
+        // chamador.
         ("clarity.long_sentence", Locale::PtBr) => {
             "frase com {words} palavras: \"{opening}…\"; diga a mesma ideia em frases curtas"
         }
@@ -397,11 +431,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "{code} é um código interno; diga o assunto pelo nome"
         }
         ("clarity.internal_code", Locale::EnUs) => "{code} is an internal code; name the subject instead",
-        // A resposta longa já apareceu na tela: o complemento não a encurta,
-        // traz um resumo curto dela, como o da nota de leitura baixa. O JSON,
-        // a tabela ou o documento pedido vai para a página avulsa, e o chat
-        // fica com o resumo. A linha cabe no corte de 160 caracteres do
-        // bloqueio (`clarity_check::MAX_DEFECT_CHARS`), com folga para o número.
+        // O texto longo pede um resumo curto, como o da nota de leitura
+        // baixa, e manda o JSON, a tabela ou o documento pedido para a página
+        // avulsa: o chat fica com o resumo.
         ("clarity.too_long", Locale::PtBr) => {
             "resposta com {lines} linhas, e o limite é {limit}; faça no chat um resumo curto, e \
              JSON, tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`"
@@ -418,6 +450,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "hard to read: {score} on the Flesch reading-ease index, and the minimum is {min}; \
              write a short summary in plain words"
         }
+        // A resposta longa e difícil de ler ao mesmo tempo: as duas linhas
+        // acima se juntam nesta, para o pedido de resumo curto não se
+        // repetir.
+        ("clarity.too_long_and_hard_to_read", Locale::PtBr) => {
+            "resposta com {lines} linhas (o limite é {limit}) e difícil de ler: nota {score} no \
+             índice de Flesch (o mínimo é {min}); faça no chat um resumo curto, em palavras \
+             simples, e o JSON, a tabela ou o documento pedido vai para a página avulsa: \
+             `mustard-rt run page`"
+        }
+        ("clarity.too_long_and_hard_to_read", Locale::EnUs) => {
+            "reply with {lines} lines (the limit is {limit}) and hard to read: {score} on the \
+             Flesch reading-ease index (the minimum is {min}); write a short summary in the chat, \
+             in plain words, and put a requested JSON, table or document on its own page: \
+             `mustard-rt run page`"
+        }
         // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
         // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
         ("clarity.wrong_language", Locale::PtBr) => {
@@ -428,21 +475,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "reply in {found}; the language of the project and the user is {expected}; write a \
              summary in {expected}"
         }
-        // O fim da resposta (`apps/rt/src/hooks/task/end_of_turn_check.rs`):
-        // a primeira resposta que reprova é barrada, e o assistente recebe o
-        // pedido de um complemento logo abaixo dela, sem reescrevê-la. O
-        // Claude Code mostra este texto ao usuário com o rótulo de erro do
-        // gancho, e por isso ele é curto e sem cara de erro. Os defeitos vêm
-        // abaixo, um por linha. O complemento não é conferido de novo.
-        ("clarity.block.head", Locale::PtBr) => {
-            "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela um \
-             complemento curto sobre estes pontos:"
-        }
-        ("clarity.block.head", Locale::EnUs) => {
-            "Mustard: complement below. Without rewriting the reply, write a short complement \
-             right below it about these points:"
-        }
-        // A última linha da lista quando há mais defeitos do que ela mostra.
+        // A frase curta que a linha escondida da mensagem seguinte leva
+        // depois de uma resposta com erro de escrita
+        // (`apps/rt/src/hooks/task/clarity_check.rs`), para o assistente
+        // corrigir na resposta seguinte. A resposta não é barrada, e a frase
+        // não aparece na tela. `{errors}` vem do chamador: os erros, separados
+        // por ponto e vírgula.
+        ("clarity.next.head", Locale::PtBr) => "Na última resposta: {errors}.",
+        ("clarity.next.head", Locale::EnUs) => "In the last reply: {errors}.",
+        // O último item da lista quando há mais erros do que ela mostra.
         ("clarity.more", Locale::PtBr) => "e mais {count}",
         ("clarity.more", Locale::EnUs) => "and {count} more",
         _ => return None,
@@ -462,8 +503,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            62,
-            0xb1dc_fa00_7262_8d04,
+            66,
+            0xde1f_3976_85dc_e39f,
         );
     }
 
@@ -478,6 +519,7 @@ mod tests {
             ("write_gate.on_base", &["{branch}"][..]),
             ("write_gate.unreadable_config", &["{file}"][..]),
             ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
+            ("write_gate.read_cut", &["{line}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
             ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),
             ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),
@@ -492,6 +534,7 @@ mod tests {
             ("subagent.not_approved", &["{spec}", "{phase}"][..]),
             ("subagent.no_wave", &["{spec}", "{wave}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
+            ("session.project_page", &["{template}", "{capabilities}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),
             ("session.provider_silent", &["{spec}", "{reason}"][..]),
             ("session.submodules", &["{spec}", "{text}"][..]),
@@ -542,7 +585,8 @@ mod tests {
             ("command_guard.checkout_all", &[][..]),
             ("command_guard.restore_all", &[][..]),
             ("command_guard.delete_base", &["{branch}"][..]),
-            ("command_guard.windows_path", &["{target}", "{command}"][..]),
+            ("command_guard.windows_path_rewritten", &["{original}", "{posix}"][..]),
+            ("command_guard.waiting_loop", &["{command}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -554,9 +598,25 @@ mod tests {
         }
     }
 
-    /// Os defeitos de clareza e o bloqueio do fim da resposta saem do
-    /// catálogo nos dois idiomas, cada um com as vagas que o medidor preenche.
-    /// O bloqueio abre avisando o complemento, e o aviso da volta saiu.
+    /// A recusa da trava de instalação sai do catálogo nos dois idiomas, cada
+    /// um citando o `mustard.json` que falta e a porta que instala.
+    #[test]
+    fn i18n_translates_install_lock_key() {
+        let (pt, en) =
+            (translate("install_lock.not_installed", Locale::PtBr), translate("install_lock.not_installed", Locale::EnUs));
+        assert_ne!(pt, "<missing-key>");
+        assert_ne!(en, "<missing-key>");
+        assert_ne!(pt, en);
+        for text in [&pt, &en] {
+            assert!(text.contains("mustard.json"), "{text}");
+            assert!(text.contains("/mustard:upsert"), "{text}");
+        }
+    }
+
+    /// Os defeitos de clareza e a frase da mensagem seguinte saem do catálogo
+    /// nos dois idiomas, cada um com as vagas que o medidor preenche. A frase
+    /// abre dizendo que o erro foi na última resposta. O pedido do complemento
+    /// saiu com o bloqueio da escrita, e o aviso da volta saiu antes dele.
     #[test]
     fn i18n_translates_clarity_defect_keys() {
         for (key, slots) in [
@@ -565,8 +625,9 @@ mod tests {
             ("clarity.internal_code", &["{code}"][..]),
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),
+("clarity.too_long_and_hard_to_read", &["{lines}", "{limit}", "{score}", "{min}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
-            ("clarity.block.head", &[][..]),
+            ("clarity.next.head", &["{errors}"][..]),
             ("clarity.more", &["{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
@@ -577,9 +638,10 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        assert!(translate("clarity.block.head", Locale::PtBr).starts_with("Mustard: complemento abaixo."));
-        assert!(translate("clarity.block.head", Locale::EnUs).starts_with("Mustard: complement below."));
+        assert_eq!(translate("clarity.next.head", Locale::PtBr), "Na última resposta: {errors}.");
+        assert_eq!(translate("clarity.next.head", Locale::EnUs), "In the last reply: {errors}.");
         for lang in [Locale::PtBr, Locale::EnUs] {
+            assert_eq!(translate("clarity.block.head", lang), "<missing-key>", "the complement request left");
             assert_eq!(translate("clarity.note.head", lang), "<missing-key>", "the warning after the complement left");
         }
     }

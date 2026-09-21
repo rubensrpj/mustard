@@ -71,7 +71,7 @@ use mustard_core::ClaudePaths;
 use std::path::PathBuf;
 
 use drift::check_drift;
-use host::{check_claude_cli, check_nerd_font, lsp_check};
+use host::{check_claude_cli, check_nerd_font, check_rtk, lsp_check};
 use project::{check_claude_md, check_scan_output, check_switches};
 use protection::check_branch_protection;
 use report::{render_report, render_report_json};
@@ -233,6 +233,7 @@ const CHECKS: &[Check] = &[
     Check { runs: Runs::Round, check: |place| check_state_health(&place.claude_dir) },
     Check { runs: Runs::Round, check: |_| check_claude_cli() },
     Check { runs: Runs::Round, check: |place| lsp_check(&place.cwd) },
+    Check { runs: Runs::Round, check: |_| check_rtk() },
     Check { runs: Runs::Round, check: |_| check_nerd_font() },
     Check { runs: Runs::Named("wave-integrity"), check: |place| check_wave_integrity(&place.claude_dir) },
     // O que o provedor realmente protege: uma base que só este binário recusa
@@ -428,6 +429,18 @@ mod tests {
 
         let has_lsp = results.iter().any(|r| r.name == "lsp");
         assert!(has_lsp, "expected a check named 'lsp' in the report");
+    }
+
+    /// A rodada inteira, pela LISTA de verdade — não uma chamada avulsa a
+    /// `check_rtk()` —, traz uma conferência chamada `rtk`. Tirar o item da
+    /// lista `CHECKS` derruba este teste; tirar só a chamada avulsa não.
+    #[test]
+    fn the_full_round_includes_the_rtk_check() {
+        let dir = tempdir().unwrap();
+        let place = Place { cwd: dir.path().to_path_buf(), claude_dir: dir.path().join(".claude") };
+        let opts = DoctorOpts { residue: false, check: None, format: "text".into() };
+        let all = answer(CHECKS, &opts, &place).unwrap();
+        assert!(all.iter().any(|r| r.name == "rtk"), "expected a check named 'rtk' in the round: {:?}", all.iter().map(|r| r.name).collect::<Vec<_>>());
     }
 
     /// Uma conferência de mentira somada à lista chega aos quatro lugares sem

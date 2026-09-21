@@ -56,6 +56,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The work of {count} branch(es) already went into the base through a merge, and \
              the branch(es) are still alive: {branches}."
         }
+        // A página do projeto que ainda não nasceu: o início da sessão manda o
+        // assistente publicar o template dela, uma vez só, e gravar o
+        // endereço. `{template}` é o caminho do template instalado e
+        // `{capabilities}` a declaração do banco de dados da página.
+        ("session.project_page", Locale::PtBr) => {
+            "[Mustard] A página do projeto ainda não foi publicada. Ela é a página do claude.ai que \
+             lista as specs deste projeto, com a fase e o link de cada uma, e o link dela fica na \
+             barra de status. Publique agora o template dela, o arquivo `{template}`, lido uma vez só \
+             e publicado como está, declarando o banco de dados da página: `{capabilities}`. Depois \
+             grave o endereço com `mustard-rt run write publish --json \
+             '{\"page\":\"project\",\"ok\":true,\"url\":\"…\"}'`. Não escreva o endereço na \
+             resposta: ele fica na barra de status."
+        }
+        ("session.project_page", Locale::EnUs) => {
+            "[Mustard] The project page has not been published yet. It is the claude.ai page that \
+             lists this project's specs, with the phase and the link of each one, and its link lives \
+             in the status line. Publish its template now, the file `{template}`, read only once and \
+             published as it is, declaring the page's database: `{capabilities}`. Then record the \
+             address with `mustard-rt run write publish --json \
+             '{\"page\":\"project\",\"ok\":true,\"url\":\"…\"}'`. Never write the address in the \
+             reply: it lives in the status line."
+        }
         // O merge feito por outra pessoa: o pull request da spec atual entrou,
         // e o início da sessão rodou o mesmo caminho do merge do Mustard.
         ("session.landed", Locale::PtBr) => {
@@ -168,8 +190,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            19,
-            0x164b_fe27_2acf_e037,
+            20,
+            0x2735_0598_a915_2a8a,
         );
     }
 

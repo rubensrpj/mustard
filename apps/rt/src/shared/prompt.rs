@@ -38,11 +38,11 @@
 /// prepend its own framing before the banner, and a notice is sometimes wrapped
 /// in a wider envelope.
 const HARNESS_NOTICE_MARKERS: &[&str] =
-    &["[SYSTEM NOTIFICATION - NOT USER INPUT]", "<task-notification>"];
+    &["[SYSTEM NOTIFICATION - NOT USER INPUT]", "<task-notification>", "<agent-message from="];
 
 /// `true` when `prompt` was authored by the runtime rather than by a person.
 ///
-/// Deliberately narrow: it recognises the two banners the runtime actually
+/// Deliberately narrow: it recognises the banners the runtime actually
 /// emits and nothing else. A heuristic ("looks machine-generated") would
 /// eventually swallow a real request, and losing what someone asked for is the
 /// worse error — an observer that records one notice too many is noisy, one
@@ -56,11 +56,12 @@ pub fn is_harness_notice(prompt: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Both banners are recognised, wherever they sit in the text.
+    /// Every banner is recognised, wherever it sits in the text.
     #[test]
     fn recognises_every_runtime_banner() {
         assert!(is_harness_notice("[SYSTEM NOTIFICATION - NOT USER INPUT]\nbody"));
         assert!(is_harness_notice("<task-notification>\n<status>completed</status>"));
+        assert!(is_harness_notice("<agent-message from=\"onda-39\">relatório</agent-message>"));
         // Wrapped in a wider envelope — still a notice.
         assert!(is_harness_notice("prefix\n\n<task-notification>x</task-notification>\n"));
     }

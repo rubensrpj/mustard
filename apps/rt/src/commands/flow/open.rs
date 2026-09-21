@@ -49,7 +49,7 @@ use mustard_core::{ClaudePaths, ProjectConfig, Scan};
 use serde_json::{json, Value};
 
 use crate::commands::event::census_settlement::{settle, CensusSettlement, CheckoutPosition};
-use crate::commands::event::pending::{mark_became, pending_id, pending_is_open};
+use crate::commands::event::pending::{mark_became, open_project_pending, pending_id, pending_is_open};
 use crate::commands::event::work_branch::{
     checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
     CheckoutWork, RefusalCause,
@@ -374,8 +374,35 @@ fn note_pending(root: &Path, pending: Option<&str>, spec: &str, lang: Locale) ->
         .then(|| translate("open.pending_note_failed", lang).replace("{spec}", spec).replace("{pending}", id))
 }
 
+/// O aviso das pendências abertas do projeto, sem dono de obra: quantas são
+/// e onde a lista inteira está — a página do projeto, quando ela já tem
+/// endereço gravado, ou o comando que a mostra, senão. `None` sem nenhuma. É
+/// aviso, nunca recusa: a abertura segue para a pergunta do objetivo mesmo
+/// sem resposta.
+fn pending_project_notice(root: &Path, lang: Locale) -> Option<String> {
+    let count = open_project_pending(root).len();
+    if count == 0 {
+        return None;
+    }
+    let list = match mustard_core::io::spec_index::project_page_url(root) {
+        Some(url) => translate("open.pending_project.list_page", lang).replace("{url}", &url),
+        None => translate("open.pending_project.list_command", lang).to_string(),
+    };
+    let key = if count == 1 { "open.pending_project.one" } else { "open.pending_project.many" };
+    Some(translate(key, lang).replace("{count}", &count.to_string()).replace("{list}", &list))
+}
+
 /// O relatório da spec aberta, que termina na pergunta do objetivo.
-fn opened(spec: &str, branch: &str, base: &str, kind: &WorkKind, map: Option<Value>, warnings: &[String], lang: Locale) -> Value {
+fn opened(
+    spec: &str,
+    branch: &str,
+    base: &str,
+    kind: &WorkKind,
+    map: Option<Value>,
+    warnings: &[String],
+    pending_project: Option<String>,
+    lang: Locale,
+) -> Value {
     let mut report = json!({
         "ok": true,
         "step": "ask_goal",
@@ -393,14 +420,10 @@ fn opened(spec: &str, branch: &str, base: &str, kind: &WorkKind, map: Option<Val
     if !warnings.is_empty() {
         report["warnings"] = json!(warnings);
     }
+    if let Some(pending_project) = pending_project {
+        report["pending_project"] = json!(pending_project);
+    }
     report
-}
-
-/// O passo termina refazendo a página e o `.md` da spec, que a gravação de
-/// cada evento já não refaz. Falhar aqui só avisa: a spec já nasceu, e o
-/// comando de página refaz os dois quando alguém pedir.
-fn page_warning(root: &Path, spec: &str, lang: Locale) -> Option<String> {
-    spec_events::pages::refresh(root, spec, lang).err().map(|refusal| refusal.message(lang))
 }
 
 /// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade.
@@ -490,11 +513,11 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             Ok(pending) => pending,
             Err(miss) => return refuse(miss.into()),
         };
-        let mut warnings: Vec<String> =
+        let warnings: Vec<String> =
             note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
-        warnings.extend(page_warning(&project.root, &name, lang));
         let base = state.base.unwrap_or_default();
-        let mut report = opened(&name, &target, &base, &kind, None, &warnings, lang);
+        let pending_project = pending_project_notice(&project.root, lang);
+        let mut report = opened(&name, &target, &base, &kind, None, &warnings, pending_project, lang);
         report["already_open"] = json!(true);
         if let Some(id) = pending {
             report["pending"] = json!(id);
@@ -576,8 +599,8 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             None
         }
     };
-    warnings.extend(page_warning(&project.root, &name, lang));
-    let mut report = opened(&name, &target, &base, &kind, map, &warnings, lang);
+    let pending_project = pending_project_notice(&project.root, lang);
+    let mut report = opened(&name, &target, &base, &kind, map, &warnings, pending_project, lang);
     if let Some(id) = pending {
         report["pending"] = json!(id);
     }
@@ -679,22 +702,20 @@ use crate::shared::context::pending_branch::set_pending_branch;
         assert!(spec_dir(root, "trava-de-pendencias").join("spec.ndjson").is_file());
     }
 
-    /// O `open` termina refazendo a página e o `.md` da spec: a gravação de
-    /// cada evento já não os refaz, e a mesma chamada de novo os deixa no
-    /// lugar.
+    /// O `open` não escreve página: a spec nasce só com o arquivo de
+    /// eventos, e a mesma chamada de novo também não escreve.
     #[test]
-    fn the_open_leaves_the_page_and_the_md_rebuilt() {
+    fn the_open_writes_no_page() {
         let dir = repo(DEV_MAIN);
         let root = dir.path();
         assert_eq!(open(root, Some("feature"), Some("trava"), Some("dev"))["ok"], json!(true));
         let spec = spec_dir(root, "trava");
-        assert!(spec.join("spec.html").is_file(), "a página sai no fim do passo");
-        assert!(spec.join("spec.md").is_file(), "e o `.md` também");
-
-        std::fs::remove_file(spec.join("spec.html")).unwrap();
         let again = open(root, Some("feature"), Some("trava"), Some("dev"));
         assert_eq!(again["already_open"], json!(true), "{again}");
-        assert!(spec.join("spec.html").is_file(), "a página volta");
+        for page in ["spec.html", "spec.md"] {
+            assert!(!spec.join(page).exists(), "{page}");
+        }
+        assert!(!root.join(".claude/spec/project.html").exists(), "nem a página do projeto");
     }
 
     /// O nome completo da branch, sem o tipo à parte, é dividido em tipo e
@@ -1093,6 +1114,50 @@ use crate::shared::context::pending_branch::set_pending_branch;
         }
     }
 
+    /// Uma obra nova, aberta com a lista tendo pendência do projeto — mesmo
+    /// sem pedir nenhuma delas por `--pending` —, traz na resposta quantas
+    /// são e onde a lista inteira está, e segue para a pergunta do objetivo
+    /// sem esperar resposta a esse aviso.
+    #[test]
+    fn the_open_announces_the_project_pending() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["step"], json!("ask_goal"), "{report}");
+        let notice = report["pending_project"].as_str().expect("the notice is present");
+        assert!(notice.contains('1'), "{notice}");
+        assert!(notice.contains("mustard-rt run pending"), "{notice}");
+    }
+
+    /// Com a página do projeto já publicada, o aviso da pendência do projeto
+    /// traz o endereço dela, em vez do comando de recuo.
+    #[test]
+    fn the_open_announces_the_project_pending_with_the_page_url() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        let index_path = ClaudePaths::for_project(root).unwrap().spec_index_path();
+        mustard_core::io::spec_index::set_project_url(&index_path, "https://mustard.example/p", true).unwrap();
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let notice = report["pending_project"].as_str().expect("the notice is present");
+        assert!(notice.contains("https://mustard.example/p"), "{notice}");
+        assert!(!notice.contains("mustard-rt run pending"), "{notice}");
+    }
+
+    /// Sem pendência nenhuma do projeto na lista, a resposta não traz o
+    /// aviso.
+    #[test]
+    fn open_with_no_project_pending_has_no_notice() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert!(report.get("pending_project").is_none(), "{report}");
+    }
+
     /// Sem `--pending`, a lista de pendências fica com os mesmos bytes.
     #[test]
     fn without_a_pending_the_list_is_not_touched() {
@@ -1264,7 +1329,7 @@ use crate::shared::context::pending_branch::set_pending_branch;
                 DEV_MAIN,
                 "Qual o objetivo, numa frase? Pode ser a sua ou a que eu sugerir, se você aprovar. Junto \
                  dele, mande o card, os critérios de aceite e os documentos antigos, se tiver.",
-                "uma frase inteira dele, palavra por palavra",
+                "uma frase que diz o que ele pediu",
                 "ou a que você sugeriu e ele aprovou",
                 "O card, os critérios de aceite e os documentos antigos que vierem junto vão logo depois",
             ),
@@ -1273,7 +1338,7 @@ use crate::shared::context::pending_branch::set_pending_branch;
                 "What is the goal, in one sentence? It can be yours, or the one I suggest, if you approve \
                  it. Along with it, send the card, the acceptance criteria and the old documents, if you \
                  have them.",
-                "one whole sentence of theirs, word for word",
+                "one sentence saying what they asked for",
                 "or the one you suggested and they approved",
                 "The card, the acceptance criteria and the old documents that come along go right after it",
             ),
@@ -1295,8 +1360,8 @@ use crate::shared::context::pending_branch::set_pending_branch;
     /// frase e, junto, o card, os critérios de aceite e os documentos
     /// antigos. O `run write` grava como objetivo a primeira frase, com
     /// `origin` na mensagem, e o card como `context` logo depois; o índice
-    /// mostra a primeira frase. Um pedaço dela, ou a frase com a maiúscula
-    /// trocada, é recusado, e nada é gravado.
+    /// mostra a primeira frase. O objetivo que não aponta uma mensagem do
+    /// usuário é recusado, e nada é gravado.
     #[test]
     fn the_goal_is_the_first_sentence_of_an_answer_that_brings_the_card() {
         use crate::commands::spec_events::write::write_at;
@@ -1327,9 +1392,15 @@ use crate::shared::context::pending_branch::set_pending_branch;
         };
         let events = || std::fs::read_to_string(spec_dir(root, "x").join("spec.ndjson")).unwrap().lines().count();
         let before = events();
-        for piece in ["Travar o merge", "travar o merge enquanto houver pendência aberta."] {
-            assert_eq!(context(piece)["reason"], json!("goal-not-verbatim"), "{piece}");
-        }
+        let state = log.visible().into_iter().find(|e| e.event_type == "state").map(|e| e.id);
+        let state = state.expect("the spec was born with its state");
+        let refused = write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".into()),
+            event_type: "context".into(),
+            json: json!({ "text": goal, "origin": state }).to_string(),
+        });
+        assert_eq!(refused["reason"], json!("goal-origin-not-user"), "{refused}");
         assert_eq!(events(), before, "a refusal writes nothing");
         assert_eq!(context(goal)["ok"], json!(true));
         assert_eq!(context(card)["ok"], json!(true));

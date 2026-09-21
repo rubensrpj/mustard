@@ -60,8 +60,7 @@ fn ticket_of(prompt: &str) -> Ticket {
 
 /// O pedido da onda `wave` da spec `spec`, montado do disco a partir de
 /// `start`, ou o motivo de não despachar: a spec sem arquivo de eventos, a
-/// spec que não está aprovada, a onda que o plano não tem e o pedido acima do
-/// teto de linhas.
+/// spec que não está aprovada e a onda que o plano não tem.
 fn assemble(start: &Path, spec: &str, wave: u64) -> Result<String, String> {
     let project = crate::commands::spec_events::project(start);
     let lang = project.lang;
@@ -83,10 +82,7 @@ fn assemble(start: &Path, spec: &str, wave: u64) -> Result<String, String> {
         .into_iter()
         .find(|built| built.wave == wave)
         .ok_or_else(|| say("subagent.no_wave", lang, &[("{spec}", spec), ("{wave}", &wanted)]))?;
-    match prompt.too_long {
-        Some(refusal) => Err(refused(refusal)),
-        None => Ok(prompt.text),
-    }
+    Ok(prompt.text)
 }
 
 /// O texto da tarefa, no `tool_input.prompt`.
@@ -115,7 +111,7 @@ impl Check for SubagentInject {
                 match tool_input.as_object_mut() {
                     Some(fields) => {
                         fields.insert("prompt".to_string(), Value::String(text));
-                        Verdict::Rewrite { tool_input }
+                        Verdict::Rewrite { tool_input, note: None }
                     }
                     None => Verdict::Allow,
                 }
@@ -163,8 +159,28 @@ mod tests {
         planned_with(root, tasks, false);
     }
 
+    /// Uma linha crua, direto no arquivo da spec, sem passar pela gravação:
+    /// [`planned_with`] a usa para as tarefas além do teto que a onda nasce
+    /// com, simulando a onda grande que já existia antes dele.
+    fn append_raw(root: &Path, event_type: &str, body: Value, id: u64) {
+        let mut map = mustard_core::domain::spec_events::normalize(
+            body.as_object().cloned().unwrap_or_default(),
+            event_type,
+        );
+        map.insert("type".into(), json!(event_type));
+        let line = mustard_core::domain::spec_events::render_line(
+            &mustard_core::domain::spec_events::stamp(map, id, None, "2026-09-20T10:00:00-03:00"),
+        );
+        use std::io::Write as _;
+        let path = store::spec_file(root, "x").unwrap();
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        writeln!(file, "{line}").unwrap();
+    }
+
     /// A spec de [`planned`]; com `skills`, cada tarefa nomeia uma skill
-    /// própria, gravada no disco, e cada uma ocupa uma linha do pedido.
+    /// própria, gravada no disco, e cada uma ocupa uma linha do pedido. As
+    /// tarefas além do teto de uma onda nova vão direto no arquivo, sem
+    /// passar pela gravação, para `tasks` continuar podendo passar de três.
     fn planned_with(root: &Path, tasks: usize, skills: bool) {
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
@@ -174,17 +190,22 @@ mod tests {
             "criterion",
             json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "origin": said}),
         );
-        write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "A suíte passa.",
-            "origin": said}));
+        let mut next_id = write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
+            "done_when": "A suíte passa.", "origin": said}));
         for i in 0..tasks {
-            let mut task = json!({"wave": 1, "text": format!("Tarefa {i}."), "origin": said});
+            let mut task = json!({"wave": 1, "text": format!("Tarefa {i}."), "files": [], "depends_on": [], "origin": said});
             if skills {
                 let dir = root.join(".claude").join("skills").join(format!("s{i}"));
                 std::fs::create_dir_all(&dir).unwrap();
                 std::fs::write(dir.join("SKILL.md"), format!("# s{i}\n")).unwrap();
                 task["skill"] = json!(format!("s{i}"));
             }
-            write(root, "task", task);
+            if i < 3 {
+                next_id = write(root, "task", task);
+            } else {
+                next_id += 1;
+                append_raw(root, "task", task, next_id);
+            }
         }
     }
 
@@ -226,10 +247,11 @@ mod tests {
         planned(root, 1);
         approve(root);
         match dispatch(root, "MUSTARD-WAVE: x 1") {
-            Verdict::Rewrite { tool_input } => {
+            Verdict::Rewrite { tool_input, .. } => {
                 assert_eq!(tool_input["prompt"], json!(assembled(root)));
                 let prompt = tool_input["prompt"].as_str().unwrap();
-                assert!(prompt.contains("- `waves`: MSTD-WAVE-0001, MSTD-TASK-0001\n"), "{prompt}");
+                assert!(prompt.lines().any(|l| l == "- `MSTD-TASK-0001`"), "{prompt}");
+                assert!(prompt.lines().any(|l| l == "- `waves`: MSTD-WAVE-0001"), "{prompt}");
                 assert_eq!(prompt.matches("mustard-rt run read").count(), 1, "{prompt}");
                 assert_eq!(tool_input["subagent_type"], json!("general-purpose"));
                 assert_eq!(tool_input["description"], json!("onda"));
@@ -238,9 +260,9 @@ mod tests {
         }
     }
 
-    /// Sem aprovação, sem a onda no plano, com o pedido acima do teto ou com
-    /// o bilhete estragado, o despacho é barrado com o motivo, e o motivo
-    /// nunca manda ler um arquivo.
+    /// Sem aprovação, sem a onda no plano ou com o bilhete estragado, o
+    /// despacho é barrado com o motivo, e o motivo nunca manda ler um
+    /// arquivo.
     #[test]
     fn the_dispatch_is_refused_with_the_reason_and_never_points_to_a_file() {
         let dir = tempdir().unwrap();
@@ -261,14 +283,26 @@ mod tests {
             assert_eq!(got, expected);
             assert!(!got.contains(".md") && !got.to_lowercase().contains("leia"), "{got}");
         }
+    }
 
-        // Os códigos das tarefas cabem numa linha só: o que passa do teto é
-        // uma parte de uma linha por item, como a das skills.
+    /// Uma onda com 500 tarefas e 500 skills — bem além do antigo teto de
+    /// 500 linhas do pedido — é despachada do mesmo jeito, com o pedido
+    /// inteiro: nada é recusado por causa do tamanho.
+    #[test]
+    fn a_wave_far_past_the_old_line_cap_is_dispatched_whole() {
         let big = tempdir().unwrap();
-        planned_with(big.path(), mustard_core::domain::wave_prompt::MAX_LINES, true);
+        planned_with(big.path(), 500, true);
         approve(big.path());
-        let long = denied(dispatch(big.path(), "MUSTARD-WAVE: x 1"));
-        assert!(long.contains(&mustard_core::domain::wave_prompt::MAX_LINES.to_string()), "{long}");
+        match dispatch(big.path(), "MUSTARD-WAVE: x 1") {
+            Verdict::Rewrite { tool_input, .. } => {
+                let prompt = tool_input["prompt"].as_str().unwrap().to_string();
+                assert!(prompt.lines().count() > 500, "{prompt}");
+                let task_lines = prompt.lines().filter(|l| l.starts_with("- `MSTD-TASK-")).count();
+                assert_eq!(task_lines, 500, "{prompt}");
+                assert!(prompt.contains("s499"), "{prompt}");
+            }
+            other => panic!("the wave is dispatched whole, got {other:?}"),
+        }
     }
 
     /// Uma tarefa sem bilhete passa como veio, e o gancho não age fora do

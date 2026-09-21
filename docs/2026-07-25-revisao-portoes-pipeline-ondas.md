@@ -189,3 +189,13 @@ O que **não** foi medido:
 - O custo real de compilação a frio numa cópia nova. O comando que apenas percorre `target/` estourou dois minutos; o impacto por onda foi estimado, não cronometrado. Reuso de artefato de build entre cópias ficou fora de escopo por isso — medir antes de dimensionar.
 - A frequência com que cada defeito aparece. O levantamento veio de **uma** execução; os defeitos são reais, a taxa de incidência não está medida.
 - O comportamento de `worktree.sparsePaths` sob o hook `WorktreeCreate` do plugin. A documentação afirma que um hook configurado substitui a criação nativa por completo, o que torna esse ajuste inerte aqui — inferido da documentação, não testado.
+
+---
+
+## 9. Nota de verificação — configuração de janela da máquina (2026-09-21)
+
+O `~/.claude/settings.json` desta máquina traz `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` com valor `15`, uma variável que não aparece na documentação oficial de compactação (`code.claude.com/docs/en/model-config.md`, que só descreve `autoCompactWindow`, `autoCompactEnabled` e `CLAUDE_CODE_AUTO_COMPACT_WINDOW`).
+
+**Verificado nesta data contra o binário instalado, versão 2.1.278** (`/home/rubens/.local/share/claude/versions/2.1.278`): a variável **ainda tem efeito**, não é resquício morto. A função que calcula o gatilho de compactação automática lê `process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` e usa o valor como `testPctOverride`, que reduz ainda mais a fração da janela efetiva na qual o corte dispara — o próprio texto embutido no binário descreve isso: *"effective_window minus the summary buffer, lowered further by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when set"*. As chaves documentadas (`autoCompactEnabled`, `autoCompactWindow`) também estão presentes e ativas no mesmo binário, lidas por caminho separado.
+
+**Conclusão:** não há variável equivalente para anotar, porque a que está configurada continua sendo a que corre. Ela é nomeada `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` tanto na configuração da máquina quanto no binário 2.1.278; o que falta é só documentação pública para ela, não substituição.

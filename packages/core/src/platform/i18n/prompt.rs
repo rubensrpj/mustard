@@ -46,6 +46,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
+        // O modelo em que a onda roda, dito no cabeçalho do próprio pedido —
+        // do mesmo jeito que ele já diz a cópia e a pasta de compilação —,
+        // porque o molde do agente sozinho não bastou: em 20/09 a onda saiu
+        // em Opus por herdar o modelo da sessão.
+        ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: Sonnet 5.",
+        ("prompt.model.wave", Locale::EnUs) => "This wave's model: Sonnet 5.",
+        ("prompt.part.items", Locale::PtBr) => "Itens da onda",
+        ("prompt.part.items", Locale::EnUs) => "Wave items",
+        ("prompt.part.tasks", Locale::PtBr) => "Tarefas, na ordem em que se faz",
+        ("prompt.part.tasks", Locale::EnUs) => "Tasks, in the order they are done",
+        ("prompt.task.read_before", Locale::PtBr) => "leia antes",
+        ("prompt.task.read_before", Locale::EnUs) => "read before",
+        // O mapa do projeto conhece os arquivos de teste de um arquivo que a
+        // tarefa cita: a linha do arquivo ganha, logo abaixo, quem o testa,
+        // para o agente não sair procurando um por um no código.
+        ("prompt.task.tested_by", Locale::PtBr) => "quem testa `{file}`: {tests}",
+        ("prompt.task.tested_by", Locale::EnUs) => "who tests `{file}`: {tests}",
         ("prompt.fixed", Locale::PtBr) => {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
              binário a partir da spec. Nenhum texto vem copiado: cada parte traz só os códigos dos \
@@ -58,46 +75,33 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              sequence, one line per spec block.\n\n\
              **What to return.** This wave's `<DELIVERED>` line."
         }
-        ("prompt.review.title", Locale::PtBr) => "{spec} — revisão da onda {n}",
-        ("prompt.review.title", Locale::EnUs) => "{spec} — review of wave {n}",
-        ("prompt.review.fixed", Locale::PtBr) => {
-            "**O que é isto.** O pedido da revisão desta onda, montado pelo binário a partir da \
-             spec. Nenhum texto vem copiado: cada parte traz só os códigos dos itens, em sequência, \
-             numa linha por bloco da spec.\n\n\
-             **O que devolver.** A linha `<VERDICT>` desta onda."
-        }
-        ("prompt.review.fixed", Locale::EnUs) => {
-            "**What this is.** This wave's review request, assembled by the binary from the spec. \
-             No text is copied in: each part carries only the items' codes, in sequence, one line \
-             per spec block.\n\n\
-             **What to return.** This wave's `<VERDICT>` line."
-        }
-
-        // A revisão final do conjunto, que o fechamento pede à spec de duas
-        // ondas ou mais.
-        ("prompt.final.title", Locale::PtBr) => "{spec} — revisão final do conjunto",
-        ("prompt.final.title", Locale::EnUs) => "{spec} — final review of the whole",
+        // O agente de teste dedicado, que o fechamento pede a toda obra —
+        // mesmo a de uma onda só —, no lugar da revisão de cada onda.
+        ("prompt.final.title", Locale::PtBr) => "{spec} — agente de teste dedicado",
+        ("prompt.final.title", Locale::EnUs) => "{spec} — dedicated test agent",
         ("prompt.final.fixed", Locale::PtBr) => {
-            "**O que é isto.** O pedido da revisão final desta spec, com as ondas juntas, montado \
-             pelo binário a partir dela. Nenhum texto vem copiado: cada parte traz só os códigos \
-             dos itens, em sequência, numa linha por bloco da spec.\n\n\
-             **O que olhar.** Só como as ondas se encaixam: código repetido entre ondas, decisão de \
-             uma que contradiz a de outra, prova que uma apagou da outra. Cada onda já teve a sua \
-             revisão, e esta não a refaz.\n\n\
+            "**O que é isto.** O pedido do agente de teste dedicado desta spec, com a obra inteira, \
+             montado pelo binário a partir dela. Nenhum texto vem copiado: cada parte traz só os \
+             códigos dos itens, em sequência, numa linha por bloco da spec.\n\n\
+             **O que olhar.** As entregas, os critérios, as mudanças da branch, as emendas gravadas \
+             entre as ondas e o que cada onda deixou aberto — como as ondas se encaixam, código \
+             repetido entre ondas, decisão de uma que contradiz a de outra, prova que uma apagou da \
+             outra. Aponte só; não conserte.\n\n\
              **O que devolver.** A linha `<VERDICT>` com `\"final\":true`: aprovada, sem `wave`; \
              reprovada, com a onda que o conserto refaz em `wave`."
         }
         ("prompt.final.fixed", Locale::EnUs) => {
-            "**What this is.** The final review request of this spec, with the waves together, \
-             assembled by the binary from it. No text is copied in: each part carries only the \
-             items' codes, in sequence, one line per spec block.\n\n\
-             **What to look at.** Only how the waves fit together: code repeated across waves, a \
-             decision of one that contradicts another's, a proof one erased from another. Each wave \
-             already had its own review, and this one does not redo it.\n\n\
+            "**What this is.** The dedicated test agent's request for this spec, with the whole \
+             work, assembled by the binary from it. No text is copied in: each part carries only \
+             the items' codes, in sequence, one line per spec block.\n\n\
+             **What to look at.** The deliveries, the criteria, the branch changes, the amendments \
+             recorded between waves and what each wave left open — how the waves fit together, code \
+             repeated across them, a decision of one that contradicts another's, a proof one erased \
+             from another. Point it out only; do not fix it.\n\n\
              **What to return.** The `<VERDICT>` line with `\"final\":true`: approved, with no \
              `wave`; rejected, with the wave the fix redoes in `wave`."
         }
-        // O exemplo único do comando que lê um item, que os três pedidos
+        // O exemplo único do comando que lê um item, que os dois pedidos
         // trazem logo depois da parte fixa. `{root}` é `--root <caminho> `
         // quando o agente trabalha numa cópia, e nada quando não trabalha.
         ("prompt.read", Locale::PtBr) => {
@@ -112,20 +116,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.waves", Locale::EnUs) => "The waves and their tasks",
         ("prompt.part.each_delivered", Locale::PtBr) => "O que cada onda entregou",
         ("prompt.part.each_delivered", Locale::EnUs) => "What each wave delivered",
-        ("prompt.part.defects", Locale::PtBr) => "Defeitos já vistos nestes arquivos",
-        ("prompt.part.defects", Locale::EnUs) => "Defects already seen in these files",
-        ("prompt.part.specification", Locale::PtBr) => "Especificação",
-        ("prompt.part.specification", Locale::EnUs) => "Specification",
+        ("prompt.part.branch_changes", Locale::PtBr) => "Mudanças já na branch",
+        ("prompt.part.branch_changes", Locale::EnUs) => "Changes already on the branch",
         ("prompt.part.agreed", Locale::PtBr) => "Combinado",
         ("prompt.part.agreed", Locale::EnUs) => "Agreed",
-        ("prompt.part.wave", Locale::PtBr) => "A onda e as tarefas dela",
-        ("prompt.part.wave", Locale::EnUs) => "The wave and its tasks",
         ("prompt.part.criteria", Locale::PtBr) => "Critérios",
         ("prompt.part.criteria", Locale::EnUs) => "Criteria",
-        ("prompt.part.lessons", Locale::PtBr) => "Lições",
-        ("prompt.part.lessons", Locale::EnUs) => "Lessons",
-        ("prompt.part.skills", Locale::PtBr) => "Skills das tarefas",
-        ("prompt.part.skills", Locale::EnUs) => "Task skills",
         ("prompt.part.delivered", Locale::PtBr) => "O que as ondas anteriores entregaram",
         ("prompt.part.delivered", Locale::EnUs) => "What the earlier waves delivered",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
@@ -133,7 +129,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.skill.read", Locale::PtBr) => "Leia o arquivo da skill antes de começar a tarefa que a nomeia.",
         ("prompt.skill.read", Locale::EnUs) => "Read the skill file before starting the task that names it.",
 
-        // O conserto: a onda que volta por reprovação e a revisão dela.
+        // O conserto: a onda que volta por reprovação.
         ("prompt.part.fix", Locale::PtBr) => "Conserto",
         ("prompt.part.fix", Locale::EnUs) => "Fix",
         ("prompt.fix.wave", Locale::PtBr) => {
@@ -146,19 +142,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              wave's previous delivery and the agreed items recorded after the last send. Fix only what \
              the verdict points out, in light of those items: do not redo the wave."
         }
-        ("prompt.fix.review", Locale::PtBr) => {
-            "Esta revisão é de um conserto. As linhas abaixo são o veredito que reprovou, a entrega \
-             anterior e os itens combinados gravados depois do último envio. Olhe só o conserto — o \
-             que o veredito apontou —, não a onda inteira de novo."
+        ("prompt.fix.final", Locale::PtBr) => {
+            "Esta é a volta do conserto. A linha abaixo é o veredito que reprovou; as ondas, as \
+             emendas e as entregas que o resto do pedido traz já estão restritas a quem foi \
+             reprovado. Confira só o conserto — o que o veredito apontou —, não a obra inteira de \
+             novo."
         }
-        ("prompt.fix.review", Locale::EnUs) => {
-            "This review is of a fix. The lines below are the verdict that rejected the wave, its \
-             previous delivery and the agreed items recorded after the last send. Look only at the \
-             fix — what the verdict pointed out —, not the whole wave again."
+        ("prompt.fix.final", Locale::EnUs) => {
+            "This is the fix round. The line below is the verdict that rejected it; the waves, the \
+             amendments and the deliveries the rest of the request carries are already restricted to \
+             whoever was rejected. Check only the fix — what the verdict pointed out —, not the \
+             whole work again."
         }
-        ("prompt.part.own_delivered", Locale::PtBr) => "O que esta onda entregou",
-        ("prompt.part.own_delivered", Locale::EnUs) => "What this wave delivered",
-
         // As regras da execução: o que o orquestrador acrescentava à mão.
         ("prompt.part.execution", Locale::PtBr) => "Regras da execução",
         ("prompt.part.execution", Locale::EnUs) => "Execution rules",
@@ -166,10 +161,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.execution.build", Locale::EnUs) => "Build with `{command}`.",
         ("prompt.execution.test", Locale::PtBr) => "Teste com `{command}`.",
         ("prompt.execution.test", Locale::EnUs) => "Test with `{command}`.",
-        ("prompt.execution.no_commit", Locale::PtBr) => "Não comite e não use `git add`: o commit é da rodada.",
-        ("prompt.execution.no_commit", Locale::EnUs) => {
-            "Do not commit and do not use `git add`: the commit belongs to the round."
-        }
         ("prompt.execution.running", Locale::PtBr) => {
             "Ondas em andamento, cada uma na sua cópia: o arquivo que você dividir com elas é juntado \
              na volta, e o trecho que conflitar para a rodada até ser resolvido."
@@ -180,6 +171,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("prompt.execution.wave", Locale::PtBr) => "Onda {n}",
         ("prompt.execution.wave", Locale::EnUs) => "Wave {n}",
+        // A leitura obrigatória de uma tarefa, quando ela aponta uma
+        // declaração (`caminho#declaração`), função, estrutura ou constante:
+        // o pedido manda ler só aquela declaração, não o arquivo inteiro, e
+        // nunca a chama de função quando ela não é.
+        ("prompt.task_read.function", Locale::PtBr) => "leia só `{function}` em `{path}`",
+        ("prompt.task_read.function", Locale::EnUs) => "read only `{function}` in `{path}`",
+        // A mesma leitura obrigatória, quando o mapa do projeto conhece a
+        // declaração e a linha em que ela termina: o pedido já manda ler só
+        // as linhas atuais dela, sem número que envelhece no plano.
+        ("prompt.task_read.function_lines", Locale::PtBr) => {
+            "leia só as linhas {lines} de `{function}` em `{path}`"
+        }
+        ("prompt.task_read.function_lines", Locale::EnUs) => {
+            "read only lines {lines} of `{function}` in `{path}`"
+        }
         ("prompt.execution.copy", Locale::PtBr) => {
             "Trabalhe só na cópia separada `{copy}`, que a rodada criou no commit atual, e rode cada \
              comando de dentro dela; nunca crie outra. Nada se edita no repositório principal \
@@ -192,6 +198,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              main repository `{root}`, and the copy stays where it is: on the way back, the round \
              merges the delivered files, new and deleted ones included, and deletes it after the commit."
         }
+        // A pasta de compilação da cópia. A frase cita o Cargo, então só vai
+        // ao pedido quando o mapa do projeto tem uma parte `cargo`; a pasta é
+        // escolhida para toda onda, porque é a vaga das ondas que rodam juntas.
         ("prompt.execution.build_dir", Locale::PtBr) => {
             "Compile e teste só na pasta de compilação `{dir}` (no Cargo, `CARGO_TARGET_DIR={dir}`), \
              em primeiro plano: ela é fixa e passa de uma cópia para a seguinte."
@@ -233,8 +242,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            38,
-            0x3869_a135_e779_f38d,
+            37,
+            0x389f_4cd0_34ea_c872,
         );
     }
 }

@@ -172,13 +172,15 @@ pub(crate) fn seed_run(root: &Path, spec: &str, criterion: u64, result: &str) ->
     seed_event(root, spec, "criterion_run", run)
 }
 
-/// Grava o veredito `result` da onda `wave`, conferindo o critério
-/// `criterion`.
+/// Grava o veredito final `result` da onda `wave`, conferindo o critério
+/// `criterion`: `final: true`, porque só o veredito final do agente de teste
+/// dedicado pode reprovar ou aprovar uma onda.
 #[cfg(test)]
 pub(crate) fn seed_verdict(root: &Path, spec: &str, wave: u64, result: &str, criterion: u64) -> u64 {
     let verdict = serde_json::json!({
         "wave": wave,
         "result": result,
+        "final": true,
         "text": "revisão da onda",
         "criteria": [{ "criterion": criterion, "tests_rule": "confere a regra" }],
     });

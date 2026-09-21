@@ -56,14 +56,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              it. Nothing was written."
         }
         ("survey.present_point", Locale::PtBr) => {
-            "Apresente o ponto {code}, e só ele: o fato conferido no código, com a fonte; o que já \
-             está decidido; o que falta decidir; e uma recomendação. Grave cada resposta na hora e \
-             feche o ponto com `closes`: {id}."
+            "Apresente o ponto {code}, e só ele, na ordem de explicar do estilo de resposta. Grave \
+             cada resposta na hora e feche o ponto com `closes`: {id}."
         }
         ("survey.present_point", Locale::EnUs) => {
-            "Present point {code}, and only it: the fact checked in the code, with its source; what \
-             is already decided; what is left to decide; and a recommendation. Record each answer \
-             right away and close the point with `closes`: {id}."
+            "Present point {code}, and only it, in the order of explaining from the response style. \
+             Record each answer right away and close the point with `closes`: {id}."
         }
         ("survey.present_all", Locale::PtBr) => {
             "Pedido pequeno: preencha todas as lacunas de `points` a partir do pedido e do código, \
@@ -104,22 +102,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.done", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
              nenhum registro aponta, e pergunte o que fazer com cada uma; depois grave a \
-             especificação, as ondas e as tarefas."
+             especificação, as ondas e as tarefas, cada tarefa já com a nota dela. {scale}"
         }
         ("survey.done", Locale::EnUs) => {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
              points to, and ask what to do with each one; then record the specification, the waves \
-             and the tasks."
+             and the tasks, each task already with its points. {scale}"
         }
         ("survey.review_step", Locale::PtBr) => {
-            "O bloco {block} fechou. Releia só as decisões dele, aponte o que pode ter ficado de fora \
-             ou se contradiz e faça a pergunta de `question`, com os achados como opções e \
-             \"{continue}\" por último."
+            "O bloco {block} fechou. Releia só as decisões dele e ache o que pode ter ficado de fora \
+             ou se contradiz. Apresente os achados na ordem de explicar do estilo de resposta e faça \
+             a pergunta de `question`, com os achados como opções e \"{continue}\" por último."
         }
         ("survey.review_step", Locale::EnUs) => {
-            "Block {block} is closed. Reread only its decisions, point out what may have been left \
-             out or contradicts itself, and ask the question in `question`, with the findings as \
-             options and \"{continue}\" last."
+            "Block {block} is closed. Reread only its decisions and find what may have been left out \
+             or contradicts itself. Present the findings in the order of explaining from the response \
+             style and ask the question in `question`, with the findings as options and \
+             \"{continue}\" last."
         }
         ("survey.review_question", Locale::PtBr) => "Quer ver mais algum ponto ou aprofundar algum?",
         ("survey.review_question", Locale::EnUs) => "Would you like to see another point or go deeper into one?",
@@ -199,7 +198,7 @@ mod tests {
             include_str!("survey.rs"),
             super::PREFIXES,
             36,
-            0xa07e_2005_fa48_9647,
+            0xdf12_94a6_4575_b373,
         );
     }
 
@@ -222,7 +221,7 @@ mod tests {
             ("survey.present_all".into(), &[][..]),
             ("survey.record_points".into(), &["{spec}"][..]),
             ("survey.touched".into(), &["{count}", "{reason}"][..]),
-            ("survey.done".into(), &[][..]),
+            ("survey.done".into(), &["{scale}"][..]),
             ("survey.review_step".into(), &["{block}", "{continue}"][..]),
             ("survey.review_question".into(), &[][..]),
             ("survey.continue_option".into(), &[][..]),

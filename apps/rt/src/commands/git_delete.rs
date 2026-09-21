@@ -56,7 +56,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::commands::event::work_branch::on_integration_base;
-use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_worktrees, show};
+use crate::commands::git_settle::{git_ok, main_checkout_root, show};
 use crate::commands::review::pr_door::{gh_json, gh_out};
 
 /// The number of the OPEN pull request whose head is `branch`, if the provider
@@ -233,24 +233,18 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // exists is the one leftover the git side cannot clear afterwards.
     let (pr, pr_closed, gh_error) = close_open_pr(&main, unit);
 
-    // Then the git side, each step on its own field. The only real coupling is
-    // that git refuses to delete a branch some worktree still checks out, so the
-    // local delete waits for the floor to be clear. The remote delete does not
-    // wait for anything — a worktree the OS still locks must never strand the
-    // server branch.
-    let entries = git_out(&main, &["worktree", "list", "--porcelain"])
-        .map(|s| parse_worktrees(&s))
-        .unwrap_or_default();
-    let (worktree_removed, floor_clear) = match entries.iter().find(|e| e.branch == unit) {
-        Some(e) => {
-            let removed = git_ok(&main, &["worktree", "remove", "--force", &e.path]);
-            (removed, removed)
-        }
-        None => (false, true),
-    };
+    // Then the git side. The work-branch gate cuts every unit IN PLACE — no
+    // worktree of its own — so there is no separate floor to free here: the
+    // worktree table this door used to consult served `work-unit-open`, which
+    // opened a unit into its own worktree and no longer exists as a command
+    // (`apps/rt/src/commands/mod.rs`). `worktreeRemoved` stays in the report,
+    // permanently `false`, so a caller reading the old field shape keeps
+    // reading valid JSON.
+    //
     // `-D`, never `-d`: an abandoned unit is unmerged BY DEFINITION, and `-d`
     // would refuse exactly the branches this command exists to remove.
-    let branch_deleted = local && floor_clear && git_ok(&main, &["branch", "-D", unit]);
+    let worktree_removed = false;
+    let branch_deleted = local && git_ok(&main, &["branch", "-D", unit]);
     let remote_deleted = remote && git_ok(&main, &["push", "origin", "--delete", unit]);
 
     let local_clear = !local || branch_deleted;

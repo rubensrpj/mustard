@@ -22,3 +22,7 @@ pub trait Render {
 }
 
 pub type Count = usize;
+
+pub const MAX_WIDTH: usize = 100;
+
+pub static DEFAULT_MODE: Mode = Mode::Fast;

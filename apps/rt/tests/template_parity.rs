@@ -451,11 +451,13 @@ const KEPT_HOOKS: &[&str] = &[
     "approval_witness",
     "command_guard",
     "end_of_turn_check",
+    "precompact_notice",
     "prompt_entry",
     "session_cleanup_observer",
     "session_start_inject",
     "statusline_heal_observer",
     "subagent_inject",
+    "wave_alive_observer",
     "write_gate",
 ];
 
@@ -488,6 +490,7 @@ const REMOVED_HOOKS: &[&str] = &[
     "tool_use_counter",
     "user_prompt_observer",
     "wave_complete_observer",
+    "wave_pause_check",
     "wave_start_observer",
     "wikilink_footer_observer",
     "worktree_create",

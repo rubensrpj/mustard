@@ -10,6 +10,19 @@
 //! principal os arquivos que cada cópia entregou, comita e apaga a cópia — e
 //! só então despacha a rodada seguinte.
 //!
+//! **A escolha antes do envio.** Antes de criar a cópia de uma onda pronta,
+//! a rodada olha os candidatos dela: os itens combinados do projeto todo, os
+//! sem dono e as lições do banco que casam com ela. Com algum, a onda só sai
+//! com a escolha do orquestrador, a conversa principal, e nenhum agente é
+//! aberto para isso: a resposta traz em `analysis` os candidatos de cada onda,
+//! cada um com o título, e o orquestrador devolve a linha
+//! `<ANALYSIS>{…}</ANALYSIS>` no `--report` seguinte, sozinha ou junto das
+//! outras. O envio gravado leva os itens que ficaram e, à parte, no campo
+//! `analysis`, o que saiu e o que entrou, cada um com o motivo. Os itens que
+//! as tarefas da onda fazem vão sempre, sem escolha. A mesma onda que sai de
+//! novo sem plano novo usa a escolha do envio anterior, quando ela julgou cada
+//! candidato de agora. Sem escolha, a onda espera; nada é recusado.
+//!
 //! **O relatório é o que os agentes devolvem, como veio.** A rodada lê, do
 //! texto recebido, cada linha `<DELIVERED>{…}</DELIVERED>` do agente de onda e
 //! cada linha `<VERDICT>{…}</VERDICT>` do revisor, no formato que os textos
@@ -23,7 +36,8 @@
 //! rodada e faz o commit com a mensagem montada do resumo.
 //!
 //! **O que trava.** Uma spec que ainda não foi aprovada; um relatório sem
-//! nenhuma das duas linhas, ou com uma linha sem campo obrigatório; um
+//! nenhuma linha de entrega, de veredito ou de escolha, ou com uma linha de
+//! entrega ou de veredito sem campo obrigatório; um
 //! `entregou` acima do teto de caracteres; um arquivo entregue que não está no
 //! disco nem no git, nem no repositório principal nem na cópia; uma mensagem
 //! de commit fora do
@@ -71,6 +85,8 @@ mod queue;
 mod report;
 mod stops;
 
+pub(crate) use commit::refresh_map_if_stale;
+
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -79,7 +95,7 @@ use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
-pub(crate) use queue::{wave_states, waves_in_progress};
+pub(crate) use queue::{wave_states, waves_in_progress, waves_pending_fix};
 pub(crate) use report::take_report;
 
 /// As opções de `mustard-rt run round`.
@@ -145,6 +161,23 @@ mod tests {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
 
+    /// A resposta do usuário à pergunta `question`, dada pela testemunha dos
+    /// gestos, como o harness a entrega depois do clique.
+    pub(super) fn click(root: &Path, session: &str, question: &str, answer: &str) {
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
+        let input = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            tool_name: Some("AskUserQuestion".to_string()),
+            session_id: Some(session.to_string()),
+            tool_input: json!({ "questions": [{ "question": question,
+                "options": [{ "label": "Aceitar" }, { "label": "Recusar" }] }] }),
+            raw: json!({ "tool_response": { "answers": { question: answer } } }),
+            ..HookInput::default()
+        };
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
+        crate::hooks::observe::approval_witness::ApprovalWitness.evaluate(&input, &ctx).expect("never errors");
+    }
+
     pub(super) fn git_at(root: &Path, args: &[&str]) {
         let out = Command::new("git")
             .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
@@ -159,6 +192,13 @@ mod tests {
     /// o teste pedir: uma entrada por onda, com os arquivos das tarefas dela e
     /// as ondas de que ela depende.
     pub(super) fn approved(root: &Path, spec: &str, plan: &[(u64, &[&str], &[u64])]) {
+        approved_with(root, spec, plan, |_| {});
+    }
+
+    /// [`approved`] com o que o teste grava antes da aprovação (`before`), que
+    /// recebe o número da mensagem de origem: é antes dela que o levantamento
+    /// grava os itens combinados, inclusive os sem dono.
+    pub(super) fn approved_with(root: &Path, spec: &str, plan: &[(u64, &[&str], &[u64])], before: impl FnOnce(u64)) {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         for (_, files, _) in plan {
@@ -197,9 +237,18 @@ mod tests {
             write(root, spec, "wave", wave);
             let declared: Vec<Value> = files.iter().map(|f| json!({"path": f})).collect();
             write(root, spec, "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
-                "files": declared, "origin": said}));
+                "files": declared, "depends_on": [], "origin": said}));
         }
+        before(said);
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+    }
+
+    /// O mapa do projeto em `root`, como o scan o grava, com uma parte só, na
+    /// raiz, do tipo `kind` (`cargo`, `npm`). Chame depois de [`approved`]:
+    /// o mapa fica fora do commit, como no projeto de verdade.
+    pub(super) fn mapped(root: &Path, kind: &str) {
+        let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": kind, "code_files": 1}]});
+        std::fs::write(mustard_core::io::project_map::model_path(root), model.to_string()).unwrap();
     }
 
     /// O projeto em `root` com o submódulo `libs/sub`, clonado de um servidor
@@ -239,6 +288,26 @@ mod tests {
         )
     }
 
+    /// [`round`] com quem relê o mapa depois do commit da rodada (`mine`),
+    /// que um teste escolhe sem instalar a ferramenta do scan de verdade.
+    pub(super) fn round_with_mine(
+        root: &Path,
+        spec: &str,
+        report: Option<&str>,
+        mine: &dyn Fn(
+            &Path,
+            &Path,
+        ) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
+    ) -> Value {
+        let opts =
+            RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) };
+        let project = spec_events::project(&opts.root);
+        match answer::run_round_with_mine(&opts, &project.root, project.lang, None, mine) {
+            Ok(report) => report,
+            Err(refusal) => refusal.to_value(project.lang),
+        }
+    }
+
     /// Uma linha do fim de um agente, como os textos dele ensinam.
     pub(super) fn line(tag: &str, body: Value) -> String {
         format!("<{tag}>{body}</{tag}>")
@@ -257,9 +326,11 @@ mod tests {
         line("DELIVERED", json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")}))
     }
 
-    /// A linha `VERDICT` da onda `wave`, com o critério pelo código.
+    /// A linha `VERDICT` da onda `wave`, com o critério pelo código. `final:
+    /// true`, porque só o veredito final do agente de teste dedicado pode
+    /// reprovar ou aprovar uma onda.
     pub(super) fn verdict(wave: u64, result: &str, text: &str) -> String {
-        line("VERDICT", json!({"wave": wave, "result": result, "text": text,
+        line("VERDICT", json!({"wave": wave, "result": result, "final": true, "text": text,
             "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}))
     }
 

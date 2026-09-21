@@ -23,7 +23,7 @@ use crate::model::ProjectModel;
 
 /// The scanner build tag written into the map. A map written by another
 /// build is read again in full, because what a file yields may have changed.
-pub(crate) const FORMAT: &str = concat!(env!("CARGO_PKG_VERSION"), "+map-3");
+pub(crate) const FORMAT: &str = concat!(env!("CARGO_PKG_VERSION"), "+map-4");
 
 /// Files whose change alters how every other file is classified: when one of
 /// them changed, everything is read again.
@@ -96,15 +96,37 @@ pub(crate) fn canonical(root: &Path) -> String {
     root.canonicalize().unwrap_or_else(|_| root.to_path_buf()).to_string_lossy().to_string()
 }
 
+/// The `state.head` a pass writes when the repository has no commit at all —
+/// distinct from the empty string, which still means "nothing to compare
+/// against, read everything" (a map from before this constant existed, or a
+/// scanner build that never recorded a head). Without the distinction, a
+/// repository with zero commits paid a full read on every single pass: `head`
+/// is always absent there, so `plan` below saw `state.head.is_empty()`
+/// forever and never let a later pass read only what changed since.
+pub(crate) const NO_COMMIT_HEAD: &str = "no-commit";
+
 /// Decide what this pass reads, given the previous map.
 pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>) -> Plan {
     let Some(prev) = prev else {
         return Plan::Full;
     };
-    if prev.state.format != FORMAT || prev.state.head.is_empty() || prev.root != canonical(root) {
+    let no_commit_before = prev.state.head == NO_COMMIT_HEAD;
+    if prev.state.format != FORMAT || (prev.state.head.is_empty() && !no_commit_before) || prev.root != canonical(root)
+    {
         return Plan::Full;
     }
-    let Some(now) = head(root) else {
+    let now = head(root);
+    // Sem commit então: não há um "de" válido para comparar (`changed_between`
+    // exige duas revisões reais). Tudo que pode ter mudado já está coberto
+    // pelo que está aberto agora, unido ao que já estava aberto na passada
+    // anterior — o mesmo raciocínio do ramo comum, sem a metade comitada.
+    if no_commit_before {
+        let Some(open) = dirty(root) else {
+            return Plan::Full;
+        };
+        return only_or_full(open.into_iter().chain(prev.state.dirty.iter().cloned()).collect());
+    }
+    let Some(now) = now else {
         return Plan::Full;
     };
     let Some(committed) = changed_between(root, &prev.state.head, &now) else {
@@ -114,6 +136,12 @@ pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>) -> Plan {
         return Plan::Full;
     };
     let changed: BTreeSet<String> = committed.into_iter().chain(open).chain(prev.state.dirty.iter().cloned()).collect();
+    only_or_full(changed)
+}
+
+/// `Plan::Only(changed)`, unless a file whose change alters how every other
+/// file is classified is in it — then the whole project is read again.
+fn only_or_full(changed: BTreeSet<String>) -> Plan {
     let global = changed.iter().any(|p| {
         let name = p.rsplit('/').next().unwrap_or(p);
         GLOBAL_INPUTS.contains(&name)
@@ -242,5 +270,38 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(plan(Path::new("."), Some(&other_build)), Plan::Full);
+    }
+
+    /// Um repositório sem nenhum commit não relê o projeto inteiro para
+    /// sempre: a passada seguinte, ainda sem commit, lê só o que a anterior já
+    /// tinha marcado como não comitado, pelo selo distinto do vazio que a
+    /// passada sem commit grava.
+    #[test]
+    fn a_repository_with_no_commit_yet_is_not_read_in_full_forever() {
+        let dir = std::env::temp_dir().join(format!("scan-refresh-no-commit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let root = dir.as_path();
+        let _ = git_exec::run(root, &["init", "-q"]);
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").expect("a.rs");
+        std::fs::write(root.join("b.rs"), "fn b() {}\n").expect("b.rs");
+
+        let prev = ProjectModel {
+            root: canonical(root),
+            state: crate::model::ScanState {
+                format: FORMAT.to_string(),
+                head: NO_COMMIT_HEAD.to_string(),
+                dirty: vec!["a.rs".to_string(), "b.rs".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        match plan(root, Some(&prev)) {
+            Plan::Only(changed) => {
+                assert_eq!(changed, BTreeSet::from(["a.rs".to_string(), "b.rs".to_string()]));
+            }
+            Plan::Full => panic!("sem commit também é um estado válido: devia ler só o não comitado, não tudo de novo"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

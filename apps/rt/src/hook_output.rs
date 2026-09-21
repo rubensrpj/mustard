@@ -57,6 +57,24 @@ pub(crate) fn event_accepts_hook_output(event_name: &str) -> bool {
 /// hook's side-effects have already run by this point, so the binary writes
 /// nothing for those events and exits clean.
 pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Option<String> {
+    // `PreCompact` fala só por `systemMessage`: o harness não tem
+    // `hookSpecificOutput` para este evento — o portão de
+    // `event_accepts_hook_output` logo abaixo o rejeitaria de saída —, e não
+    // há próximo turno onde `additionalContext` entraria. É por aqui que o
+    // bloco de retomada, antes de compactar, chega ao usuário. Avisos que
+    // venham junto (`outcome.warnings`) entram na mesma mensagem, separados
+    // por uma linha em branco.
+    if event_name == "PreCompact"
+        && let Verdict::Inject { context } = &outcome.verdict {
+            let mut text = context.clone();
+            if !outcome.warnings.is_empty() {
+                text = format!("{text}\n\n{}", outcome.warnings.join("\n"));
+            }
+            let mut root = serde_json::Map::new();
+            root.insert("systemMessage".to_string(), serde_json::Value::String(text));
+            return Some(serde_json::Value::Object(root).to_string());
+        }
+
     if !event_accepts_hook_output(event_name) {
         return None;
     }
@@ -124,6 +142,7 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
             );
             return Some(serde_json::Value::Object(root).to_string());
         }
+
     let mut hook_output = serde_json::Map::new();
     hook_output.insert(
         "hookEventName".to_string(),
@@ -142,12 +161,19 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
                 serde_json::Value::String(reason.clone()),
             );
         }
-        Verdict::Rewrite { tool_input } => {
+        Verdict::Rewrite { tool_input, note } => {
             hook_output.insert(
                 "permissionDecision".to_string(),
                 serde_json::Value::String("allow".to_string()),
             );
             hook_output.insert("updatedInput".to_string(), tool_input.clone());
+            // The rewrite's own explanation — e.g. why a read was cut short
+            // — reaches the agent the same way a warning does. The shared
+            // block below appends `outcome.warnings` to the SAME member, so
+            // a check that also warned is not silently dropped.
+            if let Some(note) = note {
+                hook_output.insert("additionalContext".to_string(), serde_json::Value::String(note.clone()));
+            }
         }
         Verdict::Inject { context } => {
             hook_output.insert(
@@ -176,10 +202,12 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     }
 
     if !outcome.warnings.is_empty() {
-        hook_output.insert(
-            "additionalContext".to_string(),
-            serde_json::Value::String(outcome.warnings.join("\n")),
-        );
+        let joined = outcome.warnings.join("\n");
+        let text = match hook_output.get("additionalContext").and_then(serde_json::Value::as_str) {
+            Some(note) => format!("{note}\n\n{joined}"),
+            None => joined,
+        };
+        hook_output.insert("additionalContext".to_string(), serde_json::Value::String(text));
     }
 
     let mut root = serde_json::Map::new();
@@ -204,10 +232,19 @@ mod tests {
     }
 
     #[test]
-    fn pre_compact_emits_no_hook_output() {
-        // The harness has no `hookSpecificOutput` slot for `PreCompact`, so the
-        // builder stays silent even for an injecting outcome.
-        assert!(hook_specific_output("PreCompact", &inject_outcome()).is_none());
+    fn pre_compact_speaks_only_through_system_message() {
+        // `PreCompact` has no `hookSpecificOutput` slot, so an injecting
+        // outcome — the resume block, before compacting — serialises as a
+        // bare `systemMessage`, with no `hookSpecificOutput` and no
+        // `decision` wrapper the harness would reject.
+        let json = hook_specific_output("PreCompact", &inject_outcome()).expect("PreCompact must emit output");
+        assert!(json.contains(r#""systemMessage":"remember this""#), "{json}");
+        assert!(!json.contains("hookSpecificOutput"), "{json}");
+
+        // A bare `Allow` with no warnings stays silent, same as every other
+        // event: nothing to say, nothing sent.
+        let allow = Outcome { verdict: Verdict::Allow, warnings: Vec::new() };
+        assert!(hook_specific_output("PreCompact", &allow).is_none());
     }
 
     #[test]
@@ -228,6 +265,23 @@ mod tests {
         let json = hook_specific_output("SessionStart", &inject_outcome())
             .expect("SessionStart must emit output");
         assert!(json.contains("additionalContext"));
+    }
+
+    #[test]
+    fn a_rewrite_with_a_note_carries_both_the_updated_input_and_the_message() {
+        // A rewrite that needs an explanation (why the input changed) must
+        // reach the agent on the SAME response as the `updatedInput` — a
+        // second turn is too late to ask for the cut excerpt.
+        let outcome = Outcome {
+            verdict: Verdict::Rewrite {
+                tool_input: serde_json::json!({ "file_path": "/p/a.rs", "limit": 40 }),
+                note: Some("os testes começam na linha 41".to_string()),
+            },
+            warnings: Vec::new(),
+        };
+        let json = hook_specific_output("PreToolUse", &outcome).expect("PreToolUse must emit output");
+        assert!(json.contains(r#""updatedInput":{"file_path":"/p/a.rs","limit":40}"#), "{json}");
+        assert!(json.contains("os testes começam na linha 41"), "{json}");
     }
 
     #[test]

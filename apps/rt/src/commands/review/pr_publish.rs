@@ -175,22 +175,30 @@ pub(crate) fn edit_report(provider: &dyn PrProvider, number: u64, body: &str) ->
 }
 
 /// Abre o pull request de `pr`, ou reescreve o corpo daquele que a branch
-/// dele já carrega.
+/// dele já carrega — desde que ele ainda esteja ABERTO.
 ///
 /// A pergunta é sempre pela BRANCH que se vai abrir, nunca pela do checkout:
 /// a branch chega por opção, e as duas não são a mesma coisa. Perguntando pelo
 /// checkout, a porta reescrevia o corpo do pull request de outra unidade e
 /// relatava ter editado aquele número.
+///
+/// A busca pela branch pode devolver um pull request já juntado ou fechado —
+/// a branch continua existindo, e o provedor não esquece o histórico dela. Só
+/// o estado aberto é editado; qualquer outro (juntado, fechado, desconhecido)
+/// segue para `open_report`, que abre um pedido novo em vez de mexer no
+/// antigo.
 #[must_use]
 pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublishReport {
     match provider.view(PrRef::Head(&pr.head)) {
         // O endereço vem da consulta: é o que a fase de pull request aberto
-        // grava junto com o número.
-        Ok(view) => PrPublishReport {
+        // grava junto com o número. Só o estado Open é reescrito — juntado
+        // ou fechado seguem para open_report, como se a busca não tivesse
+        // achado nada.
+        Ok(view) if view.status == PrStatus::Open => PrPublishReport {
             url: Some(view.url).filter(|url| !url.trim().is_empty()),
             ..edit_report(provider, view.number, &pr.body)
         },
-        Err(_) => open_report(provider, pr),
+        Ok(_) | Err(_) => open_report(provider, pr),
     }
 }
 
@@ -199,9 +207,13 @@ pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublis
 /// provedor não respondeu.
 ///
 /// A mesma pergunta de [`open_or_edit`], feita de uma vez só para as duas
-/// portas: a branch em jogo é quem aponta o pull request.
+/// portas: a branch em jogo é quem aponta o pull request, e só o estado ABERTO
+/// é reescrito. A busca pela branch devolve também o pull request já juntado
+/// ou fechado — o provedor não esquece o histórico dela —, e reescrever o
+/// corpo dele mexia num pedido que já saiu. Aqui não há o que abrir no lugar:
+/// a rodada só refaz o que está aberto, e sem isso ela não para.
 pub(crate) fn rewrite_body(provider: &dyn PrProvider, head: &str, body: &str) -> Option<u64> {
-    let view = provider.view(PrRef::Head(head)).ok()?;
+    let view = provider.view(PrRef::Head(head)).ok().filter(|view| view.status == PrStatus::Open)?;
     provider.edit_body(view.number, body).ok().map(|()| view.number)
 }
 
@@ -559,6 +571,10 @@ mod tests {
         /// O pull request que este provedor já tem aberto, com a branch que ele
         /// leva. `None` = nenhum, e a consulta responde erro.
         opened_for: Option<(String, u64)>,
+        /// O estado que a consulta devolve para `opened_for` — `Open` por
+        /// padrão. `with_landed_pr` o troca para provar que um pull request
+        /// juntado ou fechado nunca é reescrito.
+        status: PrStatus,
         seen: RefCell<Vec<String>>,
     }
 
@@ -571,6 +587,7 @@ mod tests {
                 edit: Ok(()),
                 ready: Ok(()),
                 opened_for: None,
+                status: PrStatus::Open,
                 seen: RefCell::new(Vec::new()),
             }
         }
@@ -579,6 +596,13 @@ mod tests {
         /// `head`.
         fn with_open_pr(name: &'static str, head: &str, number: u64) -> Self {
             Self { opened_for: Some((head.to_string(), number)), ..Self::green(name) }
+        }
+
+        /// O mesmo provedor, com um pull request JÁ JUNTADO (ou fechado) para
+        /// a branch `head` — o caso que `open_or_edit` deve tratar como se a
+        /// busca não tivesse achado nada.
+        fn with_landed_pr(name: &'static str, head: &str, number: u64, status: PrStatus) -> Self {
+            Self { opened_for: Some((head.to_string(), number)), status, ..Self::green(name) }
         }
 
         /// A provider on which every operation answers `token` — the shape of
@@ -590,6 +614,7 @@ mod tests {
                 edit: Err(token.to_string()),
                 ready: Err(token.to_string()),
                 opened_for: None,
+                status: PrStatus::Open,
                 seen: RefCell::new(Vec::new()),
             }
         }
@@ -637,7 +662,7 @@ mod tests {
                 title: "the unit".into(),
                 head: head.clone(),
                 base: "dev".into(),
-                status: crate::shared::branch_state::PrStatus::Open,
+                status: self.status,
                 merge_status: None,
                 draft: true,
                 url: format!("https://example.test/pr/{number}"),
@@ -745,6 +770,56 @@ mod tests {
             None,
             "a rodada reescreveu o corpo de um pull request que não é o da spec",
         );
+    }
+
+    /// Um pull request já juntado nunca é editado de novo, nas DUAS portas —
+    /// a da abertura e a da rodada, lado a lado: a busca pela branch pode
+    /// devolvê-lo mesmo depois de fechado, e nenhuma delas pode tratar isso
+    /// como "a branch tem um pull request aberto". A porta da abertura abre um
+    /// pedido novo no lugar; a da rodada, que não abre nada, responde `None` e
+    /// não reescreve nada. Aberto, as duas reescrevem, e o número que volta é
+    /// o dele.
+    ///
+    /// Em 18/09 a porta da abertura reescreveu o texto do pedido 278, já
+    /// juntado; a porta da rodada ficou com o mesmo defeito de pé. O mesmo
+    /// vale para um pull request fechado sem juntar.
+    #[test]
+    fn a_merged_pull_request_is_never_edited() {
+        let pr = to_open();
+
+        for status in [PrStatus::Merged, PrStatus::Closed] {
+            let fake = FakePub::with_landed_pr("github", "feature/my-unit", 278, status);
+            let report = open_or_edit(&fake, &pr);
+            assert_eq!(
+                report.action, ACTION_OPEN,
+                "um pull request {status:?} foi editado em vez de abrir um novo: {report:?}",
+            );
+            assert_eq!(report.number, Some(7), "{report:?}");
+            assert!(
+                !fake.seen.borrow().iter().any(|call| call.starts_with("edit 278")),
+                "o pedido já juntado foi reescrito: {:?}",
+                fake.seen.borrow(),
+            );
+
+            // A porta da rodada, pela mesma branch e com o mesmo estado.
+            let fake = FakePub::with_landed_pr("github", "feature/my-unit", 278, status);
+            assert_eq!(
+                rewrite_body(&fake, "feature/my-unit", "outro corpo"),
+                None,
+                "a rodada reescreveu o corpo de um pull request {status:?}",
+            );
+            assert!(
+                !fake.seen.borrow().iter().any(|call| call.starts_with("edit 278")),
+                "o pedido {status:?} foi reescrito pela rodada: {:?}",
+                fake.seen.borrow(),
+            );
+        }
+
+        // Aberto, a rodada reescreve: é a divisa entre o que ela toca e o que
+        // não toca.
+        let fake = FakePub::with_open_pr("github", "feature/my-unit", 278);
+        assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(278));
+        assert!(fake.seen.borrow().iter().any(|call| call == "edit 278 body=outro corpo"), "{:?}", fake.seen.borrow());
     }
 
     /// Every failure — table-driven over the two actions — degrades into the

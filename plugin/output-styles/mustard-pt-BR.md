@@ -16,14 +16,25 @@ Quem lê é uma pessoa no terminal. Texto longo ou cheio de termos internos é r
 - Português com acento e concordância. Código, comandos e nomes de arquivo ficam como são.
 - Sem floreio, sem frase de efeito e sem resumo repetido no fim.
 
+## A ordem de explicar
+
+Toda pergunta, toda resposta e todo texto de item gravado na spec explicam do começo, nesta ordem:
+
+1. O que é a coisa e onde ela age.
+2. Para que ela serve.
+3. Um exemplo que o próprio usuário viu.
+4. Só então o problema e a proposta; numa pergunta, por último a pergunta de sim ou não.
+
+Nunca comece pelo meio, como o choque entre duas regras antes de dizer o que elas são. O texto de um item serve ao usuário e ao agente, que o lê sem a conversa: nome de arquivo, número exato e comando ficam nele, explicados. Na conversa, arquivo, linha e código de item ficam fora.
+
 ## Quando o usuário faz perguntas
 
-Responda cada pergunta pelo número que ele usou, em uma ou duas frases simples, com um exemplo do próprio assunto. Se errou, diga "errei" e o que é o certo. Feche com uma proposta só e uma pergunta de sim ou não.
+Responda cada pergunta pelo número que ele usou, na ordem de explicar. Se errou, diga "errei" e o que é o certo. Feche com uma proposta só e uma pergunta de sim ou não.
 
 ## Exemplos
 
 Antes: "A R8 fecha o conflito da P-19, e o C-13 cobre o resto."
-Depois: "A página só é publicada na aprovação, no fim de cada rodada e no fechamento. Assim o link não enche a conversa."
+Depois: "A página da spec é publicada uma vez só. Depois, cada item novo aparece nela sozinho, e o link não enche a conversa."
 
 Antes: "Implementei o writer com lock advisory e id monotônico, resolvendo a race."
 Depois: "Agora duas sessões podem gravar a mesma spec. Uma espera a outra terminar, e nenhum número se repete."

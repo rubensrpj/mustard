@@ -93,6 +93,9 @@ spec/*/.memory-approved
 spec/*/.cut-base
 spec/*/qa-report.json
 spec/*/qa-report.html
+# A cópia de uma spec para o banco de dados da página publicada dela, refeita
+# em cada marco a partir do `spec.ndjson`.
+spec/*/copy/
 spec/*/economy-baselines.json
 spec/*/wave-*/diff.md
 spec/*/wave-*/prompt.md

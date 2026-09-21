@@ -18,8 +18,8 @@
 //! Duas buscas, só do Rust: por escopo ([`in_scope`]), pelo caminho dos
 //! arquivos, pelo subprojeto e pela skill; e por palavras ([`matching`]), com
 //! o BM25 de `domain::search` sobre o `search`, que devolve as 5 mais fortes.
-//! O pedido de uma onda e o da revisão levam, de cada classe, só as lições
-//! mais ligadas às tarefas ([`related_to_tasks`]), porque uma pasta pode ter
+//! O pedido de uma onda leva, de cada classe, só as lições mais ligadas às
+//! tarefas ([`related_to_tasks`]), porque uma pasta pode ter
 //! centenas delas: a mesma busca, mas sobre as palavras-chave de cada lição,
 //! e não sobre o texto inteiro, em que quase toda lição longa divide alguma
 //! palavra comum com qualquer tarefa.
@@ -331,18 +331,6 @@ pub fn in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
     found
 }
 
-/// Os defeitos já vistos nos arquivos de `scope`, em ordem de número: as
-/// lições da classe do defeito que valem ali. É o que o revisor de uma onda
-/// precisa ver antes de olhar o código — o erro que já aconteceu naqueles
-/// arquivos é o que tem mais chance de se repetir.
-#[must_use]
-pub fn defects_in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
-    in_scope(bank, scope).into_iter().filter(|lesson| lesson.event_type == DEFECT).collect()
-}
-
-/// A classe da lição que guarda um defeito que pode se repetir.
-pub const DEFECT: &str = "defect";
-
 /// A classe da lição que guarda uma regra do projeto: vale sempre, então
 /// não vira pergunta no levantamento.
 pub const PROJECT_RULE: &str = "project_rule";
@@ -417,7 +405,7 @@ pub fn matching_among(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
     search::search(lessons.iter().map(|lesson| (lesson.id, lesson.str_field("search").unwrap_or_default())), words)
 }
 
-/// As lições que o pedido de uma onda e o da revisão levam, entre as `found`
+/// As lições que o pedido de uma onda leva, entre as `found`
 /// que valem para ela: de cada classe, só as 5 mais ligadas às palavras das
 /// tarefas (`words`), pela busca de [`matching`] feita sobre as palavras-chave
 /// de cada lição ([`by_keys`]), e não sobre o texto dela. A lição sem
@@ -580,7 +568,9 @@ pub struct MissingPaths {
 /// As lições que citam um caminho que o projeto já não tem, em ordem de
 /// número, cada uma com os caminhos que faltam. Conta o arquivo citado entre
 /// crases no texto e o lugar em que a lição vale: o subprojeto e cada
-/// caminho sem `*` dos arquivos dela. A pasta citada no texto não conta: a
+/// caminho dos arquivos dela. O caminho com curinga (`hooks/**`) é conferido
+/// pelo prefixo literal antes do `*`; sem prefixo (`**`, o projeto todo),
+/// nada é conferido. A pasta citada no texto não conta: a
 /// lição cita justamente a pasta que não deve existir, como a que a
 /// instalação de dependências cria. Quem responde se o caminho existe é
 /// `found`, com o subprojeto da lição, porque a lição de um subprojeto pode
@@ -605,7 +595,10 @@ pub fn citing_missing_paths(bank: &SpecLog, found: impl Fn(&str, Option<&str>) -
                 .iter()
                 .filter_map(Value::as_str)
                 .map(clean_path)
-                .filter(|p| !p.is_empty() && !p.contains('*')),
+                .filter_map(|p| {
+                    let prefix = p.split('*').next().unwrap_or_default().trim_end_matches('/');
+                    (!prefix.is_empty()).then(|| prefix.to_string())
+                }),
         );
         let mut paths: Vec<String> = Vec::new();
         for path in cited {
@@ -961,6 +954,30 @@ mod tests {
                 MissingPaths { id: 4, paths: vec!["apps/mcp".into()] },
             ]
         );
+    }
+
+    /// O `files` com curinga (`apps/rt/src/hooks/**`) não escapa mais da
+    /// conferência: é conferido pelo prefixo literal antes do `*`. O curinga
+    /// sozinho (`**`, a lição do projeto todo) continua fora, porque não
+    /// sobra prefixo nenhum para conferir.
+    #[test]
+    fn a_lesson_citing_a_wildcard_files_pattern_is_checked_by_its_literal_prefix() {
+        let bank = parse_log(&lesson(1, base(json!({"files": ["apps/rt/src/hooks/**"]}))));
+        let prefix_exists = |path: &str, _inside: Option<&str>| path == "apps/rt/src/hooks";
+        assert_eq!(citing_missing_paths(&bank, prefix_exists), vec![], "o prefixo existe, a lição fica");
+
+        let nothing_exists = |_path: &str, _inside: Option<&str>| false;
+        assert_eq!(
+            citing_missing_paths(&bank, nothing_exists),
+            vec![MissingPaths { id: 1, paths: vec!["apps/rt/src/hooks".into()] }],
+            "o prefixo não existe, o curinga é apontado como caminho que falta"
+        );
+
+        let whole_project = parse_log(&lesson(
+            2,
+            json!({"class": "user_preference", "text": "t", "keys": ["k"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}),
+        ));
+        assert_eq!(citing_missing_paths(&whole_project, nothing_exists), vec![], "sem prefixo, nada para conferir");
     }
 
     /// A retirada é o rascunho sem classe com as lições em `targets` e o

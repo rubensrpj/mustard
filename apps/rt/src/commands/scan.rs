@@ -39,9 +39,9 @@ pub(crate) fn default_model_path(root: &Path) -> PathBuf {
 /// a spawn/exit error is reported, never panics (matches the other handlers).
 ///
 /// With a model of this project already on disk, only the files that changed
-/// since are read again; the result says which (`read`) and whether every
-/// file was (`full`). Nothing is written to git and nothing runs this on its
-/// own.
+/// since are read again; the result says how many (`read`, a count, never
+/// the list of names) and whether every file was (`full`). Nothing is
+/// written to git and nothing runs this on its own.
 ///
 /// When `full` is `true`, (re)generates the mustard-owned
 /// `.claude/scan-map.md` per subproject after the model is written; no
@@ -95,7 +95,9 @@ pub(crate) fn scan_at(
             "ok": true,
             "model": model_path.to_string_lossy(),
             "full": report.full,
-            "read": report.read,
+            // Só quantos arquivos foram lidos, como a abertura de spec
+            // responde: a lista fica no relatório da ferramenta.
+            "read": report.read.len(),
             "files": report.files,
         }),
         Err(err) => {
@@ -190,21 +192,40 @@ fn next_step(similar: &[Vec<u64>], missing: &[MissingPaths], lang: Locale) -> St
     parts.join(" ")
 }
 
-/// O caminho que uma lição cita existe no projeto: no disco, a partir da raiz
-/// ou de uma das pastas do subprojeto da lição (`inside`) até ela, ou no mapa
-/// que o scan acabou de gravar, que aceita só o fim do caminho.
+/// O caminho que uma lição cita existe no projeto: a partir da raiz ou de uma
+/// das pastas do subprojeto da lição (`inside`) até ela, ou no mapa que o
+/// scan acabou de gravar, que aceita só o fim do caminho.
 fn path_found(root: &Path, map: &ProjectMap, cited: &str, inside: Option<&str>) -> bool {
-    if root.join(cited).exists() {
+    if located(root, &root.join(cited)) {
         return true;
     }
     let mut folder = inside.map(|sub| root.join(sub));
     while let Some(dir) = folder {
-        if dir.join(cited).exists() {
+        if located(root, &dir.join(cited)) {
             return true;
         }
         folder = dir.parent().filter(|up| up.starts_with(root) && *up != root).map(Path::to_path_buf);
     }
     project_map::map_knows(map, cited)
+}
+
+/// `candidate` é uma parte real, versionada, do projeto — não só um caminho
+/// que o disco responde que existe. Sem repositório para perguntar (fora de
+/// um `git`, ou com `vcs` desligado), o disco continua sendo a resposta
+/// inteira, como sempre foi. Dentro de um repositório, um caminho que só
+/// existe porque uma compilação o deixou lá — e que o próprio git ignora, sem
+/// nunca tê-lo rastreado — não conta: é resto, não parte do projeto.
+fn located(root: &Path, candidate: &Path) -> bool {
+    if !candidate.exists() {
+        return false;
+    }
+    let git_ok = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;
+    if !git_ok(&["rev-parse", "--is-inside-work-tree"]) {
+        return true;
+    }
+    let Ok(rel) = candidate.strip_prefix(root) else { return true };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    git_ok(&["ls-files", "--error-unmatch", "--", &rel]) || !git_ok(&["check-ignore", "-q", "--", &rel])
 }
 
 /// Submodule paths declared in `.gitmodules` whose working directory holds no
@@ -364,6 +385,72 @@ mod tests {
         assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "sem o mapa, nada falta: {failed}");
     }
 
+    /// Uma lição que cita um arquivo que ainda não existe é apontada como
+    /// sem arquivo por um mapeamento bom, como o teste vizinho já prova.
+    /// Depois de o arquivo nascer, um mapeamento que falha não pode mais
+    /// apontar essa lição como sem arquivo: sem o mapa desta vez, a conta
+    /// nem roda, e `path_found` confere o disco antes do mapa em qualquer
+    /// mapeamento que tenha o mapa em mãos.
+    #[test]
+    fn a_failed_scan_never_retires_a_lesson_whose_file_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("apps/rt/src/lib.rs"), "pub fn run() {}\n");
+        write(&root.join("packages/core/Cargo.toml"), "[package]\nname = \"core\"\n");
+        let cited = root.join("packages/core/src/domain/economy/estimator.rs");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        let stale = rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
+
+        // O arquivo ainda não existe: um mapeamento bom aponta a lição.
+        let before = scan_at(root, None, false, mine_disk);
+        assert_eq!(
+            before["lessons"]["missing_paths"],
+            serde_json::json!([{"id": stale, "paths": ["domain/economy/estimator.rs"]}]),
+            "o arquivo ainda não existe: {before}"
+        );
+
+        // O arquivo nasce, e um mapeamento que falha roda: sem o mapa desta
+        // vez, a lição não é apontada como sem arquivo.
+        write(&cited, "pub fn estimate() -> usize { 0 }\n");
+        let failed = scan_at(root, None, false, mine_fails);
+        assert_eq!(failed["ok"], serde_json::json!(false), "{failed}");
+        assert!(
+            failed.get("lessons").is_none(),
+            "o arquivo já existe, e sem mapa nada é dado como faltando: {failed}"
+        );
+    }
+
+    /// Roda `git <args>` em `root`, ignorando o resultado: só monta o
+    /// repositório de teste (`init`, `add`), sem checar saída.
+    fn run_git(root: &Path, args: &[&str]) {
+        let _ = mustard_core::platform::git::run(root, args);
+    }
+
+    /// O disco sozinho não decide mais se o caminho citado existe: dentro de
+    /// um repositório, um resto de compilação (existe no disco, mas o git
+    /// ignora e nunca rastreou) não conta, e o arquivo rastreado continua
+    /// contando — os dois lados da mesma conferência.
+    #[test]
+    fn path_found_asks_the_versioned_files_not_only_the_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        run_git(root, &["init", "-q"]);
+        write(&root.join(".gitignore"), "build/\n");
+        write(&root.join("packages/core/build/estimator.rs"), "// resto de compilação\n");
+        write(&root.join("packages/core/src/lib.rs"), "pub fn lib() {}\n");
+        run_git(root, &["add", "packages/core/src/lib.rs"]);
+
+        let map = ProjectMap::default();
+        assert!(
+            !path_found(root, &map, "packages/core/build/estimator.rs", None),
+            "resto de compilação, ignorado pelo git e nunca rastreado, não conta como existente"
+        );
+        assert!(
+            path_found(root, &map, "packages/core/src/lib.rs", None),
+            "arquivo rastreado continua contando"
+        );
+    }
+
     /// Sem banco de lições, ou sem nada a enxugar, o relatório do scan não
     /// ganha a lista nem o passo seguinte.
     #[test]
@@ -377,6 +464,52 @@ mod tests {
         rule(&bank, "src", "O `main.rs` só chama a biblioteca.", &["main"]);
         let result = scan_at(root, None, false, mine_disk);
         assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
+    }
+
+    /// A ferramenta do scan que grava o mapa dos arquivos do disco e devolve
+    /// o relatório escrito na última linha, no formato que a ferramenta
+    /// instalada imprime.
+    fn mine_reporting(line: String) -> impl FnOnce(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport> {
+        move |root, model| {
+            mine_disk(root, model)?;
+            Ok(serde_json::from_str(&line).expect("o relatório da ferramenta"))
+        }
+    }
+
+    /// O comando de mapeamento lê o projeto e responde. A resposta diz
+    /// quantos arquivos a ferramenta leu desta vez, e nenhum nome deles. Na
+    /// primeira leitura são os dois arquivos do projeto; depois de mudar um,
+    /// só esse é lido de novo, e a resposta diz 1, não os 2 que o mapa tem.
+    /// Com os 1349 arquivos que a leitura da Suzano trouxe, a resposta diz
+    /// 1349 e continua sem a lista.
+    #[test]
+    fn the_scan_answer_carries_only_the_count_of_files_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("src/main.rs"), "fn main() {}\n");
+        write(&root.join("src/lib.rs"), "pub fn a() {}\n");
+        let head = "345b9361a952fba302c9f811626e26bea7fac2f2";
+
+        let whole = format!(r#"{{"ok":true,"full":true,"read":["src/lib.rs","src/main.rs"],"files":2,"head":"{head}"}}"#);
+        let answer = scan_at(root, None, false, mine_reporting(whole));
+        assert_eq!(answer["ok"], json!(true), "{answer}");
+        assert_eq!(answer["full"], json!(true), "{answer}");
+        assert_eq!(answer["read"], json!(2), "{answer}");
+        assert_eq!(answer["files"], json!(2), "{answer}");
+
+        let changed = format!(r#"{{"ok":true,"full":false,"read":["src/lib.rs"],"files":2,"head":"{head}"}}"#);
+        let answer = scan_at(root, None, false, mine_reporting(changed));
+        assert_eq!(answer["full"], json!(false), "{answer}");
+        assert_eq!(answer["read"], json!(1), "{answer}");
+        let text = answer.to_string();
+        assert!(!text.contains("src/lib.rs") && !text.contains("src/main.rs"), "a resposta não leva os nomes: {text}");
+
+        let read: Vec<String> = (0..1349).map(|n| format!("src/modulo_{n}.ts")).collect();
+        let suzano = json!({"ok": true, "full": true, "read": read, "files": 1349, "head": head}).to_string();
+        let answer = scan_at(root, None, false, mine_reporting(suzano));
+        assert_eq!(answer["read"], json!(1349), "{answer}");
+        let text = answer.to_string();
+        assert!(!text.contains("modulo_"), "a resposta não leva os nomes: {text}");
     }
 
     #[test]
@@ -424,4 +557,5 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("vendor").join("b")).expect("empty dir");
         assert_eq!(hollow_submodules(dir.path()), vec!["vendor/b".to_string()]);
     }
+
 }

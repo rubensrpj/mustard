@@ -23,5 +23,8 @@ channel = "1.98.0"
 # Installed with the toolchain rather than added by each workflow, so the
 # components land on the PINNED toolchain instead of whichever one a runner
 # happened to make default: clippy backs the CI lint gate (the workspace lint
-# table makes `unwrap_used` deny-level), rustfmt backs `cargo fmt`.
-components = ["clippy", "rustfmt"]
+# table makes `unwrap_used` deny-level), rustfmt backs `cargo fmt`, and
+# rust-analyzer backs the code tool (LSP) the wave and review agents use to
+# find a function before opening its file — every machine that builds this
+# tree gets the same analyser, not just the ones a developer set up by hand.
+components = ["clippy", "rustfmt", "rust-analyzer"]

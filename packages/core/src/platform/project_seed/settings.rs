@@ -60,6 +60,20 @@ pub const RTK_HOOK_COMMAND: &str = "rtk hook claude";
 /// The tool the rtk hook rewrites: only shell commands pass through it.
 const RTK_HOOK_MATCHER: &str = "Bash";
 
+/// A ferramenta do Claude Code que grava no banco de dados de uma página
+/// publicada no claude.ai. O Mustard copia para esse banco o que muda na spec
+/// a cada marco; liberada nas configurações, a cópia não para esperando o sim
+/// da pessoa. A regra mora na semente, e [`backfill_own_permission_rules`] a
+/// leva também ao projeto já instalado.
+pub const PAGE_DATABASE_TOOL: &str = "ArtifactData";
+
+/// Se `rule` é uma liberação do próprio Mustard: um comando `mustard-rt run`
+/// ou a ferramenta do banco de dados das páginas ([`PAGE_DATABASE_TOOL`]).
+/// Nenhuma outra liberação da semente chega a um projeto já instalado.
+fn is_own_allow_rule(rule: &str) -> bool {
+    rule.starts_with("Bash(mustard-rt run ") || rule == PAGE_DATABASE_TOOL
+}
+
 /// Lines older seeds wrote and the current seed no longer carries, spelled
 /// exactly as they were written.
 ///
@@ -286,8 +300,9 @@ fn rename_dead_skill_validate_key(settings: &mut Map<String, Value>) {
 
 
 /// Backfill the seed's own permission rules into an installed settings file:
-/// the `Bash(mustard-rt run …)` allow rules and every deny rule the seed
-/// carries, the machine rules among them.
+/// the `Bash(mustard-rt run …)` allow rules, the page database tool
+/// ([`PAGE_DATABASE_TOOL`]) and every deny rule the seed carries, the machine
+/// rules among them.
 ///
 /// **Why a default that only reaches a fresh install is not a default.** The
 /// seed merge is top-level only: a project that already has a `permissions`
@@ -302,7 +317,8 @@ fn rename_dead_skill_validate_key(settings: &mut Map<String, Value>) {
 ///
 /// - only rules the SEED declares; on the allow side, only those naming
 ///   `mustard-rt run` — the harness's own commands, never anything the
-///   operator's project runs;
+///   operator's project runs — and the tool that writes the database of the
+///   pages Mustard publishes ([`is_own_allow_rule`]);
 /// - only ADDS. Nothing is removed, nothing is reordered, and a rule the
 ///   operator already has (in any spelling that matches exactly) is left alone;
 /// - a rule the operator put in another list WINS, because that is a decision
@@ -318,8 +334,7 @@ fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<S
             .map(|rules| rules.iter().filter_map(Value::as_str).map(str::to_string).collect())
             .unwrap_or_default()
     };
-    let allow: Vec<String> =
-        seed_list("allow").into_iter().filter(|r| r.starts_with("Bash(mustard-rt run ")).collect();
+    let allow: Vec<String> = seed_list("allow").into_iter().filter(|r| is_own_allow_rule(r)).collect();
     let deny = seed_list("deny");
     let Some(perms) = settings.get_mut("permissions").and_then(Value::as_object_mut) else {
         return;
@@ -791,7 +806,7 @@ mod tests {
             .unwrap()
             .iter()
             .filter_map(Value::as_str)
-            .filter(|r| r.starts_with("Bash(mustard-rt run "))
+            .filter(|r| is_own_allow_rule(r))
             .map(str::to_string)
             .collect()
     }

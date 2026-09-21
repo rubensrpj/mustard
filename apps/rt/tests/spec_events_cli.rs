@@ -117,11 +117,12 @@ fn two_processes_writing_at_once_get_consecutive_numbers() {
     assert_eq!(ids, (1..=2 * rounds).collect::<Vec<u64>>(), "consecutive, in file order, none repeated");
 }
 
-/// A página e o `.md` do fim de uma onda são refeitos dentro da trava do
+/// A cópia para o banco da página é preparada inteira dentro da trava do
 /// arquivo de eventos: depois de dois fins de onda gravados ao mesmo tempo,
-/// por duas rodadas em dois processos, os dois têm os dois itens.
+/// por duas rodadas em dois processos, a cópia que ficou tem os dois itens, e
+/// cada lote aponta só arquivos que estão lá, sem sobra de outra rodada.
 #[test]
-fn two_processes_closing_a_wave_at_once_leave_both_items_on_the_page_and_the_md() {
+fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let spec = root.join(".claude").join("spec").join("teste");
@@ -169,13 +170,49 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_on_the_page_and_the_md(
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
             assert!(stdout_json(&out).get("warnings").is_none(), "{}", String::from_utf8_lossy(&out.stdout));
         }
+        let copied = copied_items(root, &spec.join("copy"));
+        for text in &texts {
+            assert!(copied.iter().any(|item| item["text"] == json!(text)), "round {round}: the copy lacks {text}");
+        }
         for page in ["spec.md", "spec.html"] {
-            let shown = std::fs::read_to_string(spec.join(page)).expect("the page exists");
-            for text in &texts {
-                assert!(shown.contains(text.as_str()), "round {round}: {page} lacks {text}");
-            }
+            assert!(!spec.join(page).exists(), "round {round}: no {page} is written");
         }
     }
+}
+
+/// Os itens que a cópia em `folder` manda para o banco, lidos como a
+/// ferramenta do banco os lê: de cada lote `spec-<n>.json`, cada escrita da
+/// coleção das faixas pelo arquivo dela, com os itens dela abertos. Cada
+/// arquivo apontado existe, e cada arquivo de faixa da pasta é apontado por
+/// um lote: a pasta é de uma cópia só.
+fn copied_items(root: &std::path::Path, folder: &std::path::Path) -> Vec<Value> {
+    let mut batches: Vec<std::path::PathBuf> = std::fs::read_dir(folder)
+        .expect("the copy folder")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("spec-")))
+        .collect();
+    batches.sort();
+    let mut pointed: Vec<std::path::PathBuf> = Vec::new();
+    let mut items = Vec::new();
+    for (n, batch) in batches.iter().enumerate() {
+        let name = batch.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        assert_eq!(name, format!("spec-{}.json", n + 1), "{batches:?}");
+        let writes: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(batch).expect("batch")).expect("json");
+        for write in writes.iter().filter(|w| w["op"] == json!("set")) {
+            let file = root.join(write["file_path"].as_str().expect("file_path"));
+            let body = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            if write["collection"] == json!("ranges") {
+                let range: Value = serde_json::from_str(&body).expect("range json");
+                items.extend(range["items"].as_array().cloned().unwrap_or_default());
+            }
+            pointed.push(file);
+        }
+    }
+    for entry in std::fs::read_dir(folder.join("ranges")).expect("ranges").flatten() {
+        assert!(pointed.contains(&entry.path()), "{} is left over from another copy", entry.path().display());
+    }
+    items
 }
 
 #[test]
@@ -188,9 +225,9 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": msg}));
     let c2 = write(root, "criterion", &json!({"when": "c", "then": "d", "proof": "q", "origin": msg}));
     write(root, "wave", &json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
-    write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "origin": msg}));
+    write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
     write(root, "wave", &json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "depends_on": [1], "origin": msg}));
-    write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": msg}));
+    write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": msg}));
     seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
     seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
 
@@ -245,6 +282,101 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let block = rt(root, &["read", "everything", "--spec", "teste"]).output().expect("run");
     assert_eq!(block.status.code(), Some(1));
     assert_eq!(stdout_json(&block)["reason"], json!("unknown-block"));
+}
+
+/// O commit da rodada nunca depende da lista de arquivos que a onda
+/// declara: ele lê da cópia dela o que mudou de fato. A onda 1 muda o
+/// arquivo que declarou e outro que não citou, o repositório continua
+/// compilando, e o commit leva os dois, com um aviso da divergência. A onda
+/// 2 deixa o comando de compilação quebrado, e a rodada não comita nada
+/// dela: o repositório volta ao que era, e a recusa mostra o erro.
+#[test]
+fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_build_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    let head = || {
+        let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().expect("git rev-parse");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+    for (n, files) in [(1u64, ["a1.rs"].as_slice()), (2u64, ["Makefile"].as_slice())] {
+        seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+            "done_when": "x", "origin": said}));
+        let declared: Vec<Value> = files.iter().map(|f| json!({"path": f})).collect();
+        seed_binary(root, "task", &json!({"wave": n, "text": format!("Tarefa {n}."), "files": declared, "origin": said}));
+    }
+    seed_state(root, &json!({"author": "user", "phase": "approved",
+        "witness": {"question": "Aprovar esta spec?", "answer": "Aprovar"}}));
+
+    std::fs::write(root.join("mustard.json"), br#"{"buildCommand":"make"}"#).expect("mustard.json");
+    std::fs::write(root.join("a1.rs"), "fn um() {}\n").expect("a1.rs");
+    std::fs::write(root.join("Makefile"), "default:\n\t@true\n").expect("Makefile");
+    git(&["init", "-q"]);
+    // Quem comita a rodada é o binário, não o `git` deste teste: sem
+    // identidade gravada no repositório temporário ele cai no nome do
+    // sistema, que numa máquina de integração vem vazio e faz o git recusar.
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "semente"]);
+
+    // Despacha as duas ondas: cria a cópia separada de cada uma.
+    let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
+    assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
+
+    let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "teste", wave, false);
+
+    // Onda 1: muda o arquivo declarado e um outro que a entrega não cita; o
+    // repositório continua compilando com o Makefile que já está lá.
+    std::fs::write(copy(1).join("a1.rs"), "fn um() {}\n// muda\n").expect("a1 muda");
+    std::fs::write(copy(1).join("extra.rs"), "fn extra() {}\n").expect("extra");
+    let one = json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"});
+    let report_one = format!("<DELIVERED>{one}</DELIVERED>");
+    let out = rt(root, &["round", "--spec", "teste", "--report", &report_one]).output().expect("round 1");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let body = stdout_json(&out);
+    assert_eq!(body["ok"], json!(true), "{body}");
+    assert!(body["commit"]["sha"].as_str().is_some(), "{body}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("extra.rs")).expect("o arquivo nao citado"),
+        "fn extra() {}\n",
+        "o arquivo que a onda não citou entra no commit quando o repositório compila"
+    );
+    let hint = mustard_core::platform::i18n::translate("round.files_diverged", mustard_core::platform::i18n::Locale::PtBr)
+        .replace("{wave}", "1")
+        .replace("{changed}", "2")
+        .replace("{declared}", "1")
+        .replace("{missing}", "extra.rs");
+    assert_eq!(body["warnings"], json!([{"reason": "files-diverged", "wave": 1, "hint": hint}]), "{body}");
+
+    // Onda 2: a cópia dela deixa o comando de compilação quebrado.
+    let before = head();
+    std::fs::write(copy(2).join("Makefile"), "default:\n\texit 1\n").expect("Makefile quebrado");
+    let two = json!({"wave": 2, "text": "Saiu.", "files": ["Makefile"], "commit": "makefile sai"});
+    let report_two = format!("<DELIVERED>{two}</DELIVERED>");
+    let out = rt(root, &["round", "--spec", "teste", "--report", &report_two]).output().expect("round 2");
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    let body = stdout_json(&out);
+    assert_eq!(body["reason"], json!("round-build-failed"), "{body}");
+    assert_eq!(head(), before, "nada foi comitado com o repositório quebrado");
+    assert_eq!(
+        std::fs::read_to_string(root.join("Makefile")).expect("o Makefile do principal"),
+        "default:\n\t@true\n",
+        "o repositório principal volta ao que era: nada da onda 2 entrou"
+    );
 }
 
 fn index_file(root: &Path) -> std::path::PathBuf {

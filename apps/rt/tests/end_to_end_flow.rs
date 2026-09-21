@@ -345,10 +345,27 @@ fn plan_files(project: &Project, files: &[&str]) {
     let files: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
     project.write(
         "task",
-        &json!({"wave": 1, "text": "Trocar a saudação no programa.", "files": files, "points": 1, "origin": said}),
+        &json!({"wave": 1, "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
+            "points": 1, "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
+}
+
+/// A primeira rodada, com a escolha antes do envio: as respostas do
+/// levantamento valem para o projeto todo, então a rodada entrega ao
+/// orquestrador os candidatos da onda, cada um com o título, sem pedir
+/// agente nenhum, e não solta a onda; a linha da escolha, sem mudança, solta
+/// a onda. Devolve a resposta da rodada que a soltou.
+fn first_round(project: &Project) -> Value {
+    let asked = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(asked["dispatch"], json!([]), "{asked}");
+    let candidates = asked["analysis"][0]["project"].as_array().cloned().unwrap_or_default();
+    assert!(!candidates.is_empty(), "{asked}");
+    assert!(candidates.iter().all(|c| c["title"].as_str().is_some_and(|t| !t.is_empty())), "{asked}");
+    assert!(asked["analysis"][0].get("model").is_none(), "{asked}");
+    let answer = json!({"wave": 1, "removed": [], "added": []});
+    project.run(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{answer}</ANALYSIS>")])
 }
 
 /// O clique em "Aprovar" na pergunta da aprovação, pelo gancho da testemunha.
@@ -379,11 +396,16 @@ fn calls(project: &Project) -> BTreeMap<String, usize> {
 }
 
 /// Uma spec de teste roda de ponta a ponta com o binário novo: abrir,
-/// levantar, conferir o plano, aprovar pelo clique, duas rodadas, fechar e
-/// abrir o pull request funcionam em sequência, e a pasta da spec termina com
-/// três arquivos. Cada passo do fluxo é uma chamada só: abrir 1, levantamento
-/// 1 (as respostas gravadas não contam), plano 1, aprovar 0, cada rodada 1,
-/// fechar 1 e pull request 1.
+/// levantar, conferir o plano, aprovar pelo clique, uma rodada, o agente de
+/// teste dedicado e o pull request funcionam em sequência, e a pasta da spec
+/// termina com três arquivos. Cada passo do fluxo é uma chamada só: abrir 1,
+/// levantamento 1 (as respostas gravadas não contam), plano 1, aprovar 0,
+/// cada rodada 1 e pull request 1; a escolha antes do envio da primeira onda
+/// é uma rodada a mais, a que traz a escolha do orquestrador, e o fechamento
+/// é duas chamadas — o pedido do agente de teste dedicado e a aprovação dele
+/// —, mesmo com uma onda só. A tarefa vale 1 ponto: a obra fica com o
+/// orquestrador, sem cópia separada, e ele edita direto no checkout
+/// principal.
 #[test]
 fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let project = Project::new();
@@ -394,28 +416,34 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     plan(&project);
     approve(&project);
 
-    // Primeira rodada: a onda sai numa cópia separada.
-    let first = project.run(&["round", "--spec", SPEC]);
+    // Primeira rodada: a análise antes do envio, e a onda de 1 ponto fica com
+    // o orquestrador, sem cópia separada.
+    let first = first_round(&project);
     let dispatched = first["dispatch"].as_array().cloned().unwrap_or_default();
     assert_eq!(dispatched.len(), 1, "{first}");
+    let next = first["next"].as_str().unwrap_or_default();
+    assert!(next.contains(translate("round.next.solo", Locale::PtBr)), "{next}");
     let log = project.log();
     let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
-    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
-    assert!(copy.join(".git").is_file(), "the wave works in a linked checkout");
+    assert!(sent.str_field("copy").is_none(), "a obra de 1 ponto não ganha cópia separada");
 
-    // O agente da onda muda o arquivo na cópia e devolve a linha do fim.
-    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    // O orquestrador muda o arquivo no checkout principal e devolve a linha
+    // do fim. A rodada não pede revisão nenhuma dela.
+    std::fs::write(project.root.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá"});
     let second = project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
-    let reviews = second["reviews"].as_array().cloned().unwrap_or_default();
-    assert_eq!(reviews.len(), 1, "{second}");
+    assert!(second.get("reviews").is_none(), "{second}");
     assert_eq!(std::fs::read_to_string(project.root.join("src/main.rs")).unwrap(), "fn main() {\n    println!(\"olá\");\n}\n");
 
-    // O revisor aprova, e o fechamento grava o veredito, roda o lint e o
-    // critério e fecha, sem revisão final numa spec de uma onda.
-    let verdict = json!({"wave": 1, "result": "approved", "text": "A saudação mudou.",
-        "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+    // O fechamento roda o lint e o critério e pede o agente de teste
+    // dedicado, mesmo numa spec de uma onda.
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["phase"], json!("running"), "{asked}");
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+    // Aprovado, o fechamento grava o veredito e fecha.
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou."});
     let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
     assert!(closed.get("review").is_none(), "{closed}");
@@ -426,17 +454,17 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
     let pr = project.run(&argv);
     assert_eq!(pr["number"], json!(7), "{pr}");
-    let asked = std::fs::read_to_string(project.gh_log()).expect("the fake gh was called");
-    assert!(asked.lines().any(|l| l.starts_with("pr create") && l.contains("--head feature/ponta")), "{asked}");
+    let asked_gh = std::fs::read_to_string(project.gh_log()).expect("the fake gh was called");
+    assert!(asked_gh.lines().any(|l| l.starts_with("pr create") && l.contains("--head feature/ponta")), "{asked_gh}");
     let state = State::from_log(&project.log());
     assert_eq!(state.phase, Some("pr_open"), "{pr}");
 
     let expected: BTreeMap<String, usize> =
-        [("open", 1), ("grill", 1), ("plan", 1), ("round", 2), ("close", 1), ("pr-open", 1)]
+        [("open", 1), ("grill", 1), ("plan", 1), ("round", 3), ("close", 2), ("pr-open", 1)]
             .into_iter()
             .map(|(command, count)| (command.to_string(), count))
             .collect();
-    assert_eq!(calls(&project), expected, "each flow step is one call, and the approval none");
+    assert_eq!(calls(&project), expected, "each flow step is one call, the approval none and closing two");
 
     let folder = project.root.join(".claude/spec").join(SPEC);
     let mut names: Vec<String> = std::fs::read_dir(&folder)
@@ -445,7 +473,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     names.sort();
-    assert_eq!(names, ["spec.html", "spec.md", "spec.ndjson"], "the spec folder ends with three files");
+    assert_eq!(names, ["copy", "spec.ndjson"], "the spec folder ends with the events and the copy, and no page");
 }
 
 /// A spec do projeto com submódulo, da abertura ao pull request: a onda muda
@@ -460,7 +488,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     approve(project);
 
     // A cópia da onda traz o submódulo que a onda toca.
-    let first = project.run(&["round", "--spec", SPEC]);
+    let first = first_round(project);
     assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
     let log = project.log();
     let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
@@ -491,8 +519,9 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     assert_eq!(changed.lines().collect::<Vec<_>>(), [SUB, "src/main.rs"], "{second}");
     assert_eq!(second["commit"]["submodules"][0]["path"], json!(SUB), "{second}");
 
-    let verdict = json!({"wave": 1, "result": "approved", "text": "Mudaram.",
-        "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let verdict = json!({"final": true, "result": "approved", "text": "Mudaram."});
     let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();

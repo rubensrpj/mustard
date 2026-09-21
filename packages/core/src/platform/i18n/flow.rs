@@ -10,7 +10,10 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["open", "plan", "round", "close", "resume", "reopen", "discard", "request", "message", "pr", "approve_spec", "retired", "banner"];
+pub(super) const PREFIXES: &[&str] = &[
+    "open", "plan", "round", "close", "resume", "reopen", "discard", "request", "message", "pr", "approve_spec",
+    "retired", "banner", "stuck", "conversation_size",
+];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -26,14 +29,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The plan has {count} things to fix before the approval question. Nothing was written."
         }
         ("plan.next", Locale::PtBr) => {
-            "Depois, faça a pergunta de aprovação, com \"Aprovar\" e \"Ajustar\"."
+            "Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
+             texto exato \"{question}\" e as opções \"{option}\" e \"Ajustar\": com outro texto, a \
+             aprovação não vale."
         }
-        ("plan.next", Locale::EnUs) => "Then ask the approval question, with \"Approve\" and \"Adjust\".",
-        ("plan.copy", Locale::PtBr) => {
-            "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
+        ("plan.next", Locale::EnUs) => {
+            "Then ask the approval question in the order of explaining from the response style, with \
+             the exact text \"{question}\" and the options \"{option}\" and \"Adjust\": with another \
+             text, the approval does not count."
         }
-        ("plan.copy", Locale::EnUs) => {
-            "The last publish failed: send the `copy` command along so the user can open the page."
+        // Quem executa a obra, pela soma das notas de todas as tarefas do
+        // plano e pelo número de ondas que ele já tem: até 3 pontos numa
+        // onda só, o orquestrador faz sem ondas; de 4 a 13 numa onda só, um
+        // agente faz; acima de 13, ou já com mais de uma onda no plano,
+        // ondas de até 13 pontos cada — sem dizer que o total passou de 13,
+        // porque isso pode ser falso quando a razão é a onda já dividida.
+        ("plan.execution.solo", Locale::PtBr) => {
+            "A obra soma {points} pontos: até 3, sem ondas, o orquestrador faz."
+        }
+        ("plan.execution.solo", Locale::EnUs) => {
+            "The work totals {points} points: up to 3, no waves, the orchestrator does it."
+        }
+        ("plan.execution.one_wave", Locale::PtBr) => {
+            "A obra soma {points} pontos: de 4 a 13, um agente faz, numa onda só."
+        }
+        ("plan.execution.one_wave", Locale::EnUs) => {
+            "The work totals {points} points: from 4 to 13, one agent does it, in a single wave."
+        }
+        ("plan.execution.many_waves", Locale::PtBr) => {
+            "A obra soma {points} pontos: vai em ondas de até 13 pontos cada, uma por agente."
+        }
+        ("plan.execution.many_waves", Locale::EnUs) => {
+            "The work totals {points} points: it goes in waves of up to 13 points each, one agent per \
+             wave."
+        }
+        ("plan.execution.ends_with_test_agent", Locale::PtBr) => {
+            "Em todo tamanho, a obra termina com o agente de teste dedicado."
+        }
+        ("plan.execution.ends_with_test_agent", Locale::EnUs) => {
+            "In every size, the work ends with the dedicated test agent."
         }
         ("plan.wave_loop", Locale::PtBr) => {
             "As ondas {waves} dependem umas das outras em círculo, e nenhuma pode começar. Corte uma \
@@ -95,20 +129,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("plan.item_without_task", Locale::EnUs) => {
             "No task says it covers item {code}. If it does not become code, say why."
         }
-        // O dono de cada item combinado: o plano recusa o item sem dono, e o
-        // item novo depois da aprovação nasce com dono.
-        ("plan.item_without_owner", Locale::PtBr) => {
-            "O item {code} não tem dono: nenhuma tarefa de uma onda do plano o cobre, ele não diz as \
-             ondas dele em `waves` e não vale no projeto todo. Cubra-o com a tarefa da onda que o faz, \
-             ou grave uma versão nova dele com `\"waves\":[<ondas>]` ou, quando vale para todas as \
-             ondas, com `\"applies_to\":{\"files\":[\"**\"]}`."
-        }
-        ("plan.item_without_owner", Locale::EnUs) => {
-            "Item {code} has no owner: no task of a planned wave covers it, it names no waves in \
-             `waves` and it does not hold for the whole project. Cover it with the task of the wave \
-             that does it, or record a new version of it with `\"waves\":[<waves>]` or, when it holds \
-             for every wave, with `\"applies_to\":{\"files\":[\"**\"]}`."
-        }
+        // O dono de cada item combinado: o item novo depois da aprovação nasce
+        // com dono.
         ("plan.owner_missing", Locale::PtBr) => {
             "O item novo do tipo {type} não tem dono, e a spec já foi aprovada: todo item combinado tem \
              dono. Diga em `waves` as ondas cujas tarefas o cobrem ou vão cobrir, como `\"waves\":[3]`, \
@@ -173,22 +195,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // moram só aqui, e a recusa da tarefa sem nota os mostra.
         ("plan.points_scale", Locale::PtBr) => {
             "A nota vai em `\"points\"`, na escala do Scrum, comparando a tarefa com o exemplo de \
-             cada nota. 1: trocar um texto, uma lista ou um número, como ligar o link clicável na \
-             configuração. 2: mudar uma regra num lugar só, com teste, como aceitar a unidade de \
-             tamanho de arquivo na conferência de escrita. 3: mudar uma regra que passa por vários \
-             arquivos, como o scan apontar as lições parecidas. 5: mexer no caminho que grava ou junta \
-             o trabalho, como o pedido da onda listar só os códigos. 8: mudar uma fase inteira, como a \
-             rodada criar a cópia de cada onda e juntar tudo no commit. 13: tarefa grande e incerta, \
+             cada nota. 1: trocar um texto, uma lista ou um número, como o texto de um botão ou o \
+             valor de um limite. 2: mudar uma regra num lugar só, com teste, como validar um campo \
+             novo de um formulário. 3: mudar uma regra que passa por vários arquivos, como um campo \
+             novo que vai da tela até o banco de dados. 5: mexer no caminho que grava ou junta os \
+             dados, como mudar o jeito de salvar e conferir um pedido. 8: mudar uma parte inteira do \
+             sistema, como trocar o jeito de entrar com usuário e senha. 13: tarefa grande e incerta, \
              que vale quebrar antes de gravar."
         }
         ("plan.points_scale", Locale::EnUs) => {
             "The points go in `\"points\"`, on the Scrum scale, comparing the task with the example of \
-             each value. 1: change a text, a list or a number, like turning on the clickable link in \
-             the settings. 2: change a rule in one place only, with a test, like accepting the file \
-             size unit in the writing check. 3: change a rule that runs through several files, like \
-             the scan pointing out similar lessons. 5: touch the path that writes or merges the work, \
-             like the wave request listing only the codes. 8: change a whole phase, like the round \
-             creating the copy of each wave and merging everything into the commit. 13: a large and \
+             each value. 1: change a text, a list or a number, like the text of a button or the value \
+             of a limit. 2: change a rule in one place only, with a test, like validating a new field \
+             in a form. 3: change a rule that runs through several files, like a new field that goes \
+             from the screen to the database. 5: touch the path that writes or merges the data, like \
+             changing the way an order is saved and checked. 8: change a whole part of the system, \
+             like changing the way of logging in with a username and password. 13: a large and \
              uncertain task, worth breaking up before recording."
         }
         ("plan.task_without_points", Locale::PtBr) => {
@@ -207,6 +229,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} adds up to {points} points, over the cap of {cap}: too much work for a single \
              wave. The warning does not hold the approval, and whoever approves decides whether the \
              wave goes on as it is."
+        }
+        ("plan.command_not_declared", Locale::PtBr) => {
+            "O projeto não declara `{field}` no mustard.json: preencha esse campo com o comando de \
+             verdade. Até lá, o pedido de cada onda sai sem essa linha."
+        }
+        ("plan.command_not_declared", Locale::EnUs) => {
+            "The project does not declare `{field}` in mustard.json: fill in that field with the real \
+             command. Until then, each wave's request goes out without that line."
         }
         // O descarte de uma spec (`commands/flow/discard.rs`).
         ("discard.preview", Locale::PtBr) => {
@@ -245,6 +275,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("discard.incomplete", Locale::EnUs) => {
             "The discard did not finish: the spec folder did not move, or its index line did not change."
         }
+        ("discard.done", Locale::PtBr) => "A spec está descartada.",
+        ("discard.done", Locale::EnUs) => "The spec is discarded.",
 
         // A retomada de uma spec (`commands/flow/resume.rs`).
         ("resume.line", Locale::PtBr) => {
@@ -264,10 +296,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The spec is in the survey: run the survey and record the answer to each point."
         }
         ("resume.next.plan", Locale::PtBr) => {
-            "O plano está gravado: confira o plano, publique a página da spec e faça a pergunta de aprovação."
+            "O plano está gravado: confira o plano, publique a página da spec e faça a pergunta de \
+             aprovação na ordem de explicar do estilo de resposta, com o texto exato \"{question}\" e \
+             as opções \"{option}\" e \"Ajustar\": com outro texto, a aprovação não vale."
         }
         ("resume.next.plan", Locale::EnUs) => {
-            "The plan is recorded: check the plan, publish the spec page and ask the approval question."
+            "The plan is recorded: check the plan, publish the spec page and ask the approval \
+             question in the order of explaining from the response style, with the exact text \
+             \"{question}\" and the options \"{option}\" and \"Adjust\": with another text, the \
+             approval does not count."
         }
         ("resume.next.running", Locale::PtBr) => {
             "A spec está aprovada: rode a próxima rodada de ondas."
@@ -332,19 +369,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The project lint (`{command}`) did not pass, and the spec did not close: {output}"
         }
         ("close.final_review", Locale::PtBr) => {
-            "A spec tem {count} ondas e a máquina passou: antes do pull request, despache ao agente \
-             `mustard-review` o pedido em `review.prompt`, a revisão final do conjunto, e feche de \
-             novo com a linha do fim dele, como veio: \
+            "A máquina passou: antes do pull request, despache ao agente de teste dedicado o pedido \
+             em `review.prompt` e feche de novo com a linha do fim dele, como veio: \
              `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`."
         }
         ("close.final_review", Locale::EnUs) => {
-            "The spec has {count} waves and the machine passed: before the pull request, dispatch the \
-             request in `review.prompt`, the final review of the whole, to the `mustard-review` agent, \
-             and close again with its closing line, as it came: \
+            "The machine passed: before the pull request, dispatch the request in `review.prompt` to \
+             the dedicated test agent, and close again with its closing line, as it came: \
              `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`."
         }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
+        // A pergunta de destino de uma pendência ligada à spec `{spec}`: a
+        // mesma linha que a gravação de uma pendência devolve na hora, e que
+        // o fechamento repete para cada uma que a spec ainda deixa aberta.
+        ("close.pending_destination", Locale::PtBr) => {
+            "A pendência {id} ({title}) está ligada à spec {spec}: ela entra nesta obra, fica para \
+             depois com o motivo, ou sai?"
+        }
+        ("close.pending_destination", Locale::EnUs) => {
+            "The pending item {id} ({title}) is linked to the spec {spec}: does it enter this work, \
+             stay for later with a reason, or go?"
+        }
+        // O item combinado sem dono que nenhum envio de onda levou: o
+        // fechamento avisa em vez de deixá-lo fora do código para sempre.
+        ("close.unowned_item", Locale::PtBr) => {
+            "O item {code} ({title}) não tem dono e nenhuma onda o levou: fica fora do código."
+        }
+        ("close.unowned_item", Locale::EnUs) => {
+            "Item {code} ({title}) has no owner and no wave carried it: it stays out of the code."
+        }
 
         // A rodada de ondas (`commands/flow/round.rs`).
         ("round.bad_report", Locale::PtBr) => {
@@ -352,14 +406,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.bad_report", Locale::EnUs) => {
             "The round report cannot be read: {detail}. Nothing was recorded."
-        }
-        ("round.line_missing", Locale::PtBr) => {
-            "O relatório não traz nenhuma linha `<DELIVERED>` nem `<VERDICT>`: passe a resposta de cada \
-             agente como ela veio, com a linha do fim. Nada foi gravado."
-        }
-        ("round.line_missing", Locale::EnUs) => {
-            "The report carries no `<DELIVERED>` or `<VERDICT>` line: pass each agent's answer as it \
-             came, with its closing line. Nothing was recorded."
         }
         ("round.line_field", Locale::PtBr) => {
             "Uma linha `<{line}>` do relatório não traz o campo `{field}`: peça ao agente a linha \
@@ -398,6 +444,60 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave}'s copy, {copy}, stayed on disk: {files} changed in it and was not in the \
              delivery. Bring what is useful to the main repository and delete the copy with \
              `git worktree remove --force {copy}`."
+        }
+        // O gasto da obra inteira (`apps/rt/src/commands/spec_events/pages/copy.rs`).
+        ("round.spend.line", Locale::PtBr) => {
+            "Gasto total: {waves} tokens de onda + {caller} tokens de quem despachou = {total} tokens."
+        }
+        ("round.spend.line", Locale::EnUs) => {
+            "Total spend: {waves} wave tokens + {caller} orchestrator tokens = {total} tokens."
+        }
+        // O que um agente deixou preso, encerrado no início da sessão, em
+        // cada rodada e no fechamento (`apps/rt/src/commands/flow/stuck.rs`).
+        ("stuck.ended", Locale::PtBr) => "Processo(s) preso(s) encerrado(s): {list}.",
+        ("stuck.ended", Locale::EnUs) => "Stuck process(es) ended: {list}.",
+        ("stuck.reason.waiting_loop", Locale::PtBr) => "laço de espera",
+        ("stuck.reason.waiting_loop", Locale::EnUs) => "waiting loop",
+        ("stuck.reason.deleted_copy", Locale::PtBr) => "cópia de onda apagada",
+        ("stuck.reason.deleted_copy", Locale::EnUs) => "deleted wave copy",
+        // O bloco de retomada antes de compactar, no gancho `PreCompact`.
+        ("conversation_size.block", Locale::PtBr) => {
+            "spec {spec}, fase {phase}. Ondas entregues: {delivered}. Ondas em andamento: {running}. \
+             Falta: {missing}."
+        }
+        ("conversation_size.block", Locale::EnUs) => {
+            "spec {spec}, phase {phase}. Delivered waves: {delivered}. Waves in flight: {running}. \
+             Missing: {missing}."
+        }
+        ("conversation_size.precompact", Locale::PtBr) => {
+            "Esta conversa vai ser compactada agora. Depois, cole de volta o bloco de retomada: \
+             {block} Depois, {command}. {next}"
+        }
+        ("conversation_size.precompact", Locale::EnUs) => {
+            "This conversation is about to be compacted. After, paste back the resume block: \
+             {block} After, {command}. {next}"
+        }
+        ("round.files_diverged", Locale::PtBr) => {
+            "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
+             fora {missing}. Todos entraram no commit mesmo assim."
+        }
+        ("round.files_diverged", Locale::EnUs) => {
+            "Wave {wave}'s copy changed {changed} file(s) and the delivery cited {declared}: {missing} \
+             was left out. All of it went into the commit anyway."
+        }
+        ("round.build_failed", Locale::PtBr) => {
+            "O repositório principal não compilou com `{command}`, e a rodada não comitou nada: {output}"
+        }
+        ("round.build_failed", Locale::EnUs) => {
+            "The main repository did not build with `{command}`, and the round committed nothing: {output}"
+        }
+        ("round.binary_not_reinstalled", Locale::PtBr) => {
+            "O binário do Mustard não foi reinstalado — `{command}` não passou, e o binário instalado \
+             continua o de antes: {output}"
+        }
+        ("round.binary_not_reinstalled", Locale::EnUs) => {
+            "Mustard's binary was not reinstalled — `{command}` did not pass, and the installed binary \
+             stays the one from before: {output}"
         }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
@@ -481,19 +581,40 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Dispatch this round's requests: each wave to the `mustard-wave` agent and each review \
              to the `mustard-review` agent."
         }
+        // A obra de até 3 pontos: sem cópia separada e sem agente, é o
+        // orquestrador — a própria conversa que chamou a rodada — quem faz a
+        // onda, na própria janela, no checkout principal.
+        ("round.next.solo", Locale::PtBr) => {
+            "Faça a onda desta rodada você mesmo, nesta janela, no checkout principal e sem cópia \
+             separada: leia o pedido abaixo e implemente."
+        }
+        ("round.next.solo", Locale::EnUs) => {
+            "Do this round's wave yourself, in this window, on the main checkout and without a \
+             separate copy: read the request below and implement it."
+        }
+        // O pedido de publicar e copiar a página fica por extenso só no
+        // arquivo, e a resposta leva a linha curta.
+        ("round.next.copy_file", Locale::PtBr) => "Leia `{path}` e siga as instruções de lá.",
+        ("round.next.copy_file", Locale::EnUs) => "Read `{path}` and follow the instructions there.",
         ("round.report", Locale::PtBr) => {
             "Quando voltarem, rode a rodada de novo com a linha do fim de cada agente, como ela veio, \
              uma por linha, todas no mesmo `--report '…'`: a do agente de onda é \
              `<DELIVERED>{\"wave\":1,\"text\":\"…\",\"files\":[\"…\"],\"commit\":\"…\"}</DELIVERED>`, e a do revisor, \
-             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. A rodada lê só \
-             essas linhas e monta o commit do `commit` de cada entrega."
+             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. Junto delas, \
+             acrescente, para cada onda que voltou, o consumo que a plataforma entregou a você quando \
+             o agente terminou, numa linha `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\
+             \"caller_steps\":…,\"caller_tokens\":…}</USAGE>` — nunca um número que o agente tenha digitado. \
+             A rodada lê essas linhas e monta o commit do `commit` de cada entrega."
         }
         ("round.report", Locale::EnUs) => {
             "When they come back, run the round again with each agent's closing line, as it came, one \
              per line, all in the same `--report '…'`: the wave agent's is \
              `<DELIVERED>{\"wave\":1,\"text\":\"…\",\"files\":[\"…\"],\"commit\":\"…\"}</DELIVERED>`, and the reviewer's, \
-             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. The round reads \
-             only those lines and builds the commit from each delivery's `commit`."
+             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. Along with \
+             those, add, for each wave that came back, the usage the platform handed you when the agent \
+             finished, in one `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\"caller_steps\":…,\
+             \"caller_tokens\":…}</USAGE>` line — never a number the agent typed itself. The round reads \
+             those lines and builds the commit from each delivery's `commit`."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -536,6 +657,80 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.fix_limit.question", Locale::EnUs) => {
             "Wave {wave} was rejected again after {max} fix rounds. Revise its plan or take it out of the plan?"
+        }
+        // A escolha do pedido antes do envio, que o orquestrador faz: o
+        // próximo passo, com a linha que devolve a escolha, e os avisos.
+        ("round.analysis", Locale::PtBr) => {
+            "Antes de soltar as ondas {waves}, escolha os itens do pedido de cada uma. O pedido é a \
+             lista dos itens da spec que o agente da onda lê; os itens que as tarefas da onda fazem \
+             vão sempre. Em `analysis`, cada onda traz os candidatos, cada um com o título: as \
+             regras do projeto todo (`project`) e as lições (`lessons`) vão, a menos que você tire; \
+             os itens sem dono (`unowned`) ficam fora, a menos que você ponha. Tire o que não ajuda \
+             a onda, como uma regra da entrega numa onda que só cria uma tabela, e ponha o item sem \
+             dono que ajuda. A conferência das tarefas no código — achar se o que cada uma pede já \
+             está feito ou ainda falta — vai a um agente separado, que devolve só a tarefa ajustada \
+             para ser gravada: você não lê arquivo inteiro nem saída longa para isso. Rode a rodada \
+             de novo com uma linha por onda no `--report '…'`, só com o que muda e o motivo de cada \
+             um numa frase: <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
+             motivo>\"},{\"lesson\":<número>,\"why\":\"<o motivo>\"}],\"added\":[{\"item\":\"<código>\
+             \",\"why\":\"<o motivo>\"}]}</ANALYSIS>. Sem mudança, as duas listas vão vazias. Sem \
+             essa linha, a onda não sai."
+        }
+        ("round.analysis", Locale::EnUs) => {
+            "Before sending out waves {waves}, choose the items of each one's request. The request \
+             is the list of spec items the wave agent reads; the items the wave's tasks do always \
+             go. In `analysis`, each wave brings its candidates, each with its title: the \
+             whole-project rules (`project`) and the lessons (`lessons`) go unless you take them \
+             out; the items without an owner (`unowned`) stay out unless you put them in. Take out \
+             what does not help the wave, such as a rule about the delivery in a wave that only \
+             creates a table, and put in the item without an owner that helps. Checking the tasks \
+             against the code — finding whether what each one asks is already done or still missing \
+             — goes to a separate agent, which returns only the adjusted task to record: you do not \
+             read a whole file nor long output for this. Run the round again with one line per wave \
+             in the `--report '…'`, with only what changes and each one's reason in one sentence: \
+             <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<item code>\",\"why\":\"<the \
+             reason>\"},{\"lesson\":<number>,\"why\":\"<the reason>\"}],\"added\":[{\"item\":\"<item \
+             code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>. With no change, both lists go empty. \
+             Without that line, the wave does not go out."
+        }
+        ("round.analysis_ignored", Locale::PtBr) => {
+            "Na escolha da onda {wave}, o item {item} ficou como estava: ele não está entre os \
+             candidatos dela, a lição só sai e não entra, ou ele veio sem motivo."
+        }
+        ("round.analysis_ignored", Locale::EnUs) => {
+            "In the choice for wave {wave}, item {item} stayed as it was: it is not among the \
+             wave's candidates, a lesson can only go out and not in, or it came without a reason."
+        }
+        ("round.analysis_ignored_lesson", Locale::PtBr) => {
+            "Na escolha da onda {wave}, a lição {item} ficou como estava: ela não está entre as \
+             lições dela, a lição só sai e não entra, ou ela veio sem motivo."
+        }
+        ("round.analysis_ignored_lesson", Locale::EnUs) => {
+            "In the choice for wave {wave}, lesson {item} stayed as it was: it is not among the \
+             wave's lessons, a lesson can only go out and not in, or it came without a reason."
+        }
+        ("round.analysis_unreadable", Locale::PtBr) => {
+            "Uma linha `<ANALYSIS>` não se leu e ficou de fora ({detail}): a onda dela pede a \
+             escolha de novo."
+        }
+        ("round.analysis_unreadable", Locale::EnUs) => {
+            "An `<ANALYSIS>` line could not be read and was left out ({detail}): its wave asks for \
+             the choice again."
+        }
+        // A retomada: a onda pausada ou órfã sai de novo com o pedido
+        // anterior, mais os passos gravados e o aviso de ver o que mudou na
+        // cópia; e a onda viva sem sinal por 40 minutos vira aviso.
+        ("round.resume.steps", Locale::PtBr) => "Passos já gravados desta onda:",
+        ("round.resume.steps", Locale::EnUs) => "Steps already recorded for this wave:",
+        ("round.resume.notice", Locale::PtBr) => "Comece vendo o que mudou na cópia.",
+        ("round.resume.notice", Locale::EnUs) => "Start by seeing what changed in the copy.",
+        ("round.resume.silent", Locale::PtBr) => {
+            "A onda {wave} está sem sinal de vida há mais de 40 minutos. Pare o agente dela e mande \
+             `<PAUSED>{\"wave\":{wave}}</PAUSED>` na próxima rodada, para reenviá-la."
+        }
+        ("round.resume.silent", Locale::EnUs) => {
+            "Wave {wave} has had no sign of life for more than 40 minutes. Stop its agent and send \
+             `<PAUSED>{\"wave\":{wave}}</PAUSED>` on the next round, to resend it."
         }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
@@ -584,19 +779,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("open.next_goal", Locale::PtBr) => {
             "A spec {spec} nasceu na branch {branch}. Faça ao usuário a pergunta de `question` e \
-             espere a resposta. O objetivo da spec é uma frase inteira dele, palavra por palavra, ou \
-             a que você sugeriu e ele aprovou, palavra por palavra como está nas suas respostas a \
-             que ele respondeu; grave-o como o primeiro `context`, com `origin` na mensagem dele. O \
-             card, os critérios de aceite e os documentos antigos que vierem junto vão logo depois, \
-             como `context`, com o mesmo `origin`."
+             espere a resposta. O objetivo da spec é uma frase que diz o que ele pediu, a dele ou a \
+             que você sugeriu e ele aprovou; grave-o como o primeiro `context`, com `origin` na \
+             mensagem dele. O card, os critérios de aceite e os documentos antigos que vierem junto \
+             vão logo depois, como `context`, com o mesmo `origin`."
         }
         ("open.next_goal", Locale::EnUs) => {
             "Spec {spec} was born on branch {branch}. Ask the user the question in `question` and \
-             wait for the answer. The spec's goal is one whole sentence of theirs, word for word, or \
-             the one you suggested and they approved, word for word as it stands in your replies \
-             they answered; record it as the first `context`, with `origin` on their message. The \
-             card, the acceptance criteria and the old documents that come along go right after it, \
-             as `context`, with the same `origin`."
+             wait for the answer. The spec's goal is one sentence saying what they asked for, theirs \
+             or the one you suggested and they approved; record it as the first `context`, with \
+             `origin` on their message. The card, the acceptance criteria and the old documents that \
+             come along go right after it, as `context`, with the same `origin`."
         }
         ("open.no_flow", Locale::PtBr) => {
             "O mustard.json não declara as bases (git.flow): as candidatas são as branches do \
@@ -704,6 +897,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Spec {spec} was opened, but the note \"became spec {spec}\" did not reach pending item \
              {pending}, so the merge will not close it by itself. Call open again with the same \
              arguments to record the note."
+        }
+        // O aviso, na abertura, das pendências do projeto (sem dono de obra):
+        // quantas são e onde a lista inteira está. `{count}` e `{list}` vêm
+        // de quem chama; é aviso, nunca recusa.
+        ("open.pending_project.one", Locale::PtBr) => {
+            "1 pendência do projeto esperando. {list} Quer resolver alguma nesta obra?"
+        }
+        ("open.pending_project.one", Locale::EnUs) => {
+            "1 project pending item waiting. {list} Do you want to work on any of them in this unit?"
+        }
+        ("open.pending_project.many", Locale::PtBr) => {
+            "{count} pendências do projeto esperando. {list} Quer resolver alguma nesta obra?"
+        }
+        ("open.pending_project.many", Locale::EnUs) => {
+            "{count} project pending items waiting. {list} Do you want to work on any of them in this unit?"
+        }
+        // O trecho de onde a lista inteira está: com o endereço da página do
+        // projeto, quando ele já foi gravado, ou o comando que a mostra,
+        // senão. `{url}` vem de quem chama.
+        ("open.pending_project.list_page", Locale::PtBr) => {
+            "A lista inteira está na página do projeto: {url}."
+        }
+        ("open.pending_project.list_page", Locale::EnUs) => {
+            "The whole list is on the project page: {url}."
+        }
+        ("open.pending_project.list_command", Locale::PtBr) => {
+            "A lista inteira sai com `mustard-rt run pending`."
+        }
+        ("open.pending_project.list_command", Locale::EnUs) => {
+            "The whole list comes from `mustard-rt run pending`."
         }
         ("retired.wait_round", Locale::PtBr) => {
             "O `{command}` não grava mais o veredito na spec: o veredito de cada onda é gravado \
@@ -842,8 +1065,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            113,
-            0x2f9f_b637_e840_cb9a,
+            140,
+            0x5a67_047c_8a76_02c4,
         );
     }
 
@@ -871,6 +1094,10 @@ mod tests {
             ("open.pending_unknown", &["{pending}"][..]),
             ("open.pending_closed", &["{pending}"][..]),
             ("open.pending_note_failed", &["{spec}", "{pending}"][..]),
+            ("open.pending_project.one", &["{list}"][..]),
+            ("open.pending_project.many", &["{count}", "{list}"][..]),
+            ("open.pending_project.list_page", &["{url}"][..]),
+            ("open.pending_project.list_command", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -901,6 +1128,19 @@ mod tests {
         }
     }
 
+    /// A escala de notas do plano compara a tarefa com um exemplo de
+    /// qualquer projeto, nunca com algo que só existe no próprio Mustard,
+    /// como o scan, uma lição parecida ou o pedido de uma onda.
+    #[test]
+    fn the_points_scale_uses_examples_of_any_project() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let scale = translate("plan.points_scale", lang).to_lowercase();
+            for word in ["scan", "lições parecidas", "similar lessons", "pedido da onda", "wave request", "onda só"] {
+                assert!(!scale.contains(&word.to_lowercase()), "{lang:?}: a escala ainda cita {word:?}: {scale}");
+            }
+        }
+    }
+
     /// Os títulos e as instruções fixas do pedido de uma onda, e o que a
     /// conferência do plano acha, saem do catálogo nos dois idiomas, com as
     /// vagas que o montador preenche.
@@ -908,13 +1148,22 @@ mod tests {
     fn i18n_translates_wave_prompt_keys() {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
-            ("plan.next", &[][..]),
-            ("page.publish", &["{milestone}"][..]),
-            ("page.purge_pending", &["{codes}"][..]),
-            ("page.after_rebuild", &["{milestone}"][..]),
-            ("page.not_rebuilt", &["{page}"][..]),
-            ("page.rebuild_failed", &["{page}", "{detail}"][..]),
-            ("plan.copy", &[][..]),
+            ("plan.next", &["{question}", "{option}"][..]),
+            ("plan.execution.solo", &["{points}"][..]),
+            ("plan.execution.one_wave", &["{points}"][..]),
+            ("plan.execution.many_waves", &["{points}"][..]),
+            ("plan.execution.ends_with_test_agent", &[][..]),
+            ("page.copy.publish", &["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"][..]),
+            ("page.copy.batches", &["{page}", "{url}", "{files}"][..]),
+            ("page.copy.record", &["{spec}", "{record}"][..]),
+            ("page.copy.old_page", &["{page}"][..]),
+            ("page.copy.agent", &["{page}", "{order}"][..]),
+            ("page.migration.unrated", &["{tasks}", "{scale}", "{cap}"][..]),
+            ("page.migration.over_cap", &["{wave}", "{points}", "{cap}"][..]),
+            ("page.copy.new_address", &[][..]),
+            ("page.copy.no_links", &[][..]),
+            ("page.copy.failed", &[][..]),
+            ("page.purge_pending", &["{codes}", "{spec}"][..]),
             ("plan.wave_loop", &["{waves}"][..]),
             ("plan.depends_on_missing", &["{wave}", "{on}"][..]),
             ("plan.task_without_wave", &["{task}", "{wave}"][..]),
@@ -923,7 +1172,6 @@ mod tests {
             ("plan.spec_should_split", &["{parts}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
-            ("plan.item_without_owner", &["{code}"][..]),
             ("plan.owner_missing", &["{type}"][..]),
             ("plan.contract_without_criterion", &["{code}"][..]),
             ("plan.task_without_file", &["{task}", "{files}"][..]),
@@ -944,11 +1192,12 @@ mod tests {
             ("discard.reason", &[][..]),
             ("discard.confirm_mismatch", &[][..]),
             ("discard.incomplete", &[][..]),
+            ("discard.done", &[][..]),
             ("resume.line", &["{spec}", "{phase}", "{last}", "{next}"][..]),
             ("resume.none", &[][..]),
             ("resume.wave", &["{n}"][..]),
             ("resume.next.survey", &[][..]),
-            ("resume.next.plan", &[][..]),
+            ("resume.next.plan", &["{question}", "{option}"][..]),
             ("resume.next.running", &[][..]),
             ("resume.next.closed", &[][..]),
             ("resume.next.pr_open", &[][..]),
@@ -961,10 +1210,11 @@ mod tests {
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
-            ("close.final_review", &["{count}", "{spec}"][..]),
+            ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
+            ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
+            ("close.unowned_item", &["{code}", "{title}"][..]),
             ("round.bad_report", &["{detail}"][..]),
-            ("round.line_missing", &[][..]),
             ("round.line_field", &["{line}", "{field}"][..]),
             ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),
             ("round.copy_failed", &["{wave}", "{detail}"][..]),
@@ -973,7 +1223,15 @@ mod tests {
             ("pr.submodules.stuck", &["{pr}", "{reason}"][..]),
             ("pr.pointer_commit", &[][..]),
             ("round.copy_kept", &["{wave}", "{copy}", "{files}"][..]),
+            ("stuck.ended", &["{list}"][..]),
+            ("stuck.reason.waiting_loop", &[][..]),
+            ("stuck.reason.deleted_copy", &[][..]),
+            ("conversation_size.block", &["{spec}", "{phase}", "{delivered}", "{running}", "{missing}"][..]),
+            ("conversation_size.precompact", &["{block}", "{command}", "{next}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
+            ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
+            ("round.build_failed", &["{command}", "{output}"][..]),
+            ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
             ("round.commit.scope.many", &["{waves}"][..]),
@@ -987,29 +1245,32 @@ mod tests {
             ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
+            ("round.next.copy_file", &["{path}"][..]),
+            ("round.next.solo", &[][..]),
             ("round.report", &[][..]),
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
             ("round.missing", &["{wave}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
+            ("round.analysis", &["{waves}"][..]),
+            ("round.analysis_ignored", &["{wave}", "{item}"][..]),
+            ("round.analysis_ignored_lesson", &["{wave}", "{item}"][..]),
+            ("round.analysis_unreadable", &["{detail}"][..]),
+            ("round.resume.steps", &[][..]),
+            ("round.resume.notice", &[][..]),
+            ("round.resume.silent", &["{wave}"][..]),
             ("page.findings.heading", &[][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
             ("prompt.fixed", &[][..]),
-            ("prompt.review.title", &["{spec}", "{n}"][..]),
-            ("prompt.review.fixed", &[][..]),
             ("prompt.final.title", &["{spec}"][..]),
             ("prompt.final.fixed", &[][..]),
             ("prompt.read", &["{root}", "{spec}"][..]),
             ("prompt.part.waves", &[][..]),
             ("prompt.part.each_delivered", &[][..]),
-            ("prompt.part.defects", &[][..]),
-            ("prompt.part.specification", &[][..]),
             ("prompt.part.agreed", &[][..]),
-            ("prompt.part.wave", &[][..]),
+            ("prompt.part.items", &[][..]),
             ("prompt.part.criteria", &[][..]),
-            ("prompt.part.lessons", &[][..]),
-            ("prompt.part.skills", &[][..]),
             ("prompt.part.delivered", &[][..]),
             ("prompt.skill.stale", &[][..]),
             ("prompt.skill.read", &[][..]),
@@ -1026,6 +1287,113 @@ mod tests {
             assert_ne!(pt, en, "{key} must differ per locale");
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+    }
+
+    /// O aviso da entrada que ficou como estava chama de lição o que é lição,
+    /// não de item: o número ignorado é de uma lição do banco, e a frase, nos
+    /// dois idiomas, diz "lição" (`lesson` em inglês), nunca "item"
+    /// (`MSTD-TASK-0018`, `MSTD-WAVE-0007`).
+    #[test]
+    fn the_ignored_choice_hint_says_lesson_when_the_number_is_a_lesson() {
+        for (lang, lesson_word, item_word) in [(Locale::PtBr, "lição", "item"), (Locale::EnUs, "lesson", "item")] {
+            let hint = translate("round.analysis_ignored_lesson", lang).replace("{wave}", "7").replace("{item}", "96");
+            assert!(hint.contains(lesson_word), "{lang:?}: não diz lição: {hint}");
+            assert!(!hint.contains(&format!("{item_word} 96")), "{lang:?}: chamou a lição de item: {hint}");
+        }
+    }
+
+    /// A dica que pede a escolha dos itens do pedido de uma onda manda a
+    /// conferência das tarefas no código para um agente separado, que devolve
+    /// só a tarefa ajustada para ser gravada, e diz que o orquestrador não lê
+    /// arquivo inteiro nem saída longa para isso — nos dois idiomas.
+    #[test]
+    fn the_analysis_hint_sends_the_reading_to_an_agent() {
+        for (lang, agent_word, whole_file, long_output) in [
+            (Locale::PtBr, "agente separado", "arquivo inteiro", "saída longa"),
+            (Locale::EnUs, "separate agent", "whole file", "long output"),
+        ] {
+            let hint = translate("round.analysis", lang).replace("{waves}", "1");
+            assert!(hint.contains(agent_word), "{lang:?}: sem o agente separado: {hint}");
+            assert!(hint.contains("tarefa ajustada") || hint.contains("adjusted task"), "{lang:?}: sem a tarefa ajustada: {hint}");
+            assert!(hint.contains(whole_file), "{lang:?}: não proíbe ler arquivo inteiro: {hint}");
+            assert!(hint.contains(long_output), "{lang:?}: não proíbe ler saída longa: {hint}");
+        }
+    }
+
+    /// As dicas que mandam perguntar ou responder (a de apresentar um ponto
+    /// do levantamento, a de revisar um bloco, a do plano e a da retomada) e o
+    /// mapa do início da sessão apontam para a ordem de explicar do estilo de
+    /// resposta, sem pedir a forma antiga: o fato com a fonte, o que já está
+    /// decidido, o que falta decidir e uma recomendação. O estilo de cada
+    /// idioma tem essa ordem, os quatro passos em sequência, e deixou de dizer
+    /// que a página é publicada em cada marco. A dica do plano e a da retomada
+    /// trazem o texto exato da pergunta de aprovação, entre aspas, lido da
+    /// chave dela no catálogo: "Aprovar esta spec?" em português e "Approve
+    /// this spec?" em inglês.
+    #[test]
+    fn the_question_hints_follow_the_answer_style() {
+        let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+        let cases = [
+            (
+                Locale::PtBr,
+                "Aprovar esta spec?",
+                "na ordem de explicar do estilo de resposta",
+                "## A ordem de explicar",
+                [
+                    "Toda pergunta, toda resposta e todo texto de item gravado na spec",
+                    "1. O que é a coisa e onde ela age.",
+                    "2. Para que ela serve.",
+                    "3. Um exemplo que o próprio usuário viu.",
+                    "4. Só então o problema e a proposta; numa pergunta, por último a pergunta de sim ou não.",
+                ],
+                ["com a fonte", "já está decidido", "falta decidir", "recomendação"],
+                "só é publicada na aprovação",
+            ),
+            (
+                Locale::EnUs,
+                "Approve this spec?",
+                "in the order of explaining from the response style",
+                "## The order of explaining",
+                [
+                    "Every question, every answer and every item text recorded in the spec",
+                    "1. What the thing is and where it acts.",
+                    "2. What it is for.",
+                    "3. An example the user saw for themselves.",
+                    "4. Only then the problem and the proposal; in a question, the yes-or-no question comes last.",
+                ],
+                ["with its source", "already decided", "left to decide", "recommendation"],
+                "published only at approval",
+            ),
+        ];
+        for (lang, question, pointer, section, steps, old_shape, old_example) in cases {
+            let style = std::fs::read_to_string(plugin.join(format!("output-styles/mustard-{lang}.md")))
+                .unwrap_or_else(|e| panic!("the {lang} answer style is unreadable: {e}"));
+            let order = style.find(section).unwrap_or_else(|| panic!("the {lang} style has no {section}"));
+            let mut at = order;
+            for step in steps {
+                let found = style[at..].find(step).unwrap_or_else(|| panic!("{lang}: `{step}` missing or out of order"));
+                at += found + step.len();
+            }
+            assert!(!style.contains(old_example), "the {lang} style still says the page waits for a milestone");
+
+            let hints = ["survey.present_point", "survey.review_step", "plan.next", "resume.next.plan"];
+            let texts = hints.map(|key| (key, translate(key, lang))).into_iter().chain([(
+                "session map",
+                crate::platform::seeds::session_map(lang),
+            )]);
+            for (key, text) in texts {
+                assert!(text.contains(pointer), "{key} in {lang} does not point to the answer style: {text}");
+                for old in old_shape {
+                    assert!(!text.contains(old), "{key} in {lang} still asks for the old shape `{old}`: {text}");
+                }
+            }
+
+            assert_eq!(translate("approval.question", lang), question);
+            for key in ["plan.next", "resume.next.plan"] {
+                let said = translate(key, lang).replace("{question}", translate("approval.question", lang));
+                assert!(said.contains(&format!("\"{question}\"")), "{key} in {lang} lacks the exact question: {said}");
             }
         }
     }

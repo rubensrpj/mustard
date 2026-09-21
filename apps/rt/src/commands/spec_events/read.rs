@@ -22,13 +22,21 @@
 //! menos forte: um código de item devolve aquele item, e qualquer outro termo
 //! passa pela busca por nota, que não exige que o item tenha todas as
 //! palavras.
+//!
+//! O bloco `lessons` foge dessa regra: fica fora da spec, vive no banco do
+//! projeto (`.claude/spec/lessons.ndjson`) e o `--term` é o número da lição
+//! no banco, não uma busca. É assim que o pedido de uma onda leva a lição só
+//! pelo número dela, sem copiar o texto.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::lessons::kept;
 use mustard_core::domain::spec_events::{found_by, shown_line, BlockQuery, Refusal, SpecEvent};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
+use mustard_core::platform::i18n::Locale;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
@@ -56,6 +64,9 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
 
     let block = opts.block.trim();
+    if block == "lessons" {
+        return read_lessons(&project.root, opts.spec.as_deref(), opts.term.as_deref(), lang);
+    }
     let Some(query) = BlockQuery::parse(block) else {
         return Err(refuse(Refusal::UnknownBlock { found: block.to_string() }));
     };
@@ -75,6 +86,24 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
         found_by(log.block(query), term, &codes).into_iter().map(|e| shown_with_code(e, &codes)).collect();
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &warnings))
+}
+
+/// O bloco `lessons`: fora da spec, no banco do projeto. `--term` é o número
+/// da lição no banco — não uma busca, como no resto dos blocos —, porque é
+/// assim que o pedido de uma onda a leva, sem copiar o texto dela. Sem
+/// número, ou sem lição vigente com esse número, a lista vem vazia; sem
+/// banco no disco, o mesmo.
+fn read_lessons(root: &Path, spec: Option<&str>, term: Option<&str>, lang: Locale) -> Result<String, Value> {
+    let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
+    let paths = ClaudePaths::for_project(root).map_err(|e| refuse(Refusal::Io { detail: e.to_string() }))?;
+    let bank = mustard_core::io::lessons::read(&paths.lessons_path()).map_err(refuse)?.unwrap_or_default();
+    let wanted = term.and_then(|t| t.trim().parse::<u64>().ok());
+    let events: Vec<String> = kept(&bank)
+        .into_iter()
+        .filter(|lesson| wanted.is_some_and(|id| lesson.id == id))
+        .map(|lesson| shown_line(&lesson.fields))
+        .collect();
+    Ok(render(spec.unwrap_or_default(), "lessons", &events, &[]))
 }
 
 /// O checkout em que o comando roda, cuja branch diz qual é a spec atual.
@@ -178,9 +207,9 @@ mod tests {
         let c1 = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
         let c2 = put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "origin": said}));
         put(root, "wave", json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": said}));
-        put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "origin": said}));
+        put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": said}));
         put(root, "wave", json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": said}));
-        put(root, "task", json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": said}));
+        put(root, "task", json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": said}));
 
         let report = read_at(&opts(root, "wave-2", None)).unwrap();
         let got = events(&report);
@@ -239,6 +268,37 @@ mod tests {
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0]["code"], json!("MSTD-CRIT-0002"));
         assert_eq!(got[0]["when"], json!("c"));
+    }
+
+    /// Uma lição gravada no banco no disco (`.claude/spec/lessons.ndjson`).
+    fn write_lesson(bank: &std::path::Path, text: &str, keys: &[&str]) -> u64 {
+        let draft = json!({"class": "defect", "text": text, "keys": keys,
+            "applies_to": {"files": ["**"]}, "found_in": {"source": "apps/rt/CLAUDE.md"}});
+        let Value::Object(draft) = draft else { unreachable!() };
+        mustard_core::io::lessons::write(bank, draft, None).expect("a lição entra no banco").id
+    }
+
+    /// O bloco `lessons` devolve a lição pelo número dela no banco, fora da
+    /// spec: `--term` é o número, não uma busca — mesmo um termo que casa o
+    /// texto de outra lição não a traz, porque não é pelo texto que a lição
+    /// se acha aqui.
+    #[test]
+    fn the_lessons_block_returns_a_lesson_by_its_number_not_by_search() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let bank = mustard_core::ClaudePaths::for_project(root).unwrap().lessons_path();
+        let id = write_lesson(&bank, "Nunca comitar sem rodar a suíte inteira.", &["suíte", "commit"]);
+        write_lesson(&bank, "Outra lição qualquer, sem relação com a suíte.", &["outra"]);
+
+        let got = events(&read_at(&opts(root, "lessons", Some(&id.to_string()))).unwrap());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0]["id"], json!(id));
+        assert_eq!(got[0]["text"], json!("Nunca comitar sem rodar a suíte inteira."));
+
+        // "suíte" acha as duas lições por texto; pelo número, não acha
+        // nenhuma — a leitura de `lessons` nunca é busca por palavra.
+        let by_word = events(&read_at(&opts(root, "lessons", Some("suíte"))).unwrap());
+        assert!(by_word.is_empty(), "{by_word:?}");
     }
 
     #[test]

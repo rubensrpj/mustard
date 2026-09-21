@@ -43,8 +43,10 @@ pub enum SpecEventsCmd {
         root: PathBuf,
     },
     /// Write ONE event to a spec's event file, the only way it is written.
-    /// Refuses an unknown type, an empty required field and, on a `point`, a
-    /// fact without a source or citing a file that does not exist. `remove`,
+    /// Refuses an unknown type, an empty required field, a `task` missing one
+    /// of its three mandatory declarations (what it does, the files it
+    /// touches, which tasks it depends on) and, on a `point`, a fact without
+    /// a source or citing a file that does not exist. `remove`,
     /// `purge` and a new version (`replaces`) are events like any other; they
     /// point at an item by its event number or by the code the page shows,
     /// like `MSTD-RULE-0002`. With the `lesson` type it writes one lesson to
@@ -65,7 +67,9 @@ pub enum SpecEventsCmd {
         event_type: String,
         /// The spec whose file receives the event. Required for every type
         /// but `lesson`, which takes it, when given, as the spec the lesson
-        /// was found in.
+        /// was found in, and the project page's `publish`, which without it
+        /// records the address straight on the project line of the spec
+        /// index: the page is born before any spec exists.
         #[arg(long)]
         spec: Option<String>,
         /// The event's own fields as one JSON object, e.g.
@@ -161,6 +165,10 @@ mod tests {
         }
         assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, no_code)"), "{help}");
         assert!(help.contains("\n  message: text (witness)"), "{help}");
+        assert!(
+            help.contains("a `task` missing one of its three mandatory declarations"),
+            "the help does not name the task-declaration refusal:\n{help}"
+        );
     }
 
     /// Uma decisão gravada pelo comando sem dois campos obrigatórios é

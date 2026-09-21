@@ -30,6 +30,14 @@
 //! mesmo título, sem ligar para maiúscula nem acento, é recusado apontando o
 //! item que já está aberto.
 //!
+//! ## Dois donos
+//!
+//! A pendência que nasce dentro de uma unidade é DELA: o item guarda o nome da
+//! unidade em `born`, e o fechamento pergunta o destino de cada uma. A que o
+//! usuário manda ficar para depois passa ao PROJETO — `owner: "project"`, com
+//! o motivo em `later` —, sai da leitura da unidade e nunca mais fica presa a
+//! uma unidade fechada. A gravada fora de toda unidade já nasce do projeto.
+//!
 //! ## Datas e notas
 //!
 //! Cada item guarda o dia em que entrou (`created`, `AAAA-MM-DD` em UTC). Um
@@ -47,7 +55,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::search::{query_terms, SearchIndex};
 use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, SpecLog};
-use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
 use mustard_core::domain::text;
 use mustard_core::platform::i18n::Locale;
 use serde::{Deserialize, Serialize};
@@ -57,7 +65,7 @@ use mustard_core::io::fs::lock::{read_shared, LockedFile};
 
 use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::git_settle::main_checkout_root;
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run pending`.
 #[derive(Debug, Clone, Default)]
@@ -119,6 +127,35 @@ impl Status {
     }
 }
 
+/// Quem é o dono de uma pendência que nasceu dentro de uma unidade. Enquanto
+/// a unidade corre, ela é da unidade ([`Owner::Born`]) e se fecha lá dentro; o
+/// fechamento que o usuário mandou deixar para depois passa o item ao projeto
+/// ([`Owner::Project`]), e nenhuma unidade o prende de novo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Owner {
+    /// A unidade em que a pendência nasceu — o dono de quem ninguém abriu mão.
+    #[default]
+    Born,
+    /// O projeto, que a herdou quando a unidade fechou sem resolvê-la.
+    Project,
+}
+
+impl Owner {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Born => "born",
+            Self::Project => "project",
+        }
+    }
+
+    /// O dono de sempre não vai para o arquivo: só a passagem ao projeto é
+    /// novidade que precisa ficar escrita.
+    fn is_born(&self) -> bool {
+        *self == Self::Born
+    }
+}
+
 /// Um item da lista.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +164,18 @@ struct PendingItem {
     title: String,
     detail: String,
     status: Status,
+    /// A unidade em que a pendência nasceu, quando havia uma aberta na hora
+    /// da gravação. Nunca muda: é história, não dono.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    born: Option<String>,
+    /// Quem herda a pendência hoje. Ausente no arquivo enquanto ela é da
+    /// unidade em que nasceu.
+    #[serde(default, skip_serializing_if = "Owner::is_born")]
+    owner: Owner,
+    /// Por que ela ficou para depois — a resposta do usuário no fechamento da
+    /// unidade que a soltou. Presente só na que o projeto herdou.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    later: Option<String>,
     /// Por que o item saiu da lista — presente só depois de fechado ou descartado.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
@@ -547,11 +596,16 @@ fn item_json(item: &PendingItem) -> Value {
     out.insert("title".into(), json!(item.title));
     out.insert("detail".into(), json!(item.detail));
     out.insert("status".into(), json!(item.status.as_str()));
+    if !item.owner.is_born() {
+        out.insert("owner".into(), json!(item.owner.as_str()));
+    }
     for (key, value) in [
         ("reason", &item.reason),
         ("created", &item.created),
         ("swept", &item.swept),
         ("became", &item.became),
+        ("born", &item.born),
+        ("later", &item.later),
     ] {
         if let Some(value) = value {
             out.insert(key.into(), json!(value));
@@ -610,11 +664,18 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 return duplicate(open, lang);
             }
             let id = next_id(&ledger);
+            let title_for_link = title.clone();
+            // A unidade aberta no checkout é o dono da pendência desde a
+            // gravação: sem ela, a pendência já nasce do projeto.
+            let born = active_spec(&opts.root);
             ledger.items.push(PendingItem {
                 id: id.clone(),
                 title,
                 detail,
                 status: Status::Open,
+                born: born.as_ref().map(|(_, spec)| spec.clone()),
+                owner: Owner::Born,
+                later: None,
                 reason: None,
                 created: Some(today.clone()),
                 swept: None,
@@ -625,6 +686,15 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             }
             extra.insert("id".into(), json!(id));
             extra.insert("added".into(), json!(true));
+            // Com uma spec ativa no checkout, a pendência fica ligada a ela na
+            // hora, pelo mesmo caminho do `run write`: sem spec ativa, ou numa
+            // spec que a gravação recuse (formato antigo, por exemplo), nada
+            // muda — a pendência já entrou na lista, como hoje.
+            if let Some((checkout, spec)) = &born
+                && let Some(question) = link_to_spec(checkout, spec, &id, &title_for_link, lang)
+            {
+                extra.insert("pending_question".into(), json!(question));
+            }
         }
         Action::Close { id, reason } => {
             let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) else {
@@ -818,28 +888,39 @@ pub(crate) struct OpenPending {
     pub title: String,
 }
 
-/// As pendências abertas, na ordem do ledger (a ordem em que foram combinadas).
+/// As pendências abertas, na ordem do ledger (a ordem em que foram
+/// combinadas), inteiras — com o dono, que é o que separa a da unidade da do
+/// projeto. É a leitura única de fora: a da unidade e a do projeto saem daqui.
 ///
 /// Lê o MESMO arquivo que `run pending`, resolvido pelo mesmo
 /// [`ledger_root`], para que nenhum leitor veja uma lista diferente da que o
 /// operador grava. Arquivo ausente, ilegível ou corrompido devolve a lista
 /// vazia: quem só EXIBE não tem o que fazer com um ledger quebrado, e
 /// `run pending` é quem recusa e diz como consertar.
-#[must_use]
-pub(crate) fn open_pending(root: &Path) -> Vec<OpenPending> {
+fn open_items_of(root: &Path) -> Vec<PendingItem> {
     let project = ledger_root(root);
     mustard_core::ClaudePaths::for_project(&project)
         .ok()
         .and_then(|paths| load(&paths.pending_ledger_path()).ok())
-        .map(|ledger| {
-            ledger
-                .items
-                .into_iter()
-                .filter(|i| i.status == Status::Open)
-                .map(|i| OpenPending { id: i.id, title: i.title })
-                .collect()
-        })
+        .map(|ledger| ledger.items.into_iter().filter(|i| i.status == Status::Open).collect())
         .unwrap_or_default()
+}
+
+/// O item como os leitores de fora o enxergam.
+fn shown(item: PendingItem) -> OpenPending {
+    OpenPending { id: item.id, title: item.title }
+}
+
+/// A pendência não tem dono de unidade: ou nasceu fora de toda unidade, ou o
+/// fechamento da unidade dela a passou ao projeto.
+fn of_the_project(item: &PendingItem) -> bool {
+    item.born.is_none() || handed_over(item)
+}
+
+/// O fechamento da unidade passou a pendência ao projeto. A unidade em que
+/// ela nasceu continua escrita, como história: o dono é que mudou.
+fn handed_over(item: &PendingItem) -> bool {
+    item.owner == Owner::Project
 }
 
 /// O número de uma pendência escrito à mão, como `P-12`, `p-12` ou `12`, com
@@ -853,7 +934,7 @@ pub(crate) fn pending_id(text: &str) -> Option<String> {
     digits.trim().parse::<u64>().ok().filter(|n| *n > 0).map(|n| format!("P-{n}"))
 }
 
-/// A pendência `id` na lista, lida como [`open_pending`] lê: `Some(true)`
+/// A pendência `id` na lista, lida como [`open_items_of`] lê: `Some(true)`
 /// aberta, `Some(false)` fechada ou descartada, `None` quando a lista não a
 /// tem. Uma lista ausente, ilegível ou corrompida não tem pendência nenhuma: é
 /// o `run pending` quem diz como consertá-la. O pedido adiado de uma spec só
@@ -879,12 +960,48 @@ pub(crate) fn born_in(log: &SpecLog) -> Vec<String> {
         .collect()
 }
 
-/// As pendências abertas, na ordem da lista, que nasceram na spec do
-/// arquivo de eventos `log`.
+/// As pendências abertas, na ordem da lista, que nasceram na spec do arquivo
+/// de eventos `log` E ainda são dela. A que o fechamento passou ao projeto
+/// some daqui para sempre: unidade fechada não carrega pendência pendurada.
 #[must_use]
 pub(crate) fn open_born_in(root: &Path, log: &SpecLog) -> Vec<OpenPending> {
     let born = born_in(log);
-    open_pending(root).into_iter().filter(|item| born.contains(&item.id)).collect()
+    open_items_of(root)
+        .into_iter()
+        .filter(|item| born.contains(&item.id) && !handed_over(item))
+        .map(shown)
+        .collect()
+}
+
+/// As pendências abertas do PROJETO, na ordem da lista: as sem dono de
+/// unidade — a que nasceu fora de toda unidade e a que um fechamento soltou.
+/// É a lista que a abertura de uma unidade nova apresenta.
+#[must_use]
+pub(crate) fn open_project_pending(root: &Path) -> Vec<OpenPending> {
+    open_items_of(root).into_iter().filter(of_the_project).map(shown).collect()
+}
+
+/// Solta da unidade `spec` a pendência aberta `id` e a passa ao projeto, com
+/// o motivo `later` que o usuário deu para deixá-la para depois. A unidade em
+/// que ela nasceu fica escrita (a antiga, ligada só pelo registro `deferred`,
+/// ganha `spec` agora); o dono passa a ser o projeto, e a leitura da unidade
+/// não a traz mais. `true` quando o arquivo foi de fato gravado.
+pub(crate) fn hand_to_project(root: &Path, id: &str, spec: &str, later: Option<&str>) -> bool {
+    let project = ledger_root(root);
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(&project) else {
+        return false;
+    };
+    let path = paths.pending_ledger_path();
+    let Ok((mut file, mut ledger)) = open_locked(&path) else {
+        return false;
+    };
+    let Some(item) = ledger.items.iter_mut().find(|i| i.id == id && i.status == Status::Open) else {
+        return false;
+    };
+    item.born.get_or_insert_with(|| spec.to_string());
+    item.owner = Owner::Project;
+    item.later = later.map(one_line).filter(|reason| !reason.is_empty());
+    write(&mut file, &mut ledger, &today(None)).is_ok()
 }
 
 /// As pendências abertas que nasceram na spec `spec` do projeto em `root`: é
@@ -893,6 +1010,45 @@ pub(crate) fn open_born_in(root: &Path, log: &SpecLog) -> Vec<OpenPending> {
 #[must_use]
 pub(crate) fn open_pending_born_in(root: &Path, spec: &str) -> Vec<OpenPending> {
     DiskSpecState::new(root).log(spec).map(|log| open_born_in(root, &log)).unwrap_or_default()
+}
+
+/// A spec ativa no checkout visto de `start`, com o próprio checkout: é ela a
+/// unidade dona de uma pendência gravada agora. `None` fora de toda unidade —
+/// e aí a pendência já nasce do projeto.
+fn active_spec(start: &Path) -> Option<(PathBuf, String)> {
+    let checkout_root = crate::commands::spec_events::read::checkout(start);
+    let spec = DiskSpecState::new(&checkout_root).active(session_from_env().as_deref())?;
+    Some((checkout_root, spec))
+}
+
+/// A pendência `id`/`title`, recém-gravada, fica ligada à spec `spec` do
+/// checkout em `checkout_root`, pela mesma gravação do `run write`: o registro
+/// `deferred` que aponta o número dela, gravado pelo binário (sem `origin`,
+/// porque não há mensagem de onde a pendência veio). Devolve a linha, no
+/// idioma `lang`, que o assistente mostra ao usuário na hora. Quando a
+/// gravação é recusada (a spec no formato antigo, por exemplo), `None`: a
+/// pendência já entrou na lista, e nada mais muda.
+fn link_to_spec(checkout_root: &Path, spec: &str, id: &str, title: &str, lang: Locale) -> Option<String> {
+    let number = id.strip_prefix("P-").and_then(|n| n.parse::<u64>().ok())?;
+    let mut draft = Map::new();
+    draft.insert("text".to_string(), json!(format!("Pendência {id}: {title}")));
+    draft.insert("keys".to_string(), json!(["pendencia"]));
+    draft.insert("pending".to_string(), json!(number));
+    draft.insert("author".to_string(), json!("binary"));
+    crate::commands::spec_events::write::record(checkout_root, spec, "deferred", draft, PhaseWriter::Binary).ok()?;
+    Some(destination_question(id, title, spec, lang))
+}
+
+/// A pergunta de destino de uma pendência ligada à spec `spec`: o título dela
+/// e as três saídas honestas — entra nesta obra, fica para depois com o
+/// motivo, ou sai. O texto sai do catálogo, no idioma do projeto; a gravação
+/// e o fechamento fazem a mesma pergunta, com a mesma linha.
+#[must_use]
+pub(crate) fn destination_question(id: &str, title: &str, spec: &str, lang: Locale) -> String {
+    mustard_core::translate("close.pending_destination", lang)
+        .replace("{id}", id)
+        .replace("{title}", title)
+        .replace("{spec}", spec)
 }
 
 /// Grava na pendência aberta `id` a nota "virou a spec `spec`": a unidade que
@@ -1151,6 +1307,103 @@ mod tests {
             !wt.join(".claude/pending/ledger.json").exists(),
             "the ledger lives in the main checkout, never in the worktree",
         );
+    }
+
+    /// Com uma spec ativa no checkout (a branch de trabalho dela), a
+    /// pendência gravada por `run pending --add` fica ligada a ela na hora —
+    /// um registro `deferred`, no arquivo da spec, apontando o número dela —
+    /// e a resposta traz a pergunta de destino, pronta para o assistente
+    /// mostrar ao usuário. Sem spec ativa, nada muda: a pendência só entra
+    /// na lista, como antes.
+    #[test]
+    fn the_pending_born_in_a_spec_is_linked_and_shown() {
+        let dir = repo();
+        let root = dir.path();
+        git(root, &["checkout", "-b", "feature/quero"]);
+        assert_eq!(
+            crate::commands::spec_events::write::record_open(root, "quero", "feature/quero", "dev"),
+            Ok(true),
+            "the spec is open on the branch the pending item is added from",
+        );
+
+        let wrote = add(root, "Medir o antivírus do Windows", "achado durante a spec quero");
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        assert_eq!(wrote["id"], json!("P-1"));
+        let expected = destination_question("P-1", "Medir o antivírus do Windows", "quero", Locale::PtBr);
+        assert_eq!(wrote["pending_question"], json!(expected), "{wrote}");
+
+        let log = DiskSpecState::new(root).log("quero").expect("the spec file exists");
+        assert_eq!(born_in(&log), ["P-1"], "a deferred event links the pending item to the spec");
+        let open: Vec<String> = open_born_in(root, &log).into_iter().map(|item| item.id).collect();
+        assert_eq!(open, ["P-1"], "the closing asks about it");
+
+        // Sem spec ativa (outro branch, sem spec aberta nele), a pendência
+        // entra só na lista: nada é ligado, e a resposta não traz a pergunta.
+        git(root, &["checkout", "dev"]);
+        let plain = add(root, "Outra pendência", "sem spec ativa");
+        assert_eq!(plain["ok"], json!(true), "{plain}");
+        assert!(plain.get("pending_question").is_none(), "{plain}");
+    }
+
+    /// A lista guarda a unidade em que cada pendência nasceu, e a leitura das
+    /// do PROJETO traz só as sem dono de unidade: a que nasceu fora de toda
+    /// unidade e a que um fechamento soltou. A da unidade que ainda é dela
+    /// fica de fora, e a solta sai da leitura da unidade para sempre.
+    #[test]
+    fn the_project_pending_are_the_ones_with_no_unit_owner() {
+        let dir = repo();
+        let root = dir.path();
+
+        // Fora de toda unidade: a pendência já nasce do projeto.
+        assert_eq!(add(root, "Trocar o relógio", "fora de toda unidade")["id"], json!("P-1"));
+
+        // Dentro da unidade `quero`: ela nasce da unidade, e a lista guarda
+        // qual é.
+        git(root, &["checkout", "-b", "feature/quero"]);
+        assert_eq!(
+            crate::commands::spec_events::write::record_open(root, "quero", "feature/quero", "dev"),
+            Ok(true),
+        );
+        assert_eq!(add(root, "Medir o antivírus", "achado durante a spec quero")["id"], json!("P-2"));
+
+        let listed = pending_at(&opts(root));
+        assert!(item_of(&listed, "P-1").get("born").is_none(), "nasceu fora de toda unidade: {listed}");
+        assert_eq!(
+            item_of(&listed, "P-2")["born"],
+            json!("quero"),
+            "a lista guarda a unidade em que nasceu: {listed}",
+        );
+
+        let numbers = |items: Vec<OpenPending>| -> Vec<String> { items.into_iter().map(|i| i.id).collect() };
+        let log = DiskSpecState::new(root).log("quero").expect("the spec file exists");
+        assert_eq!(numbers(open_born_in(root, &log)), ["P-2"], "a da unidade é só dela");
+        assert_eq!(numbers(open_project_pending(root)), ["P-1"], "a do projeto é só a sem dono de unidade");
+
+        // O fechamento solta a da unidade: ela passa ao projeto, com o
+        // motivo, e some da leitura da unidade.
+        assert!(hand_to_project(root, "P-2", "quero", Some("  fica para a obra seguinte  ")));
+        assert!(numbers(open_born_in(root, &log)).is_empty(), "a solta não volta à unidade");
+        assert_eq!(numbers(open_project_pending(root)), ["P-1", "P-2"], "e passa a ser do projeto");
+        let listed = pending_at(&opts(root));
+        assert_eq!(item_of(&listed, "P-2")["owner"], json!("project"), "{listed}");
+        assert_eq!(item_of(&listed, "P-2")["born"], json!("quero"), "a unidade em que nasceu fica: {listed}");
+        assert_eq!(
+            item_of(&listed, "P-2")["later"],
+            json!("fica para a obra seguinte"),
+            "o motivo fica gravado, numa linha só: {listed}",
+        );
+        assert_eq!(item_of(&listed, "P-2")["status"], json!("open"), "solta não é fechada: {listed}");
+    }
+
+    /// O item `id` da listagem.
+    fn item_of(listed: &Value, id: &str) -> Value {
+        listed["open"]
+            .as_array()
+            .expect("open")
+            .iter()
+            .find(|item| item["id"] == json!(id))
+            .cloned()
+            .expect("item")
     }
 
     /// Fechar ou descartar sem motivo (ausente ou em branco) recusa, e o

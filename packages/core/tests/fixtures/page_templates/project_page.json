@@ -1,0 +1,99 @@
+{
+  "stages": "Por fase: 1 plano, 1 em execução, 1 sem fase.",
+  "groups": [
+    {
+      "id": "specs-plan",
+      "title": "Plano",
+      "rows": [
+        {
+          "code": "trava",
+          "title": "Objetivo de trava.",
+          "status": "plano",
+          "date": "2026-09-17 10:00",
+          "fields": [
+            [
+              "Estado",
+              "plano"
+            ],
+            [
+              "Branch",
+              "feature/trava"
+            ],
+            [
+              "Aberta em",
+              "2026-09-01"
+            ],
+            [
+              "Última mudança",
+              "2026-09-17"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "specs-running",
+      "title": "Em execução",
+      "rows": [
+        {
+          "code": "busca",
+          "title": "Objetivo de busca.",
+          "status": "em execução",
+          "date": "2026-09-17 10:00",
+          "fields": [
+            [
+              "Estado",
+              "em execução"
+            ],
+            [
+              "Branch",
+              "feature/busca"
+            ],
+            [
+              "Aberta em",
+              "2026-09-01"
+            ],
+            [
+              "Última mudança",
+              "2026-09-17"
+            ],
+            [
+              "Endereço",
+              "busca"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "specs-none",
+      "title": "Sem fase",
+      "rows": [
+        {
+          "code": "velha",
+          "title": "Objetivo de velha.",
+          "status": "—",
+          "date": "2026-09-17 10:00",
+          "fields": [
+            [
+              "Estado",
+              "—"
+            ],
+            [
+              "Branch",
+              "feature/velha"
+            ],
+            [
+              "Aberta em",
+              "2026-09-01"
+            ],
+            [
+              "Última mudança",
+              "2026-09-17"
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

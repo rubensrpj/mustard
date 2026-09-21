@@ -21,7 +21,7 @@
 //!   number, title, whether the provider calls it mergeable, whether it is a
 //!   draft, and the head branch its unit lives on.
 //! - **`pr-review`** — resolves the PR to its unit and prints the review brief:
-//!   the spec the unit belongs to, the subproject its `## Files` name, and the
+//!   the spec the unit belongs to, the subproject its tasks' files name, and the
 //!   SAME skill shelf the implementer was dispatched with — so "reviewed
 //!   against the project patterns" means the very molds the work was written
 //!   to, never a second list that can drift. `--verdict` no longer records
@@ -31,17 +31,13 @@
 //!
 //! ## The spec is read out of the PR's OWN branch
 //!
-//! A review runs from an integration base — that is the door's design — and the
-//! spec no longer lives there: this unit's whole layout (`spec.md`, the waves,
-//! the ceremony) is materialized INSIDE the unit's own `{kind}/{slug}`. Reading
-//! `.claude/spec/{slug}/spec.md` off the checkout therefore finds NOTHING from a
-//! base, and the brief would come back with `spec_path`, `subproject` and
-//! `patterns` all null while `pr.md` promises them. So the text is read from the
-//! head ref itself — `git show {head}:.claude/spec/{slug}/spec.md` — with the
-//! remote-tracking ref and then the working tree as fallbacks
-//! ([`read_spec_text`]); `spec_source` reports which one answered, because "the
-//! spec is not in this checkout" and "the unit has no spec" are different facts
-//! and must not print the same.
+//! A review runs from an integration base — that is the door's design. The spec
+//! is its event file, `.claude/spec/{slug}/spec.ndjson`, never a rendered
+//! `spec.md`: the binary writes no `spec.md` any more. It is read from the head
+//! ref itself — `git show {head}:.claude/spec/{slug}/spec.ndjson` — for a
+//! project that commits its specs, with the remote-tracking ref and then the
+//! main checkout's own spec folder as fallbacks ([`spec_text_of_unit`]). The
+//! subproject comes from the files the spec's tasks name.
 //!
 //! The verdict the merge reads needs no such hop: `.claude/` is redirected
 //! state, resolved to the MAIN checkout from inside any linked worktree, so the
@@ -98,7 +94,6 @@ use std::process::Command;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::commands::agent::render::reference::files_section_paths;
 use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
 use crate::commands::event::work_branch::on_integration_base;
@@ -217,23 +212,19 @@ fn spec_of_branch(branch: &str, flow: &BaseFlow) -> Option<String> {
     flow.slug_of(branch)
 }
 
-/// Where a unit's spec lives, relative to the repository root.
+/// Where a unit's spec lives, relative to the repository root: its event file.
 fn spec_rel_path(slug: &str) -> String {
-    format!(".claude/spec/{slug}/spec.md")
+    format!(".claude/spec/{slug}/spec.ndjson")
 }
 
-/// The spec text of `slug` as the PR's OWN branch carries it.
+/// The event file of `slug`'s spec, as the PR's OWN branch carries it when the
+/// project commits its specs, else as this machine keeps it.
 ///
-/// `git show <head>:.claude/spec/<slug>/spec.md`, never the working tree. This
-/// spec moved the spec directory ONTO the work branch, and `pr-review` runs from
-/// an integration base by design — so the file is simply not in the checkout,
-/// and reading from disk answered `null` for `spec_path`, `subproject` AND
-/// `patterns` on every single review. The local ref is tried first (the author
-/// reviewing their own unit) and the remote-tracking ref second (the reviewer
-/// who only ever fetched it).
-///
-/// The on-disk read stays as the last fallback: for a unit checked out IN PLACE
-/// the tree and the branch are the same thing, and for a spec that was never
+/// `git show <head>:.claude/spec/<slug>/spec.ndjson` first — the local ref for
+/// the author reviewing their own unit, the remote-tracking ref for the
+/// reviewer who only ever fetched it — because `pr-review` runs from an
+/// integration base by design. The main checkout's own spec folder is the last
+/// fallback: specs usually stay out of git, and for a spec that was never
 /// committed it is the only copy there is.
 fn spec_text_of_unit(root: &Path, head: &str, slug: &str) -> Option<String> {
     let rel = spec_rel_path(slug);
@@ -245,7 +236,7 @@ fn spec_text_of_unit(root: &Path, head: &str, slug: &str) -> Option<String> {
     let on_disk = mustard_core::ClaudePaths::for_project(root)
         .ok()
         .and_then(|p| p.for_spec(slug).ok())
-        .map(|p| p.dir().join("spec.md"))?;
+        .map(|p| p.spec_ndjson_path())?;
     std::fs::read_to_string(on_disk).ok().filter(|t| !t.trim().is_empty())
 }
 
@@ -281,15 +272,25 @@ fn resolve_pr(root: &Path, pr: Option<u64>) -> Result<PrFacts, String> {
     })
 }
 
-/// The subproject a spec's `## Files` section names, relative to the repo root
-/// (`apps/rt`, `packages/core`, …). `None` when the paths disagree or name no
-/// `apps/<x>` / `packages/<x>` segment.
+/// The subproject the files of a spec's tasks name, relative to the repo root
+/// (`apps/rt`, `packages/core`, …), read from the spec's event file
+/// `spec_text`: every task the reading shows, each file once. `None` when the
+/// paths disagree or name no `apps/<x>` / `packages/<x>` segment.
 ///
 /// Derived through [`detect_subproject`], the ONE discovery the dispatch plan
 /// already uses — joined onto an empty root so the answer comes back relative,
 /// which is the form both the skill shelf and `review.result` want.
 fn spec_subproject(spec_text: &str) -> Option<String> {
-    let files = files_section_paths(spec_text);
+    let log = mustard_core::domain::spec_events::parse_log(spec_text);
+    let mut files: Vec<String> = Vec::new();
+    for task in log.visible().into_iter().filter(|e| e.event_type == "task") {
+        let declared = task.fields.get("files").and_then(Value::as_array).into_iter().flatten();
+        for path in declared.filter_map(|file| file.get("path").and_then(Value::as_str)) {
+            if !files.iter().any(|known| known == path) {
+                files.push(path.to_string());
+            }
+        }
+    }
     detect_subproject(&files, Path::new(""))
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .filter(|s| !s.is_empty())
@@ -1520,25 +1521,41 @@ mod tests {
         assert_eq!(merges.get(), 0);
     }
 
-    /// The merge reads the verdict from `spec.ndjson`: one wave's rejection is
-    /// not hidden by another's approval, and the merge asks before
-    /// integrating; once the rejected wave is approved again, it goes on.
+    /// O merge lê o veredito do `spec.ndjson` com a mesma regra do
+    /// fechamento. A reprovação de uma onda faz o merge perguntar antes de
+    /// juntar; a aprovação final da obra, gravada pelo agente de teste
+    /// dedicado depois da entrega do conserto, quita essa reprovação, e o
+    /// merge segue sem perguntar — é a mesma aprovação que deixou a obra
+    /// fechar. Uma reprovação gravada DEPOIS dessa aprovação volta a fazer o
+    /// merge perguntar: nada a quitou ainda.
+    ///
+    /// Em 20/09 o merge do pedido 281 parou para uma confirmação manual por
+    /// causa da reprovação de uma onda antiga que a aprovação final da obra
+    /// já tinha quitado.
     #[test]
-    fn the_merge_asks_for_confirmation_when_any_wave_verdict_was_rejected() {
-        use crate::shared::spec_state::{seed_runs, seed_verdict};
+    fn the_final_approval_of_the_work_pays_off_an_older_wave_rejection() {
+        use crate::shared::spec_state::{seed_event, seed_runs, seed_verdict};
+        use mustard_core::domain::spec_state::{final_approval, SpecState as _};
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         assert_eq!(recorded_verdict(root, "unit-a"), None, "nothing recorded yet");
+        // A leitura do fechamento, ao lado da do portão: as duas vêem a mesma
+        // quitação, ou nenhuma.
+        let closing = || {
+            let log = crate::shared::spec_state::DiskSpecState::new(root).log("unit-a").expect("the spec file");
+            final_approval(&log).map(|event| event.id)
+        };
 
         let criteria = seed_runs(root, "unit-a", &[None]);
-        seed_verdict(root, "unit-a", 1, "approved", criteria[0]);
-        assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("approved"));
-        seed_verdict(root, "unit-a", 2, "rejected", criteria[0]);
-        assert_eq!(
-            recorded_verdict(root, "unit-a").as_deref(),
-            Some("rejected"),
-            "one wave's rejection is not buried by another's approval"
-        );
+        let delivery = |wave: u64| {
+            let line = json!({ "wave": wave, "text": "a onda saiu", "files": ["src/unit.rs"] });
+            seed_event(root, "unit-a", "delivered", line)
+        };
+        delivery(1);
+        delivery(2);
+        seed_verdict(root, "unit-a", 1, "rejected", criteria[0]);
+        assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("rejected"), "a onda 1 reprovou");
+        assert_eq!(closing(), None, "sem conserto, o fechamento também não vê quitação");
 
         let merges = Cell::new(0u32);
         let merge = |_: &Path, _: u64| {
@@ -1547,15 +1564,64 @@ mod tests {
         };
         let settle = |_: &Path, _: &str| json!({ "ok": true });
         let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
-        let facts = PrFacts { number: 240, head: "dev_unit-a".to_string() };
-        let asked = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
-        assert_eq!(asked.action, "confirm");
-        assert_eq!(asked.reason, Some("review-not-approved"));
-        assert_eq!(merges.get(), 0, "a rejected wave is never merged without asking");
+        let facts = PrFacts { number: 281, head: "dev_unit-a".to_string() };
+        let door = || merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        let asked = door();
+        assert_eq!((asked.action, asked.reason), ("confirm", Some("review-not-approved")), "{asked:?}");
+        assert_eq!(merges.get(), 0, "a onda reprovada nunca é juntada sem perguntar");
 
-        seed_verdict(root, "unit-a", 2, "approved", criteria[0]);
-        let merged = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
-        assert_eq!(merged.action, "merged", "every wave approved, nothing to ask");
+        // O conserto sai pela rodada e o agente de teste dedicado aprova a
+        // obra: a aprovação fica na última onda, como o fechamento a grava.
+        delivery(1);
+        let quittance = seed_verdict(root, "unit-a", 2, "approved", criteria[0]);
+        assert_eq!(closing(), Some(quittance), "o fechamento lê a aprovação final");
+        assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("approved"), "e o portão lê a mesma");
+        let merged = door();
+        assert_eq!(merged.action, "merged", "a reprovação quitada não pede confirmação: {merged:?}");
+        assert_eq!(merges.get(), 1);
+
+        // A reprovação que chega depois da aprovação final ainda barra.
+        seed_verdict(root, "unit-a", 1, "rejected", criteria[0]);
+        assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("rejected"));
+        let again = door();
+        assert_eq!((again.action, again.reason), ("confirm", Some("review-not-approved")), "{again:?}");
+        assert_eq!(merges.get(), 1, "e nada mais foi juntado");
+    }
+
+    /// A obra sem onda nenhuma — a de até três pontos, que o orquestrador faz
+    /// — fecha com a aprovação final do agente de teste dedicado, que não
+    /// aponta onda nenhuma. O portão do merge lê essa aprovação como
+    /// veredito da obra, em vez de perguntar por falta de veredito.
+    #[test]
+    fn the_merge_reads_the_final_approval_of_a_work_with_no_waves() {
+        use crate::shared::spec_state::seed_event;
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        seed_event(root, "unit-b", "delivered", json!({ "wave": 1, "text": "a obra saiu", "files": ["src/unit.rs"] }));
+        assert_eq!(recorded_verdict(root, "unit-b"), None, "sem veredito nenhum");
+
+        let merges = Cell::new(0u32);
+        let merge = |_: &Path, _: u64| {
+            merges.set(merges.get() + 1);
+            Ok(())
+        };
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let facts = PrFacts { number: 282, head: "dev_unit-b".to_string() };
+        let door = || merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        let asked = door();
+        assert_eq!((asked.action, asked.reason), ("confirm", Some("no-review-verdict")), "{asked:?}");
+        assert_eq!(merges.get(), 0);
+
+        seed_event(
+            root,
+            "unit-b",
+            "verdict",
+            json!({ "final": true, "result": "approved", "text": "a obra está pronta" }),
+        );
+        assert_eq!(recorded_verdict(root, "unit-b").as_deref(), Some("approved"));
+        let merged = door();
+        assert_eq!(merged.action, "merged", "{merged:?}");
         assert_eq!(merges.get(), 1);
     }
 
@@ -1814,11 +1880,19 @@ mod tests {
         let root = dir.path();
         let spec_dir = root.join(".claude").join("spec").join("my-unit");
         std::fs::create_dir_all(&spec_dir).expect("spec dir");
-        std::fs::write(
-            spec_dir.join("spec.md"),
-            "# demo\n\n## Files\n\n- `apps/rt/src/lib.rs`\n- `apps/rt/src/main.rs`\n",
-        )
-        .expect("spec");
+        // A spec is its event file: the brief reads the files of its tasks,
+        // and a rendered `spec.md` that says otherwise is not read.
+        std::fs::write(spec_dir.join("spec.md"), "# demo\n\n## Files\n\n- `packages/core/src/lib.rs`\n")
+            .expect("an old spec.md");
+        let events = [
+            json!({"v": 1, "id": 1, "at": "2026-09-18T10:00:00-03:00", "type": "task", "author": "assistant",
+                "wave": 1, "text": "A.", "files": [{"path": "apps/rt/src/lib.rs"}], "origin": 1}),
+            json!({"v": 1, "id": 2, "at": "2026-09-18T10:00:01-03:00", "type": "task", "author": "assistant",
+                "wave": 2, "text": "B.", "files": [{"path": "apps/rt/src/main.rs"}, {"path": "apps/rt/src/lib.rs"}],
+                "origin": 1}),
+        ];
+        let lines: Vec<String> = events.iter().map(Value::to_string).collect();
+        std::fs::write(spec_dir.join("spec.ndjson"), format!("{}\n", lines.join("\n"))).expect("spec");
         let shelf = root.join("apps/rt/.claude/skills/rt-demo-pattern");
         std::fs::create_dir_all(&shelf).expect("shelf");
         std::fs::write(
@@ -1835,7 +1909,7 @@ mod tests {
         assert_eq!(brief.spec.as_deref(), Some("my-unit"));
         assert_eq!(brief.subproject.as_deref(), Some("apps/rt"));
         assert!(
-            brief.spec_path.unwrap_or_default().ends_with("my-unit/spec.md"),
+            brief.spec_path.unwrap_or_default().ends_with("my-unit/spec.ndjson"),
             "forward slashes on every platform"
         );
         assert!(

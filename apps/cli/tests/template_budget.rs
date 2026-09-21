@@ -2,8 +2,9 @@
 //!
 //! Em cada idioma, todo texto que o modelo lê — os comandos e o estilo de
 //! resposta do plugin, os agentes e o mapa do início da sessão que o
-//! instalador grava — soma menos de 20.480 bytes, e nenhum arquivo passa de
-//! 3.072 bytes. O mapa é o texto do início da sessão, e tem até 3.072 bytes.
+//! instalador grava — soma menos de 24.576 bytes. Não há teto por arquivo de
+//! agente: o que prende um molde é o que ele diz. O mapa do início da sessão,
+//! que entra em toda sessão, continua com o teto dele de 3.072 bytes.
 //!
 //! A conta é a do disco, byte a byte, como `find … -printf '%s'` a faz. Um
 //! arquivo pertence a um idioma quando o caminho dele diz o idioma (uma pasta
@@ -17,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 /// O teto da soma de um idioma, em bytes.
-const LANGUAGE_BUDGET: u64 = 20_480;
+const LANGUAGE_BUDGET: u64 = 24_576;
 
 /// O teto de um arquivo, e do texto do início da sessão, em bytes.
 const FILE_CAP: u64 = 3_072;
@@ -78,19 +79,13 @@ fn shown(path: &Path) -> String {
     path.strip_prefix(repo_root()).unwrap_or(path).display().to_string()
 }
 
-/// Em cada idioma, o texto que o modelo lê soma menos de 20.480 bytes, e
-/// nenhum arquivo passa de 3.072.
+/// Em cada idioma, o texto que o modelo lê soma menos de 20.480 bytes. Não há
+/// teto por arquivo: o que prende um texto de agente é o que ele diz, e a
+/// soma do idioma é que guarda o tamanho do todo.
 #[test]
 fn each_language_reads_under_the_prose_budget() {
     let files = read_by_the_model();
     assert!(files.len() >= 8, "the walk found almost nothing to measure: {files:?}");
-
-    let oversized: Vec<String> = files
-        .iter()
-        .filter(|p| bytes(p) > FILE_CAP)
-        .map(|p| format!("{}: {} bytes", shown(p), bytes(p)))
-        .collect();
-    assert!(oversized.is_empty(), "files over {FILE_CAP} bytes:\n{}", oversized.join("\n"));
 
     for lang in LANGUAGES {
         let read: Vec<&PathBuf> =

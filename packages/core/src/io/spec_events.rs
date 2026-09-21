@@ -11,12 +11,11 @@
 //! descartado. O próximo número parte do maior que existe, inclusive depois
 //! de uma edição à mão.
 //!
-//! Quem depende do arquivo como ficou (a página e o `.md` da spec) recebe o
-//! conteúdo recém-gravado ainda com a trava presa: a gravação seguinte só
-//! entra depois, então quem grava por último refaz a página por último. Numa
-//! pasta de spec do projeto, a linha da spec no índice (`io::spec_index`) é
-//! refeita do mesmo jeito, antes da página: todo gravador passa por aqui, então
-//! todo evento gravado atualiza o índice.
+//! Quem depende do arquivo como ficou (a conta das ondas depois da aprovação)
+//! recebe o conteúdo recém-gravado ainda com a trava presa: a gravação
+//! seguinte só entra depois. Numa pasta de spec do projeto, a linha da spec no
+//! índice (`io::spec_index`) é refeita do mesmo jeito: todo gravador passa por
+//! aqui, então todo evento gravado atualiza o índice.
 //!
 //! Num worktree, a spec continua sendo a do checkout principal: o arquivo mora
 //! fora do git, na pasta do Mustard do checkout principal, e sobrevive à troca
@@ -126,7 +125,8 @@ pub fn write_at(
 /// linha. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
 /// [`write_guarded`] recebe também a procura de segredo. Um nome de código citado num fato que
 /// o mapa do projeto (o da última de `cite_roots`) não confirma só avisa, em
-/// [`Written::citation_warnings`].
+/// [`Written::citation_warnings`]. O `last` de uma gravação `copy` que aponta
+/// além do último item do arquivo é trocado pelo último item, sem recusa.
 ///
 /// Numa pasta de spec do projeto (`<raiz>/.claude/spec/<nome>/spec.ndjson`),
 /// a linha da spec no índice é refeita logo depois da escrita, com a trava do
@@ -134,9 +134,9 @@ pub fn write_at(
 /// continua gravado, e [`Written::index_warning`] diz por quê.
 ///
 /// `then` roda depois da escrita e antes de a trava soltar, com o conteúdo
-/// que acabou de ser gravado, e não lê o disco: é onde a página e o `.md` são
-/// refeitos, para que duas gravações ao mesmo tempo nunca deixem a página sem
-/// a última. Numa recusa, nem o índice nem `then` são tocados.
+/// que acabou de ser gravado, e não lê o disco: é onde se confere o arquivo
+/// como ele ficou, sem que outra gravação entre no meio. Numa recusa, nem o
+/// índice nem `then` são tocados.
 pub fn write_at_then(
     path: &Path,
     event_type: &str,
@@ -179,11 +179,21 @@ fn write_inner(
     guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
-    let Prepared { event, asked, citation_warnings } = prepare(event_type, draft, cite_roots)?;
+    let Prepared { mut event, asked, citation_warnings } = prepare(event_type, draft, cite_roots)?;
 
     let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
     let content = file.read_to_string().map_err(io_refusal)?;
     let log = model::parse_log(&content);
+    // O `last` de uma cópia da página da spec nunca aponta além do que o
+    // arquivo tem: um número maior, de uma pasta de cópia velha ou de um
+    // pedido errado, é trocado pelo último item do arquivo, sem recusa —
+    // senão a cópia seguinte pularia os itens até esse número para sempre.
+    if event_type == "copy"
+        && let Some(last) = event.get("last").and_then(Value::as_u64)
+        && last > log.max_id()
+    {
+        event.insert("last".to_string(), Value::from(log.max_id()));
+    }
     // O arquivo como ficaria, conferido antes de qualquer escrita.
     let Staged { next, appended, after, id, code, effects } = stage(&content, &log, event, asked, at, find)?;
     guard(&log, &after)?;
@@ -194,16 +204,19 @@ fn write_inner(
     let log = after;
     // Primeiro a trava da spec, depois a do índice: sempre nessa ordem. A
     // publicação da página do projeto leva o endereço para a linha do
-    // projeto: ela é, por ter acabado de ser gravada, a última.
-    let project_url = log
-        .events
-        .iter()
-        .rev()
-        .find(|e| e.id == id)
-        .and_then(|e| crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE));
+    // projeto: ela é, por ter acabado de ser gravada, a última. A marca do
+    // template vai junto, e a publicação sem ela é a da página antiga.
+    let project_url = log.events.iter().rev().find(|e| e.id == id).and_then(|e| {
+        crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE)
+            .map(|url| (url, crate::domain::spec_index::is_template(e)))
+    });
     let index_warning = crate::io::spec_index::index_for(path).and_then(|(index, name)| {
         crate::io::spec_index::refresh_line(&index, &name, &log)
-            .and_then(|()| project_url.map_or(Ok(()), |url| crate::io::spec_index::set_project_url(&index, url)))
+            .and_then(|()| {
+                project_url.map_or(Ok(()), |(url, template)| {
+                    crate::io::spec_index::set_project_url(&index, url, template)
+                })
+            })
             .err()
     });
     then(&log);
@@ -356,10 +369,10 @@ pub fn read(path: &Path) -> Result<Option<SpecLog>, Refusal> {
 }
 
 /// Pega a trava exclusiva do arquivo, lê pelo mesmo manipulador e entrega o
-/// arquivo lido a `f`, soltando a trava só depois. É como a página é refeita
-/// sem gravar evento: nenhuma gravação entra no meio, então a página nunca
-/// fica atrás do arquivo. `Ok(None)` quando a spec ainda não tem arquivo; nada
-/// é criado.
+/// arquivo lido a `f`, soltando a trava só depois. É como a cópia para o
+/// banco da página, e a página do comando de página, saem sem gravar evento:
+/// nenhuma gravação entra no meio, então nenhuma das duas fica atrás do
+/// arquivo. `Ok(None)` quando a spec ainda não tem arquivo; nada é criado.
 pub fn with_locked_log<R>(path: &Path, f: impl FnOnce(&SpecLog) -> R) -> Result<Option<R>, Refusal> {
     let mut file = match LockedFile::existing(path) {
         Ok(file) => file,
@@ -446,7 +459,7 @@ mod tests {
         put(path, &[], "message", &at("09:00"), json!({"author": "user", "text": "o pedido"}));
     }
 
-    /// Uma spec de teste com os 33 tipos, em três ondas, com uma remoção por
+    /// Uma spec de teste com os 35 tipos, em três ondas, com uma remoção por
     /// horário, um expurgo e um limite revisto.
     struct Spec {
         _dir: tempfile::TempDir,
@@ -495,7 +508,8 @@ mod tests {
         let c1 = add("criterion_1", "criterion", "08:53", json!({"when": "a", "then": "b", "proof": "cargo test a", "origin": msg}));
         let c2 = add("criterion_2", "criterion", "08:54", json!({"when": "c", "then": "d", "proof": "cargo test c", "origin": msg}));
         add("wave_1", "wave", "08:55", json!({"n": 1, "text": "Preparo.", "criteria": [c1], "done_when": "A suíte passa.", "origin": msg}));
-        add("task_1", "task", "08:56", json!({"wave": 1, "text": "Juntar o texto.", "files": [{"path": "src/render.rs"}], "origin": msg}));
+        let task1 = add("task_1", "task", "08:56", json!({"wave": 1, "text": "Juntar o texto.", "files": [{"path": "src/render.rs"}], "origin": msg}));
+        add("step", "step", "08:56", json!({"wave": 1, "item": task1, "text": "A tarefa 1 ficou pronta."}));
         add("delivered_1", "delivered", "08:57", json!({"author": "wave", "wave": 1, "text": "Texto junto.", "files": ["src/render.rs"]}));
         add("wave_2", "wave", "08:58", json!({"n": 2, "text": "A aprovação lê o estado.", "criteria": [c2], "done_when": "A trava passa.", "depends_on": [1], "origin": msg}));
         add("task_2", "task", "08:59", json!({"wave": 2, "text": "O portão lê a aprovação.", "files": [{"path": "src/gate.rs", "new": true}], "skill": "add-hook-rule", "covers": [rule], "origin": msg}));
@@ -511,6 +525,7 @@ mod tests {
         add("note", "note", "09:09", json!({"text": "O Clippy foi corrigido.", "keys": ["clippy"], "origin": msg}));
         add("injection", "injection", "09:10", json!({"author": "hook", "hook": "session_start", "chars": 2870, "text": "Spec teste, fase execução."}));
         add("publish", "publish", "09:11", json!({"page": "spec", "milestone": "approval", "ok": true, "url": "https://example.com/p"}));
+        add("copy", "copy", "09:11", json!({"page": "spec", "last": 32}));
         add("call", "call", "09:12", json!({"author": "binary", "command": "round", "ms": 41, "result": "ok"}));
         add("hook", "hook", "09:13", json!({"author": "hook", "hook": "command_guard", "action": "block", "tool": "Bash", "reason": "rm -rf apaga trabalho."}));
         add("response", "response", "09:14", json!({"text": "Tirei a atualização dos projetos da Contoso.", "reply_to": msg}));
@@ -553,7 +568,7 @@ mod tests {
         );
         assert_eq!(
             ids_of(&log.block(BlockQuery::Wave(1))),
-            spec.ids(&["wave_1", "task_1", "delivered_1"])
+            spec.ids(&["wave_1", "task_1", "step", "delivered_1"])
         );
         assert!(log.block(BlockQuery::Wave(3)).is_empty());
     }
@@ -576,10 +591,10 @@ mod tests {
         let log = spec.log();
         let got = |step: Step| ids_of(&log.step(&step));
 
-        assert_eq!(got(Step::Resume), spec.ids(&["state", "publish", "approved"]));
+        assert_eq!(got(Step::Resume), spec.ids(&["state", "publish", "copy", "approved"]));
         assert_eq!(
             got(Step::Close),
-            spec.ids(&["state", "criterion_1", "criterion_2", "criterion_run", "publish", "approved"])
+            spec.ids(&["state", "criterion_1", "criterion_2", "criterion_run", "publish", "copy", "approved"])
         );
         assert_eq!(
             got(Step::Review { wave: 2 }),

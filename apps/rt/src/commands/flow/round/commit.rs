@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{
     check_message, MessageRefusal, Refusal, SpecLog, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX,
 };
@@ -39,7 +40,14 @@ pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Optio
     let scope_key = if numbers.len() == 1 { "round.commit.scope.one" } else { "round.commit.scope.many" };
     let scope = translate(scope_key, lang).replace("{waves}", &numbers.join("-"));
     let kind = if committed.iter().any(|(w, _)| !w.fixes.is_empty()) { "fix" } else { "feat" };
-    let title = format!("{kind}({scope}): {first}");
+    let mut title = format!("{kind}({scope}): {first}");
+    // O escopo com todas as ondas pode passar do teto do título quando há
+    // mais de uma; nesse caso, o título fica só com o começo da primeira
+    // onda, e o corpo — com uma linha por onda — segue como está.
+    if title.chars().count() > MESSAGE_TITLE_MAX && numbers.len() > 1 {
+        let scope = translate("round.commit.scope.one", lang).replace("{waves}", &numbers[0]);
+        title = format!("{kind}({scope}): {first}");
+    }
     let body: Vec<String> = committed
         .iter()
         .map(|(w, summary)| {
@@ -205,6 +213,35 @@ pub(super) fn git_lock(root: &Path) -> Result<LockedFile, RoundRefusal> {
 /// O commit atual do checkout `root`; vazio quando o git não responde.
 pub(super) fn head(root: &Path) -> String {
     git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string()
+}
+
+/// Depois do commit da rodada, o mapa relê só os arquivos que mudaram, pela
+/// leitura por partes que a ferramenta do scan já faz sozinha: sem isso, a
+/// sugestão de skill e de arquivos parecidos, antes do envio da onda
+/// seguinte, apontaria um arquivo que este commit acabou de apagar. Nunca
+/// trava a rodada nem avisa: sem o mapa, ou sem a ferramenta, a sugestão
+/// segue com o que já tinha.
+pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
+    let model = crate::commands::scan::default_model_path(root);
+    let _ = mine(root, &model);
+}
+
+/// O mapa fica atrasado do commit atual do checkout `root`: o mapa não
+/// existe, não se entende, ou o commit que ele leu por último não é o de
+/// agora — um commit à mão ou um pull mudaram o código fora da rodada.
+/// Quando fica, chama [`refresh_map`] com o mesmo `mine`, a releitura por
+/// partes que a rodada já faz depois de cada commit dela; sem git, sem mapa
+/// ou com o mapeador falhando, segue sem travar e sem aviso novo.
+pub(crate) fn refresh_map_if_stale(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
+    let Ok(map) = mustard_core::io::project_map::read(root) else { return };
+    if map.state.head.is_empty() {
+        return;
+    }
+    let Some(now) = git_exec::run(root, &["rev-parse", "HEAD"]).out() else { return };
+    if map.state.head == now.trim() {
+        return;
+    }
+    refresh_map(root, mine);
 }
 
 /// Os arquivos da rodada separados por repositório: os do principal e, por
@@ -427,6 +464,33 @@ fn copy_of(log: &SpecLog, wave: u64) -> Option<PathBuf> {
     recorded_copy(log, wave).map(|copy| PathBuf::from(copy.path)).filter(|path| path.is_dir())
 }
 
+/// Limpa a cópia da onda órfã `wave` — um Claude Code que fechou no meio do
+/// trabalho: o que ele deixou sem commitar, na cópia da onda e na cópia de
+/// cada submódulo dentro dela, volta ao commit atual, sem esperar o reenvio
+/// pedir isso — quem falhou no meio não deixou uma retomada em curso, deixou
+/// só o resto do que não terminou. A cópia que nunca existiu, ou que já não é
+/// mais um checkout ligado ao repositório, não faz nada.
+pub(super) fn clean_orphan_copy(root: &Path, log: &SpecLog, wave: u64) -> bool {
+    let Some(copy) = copy_of(log, wave) else { return false };
+    let subs = submodules_of(root);
+    let inner: Vec<&String> = subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()).collect();
+    let mut ok = reset_copy(&copy, &head(root));
+    for sub in inner {
+        ok = reset_copy(&copy.join(sub), &head(&root.join(sub))) && ok;
+    }
+    ok
+}
+
+/// Volta o checkout ligado `dir` ao commit `head`, descartando qualquer
+/// mudança sem commitar e qualquer arquivo novo. A pasta que não é um
+/// checkout ligado, ou sem commit para onde voltar, não faz nada.
+fn reset_copy(dir: &Path, head: &str) -> bool {
+    if !dir.join(".git").is_file() || head.is_empty() {
+        return false;
+    }
+    git(dir, &["checkout", "--detach", "--force", head]).is_ok() && git(dir, &["clean", "-fdx"]).is_ok()
+}
+
 /// Um arquivo que a junção muda no repositório principal: o que ele era e o
 /// que passa a ser. `None` é o arquivo que não existe.
 pub(super) struct Joined {
@@ -608,22 +672,57 @@ fn merge_texts(dir: &Path, ours: Option<&[u8]>, base: Option<&str>, theirs: Opti
     Err(out.stdout.lines().enumerate().filter(|(_, line)| line.starts_with("<<<<<<< ")).map(|(at, _)| at + 1).collect())
 }
 
+/// Os arquivos que a cópia `copy` mudou de fato, pelo `git status` dela, com
+/// o arquivo de dentro de um submódulo prefixado pelo caminho dele: é o dono
+/// de verdade do que entra no commit da rodada, e não a lista que a entrega
+/// citou, que vira só conferência.
+fn copy_changed(copy: &Path, subs: &[String]) -> Vec<String> {
+    let status = ["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=all"];
+    let mut changed = changed_paths(&git(copy, &status).unwrap_or_default());
+    for sub in subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()) {
+        let theirs = changed_paths(&git(&copy.join(sub), &status).unwrap_or_default());
+        changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
+    }
+    changed
+}
+
+/// Os arquivos que a onda `wave` mudou de fato, pela cópia gravada no envio
+/// mais novo dela; `None` sem cópia gravada, ou sem ela mais no disco. É o
+/// conjunto que a rodada comita, mesmo quando a linha de entrega cita outro.
+pub(super) fn real_changed_files(root: &Path, log: &SpecLog, wave: u64) -> Option<Vec<String>> {
+    let copy = copy_of(log, wave)?;
+    let subs = submodules_of(root);
+    Some(copy_changed(&copy, &subs))
+}
+
+/// Compila o repositório principal com o comando de compilação do projeto, o
+/// mesmo que o pedido de cada onda já ensina; sem ele declarado, nada é
+/// rodado, porque não há como compilar sem saber o comando. A rodada não
+/// comita nada quando a compilação falha.
+pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
+    let Some(build) = mustard_core::ProjectConfig::load(root).commands().build else {
+        return Ok(());
+    };
+    let out = crate::commands::review::qa_run::run_command(&build, root);
+    if out.result == "pass" {
+        return Ok(());
+    }
+    Err(RoundRefusal::BuildFailed { command: build, output: out.output })
+}
+
 /// Apaga a cópia de cada onda do relatório, depois do commit, com a cópia de
-/// cada submódulo dentro dela. A cópia com mudança fora da lista de arquivos
-/// entregue fica, e o aviso diz quais: ela se perderia com a cópia.
+/// cada submódulo dentro dela. A lista de arquivos de cada onda já foi
+/// trocada, antes do commit, pelo que a cópia mudou de fato — por isso a
+/// cópia só fica quando o próprio git não deixa removê-la, e o aviso mostra
+/// qual é.
 pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<Value> {
     let subs = submodules_of(root);
     let mut warnings = Vec::new();
     for wave in waves {
         let Some(copy) = copy_of(log, wave.wave) else { continue };
         let shown = copy.to_string_lossy().replace('\\', "/");
-        let status = ["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=all"];
-        let mut changed = changed_paths(&git(&copy, &status).unwrap_or_default());
+        let changed = copy_changed(&copy, &subs);
         let inner: Vec<&String> = subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()).collect();
-        for sub in &inner {
-            let theirs = changed_paths(&git(&copy.join(sub), &status).unwrap_or_default());
-            changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
-        }
         let left: Vec<String> = changed.into_iter().filter(|path| !wave.files.contains(path)).collect();
         let removed = left.is_empty()
             && git_lock(root).is_ok_and(|_held| {
@@ -641,7 +740,64 @@ pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lan
             warnings.push(json!({ "reason": "copy-kept", "wave": wave.wave, "hint": hint }));
         }
     }
+    warnings.extend(reinstall_binary(root, waves, lang));
     warnings
+}
+
+/// O comando que reinstala o binário do próprio Mustard, depois que a suíte
+/// passou: `cargo install` já não copia nada quando a compilação ou os
+/// testes de dentro dele falham, então uma instalação que sai do jeito
+/// errado nunca deixa o binário instalado pela metade.
+const REINSTALL_COMMAND: &str = "cargo install --path apps/rt --force";
+
+/// Recompila e reinstala o binário do próprio Mustard ao fim da rodada, pela
+/// decisão registrada na spec: a obra do Mustard é conduzida pelo próprio
+/// Mustard, e por isso cada rodada passa a usar a versão que ela mesma
+/// acabou de construir. A compilação de antes do commit ([`ensure_builds`])
+/// já provou que o repositório principal compila com o que a rodada comitou;
+/// falta a suíte inteira, que só ela prova de verdade. Sem onda comitada
+/// nesta rodada, sem comando de teste declarado no `mustard.json`, ou fora
+/// da raiz que constrói o próprio `mustard-rt` (sem `apps/rt/Cargo.toml`),
+/// nada roda: a rodada de outro projeto nunca tenta instalar o binário de
+/// ninguém, e uma rodada vazia não reinstala à toa. Com a suíte vermelha, ou
+/// com a instalação em si falhando depois da suíte verde, o binário
+/// instalado continua o de antes e o aviso mostra o comando e a saída.
+pub(super) fn reinstall_binary(root: &Path, waves: &[WaveReport], lang: Locale) -> Option<Value> {
+    reinstall_with(root, waves, lang, &|command, cwd| crate::commands::review::qa_run::run_command(command, cwd))
+}
+
+/// [`reinstall_binary`] com o executor recebido, que é como um teste prova a
+/// regra inteira — suíte vermelha não instala, suíte verde chama a
+/// instalação, instalação vermelha ainda assim avisa — sem rodar `cargo`
+/// de verdade nem tocar no binário instalado desta máquina.
+fn reinstall_with(
+    root: &Path,
+    waves: &[WaveReport],
+    lang: Locale,
+    exec: &dyn Fn(&str, &Path) -> crate::commands::review::qa_run::ProofRun,
+) -> Option<Value> {
+    if waves.is_empty() || !root.join("apps/rt/Cargo.toml").is_file() {
+        return None;
+    }
+    let test = mustard_core::ProjectConfig::load(root).commands().test?;
+    let suite = exec(&test, root);
+    if suite.result != "pass" {
+        return Some(binary_not_reinstalled(&test, &suite.output, lang));
+    }
+    let install = exec(REINSTALL_COMMAND, root);
+    if install.result != "pass" {
+        return Some(binary_not_reinstalled(REINSTALL_COMMAND, &install.output, lang));
+    }
+    None
+}
+
+/// O aviso de que o binário não foi reinstalado, com o comando que falhou e
+/// o que ele escreveu — nunca uma frase montada sem a saída, porque é ela
+/// que diz o que consertar.
+fn binary_not_reinstalled(command: &str, output: &str, lang: Locale) -> Value {
+    let hint =
+        translate("round.binary_not_reinstalled", lang).replace("{command}", command).replace("{output}", output);
+    json!({ "reason": "binary-not-reinstalled", "hint": hint })
 }
 
 /// Os caminhos que o `status --porcelain -z` lista, inclusive o nome antigo
@@ -684,6 +840,75 @@ mod tests {
     use super::*;
     use crate::commands::flow::round::tests::*;
 
+    /// A ferramenta que grava quantas vezes foi chamada e falha sempre, como
+    /// um scan que não está instalado.
+    fn mine_counting(calls: &std::cell::Cell<usize>) -> impl Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport> + '_ {
+        move |_, _| {
+            calls.set(calls.get() + 1);
+            Err(mustard_core::platform::error::Error::check_failed("scan: not found"))
+        }
+    }
+
+    /// Sem mapa no disco, sem git no diretório e com um mapa cujo commit já
+    /// bate com o do checkout, a ferramenta do scan nunca roda por
+    /// [`refresh_map_if_stale`]; e, quando ela falha, a chamada não trava nem
+    /// propaga o erro.
+    #[test]
+    fn a_stale_map_without_what_it_needs_never_breaks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let calls = std::cell::Cell::new(0);
+
+        // Sem mapa: nada a comparar, a ferramenta não roda.
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem mapa, a ferramenta não é chamada");
+
+        // Mapa sem o commit gravado (mapa antigo, de antes deste campo): idem.
+        let model = crate::commands::scan::default_model_path(root);
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::write(&model, json!({"modules": []}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem o head gravado, a ferramenta não é chamada");
+
+        // Mapa com um commit gravado, mas fora de um repositório git: sem
+        // como comparar, a ferramenta não roda.
+        std::fs::write(&model, json!({"modules": [], "state": {"head": "abc123"}}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "sem git, a ferramenta não é chamada");
+
+        // Um repositório git de verdade, com o mapa já no commit atual: a
+        // ferramenta segue sem rodar.
+        std::process::Command::new("git").args(["init", "-q"]).current_dir(root).output().expect("git init");
+        for args in [["config", "user.email"], ["config", "user.name"]] {
+            std::process::Command::new("git").args(args).arg("t").current_dir(root).output().expect("git config");
+        }
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        std::process::Command::new("git").args(["add", "-A"]).current_dir(root).output().expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "semente"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+        let head = String::from_utf8_lossy(
+            &std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap().stdout,
+        )
+        .trim()
+        .to_string();
+        std::fs::write(&model, json!({"modules": [], "state": {"head": head}}).to_string()).unwrap();
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 0, "o mapa já está no commit atual");
+
+        // O commit andou fora da rodada e a ferramenta falha: a chamada
+        // tenta reler, mas o erro não trava nem propaga.
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "fora da rodada"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 1, "o commit andou: a ferramenta é chamada, mesmo falhando");
+    }
+
     /// A mensagem do commit tem título e corpo dentro do teto e nunca traz o
     /// link da conversa, o nome do modelo, a assinatura de coautoria nem o
     /// e-mail de ninguém; o commit é recusado até o e-mail sair.
@@ -702,6 +927,85 @@ mod tests {
             let refused = check_commit_text(&title, &body).expect_err(&format!("{title} / {body}"));
             assert_eq!(refused.reason(), reason, "{title} / {body}");
         }
+    }
+
+    /// O texto do agente de onda diz, nos dois idiomas, o limite do resumo do
+    /// commit, e o limite é o que a rodada aceita: com o começo que ela põe na
+    /// frente (o tipo e o número de uma onda de dois dígitos), um resumo de 45
+    /// caracteres fecha o título em 60 e passa, e um de 46 passa de 60 e é
+    /// recusado.
+    #[test]
+    fn the_wave_agent_text_states_the_commit_summary_limit_the_round_accepts() {
+        let limit = 45;
+        for (lang, said) in [(Locale::PtBr, "até 45 caracteres"), (Locale::EnUs, "at most 45 characters")] {
+            let (_, agent) = mustard_core::agent_texts(lang)[0];
+            let line = agent.lines().find(|l| l.starts_with("- `commit`")).expect("the commit line of the wave agent");
+            assert!(line.contains(said), "{lang:?}: {line}");
+            assert!(line.contains(&MESSAGE_TITLE_MAX.to_string()), "{lang:?}: {line}");
+            let report = |summary: String| WaveReport {
+                wave: 13,
+                delivered: "A onda saiu.".into(),
+                files: vec!["src/a.rs".into()],
+                commit: Some(summary),
+                proofs: Vec::new(),
+                fixes: Vec::new(),
+                replan: None,
+                model_used: None,
+                steps: None,
+                tokens: None,
+                caller_steps: None,
+                caller_tokens: None,
+            };
+            let (title, _) = commit_message(&[report("a".repeat(limit))], lang)
+                .unwrap_or_else(|_| panic!("{lang:?}: a {limit}-character summary fits"))
+                .expect("a message");
+            assert_eq!(title.chars().count(), MESSAGE_TITLE_MAX, "{lang:?}: {title}");
+            let Err(over) = commit_message(&[report("a".repeat(limit + 1))], lang) else {
+                panic!("{lang:?}: a summary over {limit} characters is refused");
+            };
+            assert_eq!(over.reason(), "commit-too-long", "{lang:?}");
+        }
+    }
+
+    /// Duas ondas no mesmo commit dão um título dentro do teto, mesmo quando
+    /// o escopo das duas juntas passaria de 60: na divisa, um resumo de 43
+    /// caracteres ainda cabe com o escopo das duas ondas, e um de 44 só cabe
+    /// porque o título cai para o começo da primeira onda só; o corpo
+    /// continua com uma linha por onda nos dois casos.
+    #[test]
+    fn a_commit_of_two_waves_keeps_the_title_limit() {
+        let report = |wave: u64, summary: String| WaveReport {
+            wave,
+            delivered: "A onda saiu.".into(),
+            files: vec![format!("src/{wave}.rs")],
+            commit: Some(summary),
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+            model_used: None,
+            steps: None,
+            tokens: None,
+            caller_steps: None,
+            caller_tokens: None,
+        };
+
+        let waves = [report(1, "a".repeat(43)), report(2, "a".repeat(43))];
+        let (title, body) = commit_message(&waves, Locale::PtBr)
+            .unwrap_or_else(|_| panic!("a 43-character summary fits the joint scope of two waves"))
+            .expect("a message");
+        assert_eq!(title.chars().count(), MESSAGE_TITLE_MAX, "{title}");
+        assert!(title.starts_with("feat(ondas-1-2): "), "{title}");
+        assert_eq!(body.lines().count(), 2, "{body}");
+
+        let waves = [report(1, "a".repeat(44)), report(2, "a".repeat(44))];
+        let (title, body) = commit_message(&waves, Locale::PtBr)
+            .unwrap_or_else(|_| {
+                panic!("a 44-character summary only overflows the joint scope, not the single-wave one")
+            })
+            .expect("a message");
+        assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
+        assert!(title.starts_with("feat(onda-1): "), "{title}");
+        assert_eq!(body.lines().count(), 2, "{body}");
     }
 
     /// A mensagem do commit é conferida antes de qualquer gravação: o
@@ -792,11 +1096,11 @@ mod tests {
     }
 
     /// A junção leva ao repositório principal o arquivo que a cópia apagou, e
-    /// o commit leva a remoção. A cópia com uma mudança fora da lista
-    /// entregue fica no disco, e o aviso diz qual arquivo e qual cópia; a que
-    /// só mudou o que entregou é apagada.
+    /// o commit leva a remoção. O arquivo que a cópia mudou e a entrega não
+    /// citou entra no commit do mesmo jeito, com um aviso de divergência; as
+    /// duas cópias somem, porque tudo o que cada uma mudou já foi comitado.
     #[test]
-    fn a_file_deleted_in_the_copy_is_deleted_and_a_copy_with_more_changes_stays_with_a_warning() {
+    fn a_file_deleted_in_the_copy_is_deleted_and_an_undeclared_file_enters_the_commit_with_a_warning() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[]), (2, &["src/c.rs"], &[])]);
@@ -813,18 +1117,24 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(!root.join("src/a.rs").exists());
         assert_eq!(std::fs::read_to_string(root.join("src/c.rs")).unwrap(), "fn um() {}\nfn c() {}\n");
-        assert!(!root.join("src/esquecido.rs").exists(), "only the delivered files are merged");
+        assert_eq!(std::fs::read_to_string(root.join("src/esquecido.rs")).unwrap(), "fn esquecido() {}\n",
+            "o arquivo fora da lista entra no commit mesmo assim");
         let shown = Command::new("git").args(["show", "--name-status", "--format=", "HEAD"]).current_dir(root).output();
         let shown = String::from_utf8_lossy(&shown.unwrap().stdout).to_string();
-        assert_eq!(shown.lines().collect::<Vec<_>>(), ["D\tsrc/a.rs", "M\tsrc/b.rs", "M\tsrc/c.rs"], "{out}");
+        assert_eq!(
+            shown.lines().collect::<Vec<_>>(),
+            ["D\tsrc/a.rs", "M\tsrc/b.rs", "M\tsrc/c.rs", "A\tsrc/esquecido.rs"],
+            "{out}"
+        );
 
         assert!(!copy(1).exists(), "the copy with only delivered changes is gone");
-        assert!(copy(2).join("src/esquecido.rs").is_file(), "the copy with more changes stays");
-        let kept = translate("round.copy_kept", Locale::PtBr)
+        assert!(!copy(2).exists(), "the copy whose extra file already entered the commit is gone too");
+        let hint = translate("round.files_diverged", Locale::PtBr)
             .replace("{wave}", "2")
-            .replace("{copy}", &mustard_core::io::wave_prompt::shown(&copy(2)))
-            .replace("{files}", "src/esquecido.rs");
-        assert_eq!(out["warnings"], json!([{"reason": "copy-kept", "wave": 2, "hint": kept}]), "{out}");
+            .replace("{changed}", "2")
+            .replace("{declared}", "1")
+            .replace("{missing}", "src/esquecido.rs");
+        assert_eq!(out["warnings"], json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
     }
 
     /// Cada relatório de `wrong` é recusado pelo git, com o motivo que o git
@@ -1102,5 +1412,159 @@ mod tests {
             "class A {}\n",
             "o arquivo fora da rodada fica byte a byte"
         );
+    }
+
+    /// Um `WaveReport` mínimo, só com o número da onda — o bastante para
+    /// provar que a rodada comitou algo, sem os campos que a reinstalação
+    /// nunca lê.
+    fn minimal_wave(wave: u64) -> WaveReport {
+        WaveReport {
+            wave,
+            delivered: String::new(),
+            files: Vec::new(),
+            commit: None,
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+            model_used: None,
+            steps: None,
+            tokens: None,
+            caller_steps: None,
+            caller_tokens: None,
+        }
+    }
+
+    /// A raiz de um repositório que constrói o próprio `mustard-rt`: o
+    /// bastante para `reinstall_with` reconhecer a raiz e seguir adiante.
+    fn mustard_like_root(root: &Path, test_command: &str) {
+        std::fs::write(root.join("mustard.json"), format!(r#"{{"testCommand":"{test_command}"}}"#)).unwrap();
+        std::fs::create_dir_all(root.join("apps/rt")).unwrap();
+        std::fs::write(root.join("apps/rt/Cargo.toml"), b"[package]\nname=\"mustard-rt\"\n").unwrap();
+    }
+
+    fn proof(result: &'static str, output: &str) -> crate::commands::review::qa_run::ProofRun {
+        crate::commands::review::qa_run::ProofRun {
+            result,
+            exit: if result == "pass" { 0 } else { 1 },
+            ms: 0,
+            output: output.to_string(),
+            ran_no_test: None,
+        }
+    }
+
+    /// Sem onda comitada nesta rodada, ou fora da raiz que constrói o
+    /// próprio `mustard-rt` (sem `apps/rt/Cargo.toml`), a reinstalação nunca
+    /// chama o executor: nenhum projeto alheio tenta instalar o binário de
+    /// ninguém, e uma rodada vazia não reinstala à toa.
+    #[test]
+    fn reinstall_never_calls_the_executor_without_a_committed_wave_or_outside_mustards_own_repo() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let calls = std::cell::Cell::new(0);
+        let counting = |_: &str, _: &Path| {
+            calls.set(calls.get() + 1);
+            proof("pass", "")
+        };
+
+        // Com apps/rt/Cargo.toml, mas sem nenhuma onda comitada nesta rodada.
+        mustard_like_root(root, "exit 0");
+        assert!(reinstall_with(root, &[], Locale::PtBr, &counting).is_none());
+        assert_eq!(calls.get(), 0, "rodada vazia: o executor nunca é chamado");
+
+        // Com onda, mas fora da raiz que constrói o mustard-rt.
+        std::fs::remove_file(root.join("apps/rt/Cargo.toml")).unwrap();
+        assert!(reinstall_with(root, &[minimal_wave(1)], Locale::PtBr, &counting).is_none());
+        assert_eq!(calls.get(), 0, "fora do próprio Mustard: o executor nunca é chamado");
+    }
+
+    /// A suíte vermelha nunca chama a instalação — é o "só depois de"
+    /// principal desta peça: só a compilação e a suíte verdes reinstalam. O
+    /// binário instalado continua o de antes, e o aviso mostra o comando e a
+    /// saída de verdade.
+    #[test]
+    fn reinstall_with_a_red_suite_never_calls_the_install_and_warns_with_the_output() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        mustard_like_root(root, "a suíte de teste");
+        let install_calls = std::cell::Cell::new(0);
+        let exec = |command: &str, _: &Path| {
+            if command == REINSTALL_COMMAND {
+                install_calls.set(install_calls.get() + 1);
+            }
+            proof("fail", "3 testes falharam")
+        };
+        let warning = reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).expect("aviso de suíte vermelha");
+        assert_eq!(warning["reason"], json!("binary-not-reinstalled"), "{warning}");
+        let hint = warning["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("a suíte de teste"), "{warning}");
+        assert!(hint.contains("3 testes falharam"), "{warning}");
+        assert_eq!(install_calls.get(), 0, "suíte vermelha: a instalação nunca é chamada");
+    }
+
+    /// Compilação (já provada por [`ensure_builds`] antes do commit) e suíte
+    /// verdes: a instalação roda, na ordem certa, com o comando de teste do
+    /// projeto primeiro e a instalação depois — sem os dois, nada reinstala.
+    #[test]
+    fn reinstall_with_a_green_suite_calls_the_install_in_order_and_installs_when_it_passes_too() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        mustard_like_root(root, "a suíte de teste");
+        let commands = std::cell::RefCell::new(Vec::new());
+        let exec = |command: &str, _: &Path| {
+            commands.borrow_mut().push(command.to_string());
+            proof("pass", "")
+        };
+        assert!(reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).is_none(), "suíte e instalação verdes: sem aviso");
+        assert_eq!(commands.into_inner(), vec!["a suíte de teste".to_string(), REINSTALL_COMMAND.to_string()]);
+    }
+
+    /// Suíte verde, mas a instalação em si falha: o binário instalado
+    /// continua o de antes — `cargo install` não copia nada quando falha —
+    /// e o aviso mostra o comando da instalação e a saída dela, não a da
+    /// suíte.
+    #[test]
+    fn reinstall_with_a_green_suite_and_a_red_install_warns_with_the_install_output() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        mustard_like_root(root, "a suíte de teste");
+        let exec = |command: &str, _: &Path| {
+            if command == REINSTALL_COMMAND { proof("fail", "disco cheio") } else { proof("pass", "") }
+        };
+        let warning =
+            reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).expect("aviso de instalação vermelha");
+        assert_eq!(warning["reason"], json!("binary-not-reinstalled"), "{warning}");
+        let hint = warning["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(REINSTALL_COMMAND), "{warning}");
+        assert!(hint.contains("disco cheio"), "{warning}");
+        assert!(!hint.contains("a suíte de teste"), "o aviso é da instalação, não da suíte: {warning}");
+    }
+
+    /// A trilha que a rodada usa de verdade: `close_copies`, chamada depois
+    /// do commit, já traz o aviso de reinstalação — sem precisar montar a
+    /// rodada inteira. Prova a ligação, não só a função auxiliar.
+    #[test]
+    fn close_copies_warns_when_the_suite_fails_to_reinstall_the_binary() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        mustard_like_root(root, "exit 1");
+        let log = SpecLog::default();
+        let warnings = close_copies(root, &log, &[minimal_wave(9)], Locale::PtBr);
+        let warning = warnings
+            .iter()
+            .find(|w| w["reason"] == json!("binary-not-reinstalled"))
+            .unwrap_or_else(|| panic!("nenhum aviso de reinstalação: {warnings:?}"));
+        assert!(warning["hint"].as_str().unwrap_or_default().contains("exit 1"), "{warning}");
+    }
+
+    /// Sem onda comitada nesta rodada, `close_copies` nunca tenta reinstalar
+    /// nada — nem o aviso de suíte vermelha aparece.
+    #[test]
+    fn close_copies_never_warns_about_reinstalling_without_a_wave_this_round() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        mustard_like_root(root, "exit 1");
+        let log = SpecLog::default();
+        let warnings = close_copies(root, &log, &[], Locale::PtBr);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 }

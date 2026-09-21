@@ -72,6 +72,10 @@ pub(super) struct Segment {
     pub args: Vec<Word>,
     /// The redirects of the command, kept apart from the arguments.
     pub redirects: Vec<Redirect>,
+    /// The structure words ([`STRUCTURE_WORDS`]) written plain right before
+    /// the program, in order: `while pgrep x` is `["while"]`, `do sleep 1` is
+    /// `["do"]`. A wrapper or an assignment in between is skipped, not kept.
+    pub leading: Vec<String>,
 }
 
 impl Segment {
@@ -553,10 +557,18 @@ fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
 /// The command `words` spell: the program found past the structure words,
 /// the assignments and the wrappers, then its arguments.
 fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
-    let start = command_start(&words);
+    // `command_start` can name an index past the last word (a wrapper's own
+    // options run out with none of its own left, `function` with nothing
+    // after it): `skip` reads past the end fine, but slicing does not.
+    let start = command_start(&words).min(words.len());
+    let leading = words[..start]
+        .iter()
+        .filter(|w| w.is_plain() && STRUCTURE_WORDS.contains(&w.text.as_str()))
+        .map(|w| w.text.clone())
+        .collect();
     let mut rest = words.into_iter().skip(start);
     let program = rest.next().unwrap_or_default();
-    Segment { program, args: rest.collect(), redirects }
+    Segment { program, args: rest.collect(), redirects, leading }
 }
 
 /// Where the command really starts: past the structure words, a function
@@ -791,6 +803,22 @@ mod tests {
             let found = segments(cmd);
             assert_eq!(found[0].name(), "rm", "{cmd}: {found:?}");
         }
+    }
+
+    /// The structure words right before the program are kept, in order, on
+    /// [`Segment::leading`] — `while`/`until` mark the start of a loop's
+    /// condition, `do` marks its body, `done` closes it. A wrapper in
+    /// between is skipped from `leading`, same as it is from the program.
+    #[test]
+    fn leading_keeps_the_structure_words_before_the_program() {
+        let found = segments("until rtk pgrep -f x; do sleep 1; done");
+        let leading: Vec<Vec<&str>> = found.iter().map(|s| s.leading.iter().map(String::as_str).collect()).collect();
+        assert_eq!(leading, [vec!["until"], vec!["do"], vec!["done"]], "{found:?}");
+        assert_eq!(found[0].name(), "pgrep");
+        assert_eq!(found[1].name(), "sleep");
+
+        // A plain command, with no structure word ahead, has an empty leading.
+        assert_eq!(segments("pgrep -f x")[0].leading, Vec::<String>::new());
     }
 
     /// The value of an assignment keeps its substitution whole: cutting

@@ -5,20 +5,27 @@
 //!
 //! 1. **A trava de instalação.** Num projeto sem `mustard.json` na raiz, um
 //!    comando `/mustard:*` é barrado com a indicação do `/mustard:upsert`, o
-//!    único liberado (é a porta que instala). O `/mustard` sozinho, sem dois
-//!    pontos, é a ajuda e passa. Texto comum nunca é barrado: num projeto sem
-//!    Mustard os ganchos ficam calados.
+//!    único liberado (é a porta que instala). Sem o arquivo, o idioma do
+//!    projeto ainda não é conhecido, então a recusa sai do catálogo nos dois
+//!    idiomas, uma linha em cada. O `/mustard` sozinho, sem dois pontos, é a
+//!    ajuda e passa. Texto comum nunca é barrado: num projeto sem Mustard os
+//!    ganchos ficam calados.
 //! 2. **A mensagem, gravada.** Com uma spec atual, a mensagem do usuário vai
 //!    para o bloco da conversa, como ele a escreveu. O aviso que o próprio
 //!    Claude Code manda pelo mesmo canal (o fim de um comando em segundo
 //!    plano, a volta de um subagente) não é mensagem de ninguém e não é
 //!    gravado.
 //! 3. **A linha curta.** Todo projeto instalado recebe, a cada mensagem, uma
-//!    linha de até 100 caracteres: responder no idioma do usuário, em texto
-//!    simples. A regra de escrita inteira mora no estilo de resposta; a
-//!    linha só lembra, e vai em toda mensagem porque o que ela rege é sempre
-//!    a resposta mais nova. É o único texto que uma mensagem comum coloca na
-//!    conversa: os textos grandes de regras não vão mais a cada mensagem.
+//!    linha escondida de até 100 caracteres, sempre igual: responder no
+//!    idioma do usuário, em texto simples. A regra de escrita inteira mora no
+//!    estilo de resposta; a linha só lembra, e vai em toda mensagem porque o
+//!    que ela rege é sempre a resposta mais nova. É o único texto que uma
+//!    mensagem comum coloca na conversa: os textos grandes de regras não vão
+//!    mais a cada mensagem. A exceção: depois de uma resposta com erro de
+//!    escrita, a linha leva mais uma frase curta com o erro, como "Na última
+//!    resposta: frase com 29 palavras.", uma vez só. Quem acha e guarda o erro
+//!    é a conferência do fim da resposta (`clarity_check`), que não barra a
+//!    resposta: esta frase é o único caminho do erro até o assistente.
 
 use std::path::Path;
 
@@ -27,6 +34,7 @@ use mustard_core::platform::error::Error;
 use mustard_core::ProjectConfig;
 
 use crate::commands::spec_events::conversation::record_message;
+use crate::hooks::task::clarity_check::take_next_note;
 use crate::shared::prompt::is_harness_notice;
 
 /// A entrada da mensagem.
@@ -75,9 +83,15 @@ fn message_line(root: &Path) -> Option<String> {
     Some(mustard_core::translate(key, language.text_or_default()).to_string())
 }
 
-/// A recusa da trava de instalação.
-const NOT_INSTALLED_REASON: &str = "Mustard is not installed in this project (no mustard.json at \
-     the root). Run /mustard:upsert to install it — everything else stays disabled until then.";
+/// A recusa da trava de instalação, do catálogo, uma linha em cada idioma:
+/// sem `mustard.json` o Mustard ainda não sabe qual é o idioma do projeto.
+fn not_installed_reason() -> String {
+    format!(
+        "{}\n{}",
+        mustard_core::translate("install_lock.not_installed", mustard_core::SupportedLocale::PtBr),
+        mustard_core::translate("install_lock.not_installed", mustard_core::SupportedLocale::EnUs),
+    )
+}
 
 impl Check for PromptEntry {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
@@ -89,14 +103,22 @@ impl Check for PromptEntry {
         let root = Path::new(&cwd);
         if !ProjectConfig::exists(root) {
             if is_mustard_command(prompt) && !is_upsert_prompt(prompt) {
-                return Ok(Verdict::Deny { reason: NOT_INSTALLED_REASON.to_string() });
+                return Ok(Verdict::Deny { reason: not_installed_reason() });
             }
             return Ok(Verdict::Allow);
         }
         if !is_harness_notice(prompt) {
             let _ = record_message(root, input.session_id.as_deref(), prompt);
         }
-        Ok(message_line(root).map_or(Verdict::Allow, |context| Verdict::Inject { context }))
+        let Some(mut line) = message_line(root) else {
+            return Ok(Verdict::Allow);
+        };
+        // O erro de escrita da última resposta vai uma vez, junto da linha.
+        if let Some(note) = take_next_note(root, input.session_id.as_deref()) {
+            line.push(' ');
+            line.push_str(&note);
+        }
+        Ok(Verdict::Inject { context: line })
     }
 }
 
@@ -191,13 +213,13 @@ mod tests {
     /// escritos no disco, parado na branch de uma spec aberta.
     fn project_with_injectables_on(spec: &str) -> tempfile::TempDir {
         let dir = project_with(
-            r#"{"language":{"text":"pt-BR"},"inject":[{"on":"userPromptSubmit","file":".claude/mustard/mapa-inicio-sessao.md","once":true}]}"#,
+            r#"{"language":{"text":"pt-BR"},"inject":[{"on":"userPromptSubmit","file":".claude/mustard/session-map.md","once":true}]}"#,
         );
         let root = dir.path();
         let mustard_dir = root.join(".claude").join("mustard");
         std::fs::create_dir_all(&mustard_dir).unwrap();
         std::fs::write(
-            mustard_dir.join("mapa-inicio-sessao.md"),
+            mustard_dir.join("session-map.md"),
             mustard_core::session_map(mustard_core::platform::i18n::Locale::PtBr),
         )
         .unwrap();
@@ -273,7 +295,7 @@ mod tests {
             assert_eq!(context_of(verdict), PT_LINE, "{prompt}");
         }
         assert!(
-            !dir.path().join(".claude/.session/s1/injected-mapa-inicio-sessao.md").exists(),
+            !dir.path().join(".claude/.session/s1/injected-session-map.md").exists(),
             "no injectable is delivered, so no marker is burned",
         );
     }
@@ -302,6 +324,22 @@ mod tests {
         assert!(!bare.path().join(".claude").exists(), "no spec, nothing recorded");
     }
 
+    /// A volta de um subagente, que começa com `<agent-message from=`, não é
+    /// gravada como fala do usuário; a fala de verdade continua gravada.
+    #[test]
+    fn a_subagent_report_is_not_recorded_as_the_user() {
+        let dir = project_with_injectables_on("subagente");
+        let root = dir.path();
+        let c = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
+        for prompt in [
+            "<agent-message from=\"onda-39\">relatório da onda</agent-message>",
+            "arrume o botão",
+        ] {
+            let _ = PromptEntry.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
+        }
+        assert_eq!(messages(root, "subagente"), ["arrume o botão"]);
+    }
+
     /// A linha segue o idioma declarado em `language.text`: pt-BR recebe a
     /// linha em português, en-US a inglesa.
     #[test]
@@ -312,30 +350,29 @@ mod tests {
         }
     }
 
-    /// Sem `language.text` no `mustard.json`, o idioma nunca é suposto, e as
-    /// chaves antigas de idioma não contam como declaração: a linha manda
-    /// responder no idioma de quem escreve, sem nomear idioma, e uma resposta
-    /// em inglês não ganha defeito de idioma. Com pt-BR declarado, o defeito
-    /// continua.
-    #[test]
-    fn undeclared_language_is_never_assumed() {
-        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
-
+    /// O `Stop` da sessão `s1` com uma resposta em inglês, prosa bastante
+    /// para o idioma ser julgado.
+    fn english_stop() -> HookInput {
         let english = "The wave is done and the tests pass.\n\
             The check now compares the language of the reply with the language of the project.\n\
             It counts the common words of each language.\n\
             A short reply is not judged at all.";
-        let stop = HookInput {
+        HookInput {
             hook_event_name: Some("Stop".to_string()),
             session_id: Some("s1".to_string()),
             raw: serde_json::json!({ "last_assistant_message": english }),
             ..HookInput::default()
-        };
-        let context_or_reason = |verdict: Verdict| match verdict {
-            Verdict::Inject { context } => context,
-            Verdict::Deny { reason } => reason,
-            _ => String::new(),
-        };
+        }
+    }
+
+    /// Sem `language.text` no `mustard.json`, o idioma nunca é suposto, e as
+    /// chaves antigas de idioma não contam como declaração: a linha manda
+    /// responder no idioma de quem escreve, sem nomear idioma, e uma resposta
+    /// em inglês não ganha erro de idioma na mensagem seguinte. Com pt-BR
+    /// declarado, o erro vai.
+    #[test]
+    fn undeclared_language_is_never_assumed() {
+        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 
         for config in ["{}", r#"{"specLang":"pt-BR","lang":"pt-BR"}"#] {
             let dir = project_with(config);
@@ -346,36 +383,27 @@ mod tests {
                 assert!(!line.contains(named), "{config}: an undeclared language is named ({named}): {line}");
             }
             let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-            let block = context_or_reason(EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap());
-            assert!(!block.contains("resposta em"), "{config}: no language verdict: {block}");
+            assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap(), Verdict::Allow);
+            let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &c).unwrap());
+            assert!(!next.contains("resposta em"), "{config}: no language verdict: {next}");
         }
 
         let dir = project_with(PT_PROJECT);
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::Stop));
-        let block = context_or_reason(EndOfTurnCheck.evaluate(&stop, &c).unwrap());
-        assert!(block.contains("resposta em en-US; o idioma do projeto e do usuário é pt-BR"), "{block}");
+        assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &c).unwrap(), Verdict::Allow);
+        let on_prompt = Ctx { trigger: Some(Trigger::UserPromptSubmit), ..c };
+        let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &on_prompt).unwrap());
+        assert_eq!(next, format!("{PT_LINE} Na última resposta: resposta em en-US."));
     }
 
     /// A linha curta e a medição de idioma valem para todo projeto com
     /// `mustard.json`. Com ou sem a antiga chave do tom, a mensagem leva a
-    /// linha do idioma declarado, e uma resposta em inglês num projeto em
-    /// pt-BR é barrada no fim da resposta; a mensagem seguinte não repete o
-    /// defeito. Sem `mustard.json`, nada.
+    /// linha do idioma declarado; uma resposta em inglês num projeto em pt-BR
+    /// não é barrada, e a mensagem seguinte leva o erro, uma vez só. Sem
+    /// `mustard.json`, nada.
     #[test]
     fn the_language_line_reaches_every_mustard_project() {
         use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
-
-        let english = "The wave is done and the tests pass.\n\
-            The check now compares the language of the reply with the language of the project.\n\
-            It counts the common words of each language.\n\
-            A short reply is not judged at all.";
-        let defect = "resposta em en-US; o idioma do projeto e do usuário é pt-BR";
-        let stop = HookInput {
-            hook_event_name: Some("Stop".to_string()),
-            session_id: Some("s1".to_string()),
-            raw: serde_json::json!({ "last_assistant_message": english }),
-            ..HookInput::default()
-        };
 
         for config in [PT_PROJECT, r#"{"language":{"text":"pt-BR"},"tone":"technical"}"#] {
             let dir = project_with(config);
@@ -384,20 +412,20 @@ mod tests {
             assert_eq!(context, PT_LINE, "{config}");
 
             let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-            let Verdict::Deny { reason } = EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap() else {
-                panic!("{config}: an English reply in a pt-BR project is blocked");
-            };
-            assert!(reason.contains(defect), "{config}: {reason}");
+            let verdict = EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap();
+            assert_eq!(verdict, Verdict::Allow, "{config}: the writing check never blocks");
 
             let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &c).unwrap());
-            assert!(!next.contains(defect), "{config}: the defect rode the block, not the next prompt: {next}");
+            assert_eq!(next, format!("{PT_LINE} Na última resposta: resposta em en-US."), "{config}");
+            let after = context_of(PromptEntry.evaluate(&prompt_input("e depois?"), &c).unwrap());
+            assert_eq!(after, PT_LINE, "{config}: the error goes once");
         }
 
         let (none, c) = ctx();
         let verdict = PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap();
         assert_eq!(verdict, Verdict::Allow, "an uninstalled project gets no line");
         let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c };
-        assert_eq!(EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap(), Verdict::Allow);
+        assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap(), Verdict::Allow);
         drop(none);
     }
 
@@ -476,6 +504,21 @@ mod tests {
         }
     }
 
+    /// Sem `mustard.json` o idioma do projeto ainda não é conhecido: a
+    /// recusa sai do catálogo com uma linha em português e outra em inglês,
+    /// e não com o texto fixo que morava no próprio arquivo.
+    #[test]
+    fn the_install_lock_speaks_both_languages() {
+        let (_dir, c) = ctx();
+        let Verdict::Deny { reason } = PromptEntry.evaluate(&prompt_input("/mustard:feature x"), &c).unwrap() else {
+            panic!("expected Deny without installation");
+        };
+        let pt = mustard_core::translate("install_lock.not_installed", mustard_core::SupportedLocale::PtBr);
+        let en = mustard_core::translate("install_lock.not_installed", mustard_core::SupportedLocale::EnUs);
+        assert_ne!(pt, en, "the two lines must differ");
+        assert_eq!(reason, format!("{pt}\n{en}"));
+    }
+
     /// A porta que instala passa sem instalação; `/mustard:upsertish` é outro
     /// comando e continua barrado.
     #[test]
@@ -549,4 +592,5 @@ mod tests {
             }
         }
     }
+
 }

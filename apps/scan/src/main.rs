@@ -345,7 +345,11 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         refresh::dirty(&ing.root).unwrap_or_default().into_iter().filter(|p| walked.contains(p.as_str())).collect();
     let state = model::ScanState {
         format: refresh::FORMAT.to_string(),
-        head: head.unwrap_or_default(),
+        // Sem commit (fora do git, ou um repositório que ainda não tem
+        // nenhum), o selo é distinto do vazio: o vazio continua significando
+        // "nada para comparar, leia tudo de novo", reservado ao mapa de uma
+        // passada anterior a este selo existir.
+        head: head.unwrap_or_else(|| refresh::NO_COMMIT_HEAD.to_string()),
         dirty,
         non_utf8: ing.non_utf8,
     };
