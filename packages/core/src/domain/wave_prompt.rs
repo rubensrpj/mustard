@@ -35,13 +35,26 @@ use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecE
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
-/// O teto de tarefas de uma onda que ainda não foi entregue: acima dele, ela
-/// nasce grande demais e [`wave_size_refusal`] a recusa.
-pub const WAVE_TASKS_CAP: usize = 3;
+/// O teto de turnos de uma onda com uma tarefa só: uma ida e volta do
+/// modelo, que pode conter várias chamadas de ferramenta.
+pub const SOLO_TASK_TURNS_CAP: u32 = 10;
 
-/// O teto de provas de critério de uma onda que ainda não foi entregue, pela
-/// mesma conta de [`WAVE_TASKS_CAP`].
-pub const WAVE_PROOFS_CAP: usize = 3;
+/// O teto de turnos de uma onda com mais de uma tarefa.
+pub const MULTI_TASK_TURNS_CAP: u32 = 15;
+
+/// O teto de turnos da onda com `tasks` tarefas, para o cabeçalho do agente:
+/// [`SOLO_TASK_TURNS_CAP`] com uma tarefa só, [`MULTI_TASK_TURNS_CAP`] com
+/// mais de uma. O corte é da própria plataforma, pelo campo `maxTurns` do
+/// molde do agente — o binário só escolhe o número e o escreve lá; o que
+/// sobrou quando ela corta volta para a fila como tarefa nova.
+#[must_use]
+pub fn requested_turns(tasks: usize) -> u32 {
+    if tasks <= 1 {
+        SOLO_TASK_TURNS_CAP
+    } else {
+        MULTI_TASK_TURNS_CAP
+    }
+}
 
 /// O modelo pedido para o papel `role` (`wave`, `review` ou `skill`) no
 /// envio: a onda que implementa sai em Sonnet 5; a revisão e o agente de
@@ -571,70 +584,6 @@ fn agreed_items(log: &SpecLog) -> Vec<&SpecEvent> {
         .into_iter()
         .filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty()))
         .collect()
-}
-
-/// As tarefas ainda vigentes da onda `wave`, e quantas provas de critério a
-/// onda declara, pela mesma leitura que [`wave_files`] usa.
-fn wave_size(log: &SpecLog, wave: u64) -> (Vec<&SpecEvent>, usize) {
-    let block = log.block(BlockQuery::Block(Block::Waves));
-    let tasks: Vec<&SpecEvent> =
-        block.iter().copied().filter(|e| e.event_type == "task" && e.wave() == Some(wave)).collect();
-    let proofs = block
-        .iter()
-        .find(|e| e.event_type == "wave" && e.int("n") == Some(wave))
-        .map(|w| w.ints("criteria").len())
-        .unwrap_or(0);
-    (tasks, proofs)
-}
-
-/// A recusa da onda `wave`, quando ela passa do teto de tarefas
-/// ([`WAVE_TASKS_CAP`]) ou de provas de critério ([`WAVE_PROOFS_CAP`]);
-/// `None` quando ela cabe. A divisão sugerida corta a lista de tarefas ao
-/// meio, na ordem em que elas aparecem no arquivo.
-#[must_use]
-pub fn wave_size_refusal(log: &SpecLog, wave: u64) -> Option<Refusal> {
-    let (tasks, proofs) = wave_size(log, wave);
-    if tasks.len() <= WAVE_TASKS_CAP && proofs <= WAVE_PROOFS_CAP {
-        return None;
-    }
-    let codes = log.codes();
-    let code_of = |event: &SpecEvent| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
-    let wave_codes: Vec<String> = tasks.iter().map(|task| code_of(task)).collect();
-    let half = wave_codes.len().div_ceil(2);
-    let (first, second) = wave_codes.split_at(half);
-    Some(Refusal::WaveTooBig {
-        wave,
-        tasks: tasks.len(),
-        proofs,
-        first: first.join(", "),
-        second: second.join(", "),
-    })
-}
-
-/// A onda grande é recusada na hora de nascer, não depois de gravada: a
-/// tarefa ou a onda que faria uma onda ainda não entregue passar do teto de
-/// tarefas ou de provas de critério é recusada antes de ir para o arquivo.
-/// Olha só o evento que a gravação acabou de acrescentar a `after` — as
-/// gravações que não mexem em tarefa nem em onda passam sempre.
-///
-/// # Errors
-///
-/// [`Refusal::WaveTooBig`].
-pub fn wave_size_rule(after: &SpecLog) -> Result<(), Refusal> {
-    let Some(event) = after.get(after.max_id()) else { return Ok(()) };
-    let wave = match event.event_type.as_str() {
-        "task" => event.int("wave"),
-        "wave" => event.int("n"),
-        _ => None,
-    };
-    let Some(wave) = wave else { return Ok(()) };
-    if after.delivered_waves().contains(&wave) {
-        return Ok(());
-    }
-    match wave_size_refusal(after, wave) {
-        Some(refusal) => Err(refusal),
-        None => Ok(()),
-    }
 }
 
 /// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
@@ -1511,12 +1460,12 @@ mod tests {
     }
 
     /// Cada tarefa ganhou linha própria — o arquivo dela e o que precisa ler
-    /// antes —, então o número de tarefas volta a somar linhas ao pedido. Não
-    /// é problema: a onda nasce pequena, no máximo [`WAVE_TASKS_CAP`]
-    /// tarefas, e uma onda no teto continua cabendo longe do limite de
-    /// linhas.
+    /// antes —, então o número de tarefas soma linhas ao pedido, sem teto: o
+    /// pedido não corta onda grande, quem corta é o teto de turnos do
+    /// próprio agente.
     #[test]
-    fn each_task_adds_one_line_but_the_wave_cap_keeps_it_small() {
+    fn each_task_adds_one_line_and_the_request_has_no_task_count_cap() {
+        const MANY: usize = 6;
         let wave = |tasks: usize| {
             let mut events: Vec<(&str, Value)> =
                 vec![("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))];
@@ -1525,11 +1474,11 @@ mod tests {
             }
             log(&events)
         };
-        let (one, capped) = (wave(1), wave(WAVE_TASKS_CAP));
+        let (one, many) = (wave(1), wave(MANY));
         let small = build(&material(&one, 1), Locale::PtBr);
-        let big = build(&material(&capped, 1), Locale::PtBr);
+        let big = build(&material(&many, 1), Locale::PtBr);
         assert!(big.lines > small.lines, "cada tarefa soma linha: {}", big.text);
-        assert!(big.text.contains(&format!("MSTD-TASK-{:04}", WAVE_TASKS_CAP)), "{}", big.text);
+        assert!(big.text.contains(&format!("MSTD-TASK-{MANY:04}")), "{}", big.text);
     }
 
     /// O mesmo material escrito duas vezes dá os mesmos bytes.

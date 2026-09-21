@@ -107,16 +107,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} has parts that share no file with each other ({parts}): it goes out split, \
              one wave per part, and the parts run in parallel."
         }
-        ("plan.wave_too_big", Locale::PtBr) => {
-            "A onda {wave} tem {tasks} tarefas e {proofs} provas de critério, acima do teto de \
-             {cap}: ela sai dividida em duas ondas antes da aprovação — a primeira leva {first}, \
-             e a segunda leva {second}."
-        }
-        ("plan.wave_too_big", Locale::EnUs) => {
-            "Wave {wave} has {tasks} tasks and {proofs} criteria to prove, over the cap of {cap}: \
-             it goes out split into two waves before approval — the first takes {first}, and the \
-             second takes {second}."
-        }
         ("plan.spec_should_split", Locale::PtBr) => {
             "A spec tem partes que não dividem arquivo entre si ({parts}): ela pode ser dividida, \
              uma spec por parte."
@@ -1070,8 +1060,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            142,
-            0x5587_50b9_485e_cfa4,
+            141,
+            0x0f3d_e168_a7a9_7b38,
         );
     }
 
@@ -1174,7 +1164,6 @@ mod tests {
             ("plan.task_without_wave", &["{task}", "{wave}"][..]),
             ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
             ("plan.wave_should_split", &["{wave}", "{parts}"][..]),
-            ("plan.wave_too_big", &["{wave}", "{tasks}", "{proofs}", "{cap}", "{first}", "{second}"][..]),
             ("plan.spec_should_split", &["{parts}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),

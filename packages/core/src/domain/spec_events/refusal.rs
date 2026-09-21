@@ -112,13 +112,6 @@ pub enum Refusal {
     /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
     /// todo.
     OwnerMissing { event_type: String },
-    /// A tarefa ou o critério que faria uma onda ainda não entregue passar do
-    /// teto de tarefas ou de provas de critério: a gravação recusa antes de a
-    /// onda grande nascer, com quantas tarefas e provas ela já tem e a
-    /// divisão sugerida em duas ondas, cada uma com as tarefas dela. O plano
-    /// usa a mesma recusa como rede, para a onda que cresceu por outro
-    /// caminho.
-    WaveTooBig { wave: u64, tasks: usize, proofs: usize, first: String, second: String },
     /// Uma tarefa gravada sem uma das três declarações obrigatórias: o que
     /// ela faz, os arquivos que toca e de quais tarefas depende. Nada é
     /// gravado, e a mensagem nomeia exatamente qual (ou quais) faltou.
@@ -199,7 +192,6 @@ impl Refusal {
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
             Self::DeliveredTooLong { .. } => "delivered-too-long",
             Self::OwnerMissing { .. } => "owner-missing",
-            Self::WaveTooBig { .. } => "wave-too-big",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::Io { .. } => "io-failed",
         }
@@ -379,17 +371,6 @@ impl Refusal {
             Self::OwnerMissing { event_type } => {
                 fill("plan.owner_missing", &[("{type}", event_type.clone())])
             }
-            Self::WaveTooBig { wave, tasks, proofs, first, second } => fill(
-                "plan.wave_too_big",
-                &[
-                    ("{wave}", wave.to_string()),
-                    ("{tasks}", tasks.to_string()),
-                    ("{proofs}", proofs.to_string()),
-                    ("{cap}", crate::domain::wave_prompt::WAVE_TASKS_CAP.to_string()),
-                    ("{first}", first.clone()),
-                    ("{second}", second.clone()),
-                ],
-            ),
             Self::TaskDeclarationMissing { missing } => fill(
                 "spec_events.task_declaration_missing",
                 &[(

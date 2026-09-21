@@ -582,21 +582,6 @@ fn check(
     let ahead: Vec<&SpecEvent> =
         tasks.iter().copied().filter(|task| !task.wave().is_some_and(|n| delivered.contains(&n))).collect();
 
-    // A onda nasce pequena: até três tarefas e até três provas de critério. A
-    // gravação já recusa a tarefa ou o critério que a levaria a passar do
-    // teto (`wave_prompt::wave_size_rule`); esta conferência é a rede, para
-    // a onda que cresceu por outro caminho — a já entregue não entra, porque
-    // o tamanho dela já foi decidido quando ela saiu.
-    for wave_event in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
-        let Some(n) = wave_event.int("n") else { continue };
-        if delivered.contains(&n) {
-            continue;
-        }
-        if let Some(refusal) = wave_prompt::wave_size_refusal(log, n) {
-            out.push(PlanFinding::Refused(refusal));
-        }
-    }
-
     let mut cited: Vec<String> = Vec::new();
     for task in &ahead {
         let code = code_of(task);
@@ -1127,11 +1112,13 @@ mod tests {
         assert!(report["waves"][0]["lines"].as_u64().unwrap() > 500, "{report}");
     }
 
-    /// A rede do plano: uma onda que já tem mais de três tarefas no arquivo —
-    /// nascida assim antes da regra, ou por uma edição de fora do binário —
-    /// é recusada pelo plano, com a mesma mensagem que a gravação usaria.
+    /// O plano não tem mais rede de tamanho: uma onda com mais de três
+    /// tarefas no arquivo — nascida assim antes da regra sair, ou por uma
+    /// edição de fora do binário — passa sem bloqueio nenhum. É o caso que a
+    /// recusa `wave-too-big` bloqueava antes desta onda; quem corta o custo
+    /// agora é o teto de turnos do agente, fora do plano.
     #[test]
-    fn a_wave_grown_big_outside_the_write_is_refused_by_the_plan_net() {
+    fn a_wave_grown_big_outside_the_write_is_not_blocked_by_the_plan() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1146,17 +1133,7 @@ mod tests {
         }
 
         let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        assert!(reasons(&report, "blocking").contains(&"wave-too-big".to_string()), "{report}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let expected = wave_prompt::wave_size_refusal(&log, 1).expect("a onda passou do teto").message(Locale::PtBr);
-        let found = report["blocking"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|f| f["reason"] == json!("wave-too-big"))
-            .unwrap_or_else(|| panic!("{report}"));
-        assert_eq!(found["hint"], json!(expected), "{report}");
+        assert!(!reasons(&report, "blocking").contains(&"wave-too-big".to_string()), "{report}");
     }
 
     /// As citações do plano passam pela mesma conferência do ponto do

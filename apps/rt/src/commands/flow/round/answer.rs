@@ -715,6 +715,48 @@ mod tests {
         assert_eq!(sent[0].wave(), Some(1));
     }
 
+    /// O molde do agente instalado em `root`, com o frontmatter que os
+    /// moldes de verdade trazem.
+    fn write_agent_template(root: &Path) {
+        std::fs::create_dir_all(root.join(".claude").join("agents").join("mustard")).unwrap();
+        std::fs::write(
+            root.join(".claude").join("agents").join("mustard").join("wave.md"),
+            "---\nname: mustard-wave\nmodel: sonnet\n---\n\nCorpo do agente.\n",
+        )
+        .unwrap();
+    }
+
+    /// O envio grava, no cabeçalho do molde despachado, o teto de turnos que
+    /// a plataforma aplica: dez para a onda de uma tarefa só, quinze para a
+    /// de várias — os dois números combinados desta onda.
+    #[test]
+    fn the_dispatched_template_carries_ten_or_fifteen_turns_by_task_count() {
+        let solo_dir = tempdir().unwrap();
+        let solo_root = solo_dir.path();
+        write_agent_template(solo_root);
+        approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(solo_root, "x", None);
+        let solo_log = store::read(&store::spec_file(solo_root, "x").unwrap()).unwrap().unwrap();
+        let solo_sent = solo_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
+        let solo_template = solo_sent.str_field("template").unwrap_or_default();
+        assert!(solo_template.contains("maxTurns: 10"), "{solo_template}");
+        assert!(!solo_template.contains("maxTurns: 15"), "{solo_template}");
+
+        let multi_dir = tempdir().unwrap();
+        let multi_root = multi_dir.path();
+        write_agent_template(multi_root);
+        approved_with(multi_root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            write(multi_root, "x", "task", json!({"wave": 1, "text": "Tarefa 2 da onda 1.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": said}));
+        });
+        round(multi_root, "x", None);
+        let multi_log = store::read(&store::spec_file(multi_root, "x").unwrap()).unwrap().unwrap();
+        let multi_sent = multi_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
+        let multi_template = multi_sent.str_field("template").unwrap_or_default();
+        assert!(multi_template.contains("maxTurns: 15"), "{multi_template}");
+        assert!(!multi_template.contains("maxTurns: 10"), "{multi_template}");
+    }
+
     /// A instrução de publicar e copiar a página, por extenso, fica só no
     /// arquivo sob a pasta de lotes da spec: a resposta da rodada leva uma
     /// linha curta que manda lê-lo, sem o texto que cita a ferramenta
