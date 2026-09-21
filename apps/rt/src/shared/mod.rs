@@ -44,7 +44,11 @@
 pub mod branch_state;
 pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
-/// for why there used to be two, and what they disagreed about.
+/// for why there used to be two, and what they disagreed about. Also the
+/// basket: the same peel over a task graph instead of a wave graph, plus
+/// readiness and file-capacity packing into dispatch batches.
+// A cesta ainda não tem chamador: o allow sai com o primeiro (próxima onda).
+#[allow(dead_code)]
 pub mod dag;
 // The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod paths;

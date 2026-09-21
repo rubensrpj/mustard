@@ -48,31 +48,40 @@ pub fn session_map(text: Locale) -> &'static str {
     }
 }
 
-/// Os nomes dos três agentes do Mustard: o que faz uma onda, o que revisa e o
-/// que escreve uma skill. O nome do arquivo é o nome com `.md`.
-pub const AGENT_NAMES: [&str; 3] = ["wave", "review", "skill"];
+/// Os nomes dos quatro agentes do Mustard: os dois moldes de onda (um para
+/// lote de uma tarefa só, outro para lote de várias), o que revisa e o que
+/// escreve uma skill. O nome do arquivo é o nome com `.md`.
+pub const AGENT_NAMES: [&str; 4] = ["wave", "review", "skill", "wave-solo"];
 
-const AGENTS_PT_BR: [&str; 3] = [
+const AGENTS_PT_BR: [&str; 4] = [
     include_str!("../../templates/agents/pt-BR/wave.md"),
     include_str!("../../templates/agents/pt-BR/review.md"),
     include_str!("../../templates/agents/pt-BR/skill.md"),
+    include_str!("../../templates/agents/pt-BR/wave-solo.md"),
 ];
-const AGENTS_EN_US: [&str; 3] = [
+const AGENTS_EN_US: [&str; 4] = [
     include_str!("../../templates/agents/en-US/wave.md"),
     include_str!("../../templates/agents/en-US/review.md"),
     include_str!("../../templates/agents/en-US/skill.md"),
+    include_str!("../../templates/agents/en-US/wave-solo.md"),
 ];
 
 /// O texto de cada agente no idioma `text`, na ordem de [`AGENT_NAMES`]:
 /// `(nome, corpo)`. Os dois idiomas são molde do produto; o projeto recebe
-/// só os três do `language.text`.
+/// só os quatro do `language.text`. `wave` fica no índice 0 e `review` no
+/// índice 1, como o resto do código já assume.
 #[must_use]
-pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 3] {
+pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 4] {
     let bodies = match text {
         Locale::PtBr => AGENTS_PT_BR,
         Locale::EnUs => AGENTS_EN_US,
     };
-    [(AGENT_NAMES[0], bodies[0]), (AGENT_NAMES[1], bodies[1]), (AGENT_NAMES[2], bodies[2])]
+    [
+        (AGENT_NAMES[0], bodies[0]),
+        (AGENT_NAMES[1], bodies[1]),
+        (AGENT_NAMES[2], bodies[2]),
+        (AGENT_NAMES[3], bodies[3]),
+    ]
 }
 
 /// The `.claude/.gitignore` seed covering the ephemeral harness state

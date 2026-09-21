@@ -116,6 +116,13 @@ pub enum Refusal {
     /// ela faz, os arquivos que toca e de quais tarefas depende. Nada é
     /// gravado, e a mensagem nomeia exatamente qual (ou quais) faltou.
     TaskDeclarationMissing { missing: Vec<TaskDeclaration> },
+    /// Uma tarefa cujo `depends_on` aponta uma tarefa que não existe nesta
+    /// spec. Nada é gravado, e a mensagem nomeia as duas.
+    TaskDependsOnUnknown { task: String, depends_on: String },
+    /// Um `depends_on` que fecha um círculo entre tarefas desta spec. Nada é
+    /// gravado, e a mensagem nomeia o círculo inteiro, na ordem, voltando ao
+    /// começo.
+    TaskDependencyCycle { cycle: Vec<String> },
     Io { detail: String },
 }
 
@@ -193,6 +200,8 @@ impl Refusal {
             Self::DeliveredTooLong { .. } => "delivered-too-long",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
+            Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
+            Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -377,6 +386,14 @@ impl Refusal {
                     "{missing}",
                     missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
                 )],
+            ),
+            Self::TaskDependsOnUnknown { task, depends_on } => fill(
+                "spec_events.task_depends_on_unknown",
+                &[("{task}", task.clone()), ("{depends_on}", depends_on.clone())],
+            ),
+            Self::TaskDependencyCycle { cycle } => fill(
+                "spec_events.task_dependency_cycle",
+                &[("{cycle}", cycle.join(" → "))],
             ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }

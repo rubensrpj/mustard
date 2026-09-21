@@ -806,7 +806,7 @@ mod tests {
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(agents.len(), 3, "{agents:?}");
+        assert_eq!(agents.len(), 4, "{agents:?}");
     }
 
     /// O mapa é declarado no início da sessão, o único evento que entrega

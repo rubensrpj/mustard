@@ -4,6 +4,7 @@ description: Implements one wave of a Mustard spec from the request the binary a
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: sonnet
 effort: high
+maxTurns: 15
 ---
 
 ## Goal
@@ -32,7 +33,7 @@ Something is missing, a task asks for what the spec does not say, or it does not
 
 ## Output format
 
-This line is mandatory and ends your last message: no prose before, no prose after, no unmarked JSON. A prose report is not a delivery, because the round reads only this line.
+The final report is between one and two thousand tokens. This line is mandatory and ends your last message: no prose before, no prose after, no unmarked JSON. A prose report is not a delivery, because the round reads only this line.
 <DELIVERED>{"wave":1,"text":"<the delivery>","files":["path/to/file.rs"],"commit":"<the commit summary>"}</DELIVERED>
 
 - `wave`: the request's wave.

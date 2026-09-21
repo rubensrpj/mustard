@@ -5,14 +5,16 @@
 
 //! Os textos de agente do Mustard, pelo binário de verdade.
 //!
-//! O projeto recebe exatamente três agentes — `mustard-wave`,
-//! `mustard-review` e `mustard-skill` —, no idioma do `language.text`; os
-//! dois idiomas existem como molde do produto; nenhum texto manda criar
-//! cópia do projeto por conta própria, e os de onda e de revisão mandam
-//! trabalhar na cópia e na pasta de compilação que o pedido indica; e cada
-//! comando do fluxo responde o próximo passo, que o modelo não escolhe
-//! sozinho. O que prende o texto de um agente é o que ele diz, não quantos
-//! bytes ele tem.
+//! O projeto recebe exatamente quatro agentes — `mustard-wave`,
+//! `mustard-wave-solo`, `mustard-review` e `mustard-skill` —, no idioma do
+//! `language.text`; os dois idiomas existem como molde do produto; nenhum
+//! texto manda criar cópia do projeto por conta própria, e os de onda e de
+//! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
+//! indica; e cada comando do fluxo responde o próximo passo, que o modelo não
+//! escolhe sozinho. O que prende o texto de um agente é o que ele diz, não
+//! quantos bytes ele tem. Os dois agentes de onda trazem o teto de turnos no
+//! próprio `maxTurns` do cabeçalho — dez para o de tarefa única, quinze para
+//! o de várias —, porque é a plataforma, não o binário, quem aplica o corte.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -119,14 +121,14 @@ fn template(lang: &str, name: &str) -> String {
         .unwrap_or_else(|e| panic!("the {lang} `{name}` template is missing: {e}"))
 }
 
-/// O projeto recebe exatamente os três agentes, no idioma do `language.text`;
-/// os dois idiomas existem como molde; e o
+/// O projeto recebe exatamente os quatro agentes, no idioma do
+/// `language.text`; os dois idiomas existem como molde; e o
 /// plugin não entrega agente nenhum, porque entregaria os dois idiomas. Os
 /// textos que o instalador escreve trazem as duas guardas desta obra: provar
 /// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
 /// do caso em que o "antes" falha quando o critério diz "só depois de".
 #[test]
-fn the_project_receives_exactly_three_agents_in_its_text_language() {
+fn the_project_receives_exactly_four_agents_in_its_text_language() {
     for (lang, other) in [("pt-BR", "en-US"), ("en-US", "pt-BR")] {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
@@ -134,10 +136,10 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
         let agents = files_under(&root.join(".claude/agents"));
         assert_eq!(
             agents,
-            ["mustard/review.md", "mustard/skill.md", "mustard/wave.md"],
+            ["mustard/review.md", "mustard/skill.md", "mustard/wave-solo.md", "mustard/wave.md"],
             "the {lang} project got another set of agent texts",
         );
-        for name in ["wave", "review", "skill"] {
+        for name in ["wave", "review", "skill", "wave-solo"] {
             let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
             assert_eq!(installed, template(lang, name), "the {lang} project got another text for `{name}`");
             assert_ne!(installed, template(other, name), "the {lang} and {other} `{name}` texts are the same");
@@ -184,6 +186,31 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
     assert!(!repo_root().join("plugin/agents").exists(), "the plugin ships agent texts of its own");
 }
 
+/// Os dois moldes de agente de onda que o instalador grava carregam o teto
+/// de turnos no próprio `maxTurns` do cabeçalho — dez no de tarefa única,
+/// quinze no de várias — e os dois pedem um relatório final de mil a dois
+/// mil tokens. É a plataforma, pelo cabeçalho do agente de verdade em
+/// `.claude/agents/mustard/`, quem aplica o corte agora; antes, o teto só
+/// existia dentro do campo de molde do evento de envio, e o arquivo do
+/// agente nunca chegava a carregá-lo.
+#[test]
+fn os_dois_arquivos_de_agente_trazem_o_teto_de_turnos() {
+    for (lang, tokens) in [("pt-BR", "mil e dois mil tokens"), ("en-US", "one and two thousand tokens")] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+
+        let multi = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        assert!(multi.contains("maxTurns: 15"), "the {lang} multi-task wave agent has no maxTurns: 15: {multi}");
+        assert!(!multi.contains("maxTurns: 10"), "the {lang} multi-task wave agent must not carry the solo cap");
+        assert!(multi.contains(tokens), "the {lang} multi-task wave agent does not ask for the token-bounded report");
+
+        let solo = std::fs::read_to_string(root.join(".claude/agents/mustard/wave-solo.md")).unwrap();
+        assert!(solo.contains("maxTurns: 10"), "the {lang} solo wave agent has no maxTurns: 10: {solo}");
+        assert!(!solo.contains("maxTurns: 15"), "the {lang} solo wave agent must not carry the multi-task cap");
+        assert!(solo.contains(tokens), "the {lang} solo wave agent does not ask for the token-bounded report");
+    }
+}
+
 /// O nome de cada agente do Mustard leva o prefixo do Mustard, e um projeto
 /// que já tem um agente chamado `review` fica com os dois: o dele, intocado,
 /// e o `mustard-review`. Uma instalação antiga, com os nomes sem prefixo, é
@@ -214,7 +241,11 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
         })
         .collect();
     names.sort();
-    assert_eq!(names, ["mustard-review", "mustard-skill", "mustard-wave", "review"], "two agents share a name");
+    assert_eq!(
+        names,
+        ["mustard-review", "mustard-skill", "mustard-wave", "mustard-wave-solo", "review"],
+        "two agents share a name",
+    );
 
     for lang in [Locale::PtBr, Locale::EnUs] {
         let next = translate("round.next", lang);

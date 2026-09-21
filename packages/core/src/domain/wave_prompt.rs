@@ -56,15 +56,46 @@ pub fn requested_turns(tasks: usize) -> u32 {
     }
 }
 
-/// O modelo pedido para o papel `role` (`wave`, `review` ou `skill`) no
-/// envio: a onda que implementa sai em Sonnet 5; a revisão e o agente de
-/// teste dedicado, em Opus 5. Quem manda isso é o binário, no próprio pedido
-/// — sem escolha explícita, a onda herda o modelo da sessão e a decisão
-/// morre em silêncio.
+/// O nome do agente de onda a chamar, pelo número de tarefas do lote:
+/// `"wave-solo"` para uma tarefa só, `"wave"` para várias. É o nome do
+/// arquivo, sem a extensão, sob `.claude/agents/mustard/` — cada um já traz o
+/// teto de turnos certo no próprio `maxTurns`, então escolher o arquivo é o
+/// que fixa o corte; o binário não escreve mais o teto em memória.
+#[must_use]
+pub fn agent_role(tasks: usize) -> &'static str {
+    if tasks <= 1 {
+        "wave-solo"
+    } else {
+        "wave"
+    }
+}
+
+/// O nome do agente que o molde `template` identifica, pelo campo `name` do
+/// frontmatter dele: `mustard-wave-solo` vira `"wave-solo"`, `mustard-wave`
+/// vira `"wave"`. Sem o campo, ou um nome fora do prefixo `mustard-`, volta
+/// `"wave"` — o papel que a plataforma já aceitava antes dos dois moldes. É
+/// como o reenvio, que não remonta o pedido, sabe qual dos dois o envio
+/// original usou.
+#[must_use]
+pub fn agent_from_template(template: &str) -> String {
+    template
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("name:"))
+        .map(str::trim)
+        .and_then(|name| name.strip_prefix("mustard-"))
+        .unwrap_or("wave")
+        .to_string()
+}
+
+/// O modelo pedido para o papel `role` (`wave`, `wave-solo`, `review` ou
+/// `skill`) no envio: a onda que implementa sai em Sonnet 5, tarefa única ou
+/// várias; a revisão e o agente de teste dedicado, em Opus 5. Quem manda isso
+/// é o binário, no próprio pedido — sem escolha explícita, a onda herda o
+/// modelo da sessão e a decisão morre em silêncio.
 #[must_use]
 pub fn requested_model(role: &str) -> &'static str {
     match role {
-        "wave" => "Sonnet 5",
+        "wave" | "wave-solo" => "Sonnet 5",
         _ => "Opus 5",
     }
 }

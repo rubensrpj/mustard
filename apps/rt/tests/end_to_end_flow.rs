@@ -346,7 +346,7 @@ fn plan_files(project: &Project, files: &[&str]) {
     project.write(
         "task",
         &json!({"wave": 1, "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
-            "points": 1, "origin": said}),
+            "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");

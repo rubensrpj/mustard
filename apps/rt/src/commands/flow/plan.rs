@@ -17,8 +17,7 @@
 //! acima do teto de linhas; skill que a conferência recusa; arquivo citado
 //! que não existe e não está marcado como novo; tarefa que mexe em código
 //! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere;
-//! tarefa sem nota de trabalho, que volta com a escala e o exemplo de cada
-//! nota; tarefa cujo texto não casa com onda nenhuma do plano; e onda que
+//! tarefa cujo texto não casa com onda nenhuma do plano; e onda que
 //! ainda vem com mais de três tarefas ou mais de três provas de critério,
 //! que volta com a divisão sugerida em duas ondas e as tarefas de cada uma.
 //!
@@ -30,8 +29,7 @@
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
 //! mapa não acha; ondas que saem na mesma rodada e dividem arquivo; onda com
 //! partes independentes, que deve sair dividida em ondas paralelas; spec com
-//! partes independentes, pela mesma conta, que pode ser dividida; onda cuja
-//! soma das notas passa do teto; item
+//! partes independentes, pela mesma conta, que pode ser dividida; item
 //! combinado de uma onda que nenhuma tarefa cobre — menos o marcado como "não
 //! vira código", que traz o motivo na linha dele, e o do projeto, que vale
 //! sempre; contrato que nenhum critério cita; tarefa que podia nomear uma
@@ -39,15 +37,16 @@
 //! dizendo com qual onda ele casaria melhor; e o comando de compilar ou de
 //! testar que o `mustard.json` ainda não declara, com o campo a preencher.
 //!
+//! O plano não pede nem soma nota de trabalho: a tarefa sem nota não trava
+//! nada, e nenhum texto impresso por este passo cita a escala do Scrum.
+//!
 //! As conferências das tarefas olham só as ondas que ainda vêm: a tarefa de
 //! onda que já tem registro de entrega não é conferida, porque o que ela fez
 //! está provado pelo código que entrou, pelo commit que a carrega e pela
 //! revisão que a aprovou, e não pelo texto que a descreveu.
 //!
-//! A leitura das notas ([`wave_points`]) é uma só: serve à conferência e à
-//! migração de uma spec aprovada por uma versão antiga, que não pedia nota —
-//! no marco em que o template da página dela nasce, a ordem manda dar nota às
-//! tarefas das ondas que ainda não saíram ([`migration_points`]).
+//! A leitura das notas ([`wave_points`]) segue existindo para quem grava
+//! nota numa tarefa por conta própria; o plano só não pede nem soma.
 //!
 //! Cada achado, dos que travam e dos que só avisam, é gravado como anotação
 //! no arquivo de eventos quando este comando roda, com o rótulo do achado do
@@ -101,11 +100,6 @@ enum PlanFinding {
     /// Uma spec com partes independentes, que pode ser dividida, uma spec
     /// por parte.
     SpecShouldSplit { parts: String },
-    /// As tarefas sem nota de trabalho, pelos códigos, numa recusa só: a
-    /// escala e os exemplos vêm uma vez, e não uma por tarefa.
-    TasksWithoutPoints { tasks: String },
-    /// Uma onda cuja soma das notas passa do teto.
-    WavePointsOverCap { wave: u64, points: u64 },
     /// Um ciclo de dependência entre ondas.
     WaveLoop { waves: String },
     /// Uma onda que depende de outra que o plano não tem.
@@ -148,13 +142,11 @@ impl PlanFinding {
             | Self::DependsOnMissing { .. }
             | Self::TaskWithoutWave { .. }
             | Self::TaskWithoutFile { .. }
-            | Self::TasksWithoutPoints { .. }
             | Self::TaskMatchesNoWave { .. } => true,
             Self::Cited { finding, .. } => finding.is_refusal(),
             Self::SharedFile { .. }
             | Self::WaveShouldSplit { .. }
             | Self::SpecShouldSplit { .. }
-            | Self::WavePointsOverCap { .. }
             | Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
@@ -173,8 +165,6 @@ impl PlanFinding {
             Self::SharedFile { .. } => "waves-share-a-file".into(),
             Self::WaveShouldSplit { .. } => "wave-should-split".into(),
             Self::SpecShouldSplit { .. } => "spec-should-split".into(),
-            Self::TasksWithoutPoints { .. } => "task-without-points".into(),
-            Self::WavePointsOverCap { .. } => "wave-points-over-cap".into(),
             Self::WaveLoop { .. } => "waves-loop".into(),
             Self::DependsOnMissing { .. } => "depends-on-missing-wave".into(),
             Self::TaskWithoutWave { .. } => "task-without-wave".into(),
@@ -216,14 +206,6 @@ impl PlanFinding {
                 &[("{wave}", wave.to_string()), ("{parts}", parts.clone())],
             ),
             Self::SpecShouldSplit { parts } => fill("plan.spec_should_split", &[("{parts}", parts.clone())]),
-            Self::TasksWithoutPoints { tasks } => fill(
-                "plan.task_without_points",
-                &[("{tasks}", tasks.clone()), ("{scale}", translate("plan.points_scale", lang).to_string())],
-            ),
-            Self::WavePointsOverCap { wave, points } => fill(
-                "plan.wave_points_over_cap",
-                &[("{wave}", wave.to_string()), ("{points}", points.to_string()), ("{cap}", WAVE_POINTS_CAP.to_string())],
-            ),
             Self::WaveLoop { waves } => fill("plan.wave_loop", &[("{waves}", waves.clone())]),
             Self::DependsOnMissing { wave, on } => {
                 fill("plan.depends_on_missing", &[("{wave}", wave.to_string()), ("{on}", on.to_string())])
@@ -381,55 +363,22 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     if let Some(id) = recorded {
         report["id"] = json!(id);
     }
-    // Quem executa vem da soma das notas de todas as tarefas do plano e do
-    // número de ondas que o plano já tem, antes da pergunta de aprovação: em
-    // todo tamanho, a obra termina com o agente de teste dedicado.
-    let points = wave_points(&log, &BTreeSet::new());
-    let total: u64 = points.sums.values().sum();
     // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
     // só reconhece essa pergunta, e outro texto não aprova nada.
-    let ask = format!(
-        "{} {}",
-        who_executes(total, points.sums.len(), lang),
-        translate("plan.next", lang)
-            .replace("{question}", translate("approval.question", lang))
-            .replace("{option}", translate("approval.option", lang)),
-    );
+    let ask = translate("plan.next", lang)
+        .replace("{question}", translate("approval.question", lang))
+        .replace("{option}", translate("approval.option", lang));
     spec_events::pages::end_milestone(&mut report, Ok(&prepared), &spec, "approval", &ask, lang);
     report
 }
 
-/// Quem executa a obra, pela soma das notas de todas as tarefas do plano
-/// (`total`) e pelo número de ondas que o plano já tem (`waves`): com uma
-/// onda só e até 3 pontos, o orquestrador faz, sem cópia nem agente; de 4 a
-/// 13, ainda com uma onda só, um agente faz; acima de 13, ou com duas ondas
-/// ou mais já no plano — mesmo somando até 3 pontos —, a obra vai em ondas de
-/// até [`WAVE_POINTS_CAP`] pontos cada, uma por agente. O plano com mais de
-/// uma onda nunca diz "numa onda só" nem fica com o orquestrador, mesmo com o
-/// total dentro do teto de uma onda ou do orquestrador. Em todo tamanho, a
-/// obra termina com o agente de teste dedicado.
-fn who_executes(total: u64, waves: usize, lang: Locale) -> String {
-    let key = if waves <= 1 && total <= SOLO_POINTS_CAP {
-        "plan.execution.solo"
-    } else if waves <= 1 && total <= WAVE_POINTS_CAP {
-        "plan.execution.one_wave"
-    } else {
-        "plan.execution.many_waves"
-    };
-    let scale = translate(key, lang).replace("{points}", &total.to_string());
-    format!("{scale} {}", translate("plan.execution.ends_with_test_agent", lang))
-}
-
 /// O plano tem uma onda só, com nota em cada tarefa dela, e a soma não passa
-/// de [`SOLO_POINTS_CAP`] pontos? É a mesma soma de [`who_executes`], pela
-/// mesma leitura ([`wave_points`]), para a rodada nunca discordar de quem
-/// executa: só então a rodada manda o orquestrador fazer a onda na própria
-/// janela, sem cópia separada e sem agente. Com duas ondas ou mais, mesmo
-/// somando até o teto, cada onda vai para um agente — o orquestrador nunca
-/// divide a obra em partes. A tarefa sem nota nunca conta como obra pequena —
-/// ela travaria a pergunta de aprovação antes de a rodada rodar — e por isso
-/// tira a obra do caminho do orquestrador, em vez de arriscar uma soma que
-/// ainda falta.
+/// de [`SOLO_POINTS_CAP`] pontos? Só então a rodada manda o orquestrador
+/// fazer a onda na própria janela, sem cópia separada e sem agente. Com duas
+/// ondas ou mais, mesmo somando até o teto, cada onda vai para um agente — o
+/// orquestrador nunca divide a obra em partes. A tarefa sem nota nunca conta
+/// como obra pequena, e por isso tira a obra do caminho do orquestrador, em
+/// vez de arriscar uma soma que ainda falta.
 pub(crate) fn is_solo_work(log: &SpecLog) -> bool {
     let points = wave_points(log, &BTreeSet::new());
     points.unrated.is_empty() && points.sums.len() == 1 && points.sums.values().sum::<u64>() <= SOLO_POINTS_CAP
@@ -563,18 +512,6 @@ fn check(
         .into_iter()
         .filter(|e| e.event_type == "task")
         .collect();
-    // A nota de cada tarefa, na mesma leitura que acabou de montar `tasks`,
-    // sem refazer o filtro do bloco: a tarefa sem nota numa onda que ainda
-    // não saiu segura a pergunta, como a tarefa sem arquivo, e a onda cuja
-    // soma passa do teto só avisa — o aviso nunca recusa nem divide a onda.
-    // A onda já entregue fica de fora das duas.
-    let points = wave_points_of(&tasks, &delivered, &codes);
-    if !points.unrated.is_empty() {
-        out.push(PlanFinding::TasksWithoutPoints { tasks: points.unrated.join(", ") });
-    }
-    for (wave, points) in points.over_cap() {
-        out.push(PlanFinding::WavePointsOverCap { wave, points });
-    }
     // A conferência olha só o que ainda vem: a tarefa de onda que já tem
     // registro de entrega está provada pelo código que entrou, pelo commit
     // que a carrega e pela revisão que a aprovou, e conferir de novo o texto
@@ -715,18 +652,6 @@ pub(crate) struct WavePoints {
     pub sums: BTreeMap<u64, u64>,
 }
 
-impl WavePoints {
-    /// Cada onda cuja soma passa do teto de [`WAVE_POINTS_CAP`], com a soma.
-    pub(crate) fn over_cap(&self) -> Vec<(u64, u64)> {
-        self.sums.iter().filter(|(_, points)| **points > WAVE_POINTS_CAP).map(|(wave, points)| (*wave, *points)).collect()
-    }
-
-    /// Nenhuma tarefa sem nota e nenhuma onda acima do teto.
-    pub(crate) fn is_clear(&self) -> bool {
-        self.unrated.is_empty() && self.over_cap().is_empty()
-    }
-}
-
 /// A conta que soma e marca as tarefas sem nota, sobre uma lista de tarefas
 /// já lida do bloco de ondas: quem já tem as tarefas em mãos — como a
 /// conferência do plano, que as lê para as citações — acumula a nota no
@@ -750,27 +675,14 @@ fn wave_points_of<'a>(
     out
 }
 
-/// A leitura das notas das tarefas do plano, a mesma da conferência do plano
-/// e da migração de uma spec antiga: a tarefa de uma onda em `skip` não conta.
+/// A leitura das notas das tarefas do plano, a mesma que a rodada usa para
+/// decidir se o orquestrador faz a obra sozinho: a tarefa de uma onda em
+/// `skip` não conta.
 pub(crate) fn wave_points(log: &SpecLog, skip: &BTreeSet<u64>) -> WavePoints {
     let codes = log.codes();
     let tasks: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task").collect();
     wave_points_of(&tasks, skip, &codes)
-}
-
-/// As notas das tarefas das ondas que ainda não saíram, lidas na migração de
-/// uma spec aprovada por uma versão antiga, que não pedia nota: a onda com
-/// pedido de onda gravado já saiu, e a entregue também, e nenhuma delas conta.
-pub(crate) fn migration_points(log: &SpecLog) -> WavePoints {
-    let gone: BTreeSet<u64> = log
-        .visible()
-        .into_iter()
-        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("wave"))
-        .filter_map(SpecEvent::wave)
-        .chain(log.delivered_waves())
-        .collect();
-    wave_points(log, &gone)
 }
 
 /// `true` quando o trabalho de uma tarefa se repete no projeto: o mapa acha
@@ -781,14 +693,9 @@ fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
     !mustard_core::domain::project_map::examples(&map, &target, Locale::PtBr).picks.is_empty()
 }
 
-/// O teto da soma das notas de uma onda: acima dele, o plano avisa, sem
-/// segurar a aprovação. Fica no código, sem chave de configuração.
-pub(crate) const WAVE_POINTS_CAP: u64 = 13;
-
 /// O teto da soma das notas da obra inteira até onde o orquestrador a faz
-/// sozinho, sem onda dividida em agente. [`who_executes`] e a rodada
-/// ([`is_solo_work`]) leem esta mesma constante, para nunca discordarem da
-/// soma. Fica no código, sem chave de configuração.
+/// sozinho, sem onda dividida em agente. A rodada ([`is_solo_work`]) lê esta
+/// constante. Fica no código, sem chave de configuração.
 pub(crate) const SOLO_POINTS_CAP: u64 = 3;
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
@@ -1576,7 +1483,7 @@ mod tests {
     /// que nada cobre e o que diz uma onda que o plano não tem. Os outros
     /// seguem como eram: o item que a tarefa cobre e o do projeto todo não
     /// avisam, e o que diz a onda dele sem tarefa que o cubra avisa. Na divisa,
-    /// o plano continua travando o que trava: a tarefa sem nota segura a
+    /// o plano continua travando o que trava: a tarefa sem arquivo segura a
     /// pergunta, e o item sem dono não aparece entre os motivos.
     #[test]
     fn the_plan_accepts_an_item_without_owner() {
@@ -1618,10 +1525,10 @@ mod tests {
         assert!(uncovered[0].contains("MSTD-DEC-0003"), "{uncovered:?}");
 
         // O que trava continua travando, e o item sem dono não entra na conta.
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer mais.", "files": [{"path": "src/b.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer mais.", "origin": said}));
         let held = plan(root, "x");
         assert_eq!(held["ok"], json!(false), "{held}");
-        assert_eq!(reasons(&held, "blocking"), ["task-without-points"], "{held}");
+        assert_eq!(reasons(&held, "blocking"), ["task-without-file"], "{held}");
     }
 
     /// A tarefa que mexe em código e não nomeia arquivo trava o plano, e a
@@ -1823,240 +1730,28 @@ mod tests {
         }
     }
 
-    /// A tarefa sem nota segura a aprovação, e a recusa traz a escala com o
-    /// exemplo de cada nota, o texto único do catálogo. A spec não anda. Só
-    /// depois de a tarefa ganhar a nota, numa versão nova, o plano passa.
+    /// A tarefa sem nota não segura a aprovação, não soma nada e o texto da
+    /// pergunta não cita a nota do Scrum: o plano segue só com o que o
+    /// catálogo já dizia antes de a nota existir.
     #[test]
-    fn a_task_without_points_holds_the_approval_and_shows_the_scale() {
+    fn o_plano_nao_pede_nem_soma_nota() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
         waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/um.rs", Some(3));
-        let unrated = id_of(&rated(root, said, 1, "src/dois.rs", None));
+        rated(root, said, 1, "src/um.rs", None);
+        rated(root, said, 1, "src/dois.rs", None);
 
         let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let scale = translate("plan.points_scale", Locale::PtBr);
-        let expected = translate("plan.task_without_points", Locale::PtBr)
-            .replace("{tasks}", "MSTD-TASK-0002")
-            .replace("{scale}", scale);
-        assert_eq!(hints_of(&report, "blocking", "task-without-points"), vec![expected], "{report}");
-        for example in ["1: trocar um texto", "5: mexer no caminho que grava", "13: tarefa grande e incerta"] {
-            assert!(scale.contains(example), "a escala perdeu o exemplo {example:?}");
-        }
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(State::from_log(&log).phase, Some("survey"), "a fase não andou");
-
-        let rated_again = write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código.",
-            "files": [{"path": "src/dois.rs", "new": true}], "points": 2, "replaces": unrated, "origin": said}));
-        assert_eq!(rated_again["ok"], json!(true), "{rated_again}");
-        let after = plan(root, "x");
-        assert_eq!(after["ok"], json!(true), "com a nota, a tarefa não segura mais: {after}");
-        assert!(hints_of(&after, "blocking", "task-without-points").is_empty(), "{after}");
-    }
-
-    /// Duas tarefas sem nota, em ondas diferentes: a recusa lista as duas,
-    /// pelo código, na mesma linha — não só a primeira que o laço encontra.
-    #[test]
-    fn two_tasks_without_points_are_both_listed_in_the_refusal() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/um.rs", Some(3));
-        rated(root, said, 2, "src/dois.rs", Some(3));
-        let first_unrated = rated(root, said, 1, "src/tres.rs", None);
-        let second_unrated = rated(root, said, 2, "src/quatro.rs", None);
-
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let codes = log.codes();
-        let first_code = codes[&id_of(&first_unrated)].clone();
-        let second_code = codes[&id_of(&second_unrated)].clone();
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let scale = translate("plan.points_scale", Locale::PtBr);
-        let expected = translate("plan.task_without_points", Locale::PtBr)
-            .replace("{tasks}", &format!("{first_code}, {second_code}"))
-            .replace("{scale}", scale);
-        assert_eq!(hints_of(&report, "blocking", "task-without-points"), vec![expected], "{report}");
-    }
-
-    /// Na divisa do teto: a onda que soma 13 passa sem aviso; a que soma 14
-    /// ganha o aviso, com a soma e o teto, e a aprovação segue.
-    #[test]
-    fn a_wave_over_the_points_cap_is_warned_about_without_holding_the_approval() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", Some(8));
-        rated(root, said, 1, "src/b1.rs", Some(5));
-        rated(root, said, 2, "src/a2.rs", Some(8));
-        rated(root, said, 2, "src/b2.rs", Some(5));
-        rated(root, said, 2, "src/c2.rs", Some(1));
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(true), "o aviso não segura a aprovação: {report}");
-        assert!(hints_of(&report, "blocking", "wave-points-over-cap").is_empty(), "{report}");
-        let expected = translate("plan.wave_points_over_cap", Locale::PtBr)
-            .replace("{wave}", "2")
-            .replace("{points}", "14")
-            .replace("{cap}", "13");
-        assert_eq!(
-            hints_of(&report, "warnings", "wave-points-over-cap"),
-            vec![expected],
-            "só a onda de 14 é avisada, a de 13 não: {report}"
-        );
-    }
-
-    /// A onda já entregue fica de fora: as tarefas dela sem nota não seguram
-    /// nada, e a soma dela acima do teto não avisa. Antes da entrega, a mesma
-    /// onda segura a aprovação e ganha o aviso.
-    #[test]
-    fn a_delivered_wave_without_points_holds_nothing() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", None);
-        rated(root, said, 1, "src/b1.rs", Some(13));
-        rated(root, said, 1, "src/c1.rs", Some(8));
-        rated(root, said, 2, "src/a2.rs", Some(3));
-
-        let before = plan(root, "x");
-        assert_eq!(before["ok"], json!(false), "{before}");
-        assert_eq!(hints_of(&before, "blocking", "task-without-points").len(), 1, "{before}");
-        assert!(hints_of(&before, "blocking", "task-without-points")[0].contains("MSTD-TASK-0001"), "{before}");
-        assert_eq!(hints_of(&before, "warnings", "wave-points-over-cap").len(), 1, "{before}");
-
-        let delivered = write(root, Some("x"), "delivered",
-            json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a1.rs", "src/b1.rs", "src/c1.rs"]}));
-        assert_eq!(delivered["ok"], json!(true), "{delivered}");
-        let after = plan(root, "x");
-        assert_eq!(after["ok"], json!(true), "a onda entregue não segura nada: {after}");
-        assert!(hints_of(&after, "blocking", "task-without-points").is_empty(), "{after}");
-        assert!(hints_of(&after, "warnings", "wave-points-over-cap").is_empty(), "{after}");
-    }
-
-    /// O plano diz quem executa pela soma das notas de todas as tarefas: até
-    /// 3 pontos, sem ondas, o orquestrador faz; de 4 a 13, com uma onda só,
-    /// um agente faz; acima de 13, ou com mais de uma onda já no plano, a
-    /// obra vai em ondas de até 13 pontos. Em todos os tamanhos, o aviso diz
-    /// que a obra termina com o agente de teste dedicado. A divisa de cada
-    /// faixa entra: 3 e 4 pontos, que separam o orquestrador do agente numa
-    /// onda só; e 13 e 14 pontos, que separam a onda só das ondas de até 13.
-    /// E o caso de 13 pontos já divididos em duas ondas, que não pode dizer
-    /// "numa onda só" só porque o total cabe no teto de uma.
-    #[test]
-    fn the_plan_says_who_executes_by_the_points() {
-        let expect_solo = |points: &str, root: &Path| {
-            let out = plan(root, "x");
-            assert_eq!(out["ok"], json!(true), "{out}");
-            let next = out["next"].as_str().unwrap_or_default();
-            let expected = translate("plan.execution.solo", Locale::PtBr).replace("{points}", points);
-            assert!(next.contains(&expected), "{points} pontos deveria ser solo: {next}");
-            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
-        };
-        let expect_one_wave = |points: &str, root: &Path| {
-            let out = plan(root, "x");
-            assert_eq!(out["ok"], json!(true), "{out}");
-            let next = out["next"].as_str().unwrap_or_default();
-            let expected = translate("plan.execution.one_wave", Locale::PtBr).replace("{points}", points);
-            assert!(next.contains(&expected), "{points} pontos deveria ser onda só: {next}");
-            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
-        };
-        let expect_many_waves = |points: &str, root: &Path| {
-            let out = plan(root, "x");
-            assert_eq!(out["ok"], json!(true), "{out}");
-            let next = out["next"].as_str().unwrap_or_default();
-            let expected = translate("plan.execution.many_waves", Locale::PtBr).replace("{points}", points);
-            assert!(next.contains(&expected), "{points} pontos deveria ser ondas: {next}");
-            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
-        };
-
-        // 3 pontos: sem ondas, o orquestrador faz.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/a.rs", Some(3));
-        expect_solo("3", root);
-
-        // Os mesmos 3 pontos (1 + 2), mas já em duas ondas: a divisa não é só
-        // o total, é também o número de ondas. Com duas ondas ou mais, cada
-        // uma vai para um agente, mesmo dentro do teto do orquestrador.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", Some(1));
-        rated(root, said, 2, "src/a2.rs", Some(2));
-        expect_many_waves("3", root);
-        // A razão de ir em ondas aqui é o número de ondas já no plano, não o
-        // total: com 3 pontos, a frase não pode mentir dizendo que passou de
-        // 13.
-        let out = plan(root, "x");
-        let next = out["next"].as_str().unwrap_or_default();
-        assert!(!next.contains("acima de 13"), "3 pontos não passou de 13: {next}");
-        // A mesma guarda nos dois idiomas, no próprio catálogo: a frase cita
-        // o teto da onda uma vez só. A versão antiga dizia 13 duas vezes, e a
-        // primeira era a razão inventada — o inglês tinha a mesma mentira.
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let phrase = translate("plan.execution.many_waves", lang);
-            assert_eq!(phrase.matches("13").count(), 1, "a frase cita o teto uma vez só: {phrase}");
-        }
-
-        // 4 pontos (3 + 1, porque a escala não tem o número 4 sozinho), a
-        // divisa de cima da faixa do orquestrador: já é um agente numa onda
-        // só, não mais o orquestrador sozinho.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/a1.rs", Some(3));
-        rated(root, said, 1, "src/a2.rs", Some(1));
-        expect_one_wave("4", root);
-
-        // 8 pontos: um agente faz, numa onda só.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/a.rs", Some(8));
-        expect_one_wave("8", root);
-
-        // 13 pontos, o teto exato de uma onda, numa onda só: ainda é um
-        // agente numa onda só, não ondas de até 13.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/a.rs", Some(13));
-        expect_one_wave("13", root);
-
-        // 13 pontos já divididos em duas ondas: o total cabe no teto de uma
-        // onda, mas o plano já tem duas — a resposta não pode dizer "numa
-        // onda só".
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", Some(8));
-        rated(root, said, 2, "src/a2.rs", Some(5));
-        expect_many_waves("13", root);
-
-        // 14 pontos, em duas ondas dentro do teto de cada uma: a obra vai em
-        // ondas de até 13 pontos.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", Some(8));
-        rated(root, said, 2, "src/a2.rs", Some(5));
-        rated(root, said, 2, "src/b2.rs", Some(1));
-        expect_many_waves("14", root);
+        assert_eq!(report["ok"], json!(true), "a tarefa sem nota não trava o plano: {report}");
+        assert!(hints_of(&report, "blocking", "task-without-points").is_empty(), "{report}");
+        assert!(hints_of(&report, "warnings", "wave-points-over-cap").is_empty(), "{report}");
+        let next = report["next"].as_str().unwrap_or_default();
+        let plain = translate("plan.next", Locale::PtBr)
+            .replace("{question}", translate("approval.question", Locale::PtBr))
+            .replace("{option}", translate("approval.option", Locale::PtBr));
+        assert!(next.ends_with(&plain), "a pergunta não leva prefixo de nota: {report}");
+        assert!(!next.contains("ponto"), "nenhum texto impresso cita a nota do Scrum: {next}");
     }
 
     /// A gravação pelo comando aceita só as notas da escala: na divisa, 3, 5
@@ -2100,10 +1795,8 @@ mod tests {
     /// A aprovação é o primeiro marco de uma spec nova, que ainda não tem
     /// template: a ordem manda publicar o template, sem falar de página
     /// antiga, e entregar a primeira cópia, a spec inteira, a um agente
-    /// separado, antes da pergunta. A onda acima do teto fica no aviso da
-    /// conferência, como sempre, e a ordem da migração não se repete. Uma spec
-    /// que uma versão antiga publicou inteira, ainda no plano, ganha o
-    /// template num link novo na aprovação.
+    /// separado, antes da pergunta. Uma spec que uma versão antiga publicou
+    /// inteira, ainda no plano, ganha o template num link novo na aprovação.
     #[test]
     fn the_first_copy_goes_to_an_agent_at_the_approval_of_a_new_spec() {
         use crate::commands::spec_events::pages::copy::{agent_order, batches_order, old_page_order};
@@ -2138,8 +1831,7 @@ mod tests {
                 .replace("{question}", translate("approval.question", lang))
                 .replace("{option}", translate("approval.option", lang));
             assert!(next.find(&agent) < next.find(&ask) && next.ends_with(&ask), "{old}: {next}");
-            assert!(report.get("migration").is_none(), "{old}: the plan check already asks for the points: {report}");
-            assert_eq!(hints_of(&report, "warnings", "wave-points-over-cap").len(), 1, "{old}: {report}");
+            assert!(report.get("migration").is_none(), "{old}: a migração de nota não existe mais: {report}");
         }
     }
 }

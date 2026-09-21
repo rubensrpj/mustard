@@ -10,8 +10,7 @@
 //! [`end_milestone`]. A primeira vez de cada página, o marco manda antes
 //! publicar o template dela e gravar o endereço, e a primeira cópia da spec,
 //! que a leva inteira, fica com um agente separado. A spec antiga, cuja
-//! página uma versão antiga publicou inteira, ganha o template num link novo,
-//! e as tarefas das ondas dela que ainda não saíram ganham nota.
+//! página uma versão antiga publicou inteira, ganha o template num link novo.
 //!
 //! O item que guarda um trecho com cara de segredo não vai para o banco, e
 //! nem segura o marco: o marco diz o código dele para ser expurgado. A cópia
@@ -121,15 +120,6 @@ pub(crate) fn end_milestone(
     }
     report["copy"] = prepared.to_value();
     let mut next = prepared.order(spec.trim(), Some(milestone), lang);
-    // O template que nasce num marco que não é a aprovação é o de uma spec
-    // aprovada por uma versão antiga, que não pedia nota: as tarefas das
-    // ondas que ainda não saíram ganham a nota, e a onda acima do teto volta
-    // para o usuário. Na aprovação, a conferência do plano já cobra as duas.
-    if let Some(points) = prepared.points.as_ref().filter(|p| milestone != "approval" && !p.is_clear()) {
-        let over: Vec<Value> = points.over_cap().iter().map(|(wave, sum)| json!({ "wave": wave, "points": sum })).collect();
-        report["migration"] = json!({ "unrated": points.unrated, "over_cap": over });
-        next.extend(migration_order(points, lang));
-    }
     if !prepared.withheld.is_empty() {
         next.push(purge_pending(spec, &prepared.withheld, lang));
     }
@@ -150,30 +140,6 @@ fn numbered_next(orders: Vec<String>, then: &str) -> String {
         parts.push(then.to_string());
         parts.join(" ")
     }
-}
-
-/// A ordem da migração das notas: dar nota às tarefas `points.unrated` e
-/// levar ao usuário cada onda acima do teto.
-fn migration_order(points: &crate::commands::flow::plan::WavePoints, lang: Locale) -> Vec<String> {
-    let cap = crate::commands::flow::plan::WAVE_POINTS_CAP.to_string();
-    let mut out = Vec::new();
-    if !points.unrated.is_empty() {
-        out.push(
-            translate("page.migration.unrated", lang)
-                .replace("{tasks}", &points.unrated.join(", "))
-                .replace("{scale}", translate("plan.points_scale", lang))
-                .replace("{cap}", &cap),
-        );
-    }
-    for (wave, sum) in points.over_cap() {
-        out.push(
-            translate("page.migration.over_cap", lang)
-                .replace("{wave}", &wave.to_string())
-                .replace("{points}", &sum.to_string())
-                .replace("{cap}", &cap),
-        );
-    }
-    out
 }
 
 /// O caminho relativo ao projeto, com barras normais: a saída não traz o

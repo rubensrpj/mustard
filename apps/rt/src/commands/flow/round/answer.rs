@@ -17,7 +17,7 @@ use std::path::Path;
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog, DELIVERED_MAX_CHARS};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::wave_files;
+use mustard_core::domain::wave_prompt::{agent_from_template, wave_files};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -457,6 +457,11 @@ pub(super) fn run_round_with_mine(
         draft.insert("model".into(), json!(prompt.model));
         draft.insert("lines".into(), json!(prompt.lines));
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
+        // O nome do agente escolhido pelo tamanho do lote (`wave` ou
+        // `wave-solo`) não é campo do envio — o teto de turnos já viaja no
+        // próprio `template` — mas a resposta desta rodada o repete, para
+        // quem despacha saber qual dos dois chamar.
+        let agent = prompt.agent.clone();
         // Os itens que ficaram, e à parte a escolha do orquestrador: o que
         // saiu e o que entrou, cada um com o motivo.
         draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave))));
@@ -476,7 +481,7 @@ pub(super) fn run_round_with_mine(
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "prompt": prompt.text }));
+        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "prompt": prompt.text, "agent": agent }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(*wave, (code, written.written.id));
     }
@@ -501,7 +506,11 @@ pub(super) fn run_round_with_mine(
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
         // O molde e o modelo pedido são os do envio original: um reenvio não
-        // remonta o input, só acrescenta o aviso do que mudou na cópia.
+        // remonta o input, só acrescenta o aviso do que mudou na cópia. O
+        // nome do agente sai do próprio molde — o reenvio chama o mesmo dos
+        // dois que o envio original chamou.
+        let template = prior.str_field("template").unwrap_or_default();
+        let agent = agent_from_template(template);
         if let Some(template) = prior.str_field("template") {
             draft.insert("template".into(), json!(template));
         }
@@ -521,7 +530,7 @@ pub(super) fn run_round_with_mine(
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "prompt": text }));
+        dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "prompt": text, "agent": agent }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(wave, (code, written.written.id));
     }
@@ -729,20 +738,28 @@ mod tests {
         assert_eq!(sent[0].wave(), Some(1));
     }
 
-    /// O molde do agente instalado em `root`, com o frontmatter que os
-    /// moldes de verdade trazem.
+    /// Os dois moldes de agente instalados em `root`, cada um com o
+    /// `maxTurns` que os moldes de verdade trazem: quinze em `wave.md`, dez
+    /// em `wave-solo.md`.
     fn write_agent_template(root: &Path) {
-        std::fs::create_dir_all(root.join(".claude").join("agents").join("mustard")).unwrap();
+        let dir = root.join(".claude").join("agents").join("mustard");
+        std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            root.join(".claude").join("agents").join("mustard").join("wave.md"),
-            "---\nname: mustard-wave\nmodel: sonnet\n---\n\nCorpo do agente.\n",
+            dir.join("wave.md"),
+            "---\nname: mustard-wave\nmodel: sonnet\nmaxTurns: 15\n---\n\nCorpo do agente.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("wave-solo.md"),
+            "---\nname: mustard-wave-solo\nmodel: sonnet\nmaxTurns: 10\n---\n\nCorpo do agente.\n",
         )
         .unwrap();
     }
 
-    /// O envio grava, no cabeçalho do molde despachado, o teto de turnos que
-    /// a plataforma aplica: dez para a onda de uma tarefa só, quinze para a
-    /// de várias — os dois números combinados desta onda.
+    /// O envio grava, no cabeçalho do molde despachado, o teto de turnos do
+    /// arquivo escolhido pelo tamanho do lote: dez (`wave-solo.md`) para a
+    /// onda de uma tarefa só, quinze (`wave.md`) para a de várias — os dois
+    /// números combinados desta onda.
     #[test]
     fn the_dispatched_template_carries_ten_or_fifteen_turns_by_task_count() {
         let solo_dir = tempdir().unwrap();
@@ -769,6 +786,52 @@ mod tests {
         let multi_template = multi_sent.str_field("template").unwrap_or_default();
         assert!(multi_template.contains("maxTurns: 15"), "{multi_template}");
         assert!(!multi_template.contains("maxTurns: 10"), "{multi_template}");
+    }
+
+    /// A resposta da rodada diz qual dos dois arquivos de agente usar em
+    /// cada lote despachado, pelo tamanho dele: `wave-solo` para uma tarefa
+    /// só, `wave` para várias — no envio novo e no reenvio, que ecoa o
+    /// mesmo nome do molde original, sem remontar o pedido
+    /// (`MSTD-TASK-0011`, `MSTD-CRIT-0008`).
+    #[test]
+    fn a_resposta_da_rodada_diz_qual_agente_usar() {
+        let solo_dir = tempdir().unwrap();
+        let solo_root = solo_dir.path();
+        write_agent_template(solo_root);
+        approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(solo_root, "x", None);
+        let agent_of = |out: &Value, wave: u64| -> String {
+            out["dispatch"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["wave"].as_u64() == Some(wave))
+                .and_then(|d| d["agent"].as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(agent_of(&first, 1), "wave-solo", "{first}");
+
+        // O reenvio não remonta o pedido, mas a resposta segue dizendo qual
+        // dos dois agentes chamar: o mesmo do envio original.
+        let paused = line("PAUSED", json!({"wave": 1}));
+        let resent = round(solo_root, "x", Some(&paused));
+        assert_eq!(agent_of(&resent, 1), "wave-solo", "{resent}");
+
+        let multi_dir = tempdir().unwrap();
+        let multi_root = multi_dir.path();
+        write_agent_template(multi_root);
+        approved_with(multi_root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            write(
+                multi_root,
+                "x",
+                "task",
+                json!({"wave": 1, "text": "Tarefa 2 da onda 1.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": said}),
+            );
+        });
+        let multi_out = round(multi_root, "x", None);
+        assert_eq!(agent_of(&multi_out, 1), "wave", "{multi_out}");
     }
 
     /// A instrução de publicar e copiar a página, por extenso, fica só no

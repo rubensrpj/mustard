@@ -38,37 +38,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the exact text \"{question}\" and the options \"{option}\" and \"Adjust\": with another \
              text, the approval does not count."
         }
-        // Quem executa a obra, pela soma das notas de todas as tarefas do
-        // plano e pelo número de ondas que ele já tem: até 3 pontos numa
-        // onda só, o orquestrador faz sem ondas; de 4 a 13 numa onda só, um
-        // agente faz; acima de 13, ou já com mais de uma onda no plano,
-        // ondas de até 13 pontos cada — sem dizer que o total passou de 13,
-        // porque isso pode ser falso quando a razão é a onda já dividida.
-        ("plan.execution.solo", Locale::PtBr) => {
-            "A obra soma {points} pontos: até 3, sem ondas, o orquestrador faz."
-        }
-        ("plan.execution.solo", Locale::EnUs) => {
-            "The work totals {points} points: up to 3, no waves, the orchestrator does it."
-        }
-        ("plan.execution.one_wave", Locale::PtBr) => {
-            "A obra soma {points} pontos: de 4 a 13, um agente faz, numa onda só."
-        }
-        ("plan.execution.one_wave", Locale::EnUs) => {
-            "The work totals {points} points: from 4 to 13, one agent does it, in a single wave."
-        }
-        ("plan.execution.many_waves", Locale::PtBr) => {
-            "A obra soma {points} pontos: vai em ondas de até 13 pontos cada, uma por agente."
-        }
-        ("plan.execution.many_waves", Locale::EnUs) => {
-            "The work totals {points} points: it goes in waves of up to 13 points each, one agent per \
-             wave."
-        }
-        ("plan.execution.ends_with_test_agent", Locale::PtBr) => {
-            "Em todo tamanho, a obra termina com o agente de teste dedicado."
-        }
-        ("plan.execution.ends_with_test_agent", Locale::EnUs) => {
-            "In every size, the work ends with the dedicated test agent."
-        }
         ("plan.wave_loop", Locale::PtBr) => {
             "As ondas {waves} dependem umas das outras em círculo, e nenhuma pode começar. Corte uma \
              das dependências."
@@ -191,45 +160,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("plan.no_suggestion", Locale::PtBr) => "nada — o mapa não achou arquivo para esta tarefa",
         ("plan.no_suggestion", Locale::EnUs) => "nothing — the map found no file for this task",
-        // A nota de trabalho de cada tarefa: a escala e o exemplo de cada nota
-        // moram só aqui, e a recusa da tarefa sem nota os mostra.
-        ("plan.points_scale", Locale::PtBr) => {
-            "A nota vai em `\"points\"`, na escala do Scrum, comparando a tarefa com o exemplo de \
-             cada nota. 1: trocar um texto, uma lista ou um número, como o texto de um botão ou o \
-             valor de um limite. 2: mudar uma regra num lugar só, com teste, como validar um campo \
-             novo de um formulário. 3: mudar uma regra que passa por vários arquivos, como um campo \
-             novo que vai da tela até o banco de dados. 5: mexer no caminho que grava ou junta os \
-             dados, como mudar o jeito de salvar e conferir um pedido. 8: mudar uma parte inteira do \
-             sistema, como trocar o jeito de entrar com usuário e senha. 13: tarefa grande e incerta, \
-             que vale quebrar antes de gravar."
-        }
-        ("plan.points_scale", Locale::EnUs) => {
-            "The points go in `\"points\"`, on the Scrum scale, comparing the task with the example of \
-             each value. 1: change a text, a list or a number, like the text of a button or the value \
-             of a limit. 2: change a rule in one place only, with a test, like validating a new field \
-             in a form. 3: change a rule that runs through several files, like a new field that goes \
-             from the screen to the database. 5: touch the path that writes or merges the data, like \
-             changing the way an order is saved and checked. 8: change a whole part of the system, \
-             like changing the way of logging in with a username and password. 13: a large and \
-             uncertain task, worth breaking up before recording."
-        }
-        ("plan.task_without_points", Locale::PtBr) => {
-            "A tarefa sem nota segura a aprovação: {tasks}. Grave uma versão nova de cada uma, com a \
-             nota dela. {scale}"
-        }
-        ("plan.task_without_points", Locale::EnUs) => {
-            "A task without points holds the approval: {tasks}. Record a new version of each one, \
-             with its points. {scale}"
-        }
-        ("plan.wave_points_over_cap", Locale::PtBr) => {
-            "A onda {wave} soma {points} pontos, acima do teto de {cap}: é trabalho demais para uma \
-             onda só. O aviso não segura a aprovação, e quem aprova decide se a onda segue assim."
-        }
-        ("plan.wave_points_over_cap", Locale::EnUs) => {
-            "Wave {wave} adds up to {points} points, over the cap of {cap}: too much work for a single \
-             wave. The warning does not hold the approval, and whoever approves decides whether the \
-             wave goes on as it is."
-        }
         ("plan.command_not_declared", Locale::PtBr) => {
             "O projeto não declara `{field}` no mustard.json: preencha esse campo com o comando de \
              verdade. Até lá, o pedido de cada onda sai sem essa linha."
@@ -1065,8 +995,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            140,
-            0x5a67_047c_8a76_02c4,
+            133,
+            0x682a_53ba_9a24_171c,
         );
     }
 
@@ -1128,19 +1058,6 @@ mod tests {
         }
     }
 
-    /// A escala de notas do plano compara a tarefa com um exemplo de
-    /// qualquer projeto, nunca com algo que só existe no próprio Mustard,
-    /// como o scan, uma lição parecida ou o pedido de uma onda.
-    #[test]
-    fn the_points_scale_uses_examples_of_any_project() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let scale = translate("plan.points_scale", lang).to_lowercase();
-            for word in ["scan", "lições parecidas", "similar lessons", "pedido da onda", "wave request", "onda só"] {
-                assert!(!scale.contains(&word.to_lowercase()), "{lang:?}: a escala ainda cita {word:?}: {scale}");
-            }
-        }
-    }
-
     /// Os títulos e as instruções fixas do pedido de uma onda, e o que a
     /// conferência do plano acha, saem do catálogo nos dois idiomas, com as
     /// vagas que o montador preenche.
@@ -1149,10 +1066,6 @@ mod tests {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
             ("plan.next", &["{question}", "{option}"][..]),
-            ("plan.execution.solo", &["{points}"][..]),
-            ("plan.execution.one_wave", &["{points}"][..]),
-            ("plan.execution.many_waves", &["{points}"][..]),
-            ("plan.execution.ends_with_test_agent", &[][..]),
             ("page.copy.publish", &["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"][..]),
             ("page.copy.batches", &["{page}", "{url}", "{files}"][..]),
             ("page.copy.record", &["{spec}", "{record}"][..]),
@@ -1180,9 +1093,6 @@ mod tests {
             ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
             ("plan.skill_to_be_born", &["{task}"][..]),
             ("plan.no_suggestion", &[][..]),
-            ("plan.points_scale", &[][..]),
-            ("plan.task_without_points", &["{tasks}", "{scale}"][..]),
-            ("plan.wave_points_over_cap", &["{wave}", "{points}", "{cap}"][..]),
             ("plan.finding.label", &[][..]),
             ("discard.preview", &["{spec}", "{branch}", "{remote}", "{what}", "{token}"][..]),
             ("discard.archive", &[][..]),

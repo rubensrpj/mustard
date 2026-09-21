@@ -53,8 +53,7 @@
 //! manda de novo a spec inteira para um agente, no mesmo link.
 //!
 //! Quando o template nasce num marco que não é a aprovação — a spec foi
-//! aprovada por uma versão antiga —, a ordem leva também a nota de trabalho
-//! das tarefas das ondas que ainda não saíram (`flow::plan::migration_points`).
+//! aprovada por uma versão antiga —, a cópia segue igual, sem nota nenhuma.
 //!
 //! ## A linha da spec na página do projeto
 //!
@@ -92,7 +91,6 @@ use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
 use super::relative;
-use crate::commands::flow::plan::WavePoints;
 
 /// A pasta da cópia, dentro da pasta da spec.
 pub(crate) const FOLDER: &str = "copy";
@@ -133,9 +131,6 @@ pub(crate) struct Prepared {
     /// O código de cada item que guarda um trecho com cara de segredo e por
     /// isso fica fora da cópia, na ordem do arquivo.
     pub withheld: Vec<String>,
-    /// As notas de trabalho das tarefas das ondas que ainda não saíram,
-    /// lidas quando o template da página da spec nasce neste marco.
-    pub points: Option<WavePoints>,
 }
 
 /// O que vai para o banco de uma página.
@@ -270,10 +265,6 @@ fn build(
     if url.is_none() {
         ensure_template(place.root, SPEC_TEMPLATE, || spec_page_template(lang))?;
     }
-    // O template que nasce neste marco lê, na mesma leitura da cópia, as
-    // notas das tarefas das ondas que ainda não saíram.
-    let points = (moment == Moment::Milestone && url.is_none())
-        .then(|| crate::commands::flow::plan::migration_points(log));
     let spec = Target {
         url,
         batches: batches(place, "spec", &writes)?,
@@ -291,7 +282,6 @@ fn build(
         spec,
         project,
         withheld: withheld(log),
-        points,
     }))
 }
 
@@ -1427,14 +1417,11 @@ mod tests {
     }
 
     /// Uma spec aprovada por uma versão antiga do Mustard, que publicou a
-    /// página inteira dela e não pedia nota às tarefas, chega ao primeiro
-    /// marco desta versão, uma rodada. A ordem manda publicar o template num
-    /// link novo, deixando a página antiga parada, e entregar a primeira
-    /// cópia, a spec inteira, a um agente separado. As tarefas das ondas que
-    /// ainda não saíram ganham nota: a da onda que a própria rodada soltou
-    /// fica de fora, e a onda acima de 13 pontos volta para o usuário — na
-    /// divisa, 13 fica e 14 volta. Publicado o template, sem a cópia gravada,
-    /// o marco seguinte não publica de novo, e a spec inteira vai outra vez a
+    /// página inteira dela, chega ao primeiro marco desta versão, uma
+    /// rodada. A ordem manda publicar o template num link novo, deixando a
+    /// página antiga parada, e entregar a primeira cópia, a spec inteira, a
+    /// um agente separado. Publicado o template, sem a cópia gravada, o
+    /// marco seguinte não publica de novo, e a spec inteira vai outra vez a
     /// um agente, no mesmo link; gravada a cópia, a seguinte já não é
     /// primeira e fica na conversa.
     #[test]
@@ -1449,26 +1436,22 @@ mod tests {
             }
             write(root, "wave", draft);
         };
-        let task = |n: u64, k: u64, file: &str, points: Option<u64>| {
-            let mut draft = json!({"wave": n, "text": format!("Tarefa {k} da onda {n}."),
-                "files": [{"path": file}], "origin": said});
-            if let Some(points) = points {
-                draft["points"] = json!(points);
-            }
-            write(root, "task", draft)
+        let task = |n: u64, k: u64, file: &str| {
+            write(root, "task", json!({"wave": n, "text": format!("Tarefa {k} da onda {n}."),
+                "files": [{"path": file}], "origin": said}))
         };
-        let code = |written: &Value| written["code"].as_str().unwrap_or_default().to_string();
         wave(1, None);
-        let gone = code(&task(1, 1, "src/a.rs", None));
+        task(1, 1, "src/a.rs");
         wave(2, Some(1));
-        let unrated = [task(2, 1, "src/b.rs", None), task(2, 2, "src/b.rs", None)];
+        task(2, 1, "src/b.rs");
+        task(2, 2, "src/b.rs");
         wave(3, Some(1));
-        task(3, 1, "src/c.rs", Some(8));
-        task(3, 2, "src/c.rs", Some(5));
-        task(3, 3, "src/c.rs", Some(1));
+        task(3, 1, "src/c.rs");
+        task(3, 2, "src/c.rs");
+        task(3, 3, "src/c.rs");
         wave(4, Some(1));
-        task(4, 1, "src/d.rs", Some(8));
-        task(4, 2, "src/d.rs", Some(5));
+        task(4, 1, "src/d.rs");
+        task(4, 2, "src/d.rs");
         crate::shared::spec_state::approve_in(&root.join(".claude/spec/x"));
         // A versão antiga publicou a página inteira na aprovação.
         write(root, "publish", json!({"page": "spec", "milestone": "approval", "ok": true, "url": OLD_URL}));
@@ -1492,41 +1475,19 @@ mod tests {
         let copy = batches_order(&first, "x", translate("page.copy.new_address", lang), lang);
         assert!(next.contains(&agent_order(&copy, lang)), "the first copy goes to an agent: {next}");
         assert_eq!(next.matches(copy.as_str()).count(), 1, "the conversation never copies it itself: {next}");
-        // As tarefas das ondas que ainda não saíram ganham nota, e a onda
-        // acima do teto volta para o usuário.
-        let codes: Vec<String> = unrated.iter().map(code).collect();
-        assert_eq!(first["migration"], json!({"unrated": codes, "over_cap": [{"wave": 3, "points": 14}]}), "{first}");
-        let rate = translate("page.migration.unrated", lang)
-            .replace("{tasks}", &codes.join(", "))
-            .replace("{scale}", translate("plan.points_scale", lang))
-            .replace("{cap}", "13");
-        assert!(next.contains(&rate), "{next}");
-        let over = |wave: u64, points: u64| {
-            translate("page.migration.over_cap", lang)
-                .replace("{wave}", &wave.to_string())
-                .replace("{points}", &points.to_string())
-                .replace("{cap}", "13")
-        };
-        assert!(next.contains(&over(3, 14)), "{next}");
-        assert!(!next.contains(&over(4, 13)), "13 points is within the cap: {next}");
-        assert!(!next.contains(&gone), "the wave that went out gets no note: {next}");
+        assert!(first.get("migration").is_none(), "the old-note migration is gone: {first}");
 
-        // A conversa publica o template e dá as notas; o agente não grava a
-        // cópia.
+        // A conversa publica o template; o agente não grava a cópia.
         write(root, "publish", json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "url": SPEC_URL}));
         write(root, "publish",
             json!({"page": "project", "milestone": "round", "ok": true, "template": true, "url": PROJECT_URL}));
-        for (k, written) in unrated.iter().enumerate() {
-            write(root, "task", json!({"wave": 2, "text": format!("Tarefa {} da onda 2.", k + 1),
-                "files": [{"path": "src/b.rs"}], "points": 3, "replaces": id_of(written), "origin": said}));
-        }
         let second = round(root);
         let next = full_next(root, &second);
         assert!(second.get("publish").is_none(), "the link does not change: {second}");
         assert_eq!(second["copy"]["spec"]["first"], json!(true), "{second}");
         assert_eq!(sent_items(root, &second).first(), Some(&1), "the whole spec again: {second}");
         assert!(next.contains(&agent_order(&batches_order(&second, "x", SPEC_URL, lang), lang)), "{next}");
-        assert!(second.get("migration").is_none(), "the notes are asked when the template is born: {second}");
+        assert!(second.get("migration").is_none(), "the old-note migration is gone: {second}");
         let rows = mustard_core::io::spec_index::read_rows(root);
         assert_eq!(rows[0].url.as_deref(), Some(SPEC_URL), "the status line shows the new link: {rows:?}");
 

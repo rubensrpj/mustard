@@ -50,6 +50,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.task_declaration_files", Locale::EnUs) => "the files it touches",
         ("spec_events.task_declaration_depends_on", Locale::PtBr) => "de quais tarefas depende",
         ("spec_events.task_declaration_depends_on", Locale::EnUs) => "which tasks it depends on",
+        ("spec_events.task_depends_on_unknown", Locale::PtBr) => {
+            "A tarefa {task} depende de {depends_on}, que não existe nesta spec. Nada foi gravado."
+        }
+        ("spec_events.task_depends_on_unknown", Locale::EnUs) => {
+            "Task {task} depends on {depends_on}, which does not exist in this spec. Nothing was \
+             written."
+        }
+        ("spec_events.task_dependency_cycle", Locale::PtBr) => {
+            "As tarefas dependem umas das outras em círculo: {cycle}. Nada foi gravado."
+        }
+        ("spec_events.task_dependency_cycle", Locale::EnUs) => {
+            "The tasks depend on each other in a circle: {cycle}. Nothing was written."
+        }
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -544,8 +557,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            78,
-            0x0d1e_d00a_cd1b_9a07,
+            80,
+            0xd35a_8a12_3016_db85,
         );
     }
 
@@ -561,6 +574,8 @@ mod tests {
             ("spec_events.task_declaration_what", &[][..]),
             ("spec_events.task_declaration_files", &[][..]),
             ("spec_events.task_declaration_depends_on", &[][..]),
+            ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
+            ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),

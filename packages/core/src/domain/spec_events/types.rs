@@ -283,9 +283,6 @@ const ROLES: &[&str] = &["wave", "review", "skill"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];
-/// As notas de trabalho de uma tarefa, na escala do Scrum. O exemplo de cada
-/// uma mora no catálogo, no texto que a recusa da tarefa sem nota mostra.
-const POINTS: &[u64] = &[1, 2, 3, 5, 8, 13];
 
 /// Os 35 tipos. Os campos marcados com `opt` podem faltar; os outros são
 /// obrigatórios, e o gravador recusa o evento sem eles.
@@ -453,7 +450,9 @@ pub const TYPES: &[TypeSpec] = &[
         Block::Waves,
         true,
         &[
-            req("wave", Kind::Int),
+            // O número da onda é opcional: a tarefa pode nascer sem ele e
+            // ganhá-lo depois, no plano.
+            opt("wave", Kind::Int),
             TEXT,
             // A tarefa sem arquivo que já se sabe qual é declara a lista
             // vazia; a ausência do campo é outra coisa, e o gravador a
@@ -467,9 +466,6 @@ pub const TYPES: &[TypeSpec] = &[
             // vazia quando não depende de nenhuma. Alimenta a ordem das
             // ondas (topológica) e, como `files`, é obrigatória na gravação.
             opt("depends_on", Kind::Refs),
-            // A nota de trabalho, na escala do Scrum. A tarefa sem nota numa
-            // onda que ainda não saiu segura o plano (`flow::plan`).
-            opt("points", Kind::OneOfNumbers(POINTS)),
         ],
     ),
     ty(

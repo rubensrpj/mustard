@@ -203,6 +203,7 @@ fn shared_install_is_byte_identical_to_today() {
             ".claude/agents/mustard/wave.md",
             ".claude/agents/mustard/review.md",
             ".claude/agents/mustard/skill.md",
+            ".claude/agents/mustard/wave-solo.md",
             ".claude/.gitignore",
             "mustard.json",
         ],

@@ -1619,12 +1619,15 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
         std::fs::write(root.join(".claude/agents/mustard/wave.md"), "molde da onda").unwrap();
+        // A onda de uma tarefa só chama o agente `wave-solo`: sem o arquivo
+        // dele, o pedido não teria molde nenhum para levar.
+        std::fs::write(root.join(".claude/agents/mustard/wave-solo.md"), "molde da onda solo").unwrap();
 
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!(sent.str_field("template"), Some("molde da onda"), "the send carries the agent's template");
+        assert_eq!(sent.str_field("template"), Some("molde da onda solo"), "the send carries the agent's template");
         assert_eq!(sent.str_field("model"), Some("Sonnet 5"), "the send carries the requested model");
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
@@ -1645,7 +1648,7 @@ mod tests {
         assert_eq!(revised.int("tokens"), Some(123_456), "{revised:?}");
         assert_eq!(revised.int("caller_steps"), Some(7), "{revised:?}");
         assert_eq!(revised.int("caller_tokens"), Some(89_000), "{revised:?}");
-        assert_eq!(revised.str_field("template"), Some("molde da onda"), "keeps what was already there");
+        assert_eq!(revised.str_field("template"), Some("molde da onda solo"), "keeps what was already there");
         assert_eq!(revised.str_field("model"), Some("Sonnet 5"), "keeps what was already there");
     }
 

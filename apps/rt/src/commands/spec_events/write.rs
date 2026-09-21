@@ -156,10 +156,13 @@
 //! (`mustard_core::domain::wave_prompt::requested_turns`), aplicado pela
 //! plataforma — não a gravação.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::{LESSON, RETIRE};
-use mustard_core::domain::spec_events::{type_spec, Hidden, Refusal, SpecLog, TaskDeclaration, PHASES};
+use mustard_core::domain::spec_events::{
+    type_spec, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
     birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, waves_grown_by, PhaseWriter, SpecState,
@@ -555,7 +558,8 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 
 /// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
 /// depois dela: a mudança de fase, a mensagem que a resposta responde, o
-/// objetivo, o levantamento e o dono do item combinado.
+/// objetivo, o levantamento, o dono do item combinado e a dependência entre
+/// tarefas.
 fn record_rules(
     spec: &str,
     before: &SpecLog,
@@ -568,7 +572,112 @@ fn record_rules(
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
     survey_rule(spec, before, after)?;
+    task_dependency_rule(before, after)?;
     owner_rule(before, after)
+}
+
+/// A tarefa que uma gravação acrescenta a `after` e não estava em `before`;
+/// nenhuma para uma gravação que não é de uma tarefa nova.
+fn new_task<'a>(before: &SpecLog, after: &'a SpecLog) -> Option<&'a SpecEvent> {
+    let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
+    after.events.iter().find(|event| event.event_type == "task" && !had.contains(&event.id))
+}
+
+/// O número da versão vigente da tarefa desta spec que `value` aponta (pelo
+/// número do evento ou pelo código), ou `None` quando não existe tarefa
+/// nenhuma com esse número ou código. Um número ou código que aponta uma
+/// versão já substituída resolve para a versão nova, do mesmo jeito que o
+/// resto do arquivo trata a identidade de um item.
+fn task_ref(after: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
+    let raw = match EventRef::from_value(value)? {
+        EventRef::Id(id) => id,
+        EventRef::Code(code) => after
+            .events
+            .iter()
+            .filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code))
+            .map(|event| event.id)
+            .next_back()?,
+    };
+    after.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
+}
+
+/// O texto que nomeia, na recusa, uma dependência que não bateu com tarefa
+/// nenhuma: exatamente o que `value` trazia, código ou número.
+fn dependency_label(value: &Value) -> String {
+    value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())
+}
+
+/// As tarefas de que `task` depende, já resolvidas a números; uma referência
+/// que não aponta tarefa nenhuma desta spec some da lista — quem confere a
+/// existência da dependência é [`task_dependency_rule`], não este helper.
+fn task_depends_on(task: &SpecEvent, after: &SpecLog, codes: &BTreeMap<u64, String>) -> Vec<u64> {
+    task.fields
+        .get("depends_on")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| task_ref(after, codes, value))
+        .collect()
+}
+
+/// O primeiro círculo que se fecha partindo de `start`, pelo grafo de
+/// dependências `graph`: a lista de números, na ordem, terminando de volta em
+/// `start`. `None` quando nenhum círculo se fecha.
+fn find_cycle(start: u64, graph: &BTreeMap<u64, Vec<u64>>) -> Option<Vec<u64>> {
+    fn walk(
+        node: u64,
+        start: u64,
+        graph: &BTreeMap<u64, Vec<u64>>,
+        path: &mut Vec<u64>,
+        seen: &mut BTreeSet<u64>,
+    ) -> Option<Vec<u64>> {
+        for &next in graph.get(&node).map(Vec::as_slice).unwrap_or_default() {
+            if next == start {
+                let mut cycle = path.clone();
+                cycle.push(next);
+                return Some(cycle);
+            }
+            if seen.insert(next) {
+                path.push(next);
+                if let Some(found) = walk(next, start, graph, path, seen) {
+                    return Some(found);
+                }
+                path.pop();
+            }
+        }
+        None
+    }
+    let mut path = vec![start];
+    let mut seen = BTreeSet::from([start]);
+    walk(start, start, graph, &mut path, &mut seen)
+}
+
+/// A tarefa recém-gravada só aponta, em `depends_on`, tarefas desta spec, e
+/// nenhum círculo se fecha entre elas: a recusa nomeia a dependência que não
+/// existe, ou o círculo inteiro, na ordem, voltando ao começo.
+fn task_dependency_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    let Some(task) = new_task(before, after) else {
+        return Ok(());
+    };
+    let codes = after.codes();
+    let task_label = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+    let raw: Vec<Value> = task.fields.get("depends_on").and_then(Value::as_array).cloned().unwrap_or_default();
+    for value in &raw {
+        if task_ref(after, &codes, value).is_none() {
+            return Err(Refusal::TaskDependsOnUnknown { task: task_label, depends_on: dependency_label(value) });
+        }
+    }
+    let graph: BTreeMap<u64, Vec<u64>> = after
+        .visible()
+        .into_iter()
+        .filter(|event| event.event_type == "task")
+        .map(|event| (event.id, task_depends_on(event, after, &codes)))
+        .collect();
+    if let Some(cycle) = find_cycle(task.id, &graph) {
+        let names = cycle.into_iter().map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string())).collect();
+        return Err(Refusal::TaskDependencyCycle { cycle: names });
+    }
+    Ok(())
 }
 
 /// Gravações do binário na spec conferidas antes, sem gravar nada: cada uma
