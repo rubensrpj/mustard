@@ -193,3 +193,74 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     assert!(to_plan(root).is_ok(), "with every point closed the passage goes");
     assert_eq!(phase(root), Some("plan"));
 }
+
+/// A tarefa gravada pela porta do binário sem uma das três declarações
+/// obrigatórias (o que ela faz, os arquivos que toca, de quais tarefas
+/// depende) é recusada nomeando exatamente a que faltou, e nada entra no
+/// arquivo da spec; com as três, a gravação passa.
+#[test]
+fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_nothing() {
+    let dir = repo();
+    let root = dir.path();
+    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = user_says(root, GOAL);
+
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    let lines_before = std::fs::read_to_string(&path).expect("the spec file").lines().count();
+
+    // Falta só `depends_on`: a recusa nomeia só ela.
+    let out = rt(
+        root,
+        &[
+            "write",
+            "task",
+            "--spec",
+            SPEC,
+            "--json",
+            &json!({"wave": 1, "text": "Somar dois números.", "files": [], "origin": said}).to_string(),
+        ],
+    );
+    let refused = report(&out);
+    assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("de quais tarefas depende"), "{hint}");
+    assert!(!hint.contains("o que ela faz") && !hint.contains("os arquivos que toca"), "{hint}");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the spec file").lines().count(),
+        lines_before,
+        "nothing was written"
+    );
+
+    // Faltam `files` e `depends_on`: a recusa nomeia as duas, sem citar `text`.
+    let out = rt(
+        root,
+        &[
+            "write",
+            "task",
+            "--spec",
+            SPEC,
+            "--json",
+            &json!({"wave": 1, "text": "Somar dois números.", "origin": said}).to_string(),
+        ],
+    );
+    let refused = report(&out);
+    assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("os arquivos que toca") && hint.contains("de quais tarefas depende"), "{hint}");
+    assert!(!hint.contains("o que ela faz"), "{hint}");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the spec file").lines().count(),
+        lines_before,
+        "nothing was written"
+    );
+
+    // Com as três, a gravação passa.
+    let written = write(
+        root,
+        "task",
+        &json!({"wave": 1, "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
+    );
+    assert!(written.get("id").is_some(), "{written}");
+    assert_eq!(std::fs::read_to_string(&path).expect("the spec file").lines().count(), lines_before + 1);
+}

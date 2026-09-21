@@ -124,7 +124,34 @@ pub enum Refusal {
     /// usa a mesma recusa como rede, para a onda que cresceu por outro
     /// caminho.
     WaveTooBig { wave: u64, tasks: usize, proofs: usize, first: String, second: String },
+    /// Uma tarefa gravada sem uma das três declarações obrigatórias: o que
+    /// ela faz, os arquivos que toca e de quais tarefas depende. Nada é
+    /// gravado, e a mensagem nomeia exatamente qual (ou quais) faltou.
+    TaskDeclarationMissing { missing: Vec<TaskDeclaration> },
     Io { detail: String },
+}
+
+/// Uma das três declarações que toda tarefa precisa trazer na gravação.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskDeclaration {
+    /// O que a tarefa faz, em uma frase (`text`).
+    What,
+    /// Os arquivos que a tarefa toca (`files`), mesmo que a lista fique
+    /// vazia.
+    Files,
+    /// As tarefas de que esta depende (`depends_on`), mesmo que a lista
+    /// fique vazia.
+    DependsOn,
+}
+
+impl TaskDeclaration {
+    fn label(self, lang: Locale) -> &'static str {
+        match self {
+            Self::What => translate("spec_events.task_declaration_what", lang),
+            Self::Files => translate("spec_events.task_declaration_files", lang),
+            Self::DependsOn => translate("spec_events.task_declaration_depends_on", lang),
+        }
+    }
 }
 
 impl Refusal {
@@ -179,6 +206,7 @@ impl Refusal {
             Self::DeliveredTooLong { .. } => "delivered-too-long",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::WaveTooBig { .. } => "wave-too-big",
+            Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -376,6 +404,13 @@ impl Refusal {
                     ("{first}", first.clone()),
                     ("{second}", second.clone()),
                 ],
+            ),
+            Self::TaskDeclarationMissing { missing } => fill(
+                "spec_events.task_declaration_missing",
+                &[(
+                    "{missing}",
+                    missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
+                )],
             ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }

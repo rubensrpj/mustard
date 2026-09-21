@@ -237,7 +237,7 @@ mod tests {
             write(root, spec, "wave", wave);
             let declared: Vec<Value> = files.iter().map(|f| json!({"path": f})).collect();
             write(root, spec, "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
-                "files": declared, "origin": said}));
+                "files": declared, "depends_on": [], "origin": said}));
         }
         before(said);
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));

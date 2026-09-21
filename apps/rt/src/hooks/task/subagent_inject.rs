@@ -197,7 +197,7 @@ mod tests {
         let mut next_id = write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
             "done_when": "A suíte passa.", "origin": said}));
         for i in 0..tasks {
-            let mut task = json!({"wave": 1, "text": format!("Tarefa {i}."), "origin": said});
+            let mut task = json!({"wave": 1, "text": format!("Tarefa {i}."), "files": [], "depends_on": [], "origin": said});
             if skills {
                 let dir = root.join(".claude").join("skills").join(format!("s{i}"));
                 std::fs::create_dir_all(&dir).unwrap();

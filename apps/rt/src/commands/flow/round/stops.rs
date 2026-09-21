@@ -420,7 +420,7 @@ mod tests {
             "why": "a revisão apontou", "keys": ["tarefa"], "waves": [1], "origin": early})));
         for origin in [own, early] {
             write(root, "x", "task", json!({"wave": 1, "text": format!("Tarefa acrescentada ({origin})."),
-                "files": [{"path": "src/a.rs"}], "origin": origin}));
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": origin}));
         }
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "o plano mudou depois do pedido: {again}");

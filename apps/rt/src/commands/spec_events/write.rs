@@ -161,7 +161,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::{LESSON, RETIRE};
-use mustard_core::domain::spec_events::{type_spec, Hidden, Refusal, SpecLog, PHASES};
+use mustard_core::domain::spec_events::{type_spec, Hidden, Refusal, SpecLog, TaskDeclaration, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
     birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, waves_grown_by, PhaseWriter, SpecState,
@@ -470,6 +470,25 @@ pub fn record(
     record_in(&super::project(start), start, spec, event_type, draft, Some(by))
 }
 
+/// As três declarações que faltam num rascunho de tarefa: o que ela faz, os
+/// arquivos que toca e de quais tarefas depende. `files` e `depends_on`
+/// contam como declarados só pela chave estar presente, mesmo com a lista
+/// vazia — uma tarefa sem dependência declara `"depends_on": []`.
+fn task_declarations_missing(draft: &Map<String, Value>) -> Vec<TaskDeclaration> {
+    let mut missing = Vec::new();
+    let what = draft.get("text").and_then(Value::as_str).is_none_or(|text| text.trim().is_empty());
+    if what {
+        missing.push(TaskDeclaration::What);
+    }
+    if !draft.contains_key("files") {
+        missing.push(TaskDeclaration::Files);
+    }
+    if !draft.contains_key("depends_on") {
+        missing.push(TaskDeclaration::DependsOn);
+    }
+    missing
+}
+
 /// A única gravação no arquivo de eventos de uma spec: toda porta chega
 /// aqui, e a regra da mudança de fase confere o arquivo antes e depois, com a
 /// trava presa.
@@ -486,6 +505,12 @@ fn record_in(
 ) -> Result<Recorded, Refusal> {
     if super::pages::old_format_spec(&project.root, spec) {
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
+    }
+    if event_type == "task" {
+        let missing = task_declarations_missing(&draft);
+        if !missing.is_empty() {
+            return Err(Refusal::TaskDeclarationMissing { missing });
+        }
     }
     let path = store::spec_file(&project.root, spec)?;
     let roots = store::citation_roots(start, &project.root);
@@ -1484,7 +1509,9 @@ mod tests {
 
         // As três primeiras tarefas passam; a quarta é recusada, e nada é
         // gravado por ela.
-        let task = |i: u64| json!({"wave": 1, "text": format!("Tarefa {i}."), "origin": said}).to_string();
+        let task = |i: u64| {
+            json!({"wave": 1, "text": format!("Tarefa {i}."), "files": [], "depends_on": [], "origin": said}).to_string()
+        };
         for i in 1..=3 {
             let out = write(root, "task", &task(i));
             assert_eq!(out["ok"], json!(true), "tarefa {i}: {out}");

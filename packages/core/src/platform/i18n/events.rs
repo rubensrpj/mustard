@@ -38,6 +38,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Required fields of the {type} event that are missing or empty: {field}. Nothing was \
              written."
         }
+        ("spec_events.task_declaration_missing", Locale::PtBr) => {
+            "A tarefa precisa declarar: {missing}. Nada foi gravado."
+        }
+        ("spec_events.task_declaration_missing", Locale::EnUs) => {
+            "The task must declare: {missing}. Nothing was written."
+        }
+        ("spec_events.task_declaration_what", Locale::PtBr) => "o que ela faz",
+        ("spec_events.task_declaration_what", Locale::EnUs) => "what it does",
+        ("spec_events.task_declaration_files", Locale::PtBr) => "os arquivos que toca",
+        ("spec_events.task_declaration_files", Locale::EnUs) => "the files it touches",
+        ("spec_events.task_declaration_depends_on", Locale::PtBr) => "de quais tarefas depende",
+        ("spec_events.task_declaration_depends_on", Locale::EnUs) => "which tasks it depends on",
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -542,8 +554,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            75,
-            0xacd9_fe1e_14ee_87a2,
+            79,
+            0xe913_eb45_f724_e659,
         );
     }
 
@@ -555,6 +567,10 @@ mod tests {
             ("spec_events.not_an_object", &["{detail}"][..]),
             ("spec_events.unknown_type", &["{type}", "{types}"][..]),
             ("spec_events.missing_field", &["{type}", "{field}"][..]),
+            ("spec_events.task_declaration_missing", &["{missing}"][..]),
+            ("spec_events.task_declaration_what", &[][..]),
+            ("spec_events.task_declaration_files", &[][..]),
+            ("spec_events.task_declaration_depends_on", &[][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),

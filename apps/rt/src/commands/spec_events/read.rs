@@ -207,9 +207,9 @@ mod tests {
         let c1 = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
         let c2 = put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "origin": said}));
         put(root, "wave", json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": said}));
-        put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "origin": said}));
+        put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": said}));
         put(root, "wave", json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": said}));
-        put(root, "task", json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": said}));
+        put(root, "task", json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": said}));
 
         let report = read_at(&opts(root, "wave-2", None)).unwrap();
         let got = events(&report);

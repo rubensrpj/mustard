@@ -867,8 +867,21 @@ mod tests {
             root: root.to_path_buf(),
             spec: spec.map(str::to_string),
             event_type: event_type.into(),
-            json: body.to_string(),
+            json: with_task_declarations(event_type, body).to_string(),
         })
+    }
+
+    /// Os testes deste arquivo escrevem a tarefa pelo que ela importa para
+    /// eles (pontos, arquivos, ondas); as duas declarações que a gravação
+    /// agora exige sempre (`files`, `depends_on`) entram vazias quando o
+    /// teste não as deu, sem mudar o que ele já afirma.
+    fn with_task_declarations(event_type: &str, mut body: Value) -> Value {
+        if event_type == "task" {
+            let map = body.as_object_mut().expect("a tarefa é um objeto");
+            map.entry("files").or_insert_with(|| json!([]));
+            map.entry("depends_on").or_insert_with(|| json!([]));
+        }
+        body
     }
 
     fn id_of(report: &Value) -> u64 {
@@ -2090,7 +2103,7 @@ mod tests {
                 spec: Some("x".into()),
                 event_type: "task".into(),
                 json: json!({"wave": 1, "text": "Mexer no código.", "files": [{"path": "src/a.rs"}],
-                    "points": points, "origin": said})
+                    "depends_on": [], "points": points, "origin": said})
                 .to_string(),
             })
         };

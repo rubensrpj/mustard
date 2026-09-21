@@ -864,7 +864,7 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
         let task = write(root, "x", "task", json!({"wave": 1, "text": "Tarefa nova da onda 1.",
-            "files": [{"path": "src/b.rs"}], "origin": said}));
+            "files": [{"path": "src/b.rs"}], "depends_on": [], "origin": said}));
         let task_code = task["code"].as_str().unwrap_or_else(|| panic!("{task}")).to_string();
 
         let again = round(root, "x", None);
@@ -1117,7 +1117,7 @@ mod tests {
                 id_of(&write(root, "x", "decision", body));
             }
             write(root, "x", "task", json!({"wave": 1, "text": "Criar o índice da tabela.", "files": [{"path": "src/a.rs"}],
-                "covers": [done], "origin": said}));
+                "depends_on": [], "covers": [done], "origin": said}));
         });
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         log.codes().into_iter().map(|(id, code)| (code, id)).collect()
@@ -1482,7 +1482,7 @@ mod tests {
                 "x",
                 "task",
                 json!({"wave": 2, "text": "Montar uma calculadora nova.",
-                    "files": [{"path": "src/calculadora_nova.rs"}], "origin": said}),
+                    "files": [{"path": "src/calculadora_nova.rs"}], "depends_on": [], "origin": said}),
             );
         });
         std::fs::write(root.join("src/calculadora_nova.rs"), "fn nova() {}\n").unwrap();
@@ -1564,7 +1564,7 @@ mod tests {
             write(root, "x", "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
                 "done_when": "A suíte passa.", "origin": said}));
             write(root, "x", "task", json!({"wave": 1, "text": "Somar.",
-                "files": [{"path": "src/a.rs"}], "must_read": ["src/a.rs#soma"], "origin": said}));
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "must_read": ["src/a.rs#soma"], "origin": said}));
         });
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":0}"#).unwrap();
 

@@ -455,12 +455,18 @@ pub const TYPES: &[TypeSpec] = &[
         &[
             req("wave", Kind::Int),
             TEXT,
-            // Nem toda tarefa muda um arquivo que já se sabe qual é: a
-            // tarefa sem arquivo fica sem o campo.
+            // A tarefa sem arquivo que já se sabe qual é declara a lista
+            // vazia; a ausência do campo é outra coisa, e o gravador a
+            // recusa (`spec_events::write::record_in`), junto da falta de
+            // `depends_on`.
             opt("files", Kind::Objects),
             opt("skill", Kind::Text),
             opt("covers", Kind::Ints),
             opt("must_read", Kind::List),
+            // As tarefas de que esta depende, pelo número ou pelo código;
+            // vazia quando não depende de nenhuma. Alimenta a ordem das
+            // ondas (topológica) e, como `files`, é obrigatória na gravação.
+            opt("depends_on", Kind::Refs),
             // A nota de trabalho, na escala do Scrum. A tarefa sem nota numa
             // onda que ainda não saiu segura o plano (`flow::plan`).
             opt("points", Kind::OneOfNumbers(POINTS)),

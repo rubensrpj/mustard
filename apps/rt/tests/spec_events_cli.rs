@@ -225,9 +225,9 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": msg}));
     let c2 = write(root, "criterion", &json!({"when": "c", "then": "d", "proof": "q", "origin": msg}));
     write(root, "wave", &json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
-    write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "origin": msg}));
+    write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
     write(root, "wave", &json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "depends_on": [1], "origin": msg}));
-    write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": msg}));
+    write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": msg}));
     seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
     seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
 
