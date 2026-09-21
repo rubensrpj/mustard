@@ -282,6 +282,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.wave.prompt.summary", Locale::EnUs) => "{lines} lines, exactly as the agent gets them",
         ("page.wave.heading", Locale::PtBr) => "Onda {n}",
         ("page.wave.heading", Locale::EnUs) => "Wave {n}",
+        ("page.review.wave", Locale::PtBr) => "Revisão da onda {n}",
+        ("page.review.wave", Locale::EnUs) => "Wave {n} review",
         ("page.conversation.cut", Locale::PtBr) => {
             "Os {count} registros mais antigos da conversa ficaram só no `spec.md`: com eles, a página \
              passaria de 16 MB, o tamanho que o claude.ai aceita."
@@ -308,6 +310,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("page.wave.sent", Locale::PtBr) => "Pedido enviado ({role}) · {lines} linhas, como o agente o recebeu",
         ("page.wave.sent", Locale::EnUs) => "Request sent ({role}) · {lines} lines, exactly as the agent got it",
+        ("page.wave.template", Locale::PtBr) => "Molde recebido ({role}) · {lines} linhas, como o agente o recebeu",
+        ("page.wave.template", Locale::EnUs) => "Template received ({role}) · {lines} lines, exactly as the agent got it",
 
         ("page.type.message", Locale::PtBr) => "mensagem",
         ("page.type.message", Locale::EnUs) => "message",
@@ -522,6 +526,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.items", Locale::EnUs) => "Items sent",
         ("page.field.mustard", Locale::PtBr) => "Versão do Mustard",
         ("page.field.mustard", Locale::EnUs) => "Mustard version",
+        ("page.field.model", Locale::PtBr) => "Modelo pedido",
+        ("page.field.model", Locale::EnUs) => "Requested model",
+        ("page.field.model_used", Locale::PtBr) => "Modelo usado",
+        ("page.field.model_used", Locale::EnUs) => "Model used",
+        ("page.field.steps", Locale::PtBr) => "Passos",
+        ("page.field.steps", Locale::EnUs) => "Steps",
+        ("page.field.tokens", Locale::PtBr) => "Tokens",
+        ("page.field.tokens", Locale::EnUs) => "Tokens",
         ("page.field.lessons", Locale::PtBr) => "Lições",
         ("page.field.lessons", Locale::EnUs) => "Lessons",
         ("page.field.final", Locale::PtBr) => "Revisão final",
@@ -839,8 +851,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            323,
-            0xbd45_0022_6f88_fb50,
+            329,
+            0xcefe_88ac_b70b_9059,
         );
     }
 

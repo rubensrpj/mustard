@@ -245,10 +245,12 @@ function scrapeSpec() {
     return {
       id: s.getAttribute('id'), heading: text(h2.firstChild), hidden: s.hidden,
       overview: overview ? { hidden: overview.hidden, legend: text(overview.firstChild.lastChild),
+        spend: text(byClass(overview, 'ov-spend')),
         cards: walk(overview, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.textContent, a.className]) } : null,
       paragraphs: s.childNodes.filter((c) => c.tagName === 'P').map((p) => p.textContent),
       groups: walk(s, (e) => e.tagName === 'DETAILS' && has(e, 'group')).map((g) => ({
-        id: g.getAttribute('id'), title: text(byClass(g, 'gt')), summary: text(byClass(g, 'gs')), open: g.open, hidden: g.hidden,
+        id: g.getAttribute('id'), title: text(byClass(g, 'gt')), summary: text(byClass(g, 'gs')),
+        count: text(byClass(g, 'count')), open: g.open, hidden: g.hidden,
         items: walk(g, (e) => e.tagName === 'DETAILS' && has(e, 'item')).map(scrapeItem),
         prompts: walk(g, (e) => e.tagName === 'DETAILS' && has(e, 'prompt')).map((d) => ({
           owner: d.getAttribute('data-owner'), summary: text(d.firstChild), text: text(d.lastChild), html: d.lastChild.innerHTML, hidden: d.hidden,
@@ -267,6 +269,7 @@ function scrapeSpec() {
     downloadHidden: document.getElementById('download') ? document.getElementById('download').hidden : null,
     hits: text(byClass(appEl, 'hits')), notFound: document.getElementById('notFound') ? !document.getElementById('notFound').hidden : null,
     nav: walk(byClass(appEl, 'nav') || appEl, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.hidden || a.parentNode.hidden]),
+    headings: walk(appEl, (e) => /^H[1-6]$/.test(e.tagName)).map((e) => e.tagName),
     sections,
   };
 }
