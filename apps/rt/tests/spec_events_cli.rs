@@ -324,6 +324,11 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     std::fs::write(root.join("a1.rs"), "fn um() {}\n").expect("a1.rs");
     std::fs::write(root.join("Makefile"), "default:\n\t@true\n").expect("Makefile");
     git(&["init", "-q"]);
+    // Quem comita a rodada é o binário, não o `git` deste teste: sem
+    // identidade gravada no repositório temporário ele cai no nome do
+    // sistema, que numa máquina de integração vem vazio e faz o git recusar.
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
     std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "semente"]);
