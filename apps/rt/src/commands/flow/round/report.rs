@@ -1954,6 +1954,51 @@ mod tests {
         assert_eq!(delivered_count(root), 1, "the corrected call records the delivery once");
     }
 
+    /// Todo agente do Mustard sai em Opus: a onda de lote e a de tarefa única
+    /// saem com o modelo pedido no campo `model` do envio gravado, e o pedido
+    /// que o agente recebe diz o mesmo na linha do modelo, nos dois idiomas.
+    /// Nem o envio nem o pedido voltam a falar de Sonnet.
+    #[test]
+    fn a_onda_que_implementa_sai_em_opus() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            // A onda 1 leva duas tarefas e chama o agente de lote; a onda 2
+            // leva uma só e chama o de tarefa única: os dois papéis saem no
+            // mesmo despacho.
+            approved_with(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], |said| {
+                write(
+                    root,
+                    "x",
+                    "task",
+                    json!({"wave": 1, "text": "A segunda tarefa da onda 1.", "files": [{"path": "src/a.rs"}],
+                        "depends_on": [], "origin": said}),
+                );
+            });
+            let config = format!(r#"{{"language":{{"text":"{}"}}}}"#, lang.as_str());
+            std::fs::write(root.join("mustard.json"), config).unwrap();
+
+            let out = round(root, "x", None);
+            assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
+            let said = translate("prompt.model.wave", lang);
+            assert!(said.contains("Opus") && !said.contains("Sonnet"), "the model line still names Sonnet: {said}");
+            for at in 0..2 {
+                let prompt = out["dispatch"][at]["prompt"].as_str().unwrap_or_default();
+                assert!(prompt.contains(said), "the {lang:?} request does not say the model: {prompt}");
+                assert!(!prompt.contains("Sonnet"), "the {lang:?} request still names Sonnet: {prompt}");
+            }
+
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let sends: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
+            assert_eq!(sends.len(), 2, "both waves were dispatched: {sends:?}");
+            for sent in &sends {
+                assert_eq!(sent.str_field("model"), Some("Opus"), "the send carries the requested model: {sent:?}");
+            }
+            let agents: Vec<_> = (0..2).map(|at| out["dispatch"][at]["agent"].as_str().unwrap_or_default()).collect();
+            assert_eq!(agents, vec!["wave", "wave-solo"], "the two roles are the batch one and the solo one: {out}");
+        }
+    }
+
     /// O envio da onda guarda o molde do agente e o modelo pedido, na hora do
     /// despacho; quando a rodada traz, além da entrega do agente, a linha
     /// `USAGE` que só o orquestrador escreve, com o modelo usado, os passos,
@@ -1976,14 +2021,14 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
         assert_eq!(sent.str_field("template"), Some("molde da onda solo"), "the send carries the agent's template");
-        assert_eq!(sent.str_field("model"), Some("Sonnet 5"), "the send carries the requested model");
+        assert_eq!(sent.str_field("model"), Some("Opus"), "the send carries the requested model");
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
         // A entrega é só o que o agente devolve, sem número nenhum de
         // consumo: quem sabe o consumo é o orquestrador, numa linha à parte.
         let delivery = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a onda 1 saiu"}));
-        let usage = line("USAGE", json!({"wave": 1, "model": "Sonnet 5", "steps": 42, "tokens": 123_456,
+        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 42, "tokens": 123_456,
             "caller_steps": 7, "caller_tokens": 89_000}));
         let out = round(root, "x", Some(&format!("{delivery}\n{usage}")));
         assert_eq!(out["ok"], json!(true), "{out}");
@@ -1991,13 +2036,13 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
         assert_eq!(revised.replaced(), vec![sent.id], "the new version points to the original send");
-        assert_eq!(revised.str_field("model_used"), Some("Sonnet 5"), "{revised:?}");
+        assert_eq!(revised.str_field("model_used"), Some("Opus"), "{revised:?}");
         assert_eq!(revised.int("steps"), Some(42), "{revised:?}");
         assert_eq!(revised.int("tokens"), Some(123_456), "{revised:?}");
         assert_eq!(revised.int("caller_steps"), Some(7), "{revised:?}");
         assert_eq!(revised.int("caller_tokens"), Some(89_000), "{revised:?}");
         assert_eq!(revised.str_field("template"), Some("molde da onda solo"), "keeps what was already there");
-        assert_eq!(revised.str_field("model"), Some("Sonnet 5"), "keeps what was already there");
+        assert_eq!(revised.str_field("model"), Some("Opus"), "keeps what was already there");
     }
 
     /// Um número de consumo que o próprio agente escreve dentro do corpo de
@@ -2019,7 +2064,7 @@ mod tests {
         // O agente devolve os mesmos nomes de campo, mas dentro do corpo da
         // própria entrega, sem a linha `USAGE`: nada mais tem esse consumo.
         let delivery = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
-            "commit": "a onda 1 saiu", "model": "Sonnet 5", "steps": 42, "tokens": 123_456}));
+            "commit": "a onda 1 saiu", "model": "Opus", "steps": 42, "tokens": 123_456}));
         let out = round(root, "x", Some(&delivery));
         assert_eq!(out["ok"], json!(true), "{out}");
 

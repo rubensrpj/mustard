@@ -87,17 +87,14 @@ pub fn agent_from_template(template: &str) -> String {
         .to_string()
 }
 
-/// O modelo pedido para o papel `role` (`wave`, `wave-solo`, `review` ou
-/// `skill`) no envio: a onda que implementa sai em Sonnet 5, tarefa única ou
-/// várias; a revisão e o agente de teste dedicado, em Opus 5. Quem manda isso
-/// é o binário, no próprio pedido — sem escolha explícita, a onda herda o
+/// O modelo pedido no envio, seja qual for o papel (`wave`, `wave-solo`,
+/// `review` ou `skill`): todo agente do Mustard sai em Opus, pelo apelido que
+/// a plataforma resolve sempre para a versão mais nova. Quem manda isso é o
+/// binário, no próprio pedido — sem escolha explícita, o agente herda o
 /// modelo da sessão e a decisão morre em silêncio.
 #[must_use]
-pub fn requested_model(role: &str) -> &'static str {
-    match role {
-        "wave" | "wave-solo" => "Sonnet 5",
-        _ => "Opus 5",
-    }
+pub fn requested_model(_role: &str) -> &'static str {
+    "Opus"
 }
 
 /// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela

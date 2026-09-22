@@ -2,8 +2,8 @@
 name: mustard-wave
 description: Implementa uma onda de uma spec do Mustard pelo pedido do binário.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: sonnet
-effort: high
+model: opus
+effort: xhigh
 maxTurns: 15
 ---
 

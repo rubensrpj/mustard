@@ -2,8 +2,8 @@
 name: mustard-wave-solo
 description: Implements the single task of one wave of a Mustard spec from the request the binary assembled.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: sonnet
-effort: high
+model: opus
+effort: xhigh
 maxTurns: 10
 ---
 

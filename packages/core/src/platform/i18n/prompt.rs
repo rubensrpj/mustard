@@ -50,8 +50,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // do mesmo jeito que ele já diz a cópia e a pasta de compilação —,
         // porque o molde do agente sozinho não bastou: em 20/09 a onda saiu
         // em Opus por herdar o modelo da sessão.
-        ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: Sonnet 5.",
-        ("prompt.model.wave", Locale::EnUs) => "This wave's model: Sonnet 5.",
+        ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: Opus.",
+        ("prompt.model.wave", Locale::EnUs) => "This wave's model: Opus.",
         ("prompt.part.items", Locale::PtBr) => "Itens da onda",
         ("prompt.part.items", Locale::EnUs) => "Wave items",
         ("prompt.part.tasks", Locale::PtBr) => "Tarefas, na ordem em que se faz",
@@ -286,7 +286,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             40,
-            0xd597_53ae_c459_83ab,
+            0x12ad_6b7d_5fe3_935d,
         );
     }
 }

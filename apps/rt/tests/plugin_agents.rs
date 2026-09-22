@@ -291,26 +291,48 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
     }
 }
 
-/// O molde da onda declara o modelo sonnet com esforço alto, o do revisor
-/// declara opus com esforço alto, e o da skill declara sonnet: cada agente
-/// sabe o próprio modelo, sem herdar o da sessão em silêncio. Nenhum teste
-/// desta obra recusa um molde pelo tamanho em bytes — o que prende o texto é
-/// o que ele diz.
+/// Os quatro moldes — onda de lote, onda de tarefa única, revisão e skill —
+/// declaram o modelo opus com o esforço xhigh, nos dois idiomas: cada agente
+/// sabe o próprio modelo e o próprio esforço, sem herdar o da sessão em
+/// silêncio. O teto de turnos não anda junto: o de lote continua em quinze e
+/// o de tarefa única em dez. Nenhum teste desta obra recusa um molde pelo
+/// tamanho em bytes — o que prende o texto é o que ele diz.
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
     for lang in ["pt-BR", "en-US"] {
+        for name in ["wave", "wave-solo", "review", "skill"] {
+            let text = template(lang, name);
+            assert!(text.contains("\nmodel: opus\n"), "the {lang} `{name}` agent does not declare the opus model:\n{text}");
+            assert!(text.contains("\neffort: xhigh\n"), "the {lang} `{name}` agent does not declare the xhigh effort:\n{text}");
+            assert!(!text.contains("model: inherit"), "the {lang} `{name}` agent still inherits the session's model");
+            assert!(!text.contains("model: sonnet"), "the {lang} `{name}` agent still asks for sonnet:\n{text}");
+        }
+
         let wave = template(lang, "wave");
-        assert!(wave.contains("\nmodel: sonnet\n"), "the {lang} wave agent does not declare the sonnet model:\n{wave}");
-        assert!(wave.contains("\neffort: high\n"), "the {lang} wave agent does not declare a high effort:\n{wave}");
         assert!(wave.len() as u64 > 3_072, "the {lang} wave agent is not over the old byte cap, so it proves nothing");
+        assert!(wave.contains("maxTurns: 15"), "the {lang} multi-task wave agent lost its turn cap:\n{wave}");
+        assert!(
+            template(lang, "wave-solo").contains("maxTurns: 10"),
+            "the {lang} solo wave agent lost its turn cap"
+        );
+    }
+}
 
-        let review = template(lang, "review");
-        assert!(review.contains("\nmodel: opus\n"), "the {lang} review agent does not declare the opus model:\n{review}");
-        assert!(review.contains("\neffort: high\n"), "the {lang} review agent does not declare a high effort:\n{review}");
-
+/// A skill que o agente de skill escreve nasce com o esforço no cabeçalho: o
+/// molde dele, nos dois idiomas, manda pôr `effort: xhigh` ao lado de `name`
+/// e `description`.
+#[test]
+fn the_skill_agent_asks_for_the_effort_in_the_skill_it_writes() {
+    for lang in ["pt-BR", "en-US"] {
         let skill = template(lang, "skill");
-        assert!(skill.contains("\nmodel: sonnet\n"), "the {lang} skill agent does not declare the sonnet model:\n{skill}");
-        assert!(!skill.contains("model: inherit"), "the {lang} skill agent still inherits the session's model");
+        let header = skill
+            .lines()
+            .find(|line| line.contains("`name: <") && line.contains("`description:"))
+            .unwrap_or_else(|| panic!("o molde {lang} não descreve o cabeçalho da skill gravada:\n{skill}"));
+        assert!(
+            header.contains("`effort: xhigh`"),
+            "the {lang} skill agent does not ask for the effort in the skill it writes: {header}"
+        );
     }
 }
 
