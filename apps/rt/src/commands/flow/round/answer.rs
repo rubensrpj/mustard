@@ -40,7 +40,11 @@ pub(crate) enum RoundRefusal {
     /// escolhida para sair. A aprovação do plano já recusa isso antes de a
     /// rodada rodar — chegar aqui é a mesma leitura do grafo pegando um
     /// defeito que passou por outra porta, não uma segunda conta à parte.
-    WaveLoop(Vec<u64>),
+    /// O ciclo aparece depois de a rodada já ter juntado, comitado e gravado
+    /// o relatório: `answered` é a resposta do que ela já fez — o que foi
+    /// gravado, o commit e as instruções de cópia da página —, e a recusa sai
+    /// junto dela, em vez de trocá-la.
+    WaveLoop { cycle: Vec<u64>, answered: Value },
     /// A entrega de uma onda conflita com o repositório principal: os
     /// trechos, a cópia em que se resolve e o commit atual.
     MergeConflict { wave: u64, copy: String, conflicts: Vec<String>, head: String },
@@ -76,7 +80,7 @@ impl RoundRefusal {
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::Refused(refusal) => refusal.reason().to_string(),
-            Self::WaveLoop(_) => "waves-loop".into(),
+            Self::WaveLoop { .. } => "waves-loop".into(),
             Self::BadReport { .. } => "round-bad-report".into(),
             Self::LineField { .. } => "round-line-field-missing".into(),
             Self::MergeConflict { .. } => "round-merge-conflict".into(),
@@ -104,10 +108,7 @@ impl RoundRefusal {
             // ([`crate::commands::flow::plan::PlanFinding::WaveLoop`]): uma
             // recusa só, com a mesma leitura do ciclo e a mesma mensagem, não
             // duas contas que pudessem discordar entre si.
-            Self::WaveLoop(cycle) => fill(
-                "plan.wave_loop",
-                &[("{waves}", cycle.iter().map(u64::to_string).collect::<Vec<_>>().join(", "))],
-            ),
+            Self::WaveLoop { cycle, .. } => wave_loop_message(cycle, lang),
             Self::BadReport { detail } => fill("round.bad_report", &[("{detail}", detail.clone())]),
             Self::LineField { line, field } => {
                 fill("round.line_field", &[("{line}", (*line).to_string()), ("{field}", (*field).to_string())])
@@ -169,7 +170,16 @@ impl RoundRefusal {
     }
 
     pub(crate) fn to_value(&self, lang: Locale) -> Value {
-        let mut out = json!({ "ok": false, "reason": self.reason(), "hint": self.message(lang) });
+        // A recusa do ciclo leva junto o que a rodada já gravou: ela chega
+        // depois do commit, e trocar a resposta inteira pela recusa deixaria
+        // a página para trás, sem ninguém mandado copiá-la.
+        let mut out = match self {
+            Self::WaveLoop { answered, .. } if answered.is_object() => answered.clone(),
+            _ => json!({}),
+        };
+        out["ok"] = json!(false);
+        out["reason"] = json!(self.reason());
+        out["hint"] = json!(self.message(lang));
         // A pergunta da mudança vai pronta, em palavras, com as opções e com
         // o código que vai no cabeçalho dela: o enunciado quem pergunta pode
         // reescrever com as palavras do usuário, e é o cabeçalho, não a
@@ -181,6 +191,12 @@ impl RoundRefusal {
         }
         out
     }
+}
+
+/// A recusa das ondas `cycle`, que dependem umas das outras em círculo.
+fn wave_loop_message(cycle: &[u64], lang: Locale) -> String {
+    let waves: Vec<String> = cycle.iter().map(u64::to_string).collect();
+    translate("plan.wave_loop", lang).replace("{waves}", &waves.join(", "))
 }
 
 /// As ondas a reenviar nesta rodada, cada uma com o número do pedido
@@ -449,7 +465,31 @@ pub(super) fn run_round_with_mine(
     // vivas e órfãs, e só a viva entra no "esperando" da resposta.
     let occupied = open_sends(&log);
     let stuck = waves_stuck(&log);
-    let ready = next_waves(&log, max_parallel(root), &occupied, &stuck).map_err(RoundRefusal::WaveLoop)?;
+    // O ciclo entre as ondas seguintes só aparece aqui, depois de o relatório
+    // já ter sido juntado, comitado e gravado: a recusa sai com o que a
+    // rodada fez até agora, e a página, que o relatório mudou, é copiada do
+    // mesmo jeito que numa rodada que despacha.
+    let ready = match next_waves(&log, max_parallel(root), &occupied, &stuck) {
+        Ok(ready) => ready,
+        Err(cycle) => {
+            drop(held_lock);
+            let mut answered = json!({ "spec": spec, "recorded": recorded, "formatted": formatted });
+            if entering {
+                answered["phase"] = json!("running");
+            }
+            if let Some(commit) = commit {
+                answered["commit"] = commit;
+            }
+            if !warnings.is_empty() {
+                answered["warnings"] = json!(warnings);
+            }
+            // O "depois" da página é a própria recusa: o que falta fazer é
+            // cortar uma das dependências do ciclo.
+            let then = wave_loop_message(&cycle, lang);
+            end_answer(root, &spec, &mut answered, &then, lang);
+            return Err(RoundRefusal::WaveLoop { cycle, answered });
+        }
+    };
     // A escolha antes do envio, antes da cópia: a onda com item do projeto
     // todo, item sem dono ou lição a julgar só sai com a escolha do
     // orquestrador; sem ela, a resposta traz os candidatos dela, e a onda fica
@@ -631,16 +671,6 @@ pub(super) fn run_round_with_mine(
         .collect::<Vec<_>>()
         .join(" ");
 
-    // A cópia para o banco da página sai no fim do passo, uma vez, e a rodada
-    // manda copiá-la, menos quando ela não pôde ser preparada.
-    let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, &spec, lang);
-
-    // Com o pull request aberto, o corpo dele é refeito aqui: ele é montado do
-    // mesmo arquivo de eventos que acabou de mudar, e um corpo que descreve a
-    // rodada anterior é pior do que nenhum — foi por isso que existiu um portão
-    // só para reparar que ele tinha envelhecido.
-    let rewritten = rewrite_open_pr(root, &spec);
-
     let running: Vec<Value> = in_flight
         .iter()
         .map(|(wave, (send, sent))| running_state(root, &spec, &log, &codes, *wave, send, *sent))
@@ -668,15 +698,27 @@ pub(super) fn run_round_with_mine(
     if !warnings.is_empty() {
         out["warnings"] = json!(warnings);
     }
-    crate::commands::spec_events::pages::end_milestone(&mut out, prepared.as_ref(), &spec, "round", &then, lang);
-    shorten_publish_order(root, &spec, &mut out, &then, lang);
+    end_answer(root, &spec, &mut out, &then, lang);
     if let Some(command) = command {
         out["command"] = json!(command);
     }
-    if let Some(number) = rewritten {
+    Ok(out)
+}
+
+/// O fim de toda resposta da rodada, a que despacha e a que recusa um ciclo
+/// depois de gravar: a cópia para o banco da página sai uma vez, e a rodada
+/// manda copiá-la, menos quando ela não pôde ser preparada; e, com o pull
+/// request aberto, o corpo dele é refeito do mesmo arquivo de eventos que
+/// acabou de mudar — um corpo que descreve a rodada anterior é pior do que
+/// nenhum, e foi por isso que existiu um portão só para reparar que ele tinha
+/// envelhecido.
+fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
+    let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, spec, lang);
+    crate::commands::spec_events::pages::end_milestone(out, prepared.as_ref(), spec, "round", then, lang);
+    shorten_publish_order(root, spec, out, then, lang);
+    if let Some(number) = rewrite_open_pr(root, spec) {
         out["pr"] = json!({ "number": number, "body": "rewritten" });
     }
-    Ok(out)
 }
 
 /// A instrução de publicar e copiar a página, que [`crate::commands::spec_events::pages::end_milestone`]

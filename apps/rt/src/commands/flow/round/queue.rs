@@ -2202,9 +2202,76 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(false), "{out}");
         assert_eq!(out["reason"], json!("waves-loop"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains('4') && hint.contains('7'), "o ciclo aparece na recusa: {out}");
+        assert_eq!(out["hint"], json!(WAVE_LOOP_4_7), "a recusa nomeia as ondas do ciclo: {out}");
         assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "nenhuma onda sai com o ciclo: {out}");
+        // Sem relatório, a rodada não gravou entrega nem comitou nada antes
+        // de achar o ciclo: a resposta não inventa gravação.
+        assert_eq!(out["recorded"], json!([]), "{out}");
+        assert!(out.get("commit").is_none(), "{out}");
+    }
+
+    /// A recusa das ondas 4 e 7, que dependem uma da outra, como a pessoa a
+    /// lê: as duas pelo número, e nenhuma outra.
+    const WAVE_LOOP_4_7: &str =
+        "As ondas 4, 7 dependem umas das outras em círculo, e nenhuma pode começar. Corte uma das dependências.";
+
+    /// A rodada que recebe a entrega da onda 1 junta, comita e grava a
+    /// entrega, e só depois, ao escolher as ondas seguintes, acha as ondas 4 e
+    /// 7 em círculo. A recusa não troca a resposta: ela vem junto do que foi
+    /// gravado, do commit e das instruções de cópia da página, e nomeia só as
+    /// ondas do ciclo — a 1, entregue, fica fora dela. A prova atravessa
+    /// `round`, o comando de verdade.
+    #[test]
+    fn a_recusa_de_ciclo_devolve_o_que_a_rodada_gravou() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+
+        // O ciclo entra depois do despacho da onda 1, gravado direto, como um
+        // evento gravado à mão poderia: a rodada seguinte só o encontra
+        // depois de juntar a entrega.
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let visible = log.visible();
+        let said = visible.iter().find(|e| e.event_type == "message").unwrap().id;
+        let crit = visible.iter().find(|e| e.event_type == "criterion").unwrap().id;
+        for (n, on, file) in [(4u64, 7u64, "src/b.rs"), (7, 4, "src/c.rs")] {
+            write(root, "x", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+                "done_when": "A suíte passa.", "depends_on": [on], "origin": said}));
+            write(root, "x", "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
+                "files": [{"path": file}], "depends_on": [], "origin": said}));
+        }
+
+        let out = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("waves-loop"), "{out}");
+        assert_eq!(out["hint"], json!(WAVE_LOOP_4_7), "a recusa nomeia as ondas do ciclo, e só elas: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "nenhuma onda sai com o ciclo: {out}");
+
+        // O que foi gravado: a entrega da onda 1, que está no arquivo de
+        // eventos com o número que a resposta traz.
+        let recorded = out["recorded"].as_array().cloned().unwrap_or_default();
+        let entry = recorded
+            .iter()
+            .find(|r| r["type"] == json!("delivered") && r["wave"] == json!(1))
+            .unwrap_or_else(|| panic!("a entrega da onda 1 na resposta: {out}"));
+        let log = store::read(&path).unwrap().unwrap();
+        let written = log.get(entry["id"].as_u64().unwrap_or_default()).unwrap_or_else(|| panic!("{out}"));
+        assert_eq!(written.event_type, "delivered", "{out}");
+
+        // O commit da rodada: na resposta e no git.
+        assert!(out.get("commit").is_some_and(|c| !c.is_null()), "o commit vem na resposta: {out}");
+        let subject = Command::new("git").args(["log", "-1", "--format=%s"]).current_dir(root).output().unwrap();
+        assert!(String::from_utf8_lossy(&subject.stdout).contains("a onda 1 saiu"), "{out}");
+
+        // As instruções de cópia da página, com a recusa como o passo seguinte.
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains("Leia `.claude/spec/x/copy/next.md`"), "{next}");
+        assert!(next.ends_with(WAVE_LOOP_4_7), "{next}");
+        assert!(out["copy"].is_object(), "{out}");
+        let order = std::fs::read_to_string(root.join(".claude/spec/x/copy/next.md")).expect("a ordem de cópia");
+        assert!(order.contains("ArtifactData"), "{order}");
     }
 
     /// A tarefa que sai de um lote de duas por evento de remoção, depois de o
