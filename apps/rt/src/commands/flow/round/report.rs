@@ -18,8 +18,9 @@ use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::commit::{
-    close_copies, commit_draft, commit_message, ensure_builds, format_round_files, git_lock, head, join_copies,
-    make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file, write_joined, UNMADE_SHA,
+    close_copies, commit_draft, commit_message, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
+    head, join_copies, make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file,
+    write_joined, UNMADE_SHA,
 };
 use super::stops::{change_accepted, replan_code};
 use crate::commands::spec_events::write::{record, RecordCheck};
@@ -282,6 +283,16 @@ pub(crate) fn take_report_with_mine(
     // era e nada é comitado.
     if message.is_some()
         && let Err(refusal) = ensure_builds(root)
+    {
+        let _ = write_joined(root, &joined, false);
+        return Err(refusal);
+    }
+    // A prova de cada critério que as ondas deste relatório cobrem roda antes
+    // do commit, uma de cada vez: a que não executa ou não passa recusa com o
+    // código do critério, o comando inteiro e a saída de erro, e nada é
+    // comitado.
+    if message.is_some()
+        && let Err(refusal) = ensure_criteria_proofs(root, log, &waves)
     {
         let _ = write_joined(root, &joined, false);
         return Err(refusal);
@@ -2028,5 +2039,95 @@ mod tests {
         assert_eq!(sends[0].id, sent.id, "o envio segue o mesmo de antes");
         assert!(sends[0].int("tokens").is_none(), "o número dentro da entrega não vira consumo: {sends:?}");
         assert!(sends[0].int("steps").is_none(), "o número dentro da entrega não vira consumo: {sends:?}");
+    }
+
+    /// A versão nova do critério que a onda `wave` do log em `root` cobre,
+    /// com o comando `proof` no lugar do antigo — como um conserto de código
+    /// quebraria uma prova que antes passava, ou como ela já nasceria
+    /// mal-escrita. Devolve o código dela.
+    fn reprove_wave_criterion(root: &Path, wave: u64, proof: &str) -> String {
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+        let crit = log.wave_criteria(wave)[0];
+        let code = log.codes().get(&crit.id).cloned().unwrap_or_default();
+        let mut fields = crit.fields.clone();
+        for key in ["v", "id", "code", "at", "type", "search", "author", "replaces"] {
+            fields.remove(key);
+        }
+        let mut body = Value::Object(fields);
+        body["proof"] = json!(proof);
+        body["replaces"] = json!(crit.id);
+        body["origin"] = json!(said);
+        write(root, "x", "criterion", body);
+        code
+    }
+
+    /// A rodada roda a prova de cada critério que as ondas do relatório
+    /// cobrem antes de comitar: a que falha recusa a entrega, nomeando o
+    /// critério, o comando inteiro e a saída de erro, e nada é comitado nem
+    /// gravado — nem a entrega da onda, nem o commit no repositório
+    /// principal.
+    #[test]
+    fn a_prova_do_criterio_roda_na_volta_da_onda() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        // A prova do critério que a onda cobre passa a falhar — como uma
+        // mudança de código quebraria uma prova que antes passava.
+        let code = reprove_wave_criterion(root, 1, "git --nao-existe-esta-opcao");
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
+
+        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("round-criterion-proof-failed"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&code), "a recusa nomeia o critério: {hint}");
+        assert!(hint.contains("git --nao-existe-esta-opcao"), "a recusa nomeia o comando: {hint}");
+        assert!(hint.contains("nao-existe-esta-opcao"), "a recusa traz a saída de erro: {hint}");
+
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
+        assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
+    }
+
+    /// A prova que não executa por estar mal-escrita — um comando do cargo
+    /// com vários nomes de teste em sequência, sem o separador `--`, que o
+    /// cargo recusa antes de rodar teste nenhum — recusa na volta da mesma
+    /// onda, e não só horas depois no fechamento: o texto traz o critério, o
+    /// comando inteiro e a saída de erro do cargo.
+    #[test]
+    fn a_prova_mal_escrita_e_recusada_na_volta_da_onda() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"prova\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn soma(a: u32, b: u32) -> u32 { a + b }\n").unwrap();
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "cargo"]);
+        round(root, "x", None);
+
+        // Um comando de teste com quatro nomes em sequência, sem o `--`: o
+        // cargo recusa o argumento antes de rodar teste nenhum.
+        let bad = "cargo test soma_1 soma_2 soma_3 soma_4";
+        let code = reprove_wave_criterion(root, 1, bad);
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
+
+        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("round-criterion-proof-failed"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&code), "a recusa nomeia o critério: {hint}");
+        assert!(hint.contains(bad), "a recusa nomeia o comando inteiro: {hint}");
+        assert!(hint.contains("unexpected argument") || hint.contains("soma_2"), "a saída de erro vem inteira: {hint}");
+
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
+        assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
     }
 }

@@ -723,6 +723,32 @@ pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
     Err(RoundRefusal::BuildFailed { command: build, output: out.output })
 }
 
+/// A prova de cada critério que as ondas de `waves` cobrem roda, uma de cada
+/// vez e na ordem do código, antes do commit da rodada — o mesmo laço que o
+/// fechamento roda para os critérios da spec inteira
+/// ([`crate::commands::review::qa_run::run_criteria_proofs`]), aqui só com
+/// os critérios que estas ondas apontam. A que não executa ou não passa
+/// recusa com o código do critério, o comando inteiro e a saída de erro, e a
+/// rodada não comita nada.
+pub(super) fn ensure_criteria_proofs(root: &Path, log: &SpecLog, waves: &[u64]) -> Result<(), RoundRefusal> {
+    let codes = log.codes();
+    let criteria: Vec<(u64, String, String)> = log
+        .criteria_for_waves(waves)
+        .into_iter()
+        .filter_map(|e| {
+            let proof = e.str_field("proof")?.trim().to_string();
+            Some((e.id, codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()), proof))
+        })
+        .collect();
+    let (_, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
+    match failed {
+        Some(failed) => {
+            Err(RoundRefusal::CriterionProofFailed { code: failed.code, command: failed.command, output: failed.output })
+        }
+        None => Ok(()),
+    }
+}
+
 /// Apaga a cópia de cada onda do relatório, depois do commit, com a cópia de
 /// cada submódulo dentro dela. A lista de arquivos de cada onda já foi
 /// trocada, antes do commit, pelo que a cópia mudou de fato — por isso a

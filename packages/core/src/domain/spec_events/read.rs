@@ -506,13 +506,25 @@ fn pick<'a>(picked: &mut BTreeMap<u64, &'a SpecEvent>, events: Vec<&'a SpecEvent
 
 impl SpecLog {
     /// Os critérios que a onda `n` aponta, na versão vigente de cada um.
-    fn wave_criteria(&self, n: u64) -> Vec<&SpecEvent> {
+    pub fn wave_criteria(&self, n: u64) -> Vec<&SpecEvent> {
         self.block(BlockQuery::Wave(n))
             .into_iter()
             .filter(|e| e.event_type == "wave")
             .flat_map(|e| e.ints("criteria"))
             .filter_map(|id| self.current(id))
             .collect()
+    }
+
+    /// Os critérios que as ondas de `waves` apontam, juntos, sem repetição e
+    /// na ordem do código: o que a rodada prova, uma vez cada, antes de
+    /// comitar o que essas ondas entregaram.
+    #[must_use]
+    pub fn criteria_for_waves(&self, waves: &[u64]) -> Vec<&SpecEvent> {
+        let mut picked: BTreeMap<u64, &SpecEvent> = BTreeMap::new();
+        for wave in waves {
+            pick(&mut picked, self.wave_criteria(*wave));
+        }
+        picked.into_values().collect()
     }
 }
 

@@ -1059,7 +1059,7 @@ mod tests {
         assert_eq!(wave2.str_field("author"), Some("binary"), "onda de lote é do binário: {:?}", wave2.fields);
         assert_eq!(wave2.ints("order"), vec![t1], "as tarefas do lote, na ordem de despacho");
         assert_eq!(wave2.ints("criteria"), vec![crit], "os critérios são a união do que as tarefas cobrem");
-        assert_eq!(wave2.str_field("done_when"), Some("cargo test"), "a prova do critério coberto");
+        assert_eq!(wave2.str_field("done_when"), Some("git --version"), "a prova do critério coberto");
 
         let task_now = after.current(t1).unwrap();
         assert_eq!(task_now.wave(), Some(2), "a tarefa ganha a onda do lote que a levou");

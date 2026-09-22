@@ -66,7 +66,9 @@ fn seed_binary(root: &Path, event_type: &str, fields: &Value) -> u64 {
 fn approved_with_waves(root: &Path, waves: u64) {
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
-    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+    // A prova precisa passar de verdade: a rodada agora roda o critério
+    // coberto antes de comitar.
+    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "git --version", "origin": said}));
     for n in 1..=waves {
         seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
             "done_when": "x", "origin": said}));
@@ -310,7 +312,9 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
 
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
-    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+    // A prova precisa passar de verdade: a rodada agora roda o critério
+    // coberto antes de comitar.
+    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "git --version", "origin": said}));
     for (n, files) in [(1u64, ["a1.rs"].as_slice()), (2u64, ["Makefile"].as_slice())] {
         seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
             "done_when": "x", "origin": said}));

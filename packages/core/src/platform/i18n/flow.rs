@@ -443,6 +443,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.build_failed", Locale::EnUs) => {
             "The main repository did not build with `{command}`, and the round committed nothing: {output}"
         }
+        ("round.criterion_proof_failed", Locale::PtBr) => {
+            "A prova do critério {code} não executou ou não passou, e a rodada não comitou nada: \
+             `{command}` — {output}"
+        }
+        ("round.criterion_proof_failed", Locale::EnUs) => {
+            "Criterion {code}'s proof did not run or did not pass, and the round committed nothing: \
+             `{command}` — {output}"
+        }
         ("round.binary_not_reinstalled", Locale::PtBr) => {
             "O binário do Mustard não foi reinstalado — `{command}` não passou, e o binário instalado \
              continua o de antes: {output}"
@@ -1029,8 +1037,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            136,
-            0x0ffe_b42b_dfbf_4278,
+            137,
+            0x61bd_b489_e8e4_65c7,
         );
     }
 
@@ -1176,6 +1184,7 @@ mod tests {
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
+            ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),

@@ -64,6 +64,9 @@ pub(crate) enum RoundRefusal {
     Git { detail: String },
     /// O repositório principal não compilou antes do commit da rodada.
     BuildFailed { command: String, output: String },
+    /// A prova de um critério que as ondas deste relatório cobrem não
+    /// executou ou não passou: nada foi comitado.
+    CriterionProofFailed { code: String, command: String, output: String },
     /// O pedido de uma onda passa do teto de tokens: a rodada recusa antes de
     /// gravar o envio, com o tamanho medido e o teto.
     TokenCap { wave: u64, tokens: u64 },
@@ -86,6 +89,7 @@ impl RoundRefusal {
             Self::Replan { .. } => "wave-plan-does-not-work".into(),
             Self::Git { .. } => "git-refused".into(),
             Self::BuildFailed { .. } => "round-build-failed".into(),
+            Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
             Self::TokenCap { .. } => "wave-token-cap".into(),
         }
     }
@@ -153,6 +157,10 @@ impl RoundRefusal {
             Self::BuildFailed { command, output } => {
                 fill("round.build_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
             }
+            Self::CriterionProofFailed { code, command, output } => fill(
+                "round.criterion_proof_failed",
+                &[("{code}", code.clone()), ("{command}", command.clone()), ("{output}", output.clone())],
+            ),
             Self::TokenCap { wave, tokens } => {
                 token_cap_message(*wave, *tokens, lang).unwrap_or_default()
             }

@@ -411,10 +411,9 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog) -> Result<V
             Some((e.id, codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()), proof))
         })
         .collect();
+    let (outcomes, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
     let mut runs: Vec<Value> = Vec::new();
-    let mut failed: Option<CloseRefusal> = None;
-    for (id, code, proof) in &criteria {
-        let out = crate::commands::review::qa_run::run_proof(proof, root);
+    for (id, code, out) in &outcomes {
         let mut draft = Map::new();
         draft.insert("criterion".into(), json!(id));
         draft.insert("result".into(), json!(out.result));
@@ -427,19 +426,14 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog) -> Result<V
         record(&opts.root, spec, "criterion_run", draft, PhaseWriter::Binary)
             .map_err(CloseRefusal::Refused)?;
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms }));
-        if out.result != "pass" && failed.is_none() {
-            failed = Some(match out.ran_no_test {
-                Some(tests) => CloseRefusal::CriterionRanNoTest {
-                    code: code.clone(),
-                    command: proof.clone(),
-                    tests,
-                },
-                None => CloseRefusal::CriterionFailed { code: code.clone(), output: out.output.clone() },
-            });
-        }
     }
     match failed {
-        Some(refusal) => Err(refusal),
+        Some(failed) => Err(match failed.ran_no_test {
+            Some(tests) => {
+                CloseRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests }
+            }
+            None => CloseRefusal::CriterionFailed { code: failed.code, output: failed.output },
+        }),
         None => Ok(runs),
     }
 }
@@ -566,7 +560,8 @@ mod tests {
 
     /// Uma spec de uma onda, já aprovada, despachada, entregue, revisada e
     /// comitada: pronta para fechar. Ela ganha um critério por comando de
-    /// `proofs`, na ordem em que eles vêm.
+    /// `proofs`, na ordem em que eles vêm, e nenhum deles é coberto por
+    /// onda nenhuma — é o fechamento, e só ele, que os prova.
     fn ready_to_close(root: &Path, spec: &str, proofs: &[&str]) {
         ready_with_waves(root, spec, proofs, 1);
     }
@@ -595,7 +590,7 @@ mod tests {
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
-        let crits: Vec<u64> = proofs
+        let _crits: Vec<u64> = proofs
             .iter()
             .map(|proof| {
                 id_of(&write(root, spec, "criterion",
@@ -603,8 +598,18 @@ mod tests {
                            "proof": proof, "origin": said})))
             })
             .collect();
+        // Nenhuma onda cobre os critérios de `proofs`: são os que este teste
+        // quer ver o fechamento provar, e a rodada roda a prova de cada
+        // critério que a onda cobre antes de comitar. Cobri-los aqui faria a
+        // entrega travar na rodada, antes de chegar ao fechamento que o
+        // teste examina. Cada onda cobre, em vez disso, um critério à parte,
+        // sempre verde, gravado depois — por isso com o maior número — só
+        // para satisfazer o campo obrigatório sem mexer nos índices que os
+        // testes já leem de `proofs`.
+        let gate = id_of(&write(root, spec, "criterion",
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "origin": said})));
         for n in 1..=waves {
-            write(root, spec, "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": crits,
+            write(root, spec, "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [gate],
                 "done_when": "A suíte passa.", "origin": said}));
             write(root, spec, "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
                 "files": [{"path": wave_file(n)}], "origin": said}));
@@ -615,7 +620,8 @@ mod tests {
         let round = |report: Option<String>| {
             round_for(&RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report }, None)
         };
-        assert_eq!(round(None)["ok"], json!(true));
+        let dispatch = round(None);
+        assert_eq!(dispatch["ok"], json!(true), "{dispatch}");
         let mut delivered = String::new();
         for n in 1..=waves {
             std::fs::write(root.join(wave_file(n)), "fn um() {}\nfn dois() {}\n").unwrap();
@@ -693,7 +699,9 @@ mod tests {
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["ok"], json!(true), "{asked}");
         assert_eq!(asked["phase"], json!("running"), "{asked}");
-        assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(2), "os dois critérios rodaram: {asked}");
+        // Os dois critérios de `proofs`, mais o que cobre a onda na cópia de
+        // teste — sempre verde, para a rodada não travar a entrega.
+        assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(3), "os três critérios rodaram: {asked}");
         assert_eq!(asked["review"]["final"], json!(true), "a de uma onda só também pede o agente de teste: {asked}");
 
         let out = close(root, "x");
@@ -705,7 +713,9 @@ mod tests {
         let log = store::read(&path).unwrap().unwrap();
         let criteria: Vec<u64> =
             log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
-        assert_eq!(criteria.len(), 2, "a montagem tem dois critérios");
+        // Os dois de `proofs`, mais o que cobre a onda na cópia de teste —
+        // sempre verde, para a rodada não travar a entrega.
+        assert_eq!(criteria.len(), 3, "a montagem tem dois critérios e o que cobre a onda");
         let runs: Vec<&SpecEvent> =
             log.visible().into_iter().filter(|e| e.event_type == "criterion_run").collect();
         let ran: Vec<u64> = runs.iter().filter_map(|e| e.int("criterion")).collect();
@@ -779,8 +789,10 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let runs: Vec<&SpecEvent> =
             log.visible().into_iter().filter(|e| e.event_type == "criterion_run").collect();
-        assert_eq!(runs.len(), 1, "{runs:?}");
-        assert_eq!(runs[0].str_field("result"), Some("pass"), "{runs:?}");
+        // A prova de `proofs`, mais a do critério que cobre a onda na cópia
+        // de teste — sempre verde, para a rodada não travar a entrega.
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert!(runs.iter().all(|r| r.str_field("result") == Some("pass")), "{runs:?}");
     }
 
     /// A pendência aberta que nasceu na spec fechada aparece na resposta do
@@ -1086,7 +1098,9 @@ mod tests {
         assert_eq!(asked["ok"], json!(true), "{asked}");
         assert_eq!(asked["phase"], json!("running"), "{asked}");
         assert!(ran(root), "o lint rodou antes do agente");
-        assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(1), "{asked}");
+        // O critério de `proofs`, mais o que cobre as ondas na cópia de
+        // teste — sempre verde, para a rodada não travar a entrega.
+        assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(2), "{asked}");
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
         let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains(translate("prompt.final.fixed", Locale::PtBr)), "{prompt}");
@@ -1653,7 +1667,12 @@ mod tests {
             .filter(|e| e.event_type == "criterion_run")
             .map(|e| (e.int("criterion"), e.str_field("result")))
             .collect();
-        assert_eq!(runs, vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail"))]);
+        // O terceiro é o critério que cobre a onda na cópia de teste — sempre
+        // verde, para a rodada não travar a entrega.
+        assert_eq!(
+            runs,
+            vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail")), (Some(criteria[2]), Some("pass"))]
+        );
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
 
@@ -1684,7 +1703,12 @@ mod tests {
             .filter(|e| e.event_type == "criterion_run")
             .map(|e| (e.int("criterion"), e.str_field("result")))
             .collect();
-        assert_eq!(runs, vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail"))]);
+        // O terceiro é o critério que cobre a onda na cópia de teste — sempre
+        // verde, para a rodada não travar a entrega.
+        assert_eq!(
+            runs,
+            vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail")), (Some(criteria[2]), Some("pass"))]
+        );
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
 
@@ -1719,7 +1743,9 @@ mod tests {
             .filter(|e| e.event_type == "criterion_run")
             .map(|e| (e.str_field("result"), e.str_field("output")))
             .collect();
-        assert_eq!(runs.len(), 2, "os dois critérios rodaram: {runs:?}");
+        // O terceiro é o critério que cobre a onda na cópia de teste —
+        // sempre verde, para a rodada não travar a entrega.
+        assert_eq!(runs.len(), 3, "os dois critérios de `proofs` e o da onda rodaram: {runs:?}");
         assert_eq!(runs[0], (Some("pass"), None), "o go com um pacote sem teste e outro com teste passa");
         assert_eq!(runs[1].0, Some("fail"));
         assert_eq!(
@@ -1727,6 +1753,7 @@ mod tests {
             Some("Tests no tests"),
             "a execução recusada guarda o que o executor escreveu: {runs:?}"
         );
+        assert_eq!(runs[2].0, Some("pass"), "{runs:?}");
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
 
@@ -1755,7 +1782,9 @@ mod tests {
             .filter(|e| e.event_type == "criterion_run")
             .map(|e| e.str_field("result"))
             .collect();
-        assert_eq!(runs, vec![Some("pass")], "a prova que não é teste passou: {runs:?}");
+        // O segundo é o critério que cobre a onda na cópia de teste — sempre
+        // verde, para a rodada não travar a entrega.
+        assert_eq!(runs, vec![Some("pass"), Some("pass")], "a prova que não é teste passou: {runs:?}");
         assert_eq!(State::from_log(&log).phase, Some("closed"));
     }
 
@@ -1773,8 +1802,11 @@ mod tests {
         let log = store::read(&path).unwrap().unwrap();
         let runs: Vec<&SpecEvent> =
             log.visible().into_iter().filter(|e| e.event_type == "criterion_run").collect();
-        assert_eq!(runs.len(), 1, "a execução fica gravada");
+        // O segundo é o critério que cobre a onda na cópia de teste — sempre
+        // verde, para a rodada não travar a entrega.
+        assert_eq!(runs.len(), 2, "a execução fica gravada");
         assert_eq!(runs[0].str_field("result"), Some("fail"));
+        assert_eq!(runs[1].str_field("result"), Some("pass"));
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
 }

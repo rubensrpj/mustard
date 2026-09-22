@@ -42,7 +42,10 @@
 //! disco nem no git, nem no repositório principal nem na cópia; uma mensagem
 //! de commit fora do
 //! modelo (título e corpo acima do teto, link do claude.ai, o nome do modelo,
-//! assinatura de coautoria ou e-mail de alguém); o relatório em que um agente
+//! assinatura de coautoria ou e-mail de alguém); a prova de um critério que
+//! as ondas do relatório cobrem que não executa ou não passa — a rodada roda
+//! cada uma, na ordem do código, antes de comitar, e recusa nomeando o
+//! critério, o comando inteiro e a saída de erro; o relatório em que um agente
 //! diz que o plano da onda não funciona, que para a rodada e só segue com o
 //! "sim" do usuário. O "sim" da mudança de plano é o clique em "Aceitar" na
 //! pergunta dela, gravado pela testemunha como na aprovação da spec, e nunca a
@@ -222,11 +225,16 @@ mod tests {
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
+        // A prova é um comando que sempre passa, sem exigir um projeto Cargo
+        // de verdade na cópia de teste: desde que a rodada roda a prova de
+        // cada critério coberto antes de comitar, `cargo test` recusaria
+        // todo commit destes testes, que escrevem em pastas soltas, sem
+        // `Cargo.toml`.
         let crit = id_of(&write(
             root,
             spec,
             "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "origin": said}),
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "origin": said}),
         ));
         for (n, files, depends) in plan {
             let mut wave = json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],

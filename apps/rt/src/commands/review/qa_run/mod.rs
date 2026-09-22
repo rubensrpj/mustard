@@ -1,6 +1,8 @@
 //! The criteria runner. The `qa-run` command is gone; what stays alive here is
-//! [`run_proof`], which the close and the round call to run each criterion's
-//! proof, [`run_command`], which the close calls for the project lint, and the
+//! [`run_proof`], which runs one criterion's proof, [`run_criteria_proofs`],
+//! the loop that the close and the round both call to run a list of
+//! criteria in order and stop at the first that does not pass,
+//! [`run_command`], which the close calls for the project lint, and the
 //! section reader the page uses.
 //!
 //! As duas portas rodam o mesmo comando do mesmo jeito e se separam numa
@@ -66,6 +68,46 @@ pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
 /// lesse assim recusaria um verde legítimo.
 pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_ac_command(command, None, cwd), false)
+}
+
+/// A prova de um critério que não passou: o código dele, o comando inteiro
+/// que tentou rodar e a saída de erro — o que a recusa do fechamento e da
+/// rodada nomeiam.
+pub(crate) struct FailedProof {
+    pub code: String,
+    pub command: String,
+    pub output: String,
+    /// A saída disse zero teste rodado, com o número que ela leu — só quando
+    /// foi esse o motivo da falha.
+    pub ran_no_test: Option<u64>,
+}
+
+/// Roda a prova de cada critério de `criteria` (id, código, comando), na
+/// ordem em que a lista chega, uma de cada vez, e devolve a execução de cada
+/// um junto do primeiro que não passou. É o mesmo laço que o fechamento roda
+/// para os critérios da spec inteira, em `close.rs`, e que a rodada roda,
+/// antes de comitar, só para os que as ondas do relatório cobrem: quem chama
+/// decide o que grava com cada execução e como nomeia a recusa — aqui só se
+/// roda e se lê o resultado.
+pub(crate) fn run_criteria_proofs(
+    root: &Path,
+    criteria: &[(u64, String, String)],
+) -> (Vec<(u64, String, ProofRun)>, Option<FailedProof>) {
+    let mut runs = Vec::new();
+    let mut failed = None;
+    for (id, code, proof) in criteria {
+        let out = run_proof(proof, root);
+        if out.result != "pass" && failed.is_none() {
+            failed = Some(FailedProof {
+                code: code.clone(),
+                command: proof.clone(),
+                output: out.output.clone(),
+                ran_no_test: out.ran_no_test,
+            });
+        }
+        runs.push((*id, code.clone(), out));
+    }
+    (runs, failed)
 }
 
 /// Uma execução classificada como o fechamento a grava. As duas portas
