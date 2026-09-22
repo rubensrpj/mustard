@@ -1,3 +1,8 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! O levantamento de ponta a ponta pelo binário, num projeto com `git.flow` e
 //! um arquivo de código: o `open`, o objetivo, o `grill`, uma resposta e o
 //! fechamento de cada ponto, com o passo que cada `write` devolve, a revisão

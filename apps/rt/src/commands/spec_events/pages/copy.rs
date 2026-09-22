@@ -570,7 +570,7 @@ fn spend_line(log: &SpecLog, lang: Locale) -> Option<String> {
     if total_tokens == 0 {
         return None;
     }
-    let turns_per_task = if task_count == 0 { 0 } else { wave_turns / task_count };
+    let turns_per_task = wave_turns.checked_div(task_count).unwrap_or(0);
     Some(
         translate("round.spend.line", lang)
             .replace("{waves}", &wave_tokens.to_string())

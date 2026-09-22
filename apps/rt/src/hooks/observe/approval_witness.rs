@@ -243,8 +243,7 @@ fn header_for(input: &HookInput, question: &str) -> String {
         .into_iter()
         .flatten()
         .filter(|q| q.get("question").and_then(Value::as_str).is_some_and(|text| text.trim() == question.trim()))
-        .filter_map(|q| q.get("header").and_then(Value::as_str))
-        .next()
+        .find_map(|q| q.get("header").and_then(Value::as_str))
         .unwrap_or_default()
         .to_string()
 }

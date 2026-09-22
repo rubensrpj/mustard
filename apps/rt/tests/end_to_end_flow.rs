@@ -662,7 +662,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
 
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-    let verdict = json!({"final": true, "result": "approved", "text": "Mudaram.", "agreed": agreed_all_met(&project)});
+    let verdict = json!({"final": true, "result": "approved", "text": "Mudaram.", "agreed": agreed_all_met(project)});
     let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();

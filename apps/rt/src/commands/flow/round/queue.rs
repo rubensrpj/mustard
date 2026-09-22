@@ -643,7 +643,7 @@ pub(crate) fn basket_wave(log: &SpecLog, n: u64) -> bool {
 pub(crate) fn emptied_basket_waves(log: &SpecLog, graph: &WaveGraph) -> BTreeSet<u64> {
     log.planned_waves()
         .into_iter()
-        .filter(|n| !graph.tasks.get(n).is_some_and(|tasks| !tasks.is_empty()))
+        .filter(|n| graph.tasks.get(n).is_none_or(|tasks| tasks.is_empty()))
         .filter(|n| basket_wave(log, *n))
         .collect()
 }
@@ -1079,11 +1079,6 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let copy = mustard_core::io::wave_prompt::recorded_copy(&log, wave).unwrap_or_else(|| panic!("wave {wave}"));
         (copy.path, copy.build_dir.unwrap_or_default())
-    }
-
-    /// O log lido de `root`/`spec`, para conferir o que uma gravação deixou.
-    fn read_log(root: &Path, spec: &str) -> SpecLog {
-        store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap()
     }
 
     /// Duas ondas sem dependência e sem arquivo em comum saem juntas, cada
