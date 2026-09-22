@@ -272,3 +272,112 @@ fn a_cesta_de_tarefas_vira_sempre_os_mesmos_lotes() {
     let small_n = small.int("n").expect("wave n");
     assert!(big_n < small_n, "o lote maior abre antes do menor: {big_n} vs {small_n}");
 }
+
+/// Uma tarefa solta na cesta, sem onda própria, forma um lote sozinha: o
+/// binário, despachado pela rodada de verdade, grava o evento de onda com o
+/// autor binário, a tarefa do lote na ordem de despacho, os critérios que são
+/// a união do que ela cobre e o pronta-quando tirado da prova desse critério.
+#[test]
+fn o_binario_grava_o_evento_de_onda_do_lote() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
+
+    let t1 = basket_task(&project, crit_id, said, &["src/b.rs"], &[]);
+
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+
+    let before = project.log();
+    assert!(before.visible().into_iter().all(|e| e.event_type != "wave"), "no hand-made wave before the round");
+
+    project.run(&["round", "--spec", SPEC]);
+
+    let after = project.log();
+    let wave = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).expect("the batch wave");
+    assert_eq!(wave.str_field("author"), Some("binary"), "onda de lote é do binário: {:?}", wave.fields);
+    assert_eq!(wave.ints("order"), vec![t1], "as tarefas do lote, na ordem de despacho");
+    assert_eq!(wave.ints("criteria"), vec![crit_id], "os critérios são a união do que as tarefas cobrem");
+    assert_eq!(wave.str_field("done_when"), Some("git --version"), "a prova do critério coberto");
+
+    let task_now = after.current(t1).expect("the task");
+    assert_eq!(task_now.wave(), Some(1), "a tarefa ganha a onda do lote que a levou");
+}
+
+/// Uma spec antiga, com a onda 1 numerada à mão e já entregue de ponta a
+/// ponta, pelo binário de verdade: ela vira história, sem mexer nela. Uma
+/// tarefa carrega o número de onda 7, que nunca virou evento de onda nenhum e
+/// por isso nunca pôde ser despachada — essa tarefa volta para a cesta mesmo
+/// tendo onda gravada, o número velho é ignorado, e ela é relotada com o
+/// próximo número livre, numa rodada seguinte de verdade.
+#[test]
+fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
+
+    // A onda 1, numerada à mão, como uma spec antiga gravava antes desta
+    // obra: o plano de uma tarefa só, no arquivo que já existe no projeto.
+    project.write(
+        "wave",
+        &json!({"n": 1, "text": "Onda 1.", "criteria": [crit_id], "done_when": "git --version", "origin": said}),
+    );
+    project.write(
+        "task",
+        &json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/main.rs"}], "depends_on": [],
+            "origin": said}),
+    );
+
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+
+    // A onda 1 sai e entrega de verdade, pelo relatório do fim do agente: a
+    // escolha antes do envio primeiro, porque as decisões do levantamento são
+    // itens do projeto todo e pedem a escolha do orquestrador antes da cópia.
+    let asked = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(asked["dispatch"], json!([]), "{asked}");
+    let analysis = json!({"wave": 1, "removed": [], "added": []});
+    project.run(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{analysis}</ANALYSIS>")]);
+    let log = project.log();
+    let sent =
+        log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("o envio da onda 1");
+    let copy = PathBuf::from(sent.str_field("copy").expect("a cópia da onda 1"));
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("a mudança");
+    let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu"});
+    project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
+
+    // Uma tarefa de spec antiga: carrega o número 7, que nunca virou onda.
+    let old = project.write(
+        "task",
+        &json!({"wave": 7, "text": "Tarefa de spec antiga.", "files": [{"path": "src/b.rs", "new": true}],
+            "depends_on": [], "covers": [crit_id], "origin": said}),
+    )["id"]
+        .as_u64()
+        .expect("the recorded task has an id");
+
+    project.run(&["round", "--spec", SPEC]);
+
+    let after = project.log();
+    let task_now = after.current(old).expect("the task");
+    assert_eq!(
+        task_now.wave(),
+        Some(2),
+        "a tarefa não entregue volta para a cesta e é relotada: {:?}",
+        task_now.fields
+    );
+
+    let wave1 = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).expect("wave 1");
+    assert_eq!(wave1.str_field("text"), Some("Onda 1."), "a onda já entregue fica como história, sem versão nova");
+}
