@@ -36,10 +36,13 @@ pub enum SegmentKind {
     Unit = 7,
     /// The plugin is installed but switched off, so no hook runs.
     Inert = 8,
+    /// O ponto de tokens em que a compactação automática dispara e quanto
+    /// falta até lá — na segunda linha, depois da economia do rtk.
+    Compact = 9,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 9;
+pub const SEGMENT_KIND_COUNT: usize = 10;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -204,6 +207,65 @@ pub fn savings_segment(gain: Option<&RtkGain>, lang: SupportedLocale) -> Option<
     let pct = gain.pct.round() as i64;
     let label = mustard_core::translate("statusline.rtk", lang).replace("{pct}", &pct.to_string());
     Some(Segment::new(SegmentKind::Savings, format!("\u{26A1} {label}")))
+}
+
+/// A janela do modelo em tokens: `context_window.context_window_size` do
+/// payload quando ele vem, senão deduzida do nome ou do id do modelo — 1
+/// milhão quando um dos dois cita "1M" (como em `claude-opus-5[1m]` ou
+/// `Opus 5 (1M context)`), 200 mil (o padrão do Claude) no resto.
+fn model_window(data: &Value) -> i64 {
+    if let Some(size) =
+        data.get("context_window").and_then(|c| c.get("context_window_size")).and_then(Value::as_i64)
+        && size > 0
+    {
+        return size;
+    }
+    let model = data.get("model");
+    let cites_1m = [model.and_then(|m| m.get("display_name")), model.and_then(|m| m.get("id"))]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|s| s.to_lowercase().contains("1m"));
+    if cites_1m {
+        1_000_000
+    } else {
+        200_000
+    }
+}
+
+/// Milhares, arredondados, sem separador (`250_000` → `"250"`).
+fn thousands(n: i64) -> String {
+    (n as f64 / 1000.0).round().to_string()
+}
+
+/// `compacta em 250k - faltam 141k` — o ponto de tokens em que a
+/// compactação automática dispara (a fatia da variável de ambiente
+/// `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` vezes a janela do modelo) e quanto
+/// falta até lá (esse ponto menos os tokens já usados na conversa, de
+/// `context_window.total_input_tokens` + `total_output_tokens`). `machine` é
+/// o valor da variável, lido por quem chama (`mod.rs`, uma vez, no processo
+/// real) e nunca aqui dentro — o mesmo desenho do aviso de compactar
+/// (`hooks/session/conversation_size.rs::autocompact_line`), para o teste
+/// poder variá-lo sem mexer no ambiente do processo. `None` sem a variável
+/// na máquina, ou sem os tokens já usados no payload: a linha fica como era
+/// antes desta onda. Vermelho (`override_fg`) quando o ponto calculado fica
+/// abaixo de cem mil tokens — a fatia cortaria quase na largada da sessão.
+#[must_use]
+pub fn compact_segment(data: &Value, machine: Option<&str>, lang: SupportedLocale) -> Option<Segment> {
+    let pct: f64 = machine?.trim().parse().ok()?;
+    let context = data.get("context_window")?;
+    let used = context.get("total_input_tokens")?.as_i64()? + context.get("total_output_tokens")?.as_i64()?;
+    let window = model_window(data);
+    let point = (pct / 100.0 * window as f64).round() as i64;
+    let distance = point - used;
+    let label = mustard_core::translate("statusline.compact", lang)
+        .replace("{point}", &thousands(point))
+        .replace("{distance}", &thousands(distance));
+    let mut s = Segment::new(SegmentKind::Compact, label);
+    if point < 100_000 {
+        s.override_fg = Some(Color::Ansi(1)); // red: the cut lands too early
+    }
+    Some(s)
 }
 
 /// `Mustard 0.2.0` — a versão do Mustard que roda, no começo da segunda linha.
@@ -613,6 +675,20 @@ mod tests {
         }))
         .unwrap();
         assert!(seg.override_fg.is_some());
+    }
+
+    /// Uma janela de 200 mil (o padrão, sem "1M" no nome) com a mesma fatia
+    /// de 25 corta em 50 mil — abaixo de cem mil —, então o trecho vem com
+    /// aviso vermelho mesmo tendo tokens de sobra até lá.
+    #[test]
+    fn a_janela_pequena_demais_para_a_fatia_vira_aviso_vermelho() {
+        let data = json!({
+            "model": { "display_name": "Opus 4.7" },
+            "context_window": { "total_input_tokens": 40_000, "total_output_tokens": 5_000 }
+        });
+        let seg = compact_segment(&data, Some("25"), SupportedLocale::PtBr).unwrap();
+        assert_eq!(seg.text, "compacta em 50k - faltam 5k");
+        assert!(seg.override_fg.is_some(), "50k corta quase na largada: precisa do aviso");
     }
 
     #[test]
