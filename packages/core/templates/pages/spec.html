@@ -796,7 +796,28 @@ tr:last-child td{border-bottom:0}
       }).filter(Boolean);
       var finalGroup = tallied('review-final', t('page.review.final'), finals);
       if (finalGroup) body.push(finalGroup);
+      var table = trackingGroup();
+      if (table) body.push(table);
       return section('review', t('page.block.review'), body);
+    }
+    // A tabela de rastreabilidade que a aceitação do veredito final grava:
+    // uma linha por item do combinado, ordenada pelo código, com o item, a
+    // verificação e o arquivo que o próprio veredito já trazia, e a
+    // situação. Sem tabela nenhuma, nada aparece.
+    function trackingGroup() {
+      var events = ofType('tracking');
+      if (!events.length) return null;
+      var last = events[events.length - 1];
+      var rows = arr(last.items).map(function (row) {
+        return [isInt(row.item) ? code(row.item) : '', oneLine(str(row.verification) || ''), str(row.file) || '',
+          t(row.met === true ? 'page.value.met' : 'page.value.unmet')];
+      }).sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; });
+      if (!rows.length) return null;
+      var out = { kind: 'table', headers: [t('page.tracking.col.item'), t('page.tracking.col.verification'),
+        t('page.tracking.col.file'), t('page.tracking.col.met')], rows: rows };
+      var g = group('review-tracking', t('page.group.tracking'), [out]);
+      g.open = true;
+      return g;
     }
     function subjectOf(e) {
       var kind = str(arr(e.keys)[0]) || '';

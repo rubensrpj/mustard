@@ -44,7 +44,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::spec_state::{final_approval, last_change, PhaseWriter, SpecState, State};
 use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, requested_model, unowned};
@@ -259,6 +259,15 @@ fn run_close(
         return Ok(out);
     }
 
+    // A aceitação do veredito final grava a tabela de rastreabilidade: uma
+    // linha por item do combinado, com a verificação e o arquivo que o
+    // próprio veredito já trouxe por item, e a situação. Sem essa tabela,
+    // ninguém consultava depois qual item tem qual verificação, nem onde o
+    // comportamento mora — o resultado morria no veredito.
+    if let Some(verdict) = final_approval(&log) {
+        record_tracking_table(&opts.root, &spec, verdict).map_err(CloseRefusal::Refused)?;
+    }
+
     // A fase `closed` sai só por aqui, e é a mesma porta que arma a cobrança
     // das pendências. A função antiga de fechar, que grava arquivos do formato
     // velho, não é chamada.
@@ -462,6 +471,43 @@ fn proved_since_last_change(log: &SpecLog) -> bool {
 /// aprovação já quitou.
 fn final_approved(log: &SpecLog) -> bool {
     final_approval(log).is_some()
+}
+
+/// A tabela de rastreabilidade, gravada a partir do que `verdict` — o
+/// veredito final aceito — já trouxe por item em `agreed`: o item, a
+/// verificação (`text`) e o arquivo (`files`, juntos por vírgula quando mais
+/// de um). Nada é inventado — o item que a revisão respondeu sem arquivo ou
+/// sem texto fica com o campo vazio na linha, em vez de um valor calculado.
+fn record_tracking_table(root: &Path, spec: &str, verdict: &SpecEvent) -> Result<(), Refusal> {
+    let items: Vec<Value> = verdict
+        .fields
+        .get("agreed")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("item").and_then(Value::as_u64).map(|id| (id, entry)))
+        .map(|(id, entry)| {
+            let verification =
+                entry.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            let file = entry
+                .get("files")
+                .and_then(Value::as_array)
+                .map(|files| files.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            let met = entry.get("met").and_then(Value::as_bool).unwrap_or(false);
+            json!({ "item": id, "verification": verification, "file": file, "met": met })
+        })
+        .collect();
+    // A obra sem item combinado nenhum (até 3 pontos, feita pelo
+    // orquestrador) não tem o que tabular: sem linha, a tabela não é gravada
+    // — o campo `items` é obrigatório, e uma lista vazia seria recusada.
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut draft = Map::new();
+    draft.insert("items".into(), json!(items));
+    draft.insert("author".into(), json!("binary"));
+    record(root, spec, "tracking", draft, PhaseWriter::Binary).map(|_| ())
 }
 
 /// A obra terminou? Recusa enquanto houver onda sem commit, onda com o
@@ -1272,6 +1318,92 @@ mod tests {
         assert!(hint.contains("MSTD-DEC-0002"), "{hint}");
         assert!(hint.contains("Sem dono, nenhuma onda leva."), "{hint}");
         assert!(!hint.contains("MSTD-DEC-0001"), "a levada pela onda um não aparece: {hint}");
+    }
+
+    /// A aceitação do veredito final grava a tabela de rastreabilidade: uma
+    /// linha por item do combinado, com o item, a verificação e o arquivo
+    /// que o próprio veredito já trouxe por item, e a situação. O item
+    /// atendido sem arquivo nenhum na resposta fica com o campo vazio — a
+    /// tabela não inventa um.
+    #[test]
+    fn a_aceitacao_grava_a_tabela_de_rastreabilidade() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn um() {}\n").unwrap();
+        git_at(root, &["init", "-q"]);
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "semente"]);
+        git_at(root, &["config", "user.email", "t@t"]);
+        git_at(root, &["config", "user.name", "t"]);
+        git_at(root, &["config", "commit.gpgsign", "false"]);
+
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "o objetivo"})));
+        let crit = id_of(&write(root, "x", "criterion", json!({"when": "a onda roda e prova com git --version",
+            "then": "a suíte passa", "proof": "git --version", "origin": said})));
+        let rule = id_of(&write(root, "x", "rule", json!({"text": "A trava confere o programa.",
+            "keys": ["trava"], "example": "rm -rf pasta é barrado.", "origin": said})));
+        let dec = id_of(&write(root, "x", "decision",
+            json!({"text": "Sem prova extra.", "keys": ["k"], "why": "w", "origin": said})));
+        write(root, "x", "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
+            "done_when": "A suíte passa.", "origin": said}));
+        write(root, "x", "task", json!({"wave": 1, "text": "Tarefa da onda 1.",
+            "files": [{"path": wave_file(1)}], "origin": said}));
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
+
+        let round = |report: Option<String>| {
+            round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report }, None)
+        };
+        round(None);
+        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
+        let delivered = json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"});
+        let back = round(Some(format!("<DELIVERED>{delivered}</DELIVERED>\n")));
+        assert_eq!(back["ok"], json!(true), "{back}");
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+
+        let asked = close_for(
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() },
+            None,
+        );
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        // A regra vem respondida com a verificação e dois arquivos; a
+        // decisão vem atendida, mas sem texto e sem arquivo — o caso que a
+        // tabela não pode inventar.
+        let agreed = json!([
+            {"item": "MSTD-RULE-0001", "met": true, "text": "A trava barra o comando.",
+                "files": ["src/gate.rs", "src/lex.rs"]},
+            {"item": "MSTD-DEC-0001", "met": true},
+        ]);
+        let approval = json!({"final": true, "result": "approved", "text": "A obra está pronta.", "agreed": agreed});
+        let out = close_for(
+            &CloseOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                report: Some(format!("<VERDICT>{approval}</VERDICT>")),
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let tracking =
+            log.visible().into_iter().find(|e| e.event_type == "tracking").expect("a tabela ficou gravada");
+        let rows = tracking.fields["items"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let of = |id: u64| rows.iter().find(|r| r["item"] == json!(id)).unwrap_or_else(|| panic!("sem linha para {id}: {rows:?}"));
+        let ruled = of(rule);
+        assert_eq!(ruled["verification"], json!("A trava barra o comando."), "{ruled}");
+        assert_eq!(ruled["file"], json!("src/gate.rs, src/lex.rs"), "{ruled}");
+        assert_eq!(ruled["met"], json!(true), "{ruled}");
+        let decided = of(dec);
+        assert_eq!(decided["verification"], json!(""), "sem texto, o campo fica vazio: {decided}");
+        assert_eq!(decided["file"], json!(""), "sem arquivo, o campo fica vazio, não inventado: {decided}");
+        assert_eq!(decided["met"], json!(true), "{decided}");
     }
 
     /// O fechamento com um `mustard.json` que declara o lint.

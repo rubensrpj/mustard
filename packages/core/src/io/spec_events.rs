@@ -459,7 +459,7 @@ mod tests {
         put(path, &[], "message", &at("09:00"), json!({"author": "user", "text": "o pedido"}));
     }
 
-    /// Uma spec de teste com os 35 tipos, em três ondas, com uma remoção por
+    /// Uma spec de teste com os 36 tipos, em três ondas, com uma remoção por
     /// horário, um expurgo e um limite revisto.
     struct Spec {
         _dir: tempfile::TempDir,
@@ -517,6 +517,7 @@ mod tests {
         add("send", "send", "09:01", json!({"author": "binary", "wave": 2, "role": "wave", "text": "# teste — onda 2", "lines": 312, "chars": 21480, "items": [rule], "mustard": "0.2.0"}));
         add("delivered_2", "delivered", "09:02", json!({"author": "wave", "wave": 2, "text": "O portão lê a aprovação.", "files": ["src/gate.rs"]}));
         add("verdict", "verdict", "09:03", json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
+        add("tracking", "tracking", "09:03", json!({"author": "binary", "items": [{"item": rule, "verification": "A trava confere o programa.", "file": "src/gate.rs", "met": true}]}));
         add("commit", "commit", "09:04", json!({"author": "binary", "sha": "5e0c7a91", "title": "fix: a aprovação sai do estado", "waves": [2], "files": ["src/gate.rs"], "repo": "."}));
         add("criterion_run", "criterion_run", "09:05", json!({"author": "binary", "criterion": c2, "result": "pass", "exit": 0, "ms": 5990}));
         add("pr_summary", "pr_summary", "09:06", json!({"text": "O portão lê o estado.", "origin": msg}));

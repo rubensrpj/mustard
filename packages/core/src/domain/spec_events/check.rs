@@ -157,6 +157,7 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("send", "skills", &["name", "sha"]),
     ("verdict", "criteria", &["criterion", "tests_rule"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
+    ("tracking", "items", &["item", "met"]),
     ("state", "witness", &["question", "answer"]),
     ("message", "witness", &["question", "answer"]),
     ("remove", "filter", &["type", "from", "to"]),

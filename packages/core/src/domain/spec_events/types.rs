@@ -1,5 +1,5 @@
 //! Os tipos de evento da spec: os blocos em que cada tipo cai, a forma de
-//! cada campo e os 35 tipos, com os campos próprios de cada um.
+//! cada campo e os 36 tipos, com os campos próprios de cada um.
 
 use serde_json::Value;
 
@@ -284,7 +284,7 @@ const VERDICTS: &[&str] = &["approved", "rejected"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 
-/// Os 35 tipos. Os campos marcados com `opt` podem faltar; os outros são
+/// Os 36 tipos. Os campos marcados com `opt` podem faltar; os outros são
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa. A mensagem que responde a um gesto de aprovação leva a
@@ -587,6 +587,12 @@ pub const TYPES: &[TypeSpec] = &[
             opt("agreed", Kind::Objects),
         ],
     ),
+    // A tabela de rastreabilidade que a aceitação do veredito final grava:
+    // uma linha por item do combinado, com o item apontado, a verificação e
+    // o arquivo que o próprio veredito já trazia por item, e a situação. O
+    // binário grava sozinho, a partir do que a revisão final respondeu — não
+    // é uma resposta livre de quem revisa.
+    ty("tracking", "TRACK", Block::Review, false, &[req("items", Kind::Objects)]),
     // Andamento.
     ty(
         "commit",
@@ -646,10 +652,10 @@ mod tests {
     use crate::domain::spec_events::Refusal;
 
     #[test]
-    fn there_are_thirty_five_types_each_with_one_block() {
-        assert_eq!(TYPES.len(), 35);
+    fn there_are_thirty_six_types_each_with_one_block() {
+        assert_eq!(TYPES.len(), 36);
         let names: BTreeSet<&str> = TYPES.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 35, "a type name repeats");
+        assert_eq!(names.len(), 36, "a type name repeats");
         for block in Block::ALL {
             if block == Block::Metrics {
                 assert!(TYPES.iter().all(|t| t.block != block), "nobody writes to the panel");

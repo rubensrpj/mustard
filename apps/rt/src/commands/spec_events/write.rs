@@ -179,10 +179,12 @@ use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
 /// fechamento grava ao rodar a prova; o veredito, o envio do pedido de uma
-/// onda, o que ela entregou e o commit, que só a rodada grava; e a resposta do
-/// assistente, que o despachante grava no fim de cada resposta.
+/// onda, o que ela entregou e o commit, que só a rodada grava; a tabela de
+/// rastreabilidade, que o fechamento grava ao aceitar o veredito final; e a
+/// resposta do assistente, que o despachante grava no fim de cada resposta.
 /// O `run write` não os grava, nem tira ou revê um deles.
-const BINARY_ONLY: &[&str] = &["criterion_run", "verdict", "send", "delivered", "commit", "response"];
+const BINARY_ONLY: &[&str] =
+    &["criterion_run", "verdict", "send", "delivered", "commit", "tracking", "response"];
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
