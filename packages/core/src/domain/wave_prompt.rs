@@ -1354,10 +1354,11 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// As regras da execução do revisor: criar a cópia que o pedido indica no
-    /// commit da onda, compilar na pasta de compilação dela num projeto Rust,
-    /// os comandos do projeto com menos processos, não comitar e apagar a
-    /// cópia no fim. De onde ler a spec, o exemplo de leitura já diz.
+    /// As regras da execução do revisor: a cópia que o fechamento já criou no
+    /// commit da obra, compilar na pasta de compilação dela num projeto Rust,
+    /// os comandos do projeto com menos processos, e desfazer cada corte
+    /// antes de devolver — quem apaga a cópia é o fechamento. De onde ler a
+    /// spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let (copy, root) = (&execution.review, &execution.root);
@@ -2361,10 +2362,10 @@ mod tests {
         assert_eq!(last.matches("--root").count(), 1, "{last}");
         let rules = section(&last, t("prompt.part.execution"));
         for line in [
-            "`git worktree add --detach /repo/revisao-1 abc1234`",
+            "já a criou no commit `abc1234`",
             "`CARGO_TARGET_DIR=/repo/target/copias/b`",
             t("prompt.review.jobs"),
-            "`git worktree remove --force /repo/revisao-1`",
+            "recusa começar sobre `/repo/revisao-1` com mudança",
             "- Compile com `make`.",
         ] {
             assert!(rules.contains(line), "{line}: {rules}");
@@ -2388,7 +2389,7 @@ mod tests {
             "sem cópia, não há o que comitar nem relatar: {rules}"
         );
         assert!(!rules.contains("CARGO_TARGET_DIR") && !wave.contains("--root"), "{wave}");
-        assert!(write_final_review(&m, Locale::PtBr).contains("--detach  HEAD`"));
+        assert!(write_final_review(&m, Locale::PtBr).contains("no commit `HEAD`"));
         assert!(write_final_review(&m, Locale::PtBr).contains(&example), "o revisor trabalha sempre numa cópia");
         let en = write(&Material { execution: with_copy(), ..material(&log, 1) }, Locale::EnUs);
         let rules = section(&en, translate("prompt.part.execution", Locale::EnUs));

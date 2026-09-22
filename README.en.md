@@ -97,9 +97,9 @@ flowchart LR
     C --> PR["pr-open"]
 ```
 
-Every step is a single call, and every command ends by naming the next one. `open` starts the spec; `grill` surveys what is missing, one question at a time; `plan` builds the waves and puts them up for approval; the approval is the user's click, recorded by the conversation hook; `round` dispatches the waves that can go out together, each in its own copy, and records what they delivered and each review's verdict; `close` runs the project lint and every criterion once and, on a spec of two waves or more, asks for the final review of the whole; `pr-open` opens the pull request. The merge is the only step that happens only when the user asks.
+Every step is a single call, and every command ends by naming the next one. `open` starts the spec; `grill` surveys what is missing, one question at a time; `plan` builds the waves and puts them up for approval; the approval is the user's click, recorded by the conversation hook; `round` dispatches the waves that can go out together, each in its own copy, and records what they delivered and each review's verdict; `close` runs, in a clean environment, the lint and the suite `mustard.json` declares and every criterion once and, on a spec of two waves or more, asks for the final review of the whole; `pr-open` opens the pull request. The merge is the only step that happens only when the user asks.
 
-The close refuses while any criterion lacks an approved run in `spec.ndjson`, while the project lint fails, or while the final review of the whole has not been approved.
+The close refuses while any criterion lacks an approved run in `spec.ndjson`, while the project lint or suite fails, or while the final review of the whole has not been approved.
 
 ---
 

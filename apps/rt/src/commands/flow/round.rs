@@ -102,7 +102,7 @@ use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
-pub(crate) use queue::{wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use queue::{ensure_copy, wave_states, waves_in_progress, waves_pending_fix};
 pub(crate) use report::take_report;
 
 /// As opções de `mustard-rt run round`.

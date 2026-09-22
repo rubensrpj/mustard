@@ -298,6 +298,49 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("close.lint_failed", Locale::EnUs) => {
             "The project lint (`{command}`) did not pass, and the spec did not close: {output}"
         }
+        ("close.suite_failed", Locale::PtBr) => {
+            "A suíte do projeto (`{command}`), rodada em ambiente limpo como o servidor a roda, não \
+             passou, e a spec não fechou: {output}"
+        }
+        ("close.suite_failed", Locale::EnUs) => {
+            "The project suite (`{command}`), run in a clean environment the way the server runs it, \
+             did not pass, and the spec did not close: {output}"
+        }
+        // O comando do servidor que o `mustard.json` não declara: o
+        // fechamento não o roda, e avisa que não promete o que o servidor
+        // vai dizer.
+        ("close.server_command_not_declared", Locale::PtBr) => {
+            "O `mustard.json` não declara `{key}`: o fechamento não rodou esse comando, e não promete \
+             que o servidor passa. Declare nele o comando que o servidor roda, ao pé da letra."
+        }
+        ("close.server_command_not_declared", Locale::EnUs) => {
+            "`mustard.json` does not declare `{key}`: the close did not run that command, and does not \
+             promise the server passes. Declare there the command the server runs, word for word."
+        }
+        ("close.review_copy_dirty", Locale::PtBr) => {
+            "A cópia do revisor `{copy}` tem mudança ({files}), que um revisor anterior deixou, e o \
+             fechamento não revisa por cima dela. Confira o que é e descarte com \
+             `git worktree remove --force {copy}`; depois feche de novo."
+        }
+        ("close.review_copy_dirty", Locale::EnUs) => {
+            "The reviewer's copy `{copy}` has changes ({files}) a previous reviewer left, and the close \
+             does not review on top of them. Check what they are and discard with \
+             `git worktree remove --force {copy}`; then close again."
+        }
+        ("close.review_copy_failed", Locale::PtBr) => {
+            "A cópia do revisor `{copy}` não pôde ser criada, e a spec não fechou: {detail}"
+        }
+        ("close.review_copy_failed", Locale::EnUs) => {
+            "The reviewer's copy `{copy}` could not be created, and the spec did not close: {detail}"
+        }
+        ("close.review_copy_kept", Locale::PtBr) => {
+            "A obra fechou, mas a cópia do revisor `{copy}` ficou: {detail}. Apague-a com \
+             `git worktree remove --force {copy}`."
+        }
+        ("close.review_copy_kept", Locale::EnUs) => {
+            "The work closed, but the reviewer's copy `{copy}` stayed: {detail}. Delete it with \
+             `git worktree remove --force {copy}`."
+        }
         ("close.final_review", Locale::PtBr) => {
             "A máquina passou: antes do pull request, despache ao agente de teste dedicado o pedido \
              em `review.prompt` e feche de novo com a linha do fim dele, como veio: \
@@ -1131,8 +1174,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            148,
-            0x91ad_a98c_1d27_f725,
+            153,
+            0xa63e_7e2c_8789_de66,
         );
     }
 
@@ -1256,6 +1299,11 @@ mod tests {
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
+            ("close.suite_failed", &["{command}", "{output}"][..]),
+            ("close.server_command_not_declared", &["{key}"][..]),
+            ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
+            ("close.review_copy_failed", &["{copy}", "{detail}"][..]),
+            ("close.review_copy_kept", &["{copy}", "{detail}"][..]),
             ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),

@@ -253,13 +253,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the foreground: it is fixed and passes from one copy to the next."
         }
         ("prompt.review.copy", Locale::PtBr) => {
-            "Revise na cópia separada `{copy}`, nunca no repositório principal `{root}`: crie-a no \
-             commit da onda com `git worktree add --detach {copy} {commit}` e rode tudo dentro dela."
+            "Revise na cópia separada `{copy}`, nunca no repositório principal `{root}`: o fechamento \
+             já a criou no commit `{commit}`; rode tudo dentro dela."
         }
         ("prompt.review.copy", Locale::EnUs) => {
-            "Review in the separate copy `{copy}`, never in the main repository `{root}`: create it at \
-             the wave's commit with `git worktree add --detach {copy} {commit}` and run everything \
-             inside it."
+            "Review in the separate copy `{copy}`, never in the main repository `{root}`: the close \
+             already created it at commit `{commit}`; run everything inside it."
         }
         ("prompt.review.jobs", Locale::PtBr) => {
             "Compile e teste com menos processos em paralelo que o normal: as ondas compilam ao mesmo \
@@ -269,8 +268,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Build and test with fewer parallel jobs than usual: the waves are compiling at the same \
              time as you."
         }
-        ("prompt.review.cleanup", Locale::PtBr) => "No fim, apague a cópia com `git worktree remove --force {copy}`.",
-        ("prompt.review.cleanup", Locale::EnUs) => "At the end, delete the copy with `git worktree remove --force {copy}`.",
+        ("prompt.review.cleanup", Locale::PtBr) => {
+            "Desfaça cada corte antes de devolver a linha: o fechamento seguinte recusa começar sobre \
+             `{copy}` com mudança, e apaga a cópia sozinho quando a obra fecha."
+        }
+        ("prompt.review.cleanup", Locale::EnUs) => {
+            "Undo every cut before returning your line: the next close refuses to start on `{copy}` \
+             with changes, and deletes the copy itself when the work closes."
+        }
         _ => return None,
     })
 }
@@ -286,7 +291,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             40,
-            0x12ad_6b7d_5fe3_935d,
+            0x6c7c_6913_ff1a_f330,
         );
     }
 }

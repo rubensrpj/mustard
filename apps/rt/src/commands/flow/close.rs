@@ -1,8 +1,9 @@
 //! `mustard-rt run close [--spec <nome>]` — o fechamento de uma spec.
 //!
 //! É a porta única do fechamento: grava o que voltou da última rodada,
-//! confere se a obra terminou mesmo, roda o lint do projeto inteiro (o
-//! `lintCommand` do `mustard.json`), roda cada critério uma vez e grava a
+//! confere se a obra terminou mesmo, roda os dois comandos do servidor — o
+//! lint e a suíte inteira, o `lintCommand` e o `testCommand` do
+//! `mustard.json` — em ambiente limpo, roda cada critério uma vez e grava a
 //! execução de cada um, e então fecha — grava a fase `closed`, que arma a
 //! cobrança das pendências pela mesma porta, solta a spec da sessão e prepara
 //! a cópia para o banco de dados da página. A pasta de uma spec fechada fica
@@ -21,9 +22,17 @@
 //! até duas voltas de conserto sem aprovar, a onda para e a decisão passa a
 //! ser do usuário — o mesmo limite de qualquer conserto.
 //!
+//! **A cópia do revisor.** É o binário que cria a cópia onde o agente de
+//! teste dedicado confere a obra, pela mesma porta das cópias de onda, antes
+//! de a máquina rodar, e que a apaga quando a obra fecha. Uma cópia que
+//! chegou com mudança — o corte que o revisor fez para ver a prova cair e não
+//! desfez — trava o fechamento, com os arquivos: ler código sabotado como se
+//! fosse o da obra é pior do que parar.
+//!
 //! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
 //! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
-//! o lint que falha, com a saída dele; critério cuja prova não passou; e
+//! a cópia do revisor com mudança, ou que não pôde ser criada; o lint ou a
+//! suíte que falham, com a saída; critério cuja prova não passou; e
 //! critério cuja prova saiu verde sem rodar teste nenhum — a saída do
 //! executor diz zero teste, que é o que um nome de teste errado dá, e a
 //! recusa traz o comando e o número que ela leu. Cada recusa diz qual onda
@@ -86,6 +95,12 @@ enum CloseRefusal {
     RequestNotDelivered { code: String },
     /// O lint do projeto falhou.
     LintFailed { command: String, output: String },
+    /// A suíte inteira do projeto falhou.
+    SuiteFailed { command: String, output: String },
+    /// A cópia do revisor final chegou com mudança, com os arquivos dela.
+    ReviewCopyDirty { copy: String, files: String },
+    /// A cópia do revisor final não pôde ser criada, com o que o git disse.
+    ReviewCopyFailed { copy: String, detail: String },
     /// Um critério cuja prova não passou.
     CriterionFailed { code: String, output: String },
     /// Um critério cuja prova saiu verde sem rodar teste nenhum, com o
@@ -103,6 +118,9 @@ impl CloseRefusal {
             Self::WaveRejected { .. } => "wave-rejected".into(),
             Self::RequestNotDelivered { .. } => "request-not-delivered".into(),
             Self::LintFailed { .. } => "lint-failed".into(),
+            Self::SuiteFailed { .. } => "suite-failed".into(),
+            Self::ReviewCopyDirty { .. } => "review-copy-dirty".into(),
+            Self::ReviewCopyFailed { .. } => "review-copy-failed".into(),
             Self::CriterionFailed { .. } => "criterion-failed".into(),
             Self::CriterionRanNoTest { .. } => "criterion-ran-no-test".into(),
         }
@@ -125,6 +143,15 @@ impl CloseRefusal {
             }
             Self::LintFailed { command, output } => {
                 fill("close.lint_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
+            }
+            Self::SuiteFailed { command, output } => {
+                fill("close.suite_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
+            }
+            Self::ReviewCopyDirty { copy, files } => {
+                fill("close.review_copy_dirty", &[("{copy}", copy.clone()), ("{files}", files.clone())])
+            }
+            Self::ReviewCopyFailed { copy, detail } => {
+                fill("close.review_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())])
             }
             Self::CriterionFailed { code, output } => {
                 fill("close.criterion_failed", &[("{code}", code.clone()), ("{output}", output.clone())])
@@ -212,10 +239,20 @@ fn run_close(
     let log = read(&path)?;
     finished(&log)?;
 
-    // A máquina antes do agente de teste dedicado: o lint do projeto inteiro
-    // e cada critério, uma vez por fechamento. A volta que só confere a
-    // aprovação, sem nada mudado desde a máquina verde, não roda nada de novo.
-    let runs = if proved_since_last_change(&log) { Vec::new() } else { machine(opts, root, &spec, &log)? };
+    // A cópia do revisor sai antes da máquina, pela mesma porta das cópias de
+    // onda: a que chegou com mudança trava aqui, antes de gastar a suíte, e
+    // a limpa vai para o commit da obra. Com a obra já aprovada, ninguém mais
+    // revisa, e a cópia só espera ser apagada lá embaixo.
+    if !final_approved(&log) {
+        prepare_review_copy(root, &spec, &log)?;
+    }
+
+    // A máquina antes do agente de teste dedicado: os dois comandos do
+    // servidor e cada critério, uma vez por fechamento. A volta que só
+    // confere a aprovação, sem nada mudado desde a máquina verde, não roda
+    // nada de novo.
+    let (runs, undeclared) =
+        if proved_since_last_change(&log) { (Vec::new(), Vec::new()) } else { machine(opts, root, &spec, &log, lang)? };
     // O caminho de volta roda depois que a máquina passa, e nunca trava: os
     // testes sem dono viram aviso na resposta, e não recusa.
     let unowned_tests = unowned_test_hints(root, &log, lang);
@@ -253,6 +290,9 @@ fn run_close(
         if let Some(hint) = &stuck_hint {
             spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
         }
+        for hint in &undeclared {
+            spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
+        }
         for hint in &unowned_tests {
             spec_events::pages::push_warning(&mut out, "unowned-test", hint);
         }
@@ -281,6 +321,10 @@ fn run_close(
     // raiz que constrói o próprio `mustard-rt`, nada roda.
     let reinstall_warning =
         crate::commands::flow::round::reinstall_binary(root, !log.delivered_waves().is_empty(), lang);
+    // A obra fechou: ninguém mais revisa, e a cópia do revisor sai daqui,
+    // com o que tiver dentro — o que ele cortou para ver a prova cair não é
+    // trabalho de ninguém, e ficar para o próximo fechamento é o defeito.
+    let review_copy_kept = remove_review_copy(root, &spec, lang);
     // O fechamento é um marco: a cópia para o banco da página sai aqui, com a
     // fase fechada na linha da spec da página do projeto.
     let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, &spec, lang);
@@ -302,6 +346,12 @@ fn run_close(
     if let Some(warning) = &reinstall_warning {
         let hint = warning["hint"].as_str().unwrap_or_default();
         spec_events::pages::push_warning(&mut out, "binary-not-reinstalled", hint);
+    }
+    if let Some(hint) = &review_copy_kept {
+        spec_events::pages::push_warning(&mut out, "review-copy-kept", hint);
+    }
+    for hint in &undeclared {
+        spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
     }
     for hint in &unowned_tests {
         spec_events::pages::push_warning(&mut out, "unowned-test", hint);
@@ -404,17 +454,49 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
     out
 }
 
-/// A máquina do fechamento: o lint do projeto inteiro, quando o
-/// `mustard.json` declara um, e depois cada critério, uma vez, com a execução
-/// de cada um gravada. O lint que falha recusa antes de qualquer critério
-/// rodar; o critério que falha recusa depois de todos rodarem.
-fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog) -> Result<Vec<Value>, CloseRefusal> {
-    if let Some(lint) = mustard_core::ProjectConfig::load(root).commands().lint {
-        // O lint não é prova de critério: ele não promete rodar teste nenhum,
-        // e a leitura de quantos testes a saída diz fica fora do caminho dele.
-        let out = crate::commands::review::qa_run::run_command(&lint, root);
+/// A máquina do fechamento: os dois comandos que o servidor roda — o lint e
+/// a suíte inteira —, cada um em ambiente limpo ([`clean_env`]), e depois
+/// cada critério, uma vez, com a execução de cada um gravada. O comando que
+/// falha recusa antes de qualquer critério rodar; o critério que falha recusa
+/// depois de todos rodarem.
+///
+/// **Um lugar só.** Os dois comandos são o `lintCommand` e o `testCommand` do
+/// `mustard.json`: a mesma declaração que o pedido de cada onda cita e que a
+/// reinstalação do binário usa, e não uma segunda lista escrita aqui. O
+/// projeto que quer o fechamento igual ao servidor declara ali, ao pé da
+/// letra, o que o servidor roda — no próprio Mustard, as linhas `Test` e
+/// `Clippy` de `.github/workflows/ci.yml`.
+///
+/// **O projeto que não declara.** Fora do próprio Mustard, um projeto pode
+/// não ter servidor nenhum, ou não ter dito ao Mustard o que ele roda: o
+/// comando que falta não roda, e a resposta leva um aviso por chave que
+/// falta, dizendo que o fechamento não promete o que o servidor vai dizer.
+/// É aviso, nunca recusa: recusar travaria todo projeto que nunca declarou,
+/// sem nada que ele pudesse consertar no código da obra.
+fn machine(
+    opts: &CloseOpts,
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    lang: Locale,
+) -> Result<(Vec<Value>, Vec<String>), CloseRefusal> {
+    let declared = mustard_core::ProjectConfig::load(root).commands();
+    let mut undeclared: Vec<String> = Vec::new();
+    for (key, command) in [("lintCommand", declared.lint), ("testCommand", declared.test)] {
+        let Some(command) = command else {
+            undeclared.push(translate("close.server_command_not_declared", lang).replace("{key}", key));
+            continue;
+        };
+        // Nenhum dos dois é prova de critério: eles não prometem rodar um
+        // teste pelo nome, e a leitura de quantos testes a saída diz fica
+        // fora do caminho deles.
+        let out = crate::commands::review::qa_run::run_command(&clean_env(&command), root);
         if out.result != "pass" {
-            return Err(CloseRefusal::LintFailed { command: lint, output: out.output });
+            return Err(if key == "lintCommand" {
+                CloseRefusal::LintFailed { command, output: out.output }
+            } else {
+                CloseRefusal::SuiteFailed { command, output: out.output }
+            });
         }
     }
 
@@ -443,8 +525,102 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog) -> Result<V
             }
             None => CloseRefusal::CriterionFailed { code: failed.code, output: failed.output },
         }),
-        None => Ok(runs),
+        None => Ok((runs, undeclared)),
     }
+}
+
+/// `command` embrulhado para rodar como o servidor o roda, e não como a
+/// máquina de quem programa: uma pasta de casa nova e vazia, sem a
+/// identidade do git (nem a da configuração global, nem a das variáveis), sem
+/// as variáveis do Claude Code e do Mustard e, no Linux, sem o processo do
+/// editor entre os pais. Cada uma dessas três já deixou uma obra verde aqui e
+/// vermelha no servidor: o teste que lia o `claude` entre os pais, e o que
+/// comitava sem dizer quem era o autor.
+///
+/// A pasta do Cargo e a do rustup ficam onde estavam: são o compilador, não a
+/// casa de ninguém, e sem elas a casa nova não compilaria nada. Sair de
+/// baixo do editor pede um processo que troque de pai: `setsid --fork` solta
+/// o comando, que avisa por um canal nomeado (`mkfifo`) o código com que
+/// saiu, e a espera é a leitura desse canal, sem laço. Sem `setsid`, e fora
+/// do Linux — onde nenhuma leitura procura o editor entre os pais —, o
+/// comando roda direto, com o resto do ambiente limpo.
+///
+/// No Windows o comando vai como está: o executor pode cair no `cmd.exe`,
+/// onde este embrulho não é comando nenhum.
+fn clean_env(command: &str) -> String {
+    if cfg!(windows) {
+        return command.to_string();
+    }
+    let quoted = command.replace('\'', "'\\''");
+    format!(
+        "mustard_cmd='{quoted}'\n\
+         mustard_tmp=$(mktemp -d) || exit 1\n\
+         mkdir \"$mustard_tmp/home\" || exit 1\n\
+         export CARGO_HOME=\"${{CARGO_HOME:-$HOME/.cargo}}\" RUSTUP_HOME=\"${{RUSTUP_HOME:-$HOME/.rustup}}\"\n\
+         export HOME=\"$mustard_tmp/home\"\n\
+         unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL\n\
+         for mustard_var in $(env | sed -n 's/^\\(CLAUDE[A-Za-z0-9_]*\\)=.*/\\1/p; s/^\\(MUSTARD_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$mustard_var\"; done\n\
+         export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=1 \
+         GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true\n\
+         if [ \"$(uname -s)\" = Linux ] && command -v setsid >/dev/null 2>&1; then\n\
+         mkfifo \"$mustard_tmp/exit\" || exit 1\n\
+         setsid --fork sh -c '(eval \"$1\"); echo $? > \"$2\"' sh \"$mustard_cmd\" \"$mustard_tmp/exit\"\n\
+         read mustard_code < \"$mustard_tmp/exit\"\n\
+         else\n\
+         (eval \"$mustard_cmd\"); mustard_code=$?\n\
+         fi\n\
+         rm -rf \"$mustard_tmp\"\n\
+         exit \"${{mustard_code:-1}}\""
+    )
+}
+
+/// Cria a cópia do revisor final da spec `spec` no commit da obra, pela
+/// mesma porta das cópias de onda (`ensure_copy`), com a trava do passo do
+/// git presa, como a rodada cria as dela. A cópia que já existe e está limpa
+/// vai para o commit; a que tem mudança recusa, com os arquivos, e a
+/// recusa diz como descartar — é o corte que o revisor anterior deixou, e
+/// revisar por cima dele é ler código sabotado como se fosse o da obra.
+fn prepare_review_copy(root: &Path, spec: &str, log: &SpecLog) -> Result<(), CloseRefusal> {
+    use mustard_core::io::wave_prompt::{final_copy_path, final_review_commit, shown};
+    use mustard_core::platform::git;
+    let path = final_copy_path(root, spec);
+    let copy = shown(&path);
+    let failed = |detail: String| CloseRefusal::ReviewCopyFailed { copy: copy.clone(), detail };
+    if path.join(".git").is_file() {
+        let status = git::run(&path, &["status", "--porcelain", "--untracked-files=all"]);
+        if !status.ok {
+            return Err(failed(status.stderr.trim().to_string()));
+        }
+        let files: Vec<&str> =
+            status.stdout.lines().filter(|line| line.len() > 3).map(|line| line[3..].trim()).collect();
+        if !files.is_empty() {
+            return Err(CloseRefusal::ReviewCopyDirty { copy: copy.clone(), files: files.join(", ") });
+        }
+    }
+    let commit = match final_review_commit(root, log) {
+        Some(sha) => sha,
+        None => git::run(root, &["rev-parse", "HEAD"]).result().map_err(&failed)?,
+    };
+    let _held = crate::commands::git_settle::git_step_lock(root).map_err(&failed)?;
+    crate::commands::flow::round::ensure_copy(root, &path, &commit).map_err(failed)
+}
+
+/// Apaga a cópia do revisor final da spec `spec`, quando ela existe, com a
+/// trava do passo do git presa. Devolve o aviso quando o git não deixou
+/// apagar: a obra fecha do mesmo jeito, e o aviso diz qual pasta ficou.
+fn remove_review_copy(root: &Path, spec: &str, lang: Locale) -> Option<String> {
+    use mustard_core::io::wave_prompt::{final_copy_path, shown};
+    let path = final_copy_path(root, spec);
+    if !path.exists() {
+        return None;
+    }
+    let copy = shown(&path);
+    let removed = crate::commands::git_settle::git_step_lock(root).and_then(|_held| {
+        mustard_core::platform::git::run(root, &["worktree", "remove", "--force", &copy]).result().map(|_| ())
+    });
+    removed.err().map(|detail| {
+        translate("close.review_copy_kept", lang).replace("{copy}", &copy).replace("{detail}", &detail)
+    })
 }
 
 /// A máquina já passou depois da última mudança: cada critério vigente tem,
@@ -1019,7 +1195,12 @@ mod tests {
         ready_to_close(root, "x", &["git --version"]);
         std::fs::create_dir_all(root.join("apps/rt")).unwrap();
         std::fs::write(root.join("apps/rt/Cargo.toml"), b"[package]\nname=\"mustard-rt\"\n").unwrap();
-        std::fs::write(root.join("mustard.json"), br#"{"testCommand":"exit 1"}"#).unwrap();
+        // A suíte passa enquanto a marca existe: verde na máquina do
+        // fechamento, que agora a roda e recusa quando ela cai, e vermelha na
+        // reinstalação, depois que a marca sai — é esse vermelho que prova
+        // que a reinstalação rodou, sem instalar nada de verdade.
+        std::fs::write(root.join("suite-verde"), b"").unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"testCommand":"test -f suite-verde"}"#).unwrap();
 
         let asked =
             close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
@@ -1032,7 +1213,11 @@ mod tests {
             "a onda entregue e comitada, mas ainda sem aprovação final, não mexe no binário instalado: {asked}"
         );
 
-        let out = close(root, "x");
+        std::fs::remove_file(root.join("suite-verde")).unwrap();
+        let out = close_for(
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: Some(final_approval()), ..Default::default() },
+            None,
+        );
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["phase"], json!("closed"), "{out}");
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
@@ -1040,6 +1225,162 @@ mod tests {
             warnings.iter().any(|w| w["reason"] == json!("binary-not-reinstalled")),
             "aprovada a obra, o fechamento tenta reinstalar uma vez, e a suíte vermelha vira aviso: {out}"
         );
+    }
+
+    /// A cópia do revisor final nasce pelo binário, no commit da obra, e é
+    /// ele que a apaga quando a obra fecha. A cópia que chega com mudança — o
+    /// corte que um revisor fez para ver a prova cair e não desfez — trava o
+    /// fechamento seguinte, nomeando o arquivo; desfeito o corte, o
+    /// fechamento volta a pedir a revisão sobre a mesma cópia.
+    #[test]
+    fn a_copia_do_revisor_e_criada_e_apagada_pelo_binario() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x");
+        let shown = mustard_core::io::wave_prompt::shown(&copy);
+        assert!(!copy.exists(), "ninguém criou a cópia antes do fechamento");
+        let ask = |report: Option<String>| {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
+        };
+        let git_out = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").args(args).current_dir(dir).output().expect("git");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        let asked = ask(None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert!(copy.join(".git").is_file(), "o fechamento criou a cópia como checkout ligado: {asked}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let commit = mustard_core::io::wave_prompt::final_review_commit(root, &log).expect("a obra comitou");
+        assert_eq!(git_out(&copy, &["rev-parse", "HEAD"]), commit, "a cópia está no commit da obra");
+        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains(&format!("`{shown}`")) && prompt.contains(&format!("`{commit}`")), "{prompt}");
+
+        // O revisor corta uma prova e não desfaz: o fechamento seguinte não
+        // revisa por cima do corte.
+        std::fs::write(copy.join(wave_file(1)), "fn cortado() {}\n").unwrap();
+        let refused = ask(None);
+        assert_eq!(refused["reason"], json!("review-copy-dirty"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&wave_file(1)) && hint.contains(&shown), "a recusa nomeia a cópia e o arquivo: {hint}");
+        assert!(copy.join(wave_file(1)).is_file(), "a recusa não apaga nada");
+
+        // Desfeito o corte, o pedido volta sobre a mesma cópia.
+        git_at(&copy, &["checkout", "--", &wave_file(1)]);
+        let again = ask(None);
+        assert_eq!(again["review"]["final"], json!(true), "{again}");
+        assert_eq!(git_out(&copy, &["rev-parse", "HEAD"]), commit, "{again}");
+
+        // Aprovada a obra, o binário apaga a cópia, e o git não a lista mais.
+        let closed = ask(Some(final_approval()));
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        assert!(!copy.exists(), "o fechamento apagou a cópia: {closed}");
+        assert!(!git_out(root, &["worktree", "list", "--porcelain"]).contains(&shown), "{closed}");
+    }
+
+    /// O roteiro que os dois comandos do servidor rodam no teste: grava, num
+    /// arquivo com o nome do papel, a casa, se o git tem identidade global,
+    /// as variáveis do Claude Code e os processos pais, e sai com o código
+    /// pedido.
+    const PROBE: &str = r#"out="$PWD/ran-$1"
+{
+  echo "home=$HOME"
+  if git config --global user.name >/dev/null 2>&1; then echo identity=yes; else echo identity=no; fi
+  echo "claude=${CLAUDECODE:-}${CLAUDE_PROJECT_DIR:-}"
+  pid=$$; chain=""
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
+    chain="$chain $pid"
+    pid=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f2)
+  done
+  echo "chain=$chain "
+} > "$out"
+exit "${2:-0}"
+"#;
+
+    /// O que o roteiro gravou para o papel `role`, uma chave por linha.
+    fn probed(root: &Path, role: &str) -> std::collections::BTreeMap<String, String> {
+        let text = std::fs::read_to_string(root.join(format!("ran-{role}"))).unwrap_or_default();
+        text.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    /// O fechamento roda o lint e a suíte que o `mustard.json` declara — o
+    /// lugar só onde o projeto diz o que o servidor roda —, cada um em
+    /// ambiente limpo: casa nova e vazia, que some depois, sem a identidade
+    /// global do git, sem as variáveis do Claude Code e, no Linux, fora da
+    /// árvore de processos de quem chamou. O lint que falha recusa antes da
+    /// suíte; a suíte que falha recusa também, antes de critério nenhum; os
+    /// dois verdes deixam a máquina seguir para o revisor.
+    #[test]
+    fn o_fechamento_roda_os_comandos_do_servidor_em_ambiente_limpo() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        std::fs::write(root.join("probe.sh"), PROBE).unwrap();
+        let close_with = |lint: &str, test: &str| {
+            for role in ["lint", "test"] {
+                let _ = std::fs::remove_file(root.join(format!("ran-{role}")));
+            }
+            std::fs::write(root.join("mustard.json"), json!({ "lintCommand": lint, "testCommand": test }).to_string())
+                .unwrap();
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None)
+        };
+
+        let refused = close_with("sh probe.sh lint 1", "sh probe.sh test");
+        assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
+        assert!(!root.join("ran-test").exists(), "com o lint vermelho, a suíte nem roda");
+
+        let refused = close_with("sh probe.sh lint", "sh probe.sh test 1");
+        assert_eq!(refused["reason"], json!("suite-failed"), "a suíte vermelha trava o fechamento: {refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains("`sh probe.sh test 1`"), "{refused}");
+        assert_eq!(criterion_runs(root), 0, "nenhum critério roda com a suíte vermelha");
+
+        let asked = close_with("sh probe.sh lint", "sh probe.sh test");
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let real_home = std::env::var("HOME").unwrap_or_default();
+        for role in ["lint", "test"] {
+            let seen = probed(root, role);
+            let home = seen.get("home").cloned().unwrap_or_default();
+            assert!(!home.is_empty() && home != real_home, "{role} roda com casa própria: {seen:?}");
+            assert!(!Path::new(&home).exists(), "a casa do {role} era de uma vez só: {seen:?}");
+            assert_eq!(seen.get("identity").map(String::as_str), Some("no"), "{role} sem identidade global: {seen:?}");
+            assert_eq!(seen.get("claude").map(String::as_str), Some(""), "{role} sem o Claude Code: {seen:?}");
+            if cfg!(target_os = "linux") {
+                let chain = seen.get("chain").cloned().unwrap_or_default();
+                assert!(chain.split_whitespace().count() > 0, "{seen:?}");
+                assert!(
+                    !chain.split_whitespace().any(|pid| pid == std::process::id().to_string()),
+                    "{role} saiu da árvore de processos de quem chamou: {seen:?}"
+                );
+            }
+        }
+        let warnings = asked["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().all(|w| w["reason"] != json!("server-command-not-declared")), "{asked}");
+    }
+
+    /// O projeto que não declara um dos dois comandos do servidor fecha do
+    /// mesmo jeito: o que falta não roda, e a resposta avisa qual chave falta.
+    #[test]
+    fn o_fechamento_roda_os_comandos_do_servidor_em_ambiente_limpo_e_avisa_o_que_falta() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        std::fs::write(root.join("probe.sh"), PROBE).unwrap();
+        std::fs::write(root.join("mustard.json"), json!({ "lintCommand": "sh probe.sh lint" }).to_string()).unwrap();
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert!(root.join("ran-lint").is_file(), "o que está declarado roda");
+        let hints: Vec<String> = asked["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|w| w["reason"] == json!("server-command-not-declared"))
+            .map(|w| w["hint"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(hints.len(), 1, "{asked}");
+        assert!(hints[0].contains("`testCommand`"), "{hints:?}");
     }
 
     /// O motor do comando `qa-run` saiu de `qa_run/mod.rs` e

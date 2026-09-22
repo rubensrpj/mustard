@@ -126,10 +126,29 @@ pub fn copy_path(root: &Path, spec: &str, wave: u64, review: bool) -> PathBuf {
 }
 
 /// A pasta da cópia separada do revisor final da spec `spec`, ao lado das
-/// cópias das ondas.
+/// cópias das ondas. Quem a cria, no commit de [`final_review_commit`], e a
+/// apaga no fim é o fechamento (`mustard-rt run close`), pela mesma porta das
+/// cópias de onda; o pedido do revisor só diz onde ela está.
 #[must_use]
 pub fn final_copy_path(root: &Path, spec: &str) -> PathBuf {
     crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(format!("mustard-{spec}-final-review"))
+}
+
+/// O commit em que o revisor final confere a obra: o mais novo que a spec
+/// gravou no repositório principal do checkout `root`. O commit de um
+/// submódulo, que a rodada grava com o nome da pasta dele em `repo`, não
+/// existe no principal, e a cópia não nasceria nele. `None` quando a obra
+/// ainda não comitou nada ali — aí o pedido diz `HEAD`, e o fechamento cria a
+/// cópia no commit atual do checkout.
+#[must_use]
+pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
+    let main = root.file_name().map(|name| name.to_string_lossy().to_string());
+    log.block(BlockQuery::Block(Block::Progress))
+        .into_iter()
+        .rev()
+        .filter(|e| e.event_type == "commit")
+        .filter(|e| e.str_field("repo").is_none_or(|repo| Some(repo) == main.as_deref()))
+        .find_map(|e| e.str_field("sha").map(str::to_string))
 }
 
 /// O pedido do agente de teste dedicado da spec `spec`, que o fechamento pede
@@ -176,11 +195,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         let verdicts = log.verdicts_by_wave();
         fixing.iter().filter_map(|n| verdicts.get(n).and_then(|v| v.last().copied())).collect()
     };
-    let commit = log
-        .block(BlockQuery::Block(Block::Progress))
-        .into_iter()
-        .rev()
-        .find_map(|e| (e.event_type == "commit").then(|| e.str_field("sha").map(str::to_string)).flatten());
+    let commit = final_review_commit(root, log);
     let last_sent = log.last_by_wave("send").into_iter().max_by_key(|(_, id)| *id).map(|(n, _)| n);
     let commands = crate::ProjectConfig::load(root).commands();
     let execution = Execution {

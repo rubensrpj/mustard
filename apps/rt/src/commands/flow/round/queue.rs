@@ -512,7 +512,7 @@ pub(super) fn open_copies(
 /// está limpa vai para o commit `head`, porque um commit fora da rodada pode
 /// ter avançado o checkout principal desde a criação dela. A que tem mudança,
 /// como a de uma retomada em andamento, fica como está.
-fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), String> {
+pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), String> {
     if path.join(".git").is_file() {
         let clean = git::run(path, &["status", "--porcelain", "--untracked-files=all"])
             .out()

@@ -120,12 +120,13 @@ pub enum FlowCmd {
     },
     /// Fecha uma spec: grava o que voltou da última rodada, confere se a obra
     /// terminou (nenhuma onda sem commit, nenhuma reprovada sem o conserto e
-    /// nenhum pedido do usuário sem onda que o entregue), roda o lint do
-    /// projeto inteiro e cada critério uma vez, gravando a execução de cada
-    /// um, e então grava a fase fechada, solta a spec da sessão e prepara a
-    /// cópia para o banco de dados das páginas. Toda obra, mesmo a de uma
-    /// onda só, recebe antes o pedido do agente de teste dedicado, e só fecha
-    /// com a linha dele aprovada.
+    /// nenhum pedido do usuário sem onda que o entregue), roda em ambiente
+    /// limpo o lint e a suíte que o `mustard.json` declara e cada critério uma
+    /// vez, gravando a execução de cada um, e então grava a fase fechada,
+    /// solta a spec da sessão e prepara a cópia para o banco de dados das
+    /// páginas. Toda obra, mesmo a de uma onda só, recebe antes o pedido do
+    /// agente de teste dedicado, numa cópia que o fechamento cria e apaga, e
+    /// só fecha com a linha dele aprovada.
     #[command(display_order = 4)]
     Close {
         /// A spec que fecha. Sem ela, a spec atual.
