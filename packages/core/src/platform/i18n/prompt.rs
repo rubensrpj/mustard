@@ -67,13 +67,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
              binário a partir da spec. Nenhum texto vem copiado: cada parte traz só os códigos dos \
              itens, em sequência, numa linha por bloco da spec.\n\n\
-             **O que devolver.** A linha `<DELIVERED>` desta onda."
+             **O que devolver.** A linha `<DELIVERED>` desta onda. Devolva só ela e a de gasto: nada \
+             de texto solto ao redor, e o que houver a contar do trabalho mora dentro do campo de \
+             texto dela."
         }
         ("prompt.fixed", Locale::EnUs) => {
             "**What this is.** The list of this wave's items, in execution order, assembled by the \
              binary from the spec. No text is copied in: each part carries only the items' codes, in \
              sequence, one line per spec block.\n\n\
-             **What to return.** This wave's `<DELIVERED>` line."
+             **What to return.** This wave's `<DELIVERED>` line. Return only that and the spend one: \
+             no loose text around it, and whatever there is to tell about the work lives inside its \
+             text field."
         }
         // O agente de teste dedicado, que o fechamento pede a toda obra —
         // mesmo a de uma onda só —, no lugar da revisão de cada onda.
@@ -225,6 +229,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "In the delivery report, the `commit` field is the message's title, in words and short \
              — never the commit's code."
         }
+        // A última mensagem, ao lado da regra de não comitar: quem despacha
+        // exige de novo quando ela faltar ou sair do padrão, em vez de montar
+        // as linhas a partir de uma prosa que não fica registrada em lugar
+        // nenhum.
+        ("prompt.execution.report_lines", Locale::PtBr) => {
+            "A última mensagem tem só a linha `<DELIVERED>` e a de gasto: nenhuma prosa em volta, e \
+             o relato do trabalho vai dentro do campo de texto da entrega."
+        }
+        ("prompt.execution.report_lines", Locale::EnUs) => {
+            "The last message has only the `<DELIVERED>` line and the spend one: no prose around \
+             them, and the account of the work goes inside the delivery's text field."
+        }
         // A pasta de compilação da cópia. A frase cita o Cargo, então só vai
         // ao pedido quando o mapa do projeto tem uma parte `cargo`; a pasta é
         // escolhida para toda onda, porque é a vaga das ondas que rodam juntas.
@@ -269,8 +285,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            39,
-            0x0a69_4402_7868_22c2,
+            40,
+            0xd27e_8128_88fd_6e9a,
         );
     }
 }

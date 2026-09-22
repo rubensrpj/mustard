@@ -564,7 +564,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              acrescente, para cada onda que voltou, o consumo que a plataforma entregou a você quando \
              o agente terminou, numa linha `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\
              \"caller_steps\":…,\"caller_tokens\":…}</USAGE>` — nunca um número que o agente tenha digitado. \
-             A rodada lê essas linhas e monta o commit do `commit` de cada entrega."
+             A rodada lê essas linhas e monta o commit do `commit` de cada entrega. Quando a última \
+             mensagem de um agente não trouxer as linhas, ou elas vierem fora do padrão, mande o \
+             agente responder de novo no formato: nunca monte as linhas a partir da prosa dele."
         }
         ("round.report", Locale::EnUs) => {
             "When they come back, run the round again with each agent's closing line, as it came, one \
@@ -574,7 +576,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              those, add, for each wave that came back, the usage the platform handed you when the agent \
              finished, in one `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\"caller_steps\":…,\
              \"caller_tokens\":…}</USAGE>` line — never a number the agent typed itself. The round reads \
-             those lines and builds the commit from each delivery's `commit`."
+             those lines and builds the commit from each delivery's `commit`. When an agent's last \
+             message is missing the lines, or they come out of shape, make the agent answer again in \
+             the format: never assemble the lines from its prose."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -1026,7 +1030,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             136,
-            0x864c_3dfc_2f4a_2e5c,
+            0x0ffe_b42b_dfbf_4278,
         );
     }
 

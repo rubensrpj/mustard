@@ -130,4 +130,44 @@ mod tests {
             assert!(map.contains(investigation), "the {text} map lost the investigation delegation: {map}");
         }
     }
+
+    /// Os dois moldes de onda, nos dois idiomas, não pedem mais um relatório
+    /// pelo tamanho: a última mensagem tem só as duas linhas do formato, e
+    /// todo o detalhe do trabalho vai no campo de texto da entrega.
+    #[test]
+    fn o_molde_da_onda_pede_so_as_duas_linhas() {
+        for (text, size_report, two_lines, text_field) in [
+            (
+                Locale::PtBr,
+                "entre mil e dois mil tokens",
+                "só traz as duas linhas do formato",
+                "detalhe no texto da entrega",
+            ),
+            (
+                Locale::EnUs,
+                "between one and two thousand tokens",
+                "only the two lines close it",
+                "delivery text",
+            ),
+        ] {
+            for (name, body) in agent_texts(text) {
+                if name != "wave" && name != "wave-solo" {
+                    continue;
+                }
+                let lower = body.to_lowercase();
+                assert!(
+                    !lower.contains(size_report),
+                    "the {text} `{name}` agent still asks for a report by size: {body}"
+                );
+                assert!(
+                    lower.contains(two_lines),
+                    "the {text} `{name}` agent does not say the last message has only the two lines: {body}"
+                );
+                assert!(
+                    lower.contains(text_field),
+                    "the {text} `{name}` agent does not send the work's detail to the delivery's text: {body}"
+                );
+            }
+        }
+    }
 }

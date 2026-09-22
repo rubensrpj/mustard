@@ -33,7 +33,7 @@ Falta algo, a tarefa pede o que a spec não diz, ou não fecha (arquivo que falt
 
 ## Formato de saída
 
-O relatório final fica entre mil e dois mil tokens. Esta linha é obrigatória e fecha a sua última mensagem: sem prosa antes, sem prosa depois, sem JSON solto sem a marca. Relatório em prosa não é entrega, porque a rodada só lê esta linha.
+A última mensagem só traz as duas linhas do formato: detalhe no texto da entrega. Esta linha é obrigatória e fecha a sua última mensagem: sem prosa antes, sem prosa depois, sem JSON solto sem a marca. Relatório em prosa não é entrega, porque a rodada só lê esta linha.
 <DELIVERED>{"wave":1,"text":"<a entrega>","files":["caminho/do/arquivo.rs"],"commit":"<o resumo do commit>"}</DELIVERED>
 
 - `wave`: a onda do pedido.

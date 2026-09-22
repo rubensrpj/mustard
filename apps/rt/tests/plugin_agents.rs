@@ -188,11 +188,11 @@ fn the_project_receives_exactly_four_agents_in_its_text_language() {
 
 /// Os dois moldes de agente de onda que o instalador grava carregam o teto
 /// de turnos no próprio `maxTurns` do cabeçalho — dez no de tarefa única,
-/// quinze no de várias — e os dois pedem um relatório final de mil a dois
-/// mil tokens. É a plataforma, pelo cabeçalho do agente de verdade em
-/// `.claude/agents/mustard/`, quem aplica o corte agora; antes, o teto só
+/// quinze no de várias. É a plataforma, pelo cabeçalho do agente de verdade
+/// em `.claude/agents/mustard/`, quem aplica o corte agora; antes, o teto só
 /// existia dentro do campo de molde do evento de envio, e o arquivo do
-/// agente nunca chegava a carregá-lo.
+/// agente nunca chegava a carregá-lo. Nenhum dos dois pede mais um relatório
+/// pelo tamanho: a última mensagem tem só as duas linhas do formato (onda 13).
 #[test]
 fn os_dois_arquivos_de_agente_trazem_o_teto_de_turnos() {
     for (lang, tokens) in [("pt-BR", "mil e dois mil tokens"), ("en-US", "one and two thousand tokens")] {
@@ -202,12 +202,12 @@ fn os_dois_arquivos_de_agente_trazem_o_teto_de_turnos() {
         let multi = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
         assert!(multi.contains("maxTurns: 15"), "the {lang} multi-task wave agent has no maxTurns: 15: {multi}");
         assert!(!multi.contains("maxTurns: 10"), "the {lang} multi-task wave agent must not carry the solo cap");
-        assert!(multi.contains(tokens), "the {lang} multi-task wave agent does not ask for the token-bounded report");
+        assert!(!multi.contains(tokens), "the {lang} multi-task wave agent still asks for a report by size");
 
         let solo = std::fs::read_to_string(root.join(".claude/agents/mustard/wave-solo.md")).unwrap();
         assert!(solo.contains("maxTurns: 10"), "the {lang} solo wave agent has no maxTurns: 10: {solo}");
         assert!(!solo.contains("maxTurns: 15"), "the {lang} solo wave agent must not carry the multi-task cap");
-        assert!(solo.contains(tokens), "the {lang} solo wave agent does not ask for the token-bounded report");
+        assert!(!solo.contains(tokens), "the {lang} solo wave agent still asks for a report by size");
     }
 }
 
@@ -489,6 +489,49 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
             let sentence = translate(key, text);
             assert!(prompt.contains(sentence), "{lang} wave request misses `{key}`: {prompt}");
         }
+    }
+}
+
+/// O pedido de onda, montado pelo binário de verdade, manda o agente
+/// devolver só a linha `<DELIVERED>` e a de gasto, sem prosa em volta, com
+/// todo o detalhe do trabalho dentro do campo de texto da entrega: a parte
+/// fixa do pedido diz isso, e a regra da execução repete a frase logo depois
+/// das duas frases sobre não comitar que a onda 12 acrescentou. Nos dois
+/// idiomas. Prova o critério de o pedido mandar devolver só as duas linhas.
+#[test]
+fn o_pedido_manda_devolver_so_as_duas_linhas() {
+    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home) =
+            installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "duaslinhas", "--base", "dev"], None);
+        assert_eq!(opened["ok"], json!(true), "{opened}");
+        let file = root.join(".claude/spec/duaslinhas/spec.ndjson");
+        let put =
+            |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
+        let said = put("message", json!({"author": "user", "text": "o objetivo"}));
+        let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+        put("wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
+        put("state", json!({"phase": "running", "branch": "feature/duaslinhas"}));
+
+        let round = rt(&root, &home, &["run", "round", "--spec", "duaslinhas"], None);
+        assert_eq!(round["ok"], json!(true), "{round}");
+        let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
+        assert_eq!(dispatched.len(), 1, "{round}");
+        let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default();
+
+        assert!(prompt.contains(translate("prompt.fixed", text)), "{lang} wave request misses the fixed part: {prompt}");
+
+        let commit_field = translate("prompt.execution.commit_field", text);
+        let report_lines = translate("prompt.execution.report_lines", text);
+        assert!(prompt.contains(report_lines), "{lang} wave request misses the two-lines reminder: {prompt}");
+        let commit_at = prompt.find(commit_field).unwrap_or_else(|| panic!("{lang} wave request misses `commit_field`: {prompt}"));
+        let report_at = prompt.find(report_lines).unwrap();
+        assert!(
+            report_at > commit_at,
+            "{lang} the two-lines reminder does not sit right after the no-commit phrases in the execution rules block: {prompt}"
+        );
     }
 }
 

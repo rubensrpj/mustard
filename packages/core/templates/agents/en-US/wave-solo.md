@@ -33,7 +33,7 @@ Something is missing, the task asks for what the spec does not say, or it does n
 
 ## Output format
 
-The final report is between one and two thousand tokens. This line is mandatory and ends your last message: no prose before, no prose after, no unmarked JSON. A prose report is not a delivery, because the round reads only this line.
+Only the two lines close it: detail goes in delivery text. This line is mandatory and ends your last message: no prose before, no prose after, no unmarked JSON. A prose report is not a delivery, because the round reads only this line.
 <DELIVERED>{"wave":1,"text":"<the delivery>","files":["path/to/file.rs"],"commit":"<the commit summary>"}</DELIVERED>
 
 - `wave`: the request's wave.
