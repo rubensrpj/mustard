@@ -624,6 +624,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.close", Locale::EnUs) => {
             "Every wave is delivered and approved: close the spec with `{command}`."
         }
+        ("round.fix_push", Locale::PtBr) => {
+            "A onda de conserto está entregue e comitada na branch da obra, que continua fechada: \
+             empurre o conserto para o servidor com `{command}`."
+        }
+        ("round.fix_push", Locale::EnUs) => {
+            "The fix wave is delivered and committed on the work's branch, which stays closed: \
+             push the repair to the server with `{command}`."
+        }
+        ("round.fix_reason", Locale::PtBr) => "o servidor reprovou os testes do pull request",
+        ("round.fix_reason", Locale::EnUs) => "the server failed the pull request's tests",
         ("round.missing", Locale::PtBr) => {
             "Nada a despachar nem a revisar, e a onda {wave} ainda não está entregue e aprovada: \
              mostre ao usuário o que a segura antes de fechar."
@@ -1026,6 +1036,68 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The spec {spec} is already under survey, and nothing was written. Run `mustard-rt run \
              grill --spec {spec} --kinds <types>` to build the points."
         }
+        ("reopen.fix_opened", Locale::PtBr) => {
+            "O servidor reprovou os testes do pull request {pr}, e a onda de conserto {wave} está \
+             aberta na spec {spec}, que continua fechada. Rode `mustard-rt run round --spec \
+             {spec}`: a onda de conserto sai, e o conserto é comitado na mesma branch. Depois \
+             rode este mesmo passo de novo para empurrar."
+        }
+        ("reopen.fix_opened", Locale::EnUs) => {
+            "The server failed the tests of pull request {pr}, and the fix wave {wave} is open in \
+             the spec {spec}, which stays closed. Run `mustard-rt run round --spec {spec}`: the \
+             fix wave goes out, and the repair is committed on the same branch. Then run this \
+             very step again to push it."
+        }
+        ("reopen.fix_waiting", Locale::PtBr) => {
+            "A onda de conserto {wave} da spec {spec} já está aberta e ainda não entregou, e nada \
+             foi gravado. Rode `mustard-rt run round --spec {spec}` para levá-la até o commit; \
+             depois rode este mesmo passo de novo para empurrar."
+        }
+        ("reopen.fix_waiting", Locale::EnUs) => {
+            "The fix wave {wave} of the spec {spec} is already open and has not delivered yet, and \
+             nothing was written. Run `mustard-rt run round --spec {spec}` to take it to the \
+             commit; then run this very step again to push it."
+        }
+        ("reopen.fix_pushed", Locale::PtBr) => {
+            "O conserto da onda {wave} foi empurrado para a branch {branch}: o servidor roda os \
+             testes do pull request {pr} de novo. A obra não foi reaberta e nenhuma spec nova \
+             nasceu; o que foi consertado ficou gravado na spec {spec}."
+        }
+        ("reopen.fix_pushed", Locale::EnUs) => {
+            "The repair of wave {wave} was pushed to the branch {branch}: the server runs the \
+             tests of pull request {pr} again. The work was not reopened and no new spec was \
+             born; what was repaired is on the record in the spec {spec}."
+        }
+        ("reopen.fix_push_failed", Locale::PtBr) => {
+            "O git recusou empurrar a branch {branch}: {error}. O conserto continua comitado na \
+             branch, e nada foi gravado; resolva o que o git disse e rode este passo de novo."
+        }
+        ("reopen.fix_push_failed", Locale::EnUs) => {
+            "Git refused to push the branch {branch}: {error}. The repair is still committed on \
+             the branch, and nothing was written; resolve what git said and run this step again."
+        }
+        ("reopen.fix_wave_text", Locale::PtBr) => {
+            "Conserte o que o servidor reprovou no pull request {pr}: {reason}. A obra continua \
+             fechada; o conserto sai na mesma branch."
+        }
+        ("reopen.fix_wave_text", Locale::EnUs) => {
+            "Repair what the server failed on pull request {pr}: {reason}. The work stays closed; \
+             the repair goes out on the same branch."
+        }
+        ("reopen.fix_wave_done", Locale::PtBr) => {
+            "O servidor roda os testes do pull request {pr} de novo e eles voltam verdes."
+        }
+        ("reopen.fix_wave_done", Locale::EnUs) => {
+            "The server runs the tests of pull request {pr} again and they come back green."
+        }
+        ("reopen.fix_note", Locale::PtBr) => {
+            "A onda de conserto {wave} consertou o que o servidor reprovou no pull request {pr}, e \
+             o commit dela foi empurrado para a branch {branch}."
+        }
+        ("reopen.fix_note", Locale::EnUs) => {
+            "The fix wave {wave} repaired what the server failed on pull request {pr}, and its \
+             commit was pushed to the branch {branch}."
+        }
         ("request.new_waves", Locale::PtBr) => {
             "Pedido gravado. Grave as ondas novas no fim do plano; a spec e a branch continuam as \
              mesmas, e não há nova aprovação."
@@ -1059,8 +1131,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            139,
-            0xef38_884c_9c5d_1b1f,
+            148,
+            0x91ad_a98c_1d27_f725,
         );
     }
 

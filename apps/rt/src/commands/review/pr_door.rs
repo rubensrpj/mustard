@@ -98,7 +98,7 @@ use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
 use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at, superproject_of};
-use crate::commands::review::pr_publish::{spec_pr, submodules_landed, SubmodulePrs};
+use crate::commands::review::pr_publish::{spec_pr, submodules_landed, SpecPr, SubmodulePrs};
 use crate::shared::branch_state::PrStatus;
 use crate::shared::pr_provider::{provider_for, provider_in, PrChecks};
 use crate::shared::work_kind::BaseFlow;
@@ -607,6 +607,43 @@ fn is_base_promotion(head: &str, flow: &BaseFlow) -> bool {
     flow.is_declared_base(head)
 }
 
+/// As verificações do provedor para o pull request `number`, a leitura que o
+/// portão do merge já fazia, agora com nome próprio.
+///
+/// É por aqui que a porta de conserto
+/// ([`crate::commands::flow::reopen`]) pergunta o mesmo que o merge pergunta:
+/// uma leitura só do vermelho do servidor, para as duas portas nunca
+/// discordarem sobre o que o provedor respondeu.
+pub(crate) fn provider_checks(root: &Path, number: u64) -> Result<PrChecks, String> {
+    provider_for(root).checks(number)
+}
+
+/// O vermelho que o servidor relatou no pull request da spec `spec`: o número
+/// do pull request quando as verificações do provedor voltaram vermelhas.
+///
+/// `Err` traz a palavra do provedor — `passed`, `running`, `absent` ou o
+/// motivo de não dar para perguntar. Nenhuma delas é vermelho, e a porta de
+/// conserto não abre sem ele: sem evidência de reprovação não há o que
+/// consertar, e a spec fechada continua fechada.
+///
+/// O pull request é o que a spec gravou ao abri-lo ([`spec_pr`]), nunca uma
+/// segunda leitura: a porta de conserto e a do merge apontam o mesmo pull
+/// request.
+pub(crate) fn red_reported(
+    root: &Path,
+    spec: &str,
+    checks: &dyn Fn(&Path, u64) -> Result<PrChecks, String>,
+) -> Result<u64, String> {
+    let Some(SpecPr::Number(number)) = spec_pr(root, spec) else {
+        return Err("pr-unknown".to_string());
+    };
+    match checks(root, number) {
+        Ok(PrChecks::Failed) => Ok(number),
+        Ok(other) => Err(other.word().to_string()),
+        Err(reason) => Err(reason),
+    }
+}
+
 /// The review verdict of `spec`, read from its `spec.ndjson`: `approved` when
 /// the last verdict of every wave approved, `rejected` when some wave's
 /// rejected. `None` = the spec has no verdict at all, or no event file.
@@ -780,11 +817,16 @@ fn merge_or_ask(
                      to merge without waiting"
                         .to_string()
                 }
-                "provider-checks-failed" => {
-                    "fix what they reported and push again, or re-run with `--confirm` to merge \
-                     anyway"
-                        .to_string()
-                }
+                // The red the server reported now has a door of its own, and
+                // it is the one named here: editing files on the branch by
+                // hand is what this advice used to leave the operator doing,
+                // and the repair then existed nowhere in the spec.
+                "provider-checks-failed" => format!(
+                    "run `mustard-rt run reopen --spec {unit} --reason <what the server \
+                     reported>` — the repair door opens the fix wave inside the closed spec, \
+                     commits on the same branch and pushes, without reopening the work; or \
+                     re-run with `--confirm` to merge anyway"
+                ),
                 "provider-checks-unreadable" => {
                     "the provider did not answer — check that its tooling is installed and \
                      authenticated, then run `pr merge` again; `--confirm` merges without it"

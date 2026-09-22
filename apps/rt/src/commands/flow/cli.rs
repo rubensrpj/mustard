@@ -186,6 +186,12 @@ pub enum FlowCmd {
     /// novo, e os pontos novos convivem com o que já foi decidido. Nada do
     /// que está gravado é apagado. Uma spec fechada, com o pull request
     /// aberto, entregue ou descartada é recusada, dizendo a fase em que está.
+    ///
+    /// A exceção é a obra fechada cujo pull request o servidor reprovou:
+    /// aí este passo é a porta de conserto. Ele abre a onda de conserto
+    /// dentro da mesma spec, com o vermelho relatado, e, depois que a rodada
+    /// a entrega e comita na mesma branch, empurra a branch para o servidor
+    /// rodar de novo — sem reabrir a obra e sem spec nova.
     #[command(display_order = 11)]
     Reopen {
         /// Por que a spec volta ao levantamento, numa frase. Obrigatório: é

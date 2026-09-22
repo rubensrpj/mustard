@@ -396,8 +396,14 @@ pub(super) fn run_round_with_mine(
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
 
     // Só uma spec aprovada roda. Antes disso a rodada não tem o que despachar.
+    //
+    // A exceção é a onda de conserto que a porta do pull request reprovado
+    // abriu numa spec já fechada
+    // ([`crate::commands::flow::reopen::open_fix_wave_of`]): é a rodada de
+    // sempre que a despacha e comita o conserto na mesma branch, e sem esta
+    // fresta a porta abriria uma onda que nunca sairia.
     let phase = State::from_log(&log).phase.unwrap_or_default().to_string();
-    if !can_run(&phase) {
+    if !can_run(&phase) && crate::commands::flow::reopen::open_fix_wave_of(&log).is_none() {
         return Err(RoundRefusal::NotApproved { phase });
     }
 
@@ -654,9 +660,17 @@ pub(super) fn run_round_with_mine(
         translate("round.missing", lang).replace("{wave}", &wave.to_string())
     } else {
         let state = State::from_log(&log);
-        let close = crate::commands::flow::resume::step_command(DONE_STEP, &spec, &state);
-        let text = translate("round.close", lang).replace("{command}", close.as_deref().unwrap_or_default());
-        command = close;
+        // A obra já fechada não fecha de novo: a rodada acabou de receber o
+        // conserto do pull request reprovado, e o passo é empurrá-lo pela
+        // mesma porta que o abriu.
+        let (step, key) = if state.phase == Some("pr_open") {
+            let reason = translate("round.fix_reason", lang);
+            (Some(format!("mustard-rt run reopen --spec {spec} --reason \"{reason}\"")), "round.fix_push")
+        } else {
+            (crate::commands::flow::resume::step_command(DONE_STEP, &spec, &state), "round.close")
+        };
+        let text = translate(key, lang).replace("{command}", step.as_deref().unwrap_or_default());
+        command = step;
         text
     };
     // A pergunta da onda parada vem antes do resto, que segue sem ela; o
@@ -784,6 +798,60 @@ mod tests {
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let refused = round(root, "x", None);
         assert_eq!(refused["reason"], json!("round-not-approved"), "{refused}");
+    }
+
+    /// A rodada é quem despacha a onda de conserto que a porta do pull
+    /// request reprovado abre numa obra já fechada: é por ela que o conserto
+    /// chega ao commit, na mesma branch, com a spec parada no pull request
+    /// aberto. Sem onda de conserto aberta, a spec fechada continua sem
+    /// rodada — a fresta é só essa.
+    #[test]
+    fn o_pull_request_reprovado_tem_porta_de_conserto_despachada_pela_rodada() {
+        use crate::commands::flow::reopen::{reopen_with, ReopenOpts};
+        use crate::commands::spec_events::write::{record, record_phase, record_pr_open};
+        use mustard_core::domain::spec_state::PhaseWriter;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let delivered = json!({"author": "binary", "wave": 1, "text": "A onda 1 entregou.",
+            "files": ["src/a.rs"]});
+        record(root, "x", "delivered", delivered.as_object().cloned().expect("an object"), PhaseWriter::Binary)
+            .expect("the delivery of wave 1");
+        assert!(record_phase(root, "x", "closed", None), "the work closes");
+        assert!(record_pr_open(root, "x", 9, None), "the pull request opens");
+
+        // Sem onda de conserto, a obra fechada não roda rodada nenhuma.
+        let refused = round(root, "x", None);
+        assert_eq!(refused["reason"], json!("round-not-approved"), "{refused}");
+
+        // O vermelho do servidor abre a onda de conserto pela porta.
+        let opened = reopen_with(
+            &ReopenOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                reason: "o teste do servidor caiu".into(),
+            },
+            None,
+            &|_, number| {
+                assert_eq!(number, 9);
+                Ok(crate::shared::pr_provider::PrChecks::Failed)
+            },
+            &|_, branch| panic!("nada empurra a branch {branch} antes do conserto"),
+        );
+        assert_eq!(opened["action"], json!("fix"), "{opened}");
+        let wave = opened["wave"].as_u64().unwrap_or_else(|| panic!("{opened}"));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
+        assert_eq!(dispatched.len(), 1, "só a onda de conserto sai: {out}");
+        assert_eq!(dispatched[0]["wave"], json!(wave), "{out}");
+        assert_eq!(
+            State::from_log(&store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()).phase,
+            Some("pr_open"),
+            "a obra não foi reaberta"
+        );
     }
 
     /// A primeira rodada leva a spec para a execução, grava o envio de cada
