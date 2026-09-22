@@ -759,7 +759,8 @@ mod tests {
     /// Um critério da spec, que toda onda precisa apontar.
     fn criterion(root: &Path, spec: &str, said: u64) -> u64 {
         id_of(&write(root, Some(spec), "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "origin": said})))
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "form": "ubiquitous",
+                "origin": said})))
     }
 
     /// Uma onda com uma tarefa, num plano que passa em tudo.

@@ -234,7 +234,8 @@ mod tests {
             root,
             spec,
             "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "origin": said}),
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous",
+                "origin": said}),
         ));
         for (n, files, depends) in plan {
             let mut wave = json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],

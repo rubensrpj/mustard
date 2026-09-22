@@ -163,7 +163,8 @@ fn plan(project: &Project) -> (u64, u64) {
     let said = user_says(project, "O plano é uma onda só, que soma dois números.");
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "origin": said}),
+        &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
+            "origin": said}),
     )["id"]
         .as_u64()
         .expect("the criterion id");
@@ -276,7 +277,8 @@ fn gravacao_no_plano_depois_da_aprovacao_prepara_a_copia_da_pagina() {
     let said2 = user_says(&project, "Incluir também a subtração.");
     let criterion2 = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a subtração aparece", "proof": "git --version", "origin": said2}),
+        &json!({"when": "o programa roda", "then": "a subtração aparece", "proof": "git --version", "form": "ubiquitous",
+            "origin": said2}),
     );
     let wave2 = project.write(
         "wave",

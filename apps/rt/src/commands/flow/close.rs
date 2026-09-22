@@ -790,7 +790,7 @@ mod tests {
             .map(|proof| {
                 id_of(&write(root, spec, "criterion",
                     json!({"when": format!("a onda roda e prova com {proof}"), "then": "a suíte passa",
-                           "proof": proof, "origin": said})))
+                           "proof": proof, "form": "ubiquitous", "origin": said})))
             })
             .collect();
         // Nenhuma onda cobre os critérios de `proofs`: são os que este teste
@@ -802,7 +802,8 @@ mod tests {
         // para satisfazer o campo obrigatório sem mexer nos índices que os
         // testes já leem de `proofs`.
         let gate = id_of(&write(root, spec, "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "origin": said})));
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous",
+                "origin": said})));
         for n in 1..=waves {
             write(root, spec, "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [gate],
                 "done_when": "A suíte passa.", "origin": said}));
@@ -908,7 +909,8 @@ mod tests {
             root,
             spec,
             "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "origin": said}),
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous",
+                "origin": said}),
         ));
         write(
             root,
@@ -1260,7 +1262,7 @@ mod tests {
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "o objetivo"})));
         let crit = id_of(&write(root, "x", "criterion", json!({"when": "a onda roda e prova com git --version",
-            "then": "a suíte passa", "proof": "git --version", "origin": said})));
+            "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous", "origin": said})));
         // O código de cada decisão sai da ordem em que ela nasce na spec: a
         // primeira decisão gravada ganha o código de número um, a segunda o
         // de número dois.
@@ -1342,7 +1344,7 @@ mod tests {
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "o objetivo"})));
         let crit = id_of(&write(root, "x", "criterion", json!({"when": "a onda roda e prova com git --version",
-            "then": "a suíte passa", "proof": "git --version", "origin": said})));
+            "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous", "origin": said})));
         let rule = id_of(&write(root, "x", "rule", json!({"text": "A trava confere o programa.",
             "keys": ["trava"], "example": "rm -rf pasta é barrado.", "origin": said})));
         let dec = id_of(&write(root, "x", "decision",
@@ -1459,7 +1461,7 @@ mod tests {
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
         let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains(translate("prompt.final.fixed", Locale::PtBr)), "{prompt}");
-        assert!(prompt.contains("código repetido entre ondas") && prompt.contains("prova que uma apagou da outra"), "{prompt}");
+        assert!(prompt.contains("código repetido entre ondas") && prompt.contains("verificação que uma apagou da outra"), "{prompt}");
         for n in [1, 2] {
             assert!(prompt.contains(&format!("MSTD-WAVE-000{n}")), "a onda {n} está no pedido: {prompt}");
         }
@@ -1910,7 +1912,8 @@ mod tests {
         ready_to_close(root, "x", &["git --version"]);
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "mais uma"})));
         let crit = id_of(&write(root, "x", "criterion",
-            json!({"when": "a onda roda", "then": "passa", "proof": "git --version", "origin": said})));
+            json!({"when": "a onda roda", "then": "passa", "proof": "git --version", "form": "ubiquitous",
+                "origin": said})));
         write(root, "x", "wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit],
             "done_when": "passa", "origin": said}));
         let refused = close(root, "x");

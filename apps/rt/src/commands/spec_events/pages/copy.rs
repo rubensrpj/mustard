@@ -994,7 +994,8 @@ mod tests {
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let said = id_of(&write(root, "message", json!({"author": "user", "text": "o objetivo"})));
         let crit = id_of(&write(root, "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "origin": said})));
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "form": "ubiquitous",
+                "origin": said})));
         (dir, said, crit)
     }
 
@@ -1795,8 +1796,8 @@ mod tests {
         let mut criteria = vec![crit1];
         let mut wave_id = id_of(&wave);
         for proof in ["p2", "p3", "p4"] {
-            let crit =
-                id_of(&write(root, "criterion", json!({"when": "a", "then": "b", "proof": proof, "origin": said})));
+            let crit = id_of(&write(root, "criterion",
+                json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous", "origin": said})));
             criteria.push(crit);
             let revised = write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": criteria.clone(),
                 "done_when": "passa", "origin": said, "replaces": wave_id}));

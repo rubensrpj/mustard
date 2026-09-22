@@ -226,7 +226,7 @@ fn a_cesta_de_tarefas_vira_sempre_os_mesmos_lotes() {
     let criterion = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "origin": said}),
+            "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
 

@@ -316,7 +316,7 @@ mod tests {
     const INTERNAL: &[&str] = &["injection", "hook", "call"];
 
     /// O pedido da onda 3, como o agente o recebe: só os códigos.
-    const WAVE_3_PROMPT: &str = "# demo — onda 3\n\n## Especificação\n\n- `specification`: MSTD-CTX-0001, MSTD-CONC-0001\n\n## Combinado\n\n- `agreed`: MSTD-RULE-0001, MSTD-DEC-0001\n\n## Critérios\n\n- `criteria`: MSTD-CRIT-0001\n";
+    const WAVE_3_PROMPT: &str = "# demo — onda 3\n\n## Especificação\n\n- `specification`: MSTD-CTX-0001, MSTD-CONC-0001\n\n## Requisitos acordados\n\n- `agreed`: MSTD-RULE-0001, MSTD-DEC-0001\n\n## Critérios\n\n- `criteria`: MSTD-CRIT-0001\n";
 
     /// A spec de exemplo mais o que a página nova precisa mostrar: uma regra
     /// revista com duas linhas de lista, uma onda enviada no formato de hoje
@@ -354,7 +354,7 @@ mod tests {
     fn wave_prompts() -> BTreeMap<u64, String> {
         BTreeMap::from([
             (1, "# demo — onda 1\n\n## A onda e as tarefas dela\n\n- `waves`: MSTD-WAVE-0001\n".to_string()),
-            (4, "# demo — onda 4\n\n## Combinado\n\n- `agreed`: MSTD-RULE-0001\n".to_string()),
+            (4, "# demo — onda 4\n\n## Requisitos acordados\n\n- `agreed`: MSTD-RULE-0001\n".to_string()),
         ])
     }
 
@@ -646,7 +646,7 @@ mod tests {
                 json!("MSTD-VERD-0002"),
                 json!("As ondas se encaixam sem prova perdida."),
                 json!("aprovada"),
-                vec![json!(["Onda", "2"]), json!(["Resultado", "aprovada"]), json!(["Revisão final", "sim"])],
+                vec![json!(["Onda", "2"]), json!(["Resultado", "aprovada"]), json!(["Aceitação", "sim"])],
             ),
             "{final_item}"
         );

@@ -127,7 +127,7 @@
   },
   {
     "id": "agreed",
-    "heading": "Combinado",
+    "heading": "Requisitos acordados",
     "groups": [
       {
         "id": "agreed-work_type",
@@ -369,7 +369,7 @@
           {
             "code": "MSTD-CRIT-0001",
             "anchored": true,
-            "title": "Quando: O pedido montado de uma onda passa de 500 linhas. · Então: O binário recusa o despacho, com a mensagem do que passou. · Prova: cargo test -p mustard-rt --test wave_request_limit",
+            "title": "Quando: O pedido montado de uma onda passa de 500 linhas. · Então: O binário recusa o despacho, com a mensagem do que passou. · Verificação: cargo test -p mustard-rt --test wave_request_limit",
             "who": null,
             "mark": null,
             "status": null,
@@ -599,7 +599,7 @@
               ],
               [
                 "Recebe",
-                "Especificação (2), Combinado (2), Critérios (1)"
+                "Especificação (2), Requisitos acordados (2), Critérios (1)"
               ]
             ]
           },
@@ -687,7 +687,7 @@
               ],
               [
                 "Recebe",
-                "Combinado (1)"
+                "Requisitos acordados (1)"
               ]
             ]
           }
@@ -790,7 +790,7 @@
                 "aprovada"
               ],
               [
-                "Revisão final",
+                "Aceitação",
                 "sim"
               ]
             ]

@@ -64,11 +64,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The tasks depend on each other in a circle: {cycle}. Nothing was written."
         }
         ("spec_events.agreed_items_missing", Locale::PtBr) => {
-            "O veredito final precisa responder por todo o combinado vigente: faltou {missing}. \
+            "O veredito final precisa responder por todos os requisitos acordados vigentes: faltou {missing}. \
              Nada foi gravado."
         }
         ("spec_events.agreed_items_missing", Locale::EnUs) => {
-            "The final verdict must answer for the whole vigent agreed set: {missing} is missing. \
+            "The final verdict must answer for all the vigent agreed requirements: {missing} is missing. \
+             Nothing was written."
+        }
+        ("spec_events.criterion_form_missing", Locale::PtBr) => {
+            "O critério precisa declarar a forma dele, uma das cinco do padrão: a que vale sempre, a \
+             disparada por um acontecimento, a que só vale enquanto um estado durar, a que só vale se \
+             um recurso existir, ou a que trata um acontecimento indesejado. Nada foi gravado."
+        }
+        ("spec_events.criterion_form_missing", Locale::EnUs) => {
+            "The criterion must declare its form, one of the pattern's five: the kind that always \
+             holds, the kind triggered by an event, the kind that only holds while a state lasts, the \
+             kind that only holds if a resource exists, or the kind that handles an unwanted event. \
              Nothing was written."
         }
         ("spec_events.invalid_value", Locale::PtBr) => {
@@ -565,8 +576,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            81,
-            0x9b89_2823_fc39_393b,
+            82,
+            0x77a9_a708_4de2_a7e8,
         );
     }
 
@@ -585,6 +596,7 @@ mod tests {
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
+            ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),

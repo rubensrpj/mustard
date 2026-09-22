@@ -205,6 +205,10 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
     let need = |f: &str| if has(f) { Ok(()) } else { Err(missing(event_type, f)) };
     let word = |f: &str| event.get(f).and_then(Value::as_str).unwrap_or_default();
     match event_type {
+        // A forma é obrigatória na gravação nova; o critério já gravado sem
+        // ela continua válido, porque esta conferência só corre na escrita,
+        // nunca na leitura do que já existe.
+        "criterion" if !has("form") => Err(Refusal::CriterionFormMissing),
         "state" => match word("phase") {
             "approved" => need("witness"),
             "discarded" => need("reason"),
@@ -429,7 +433,7 @@ mod tests {
     /// `spec.md` entra sem `origin`, e o mesmo critério pelo assistente, não.
     #[test]
     fn what_the_binary_writes_needs_no_origin() {
-        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test"});
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous"});
         let mut by_binary = criterion.clone();
         by_binary["author"] = json!("binary");
         assert!(checked("criterion", by_binary).is_ok());

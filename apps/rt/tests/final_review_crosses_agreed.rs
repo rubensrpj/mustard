@@ -176,7 +176,8 @@ fn plan(project: &Project) {
     let said = user_says(project, "O plano é uma onda só, que soma dois números.");
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "origin": said}),
+        &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
+            "origin": said}),
     );
     project.write(
         "wave",

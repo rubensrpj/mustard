@@ -505,8 +505,18 @@ mod tests {
         add("error", "error", "08:50", json!({"text": "Título longo.", "message": "O título passa de 60.", "keys": ["título"], "origin": msg}));
         add("point", "point", "08:51", json!({"block": "limits", "gap": "tamanho do pedido", "from": "gap", "status": "open", "facts": [{"text": "Não há teto.", "source": "src/render.rs:2"}], "origin": msg}));
         let old_limit = add("limit_old", "limit", "08:52", json!({"text": "Tamanho do pedido.", "value": "400 linhas", "keys": ["pedido"], "origin": msg}));
-        let c1 = add("criterion_1", "criterion", "08:53", json!({"when": "a", "then": "b", "proof": "cargo test a", "origin": msg}));
-        let c2 = add("criterion_2", "criterion", "08:54", json!({"when": "c", "then": "d", "proof": "cargo test c", "origin": msg}));
+        let c1 = add(
+            "criterion_1",
+            "criterion",
+            "08:53",
+            json!({"when": "a", "then": "b", "proof": "cargo test a", "form": "ubiquitous", "origin": msg}),
+        );
+        let c2 = add(
+            "criterion_2",
+            "criterion",
+            "08:54",
+            json!({"when": "c", "then": "d", "proof": "cargo test c", "form": "ubiquitous", "origin": msg}),
+        );
         add("wave_1", "wave", "08:55", json!({"n": 1, "text": "Preparo.", "criteria": [c1], "done_when": "A suíte passa.", "origin": msg}));
         let task1 = add("task_1", "task", "08:56", json!({"wave": 1, "text": "Juntar o texto.", "files": [{"path": "src/render.rs"}], "origin": msg}));
         add("step", "step", "08:56", json!({"wave": 1, "item": task1, "text": "A tarefa 1 ficou pronta."}));

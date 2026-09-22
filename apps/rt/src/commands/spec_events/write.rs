@@ -1203,7 +1203,7 @@ mod tests {
         let decision = r#"{"author":"binary","text":"t","keys":["k"],"why":"w"}"#;
         assert_eq!(write(root, "decision", decision)["reason"], json!("binary-author"));
 
-        let criterion = format!(r#"{{"when":"w","then":"t","proof":"cd .","origin":{msg}}}"#);
+        let criterion = format!(r#"{{"when":"w","then":"t","proof":"cd .","form":"ubiquitous","origin":{msg}}}"#);
         let accepted = write(root, "criterion", &criterion);
         assert_eq!(accepted["ok"], json!(true), "a spec rendered from its events takes a criterion: {accepted}");
         let md = root.join(".claude").join("spec").join("teste").join("spec.md");
@@ -1212,7 +1212,7 @@ mod tests {
         let events = lines(root);
 
         let removal = format!(r#"{{"targets":[{}],"reason":"engano"}}"#, accepted["id"]);
-        let revision = format!(r#"{{"when":"w","then":"t","proof":"cd ..","origin":{msg},"replaces":{}}}"#, accepted["id"]);
+        let revision = format!(r#"{{"when":"w","then":"t","proof":"cd ..","form":"ubiquitous","origin":{msg},"replaces":{}}}"#, accepted["id"]);
         for (event_type, payload) in [
             ("criterion", criterion.as_str()),
             ("remove", removal.as_str()),
@@ -1596,7 +1596,8 @@ mod tests {
         let root = dir.path();
         born(root);
         let said = write(root, "message", r#"{"author":"user","text":"decidi"}"#)["id"].as_u64().unwrap();
-        let crit = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": said}).to_string());
+        let crit = write(root, "criterion",
+            &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}).to_string());
         let wave = json!({"n": 1, "text": "Onda.", "criteria": [crit["id"]], "done_when": "passa", "origin": said});
         assert_eq!(write(root, "wave", &wave.to_string())["ok"], json!(true));
         let decision = |extra: Value| {
@@ -1632,7 +1633,7 @@ mod tests {
         born(root);
         let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
         let crit1 = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p1", "origin": said}).to_string())["id"].as_u64().unwrap();
+            &json!({"when": "a", "then": "b", "proof": "p1", "form": "ubiquitous", "origin": said}).to_string())["id"].as_u64().unwrap();
         let wave = write(root, "wave",
             &json!({"n": 1, "text": "Onda 1.", "criteria": [crit1], "done_when": "passa", "origin": said}).to_string());
         assert_eq!(wave["ok"], json!(true), "{wave}");
@@ -1649,7 +1650,8 @@ mod tests {
 
         // Quatro provas de critério passam, do mesmo jeito.
         let crit = |proof: &str| {
-            write(root, "criterion", &json!({"when": "a", "then": "b", "proof": proof, "origin": said}).to_string())["id"]
+            write(root, "criterion",
+                &json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous", "origin": said}).to_string())["id"]
                 .as_u64()
                 .unwrap()
         };
@@ -1799,7 +1801,7 @@ mod tests {
         // O mesmo campo, agora declarado pelo tipo da onda, passa.
         let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
         let crit = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p", "origin": said}).to_string())["id"]
+            &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}).to_string())["id"]
             .as_u64()
             .unwrap();
         let wave = write(root, "wave",
@@ -2101,7 +2103,7 @@ mod tests {
     fn planned_with_waves(root: &std::path::Path, waves: u64) -> (u64, u64) {
         born(root);
         let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
-        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "origin": msg});
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
         let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
         for n in 1..=waves {
             assert_eq!(write_wave(root, n, msg, criterion, None)["ok"], json!(true));

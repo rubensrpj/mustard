@@ -101,13 +101,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O dono de cada item combinado: o item novo depois da aprovação nasce
         // com dono.
         ("plan.owner_missing", Locale::PtBr) => {
-            "O item novo do tipo {type} não tem dono, e a spec já foi aprovada: todo item combinado tem \
+            "O item novo do tipo {type} não tem dono, e a spec já foi aprovada: todo requisito acordado tem \
              dono. Diga em `waves` as ondas cujas tarefas o cobrem ou vão cobrir, como `\"waves\":[3]`, \
              ou, quando ele vale para todas as ondas, grave-o com \
              `\"applies_to\":{\"files\":[\"**\"]}`. Nada foi gravado."
         }
         ("plan.owner_missing", Locale::EnUs) => {
-            "The new {type} item has no owner, and the spec is already approved: every agreed item has \
+            "The new {type} item has no owner, and the spec is already approved: every agreed requirement has \
              an owner. Name in `waves` the waves whose tasks cover it or will cover it, as in \
              `\"waves\":[3]`, or, when it holds for every wave, record it with \
              `\"applies_to\":{\"files\":[\"**\"]}`. Nothing was written."
@@ -281,16 +281,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              take it into a wave before closing."
         }
         ("close.criterion_failed", Locale::PtBr) => {
-            "A prova do critério {code} não passou: {output}"
+            "A verificação do critério {code} não passou: {output}"
         }
-        ("close.criterion_failed", Locale::EnUs) => "The proof of criterion {code} did not pass: {output}",
+        ("close.criterion_failed", Locale::EnUs) => "The verification of criterion {code} did not pass: {output}",
         ("close.criterion_ran_no_test", Locale::PtBr) => {
-            "A prova do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
-             {count} testes. Grave a versão nova do critério com a prova certa e feche de novo."
+            "A verificação do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
+             {count} testes. Grave a versão nova do critério com a verificação certa e feche de novo."
         }
         ("close.criterion_ran_no_test", Locale::EnUs) => {
-            "The proof of criterion {code} came out green without running any test: `{command}` says \
-             it ran {count} tests. Record the criterion's new version with the right proof and close again."
+            "The verification of criterion {code} came out green without running any test: `{command}` says \
+             it ran {count} tests. Record the criterion's new version with the right verification and close again."
         }
         ("close.lint_failed", Locale::PtBr) => {
             "O lint do projeto (`{command}`) não passou, e a spec não fechou: {output}"
@@ -333,10 +333,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // nenhum critério cita na prova dele — o fechamento avisa, com o
         // nome do teste e o arquivo, em vez de deixar o teste sem dono.
         ("close.unowned_test", Locale::PtBr) => {
-            "O teste {name}, em {file}, não tem critério que o cite na prova dele: fica sem cobertura."
+            "O teste {name}, em {file}, não tem critério que o cite na verificação dele: fica sem cobertura."
         }
         ("close.unowned_test", Locale::EnUs) => {
-            "The test {name}, in {file}, has no criterion citing it in its proof: it stays without coverage."
+            "The test {name}, in {file}, has no criterion citing it in its verification: it stays without coverage."
         }
 
         // A rodada de ondas (`commands/flow/round.rs`).
@@ -453,11 +453,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The main repository did not build with `{command}`, and the round committed nothing: {output}"
         }
         ("round.criterion_proof_failed", Locale::PtBr) => {
-            "A prova do critério {code} não executou ou não passou, e a rodada não comitou nada: \
+            "A verificação do critério {code} não executou ou não passou, e a rodada não comitou nada: \
              `{command}` — {output}"
         }
         ("round.criterion_proof_failed", Locale::EnUs) => {
-            "Criterion {code}'s proof did not run or did not pass, and the round committed nothing: \
+            "Criterion {code}'s verification did not run or did not pass, and the round committed nothing: \
              `{command}` — {output}"
         }
         ("round.binary_not_reinstalled", Locale::PtBr) => {
@@ -477,12 +477,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              nothing to take. Ask the agent for the right path. Nothing was recorded."
         }
         ("round.proof_ran_no_test", Locale::PtBr) => {
-            "A prova nova do critério {code} saiu verde sem rodar teste nenhum: o nome do teste não \
-             casa. Peça a prova certa antes de fechar."
+            "A verificação nova do critério {code} saiu verde sem rodar teste nenhum: o nome do teste não \
+             casa. Peça a verificação certa antes de fechar."
         }
         ("round.proof_ran_no_test", Locale::EnUs) => {
-            "The new proof of criterion {code} came out green without running any test: the test name \
-             does not match. Ask for the right proof before closing."
+            "The new verification of criterion {code} came out green without running any test: the test name \
+             does not match. Ask for the right verification before closing."
         }
         ("round.commit.scope.one", Locale::PtBr) => "onda-{waves}",
         ("round.commit.scope.one", Locale::EnUs) => "wave-{waves}",
@@ -1047,7 +1047,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             138,
-            0x7942_9e90_fbc9_bd27,
+            0x0ec0_3bab_743e_c437,
         );
     }
 

@@ -127,6 +127,10 @@ pub enum Refusal {
     /// item combinado vigente de fora dela. Nada é gravado, e a mensagem
     /// nomeia pelo código cada item que faltou.
     AgreedItemsMissing { missing: Vec<String> },
+    /// Um critério gravado sem declarar a forma: nenhuma das cinco do padrão
+    /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
+    /// pelo nome, nos dois idiomas.
+    CriterionFormMissing,
     Io { detail: String },
 }
 
@@ -207,6 +211,7 @@ impl Refusal {
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
+            Self::CriterionFormMissing => "criterion-form-missing",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -404,6 +409,7 @@ impl Refusal {
                 "spec_events.agreed_items_missing",
                 &[("{missing}", missing.join(", "))],
             ),
+            Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }

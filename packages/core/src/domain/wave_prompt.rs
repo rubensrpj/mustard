@@ -2340,13 +2340,13 @@ mod tests {
         for (lang, wave, review) in [
             (
                 Locale::PtBr,
-                ["nasce vermelho", "o comando ou o evento do gancho", "não só na função auxiliar", "prova do vermelho (o que foi cortado"],
-                ["rode a prova gravada", "prova do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
+                ["nasce vermelho", "o comando ou o evento do gancho", "não só na função auxiliar", "verificação do vermelho (o que foi cortado"],
+                ["rode a verificação gravada", "verificação do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
             ),
             (
                 Locale::EnUs,
-                ["is born red", "the command or the hook event", "not only in the helper function", "red proof (what was cut"],
-                ["run its recorded proof", "red proof the delivery reports", "where the wave did not cut", "without repeating its own"],
+                ["is born red", "the command or the hook event", "not only in the helper function", "red verification (what was cut"],
+                ["run its recorded verification", "red verification the delivery reports", "where the wave did not cut", "without repeating its own"],
             ),
         ] {
             let agents = crate::platform::seeds::agent_texts(lang);

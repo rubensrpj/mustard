@@ -183,7 +183,7 @@ mod tests {
             root,
             spec,
             "criterion",
-            serde_json::json!({"when": "a", "then": "b", "proof": "p", "origin": said}),
+            serde_json::json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}),
         );
         crate::shared::spec_state::seed_event(
             root,

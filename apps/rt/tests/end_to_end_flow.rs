@@ -349,7 +349,7 @@ fn plan_files(project: &Project, files: &[&str]) {
     let criterion = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "origin": said}),
+            "form": "ubiquitous", "origin": said}),
     );
     project.write(
         "wave",
@@ -490,6 +490,86 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .collect();
     names.sort();
     assert_eq!(names, ["copy", "spec.ndjson"], "the spec folder ends with the events and the copy, and no page");
+}
+
+/// Um critério gravado sem declarar a forma dele é recusado, e a recusa lista
+/// as cinco formas do padrão pelo nome, em vez de um nome de campo cru.
+#[test]
+fn o_criterio_sem_forma_declarada_e_recusado() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    let said = user_says(&project, "O plano é uma onda só, que muda a saudação.");
+
+    let refused = project.answer(&[
+        "write",
+        "criterion",
+        "--spec",
+        SPEC,
+        "--json",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "origin": said})
+            .to_string(),
+    ]);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(refused["reason"], json!("criterion-form-missing"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    for forma in [
+        "vale sempre",
+        "disparada por um acontecimento",
+        "estado durar",
+        "recurso existir",
+        "acontecimento indesejado",
+    ] {
+        assert!(hint.contains(forma), "a recusa lista a forma {forma:?} pelo nome: {hint}");
+    }
+
+    // Com a forma declarada, a mesma gravação passa.
+    let accepted = project.write(
+        "criterion",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+}
+
+/// Os três termos internos usam o nome de mercado, nos dois idiomas: o que
+/// era "combinado" vira "requisitos acordados", o que era "prova" vira
+/// "verificação", e o que era "revisão final" vira "aceitação" — sem sobra do
+/// nome antigo no texto impresso, inclusive no pedido de verdade que o
+/// binário monta para o agente da onda.
+#[test]
+fn os_tres_termos_usam_o_nome_de_mercado() {
+    let esperado = [
+        (Locale::PtBr, "page.block.agreed", "Requisitos acordados"),
+        (Locale::EnUs, "page.block.agreed", "Agreed requirements"),
+        (Locale::PtBr, "page.field.proof", "Verificação"),
+        (Locale::EnUs, "page.field.proof", "Verification"),
+        (Locale::PtBr, "page.field.final", "Aceitação"),
+        (Locale::EnUs, "page.field.final", "Acceptance"),
+        (Locale::PtBr, "prompt.part.agreed", "Requisitos acordados"),
+        (Locale::EnUs, "prompt.part.agreed", "Agreed requirements"),
+    ];
+    for (locale, key, texto) in esperado {
+        assert_eq!(translate(key, locale), texto, "{key} ({locale:?}) usa o nome de mercado");
+    }
+
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    plan(&project);
+    approve(&project);
+    first_round(&project);
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let text = sent.str_field("text").unwrap_or_default();
+    assert!(!text.contains("Combinado"), "o pedido enviado não guarda o nome antigo: {text}");
+    if text.contains("## ") {
+        assert!(
+            !text.contains("## Prova") && !text.contains("## Revisão final"),
+            "nenhum cabeçalho do pedido guarda um nome antigo: {text}"
+        );
+    }
 }
 
 /// A spec do projeto com submódulo, da abertura ao pull request: a onda muda

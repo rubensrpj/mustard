@@ -208,7 +208,7 @@ fn a_round_forms_a_lot_from_the_basket_and_records_it_as_the_binarys_wave() {
     let criterion = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "origin": said}),
+            "form": "ubiquitous", "origin": said}),
     );
     project.write(
         "task",
@@ -239,7 +239,7 @@ fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
     let criterion = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "origin": said}),
+            "form": "ubiquitous", "origin": said}),
     );
     // O `done_when` da onda abre o pedido de verdade, então é ele que
     // precisa ser grande: um texto bem acima do teto de 25 mil tokens (perto

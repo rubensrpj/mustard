@@ -160,7 +160,7 @@ fn the_project_receives_exactly_four_agents_in_its_text_language() {
                     "\"só depois de\" ganha também o teste do caso em que o \"antes\" falha",
                 ]),
                 ("review", [
-                    "apagou ou moveu algo no git? Confira a prova de que nada se perdeu",
+                    "apagou ou moveu algo no git? Confira que nada se perdeu",
                     "\"só depois de\" tem teste do caso em que o \"antes\" falha",
                 ]),
             ]
@@ -171,7 +171,7 @@ fn the_project_receives_exactly_four_agents_in_its_text_language() {
                     "\"only after\" also gets a test of the case where the \"before\" fails",
                 ]),
                 ("review", [
-                    "delete or move anything in git? Check the proof that nothing was lost",
+                    "delete or move anything in git? Check that nothing was lost",
                     "\"only after\" has a test of the case where the \"before\" fails",
                 ]),
             ]
@@ -421,7 +421,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     let file = root.join(".claude/spec/copia/spec.ndjson");
     let put = |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
     let said = put("message", json!({"author": "user", "text": "o objetivo"}));
-    let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+    let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "form": "ubiquitous", "origin": said}));
     // Cada onda declara o arquivo dela: a trava por arquivo tira da rodada
     // as ondas que dividem um mesmo arquivo, e este teste prova as duas
     // saindo juntas, sem cruzar arquivo nenhuma com a outra.
@@ -475,7 +475,7 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
         let put =
             |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
         let said = put("message", json!({"author": "user", "text": "o objetivo"}));
-        let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+        let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "form": "ubiquitous", "origin": said}));
         put("wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "passa", "origin": said}));
         put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
         put("state", json!({"phase": "running", "branch": "feature/titulo"}));
@@ -515,7 +515,7 @@ fn o_pedido_manda_devolver_so_as_duas_linhas() {
         let put =
             |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
         let said = put("message", json!({"author": "user", "text": "o objetivo"}));
-        let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+        let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "form": "ubiquitous", "origin": said}));
         put("wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "passa", "origin": said}));
         put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
         put("state", json!({"phase": "running", "branch": "feature/duaslinhas"}));

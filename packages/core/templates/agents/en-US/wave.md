@@ -24,7 +24,7 @@ You implement the tasks of one wave of a spec, and only those. The request lists
 - Read by excerpt: find the function with search and read only it; the whole file only when you are going to change a large part of it. Do not reread the file after editing: the edit already shows the changed excerpt.
 - During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, with the command's time limit and through `rtk`, which shows only the failures.
 - Never send a build or test to the background, and never wait on another process in a loop.
-- Do not commit and do not use `git add`: the commit belongs to the round. Never commit, push, switch branches or stash, and never edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost; without proof, stop and say why. The pending ledger in `.claude/pending/` is not yours to close either: say in the delivery what the wave settles, and whoever dispatched you closes it.
+- Do not commit and do not use `git add`: the commit belongs to the round. Never commit, push, switch branches or stash, and never edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. The pending ledger in `.claude/pending/` is not yours to close either: say in the delivery what the wave settles, and whoever dispatched you closes it.
 - Comments follow the project's language; names, commands and keys stay in English.
 
 ## Task boundary
@@ -37,7 +37,7 @@ Only the two lines close it: detail goes in delivery text. This line is mandator
 <DELIVERED>{"wave":1,"text":"<the delivery>","files":["path/to/file.rs"],"commit":"<the commit summary>"}</DELIVERED>
 
 - `wave`: the request's wave.
-- `text`: in the project's language, up to 8,000 characters: each changed file in a sentence; for each criterion, the test and its red proof (what was cut, what fell); what you decided outside the request; what's left open, and why.
+- `text`: in the project's language, up to 8,000 characters: each changed file in a sentence; for each criterion, the test and its red verification (what was cut, what fell); what you decided outside the request; what's left open, and why.
 - `commit`: what the wave did, no spec code, at most 45 characters; the round adds a prefix, refusing over 60.
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the new command>"}]`.
 - In a fix: `"fixes":[<waves it closes>]`.

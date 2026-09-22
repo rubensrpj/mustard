@@ -68,7 +68,8 @@ fn approved_with_waves(root: &Path, waves: u64) {
     let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
     // A prova precisa passar de verdade: a rodada agora roda o critério
     // coberto antes de comitar.
-    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "git --version", "origin": said}));
+    let crit = seed_binary(root, "criterion",
+        &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": said}));
     for n in 1..=waves {
         seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
             "done_when": "x", "origin": said}));
@@ -224,8 +225,10 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
     write(root, "context", &json!({"text": "Revise tudo", "origin": msg}));
-    let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": msg}));
-    let c2 = write(root, "criterion", &json!({"when": "c", "then": "d", "proof": "q", "origin": msg}));
+    let c1 = write(root, "criterion",
+        &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
+    let c2 = write(root, "criterion",
+        &json!({"when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
     write(root, "wave", &json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
     write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
     write(root, "wave", &json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "depends_on": [1], "origin": msg}));
@@ -314,7 +317,8 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
     // A prova precisa passar de verdade: a rodada agora roda o critério
     // coberto antes de comitar.
-    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "git --version", "origin": said}));
+    let crit = seed_binary(root, "criterion",
+        &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": said}));
     for (n, files) in [(1u64, ["a1.rs"].as_slice()), (2u64, ["Makefile"].as_slice())] {
         seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
             "done_when": "x", "origin": said}));

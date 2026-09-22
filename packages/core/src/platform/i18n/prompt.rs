@@ -89,12 +89,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              códigos dos itens, em sequência, numa linha por bloco da spec.\n\n\
              **O que olhar.** As entregas, os critérios, as mudanças da branch, as emendas gravadas \
              entre as ondas e o que cada onda deixou aberto — como as ondas se encaixam, código \
-             repetido entre ondas, decisão de uma que contradiz a de outra, prova que uma apagou da \
+             repetido entre ondas, decisão de uma que contradiz a de outra, verificação que uma apagou da \
              outra. Aponte só; não conserte.\n\n\
-             **O que devolver.** A linha `<VERDICT>` com `\"final\":true`. O pedido traz o combinado \
-             inteiro da spec, dono ou não de onda: responda por cada item em `agreed`, com o código \
+             **O que devolver.** A linha `<VERDICT>` com `\"final\":true`. O pedido traz os requisitos \
+             acordados inteiros da spec, dono ou não de onda: responda por cada item em `agreed`, com o código \
              em `item` e `met` dizendo se está atendido; quando não estiver, `text` diz o que falta \
-             e `files` os arquivos, e viram uma tarefa nova. Faltar algum item do combinado na lista \
+             e `files` os arquivos, e viram uma tarefa nova. Faltar algum requisito acordado na lista \
              é veredito malformado: nada é gravado."
         }
         ("prompt.final.fixed", Locale::EnUs) => {
@@ -103,13 +103,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the items' codes, in sequence, one line per spec block.\n\n\
              **What to look at.** The deliveries, the criteria, the branch changes, the amendments \
              recorded between waves and what each wave left open — how the waves fit together, code \
-             repeated across them, a decision of one that contradicts another's, a proof one erased \
+             repeated across them, a decision of one that contradicts another's, a verification one erased \
              from another. Point it out only; do not fix it.\n\n\
              **What to return.** The `<VERDICT>` line with `\"final\":true`. The request carries \
-             the spec's whole agreed set, owned by a wave or not: answer for each item in `agreed`, \
+             the spec's whole agreed requirements, owned by a wave or not: answer for each item in `agreed`, \
              with the code in `item` and `met` saying whether it is satisfied; when it is not, \
              `text` says what is missing and `files` the files, and they become a new task. Missing \
-             any agreed item from the list is a malformed verdict: nothing gets recorded."
+             any agreed requirement from the list is a malformed verdict: nothing gets recorded."
         }
         // O exemplo único do comando que lê um item, que os dois pedidos
         // trazem logo depois da parte fixa. `{root}` é `--root <caminho> `
@@ -128,8 +128,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.each_delivered", Locale::EnUs) => "What each wave delivered",
         ("prompt.part.branch_changes", Locale::PtBr) => "Mudanças já na branch",
         ("prompt.part.branch_changes", Locale::EnUs) => "Changes already on the branch",
-        ("prompt.part.agreed", Locale::PtBr) => "Combinado",
-        ("prompt.part.agreed", Locale::EnUs) => "Agreed",
+        ("prompt.part.agreed", Locale::PtBr) => "Requisitos acordados",
+        ("prompt.part.agreed", Locale::EnUs) => "Agreed requirements",
         ("prompt.part.criteria", Locale::PtBr) => "Critérios",
         ("prompt.part.criteria", Locale::EnUs) => "Criteria",
         ("prompt.part.delivered", Locale::PtBr) => "O que as ondas anteriores entregaram",
@@ -144,12 +144,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.fix", Locale::EnUs) => "Fix",
         ("prompt.fix.wave", Locale::PtBr) => {
             "Esta onda voltou por reprovação. As linhas abaixo são o veredito que reprovou, a entrega \
-             anterior desta onda e os itens combinados gravados depois do último envio. Conserte só o \
+             anterior desta onda e os requisitos acordados gravados depois do último envio. Conserte só o \
              que o veredito aponta, à luz desses itens: não refaça a onda."
         }
         ("prompt.fix.wave", Locale::EnUs) => {
             "This wave came back rejected. The lines below are the verdict that rejected it, this \
-             wave's previous delivery and the agreed items recorded after the last send. Fix only what \
+             wave's previous delivery and the agreed requirements recorded after the last send. Fix only what \
              the verdict points out, in light of those items: do not redo the wave."
         }
         ("prompt.fix.final", Locale::PtBr) => {
@@ -286,7 +286,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             40,
-            0xd27e_8128_88fd_6e9a,
+            0xd597_53ae_c459_83ab,
         );
     }
 }

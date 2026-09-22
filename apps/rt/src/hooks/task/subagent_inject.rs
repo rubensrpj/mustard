@@ -188,7 +188,8 @@ mod tests {
         let crit = write(
             root,
             "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "origin": said}),
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "form": "ubiquitous",
+                "origin": said}),
         );
         let mut next_id = write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
             "done_when": "A suíte passa.", "origin": said}));

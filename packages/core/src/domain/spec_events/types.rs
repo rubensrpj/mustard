@@ -278,6 +278,13 @@ pub const WORK_KINDS: &[&str] = &["feature", "fix", "refactor"];
 const POINT_FROM: &[&str] = &["gap", "lesson", "prior_spec", "code_conflict", "outside_review"];
 const POINT_STATUS: &[&str] = &["open", "closed", "not_applicable"];
 const RUN_RESULTS: &[&str] = &["pass", "fail"];
+/// As cinco formas do padrão de critério de aceitação: a que vale sempre, a
+/// disparada por um acontecimento, a que só vale enquanto um estado durar, a
+/// que só vale se um recurso existir, e a que trata um acontecimento
+/// indesejado. Obrigatória na gravação nova (`check::check_conditions`);
+/// critério já gravado sem o campo continua válido na leitura.
+const CRITERION_FORMS: &[&str] =
+    &["ubiquitous", "event_driven", "state_driven", "optional_feature", "unwanted_behavior"];
 const SKILL_ACTIONS: &[&str] = &["create", "change", "drop"];
 const ROLES: &[&str] = &["wave", "review", "skill"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
@@ -410,6 +417,12 @@ pub const TYPES: &[TypeSpec] = &[
             req("when", Kind::Text),
             req("then", Kind::Text),
             req("proof", Kind::Text),
+            // Obrigatório na gravação nova, exigido em
+            // `check::check_conditions` com a recusa que lista as cinco
+            // formas pelo nome; `opt` aqui só para não entrar na recusa
+            // genérica de campo ausente, sem a lista. Critério gravado antes
+            // desta exigência continua sem o campo, e a leitura não recusa.
+            opt("form", Kind::OneOf(CRITERION_FORMS)),
             opt("contracts", Kind::Ints),
         ],
     ),
