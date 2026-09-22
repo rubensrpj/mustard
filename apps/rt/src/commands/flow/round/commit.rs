@@ -215,6 +215,19 @@ pub(super) fn head(root: &Path) -> String {
     git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string()
 }
 
+/// O commit em que a cópia `copy_repo` nasceu: o antepassado comum dela com
+/// o repositório `root_repo` agora, e não o HEAD dela. Usar o HEAD faria a
+/// junção não enxergar nada para trazer de uma cópia que ganhou commit
+/// próprio — o disco dela já bate com esse HEAD, então a comparação sairia
+/// sempre igual, e o arquivo comitado dentro da cópia nunca chegaria ao
+/// repositório principal. A cópia é um checkout ligado (`git worktree`) do
+/// mesmo repositório, então o antepassado comum sempre existe.
+fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
+    let root_head = git(root_repo, &["rev-parse", "HEAD"])?;
+    let base = git(copy_repo, &["merge-base", "HEAD", root_head.trim()])?;
+    Ok(base.trim().to_string())
+}
+
 /// Depois do commit da rodada, o mapa relê só os arquivos que mudaram, pela
 /// leitura por partes que a ferramenta do scan já faz sozinha: sem isso, a
 /// sugestão de skill e de arquivos parecidos, antes do envio da onda
@@ -544,8 +557,8 @@ pub(super) fn join_copies(
             let (copy_repo, inner) = repo_of(&copy, &subs, file);
             let (root_repo, _) = repo_of(root, &subs, file);
             if !bases.contains_key(&copy_repo) {
-                let base = git(&copy_repo, &["rev-parse", "HEAD"]).map_err(|detail| RoundRefusal::Git { detail })?;
-                bases.insert(copy_repo.clone(), base.trim().to_string());
+                let base = fork_point(&copy_repo, &root_repo).map_err(|detail| RoundRefusal::Git { detail })?;
+                bases.insert(copy_repo.clone(), base);
             }
             let base = bases.get(&copy_repo).cloned().unwrap_or_default();
             let theirs = std::fs::read(copy.join(file)).ok();
@@ -1337,6 +1350,37 @@ mod tests {
         let unchanged = [line("DELIVERED", json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"],
             "commit": "a onda 1 saiu"}))];
         refused_by_git_records_nothing(root, &unchanged, || {}, &["src/a.rs"]);
+    }
+
+    /// Quando a cópia de uma onda chega com commit próprio, à frente do
+    /// commit em que nasceu, e nada mudado fora dele — o `git status` dela
+    /// sai limpo —, a rodada junta ao repositório principal o que esse
+    /// commit mudou, em vez de recusar como no teste acima: usar o HEAD da
+    /// cópia como base da comparação (o defeito de 22/09/2026) faria a
+    /// junção comparar a cópia contra ela mesma, sem achar diferença
+    /// nenhuma, e o commit do repositório principal saísse sem nada a
+    /// comitar.
+    #[test]
+    fn a_rodada_junta_a_copia_que_veio_comitada() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let copy = copy_of(&log, 1).expect("a onda 1 ganhou cópia");
+        std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        git_at(&copy, &["add", "-A"]);
+        git_at(&copy, &["commit", "-q", "-m", "o agente comitou dentro da cópia"]);
+
+        let report =
+            line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"}));
+        let out = round(root, "x", Some(&report));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let content = std::fs::read_to_string(root.join("src/a.rs")).unwrap();
+        assert!(content.contains("A soma saiu."), "o que a cópia comitou chegou ao repositório principal: {content}");
+        assert_eq!(delivered_count(root), 1, "{out}");
     }
 
     /// Num projeto sem formatador configurado nada é formatado e nada é

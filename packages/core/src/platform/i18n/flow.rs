@@ -499,6 +499,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.commit_forbidden", Locale::EnUs) => {
             "The commit message carries {found}, which it never carries. Take it out and run the round again."
         }
+        ("round.commit_looks_like_sha", Locale::PtBr) => {
+            "O campo `commit` chegou como {found}, com cara de código de commit. Ali vai o título da \
+             mensagem, em palavras e curto: o agente não comita, quem comita é a rodada."
+        }
+        ("round.commit_looks_like_sha", Locale::EnUs) => {
+            "The `commit` field arrived as {found}, looking like a commit's code. That field takes the \
+             message's title, in words and short: the agent does not commit, the round does."
+        }
         ("round.formatter_missing", Locale::PtBr) => {
             "O projeto usa {name} e ele não foi achado: os arquivos da rodada ficaram sem formatar."
         }
@@ -1017,8 +1025,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            135,
-            0x0d15_96b0_9f6a_b863,
+            136,
+            0x864c_3dfc_2f4a_2e5c,
         );
     }
 
@@ -1174,6 +1182,7 @@ mod tests {
             ("round.delivered_too_long", &["{wave}", "{chars}", "{max}"][..]),
             ("round.commit_too_long", &["{part}", "{chars}", "{max}"][..]),
             ("round.commit_forbidden", &["{found}"][..]),
+            ("round.commit_looks_like_sha", &["{found}"][..]),
             ("round.formatter_missing", &["{name}"][..]),
             ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}"][..]),
             ("round.git_refused", &["{detail}"][..]),

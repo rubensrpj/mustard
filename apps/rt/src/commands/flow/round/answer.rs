@@ -54,6 +54,9 @@ pub(crate) enum RoundRefusal {
     CommitTooLong { part: String, chars: usize, max: usize },
     /// A mensagem do commit traz o que ela nunca leva.
     CommitForbidden { found: String },
+    /// O campo `commit` do relatório de entrega chegou com cara de código de
+    /// commit, e não com o título em palavras que ele pede.
+    CommitLooksLikeSha { found: String },
     /// Um agente disse que o plano da onda não funciona: a rodada para e
     /// mostra a mudança proposta, com a pergunta que decide.
     Replan { wave: u64, change: String, code: String },
@@ -79,6 +82,7 @@ impl RoundRefusal {
             Self::DeliveredTooLong { .. } => "delivered-too-long".into(),
             Self::CommitTooLong { .. } => "commit-too-long".into(),
             Self::CommitForbidden { .. } => "commit-forbidden-text".into(),
+            Self::CommitLooksLikeSha { .. } => "commit-looks-like-sha".into(),
             Self::Replan { .. } => "wave-plan-does-not-work".into(),
             Self::Git { .. } => "git-refused".into(),
             Self::BuildFailed { .. } => "round-build-failed".into(),
@@ -131,6 +135,9 @@ impl RoundRefusal {
             ),
             Self::CommitForbidden { found } => {
                 fill("round.commit_forbidden", &[("{found}", found.clone())])
+            }
+            Self::CommitLooksLikeSha { found } => {
+                fill("round.commit_looks_like_sha", &[("{found}", found.clone())])
             }
             Self::Replan { wave, change, code } => fill(
                 "round.replan",

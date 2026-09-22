@@ -422,6 +422,16 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         if commit.is_none() && !files.is_empty() && replan.is_none() {
             return Err(field("commit"));
         }
+        // O campo `commit` é o título em palavras, nunca o código do commit:
+        // a rodada não depende da boa vontade do agente para não comitar
+        // dentro da cópia e devolver o código dele aqui — ela recusa antes
+        // de comitar, com a cara do código (hexadecimal, do tamanho de um
+        // SHA curto ou inteiro) que a entrega nunca deveria trazer ali.
+        if let Some(summary) = &commit
+            && looks_like_commit_sha(summary)
+        {
+            return Err(RoundRefusal::CommitLooksLikeSha { found: summary.clone() });
+        }
         let mut proofs = Vec::new();
         for proof in fields.get("proofs").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default() {
             let criterion = proof.get("criterion").filter(|c| !c.is_null()).cloned().ok_or_else(|| field("proofs"))?;
@@ -495,6 +505,16 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
 /// escrita da onda deixa para trás, sem a linha obrigatória fechada.
 fn without_any_mark(raw: &str) -> bool {
     tagged(raw, DELIVERED_LINE).is_empty() && tagged(raw, VERDICT_LINE).is_empty() && tagged(raw, PAUSED_LINE).is_empty()
+}
+
+/// O texto `summary` tem cara de código de commit: só dígito hexadecimal, do
+/// tamanho de um SHA curto (o `git rev-parse --short` mais comum) ao inteiro
+/// de quarenta caracteres. O título em palavras que o campo `commit` pede
+/// nunca cai nessa faixa — um resumo curto e em português ou inglês sempre
+/// traz espaço ou letra fora do alfabeto hexadecimal.
+fn looks_like_commit_sha(summary: &str) -> bool {
+    let text = summary.trim();
+    (7..=40).contains(&text.len()) && text.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// A versão nova da tarefa `task`, devolvida à cesta: os mesmos campos dela,
@@ -1010,6 +1030,39 @@ mod tests {
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 0);
+    }
+
+    /// Quando o campo `commit` do relatório de entrega chega com cara de
+    /// código de commit — hexadecimal, do tamanho de um SHA curto —, a rodada
+    /// recusa antes de gravar qualquer coisa, em vez de aceitar em silêncio o
+    /// código que um agente comitou dentro da cópia (o defeito de
+    /// 22/09/2026). Corrigido o título, a entrega sai gravada uma vez.
+    #[test]
+    fn a_rodada_recusa_o_codigo_de_commit_no_lugar_do_titulo() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let sha_like = line(
+            "DELIVERED",
+            json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "9f8c3b1a2d4e5f60718293a4b5c6d7e8f9012345"}),
+        );
+        let refused = round(root, "x", Some(&sha_like));
+        assert_eq!(refused["reason"], json!("commit-looks-like-sha"), "{refused}");
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 0, "nada foi gravado");
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let with_title = line(
+            "DELIVERED",
+            json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "onda 1 fecha a soma"}),
+        );
+        let out = round(root, "x", Some(&with_title));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(delivered_count(root), 1, "{out}");
     }
 
     /// A rodada aceita as linhas do fim exatamente como os textos dos agentes

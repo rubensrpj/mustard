@@ -458,6 +458,40 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
 }
 
+/// O pedido de onda, montado pelo binário de verdade, diz com todas as
+/// letras que o agente não comita — o trabalho fica mudado na cópia, sem
+/// `git add` nem `git commit`, e quem junta e comita é a rodada — e que, no
+/// relatório de entrega, o campo `commit` é o título da mensagem, nunca o
+/// código do commit. As duas frases saem nos dois idiomas.
+#[test]
+fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_title() {
+    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home) =
+            installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "titulo", "--base", "dev"], None);
+        assert_eq!(opened["ok"], json!(true), "{opened}");
+        let file = root.join(".claude/spec/titulo/spec.ndjson");
+        let put =
+            |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
+        let said = put("message", json!({"author": "user", "text": "o objetivo"}));
+        let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+        put("wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
+        put("state", json!({"phase": "running", "branch": "feature/titulo"}));
+
+        let round = rt(&root, &home, &["run", "round", "--spec", "titulo"], None);
+        assert_eq!(round["ok"], json!(true), "{round}");
+        let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
+        assert_eq!(dispatched.len(), 1, "{round}");
+        let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default();
+        for key in ["prompt.execution.no_commit", "prompt.execution.commit_field"] {
+            let sentence = translate(key, text);
+            assert!(prompt.contains(sentence), "{lang} wave request misses `{key}`: {prompt}");
+        }
+    }
+}
+
 /// A parte fixa de cada pedido que o binário monta: o da onda e o da revisão
 /// final do conjunto.
 const FIXED_PARTS: [&str; 2] = ["prompt.fixed", "prompt.final.fixed"];

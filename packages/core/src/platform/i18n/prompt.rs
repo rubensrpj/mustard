@@ -204,6 +204,27 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              main repository `{root}`, and the copy stays where it is: on the way back, the round \
              merges the delivered files, new and deleted ones included, and deletes it after the commit."
         }
+        // O agente nunca comita: quem junta a cópia ao repositório principal
+        // e faz o commit é a rodada. Precisa dizer isso com todas as letras,
+        // porque em 22/09/2026 dois agentes comitaram dentro da cópia e
+        // devolveram o código do commit no campo do título, e a rodada
+        // recusou dizendo que não havia nada para comitar.
+        ("prompt.execution.no_commit", Locale::PtBr) => {
+            "O trabalho fica mudado só na cópia, sem `git add` e sem `git commit`: quem junta as \
+             cópias no repositório principal e comita é a rodada."
+        }
+        ("prompt.execution.no_commit", Locale::EnUs) => {
+            "The work stays changed only in the copy, without `git add` and without `git commit`: \
+             the round is the one that merges the copies into the main repository and commits."
+        }
+        ("prompt.execution.commit_field", Locale::PtBr) => {
+            "No relatório de entrega, o campo `commit` é o título da mensagem, em palavras e curto \
+             — nunca o código do commit."
+        }
+        ("prompt.execution.commit_field", Locale::EnUs) => {
+            "In the delivery report, the `commit` field is the message's title, in words and short \
+             — never the commit's code."
+        }
         // A pasta de compilação da cópia. A frase cita o Cargo, então só vai
         // ao pedido quando o mapa do projeto tem uma parte `cargo`; a pasta é
         // escolhida para toda onda, porque é a vaga das ondas que rodam juntas.
@@ -248,8 +269,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            37,
-            0xc2f7_196f_a2db_6aac,
+            39,
+            0x0a69_4402_7868_22c2,
         );
     }
 }

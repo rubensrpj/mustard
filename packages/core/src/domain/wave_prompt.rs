@@ -1253,9 +1253,11 @@ impl Writer<'_> {
     /// As regras da execução do agente da onda que carregam valor deste
     /// projeto e desta rodada — a cópia separada, a pasta de compilação num
     /// projeto Rust, os comandos do projeto e as outras ondas em andamento,
-    /// com os arquivos delas. O resto (ler por trecho, não comitar, a suíte
-    /// uma vez no fim…) já mora no molde do agente, e não repete aqui. De
-    /// onde ler a spec, o exemplo de leitura já diz.
+    /// com os arquivos delas — e, ligadas à cópia, as duas frases que dizem
+    /// com todas as letras que o agente não comita e que o campo `commit` do
+    /// relatório é o título, nunca o código do commit. O resto (ler por
+    /// trecho, a suíte uma vez no fim…) já mora no molde do agente, e não
+    /// repete aqui. De onde ler a spec, o exemplo de leitura já diz.
     fn execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let running = &execution.running;
@@ -1264,6 +1266,8 @@ impl Writer<'_> {
             let line = self.t("prompt.execution.copy").replace("{copy}", &copy.path).replace("{root}", &execution.root);
             let _ = writeln!(out, "- {line}");
             self.build_dir(out, copy);
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.commit_field"));
         }
         self.commands(out);
         if !running.is_empty() {
@@ -2267,6 +2271,8 @@ mod tests {
         for line in [
             format!("- {}", t("prompt.execution.copy").replace("{copy}", "/repo/copia-1").replace("{root}", "/repo")),
             format!("- {}", t("prompt.execution.build_dir").replace("{dir}", "/repo/target/copias/a")),
+            format!("- {}", t("prompt.execution.no_commit")),
+            format!("- {}", t("prompt.execution.commit_field")),
             "- Compile com `make`.".to_string(),
             "- Teste com `make test`.".to_string(),
             format!("- {}", t("prompt.execution.running")),
@@ -2295,11 +2301,19 @@ mod tests {
             assert!(rules.contains(line), "{line}: {rules}");
         }
         assert!(!rules.contains("Onda 2") && !rules.contains("copia-1"), "a revisão roda na cópia dela: {rules}");
+        assert!(
+            !rules.contains(t("prompt.execution.no_commit")) && !rules.contains(t("prompt.execution.commit_field")),
+            "o revisor não entrega, e o pedido dele não fala do campo commit: {rules}"
+        );
 
         m.execution = Execution { root: "/repo".into(), ..Execution::default() };
         let wave = write(&m, Locale::PtBr);
         let rules = section(&wave, t("prompt.part.execution"));
         assert!(!rules.contains("Compile com") && !rules.contains(t("prompt.execution.running")), "{rules}");
+        assert!(
+            !rules.contains(t("prompt.execution.no_commit")) && !rules.contains(t("prompt.execution.commit_field")),
+            "sem cópia, não há o que comitar nem relatar: {rules}"
+        );
         assert!(!rules.contains("CARGO_TARGET_DIR") && !wave.contains("--root"), "{wave}");
         assert!(write_final_review(&m, Locale::PtBr).contains("--detach  HEAD`"));
         assert!(write_final_review(&m, Locale::PtBr).contains(&example), "o revisor trabalha sempre numa cópia");
