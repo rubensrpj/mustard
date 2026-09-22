@@ -52,12 +52,12 @@ fn wave_in_command(command: &str) -> Option<(String, u64)> {
 }
 
 /// A onda dona da chamada `input`, sob `root` — uma leitura só, usada pelo
-/// sinal de vida e pela pausa aos 200 mil. O agente de onda lê e edita os
-/// arquivos da cópia pelo caminho, sem mudar de pasta: a pasta de trabalho da
-/// chamada dele continua sendo a do projeto, não a da cópia. Por isso a
-/// leitura tenta, nesta ordem: (1) a pasta de trabalho (`cwd`); (2) o caminho
-/// do arquivo no pedido da ferramenta (`file_path`, `notebook_path` ou
-/// `path`); (3) um caminho de cópia citado no comando do Bash.
+/// sinal de vida. O agente de onda lê e edita os arquivos da cópia pelo
+/// caminho, sem mudar de pasta: a pasta de trabalho da chamada dele continua
+/// sendo a do projeto, não a da cópia. Por isso a leitura tenta, nesta ordem:
+/// (1) a pasta de trabalho (`cwd`); (2) o caminho do arquivo no pedido da
+/// ferramenta (`file_path`, `notebook_path` ou `path`); (3) um caminho de
+/// cópia citado no comando do Bash.
 pub(crate) fn wave_of_call(root: &Path, input: &HookInput) -> Option<(String, u64)> {
     if let Some(found) =
         input.cwd.as_deref().filter(|c| !c.is_empty()).and_then(|cwd| wave_of_copy(root, Path::new(cwd)))

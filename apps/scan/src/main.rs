@@ -241,7 +241,10 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     for walked in ing.files {
         match walked {
             ingest::Walked::Kept(mut kept) => {
-                // Recomputed below from the whole set of modules.
+                // Recomputed below from the whole set of modules. The call
+                // sites are NOT cleared: they are what the file itself says,
+                // and a pass that did not read it again resolves the same
+                // declaration links from them.
                 kept.fan_in = 0;
                 kept.deps.clear();
                 kept.tests.clear();
@@ -271,6 +274,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                     tests: Vec::new(),
                     has_tests: testmap::has_inline_tests(&sf.content),
                     signals: code_signals(&sf.content),
+                    calls: extracted.calls,
                 };
                 modules.push(module);
             }
@@ -299,6 +303,10 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         named.sort();
         m.deps = named;
     }
+    // The named edges between declarations: who calls whom, in which file and
+    // on which line. Read from the call sites every module carries, so a pass
+    // that read only what changed links the same declarations a full pass does.
+    graph::link_declarations(&mut modules);
     let mined = mine::mine(&modules);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 

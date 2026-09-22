@@ -29,9 +29,9 @@
 //!     Nothing here switches on a language name, so a new language needs no change.
 //!     Imports that resolve to nothing internal are treated as external deps.
 
-use crate::model::{GraphStats, LayerInfo, Module, NodeDegree, Touchpoint};
+use crate::model::{Decl, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
 use petgraph::graph::{DiGraph, NodeIndex};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Catalog cap for `top_fan_in` / `top_fan_out`. The digest filters these BY
 /// QUERY VOCABULARY, so the catalog must be wide enough for a domain-specific
@@ -251,6 +251,109 @@ pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String
         touchpoints,
     };
     (stats, degree_map, depth_by_path)
+}
+
+/// A name declared by more declarations than this is a common word (`new`,
+/// `build`, `run`), not a link: tying every call of it to all of them would
+/// fill the map with noise instead of answers. Same bucket ceiling the import
+/// resolution already applies.
+const MAX_SAME_NAME: usize = 8;
+
+/// The named edges BETWEEN DECLARATIONS: for each declaration, which ones it
+/// calls and every place that uses it, with the file and the line. Until here
+/// the graph only counted file-to-file edges, which cannot answer "who calls
+/// this function".
+///
+/// The call sites come from what each module carries (`Module::calls`), never
+/// from reading the file again — so a pass that read only the files that
+/// changed links exactly what a full pass links.
+///
+/// A name is resolved to the declarations that carry it, preferring the ones
+/// declared in the calling file itself or in a file it imports; a name nobody
+/// declares is an outside call and is simply dropped. The links of every
+/// declaration are rewritten from scratch on each pass, so nothing survives a
+/// declaration that is gone.
+pub fn link_declarations(modules: &mut [Module]) {
+    let (calls, uses) = resolve_declaration_links(modules);
+    for (m, (module_calls, module_uses)) in modules.iter_mut().zip(calls.into_iter().zip(uses)) {
+        for (decl, (called, used)) in m.declarations.iter_mut().zip(module_calls.into_iter().zip(module_uses)) {
+            decl.calls = called.into_iter().collect();
+            let mut used: Vec<UseSite> = used;
+            used.sort();
+            used.dedup();
+            decl.used_by = used;
+        }
+    }
+}
+
+/// What each declaration calls, per module and per declaration.
+type CallsByDecl = Vec<Vec<BTreeSet<String>>>;
+
+/// The uses each declaration receives, per module and per declaration.
+type UsesByDecl = Vec<Vec<Vec<UseSite>>>;
+
+/// The links, per module and per declaration: the names it calls and the uses
+/// it receives. Split out of [`link_declarations`] so the whole project is
+/// read before any declaration is written to.
+fn resolve_declaration_links(modules: &[Module]) -> (CallsByDecl, UsesByDecl) {
+    let mut by_name: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+    for (mi, m) in modules.iter().enumerate() {
+        for (di, d) in m.declarations.iter().enumerate() {
+            if !d.name.is_empty() {
+                by_name.entry(d.name.as_str()).or_default().push((mi, di));
+            }
+        }
+    }
+
+    let mut calls: CallsByDecl = modules.iter().map(|m| vec![BTreeSet::new(); m.declarations.len()]).collect();
+    let mut uses: UsesByDecl = modules.iter().map(|m| vec![Vec::new(); m.declarations.len()]).collect();
+
+    for (src, m) in modules.iter().enumerate() {
+        if m.calls.is_empty() {
+            continue;
+        }
+        let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
+        for site in &m.calls {
+            let Some(all) = by_name.get(site.name.as_str()) else { continue };
+            let near: Vec<(usize, usize)> = all
+                .iter()
+                .copied()
+                .filter(|(mi, _)| *mi == src || imported.contains(modules[*mi].path.as_str()))
+                .collect();
+            let chosen: &[(usize, usize)] = if near.is_empty() { all } else { &near };
+            if chosen.len() > MAX_SAME_NAME {
+                continue;
+            }
+            let from = enclosing(&m.declarations, site.line);
+            let from_name = from.map_or(String::new(), |di| m.declarations[di].name.clone());
+            for &(dst_mi, dst_di) in chosen {
+                uses[dst_mi][dst_di].push(UseSite {
+                    file: m.path.clone(),
+                    line: site.line,
+                    from: from_name.clone(),
+                });
+                if let Some(di) = from {
+                    calls[src][di].insert(site.name.clone());
+                }
+            }
+        }
+    }
+    (calls, uses)
+}
+
+/// The declaration a line falls inside: the innermost one that starts at or
+/// above it and has not ended yet. `None` when the line sits outside every
+/// declaration (top-level code). A declaration with no end line recorded
+/// covers only what starts after it, which is the best an older map allows.
+fn enclosing(declarations: &[Decl], line: usize) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, d) in declarations.iter().enumerate() {
+        let covers = d.line <= line && (d.end_line == 0 || d.end_line >= line);
+        if covers && best.is_none_or(|b| declarations[b].line <= d.line) {
+            best = Some(i);
+        }
+    }
+    best
 }
 
 fn build_stem_index(modules: &[Module]) -> HashMap<String, Vec<String>> {

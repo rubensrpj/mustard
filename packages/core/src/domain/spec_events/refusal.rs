@@ -74,6 +74,10 @@ pub enum Refusal {
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
     /// aponta em `origin` uma mensagem do usuário.
     GoalOriginNotUser { spec: String, origin: String },
+    /// O objetivo gravado cuja primeira frase — a que vira o título do pull
+    /// request — passa do teto do título. Recusado na gravação, e não lá na
+    /// abertura do pull request, com a obra inteira já feita em cima dele.
+    GoalTitleTooLong { chars: usize, max: usize },
     /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
     /// ou reveria o tipo de trabalho: quem o grava é o `grill`.
     WorkTypeByGrill,
@@ -194,6 +198,7 @@ impl Refusal {
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::GoalOriginNotUser { .. } => "goal-origin-not-user",
+            Self::GoalTitleTooLong { .. } => "goal-title-too-long",
             Self::WorkTypeByGrill => "work-type-by-grill",
             Self::SurveyOpen { .. } => "survey-open",
             Self::SurveyNotStarted { .. } => "survey-not-started",
@@ -353,6 +358,13 @@ impl Refusal {
                 "spec_events.goal_origin_not_user",
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
+            // A mesma recusa da abertura do pull request, palavra por palavra:
+            // o teto é o mesmo, então a frase que o explica é a mesma. Duas
+            // redações do mesmo limite ensinariam duas coisas diferentes.
+            Self::GoalTitleTooLong { chars, max } => {
+                super::message::MessageRefusal::TooLong { part: "title", chars: *chars, max: *max }
+                    .message(lang)
+            }
             Self::WorkTypeByGrill => fill("grill.work_type_by_grill", &[]),
             Self::SurveyOpen { spec, count, points } => fill(
                 "spec_events.survey_open",

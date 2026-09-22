@@ -569,11 +569,19 @@ fn checks_reason(checks: &Result<PrChecks, String>) -> Option<&'static str> {
 /// forking them into separate behaviours would add decisions the operator never
 /// asked for. `confirmed` is that operator's answer coming back — the one way
 /// through the gate, deliberately.
+///
+/// `promotion` é a rota que não tem veredito nenhum a ter: levar uma base de
+/// integração para outra não é obra de ninguém, então não existe spec, não
+/// existe revisão e a pergunta pela falta do veredito nunca poderia ser
+/// respondida com um veredito. Quem usa aprendia a confirmar sem ler. As
+/// verificações do provedor continuam valendo na promoção, porque ali há um
+/// resultado real a esperar.
 #[must_use]
 pub(crate) fn merge_consent(
     verdict: Option<&str>,
     checks: &Result<PrChecks, String>,
     confirmed: bool,
+    promotion: bool,
 ) -> MergeConsent {
     if confirmed {
         return MergeConsent::Proceed;
@@ -581,12 +589,22 @@ pub(crate) fn merge_consent(
     if let Some(reason) = checks_reason(checks) {
         return MergeConsent::Ask { reason };
     }
-    if verdict == Some("approved") {
+    if promotion || verdict == Some("approved") {
         return MergeConsent::Proceed;
     }
     MergeConsent::Ask {
         reason: if verdict.is_none() { "no-review-verdict" } else { "review-not-approved" },
     }
+}
+
+/// A rota da promoção entre bases: o pull request cujo head é uma base que o
+/// próprio projeto declarou (`dev` para `main`, por exemplo).
+///
+/// Uma leitura só, usada pelo portão antes de decidir e por [`land`] depois do
+/// merge. Eram duas antes — a poda já reconhecia a rota, o portão não — e o
+/// portão pedia confirmação por falta de um veredito que a rota nunca pode ter.
+fn is_base_promotion(head: &str, flow: &BaseFlow) -> bool {
+    flow.is_declared_base(head)
 }
 
 /// The review verdict of `spec`, read from its `spec.ndjson`: `approved` when
@@ -711,7 +729,9 @@ fn merge_or_ask(
         Err(reason) => reason.clone(),
     };
 
-    if let MergeConsent::Ask { reason } = merge_consent(verdict.as_deref(), &checks, confirmed) {
+    let promotion = is_base_promotion(&facts.head, flow);
+
+    if let MergeConsent::Ask { reason } = merge_consent(verdict.as_deref(), &checks, confirmed, promotion) {
         let unit = spec.as_deref().unwrap_or(&facts.head);
         return Err(Box::new(PrMergeReport {
             ok: true,
@@ -962,7 +982,7 @@ fn land(
     session: Option<&str>,
 ) -> Landed {
     let (pending_closed, pending_open) = after_merge(root, facts, spec, session);
-    let settle = (!flow.is_declared_base(&facts.head)).then(|| settle(root, &facts.head));
+    let settle = (!is_base_promotion(&facts.head, flow)).then(|| settle(root, &facts.head));
     Landed { pending_closed, pending_open, settle }
 }
 
@@ -1380,6 +1400,63 @@ mod tests {
         assert!(done.settle.is_none(), "so there is no settle report to carry: {done:?}");
     }
 
+    /// A promoção entre bases não pede veredito de revisão.
+    ///
+    /// Levar `dev` para `main` não é obra de ninguém: não há spec, não há
+    /// revisão e o veredito que o portão cobrava nunca poderia existir. Sem
+    /// `--confirm`, o portão reconhece a rota antes de decidir e o merge
+    /// acontece sem pergunta nenhuma — antes ele respondia `confirm` com o
+    /// motivo `no-review-verdict`, e quem usava aprendia a confirmar sem ler.
+    ///
+    /// A pergunta que continua de pé: as verificações do provedor. Elas são um
+    /// resultado que a promoção pode mesmo ter, e uma que ainda está correndo
+    /// segura o merge como sempre segurou. As contagens provam o efeito real,
+    /// não o texto do relatório.
+    #[test]
+    fn a_promocao_entre_bases_nao_pede_veredito() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let bases = door_flow();
+        // O head É uma base declarada: é assim que a promoção chega à porta.
+        let promotion = PrFacts { number: 231, head: "dev".to_string() };
+
+        let merges = Cell::new(0u32);
+        let settles = Cell::new(0u32);
+        let merge = |_: &Path, _: u64| {
+            merges.set(merges.get() + 1);
+            Ok(())
+        };
+        let settle = |_: &Path, _: &str| {
+            settles.set(settles.get() + 1);
+            json!({ "ok": true })
+        };
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+
+        let done = merge_core(root, &promotion, &bases, false, &green, &merge, &settle, None);
+        assert_eq!(done.action, "merged", "sem `--confirm` a promoção passa: {done:?}");
+        assert_eq!(done.reason, Some("base-to-base-promotion"));
+        assert_eq!(done.verdict, None, "a rota não tem veredito a ter");
+        assert_eq!(merges.get(), 1, "a promoção foi mesmo merjada sem pergunta");
+        assert_eq!(settles.get(), 0, "e a poda segue fora da rota");
+
+        // A mesma porta, com uma unidade de verdade no head e sem veredito
+        // gravado, continua perguntando: o que saiu foi a pergunta impossível,
+        // não a regra.
+        let unit = PrFacts { number: 232, head: "dev_unreviewed".to_string() };
+        let asked = merge_core(root, &unit, &bases, false, &green, &merge, &settle, None);
+        assert_eq!(asked.action, "confirm");
+        assert_eq!(asked.reason, Some("no-review-verdict"));
+        assert_eq!(merges.get(), 1, "a unidade sem veredito não foi merjada");
+
+        // E a proteção que resta na promoção: uma verificação do provedor ainda
+        // correndo segura o merge, mesmo sem veredito nenhum em jogo.
+        let running = |_: &Path, _: u64| Ok(PrChecks::Running);
+        let held = merge_core(root, &promotion, &bases, false, &running, &merge, &settle, None);
+        assert_eq!(held.action, "confirm");
+        assert_eq!(held.reason, Some("provider-checks-running"));
+        assert_eq!(merges.get(), 1, "nada foi merjado com a verificação em curso");
+    }
+
     /// The consent rule itself, over BOTH sources of evidence: only an
     /// `approved` verdict on top of provider checks that are not in the way
     /// (or the operator's own answer) proceeds. Everything else ASKS, and
@@ -1387,15 +1464,15 @@ mod tests {
     #[test]
     fn pr_merge_consent_asks_for_anything_but_approved() {
         let green = Ok(PrChecks::Passed);
-        assert_eq!(merge_consent(Some("approved"), &green, false), MergeConsent::Proceed);
-        assert_eq!(merge_consent(None, &green, true), MergeConsent::Proceed);
-        assert_eq!(merge_consent(Some("rejected"), &green, true), MergeConsent::Proceed);
+        assert_eq!(merge_consent(Some("approved"), &green, false, false), MergeConsent::Proceed);
+        assert_eq!(merge_consent(None, &green, true, false), MergeConsent::Proceed);
+        assert_eq!(merge_consent(Some("rejected"), &green, true, false), MergeConsent::Proceed);
         assert_eq!(
-            merge_consent(None, &green, false),
+            merge_consent(None, &green, false, false),
             MergeConsent::Ask { reason: "no-review-verdict" }
         );
         assert_eq!(
-            merge_consent(Some("rejected"), &green, false),
+            merge_consent(Some("rejected"), &green, false, false),
             MergeConsent::Ask { reason: "review-not-approved" }
         );
 
@@ -1403,18 +1480,18 @@ mod tests {
         // green (or a measured absence of runs) lets the merge through.
         let asks = |checks: Result<PrChecks, String>, reason: &'static str| {
             assert_eq!(
-                merge_consent(Some("approved"), &checks, false),
+                merge_consent(Some("approved"), &checks, false, false),
                 MergeConsent::Ask { reason },
                 "for {checks:?}",
             );
             assert_eq!(
-                merge_consent(Some("approved"), &checks, true),
+                merge_consent(Some("approved"), &checks, true, false),
                 MergeConsent::Proceed,
                 "`--confirm` is the one way through, for {checks:?}",
             );
         };
         assert_eq!(
-            merge_consent(Some("approved"), &Ok(PrChecks::Absent), false),
+            merge_consent(Some("approved"), &Ok(PrChecks::Absent), false, false),
             MergeConsent::Proceed,
             "a project with no CI measured zero runs — that is an answer",
         );

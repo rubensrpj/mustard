@@ -7,7 +7,8 @@
 
 use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -178,6 +179,43 @@ pub struct Module {
     /// that does not read the file again still infers the same stacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<String>,
+    /// Every call site read out of this file: the name called and the line it
+    /// is called on, in document order. Raw on purpose — a name is not
+    /// resolved to a declaration here, so a file that did not change still
+    /// feeds the declaration links of a pass that only read what changed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<CallSite>,
+}
+
+/// One call read out of a file: the name called and the line of the call. The
+/// caller is the file it was read from, and the declaration that encloses the
+/// line — resolved by [`crate::graph::link_declarations`], not stored twice.
+///
+/// Written as one string, `name:line`: there are tens of thousands of these,
+/// and the model is written indented, so an object of two fields would cost
+/// five lines each. The map is read by machine, and `name:line` is the form
+/// every reader already knows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CallSite {
+    pub name: String,
+    pub line: usize,
+}
+
+impl Serialize for CallSite {
+    fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        out.collect_str(&format_args!("{}:{}", self.name, self.line))
+    }
+}
+
+impl<'de> Deserialize<'de> for CallSite {
+    fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(input)?;
+        let (name, line) = text
+            .rsplit_once(':')
+            .ok_or_else(|| D::Error::custom(format!("a call site reads `name:line`, not `{text}`")))?;
+        let line = line.parse().map_err(D::Error::custom)?;
+        Ok(Self { name: name.to_string(), line })
+    }
 }
 
 /// serde helper for additive numeric fields (mirrors `String::is_empty` above).
@@ -225,6 +263,74 @@ pub struct Decl {
     /// generic to mine: a base name shared by many entities is a shared contract.
     #[serde(default)]
     pub supertypes: Vec<String>,
+    /// The documentation comment written right above the declaration, cleaned
+    /// of its comment markers and joined into one line. Empty when there is
+    /// none there — and in this project it is the only part written in the
+    /// developer's own language, so it is what makes a question in words meet
+    /// the code. Additive: older models default to empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+    /// The declaration's own signature: what comes before its body, whitespace
+    /// collapsed (name, parameters, return/base types). Never the body — the
+    /// whole body was measured as the worst thing to keep. Empty when the
+    /// declaration has no header to speak of.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signature: String,
+    /// The declarations of this project that this one calls, by name, sorted
+    /// and deduped. Filled by [`crate::graph::link_declarations`] from the
+    /// call sites of the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<String>,
+    /// Every use of this declaration: which file, which line, and which
+    /// declaration the call starts from. Filled by
+    /// [`crate::graph::link_declarations`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub used_by: Vec<UseSite>,
+}
+
+/// One use of a declaration: the file the call is written in, the line, and
+/// the declaration it starts from (empty when the call sits outside any
+/// declaration). This is the named edge "who calls whom, where".
+///
+/// Written as one string, `file:line:from` (`file:line` when the call is
+/// outside every declaration) — the same reason as [`CallSite`], and the same
+/// `file:line` a compiler prints.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UseSite {
+    pub file: String,
+    pub line: usize,
+    pub from: String,
+}
+
+impl Serialize for UseSite {
+    fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        if self.from.is_empty() {
+            out.collect_str(&format_args!("{}:{}", self.file, self.line))
+        } else {
+            out.collect_str(&format_args!("{}:{}:{}", self.file, self.line, self.from))
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UseSite {
+    fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(input)?;
+        let wrong = || D::Error::custom(format!("a use reads `file:line[:from]`, not `{text}`"));
+        let (head, tail) = text.rsplit_once(':').ok_or_else(wrong)?;
+        // `file:line` or `file:line:from` — which one it is, the line number
+        // says: it is always the last part that is a number.
+        Ok(match tail.parse() {
+            Ok(line) => Self { file: head.to_string(), line, from: String::new() },
+            Err(_) => {
+                let (file, line) = head.rsplit_once(':').ok_or_else(wrong)?;
+                Self {
+                    file: file.to_string(),
+                    line: line.parse().map_err(D::Error::custom)?,
+                    from: tail.to_string(),
+                }
+            }
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

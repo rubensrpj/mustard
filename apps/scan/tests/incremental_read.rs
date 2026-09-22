@@ -95,6 +95,17 @@ fn a_second_pass_reads_only_the_changed_file_and_leaves_git_clean() {
     // The map keeps the history and what each file imports.
     let model: Value = serde_json::from_slice(&undone).unwrap();
     assert_eq!(model["history"]["commits"].as_array().unwrap().len(), 2, "{}", model["history"]);
+    // And it keeps the named edges between declarations: this last pass read
+    // only `src/a.rs`, so the use of `alpha` inside `src/b.rs` came from the
+    // call sites the unread file carries, not from reading it again.
+    let alpha = model["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["path"] == json!("src/a.rs"))
+        .map(|m| m["declarations"][0].clone())
+        .unwrap();
+    assert_eq!(alpha["used_by"], json!(["src/b.rs:3:beta"]), "{alpha}");
     assert_eq!(git(&dir, &["status", "--porcelain"]), "");
 
     let _ = std::fs::remove_dir_all(&dir);

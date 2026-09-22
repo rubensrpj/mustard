@@ -39,10 +39,11 @@ pub enum ScanCmd {
 
     /// Ask the project map a short question: `examples` for a task
     /// (`--file <target>` or `--task "<task>"`), `importers --file`,
-    /// `tests --file`, `search --query`, `summary` (the session-start digest,
-    /// up to 3 kB) or `skill --path <SKILL.md>` (every cited path exists and
-    /// the skill stays under 500 lines). Reads `.claude/grain.model.json`;
-    /// prints JSON and exits 1 on a refusal.
+    /// `tests --file`, `slice --file --name <declaration>` (the declaration's
+    /// own lines, without opening the file), `search --query`, `summary` (the
+    /// session-start digest, up to 3 kB) or `skill --path <SKILL.md>` (every
+    /// cited path exists and the skill stays under 500 lines). Reads
+    /// `.claude/grain.model.json`; prints JSON and exits 1 on a refusal.
     #[command(display_order = 16)]
     Map {
         /// The question to ask.
@@ -61,6 +62,9 @@ pub enum ScanCmd {
         /// The skill to check (`skill`).
         #[arg(long)]
         path: Option<PathBuf>,
+        /// The declaration the question is about (`slice`).
+        #[arg(long)]
+        name: Option<String>,
         /// Any directory inside the project. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -72,8 +76,16 @@ pub enum ScanCmd {
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
-        ScanCmd::Map { question, file, task, query, path, root } => {
-            crate::commands::map::run(&crate::commands::map::MapOpts { root, question, file, task, query, path });
+        ScanCmd::Map { question, file, task, query, path, name, root } => {
+            crate::commands::map::run(&crate::commands::map::MapOpts {
+                root,
+                question,
+                file,
+                task,
+                query,
+                path,
+                name,
+            });
         }
     }
 }

@@ -61,6 +61,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The file `{file}` is not in the map. Check the path from the project root, or run \
              `mustard-rt run scan` if it is new."
         }
+        ("map.unknown_declaration", Locale::PtBr) => {
+            "O arquivo `{file}` não declara `{name}`. Confira o nome, ou rode `mustard-rt run scan` \
+             se ele é novo."
+        }
+        ("map.unknown_declaration", Locale::EnUs) => {
+            "The file `{file}` declares no `{name}`. Check the name, or run `mustard-rt run scan` \
+             if it is new."
+        }
+        ("map.file_unreadable", Locale::PtBr) => {
+            "O arquivo `{file}` está no mapa e não pôde ser lido ({detail}). Confira se ele ainda \
+             está no lugar."
+        }
+        ("map.file_unreadable", Locale::EnUs) => {
+            "The file `{file}` is in the map and could not be read ({detail}). Check whether it is \
+             still there."
+        }
         ("map.missing_argument", Locale::PtBr) => "A pergunta `{question}` precisa de `{flag}`.",
         ("map.missing_argument", Locale::EnUs) => "The `{question}` question needs `{flag}`.",
         ("map.skill_unreadable", Locale::PtBr) => "A skill `{path}` não pôde ser lida ({detail}).",
@@ -110,12 +126,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.summary.recent", Locale::PtBr) => "Mudados há pouco: {files}.",
         ("map.summary.recent", Locale::EnUs) => "Recently changed: {files}.",
         ("map.summary.ask", Locale::PtBr) => {
-            "Pergunte ao mapa: `mustard-rt run map examples --file <caminho>`, `importers`, `tests` ou \
-             `search --query \"<palavras>\"`."
+            "Pergunte ao mapa: `mustard-rt run map examples --file <caminho>`, `importers`, `tests`, \
+             `slice --file <caminho> --name <declaração>` ou `search --query \"<palavras>\"`."
         }
         ("map.summary.ask", Locale::EnUs) => {
-            "Ask the map: `mustard-rt run map examples --file <path>`, `importers`, `tests` or \
-             `search --query \"<words>\"`."
+            "Ask the map: `mustard-rt run map examples --file <path>`, `importers`, `tests`, \
+             `slice --file <path> --name <declaration>` or `search --query \"<words>\"`."
         }
         _ => return None,
     })
@@ -134,8 +150,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            27,
-            0xd40b_815b_8a0a_da53,
+            29,
+            0xb13b_29d2_3cf8_12f4,
         );
     }
 
@@ -148,6 +164,8 @@ mod tests {
             ("map.missing", &[][..]),
             ("map.unreadable", &["{detail}"][..]),
             ("map.unknown_file", &["{file}"][..]),
+            ("map.unknown_declaration", &["{file}", "{name}"][..]),
+            ("map.file_unreadable", &["{file}", "{detail}"][..]),
             ("map.missing_argument", &["{question}", "{flag}"][..]),
             ("map.skill_unreadable", &["{path}", "{detail}"][..]),
             ("map.skill_missing_path", &["{paths}"][..]),

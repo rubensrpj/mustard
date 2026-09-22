@@ -13,13 +13,11 @@
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; erro de montagem do plano (ciclo entre ondas, e
-//! tarefa ou dependência apontando uma onda que não existe); pedido de onda
-//! acima do teto de linhas; skill que a conferência recusa; arquivo citado
-//! que não existe e não está marcado como novo; tarefa que mexe em código
-//! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere;
-//! tarefa cujo texto não casa com onda nenhuma do plano; e onda que
-//! ainda vem com mais de três tarefas ou mais de três provas de critério,
-//! que volta com a divisão sugerida em duas ondas e as tarefas de cada uma.
+//! tarefa ou dependência apontando uma onda que não existe); skill que a
+//! conferência recusa; arquivo citado que não existe e não está marcado
+//! como novo; tarefa que mexe em código sem dizer em que arquivo, que volta
+//! com os arquivos que o mapa sugere; e tarefa cujo texto não casa com onda
+//! nenhuma do plano.
 //!
 //! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
 //! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
