@@ -9,6 +9,7 @@ use std::path::Path;
 use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog, DELIVERED_MAX_CHARS};
 use mustard_core::domain::spec_state::{PhaseWriter, State};
+use mustard_core::domain::wave_prompt as agreed_prompt;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -368,10 +369,11 @@ fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<Strin
     Ok((fields.get("wave").and_then(Value::as_u64), fields))
 }
 
-/// A linha é a da aprovação do agente de teste dedicado, a única que vem sem
-/// onda.
-fn final_approval(fields: &Map<String, Value>) -> bool {
-    fields.get("final") == Some(&Value::Bool(true)) && fields.get("result").and_then(Value::as_str) == Some("approved")
+/// A linha é a da revisão final do agente de teste dedicado, aprovada ou
+/// reprovada: a única que vem sem onda, porque responde pelo combinado
+/// inteiro, não por uma onda dele.
+fn is_final(fields: &Map<String, Value>) -> bool {
+    fields.get("final") == Some(&Value::Bool(true))
 }
 
 /// O relatório da rodada anterior: as linhas `DELIVERED` e `VERDICT` que o
@@ -470,7 +472,7 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     let mut verdicts = Vec::new();
     for body in verdict_bodies {
         let (wave, mut fields) = line_object(body, VERDICT_LINE)?;
-        if wave.is_none() && !final_approval(&fields) {
+        if wave.is_none() && !is_final(&fields) {
             return Err(RoundRefusal::LineField { line: VERDICT_LINE, field: "wave" });
         }
         fields.remove("wave");
@@ -533,6 +535,28 @@ fn return_cut_baskets(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<Val
     Ok(recorded)
 }
 
+/// O número do evento que `reference` aponta, dado pelo código que a página
+/// mostra ou pelo número, na versão gravada — sem conferir ainda se ele
+/// segue vigente nem de que tipo é.
+fn reference_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
+    let unknown = || Refusal::UnknownTarget {
+        target: mustard_core::domain::spec_events::EventRef::from_value(reference)
+            .unwrap_or(mustard_core::domain::spec_events::EventRef::Code(reference.to_string())),
+    };
+    let codes = log.codes();
+    match reference {
+        Value::Number(n) => n.as_u64().ok_or_else(unknown),
+        Value::String(code) => {
+            let code = code.trim();
+            match code.parse::<u64>() {
+                Ok(n) => Ok(n),
+                Err(_) => codes.iter().filter(|(_, c)| c.as_str() == code).map(|(id, _)| *id).max().ok_or_else(unknown),
+            }
+        }
+        _ => Err(unknown()),
+    }
+}
+
 /// O número do critério `reference`, dado pelo código que a página mostra ou
 /// pelo número, na versão mais nova. Um critério que a spec não tem é
 /// recusado.
@@ -541,19 +565,22 @@ fn criterion_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
         target: mustard_core::domain::spec_events::EventRef::from_value(reference)
             .unwrap_or(mustard_core::domain::spec_events::EventRef::Code(reference.to_string())),
     };
-    let codes = log.codes();
-    let id = match reference {
-        Value::Number(n) => n.as_u64().ok_or_else(unknown)?,
-        Value::String(code) => {
-            let code = code.trim();
-            match code.parse::<u64>() {
-                Ok(n) => n,
-                Err(_) => codes.iter().filter(|(_, c)| c.as_str() == code).map(|(id, _)| *id).max().ok_or_else(unknown)?,
-            }
-        }
-        _ => return Err(unknown()),
-    };
+    let id = reference_id(log, reference)?;
     let current = log.current(id).filter(|e| e.event_type == "criterion").ok_or_else(unknown)?;
+    Ok(current.id)
+}
+
+/// O número vigente do item combinado `reference`, dado pelo código que a
+/// página mostra ou pelo número: ao contrário de [`criterion_id`], vale para
+/// qualquer tipo do bloco combinado (decisão, regra, contrato...). Um item
+/// que a spec não tem, ou que saiu da leitura, é recusado.
+fn agreed_item_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
+    let unknown = || Refusal::UnknownTarget {
+        target: mustard_core::domain::spec_events::EventRef::from_value(reference)
+            .unwrap_or(mustard_core::domain::spec_events::EventRef::Code(reference.to_string())),
+    };
+    let id = reference_id(log, reference)?;
+    let current = log.current(id).ok_or_else(unknown)?;
     Ok(current.id)
 }
 
@@ -574,6 +601,9 @@ struct CheckedReport {
     /// A versão nova do envio de cada onda cuja entrega trouxe o modelo
     /// usado, os passos, os tokens ou o consumo de quem despacha.
     sends: Vec<(u64, Map<String, Value>)>,
+    /// Uma tarefa nova na cesta por item combinado que a revisão final
+    /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
+    agreed_tasks: Vec<Map<String, Value>>,
 }
 
 /// O caminho como a rodada grava `file` da onda `wave`: quando é o caminho
@@ -602,6 +632,7 @@ fn check_reports(
     let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
     // Os critérios citados existem, antes de qualquer gravação.
     let mut verdicts = Vec::new();
+    let mut agreed_tasks: Vec<Map<String, Value>> = Vec::new();
     for verdict in &report.verdicts {
         let mut draft = verdict.fields.clone();
         if let Some(Value::Array(criteria)) = draft.get_mut("criteria") {
@@ -611,16 +642,69 @@ fn check_reports(
                 }
             }
         }
-        // A aprovação do agente de teste dedicado não aponta onda: a última
-        // onda do plano, quando há uma, ou onda nenhuma, na obra de até 3
-        // pontos que o orquestrador faz direto, sem onda nenhuma.
-        let wave = verdict.wave.or_else(|| check.log().planned_waves().last().copied());
+        let is_final = draft.get("final") == Some(&Value::Bool(true));
+        if is_final {
+            // A revisão final responde por todo o combinado vigente, item a
+            // item, em `agreed`: faltar algum, ou a lista inteira, é
+            // veredito malformado, e nada é gravado. Quem vem `met:false`
+            // força o resultado a reprovado e vira uma tarefa nova na cesta,
+            // cobrindo esse item.
+            let vigent = agreed_prompt::all_agreed(check.log());
+            let codes = check.log().codes();
+            let label = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
+            let mut answered: Vec<(u64, bool, Option<String>, Vec<String>)> = Vec::new();
+            if let Some(Value::Array(items)) = draft.get_mut("agreed") {
+                for item in items.iter_mut() {
+                    let reference = item.get("item").cloned().unwrap_or(Value::Null);
+                    let id = agreed_item_id(check.log(), &reference)?;
+                    item["item"] = json!(id);
+                    let met = item.get("met").and_then(Value::as_bool).unwrap_or(false);
+                    let text = item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_string);
+                    let files: Vec<String> = item
+                        .get("files")
+                        .and_then(Value::as_array)
+                        .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                        .unwrap_or_default();
+                    answered.push((id, met, text, files));
+                }
+            }
+            let missing: Vec<String> =
+                vigent.iter().filter(|item| !answered.iter().any(|(id, ..)| *id == item.id)).map(|item| label(item.id)).collect();
+            if !missing.is_empty() {
+                return Err(Refusal::AgreedItemsMissing { missing });
+            }
+            let unmet: Vec<&(u64, bool, Option<String>, Vec<String>)> = answered.iter().filter(|(_, met, ..)| !met).collect();
+            if !unmet.is_empty() {
+                draft.insert("result".into(), json!("rejected"));
+            }
+            for (id, _, text, files) in unmet {
+                let mut task = Map::new();
+                task.insert("text".into(), json!(text.clone().unwrap_or_default()));
+                task.insert("files".into(), json!(files.iter().map(|f| json!({ "path": f })).collect::<Vec<_>>()));
+                task.insert("depends_on".into(), json!([]));
+                task.insert("covers".into(), json!([id]));
+                task.insert("author".into(), json!("review"));
+                agreed_tasks.push(task);
+            }
+        }
+        // A revisão final não aponta onda: ela responde pelo combinado
+        // inteiro, não por uma onda dele. Só a revisão de uma onda usa a
+        // última onda do plano quando o veredito não diz qual.
+        let wave = if is_final { verdict.wave } else { verdict.wave.or_else(|| check.log().planned_waves().last().copied()) };
         if let Some(wave) = wave {
             draft.insert("wave".into(), json!(wave));
         }
         draft.insert("author".into(), json!("review"));
         check.record("verdict", draft.clone())?;
         verdicts.push((wave, draft));
+    }
+    for task in &agreed_tasks {
+        check.record("task", task.clone())?;
     }
     let mut deliveries = Vec::new();
     for report in &report.waves {
@@ -692,7 +776,7 @@ fn check_reports(
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs, sends })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -728,7 +812,7 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando.
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
-    let CheckedReport { verdicts, deliveries, proofs, sends } = checked;
+    let CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks } = checked;
     let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
     let mut recorded = Vec::new();
@@ -739,6 +823,10 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
             entry["wave"] = json!(wave);
         }
         recorded.push(entry);
+    }
+    for draft in agreed_tasks {
+        let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
+        recorded.push(json!({ "type": "task", "id": written.written.id }));
     }
     for (wave, draft) in deliveries {
         let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;

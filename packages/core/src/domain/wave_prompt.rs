@@ -388,6 +388,14 @@ pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
     agreed_items(log).into_iter().filter(|item| !owners.contains_key(&item.id)).collect()
 }
 
+/// Todo o combinado vigente da spec, dono ou não de onda: a lista que a
+/// revisão final precisa responder, item por item, mesmo numa rodada de
+/// conserto.
+#[must_use]
+pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
+    agreed_items(log)
+}
+
 // ---------------------------------------------------------------------------
 // A escolha do pedido antes do envio
 // ---------------------------------------------------------------------------

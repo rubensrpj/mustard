@@ -404,16 +404,24 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
-        let rejected = |n: usize| {
+        // O veredito final reprovado, com o combinado vigente atendido: sem
+        // a lista `agreed` cobrindo o item que a decisão do orquestrador cria
+        // mais adiante, a terceira reprovação seria recusada por faltar item,
+        // antes de a conta de consertos entrar em jogo.
+        let rejected = |n: usize, agreed: &[&str]| {
             let out = round(root, "x", Some(&delivered(root, 1, &format!("Tentativa {n}."), &["src/a.rs"])));
             assert_eq!(out["ok"], json!(true), "{out}");
-            round(root, "x", Some(&verdict(1, "rejected", &format!("reprovação {n}"))))
+            let agreed: Vec<Value> = agreed.iter().map(|item| json!({"item": item, "met": true})).collect();
+            let rejected = line("VERDICT", json!({"wave": 1, "result": "rejected", "final": true,
+                "text": format!("reprovação {n}"), "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
+                "agreed": agreed}));
+            round(root, "x", Some(&rejected))
         };
-        assert_eq!(waves_in(&rejected(1), "dispatch"), vec![1]);
+        assert_eq!(waves_in(&rejected(1, &[]), "dispatch"), vec![1]);
         // Uma fala do usuário antes da segunda reprovação: a tarefa que nasce
         // dela depois dessa reprovação não zera a conta.
         let early = id_of(&write(root, "x", "message", json!({"author": "user", "text": "Veja o teste."})));
-        assert_eq!(waves_in(&rejected(2), "dispatch"), vec![1]);
+        assert_eq!(waves_in(&rejected(2, &[]), "dispatch"), vec![1]);
 
         // O orquestrador acrescenta uma tarefa à onda, por decisão dele.
         let own = id_of(&write(root, "x", "decision", json!({"text": "Falta uma tarefa na onda 1.",
@@ -425,7 +433,7 @@ mod tests {
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "o plano mudou depois do pedido: {again}");
 
-        let stopped = rejected(3);
+        let stopped = rejected(3, &["MSTD-DEC-0001"]);
         assert_eq!(waves_in(&stopped, "stopped"), vec![1], "a tarefa do orquestrador não zera a conta: {stopped}");
         assert_eq!(waves_in(&stopped, "dispatch"), Vec::<u64>::new(), "{stopped}");
         assert_eq!(stopped["stopped"][0]["verdicts"].as_array().map(Vec::len), Some(3), "{stopped}");

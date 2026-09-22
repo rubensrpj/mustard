@@ -276,6 +276,20 @@ impl Project {
     }
 }
 
+/// A lista `agreed` do veredito final, com todo o combinado vigente atendido:
+/// estes testes provam o fluxo do fechamento e do pull request, não o do
+/// combinado — sem a lista inteira, a revisão final seria recusada por
+/// faltar item.
+fn agreed_all_met(project: &Project) -> Value {
+    let log = project.log();
+    let codes = log.codes();
+    let items: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log)
+        .iter()
+        .map(|item| json!({"item": codes.get(&item.id).cloned().unwrap_or_default(), "met": true}))
+        .collect();
+    json!(items)
+}
+
 /// A fala do usuário, pelo gancho da entrada; devolve o número dela.
 fn user_says(project: &Project, text: &str) -> u64 {
     project.hook(
@@ -444,7 +458,8 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
 
     // Aprovado, o fechamento grava o veredito e fecha.
-    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou."});
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
+        "agreed": agreed_all_met(&project)});
     let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
     assert!(closed.get("review").is_none(), "{closed}");
@@ -522,7 +537,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
 
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-    let verdict = json!({"final": true, "result": "approved", "text": "Mudaram."});
+    let verdict = json!({"final": true, "result": "approved", "text": "Mudaram.", "agreed": agreed_all_met(&project)});
     let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();

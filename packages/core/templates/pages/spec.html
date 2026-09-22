@@ -737,8 +737,6 @@ tr:last-child td{border-bottom:0}
             if (commits) it.fields.push([t('page.field.wave_commit'), commits]);
             var parts = prompt ? receives(prompt) : '';
             if (parts) it.fields.push([t('page.field.wave_receives'), parts]);
-            var points = ofType('task').filter(function (k) { return waveOf(k) === n && isInt(k.points); });
-            if (points.length) it.fields.push([t('page.field.wave_points'), String(points.reduce(function (s, k) { return s + k.points; }, 0))]);
           }
           if (e.type === 'send') {
             var text = it.text, template = str(e.template) || '';
@@ -769,7 +767,13 @@ tr:last-child td{border-bottom:0}
         g.summary = names.get(n) || '';
         groups.push(g);
       });
-      var skills = groupOf('waves-skills', t('page.group.skill'), events.filter(function (e) { return waveOf(e) === null; }));
+      // A cesta: tarefas que ainda não entraram em lote nenhum. Vem antes dos
+      // lotes já formados, porque é dali que eles saem.
+      var basket = groupOf('waves-basket', t('page.group.basket'),
+        events.filter(function (e) { return e.type === 'task' && waveOf(e) === null; }));
+      if (basket) groups.unshift(basket);
+      var skills = groupOf('waves-skills', t('page.group.skill'),
+        events.filter(function (e) { return e.type !== 'task' && waveOf(e) === null; }));
       if (skills) groups.push(skills);
       return section('waves', t('page.block.waves'), groups);
     }

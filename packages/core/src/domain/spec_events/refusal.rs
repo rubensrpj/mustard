@@ -123,6 +123,10 @@ pub enum Refusal {
     /// gravado, e a mensagem nomeia o círculo inteiro, na ordem, voltando ao
     /// começo.
     TaskDependencyCycle { cycle: Vec<String> },
+    /// O veredito final (`"final":true`) sem a lista `agreed`, ou com algum
+    /// item combinado vigente de fora dela. Nada é gravado, e a mensagem
+    /// nomeia pelo código cada item que faltou.
+    AgreedItemsMissing { missing: Vec<String> },
     Io { detail: String },
 }
 
@@ -202,6 +206,7 @@ impl Refusal {
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
+            Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -394,6 +399,10 @@ impl Refusal {
             Self::TaskDependencyCycle { cycle } => fill(
                 "spec_events.task_dependency_cycle",
                 &[("{cycle}", cycle.join(" → "))],
+            ),
+            Self::AgreedItemsMissing { missing } => fill(
+                "spec_events.agreed_items_missing",
+                &[("{missing}", missing.join(", "))],
             ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }

@@ -864,11 +864,14 @@ fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Ma
 /// lê a spec, monta a população de tarefas e grava o que ele decidiu.
 /// `Ok(vec![])` sem tarefa pronta na cesta.
 ///
-/// Ainda não é chamada pelo despacho de verdade: quem decide as ondas
-/// prontas para o pedido ([`next_waves`], acima) lê só o evento de onda já
-/// gravado, e ligar as duas pontas é `run_round_with_mine`
-/// (`apps/rt/src/commands/flow/round/answer.rs`), fora do alcance desta
-/// tarefa.
+/// `run_round_with_mine` (`apps/rt/src/commands/flow/round/answer.rs`) chama
+/// esta função antes de formar a lista de ondas prontas: quem decide as
+/// ondas prontas para o pedido ([`next_waves`], acima) só lê o evento de
+/// onda já gravado, e é por isso que o lote precisa existir como onda antes
+/// de `next_waves` rodar, na mesma chamada. A leitura que ela recebe é a de
+/// quando a rodada começou, antes do relatório dela mexer em onda ou tarefa:
+/// a que o corte de uma onda de lote devolve solta agora mesmo só empacota
+/// na rodada seguinte, nunca na mesma que a soltou.
 ///
 /// # Errors
 ///
@@ -920,12 +923,12 @@ pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result
             }
         }
         let criteria: Vec<u64> = criteria.into_iter().collect();
-        let done_when = criteria
-            .iter()
-            .filter_map(|id| log.get(*id))
-            .filter_map(|event| event.str_field("proof"))
-            .collect::<Vec<_>>()
-            .join(" && ");
+        // A tarefa nascida de uma onda cobre critério, com prova para juntar
+        // aqui; a que nasce do item combinado sem onda dona (a cesta da
+        // revisão final) cobre o item, que não tem prova — o texto de quem
+        // marcou o item sem atender é o que diz quando a onda entrega.
+        let done_when = criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof")).collect::<Vec<_>>().join(" && ");
+        let done_when = if done_when.is_empty() { text_parts.join(" ") } else { done_when };
         let draft = json!({
             "n": next_n,
             "text": text_parts.join(" "),
@@ -1494,6 +1497,17 @@ mod tests {
         log.codes().into_iter().map(|(id, code)| (code, id)).collect()
     }
 
+    /// O veredito final reprovado, com o combinado inteiro vigente
+    /// atendido: os testes daqui provam o mecanismo da escolha (`ANALYSIS`),
+    /// não o do combinado — sem a lista `agreed` cobrindo todo mundo, a
+    /// revisão final seria recusada por faltar item, antes de chegar à
+    /// escolha que o teste quer provar.
+    fn verdict_with_agreed(wave: u64, result: &str, text: &str, agreed: &[&str]) -> String {
+        let agreed: Vec<Value> = agreed.iter().map(|item| json!({"item": item, "met": true})).collect();
+        line("VERDICT", json!({"wave": wave, "result": result, "final": true, "text": text,
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}], "agreed": agreed}))
+    }
+
     /// A linha da escolha da onda 1: o que sai e o que entra, com o motivo.
     fn analysis(removed: Value, added: Value) -> String {
         line("ANALYSIS", json!({"wave": 1, "removed": removed, "added": added}))
@@ -1656,7 +1670,9 @@ mod tests {
 
         // O conserto, com os mesmos itens a julgar, sai com a escolha gravada.
         round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
-        let fix = round(root, "x", Some(&verdict(1, "rejected", "faltou o índice")));
+        let vigent_before = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003",
+            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
+        let fix = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o índice", &vigent_before)));
         assert_eq!(waves_in(&fix, "dispatch"), vec![1], "{fix}");
         let sent = sends();
         assert_eq!(sent.len(), 2, "{fix}");
@@ -1669,7 +1685,9 @@ mod tests {
             .visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
         let newer = id_of(&write(root, "x", "rule", json!({"text": "Vale sempre: o nome é curto.", "example": "e",
             "keys": ["k"], "applies_to": {"files": ["**"]}, "origin": said})));
-        let again = round(root, "x", Some(&verdict(1, "rejected", "faltou o nome")));
+        let vigent_with_newer = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-RULE-0004",
+            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
+        let again = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o nome", &vigent_with_newer)));
         assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "{again}");
         assert_eq!(codes_in(&again["analysis"][0], "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0004"], "{again}");
         assert_eq!(sends().len(), 2, "{again}");
@@ -1709,7 +1727,9 @@ mod tests {
         // O conserto, com os mesmos candidatos — a mesma lição, nenhuma nova
         // —, reusa a escolha gravada, sem perguntar de novo.
         round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
-        let fix = round(root, "x", Some(&verdict(1, "rejected", "faltou algo")));
+        let vigent = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003",
+            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
+        let fix = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou algo", &vigent)));
         assert_eq!(waves_in(&fix, "dispatch"), vec![1], "o conserto com os mesmos candidatos reusa a escolha: {fix}");
         let sent = sends();
         assert_eq!(sent.len(), 2, "{fix}");
@@ -1721,7 +1741,7 @@ mod tests {
         let newer = id_of(&write(root, "x", "lesson", json!({"class": "defect",
             "text": "O índice novo evita busca lenta.", "keys": ["índice"], "applies_to": {"files": ["**"]}})));
         round(root, "x", Some(&delivered(root, 1, "O índice entrou.", &["src/a.rs"])));
-        let again = round(root, "x", Some(&verdict(1, "rejected", "faltou o nome")));
+        let again = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o nome", &vigent)));
         assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "a lição nova pede a escolha de novo: {again}");
         let lessons: Vec<u64> = again["analysis"][0]["lessons"].as_array().unwrap_or(&Vec::new())
             .iter().filter_map(|l| l["lesson"].as_u64()).collect();

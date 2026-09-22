@@ -10,7 +10,7 @@ use std::path::Path;
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog, DELIVERED_MAX_CHARS};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{agent_from_template, wave_files};
+use mustard_core::domain::wave_prompt::{agent_from_template, estimate_tokens, token_cap_message, wave_files};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -18,8 +18,8 @@ use serde_json::{json, Map, Value};
 
 use super::commit::git_lock;
 use super::queue::{
-    analyse, analysis_lines, first_unfinished, max_parallel, next_waves, only_analysis, open_copies, open_sends,
-    orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
+    analyse, analysis_lines, dispatch_basket, first_unfinished, max_parallel, next_waves, only_analysis, open_copies,
+    open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
 };
 use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
@@ -60,6 +60,9 @@ pub(crate) enum RoundRefusal {
     Git { detail: String },
     /// O repositório principal não compilou antes do commit da rodada.
     BuildFailed { command: String, output: String },
+    /// O pedido de uma onda passa do teto de tokens: a rodada recusa antes de
+    /// gravar o envio, com o tamanho medido e o teto.
+    TokenCap { wave: u64, tokens: u64 },
 }
 
 impl RoundRefusal {
@@ -78,6 +81,7 @@ impl RoundRefusal {
             Self::Replan { .. } => "wave-plan-does-not-work".into(),
             Self::Git { .. } => "git-refused".into(),
             Self::BuildFailed { .. } => "round-build-failed".into(),
+            Self::TokenCap { .. } => "wave-token-cap".into(),
         }
     }
 
@@ -140,6 +144,9 @@ impl RoundRefusal {
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
             Self::BuildFailed { command, output } => {
                 fill("round.build_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
+            }
+            Self::TokenCap { wave, tokens } => {
+                token_cap_message(*wave, *tokens, lang).unwrap_or_default()
             }
         }
     }
@@ -352,6 +359,12 @@ pub(super) fn run_round_with_mine(
         return Err(RoundRefusal::NotApproved { phase });
     }
 
+    // A cesta é lida como estava ao entrar na rodada, antes de o relatório
+    // dela mexer em onda ou tarefa: a tarefa que o corte de uma onda de lote
+    // devolve solta, agora mesmo, fica solta até a rodada seguinte — só a que
+    // já estava pronta antes desta rodada começar é empacotada aqui.
+    let log_on_entry = log.clone();
+
     // O relatório que só traz a escolha antes do envio não tem o que juntar:
     // a rodada vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
@@ -384,12 +397,30 @@ pub(super) fn run_round_with_mine(
     let log = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+
+    // A cesta forma os lotes das tarefas prontas antes de qualquer escolha:
+    // o binário grava a onda e as tarefas dela, com autor próprio, e só
+    // depois a rodada lê as ondas que existem — as novas e as já entregues.
+    dispatch_basket(&opts.root, &spec, &log).map_err(RoundRefusal::Refused)?;
+    let log = store::read(&path)
+        .map_err(RoundRefusal::Refused)?
+        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
     let codes = log.codes();
 
     // O mapa volta ao commit atual antes de montar os pedidos: um commit à
     // mão ou um pull podem ter mudado o código fora da rodada, e sem isto a
     // sugestão da onda seguinte apontaria linhas velhas.
     super::commit::refresh_map_if_stale(root, mine);
+
+    // A tarefa da cesta — a que a revisão final gravou sem onda dona, para o
+    // item do combinado que ela achou sem atender, numa chamada anterior —
+    // vira onda assim que fica pronta: esta rodada forma o lote antes de
+    // escolher o que despachar, e relê a spec para enxergar a onda nova
+    // junto das demais.
+    dispatch_basket(&opts.root, &spec, &log_on_entry).map_err(RoundRefusal::Refused)?;
+    let log = store::read(&path)
+        .map_err(RoundRefusal::Refused)?
+        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
 
     // O despacho da rodada seguinte: as ondas prontas, no máximo o que o
     // projeto deixa compilar ao mesmo tempo contando as que já estão em
@@ -429,6 +460,13 @@ pub(super) fn run_round_with_mine(
     let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
     for wave in &next {
         let Some(prompt) = built.iter().find(|p| p.wave == *wave) else { continue };
+        // O pedido acima do teto de tokens recusa a rodada antes de gravar o
+        // envio: sem isso o agente recebia um pedido grande demais sem
+        // ninguém ter decidido dividir o lote.
+        let tokens = estimate_tokens(&prompt.text);
+        if token_cap_message(*wave, tokens, lang).is_some() {
+            return Err(RoundRefusal::TokenCap { wave: *wave, tokens });
+        }
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
@@ -1114,7 +1152,13 @@ mod tests {
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
         write(root, "x", "decision", json!({"author": "user", "text": "A soma aceita negativos.", "keys": ["soma"],
             "why": "o usuário pediu", "waves": [1]}));
-        let fix = text(&round(root, "x", Some(&verdict(1, "rejected", "faltou o teste"))), "dispatch", 1);
+        // O veredito final, com o item combinado vigente atendido: sem a
+        // lista `agreed`, a revisão final seria recusada por faltar item,
+        // antes de a rodada montar o pedido do conserto que este teste prova.
+        let rejected_with_agreed = line("VERDICT", json!({"wave": 1, "result": "rejected", "final": true,
+            "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
+            "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
+        let fix = text(&round(root, "x", Some(&rejected_with_agreed)), "dispatch", 1);
         let heading =
             format!("## {}\n\n{}", translate("prompt.part.items", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");

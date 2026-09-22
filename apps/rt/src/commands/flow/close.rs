@@ -967,7 +967,19 @@ mod tests {
         assert_eq!(back["ok"], json!(true), "{back}");
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
 
-        let out = close(root, "x");
+        // O fechamento pede a revisão final, que responde pelas duas
+        // decisões, dona ou não de onda: a lista `agreed` leva as duas.
+        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let agreed = json!([
+            {"item": "MSTD-DEC-0001", "met": true},
+            {"item": "MSTD-DEC-0002", "met": true},
+        ]);
+        let approval = json!({"final": true, "result": "approved", "text": "A obra está pronta.", "agreed": agreed});
+        let out = close_for(
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: Some(format!("<VERDICT>{approval}</VERDICT>")), ..Default::default() },
+            None,
+        );
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["phase"], json!("closed"), "{out}");
 
@@ -1080,7 +1092,11 @@ mod tests {
         assert!(!ran(root), "nem o lint");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let last = log.visible().into_iter().rfind(|e| e.event_type == "verdict").unwrap();
-        assert_eq!((last.wave(), last.fields.get("final")), (Some(2), Some(&json!(true))), "a aprovação fica na última onda");
+        assert_eq!(
+            (last.wave(), last.fields.get("final"), last.str_field("result")),
+            (None, Some(&json!(true)), Some("approved")),
+            "a aprovação final não aponta onda: ela responde pelo combinado inteiro, não por uma onda dele"
+        );
         let finals: Vec<&SpecEvent> = log
             .visible()
             .into_iter()

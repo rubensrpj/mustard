@@ -161,7 +161,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::{LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
-    type_spec, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+    type_spec, Block, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
@@ -328,23 +328,44 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
                 );
             }
             // O pedido muda o plano: a cópia para o banco da página sai logo
-            // depois dele. A que não pôde ser preparada só avisa, e a cópia
-            // seguinte leva os mesmos itens.
+            // depois dele. Toda gravação que muda o plano de uma spec já
+            // aprovada — onda, tarefa, critério ou item do combinado — leva
+            // a mesma cópia, sem esperar um pedido: sem isso a cópia do
+            // pedido saía antes das ondas novas, e a página ficava sem elas
+            // até a rodada seguinte. A que não pôde ser preparada só avisa, e
+            // a cópia seguinte leva os mesmos itens.
             let mut next = next.map(|key| translate(&key, lang).to_string());
-            if let Some(said) = next.as_mut() {
+            let changes_plan =
+                matches!(type_spec(event_type).map(|t| t.block), Some(Block::Waves | Block::Criteria | Block::Agreed));
+            let already_approved = store::spec_file(&project.root, spec)
+                .ok()
+                .and_then(|path| store::read(&path).ok().flatten())
+                .is_some_and(|log| State::from_log(&log).approved);
+            if next.is_some() || (changes_plan && already_approved) {
                 match super::pages::copy::prepare(&project.root, spec, super::pages::copy::Moment::Request, lang) {
                     Ok(Some(prepared)) => {
                         report["copy"] = prepared.to_value();
-                        for sentence in prepared.order(spec.trim(), None, lang) {
-                            said.push(' ');
-                            said.push_str(&sentence);
+                        let sentences = prepared.order(spec.trim(), None, lang);
+                        match next.as_mut() {
+                            Some(said) => {
+                                for sentence in sentences {
+                                    said.push(' ');
+                                    said.push_str(&sentence);
+                                }
+                            }
+                            None => next = Some(sentences.join(" ")),
                         }
                     }
                     Ok(None) => {}
                     Err(refusal) => {
                         warnings.push(refusal.message(lang));
-                        said.push(' ');
-                        said.push_str(translate("page.copy.failed", lang));
+                        match next.as_mut() {
+                            Some(said) => {
+                                said.push(' ');
+                                said.push_str(translate("page.copy.failed", lang));
+                            }
+                            None => next = Some(translate("page.copy.failed", lang).to_string()),
+                        }
                     }
                 }
             }

@@ -87,8 +87,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              entre as ondas e o que cada onda deixou aberto — como as ondas se encaixam, código \
              repetido entre ondas, decisão de uma que contradiz a de outra, prova que uma apagou da \
              outra. Aponte só; não conserte.\n\n\
-             **O que devolver.** A linha `<VERDICT>` com `\"final\":true`: aprovada, sem `wave`; \
-             reprovada, com a onda que o conserto refaz em `wave`."
+             **O que devolver.** A linha `<VERDICT>` com `\"final\":true`. O pedido traz o combinado \
+             inteiro da spec, dono ou não de onda: responda por cada item em `agreed`, com o código \
+             em `item` e `met` dizendo se está atendido; quando não estiver, `text` diz o que falta \
+             e `files` os arquivos, e viram uma tarefa nova. Faltar algum item do combinado na lista \
+             é veredito malformado: nada é gravado."
         }
         ("prompt.final.fixed", Locale::EnUs) => {
             "**What this is.** The dedicated test agent's request for this spec, with the whole \
@@ -98,8 +101,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              recorded between waves and what each wave left open — how the waves fit together, code \
              repeated across them, a decision of one that contradicts another's, a proof one erased \
              from another. Point it out only; do not fix it.\n\n\
-             **What to return.** The `<VERDICT>` line with `\"final\":true`: approved, with no \
-             `wave`; rejected, with the wave the fix redoes in `wave`."
+             **What to return.** The `<VERDICT>` line with `\"final\":true`. The request carries \
+             the spec's whole agreed set, owned by a wave or not: answer for each item in `agreed`, \
+             with the code in `item` and `met` saying whether it is satisfied; when it is not, \
+             `text` says what is missing and `files` the files, and they become a new task. Missing \
+             any agreed item from the list is a malformed verdict: nothing gets recorded."
         }
         // O exemplo único do comando que lê um item, que os dois pedidos
         // trazem logo depois da parte fixa. `{root}` é `--root <caminho> `
@@ -243,7 +249,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             37,
-            0x389f_4cd0_34ea_c872,
+            0xc2f7_196f_a2db_6aac,
         );
     }
 }

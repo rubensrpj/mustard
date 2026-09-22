@@ -63,6 +63,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.task_dependency_cycle", Locale::EnUs) => {
             "The tasks depend on each other in a circle: {cycle}. Nothing was written."
         }
+        ("spec_events.agreed_items_missing", Locale::PtBr) => {
+            "O veredito final precisa responder por todo o combinado vigente: faltou {missing}. \
+             Nada foi gravado."
+        }
+        ("spec_events.agreed_items_missing", Locale::EnUs) => {
+            "The final verdict must answer for the whole vigent agreed set: {missing} is missing. \
+             Nothing was written."
+        }
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -557,8 +565,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            80,
-            0xd35a_8a12_3016_db85,
+            81,
+            0x9b89_2823_fc39_393b,
         );
     }
 
@@ -576,6 +584,7 @@ mod tests {
             ("spec_events.task_declaration_depends_on", &[][..]),
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
+            ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),

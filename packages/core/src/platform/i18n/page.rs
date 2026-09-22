@@ -405,6 +405,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.group.criterion_run", Locale::PtBr) => "Execuções",
         ("page.group.criterion_run", Locale::EnUs) => "Runs",
         ("page.group.skill", _) => "Skills",
+        ("page.group.basket", Locale::PtBr) => "Cesta",
+        ("page.group.basket", Locale::EnUs) => "Basket",
 
         ("page.field.excerpt", Locale::PtBr) => "trecho",
         ("page.field.excerpt", Locale::EnUs) => "excerpt",
@@ -577,8 +579,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.wave_commit", Locale::EnUs) => "Commit",
         ("page.field.wave_receives", Locale::PtBr) => "Recebe",
         ("page.field.wave_receives", Locale::EnUs) => "Receives",
-        ("page.field.wave_points", Locale::PtBr) => "Soma das notas",
-        ("page.field.wave_points", Locale::EnUs) => "Points total",
 
         ("page.value.warn", Locale::PtBr) => "aviso",
         ("page.value.warn", Locale::EnUs) => "warning",
@@ -852,7 +852,7 @@ mod tests {
             include_str!("page.rs"),
             super::PREFIXES,
             329,
-            0xcefe_88ac_b70b_9059,
+            0x0db8_4a9e_bd8e_7001,
         );
     }
 

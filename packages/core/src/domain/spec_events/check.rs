@@ -218,20 +218,20 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
             }
         }
         // A revisão de uma onda aponta a onda e diz quais critérios conferiu.
-        // A aprovação do agente de teste dedicado não aponta onda nenhuma —
-        // ela vale para a obra inteira, e uma obra sem onda nenhuma (até 3
-        // pontos, feita pelo orquestrador) não tem o que apontar —, nem
-        // confere critério: ela confere o encaixe do que a obra fez, e cobrar
-        // os dois campos dela travava o fechamento de toda obra, que não
-        // fecha sem essa aprovação.
-        "verdict" => {
-            let approved = word("result") == "approved";
-            match event.get("final").and_then(Value::as_bool) {
-                Some(true) if approved => Ok(()),
-                Some(true) => need("wave"),
-                _ => need("wave").and_then(|()| need("criteria")),
-            }
-        }
+        // A revisão final do agente de teste dedicado não aponta onda
+        // nenhuma, aprovada ou reprovada: ela vale para a obra inteira, e
+        // responde pelo combinado vigente item a item, não por onda — a
+        // reprovação por um item que nenhuma onda carrega vira tarefa na
+        // cesta, sem onda para apontar. Uma obra sem onda nenhuma (até 3
+        // pontos, feita pelo orquestrador) também não tem o que apontar. Nem
+        // uma nem outra confere critério: quem confere o encaixe do que a
+        // obra fez é o combinado, não o critério de uma onda, e cobrar os
+        // dois campos dela travava o fechamento de toda obra, que não fecha
+        // sem essa aprovação.
+        "verdict" => match event.get("final").and_then(Value::as_bool) {
+            Some(true) => Ok(()),
+            _ => need("wave").and_then(|()| need("criteria")),
+        },
         "point" => {
             let reminders = event.get("reminders").and_then(Value::as_array).map_or(0, Vec::len);
             if reminders > 3 {
@@ -509,21 +509,19 @@ mod tests {
         );
     }
 
-    /// A aprovação do agente de teste dedicado, sem onda nenhuma: é a única
-    /// que entra assim, para a obra sem onda (até 3 pontos, feita pelo
-    /// orquestrador) também poder fechar. A reprovação final continua
-    /// apontando a onda do conserto, e a revisão de uma onda continua
-    /// apontando a dela.
+    /// A revisão final do agente de teste dedicado, sem onda nenhuma, entra
+    /// aprovada ou reprovada: é a única que entra assim, para a obra sem
+    /// onda (até 3 pontos, feita pelo orquestrador) também poder fechar, e
+    /// para o item combinado que nenhuma onda carrega poder reprovar sem
+    /// apontar onda — ele vira tarefa na cesta, não conserto de uma onda. A
+    /// revisão de uma onda continua apontando a dela.
     #[test]
-    fn only_the_dedicated_test_agents_approval_is_recorded_without_a_wave() {
+    fn only_the_final_review_of_the_whole_is_recorded_without_a_wave() {
         let approved = json!({"author": "review", "final": true, "result": "approved", "text": "pronto"});
         assert_eq!(checked("verdict", approved), Ok(()));
 
         let rejected = json!({"author": "review", "final": true, "result": "rejected", "text": "faltou"});
-        assert_eq!(
-            checked("verdict", rejected).unwrap_err(),
-            Refusal::MissingField { event_type: "verdict".into(), field: "wave".into() }
-        );
+        assert_eq!(checked("verdict", rejected), Ok(()));
 
         let no_wave = json!({"author": "review", "result": "approved", "text": "passou",
             "criteria": [{"criterion": 7, "tests_rule": true}]});

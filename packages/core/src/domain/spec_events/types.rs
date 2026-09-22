@@ -573,10 +573,12 @@ pub const TYPES: &[TypeSpec] = &[
             // cobrança do campo fica com a situação (veja `check_conditions`).
             opt("criteria", Kind::Objects),
             opt("lessons", Kind::Objects),
-            // A revisão final do conjunto, que o fechamento pede à spec de
-            // duas ondas ou mais: aprovada, fica na última onda do plano;
-            // reprovada, na onda que o conserto refaz.
+            // A revisão final do conjunto, que o fechamento pede a toda obra:
+            // fica sem onda, na resposta por todo o combinado vigente que
+            // `agreed` traz, item a item — cobrança de fora, junto do
+            // veredito (veja `check_conditions`).
             opt("final", Kind::Bool),
+            opt("agreed", Kind::Objects),
         ],
     ),
     // Andamento.

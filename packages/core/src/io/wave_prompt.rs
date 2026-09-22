@@ -164,14 +164,9 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         .collect();
     let criteria: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").collect();
-    let mut agreed: Vec<&SpecEvent> = Vec::new();
-    for wave in scope {
-        for item in wave_prompt::agreed_for(log, *wave) {
-            if !agreed.iter().any(|seen| seen.id == item.id) {
-                agreed.push(item);
-            }
-        }
-    }
+    // Todo o combinado vigente, dono ou não de onda: a revisão final responde
+    // por ele inteiro, mesmo numa rodada de conserto de uma onda só.
+    let mut agreed: Vec<&SpecEvent> = wave_prompt::all_agreed(log);
     agreed.sort_by_key(|e| e.id);
     let changes: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit").collect();
