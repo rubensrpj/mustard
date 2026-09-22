@@ -656,6 +656,62 @@ pub fn basket_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BasketFields {
     BasketFields { criteria, text: text_parts.join(" "), done_when }
 }
 
+/// Os executores que o binário reconhece abrindo a prova de um critério,
+/// escritos como uma palavra só. A lista é de ferramenta, não de projeto:
+/// qualquer pilha que rode teste aparece aqui, e o programa que só existe num
+/// projeto entra pela outra porta, a do nome com caminho, ponto ou hífen.
+pub const PROOF_COMMANDS: &[&str] = &[
+    "bash", "bun", "bundle", "cabal", "cargo", "cmake", "composer", "ctest", "dart", "deno", "docker", "dotnet",
+    "echo", "elixir", "env", "flutter", "git", "go", "gradle", "gradlew", "grep", "jest", "just", "make", "mix",
+    "mocha", "mvn", "ninja", "node", "npm", "npx", "php", "phpunit", "pnpm", "poetry", "printf", "pytest", "python",
+    "python3", "rake", "rg", "rspec", "rtk", "ruby", "rustc", "sbt", "sh", "stack", "swift", "task", "tox", "tsc",
+    "uv", "vitest", "yarn", "zig", "zsh",
+];
+
+/// `true` quando `token` é uma atribuição de variável de ambiente à frente do
+/// comando, como `PATH="..."` ou `CARGO_TARGET_DIR=/tmp/x`: ela abre a linha
+/// sem ser o programa que roda.
+fn env_assignment(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else { return false };
+    !name.is_empty()
+        && !name.contains('/')
+        && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `true` quando `proof` abre por um programa, e não por prosa ou pelo nome
+/// solto de um teste: descontadas as atribuições de ambiente da frente, o
+/// primeiro pedaço ou está em [`PROOF_COMMANDS`] ou nomeia um programa pelo
+/// caminho, pelo ponto ou pelo hífen — que nome de teste e palavra de frase
+/// não trazem.
+#[must_use]
+pub fn proof_is_command(proof: &str) -> bool {
+    let Some(program) = proof.split_whitespace().find(|token| !env_assignment(token)) else { return false };
+    PROOF_COMMANDS.contains(&program)
+        || program.contains('/')
+        || program.contains('.')
+        || program.contains('-')
+}
+
+/// Confere que a prova que a entrega de uma onda traz para o critério
+/// `criterion` é uma linha de comando. O campo guarda o comando que demonstra
+/// o critério, e é ele que a rodada e o fechamento rodam; duas provas do
+/// mesmo critério viram um comando só, ligado por `&&`, e o nome solto de um
+/// teste ali dentro vira um comando que o shell não acha, com saída 127 e uma
+/// mensagem que não diz de onde veio. A conferência é na gravação, para o
+/// defeito aparecer na rodada que o criou.
+///
+/// # Errors
+///
+/// [`Refusal::ProofNotACommand`], com o critério e o texto que veio no lugar
+/// do comando.
+pub fn proof_rule(criterion: &str, proof: &str) -> Result<(), Refusal> {
+    if proof_is_command(proof) {
+        return Ok(());
+    }
+    Err(Refusal::ProofNotACommand { criterion: criterion.to_string(), found: proof.to_string() })
+}
+
 /// A gravação de um item combinado novo depois da aprovação: ele nasce com
 /// dono. Olha o arquivo antes e depois da gravação; o item que já existia, a
 /// spec ainda não aprovada e a gravação de outro tipo passam.

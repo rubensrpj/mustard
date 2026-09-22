@@ -1178,7 +1178,16 @@ mod tests {
             .replace("{changed}", "2")
             .replace("{declared}", "1")
             .replace("{missing}", "src/esquecido.rs");
-        assert_eq!(out["warnings"], json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
+        // O aviso da onda que entregou sem linha de consumo é de outro
+        // assunto e sai junto: aqui se olha o resto.
+        let warned: Vec<Value> = out["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w["reason"] != json!("usage-missing"))
+            .collect();
+        assert_eq!(json!(warned), json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
     }
 
     /// Cada relatório de `wrong` é recusado pelo git, com o motivo que o git

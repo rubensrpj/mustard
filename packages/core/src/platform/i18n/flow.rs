@@ -446,6 +446,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave}'s copy changed {changed} file(s) and the delivery cited {declared}: {missing} \
              was left out. All of it went into the commit anyway."
         }
+        ("round.usage_missing", Locale::PtBr) => {
+            "A onda {wave} entregou sem a linha de consumo, e o gasto dela não entrou na página: \
+             a entrega ficou gravada assim mesmo. Acrescente a linha USAGE dessa onda, com o \
+             modelo, os passos e os tokens, e repita a rodada com o mesmo relatório."
+        }
+        ("round.usage_missing", Locale::EnUs) => {
+            "Wave {wave} delivered without the usage line, and its cost did not reach the page: \
+             the delivery was written anyway. Add that wave's USAGE line, with the model, the steps \
+             and the tokens, and run the round again with the same report."
+        }
         ("round.build_failed", Locale::PtBr) => {
             "O repositório principal não compilou com `{command}`, e a rodada não comitou nada: {output}"
         }
@@ -1049,8 +1059,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            138,
-            0x7d2a_8644_18b1_f782,
+            139,
+            0xef38_884c_9c5d_1b1f,
         );
     }
 
@@ -1196,6 +1206,7 @@ mod tests {
             ("conversation_size.autocompact", &["{machine}", "{installed}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
+            ("round.usage_missing", &["{wave}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),

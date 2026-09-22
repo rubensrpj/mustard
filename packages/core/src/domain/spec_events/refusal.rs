@@ -135,6 +135,12 @@ pub enum Refusal {
     /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
     /// pelo nome, nos dois idiomas.
     CriterionFormMissing,
+    /// A prova de um critério que chegou pelo relatório de uma onda sem ser
+    /// uma linha de comando: o campo guarda o comando que demonstra o
+    /// critério, e o que não começa por um executável conhecido vira, mais
+    /// adiante, um comando que o shell não acha. `criterion` é o critério, e
+    /// `found` o texto que veio no lugar do comando.
+    ProofNotACommand { criterion: String, found: String },
     Io { detail: String },
 }
 
@@ -217,6 +223,7 @@ impl Refusal {
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
+            Self::ProofNotACommand { .. } => "proof-not-a-command",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -422,6 +429,10 @@ impl Refusal {
                 &[("{missing}", missing.join(", "))],
             ),
             Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
+            Self::ProofNotACommand { criterion, found } => fill(
+                "spec_events.proof_not_a_command",
+                &[("{criterion}", criterion.clone()), ("{found}", found.clone())],
+            ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }

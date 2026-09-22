@@ -171,7 +171,16 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
         for writer in writers {
             let out = writer.wait_with_output().expect("wait write");
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
-            assert!(stdout_json(&out).get("warnings").is_none(), "{}", String::from_utf8_lossy(&out.stdout));
+            // Sem a linha de consumo, que só quem despacha escreve, a rodada
+            // avisa; é de outro assunto, e aqui se olha o resto.
+            let warned = stdout_json(&out)["warnings"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|w| w["reason"] != json!("usage-missing"))
+                .count();
+            assert_eq!(warned, 0, "{}", String::from_utf8_lossy(&out.stdout));
         }
         let copied = copied_items(root, &spec.join("copy"));
         for text in &texts {
@@ -368,7 +377,14 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
         .replace("{changed}", "2")
         .replace("{declared}", "1")
         .replace("{missing}", "extra.rs");
-    assert_eq!(body["warnings"], json!([{"reason": "files-diverged", "wave": 1, "hint": hint}]), "{body}");
+    let warned: Vec<serde_json::Value> = body["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|w| w["reason"] != json!("usage-missing"))
+        .collect();
+    assert_eq!(json!(warned), json!([{"reason": "files-diverged", "wave": 1, "hint": hint}]), "{body}");
 
     // Onda 2: a cópia dela deixa o comando de compilação quebrado.
     let before = head();

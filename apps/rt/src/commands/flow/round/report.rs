@@ -345,6 +345,25 @@ pub(crate) fn take_report_with_mine(
         refresh_map(root, mine);
     }
     warnings.extend(close_copies(root, log, &report.waves, lang));
+    // A linha de consumo é opcional na forma, e nunca em silêncio: sem ela o
+    // envio da onda não ganha versão nova, e a página mostra um gasto menor
+    // que o real. A entrega fica gravada do mesmo jeito — o consumo não é
+    // dela, e recusá-la devolveria o trabalho de uma onda inteira por uma
+    // linha que quem despacha escreve —, e a resposta avisa, nomeando a onda.
+    for wave in &report.waves {
+        let silent = wave.model_used.is_none()
+            && wave.steps.is_none()
+            && wave.tokens.is_none()
+            && wave.caller_steps.is_none()
+            && wave.caller_tokens.is_none();
+        if silent {
+            warnings.push(json!({
+                "reason": "usage-missing",
+                "wave": wave.wave,
+                "hint": translate("round.usage_missing", lang).replace("{wave}", &wave.wave.to_string()),
+            }));
+        }
+    }
     // A prova nova roda uma vez: a que sai verde sem rodar teste nenhum é
     // avisada agora, antes de o fechamento recusá-la.
     for (code, proof) in proofs {
@@ -784,11 +803,16 @@ fn check_reports(
     }
     // Mais de uma prova para o mesmo critério não vira uma versão por prova,
     // em cadeia: junta todas num comando só, ligado por `&&`, na ordem e sem
-    // repetir, e o critério ganha uma versão só, mais abaixo.
+    // repetir, e o critério ganha uma versão só, mais abaixo. Cada uma passa
+    // antes pela regra da prova: o que não é linha de comando recusa aqui,
+    // nomeando o critério, em vez de virar um comando que o shell não acha na
+    // rodada seguinte.
     let mut proofs: Vec<(u64, String)> = Vec::new();
     for wave in &report.waves {
         for (reference, proof) in &wave.proofs {
             let id = criterion_id(check.log(), reference)?;
+            let code = check.log().codes().get(&id).cloned().unwrap_or_else(|| id.to_string());
+            agreed_prompt::proof_rule(&code, proof)?;
             match proofs.iter_mut().find(|(existing, _)| *existing == id) {
                 Some((_, joined)) if joined.split(" && ").any(|part| part == proof) => {}
                 Some((_, joined)) => {
@@ -1466,7 +1490,16 @@ mod tests {
         let shown_files = String::from_utf8_lossy(&shown_files.unwrap().stdout).to_string();
         assert_eq!(shown_files.lines().collect::<Vec<_>>(), ["src/a.rs", "src/novo.rs"], "{went}");
         assert!(!copy(1).exists(), "the first copy is gone after the commit: {went}");
-        assert!(went.get("warnings").is_none(), "{went}");
+        // Só o aviso da onda que entregou sem linha de consumo, de outro
+        // assunto: a junção das duas ondas não tem o que avisar.
+        let warned: Vec<Value> = went["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w["reason"] != json!("usage-missing"))
+            .collect();
+        assert!(warned.is_empty(), "{went}");
         // A onda 2 já tem pedido aberto: a rodada não despacha nada de novo,
         // e a cópia dela, com o trecho que ainda não entregou, segue como
         // estava.
@@ -1719,7 +1752,14 @@ mod tests {
             .replace("{copy}", &mustard_core::io::wave_prompt::shown(&copy(1)))
             .replace("{head}", &head);
         assert!(expected.contains("só com a linha `DELIVERED` da onda 1"), "the other line is not sent again: {expected}");
-        assert_eq!(out["warnings"], json!([{"reason": "round-merge-conflict", "wave": 1, "hint": expected}]), "{out}");
+        let warned: Vec<Value> = out["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w["reason"] != json!("usage-missing"))
+            .collect();
+        assert_eq!(json!(warned), json!([{"reason": "round-merge-conflict", "wave": 1, "hint": expected}]), "{out}");
         assert_eq!(waves_in(&out, "running"), vec![1], "the held wave is still out: {out}");
 
         git_at(&copy(1), &["checkout", "-q", "--merge", "--detach", &head]);
@@ -1908,6 +1948,12 @@ mod tests {
             "#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma_nova() { assert_eq!(1 + 1, 2); }\n}\n",
         )
         .unwrap();
+        let warned = |out: &Value, reason: &str| {
+            out["warnings"]
+                .as_array()
+                .map(|list| list.iter().any(|w| w["reason"] == json!(reason)))
+                .unwrap_or(false)
+        };
         let proof = |name: &str| format!("cargo test --lib -- tests::{name} --exact");
         let report = |name: &str, summary: &str| {
             line("DELIVERED", json!({"wave": 1, "text": "O teste mudou de nome.", "files": ["src/lib.rs"],
@@ -1915,7 +1961,9 @@ mod tests {
         };
         let out = round(root, "x", Some(&report("soma_nova", "o teste muda de nome")));
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert!(out.get("warnings").is_none(), "the right name runs a test: {out}");
+        // O aviso da onda sem linha de consumo é de outro assunto e sai
+        // junto: aqui se olha o da prova que não rodou teste.
+        assert!(!warned(&out, "proof-ran-no-test"), "the right name runs a test: {out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let visible = log.visible();
         let criteria: Vec<&&SpecEvent> = visible.iter().filter(|e| e.event_type == "criterion").collect();
@@ -1929,7 +1977,14 @@ mod tests {
         let out = round(root, "x", Some(&report("soma", "a prova errada")));
         assert_eq!(out["ok"], json!(true), "{out}");
         let expected = translate("round.proof_ran_no_test", Locale::PtBr).replace("{code}", "MSTD-CRIT-0001");
-        assert_eq!(out["warnings"], json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
+        let rest: Vec<Value> = out["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w["reason"] != json!("usage-missing"))
+            .collect();
+        assert_eq!(json!(rest), json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
     }
 
     /// O motor do comando `qa-run` saiu de `qa_run/mod.rs` e
@@ -1951,14 +2006,27 @@ mod tests {
                 "commit": summary, "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": proof}]}))
         };
 
+        let warned = |out: &Value, reason: &str| {
+            out["warnings"]
+                .as_array()
+                .map(|list| list.iter().any(|w| w["reason"] == json!(reason)))
+                .unwrap_or(false)
+        };
         let out = round(root, "x", Some(&report("echo running 1 test", "a prova roda teste")));
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert!(out.get("warnings").is_none(), "a prova que roda teste não avisa: {out}");
+        assert!(!warned(&out, "proof-ran-no-test"), "a prova que roda teste não avisa: {out}");
 
         let out = round(root, "x", Some(&report("echo running 0 tests", "a prova não roda teste")));
         assert_eq!(out["ok"], json!(true), "{out}");
         let expected = translate("round.proof_ran_no_test", Locale::PtBr).replace("{code}", "MSTD-CRIT-0001");
-        assert_eq!(out["warnings"], json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
+        let rest: Vec<Value> = out["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w["reason"] != json!("usage-missing"))
+            .collect();
+        assert_eq!(json!(rest), json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
     }
 
     /// A conferência antes do git é a da gravação inteira, contra a spec, e
@@ -2148,6 +2216,102 @@ mod tests {
         assert_eq!(sends[0].id, sent.id, "o envio segue o mesmo de antes");
         assert!(sends[0].int("tokens").is_none(), "o número dentro da entrega não vira consumo: {sends:?}");
         assert!(sends[0].int("steps").is_none(), "o número dentro da entrega não vira consumo: {sends:?}");
+    }
+
+    /// A linha de consumo pode faltar — a entrega é gravada do mesmo jeito,
+    /// porque o consumo não é dela —, mas nunca em silêncio: a resposta da
+    /// rodada avisa, nomeando a onda, que o gasto daquela onda não entrou na
+    /// página. Com a linha, aviso nenhum.
+    #[test]
+    fn a_entrega_sem_linha_de_consumo_avisa_na_resposta() {
+        let sem = tempdir().unwrap();
+        let root = sem.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(true), "a entrega não é recusada por falta de consumo: {out}");
+        assert_eq!(delivered_count(root), 1, "a entrega foi gravada: {out}");
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        let silent: Vec<u64> = warnings
+            .iter()
+            .filter(|w| w["reason"] == json!("usage-missing"))
+            .filter_map(|w| w["wave"].as_u64())
+            .collect();
+        assert_eq!(silent, vec![1], "o aviso nomeia a onda que ficou sem consumo: {out}");
+        let hint = warnings
+            .iter()
+            .find(|w| w["reason"] == json!("usage-missing"))
+            .and_then(|w| w["hint"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(hint.contains(" 1 "), "o aviso diz de qual onda fala: {hint}");
+
+        // A mesma entrega com a linha de consumo: o gasto entra na página e
+        // não há o que avisar.
+        let com = tempdir().unwrap();
+        let root = com.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        let delivery = delivered(root, 1, "A soma saiu.", &["src/a.rs"]);
+        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 42, "tokens": 123_456,
+            "caller_steps": 7, "caller_tokens": 89_000}));
+        let out = round(root, "x", Some(&format!("{delivery}\n{usage}")));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().all(|w| w["reason"] != json!("usage-missing")), "com a linha, aviso nenhum: {out}");
+    }
+
+    /// Duas provas do mesmo critério viram um comando só, ligado por `&&`:
+    /// o nome solto de um teste ali dentro daria um comando que o shell não
+    /// acha, e que só estouraria na rodada seguinte. A rodada recusa a
+    /// gravação na hora, nomeando o critério e dizendo que o campo é uma
+    /// linha de comando, e nada é gravado nem comitado. Com as duas provas
+    /// escritas como comando, a junção sai e o critério ganha uma versão só.
+    #[test]
+    fn duas_provas_do_mesmo_criterio_nao_viram_comando_invalido() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let body = |proofs: Value| {
+            line(
+                "DELIVERED",
+                json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu",
+                    "proofs": proofs}),
+            )
+        };
+        let names = body(json!([
+            {"criterion": "MSTD-CRIT-0001", "proof": "a_soma_sai_certa"},
+            {"criterion": "MSTD-CRIT-0001", "proof": "a_dobra_sai_certa"},
+        ]));
+        let refused = round(root, "x", Some(&names));
+        assert_eq!(refused["reason"], json!("proof-not-a-command"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default().to_string();
+        assert!(hint.contains("MSTD-CRIT-0001"), "a recusa nomeia o critério: {hint}");
+        assert!(hint.contains("a_soma_sai_certa"), "a recusa mostra o texto que veio no lugar: {hint}");
+        assert_eq!(delivered_count(root), 0, "nada foi gravado: {refused}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {refused}");
+
+        // As mesmas duas provas escritas como comando passam, e o critério
+        // fica com uma linha de comando só.
+        let commands = body(json!([
+            {"criterion": "MSTD-CRIT-0001", "proof": "cargo test -p x a_soma_sai_certa"},
+            {"criterion": "MSTD-CRIT-0001", "proof": "cargo test -p x a_dobra_sai_certa"},
+        ]));
+        let out = round(root, "x", Some(&commands));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério");
+        assert_eq!(
+            current.str_field("proof"),
+            Some("cargo test -p x a_soma_sai_certa && cargo test -p x a_dobra_sai_certa"),
+            "as duas provas viram um comando só"
+        );
     }
 
     /// A versão nova do critério que a onda `wave` do log em `root` cobre,

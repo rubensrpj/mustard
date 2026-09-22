@@ -82,6 +82,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              kind that only holds if a resource exists, or the kind that handles an unwanted event. \
              Nothing was written."
         }
+        ("spec_events.proof_not_a_command", Locale::PtBr) => {
+            "A prova do critério {criterion} precisa ser uma linha de comando, a que demonstra o \
+             critério, e veio {found}. Junte as provas do mesmo critério num comando só e repita a \
+             rodada. Nada foi gravado."
+        }
+        ("spec_events.proof_not_a_command", Locale::EnUs) => {
+            "Criterion {criterion}'s proof must be a command line, the one that demonstrates the \
+             criterion, and {found} arrived instead. Merge the proofs of the same criterion into a \
+             single command and run the round again. Nothing was written."
+        }
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -576,8 +586,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            82,
-            0x77a9_a708_4de2_a7e8,
+            83,
+            0xfbfc_3e1e_4407_a35d,
         );
     }
 
@@ -597,6 +607,7 @@ mod tests {
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
+            ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),
