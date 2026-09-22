@@ -358,6 +358,20 @@ impl SpecLog {
             .collect()
     }
 
+    /// Os arquivos que os commits desta obra tocaram, de toda onda — a prova
+    /// concreta do que as entregas mudaram, e não o que uma tarefa declarava
+    /// tocar antes de rodar. É daqui que o caminho de volta (do teste para o
+    /// critério que o cobre) parte, no fechamento.
+    #[must_use]
+    pub fn delivered_files(&self) -> BTreeSet<String> {
+        self.block(BlockQuery::Block(Block::Progress))
+            .into_iter()
+            .filter(|event| event.event_type == "commit")
+            .flat_map(|event| event.fields.get("files").and_then(Value::as_array).cloned().unwrap_or_default())
+            .filter_map(|file| file.as_str().map(str::to_string))
+            .collect()
+    }
+
     /// As ondas do plano: as que a leitura mostra. O que foi gravado em nome
     /// de uma onda que saiu do plano — o veredito, que o binário não deixa
     /// tirar, e o pedido e a entrega — não conta na rodada, no fechamento nem
@@ -566,6 +580,25 @@ mod tests {
         // os dois, e não a onda nem a tarefa.
         let panel: Vec<u64> = log.block(BlockQuery::Block(Block::Metrics)).iter().map(|e| e.id).collect();
         assert_eq!(panel, [5, 6, 7]);
+    }
+
+    /// Os arquivos entregues são os dos eventos `commit`, sem repetir, e não
+    /// os de outro tipo de evento — a tarefa que só declara o que uma onda
+    /// vai tocar não conta, porque nada garante que ela tocou aquilo de
+    /// verdade.
+    #[test]
+    fn delivered_files_are_the_ones_the_commits_touched() {
+        let content = "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"task\",\"wave\":1,\"text\":\"Mexer.\",\
+                       \"files\":[{\"path\":\"src/nao-e-commit.rs\"}]}\n\
+                       {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"commit\",\"sha\":\"a1\",\"title\":\"x\",\
+                       \"waves\":[1],\"files\":[\"src/a.rs\",\"src/b.rs\"],\"repo\":\".\"}\n\
+                       {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"commit\",\"sha\":\"a2\",\"title\":\"y\",\
+                       \"waves\":[2],\"files\":[\"src/b.rs\",\"src/c.rs\"],\"repo\":\".\"}\n";
+        let log = parse_log(content);
+        assert_eq!(
+            log.delivered_files(),
+            BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()])
+        );
     }
 
     #[test]

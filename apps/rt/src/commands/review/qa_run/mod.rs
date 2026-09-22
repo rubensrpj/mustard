@@ -191,4 +191,36 @@ mod tests {
         assert!(!section.contains("Files"));
     }
 
+    /// A peça que roda a prova de um critério — [`run_proof`], a mesma que o
+    /// fechamento e a rodada chamam — não se contenta com o código de saída:
+    /// um comando real, de um executor real, cujo filtro não casa teste
+    /// nenhum, sai verde e ainda assim não passa, porque a leitura da saída
+    /// diz zero teste rodado. É a peça, e não a conversa entre close.rs e
+    /// runner.rs, que promete essa leitura.
+    #[test]
+    fn a_verificacao_que_nao_roda_teste_nenhum_e_recusada() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"prova\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma() { assert_eq!(1 + 1, 2); }\n}\n",
+        )
+        .unwrap();
+
+        // Sanidade: o mesmo comando, com o nome certo, roda e passa — a
+        // recusa abaixo é da leitura de zero testes, não de outro motivo.
+        let matching = run_proof("cargo test --lib -- tests::soma --exact", root);
+        assert_eq!(matching.result, "pass", "a prova com o nome certo passa");
+        assert_eq!(matching.ran_no_test, None);
+
+        let out = run_proof("cargo test --lib -- nome_que_nao_existe_em_lugar_nenhum", root);
+        assert_eq!(out.result, "fail", "verde sem rodar teste não é prova aprovada");
+        assert_eq!(out.ran_no_test, Some(0), "a recusa carrega o número que a saída disse");
+    }
 }

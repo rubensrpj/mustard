@@ -329,6 +329,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("close.unowned_item", Locale::EnUs) => {
             "Item {code} ({title}) has no owner and no wave carried it: it stays out of the code."
         }
+        // O caminho de volta: um teste que a obra criou ou mudou e que
+        // nenhum critério cita na prova dele — o fechamento avisa, com o
+        // nome do teste e o arquivo, em vez de deixar o teste sem dono.
+        ("close.unowned_test", Locale::PtBr) => {
+            "O teste {name}, em {file}, não tem critério que o cite na prova dele: fica sem cobertura."
+        }
+        ("close.unowned_test", Locale::EnUs) => {
+            "The test {name}, in {file}, has no criterion citing it in its proof: it stays without coverage."
+        }
 
         // A rodada de ondas (`commands/flow/round.rs`).
         ("round.bad_report", Locale::PtBr) => {
@@ -1037,8 +1046,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            137,
-            0x61bd_b489_e8e4_65c7,
+            138,
+            0x7942_9e90_fbc9_bd27,
         );
     }
 
@@ -1166,6 +1175,7 @@ mod tests {
             ("close.next", &["{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
             ("close.unowned_item", &["{code}", "{title}"][..]),
+            ("close.unowned_test", &["{name}", "{file}"][..]),
             ("round.bad_report", &["{detail}"][..]),
             ("round.line_field", &["{line}", "{field}"][..]),
             ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),
