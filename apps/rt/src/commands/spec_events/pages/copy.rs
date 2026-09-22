@@ -882,13 +882,12 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict};
+    use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger};
     use mustard_core::domain::spec_state::SpecState as _;
     use serde_json::{json, Value};
     use tempfile::tempdir;
 
     use super::*;
-    use crate::commands::flow::plan::{plan_for, PlanOpts};
     use crate::commands::flow::round::{round_for, RoundOpts};
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
     use crate::shared::spec_state::DiskSpecState;
