@@ -341,6 +341,26 @@ mod tests {
         }
     }
 
+    /// O nível topológico de uma tarefa da cesta espera a dependência dela:
+    /// mesmo grafo do teste de ponta a ponta do despacho
+    /// (`apps/rt/tests/round_dispatch.rs`), só que sobre o nível, não o lote.
+    #[test]
+    fn a_task_waits_the_level_of_its_dependency() {
+        let tasks = [
+            task(1, &[], &["a.rs", "b.rs"], false),
+            task(2, &[], &["c.rs"], false),
+            task(3, &[1], &["d.rs"], false),
+            task(4, &[], &["e.rs", "f.rs", "g.rs"], false),
+            task(5, &[], &["b.rs"], false),
+            task(6, &[4], &["h.rs"], false),
+        ];
+        let levels = task_levels(&tasks);
+        assert!(levels.cycle.is_empty());
+        assert_eq!(levels.level[&1], 0);
+        assert_eq!(levels.level[&3], 1, "a 3 espera a 1");
+        assert_eq!(levels.level[&6], 1, "a 6 espera a 4");
+    }
+
     /// O exemplo da regra em código, com os dois lados: a tarefa 7 depende
     /// das tarefas 3 e 5; com a 3 entregue e a 5 aberta, a 7 não entra em
     /// lote (o "antes" falha); entregue a 5 também, a 7 entra na rodada
@@ -427,40 +447,9 @@ mod tests {
         assert!(pack_batches(&tasks, &[], BASKET_CAPACITY).is_empty());
     }
 
-    /// A cesta inteira, numa spec de 6 tarefas com dependências e arquivos
-    /// declarados: o nível topológico, a prontidão com desempate e o
-    /// empacotamento sempre devolvem os mesmos lotes.
-    #[test]
-    fn a_cesta_de_tarefas_vira_sempre_os_mesmos_lotes() {
-        let tasks = [
-            task(1, &[], &["a.rs", "b.rs"], false),
-            task(2, &[], &["c.rs"], false),
-            task(3, &[1], &["d.rs"], false),
-            task(4, &[], &["e.rs", "f.rs", "g.rs"], false),
-            task(5, &[], &["b.rs"], false),
-            task(6, &[4], &["h.rs"], false),
-        ];
-
-        let levels = task_levels(&tasks);
-        assert!(levels.cycle.is_empty());
-        assert_eq!(levels.level[&1], 0);
-        assert_eq!(levels.level[&3], 1, "a 3 espera a 1");
-        assert_eq!(levels.level[&6], 1, "a 6 espera a 4");
-
-        let first_order = ready_tasks(&tasks);
-        let first_batches = pack_batches(&tasks, &first_order, BASKET_CAPACITY);
-
-        // Roda de novo: os mesmos lotes, sempre.
-        let second_order = ready_tasks(&tasks);
-        let second_batches = pack_batches(&tasks, &second_order, BASKET_CAPACITY);
-        assert_eq!(first_order, second_order);
-        assert_eq!(first_batches, second_batches);
-
-        assert_eq!(first_order, vec![1, 4, 2, 5], "3 e 6 esperam dependência aberta; 1 e 4 destravam, decidem pelo número, depois 2 e 5");
-
-        assert_eq!(first_batches.len(), 2, "{first_batches:?}");
-        let batch_of = |id: u32| first_batches.iter().position(|b| b.tasks.contains(&id)).expect("lote");
-        assert_eq!(batch_of(1), batch_of(5), "1 e 5 dividem b.rs: mesmo lote sempre");
-        assert_ne!(batch_of(1), batch_of(2), "2 não compartilha arquivo com a parte de 1, 4 e 5");
-    }
+    // A cesta inteira, com dependência e arquivo compartilhado, despachada
+    // de verdade — não só pela função pura — mora agora em
+    // `apps/rt/tests/round_dispatch.rs`: o critério fala em despacho pelo
+    // binário, num repositório temporário, e não em chamar `pack_batches`
+    // duas vezes.
 }

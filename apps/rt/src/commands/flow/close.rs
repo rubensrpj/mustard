@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::spec_state::{final_approval, last_change, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{recorded_choice, unowned};
+use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, requested_model, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
@@ -220,6 +220,23 @@ fn run_close(
     let log = read(&path)?;
     if !final_approved(&log) {
         let prompt = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
+        // O pedido do agente de revisão final é gravado como evento de
+        // envio antes de sair daqui, pela mesma porta que grava o pedido de
+        // cada onda: o texto inteiro, o papel de revisão e o modelo — nunca
+        // um segundo caminho de gravação.
+        let mut draft = Map::new();
+        draft.insert("role".into(), json!("review"));
+        let template = mustard_core::io::wave_prompt::agent_template(root, "review");
+        if !template.is_empty() {
+            draft.insert("template".into(), json!(template));
+        }
+        draft.insert("lines".into(), json!(count_lines(&prompt)));
+        draft.insert("chars".into(), json!(prompt.chars().count()));
+        draft.insert("text".into(), json!(prompt));
+        draft.insert("model".into(), json!(requested_model("review")));
+        draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
+        draft.insert("author".into(), json!("binary"));
+        record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
         let next = translate("close.final_review", lang).replace("{spec}", &spec);
         let mut out = json!({
             "ok": true,
@@ -631,6 +648,36 @@ mod tests {
             );
         }
         out
+    }
+
+    /// O pedido do agente de revisão final vira evento de envio no
+    /// spec.ndjson antes de sair para quem despacha: o texto inteiro, o
+    /// papel de revisão e o modelo — pela mesma porta que já grava o pedido
+    /// de cada onda, sem onda dona nenhuma.
+    #[test]
+    fn o_pedido_da_revisao_vira_evento_de_envio() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+
+        let path = store::spec_file(root, "x").unwrap();
+        let before = store::read(&path).unwrap().unwrap();
+        let sent_before = before.visible().into_iter().filter(|e| e.event_type == "send").count();
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(!prompt.is_empty(), "{asked}");
+
+        let after = store::read(&path).unwrap().unwrap();
+        let sent: Vec<&SpecEvent> = after.visible().into_iter().filter(|e| e.event_type == "send").collect();
+        assert_eq!(sent.len(), sent_before + 1, "grava exatamente um envio novo: {sent:?}");
+        let sent = sent.last().unwrap_or_else(|| panic!("nenhum envio gravado"));
+        assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
+        assert_eq!(sent.str_field("text"), Some(prompt.as_str()), "o texto gravado é o pedido inteiro que voltou: {sent:?}");
+        assert!(sent.str_field("model").is_some_and(|m| !m.is_empty()), "o modelo pedido vai junto: {sent:?}");
+        assert!(sent.wave().is_none(), "a revisão final não é dona de onda nenhuma: {sent:?}");
     }
 
     /// O fechamento roda cada critério uma vez — os dois critérios da spec

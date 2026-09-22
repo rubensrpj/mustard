@@ -507,22 +507,6 @@ pub(super) fn open_copies(
     (copies, warnings)
 }
 
-/// Alguma tarefa das ondas `waves` mexe num arquivo de dentro de um
-/// submódulo? A obra de até 3 pontos que toca submódulo continua com a cópia
-/// separada, mesmo pequena: sem cópia não há onde a rodada pôr o submódulo na
-/// branch da unidade ([`copy_submodule`]) antes de o orquestrador editar, e
-/// essa conta só compensa dentro da cópia que já resolve isso.
-pub(super) fn touches_a_submodule(root: &Path, log: &SpecLog, waves: &[u64]) -> bool {
-    let subs = submodules_of(root);
-    if subs.is_empty() {
-        return false;
-    }
-    let files = wave_graph(log).files;
-    waves.iter().any(|wave| {
-        files.get(wave).into_iter().flatten().any(|file| submodule_holding(&subs, file).is_some())
-    })
-}
-
 /// A cópia em `path`, criada no commit `head` do checkout `root`. A pasta que
 /// já é uma cópia ligada ao repositório, de um envio anterior da mesma onda, e
 /// está limpa vai para o commit `head`, porque um commit fora da rodada pode

@@ -487,7 +487,10 @@ pub const TYPES: &[TypeSpec] = &[
         Block::Waves,
         false,
         &[
-            req("wave", Kind::Int),
+            // A onda é opcional: o envio do pedido da revisão final, que não
+            // é dono de onda nenhuma, grava sem ela — a mesma porta que a
+            // rodada usa para o pedido de cada onda.
+            opt("wave", Kind::Int),
             req("role", Kind::OneOf(ROLES)),
             // O molde do agente, como o instalador o gravou no projeto, e o
             // pedido exato, como foi injetado no agente — nesta ordem, a
@@ -497,7 +500,10 @@ pub const TYPES: &[TypeSpec] = &[
             TEXT,
             req("lines", Kind::Int),
             req("chars", Kind::Int),
-            req("items", Kind::Ints),
+            // Os itens do pedido: a onda leva os dela, cada um pelo número.
+            // O pedido da revisão final não recorta itens — cobre o
+            // combinado inteiro — e sai sem este campo.
+            opt("items", Kind::Ints),
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),

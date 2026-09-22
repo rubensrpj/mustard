@@ -346,13 +346,20 @@ fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
 }
 
 /// Uma tarefa que declara depender de uma tarefa que não existe nesta spec é
-/// recusada, nomeando as duas; nada é gravado.
+/// recusada, nomeando as duas: a que declarou a dependência e a que não
+/// existe; nada é gravado. A revisão de uma tarefa existente, pelo
+/// `replaces`, dá à declarante um código conhecido do teste — o mesmo jeito
+/// que o teste do círculo, logo acima, já usa para nomear os dois lados.
 #[test]
 fn a_dependencia_de_tarefa_inexistente_e_recusada() {
     let dir = repo();
     let root = dir.path();
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = user_says(root, GOAL);
+
+    let a = write(root, "task", &json!({"text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
+    let a_id = a["id"].as_u64().unwrap();
+    let a_code = a["code"].as_str().unwrap().to_string();
 
     let path = store::spec_file(root, SPEC).expect("the spec's file");
     let lines_before = std::fs::read_to_string(&path).expect("the spec file").lines().count();
@@ -366,7 +373,8 @@ fn a_dependencia_de_tarefa_inexistente_e_recusada() {
             SPEC,
             "--json",
             &json!({
-                "text": "Tarefa A.", "files": [], "depends_on": ["MSTD-TASK-0099"], "origin": said,
+                "text": "Tarefa A, revista.", "files": [], "depends_on": ["MSTD-TASK-0099"],
+                "replaces": a_id, "origin": said,
             })
             .to_string(),
         ],
@@ -374,7 +382,8 @@ fn a_dependencia_de_tarefa_inexistente_e_recusada() {
     let refused = report(&out);
     assert_eq!(refused["reason"], json!("task-depends-on-unknown"), "{refused}");
     let hint = refused["hint"].as_str().unwrap_or_default();
-    assert!(hint.contains("MSTD-TASK-0099"), "{hint}");
+    assert!(hint.contains(&a_code), "the message names the task that declared the dependency: {hint}");
+    assert!(hint.contains("MSTD-TASK-0099"), "the message names the dependency that does not exist: {hint}");
     assert_eq!(
         std::fs::read_to_string(&path).expect("the spec file").lines().count(),
         lines_before,

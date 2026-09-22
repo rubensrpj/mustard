@@ -497,7 +497,12 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
 /// todo o detalhe do trabalho dentro do campo de texto da entrega: a parte
 /// fixa do pedido diz isso, e a regra da execução repete a frase logo depois
 /// das duas frases sobre não comitar que a onda 12 acrescentou. Nos dois
-/// idiomas. Prova o critério de o pedido mandar devolver só as duas linhas.
+/// idiomas. A instrução volta também ao orquestrador, na saída da própria
+/// rodada: quando a última mensagem de um agente não trouxer as duas linhas,
+/// ou vier fora do padrão, o `next` da rodada manda exigi-las de novo, nos
+/// dois idiomas — antes desta prova, essa segunda metade só ficava protegida
+/// pela impressão digital do catálogo de textos. Prova o critério de o
+/// pedido mandar devolver só as duas linhas.
 #[test]
 fn o_pedido_manda_devolver_so_as_duas_linhas() {
     for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
@@ -531,6 +536,19 @@ fn o_pedido_manda_devolver_so_as_duas_linhas() {
         assert!(
             report_at > commit_at,
             "{lang} the two-lines reminder does not sit right after the no-commit phrases in the execution rules block: {prompt}"
+        );
+
+        // A segunda metade do critério: a instrução que a rodada devolve ao
+        // orquestrador depois de despachar, mandando exigir as duas linhas
+        // de novo quando elas não vierem, ou vierem fora do padrão.
+        let next = round["next"].as_str().unwrap_or_default();
+        let demand_again = match text {
+            Locale::PtBr => "mande o agente responder de novo no formato",
+            Locale::EnUs => "make the agent answer again in the format",
+        };
+        assert!(
+            next.contains(demand_again),
+            "{lang} round output misses the instruction to the orchestrator to demand the two lines again: {next}"
         );
     }
 }

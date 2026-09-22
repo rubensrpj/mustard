@@ -1723,7 +1723,9 @@ mod tests {
     }
 
     /// A linha do gasto também mostra os turnos por tarefa: uma rodada com
-    /// 3 tarefas e 24 turnos aparece como 8 turnos por tarefa.
+    /// 3 tarefas e 24 turnos aparece como 8 turnos por tarefa — o texto
+    /// inteiro do pedaço, não só o algarismo 8 (que passaria com qualquer
+    /// número que tivesse um oito, como os próprios 1000 tokens da onda).
     #[test]
     fn a_linha_de_gasto_mostra_turnos_por_tarefa() {
         let log = mustard_core::domain::spec_events::parse_log(
@@ -1735,8 +1737,12 @@ mod tests {
              \"lines\":1,\"chars\":1,\"items\":[],\"mustard\":\"0.2.1\",\"tokens\":1000,\"steps\":24}\n",
         );
         let line = spend_line(&log, Locale::PtBr).expect("the spend line");
-        assert!(line.contains('8'), "{line}");
-        assert!(!line.contains("24 turnos por tarefa"), "{line}");
+        assert_eq!(
+            line,
+            "Gasto total: 1000 tokens de onda + 0 tokens de quem despachou = 1000 tokens \
+             (8 turnos por tarefa).",
+            "{line}"
+        );
     }
 
     /// Sem nenhum token registrado ainda, a linha do gasto fica de fora.
