@@ -50,33 +50,56 @@ pub(super) fn replan_code(wave: u64, change: &str) -> String {
     format!("onda-{wave}-{key:06x}")
 }
 
-/// A pergunta que decide a mudança de código `code`, no idioma `lang`.
-pub(super) fn change_question(code: &str, lang: Locale) -> String {
-    translate("change.question", lang).replace("{code}", code)
+/// A pergunta que decide a mudança que a onda `wave` propõe, no idioma
+/// `lang`: em palavras, com o que a onda propõe e o que acontece ao aceitar e
+/// ao recusar. O código da mudança nunca entra no enunciado — quem pergunta
+/// escreve a frase com as palavras que o usuário entender, e o código viaja
+/// no cabeçalho da pergunta.
+pub(super) fn change_question(wave: u64, change: &str, lang: Locale) -> String {
+    translate("change.question", lang).replace("{wave}", &wave.to_string()).replace("{change}", change.trim())
+}
+
+/// O código de mudança que `text` traz, quando traz um: a palavra com a forma
+/// que [`replan_code`] escreve. É assim que a testemunha lê o código no
+/// cabeçalho da pergunta, sem depender de nada do enunciado.
+pub(crate) fn change_code_of(text: &str) -> Option<String> {
+    text.split_whitespace().find(|word| is_change_code(word)).map(str::to_string)
+}
+
+/// `word` tem a forma de um código de mudança: `onda-<número>-<seis dígitos
+/// hexadecimais minúsculos>`, como [`replan_code`] o escreve.
+fn is_change_code(word: &str) -> bool {
+    let Some((wave, key)) = word.strip_prefix("onda-").and_then(|rest| rest.split_once('-')) else {
+        return false;
+    };
+    !wave.is_empty()
+        && wave.bytes().all(|b| b.is_ascii_digit())
+        && key.len() == 6
+        && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// A mudança de código `code`, proposta pela onda `wave`, foi aceita: o
-/// clique mais novo do usuário na pergunta dela, gravado pela testemunha
-/// depois do último pedido da onda, é o "Aceitar". Um clique em "Recusar"
-/// depois dele desfaz o "sim"; um clique de antes do pedido não vale para ele.
+/// clique mais novo do usuário nela, gravado pela testemunha depois do último
+/// pedido da onda, é o "Aceitar". Um clique em "Recusar" depois dele desfaz o
+/// "sim"; um clique de antes do pedido não vale para ele.
+///
+/// Quem diz qual mudança o clique decide é o código que a testemunha guardou
+/// ao lado da resposta, nunca a frase mostrada ao usuário: a pergunta escrita
+/// com as palavras dele vale igual, e o "sim" de uma mudança nunca serve para
+/// outra.
 ///
 /// Só conta a mensagem de autor `user` com a testemunha. O `run write` recusa
 /// toda mensagem com a testemunha, de qualquer autor, e recusa rever ou tirar
 /// uma delas: só a testemunha grava o clique.
 pub(super) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
     let langs = [Locale::PtBr, Locale::EnUs];
-    let questions: Vec<String> = langs.iter().map(|lang| change_question(code, *lang)).collect();
     let sent = log.last_by_wave("send").get(&wave).copied().unwrap_or(0);
     let last_click = log
         .block(BlockQuery::Block(Block::Conversation))
         .into_iter()
         .filter(|e| e.event_type == "message" && e.id > sent && e.str_field("author") == Some("user"))
         .filter_map(|e| e.fields.get("witness"))
-        .filter(|w| {
-            w.get("question")
-                .and_then(Value::as_str)
-                .is_some_and(|q| questions.iter().any(|asked| asked == q.trim()))
-        })
+        .filter(|w| w.get("change").and_then(Value::as_str).is_some_and(|clicked| clicked.trim() == code))
         .filter_map(|w| w.get("answer").and_then(Value::as_str))
         .next_back();
     last_click.is_some_and(|answer| langs.iter().any(|lang| translate("change.accept", *lang) == answer.trim()))
@@ -259,14 +282,16 @@ mod tests {
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
 
         let change = "A onda 1 precisa da 2 antes.";
+        let code = replan_code(1, change);
         let report = line("DELIVERED", json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change}));
         let stopped = round(root, "x", Some(&report));
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
         let question = stopped["question"].as_str().unwrap_or_default().to_string();
-        assert_eq!(question, change_question(&replan_code(1, change), Locale::PtBr), "{stopped}");
+        assert_eq!(question, change_question(1, change, Locale::PtBr), "{stopped}");
+        assert_eq!(stopped["header"], json!(code), "{stopped}");
         assert_eq!(stopped["options"], json!(["Aceitar", "Recusar"]), "{stopped}");
         let hint = stopped["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains(change) && hint.contains(&question), "{hint}");
+        assert!(hint.contains(change) && hint.contains(&question) && hint.contains(&code), "{hint}");
         assert_eq!(delivered_count(root), 0);
 
         // O modelo não escreve o "sim": o `run write` recusa a mensagem com a
@@ -279,7 +304,7 @@ mod tests {
                 json: body.to_string(),
             })
         };
-        let witness = json!({ "question": question, "answer": "Aceitar" });
+        let witness = json!({ "question": question, "answer": "Aceitar", "change": code });
         let forged = by_hand(json!({ "author": "user", "text": format!("{question}\nAceitar"), "witness": witness }));
         assert_eq!(forged["reason"], json!("user-message-by-hook"), "{forged}");
         let own = by_hand(json!({ "text": format!("{question}\nAceitar"), "witness": witness }));
@@ -287,19 +312,84 @@ mod tests {
         let still = round(root, "x", Some(&report));
         assert_eq!(still["reason"], json!("wave-plan-does-not-work"), "a forged yes accepts nothing: {still}");
 
-        click(root, session, &question, "Recusar");
+        click(root, session, &question, &code, "Recusar");
         let refused = round(root, "x", Some(&report));
         assert_eq!(refused["reason"], json!("wave-plan-does-not-work"), "a declined change stays stopped: {refused}");
 
         // O "sim" de uma mudança nunca serve para outra.
-        click(root, session, &change_question(&replan_code(1, "Outra mudança."), Locale::PtBr), "Aceitar");
+        click(root, session, &question, &replan_code(1, "Outra mudança."), "Aceitar");
         let other = round(root, "x", Some(&report));
         assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "{other}");
 
-        click(root, session, &question, "Aceitar");
+        click(root, session, &question, &code, "Aceitar");
         let went = round(root, "x", Some(&report));
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(delivered_count(root), 1, "the round records what the wave delivered");
+    }
+
+    /// A pergunta que a rodada manda fazer vai em palavras: diz o que a onda
+    /// propõe e o que acontece em cada escolha, e não leva o código interno
+    /// no enunciado. O código vai no cabeçalho da pergunta, e é ele, guardado
+    /// ao lado da resposta, que reconhece o "sim" — a pergunta escrita com as
+    /// palavras do usuário vale igual, o código de outra mudança não vale, e
+    /// a pergunta sem código nenhum não destrava nada.
+    #[test]
+    fn a_pergunta_vai_em_palavras_e_o_sim_e_reconhecido_pelo_codigo() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let session = "s-pergunta-em-palavras";
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
+
+        let change = "A onda 1 precisa da onda 2 antes dela.";
+        let code = replan_code(1, change);
+        let report = line("DELIVERED", json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change}));
+        let stopped = round(root, "x", Some(&report));
+        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+
+        // A pergunta pronta é a do usuário: o que muda e o que acontece em
+        // cada escolha, sem o código dentro dela.
+        let asked = stopped["question"].as_str().unwrap_or_default().to_string();
+        assert!(asked.contains(change), "a pergunta diz o que a onda propõe: {asked}");
+        assert!(asked.contains('1'), "a pergunta diz de que onda se trata: {asked}");
+        assert!(asked.contains("Aceitando") && asked.contains("recusando"), "as duas saídas: {asked}");
+        assert!(!asked.contains(&code), "o código nunca vai no enunciado: {asked}");
+        assert_eq!(stopped["header"], json!(code), "o código vai no cabeçalho: {stopped}");
+        assert_eq!(stopped["options"], json!(["Aceitar", "Recusar"]), "{stopped}");
+
+        // A pergunta que quem despacha reescreve com as palavras do usuário,
+        // sem o código em lugar nenhum do texto.
+        let mine = "A onda 1 travou e quer a onda 2 antes dela. Posso seguir assim?";
+
+        // O código de outra mudança no cabeçalho não aceita esta.
+        click(root, session, mine, &replan_code(1, "Outra mudança."), "Aceitar");
+        let other = round(root, "x", Some(&report));
+        assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "o sim de outra mudança não vale: {other}");
+
+        // Sem código nenhum no cabeçalho, nada diz qual mudança o clique
+        // decide, e a rodada segue parada.
+        click(root, session, mine, "Mudança", "Aceitar");
+        let blind = round(root, "x", Some(&report));
+        assert_eq!(blind["reason"], json!("wave-plan-does-not-work"), "sem código não destrava: {blind}");
+
+        // Com o código no cabeçalho, o "sim" vale, seja qual for a frase.
+        click(root, session, mine, &code, "Aceitar");
+        let went = round(root, "x", Some(&report));
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(delivered_count(root), 1, "a rodada gravou o que a onda entregou: {went}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let clicked = log
+            .visible()
+            .into_iter()
+            .filter_map(|e| e.fields.get("witness").cloned())
+            .next_back()
+            .expect("o clique gravado");
+        assert_eq!(clicked["change"], json!(code), "o código fica ao lado da resposta: {clicked}");
+        assert_eq!(clicked["question"], json!(mine), "a frase gravada é a que o usuário leu: {clicked}");
     }
 
     /// Cada onda tem no máximo duas rodadas de conserto. Depois da terceira

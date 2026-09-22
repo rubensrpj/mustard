@@ -78,23 +78,26 @@ pub(crate) fn record_message(root: &Path, session: Option<&str>, text: &str) -> 
 }
 
 /// A resposta do usuário a uma pergunta de gesto, com a testemunha: a
-/// pergunta e a opção que ele clicou. É o registro que o fluxo lê como o
-/// "sim" do usuário, e só a testemunha o grava.
+/// pergunta, a opção que ele clicou e, quando a pergunta decide uma mudança,
+/// o código dela ao lado da resposta. É o registro que o fluxo lê como o
+/// "sim" do usuário — pelo código, nunca pela frase mostrada —, e só a
+/// testemunha o grava.
 pub(crate) fn record_witnessed_message(
     root: &Path,
     session: Option<&str>,
     text: &str,
     question: &str,
     answer: &str,
+    change: Option<&str>,
 ) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
     }
-    let fields = json!({
-        "author": "user",
-        "text": text,
-        "witness": { "question": question, "answer": answer },
-    });
+    let mut witness = json!({ "question": question, "answer": answer });
+    if let Some(code) = change {
+        witness["change"] = json!(code);
+    }
+    let fields = json!({ "author": "user", "text": text, "witness": witness });
     record(root, session, "message", draft(fields))
 }
 

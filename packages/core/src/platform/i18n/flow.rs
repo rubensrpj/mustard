@@ -532,15 +532,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.replan", Locale::PtBr) => {
             "A onda {wave} diz que o plano dela não funciona. Mudança proposta: {change}. \
-             Mostre a mudança ao usuário e faça a pergunta com opções \"{question}\", com \
-             \"{yes}\" e \"{no}\". O sim é o clique em \"{yes}\": depois dele, repita a \
-             rodada com o mesmo relatório."
+             Faça ao usuário a pergunta com opções, com \"{yes}\" e \"{no}\", e ponha {code} \
+             no cabeçalho dela: é o cabeçalho que diz qual mudança o clique decide, e o enunciado \
+             você escreve com as palavras que o usuário entender. Pergunta pronta: \"{question}\". \
+             O sim é o clique em \"{yes}\": depois dele, repita a rodada com o mesmo relatório."
         }
         ("round.replan", Locale::EnUs) => {
             "Wave {wave} says its plan does not work. Proposed change: {change}. \
-             Show the change to the user and ask the question with options \"{question}\", \
-             with \"{yes}\" and \"{no}\". The yes is the click on \"{yes}\": after it, run \
-             the round again with the same report."
+             Ask the user a question with options, with \"{yes}\" and \"{no}\", and put {code} \
+             in its header: the header is what says which change the click decides, and the \
+             question itself you write in words the user understands. Ready question: \
+             \"{question}\". The yes is the click on \"{yes}\": after it, run the round again \
+             with the same report."
         }
         ("round.git_refused", Locale::PtBr) => {
             "O git recusou o commit da rodada: {detail}\nNada foi gravado. Corrija o que o git \
@@ -1047,7 +1050,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             138,
-            0x0ec0_3bab_743e_c437,
+            0x7d2a_8644_18b1_f782,
         );
     }
 
@@ -1207,7 +1210,7 @@ mod tests {
             ("round.commit_forbidden", &["{found}"][..]),
             ("round.commit_looks_like_sha", &["{found}"][..]),
             ("round.formatter_missing", &["{name}"][..]),
-            ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}"][..]),
+            ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}", "{code}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
             ("round.next.copy_file", &["{path}"][..]),

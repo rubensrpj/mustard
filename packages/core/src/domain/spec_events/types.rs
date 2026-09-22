@@ -561,8 +561,8 @@ pub const TYPES: &[TypeSpec] = &[
         "DELIV",
         Block::Waves,
         false,
-        // Sem replanejamento, a entrega exige a lista de arquivos; com ele, a
-        // onda pode ter voltado sem mexer em nenhum (veja `check_conditions`).
+        // A lista de arquivos é opcional: a onda que só foi conferir volta sem
+        // mexer em nenhum, e o texto dela diz o que conferiu.
         &[req("wave", Kind::Int), TEXT, opt("files", Kind::Texts), opt("replan", Kind::Text)],
     ),
     // O agente de onda grava um passo ao terminar cada tarefa e ao provar o

@@ -88,6 +88,10 @@ mod queue;
 mod report;
 mod stops;
 
+/// O código de mudança que um texto traz: a testemunha dos gestos o lê no
+/// cabeçalho da pergunta que decide a mudança.
+pub(crate) use stops::change_code_of;
+
 pub(crate) use commit::{reinstall_binary, refresh_map_if_stale};
 
 use std::path::PathBuf;
@@ -164,15 +168,16 @@ mod tests {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
 
-    /// A resposta do usuário à pergunta `question`, dada pela testemunha dos
+    /// A resposta do usuário à pergunta `question`, feita com o cabeçalho
+    /// `header` — onde vai o código da mudança —, dada pela testemunha dos
     /// gestos, como o harness a entrega depois do clique.
-    pub(super) fn click(root: &Path, session: &str, question: &str, answer: &str) {
+    pub(super) fn click(root: &Path, session: &str, question: &str, header: &str, answer: &str) {
         use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
         let input = HookInput {
             hook_event_name: Some("PostToolUse".to_string()),
             tool_name: Some("AskUserQuestion".to_string()),
             session_id: Some(session.to_string()),
-            tool_input: json!({ "questions": [{ "question": question,
+            tool_input: json!({ "questions": [{ "question": question, "header": header,
                 "options": [{ "label": "Aceitar" }, { "label": "Recusar" }] }] }),
             raw: json!({ "tool_response": { "answers": { question: answer } } }),
             ..HookInput::default()

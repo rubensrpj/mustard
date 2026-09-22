@@ -8,18 +8,20 @@
 //!
 //! ## Os gestos são uma lista
 //!
-//! Cada gesto é um item de [`GESTURES`]: a pergunta do catálogo, a opção que
-//! dá o "sim" e o que fazer com a resposta. Acrescentar um gesto é somar um
-//! item. Hoje são dois:
+//! Cada gesto é um item de [`GESTURES`]: como a pergunta é reconhecida, a
+//! opção que dá o "sim" e o que fazer com a resposta. Acrescentar um gesto é
+//! somar um item. Hoje são dois:
 //!
 //! - **"Aprovar esta spec?"**, com "Aprovar" e "Ajustar". Com a spec em plano,
 //!   o "Aprovar" grava no `spec.ndjson` um `state` com a fase `approved`, o
 //!   autor `user` e a testemunha `{question, answer}`, e a testemunha diz ao
 //!   assistente para sugerir `/clear`.
-//! - **"Aceitar a mudança <código>?"**, com "Aceitar" e "Recusar". A rodada
+//! - **a mudança que uma onda propõe**, com "Aceitar" e "Recusar". A rodada
 //!   para quando uma onda diz que o plano dela não funciona, e só segue
-//!   depois do clique em "Aceitar" gravado aqui. O código na pergunta diz qual
-//!   mudança o clique decide.
+//!   depois do clique em "Aceitar" gravado aqui. O enunciado é escrito com as
+//!   palavras que o usuário entender e nunca é comparado: quem diz qual
+//!   mudança o clique decide é o código no cabeçalho da pergunta, que a
+//!   testemunha guarda ao lado da resposta.
 //!
 //! ## A resposta de cada pergunta
 //!
@@ -86,6 +88,7 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use crate::commands::flow::round::change_code_of;
 use crate::commands::spec_events::conversation::{record_message, record_witnessed_message};
 use crate::hooks::write::write_gate::say;
 use crate::shared::spec_state::DiskSpecState;
@@ -97,11 +100,21 @@ pub struct ApprovalWitness;
 /// A vaga da pergunta de um gesto, que diz sobre o que o clique decide.
 const SLOT: &str = "{code}";
 
-/// Um gesto de aprovação: a pergunta do catálogo, a opção que dá o "sim" e o
-/// que fazer com a resposta.
+/// Como a pergunta de um gesto é reconhecida.
+enum Keyed {
+    /// Pela frase do catálogo, que pode ter a vaga [`SLOT`]: o que a vaga
+    /// traz é o que o gesto decide.
+    Phrase(&'static str),
+    /// Pelas duas opções do catálogo — a do "sim" e esta, a do "não" — e pelo
+    /// código no cabeçalho da pergunta. O enunciado nunca é comparado: quem
+    /// pergunta o escreve com as palavras que o usuário entender.
+    Options(&'static str),
+}
+
+/// Um gesto de aprovação: como a pergunta é reconhecida, a opção que dá o
+/// "sim" e o que fazer com a resposta.
 struct Gesture {
-    /// A chave da pergunta no catálogo. Ela pode ter a vaga [`SLOT`].
-    question: &'static str,
+    keyed: Keyed,
     /// A chave da opção que dá o "sim".
     yes: &'static str,
     /// O que o gesto faz com a resposta; devolve o que dizer ao assistente.
@@ -111,9 +124,9 @@ struct Gesture {
 /// Os gestos de aprovação. Acrescentar um gesto é somar um item.
 const GESTURES: &[Gesture] = &[
     // "Aprovar/Ajustar": a aprovação da spec.
-    Gesture { question: "approval.question", yes: "approval.option", decide: decide_approval },
+    Gesture { keyed: Keyed::Phrase("approval.question"), yes: "approval.option", decide: decide_approval },
     // "Aceitar/Recusar": a mudança que parte de um agente.
-    Gesture { question: "change.question", yes: "change.accept", decide: decide_change },
+    Gesture { keyed: Keyed::Options("change.decline"), yes: "change.accept", decide: decide_change },
 ];
 
 /// O que o usuário fez na pergunta de um gesto.
@@ -164,14 +177,30 @@ fn slot_of(template: &str, question: &str) -> Option<String> {
     (!middle.is_empty() && !middle.chars().any(char::is_whitespace)).then(|| middle.to_string())
 }
 
-/// O gesto cuja pergunta, num dos idiomas, é `question`, e o que a vaga dela
-/// trouxe.
-fn gesture_of(question: &str) -> Option<(&'static Gesture, String)> {
-    GESTURES.iter().find_map(|gesture| {
-        [Locale::PtBr, Locale::EnUs]
+/// O gesto da pergunta respondida e o que ele decide: a spec, na pergunta de
+/// aprovação, que se reconhece pela frase do catálogo; o código da mudança,
+/// na pergunta da mudança, que se reconhece pelas duas opções do catálogo e
+/// traz o código no cabeçalho. Vazio no lugar do código quando o cabeçalho
+/// não traz nenhum: o gesto é da mudança do mesmo jeito, e a testemunha diz
+/// ao assistente o que fazer.
+fn gesture_of(question: &str, offered: &[String], header: &str) -> Option<(&'static Gesture, String)> {
+    GESTURES.iter().find_map(|gesture| match gesture.keyed {
+        Keyed::Phrase(key) => [Locale::PtBr, Locale::EnUs]
             .into_iter()
-            .find_map(|lang| slot_of(translate(gesture.question, lang), question))
-            .map(|slot| (gesture, slot))
+            .find_map(|lang| slot_of(translate(key, lang), question))
+            .map(|slot| (gesture, slot)),
+        Keyed::Options(no) => {
+            offers_both(offered, gesture.yes, no).then(|| (gesture, change_code_of(header).unwrap_or_default()))
+        }
+    })
+}
+
+/// A pergunta ofereceu as duas opções do gesto, as do catálogo e no mesmo
+/// idioma.
+fn offers_both(offered: &[String], yes: &'static str, no: &'static str) -> bool {
+    [Locale::PtBr, Locale::EnUs].into_iter().any(|lang| {
+        let (yes, no) = (translate(yes, lang), translate(no, lang));
+        offered.iter().any(|label| label.trim() == yes) && offered.iter().any(|label| label.trim() == no)
     })
 }
 
@@ -202,6 +231,22 @@ fn offered_for(input: &HookInput, question: &str) -> Vec<String> {
         .filter(|label| !label.trim().is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// O cabeçalho da pergunta `question`, lido do `tool_input`: é ele que leva o
+/// código da mudança, fora do enunciado. Vazio quando a pergunta não o traz.
+fn header_for(input: &HookInput, question: &str) -> String {
+    input
+        .tool_input
+        .get("questions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|q| q.get("question").and_then(Value::as_str).is_some_and(|text| text.trim() == question.trim()))
+        .filter_map(|q| q.get("header").and_then(Value::as_str))
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// A resposta é exatamente um dos rótulos oferecidos, sem os espaços das
@@ -341,6 +386,9 @@ fn decide_change(answer: &Answered<'_>) -> Option<String> {
     let lang = answer.lang;
     match answer.choice {
         Choice::Nothing => None,
+        // Sem o código no cabeçalho, nada diz qual mudança o clique decide:
+        // a resposta vai para a conversa, e nenhuma rodada a lê como o "sim".
+        _ if code.is_empty() => Some(say("change.witness.no_code", lang, &[])),
         Choice::Free => Some(say(
             "change.witness.free_text",
             lang,
@@ -385,7 +433,13 @@ fn truncate(s: &str) -> String {
 /// cada uma numa linha. Com `witness`, a mensagem leva a testemunha: a
 /// pergunta e a opção clicada. Pergunta sem resposta não grava nada; `true`
 /// quando gravou.
-fn record_answer(root: &Path, session: Option<&str>, item: &AskAnswer, witness: Option<&str>) -> bool {
+fn record_answer(
+    root: &Path,
+    session: Option<&str>,
+    item: &AskAnswer,
+    witness: Option<&str>,
+    change: Option<&str>,
+) -> bool {
     let question = item.question.trim();
     let answer = item.labels.iter().map(|label| label.trim()).collect::<Vec<_>>().join(", ");
     if question.is_empty() || answer.is_empty() {
@@ -397,7 +451,7 @@ fn record_answer(root: &Path, session: Option<&str>, item: &AskAnswer, witness: 
         text.push_str(notes);
     }
     match witness {
-        Some(clicked) => record_witnessed_message(root, session, &text, question, clicked).is_some(),
+        Some(clicked) => record_witnessed_message(root, session, &text, question, clicked, change).is_some(),
         None => record_message(root, session, &text).is_some(),
     }
 }
@@ -421,14 +475,18 @@ impl Check for ApprovalWitness {
         let lang = ctx.config.language().text_or_default();
         let mut said: Vec<String> = Vec::new();
         for item in input.ask_answers().items {
-            let Some((gesture, slot)) = gesture_of(&item.question) else {
+            let offered = offered_for(input, &item.question);
+            let header = header_for(input, &item.question);
+            let Some((gesture, slot)) = gesture_of(&item.question, &offered, &header) else {
                 // Uma pergunta que não é de gesto só vai para a conversa.
-                record_answer(Path::new(&root), session, &item, None);
+                record_answer(Path::new(&root), session, &item, None, None);
                 continue;
             };
-            let offered = offered_for(input, &item.question);
             let witness = clicked(&item.labels, &offered);
-            let recorded = record_answer(Path::new(&root), session, &item, witness.as_deref());
+            // O código da mudança fica ao lado da resposta: é por ele, e não
+            // pela frase mostrada, que a rodada reconhece o "sim".
+            let change = Some(slot.as_str()).filter(|code| !code.is_empty() && matches!(gesture.keyed, Keyed::Options(_)));
+            let recorded = record_answer(Path::new(&root), session, &item, witness.as_deref(), change);
             let answered = Answered {
                 root: &root,
                 session,
@@ -476,12 +534,18 @@ mod tests {
     /// A pergunta `question` com as opções `options` e a resposta `answer`,
     /// como o harness entrega: o menu no `tool_input` e a resposta à parte.
     fn ask_on(question: &str, options: &[&str], answer: Value) -> HookInput {
+        ask_with(question, "Spec", options, answer)
+    }
+
+    /// [`ask_on`] com o cabeçalho `header`, que é onde vai o código da
+    /// mudança.
+    fn ask_with(question: &str, header: &str, options: &[&str], answer: Value) -> HookInput {
         let options: Vec<Value> = options.iter().map(|l| json!({ "label": l })).collect();
         HookInput {
             hook_event_name: Some("PostToolUse".to_string()),
             tool_name: Some("AskUserQuestion".to_string()),
             session_id: Some(SESSION.to_string()),
-            tool_input: json!({ "questions": [{ "question": question, "header": "Spec", "options": options }] }),
+            tool_input: json!({ "questions": [{ "question": question, "header": header, "options": options }] }),
             raw: json!({ "tool_response": { "questions": [], "answers": { question: answer } } }),
             ..HookInput::default()
         }
@@ -544,9 +608,15 @@ mod tests {
         ApprovalWitness.evaluate(input, &ctx(root)).expect("never errors")
     }
 
-    /// O gesto de uma pergunta do catálogo.
+    /// O gesto de uma pergunta do catálogo, sem opção nenhuma oferecida.
     fn gesture(question: &str) -> &'static Gesture {
-        gesture_of(question).map(|(gesture, _)| gesture).expect("a gesture question")
+        gesture_of(question, &[], "").map(|(gesture, _)| gesture).expect("a gesture question")
+    }
+
+    /// O gesto de uma pergunta com as opções `options` e o cabeçalho `header`.
+    fn gesture_asked(question: &str, options: &[&str], header: &str) -> Option<(&'static Gesture, String)> {
+        let offered: Vec<String> = options.iter().map(|l| (*l).to_string()).collect();
+        gesture_of(question, &offered, header)
     }
 
     /// Só o rótulo do catálogo, por inteiro, é a opção de aprovar.
@@ -561,37 +631,49 @@ mod tests {
         }
     }
 
-    /// Os gestos são uma lista: a aprovação da spec, com "Aprovar", e a
-    /// mudança que parte de um agente, com "Aceitar". A pergunta da mudança
-    /// traz o código dela, uma palavra só; a pergunta sem código, ou com uma
-    /// frase no lugar dele, não é gesto nenhum.
+    /// Os gestos são uma lista: a aprovação da spec, reconhecida pela frase
+    /// do catálogo, e a mudança que parte de um agente, reconhecida pelas
+    /// duas opções dela, com o código no cabeçalho — a frase da pergunta
+    /// dessa nunca é comparada. Sem as duas opções não há gesto de mudança, e
+    /// o cabeçalho sem código deixa o gesto sem o que decidir.
     #[test]
     fn the_gestures_are_a_list_with_the_spec_approval_and_the_agent_change() {
-        let questions: Vec<&str> = GESTURES.iter().map(|g| g.question).collect();
-        assert_eq!(questions, ["approval.question", "change.question"]);
+        let yeses: Vec<&str> = GESTURES.iter().map(|g| g.yes).collect();
+        assert_eq!(yeses, ["approval.option", "change.accept"]);
 
-        let (approval, slot) = gesture_of("Approve this spec?").expect("the approval, in English");
-        assert_eq!((approval.question, slot.as_str()), ("approval.question", ""));
+        let (approval, slot) = gesture_of("Approve this spec?", &[], "").expect("the approval, in English");
+        assert!(matches!(approval.keyed, Keyed::Phrase("approval.question")));
+        assert_eq!(slot, "");
 
-        let (change, code) = gesture_of("Aceitar a mudança onda-3-a1b2c3?").expect("the change");
-        assert_eq!((change.question, code.as_str()), ("change.question", "onda-3-a1b2c3"));
-        assert_eq!(gesture_of(" Accept the change onda-3-a1b2c3? ").map(|(_, c)| c).as_deref(), Some("onda-3-a1b2c3"));
+        let options = ["Aceitar", "Recusar"];
+        let (change, code) = gesture_asked("Posso seguir assim?", &options, "onda-3-a1b2c3").expect("the change");
+        assert!(matches!(change.keyed, Keyed::Options("change.decline")));
+        assert_eq!(code, "onda-3-a1b2c3", "o código vem do cabeçalho, não da frase");
+        assert_eq!(
+            gesture_asked("Whatever the words are", &["Accept", "Decline"], " onda-3-a1b2c3 ").map(|(_, c)| c),
+            Some("onda-3-a1b2c3".to_string()),
+            "as duas opções em inglês também"
+        );
         assert!(is_yes(change, "Aceitar") && is_yes(change, "Accept"));
         assert!(!is_yes(change, "Recusar") && !is_yes(change, "Aprovar"));
 
-        for not_a_gesture in [
-            "Aceitar a mudança ?",
-            "Aceitar a mudança da onda 3?",
-            "Aceitar esta mudança?",
-            "Como liberar o cadastro?",
-        ] {
-            assert!(gesture_of(not_a_gesture).is_none(), "{not_a_gesture}");
+        // Sem código no cabeçalho o gesto é o mesmo, sem o que decidir.
+        assert_eq!(gesture_asked("Posso seguir?", &options, "Mudança").map(|(_, c)| c), Some(String::new()));
+        for bad in ["onda-3-A1B2C3", "onda--a1b2c3", "onda-3-a1b2c", "onda-3-a1b2cg", "onda-3"] {
+            assert_eq!(gesture_asked("Posso seguir?", &options, bad).map(|(_, c)| c), Some(String::new()), "{bad}");
+        }
+        // Sem as duas opções do catálogo, a pergunta não é gesto nenhum.
+        for not_a_gesture in [&["Aceitar", "Depois"][..], &["Sim", "Não"][..], &["Aceitar"][..], &[][..]] {
+            assert!(gesture_asked("Posso seguir?", not_a_gesture, "onda-3-a1b2c3").is_none(), "{not_a_gesture:?}");
         }
     }
 
-    /// A pergunta da mudança que parte de um agente.
-    fn change_question(code: &str) -> String {
-        translate("change.question", Locale::PtBr).replace(SLOT, code)
+    /// A pergunta da mudança que parte de um agente, como a rodada a manda
+    /// fazer: em palavras, sem o código dentro dela.
+    fn change_question(wave: u64, change: &str) -> String {
+        translate("change.question", Locale::PtBr)
+            .replace("{wave}", &wave.to_string())
+            .replace("{change}", change)
     }
 
     /// As mensagens de usuário da spec `epic`, com a testemunha de cada uma.
@@ -609,9 +691,10 @@ mod tests {
     }
 
     /// O clique numa opção da pergunta da mudança é gravado com a
-    /// testemunha, e a testemunha diz ao assistente o que o usuário escolheu.
-    /// Texto livre é gravado sem testemunha e não aceita nada; sem spec
-    /// atual, nada é gravado, e ela diz isso.
+    /// testemunha, que leva o código da mudança ao lado da resposta, e a
+    /// testemunha diz ao assistente o que o usuário escolheu. Texto livre é
+    /// gravado sem testemunha e não aceita nada; sem spec atual, nada é
+    /// gravado, e ela diz isso.
     #[test]
     fn a_change_click_is_recorded_with_its_witness_and_free_text_is_not() {
         if ambient_override() {
@@ -619,25 +702,27 @@ mod tests {
         }
         let dir = spec_with(&[json!({ "phase": "running", "branch": "feature/epic" })]);
         let root = dir.path();
-        let question = change_question("onda-2-abc123");
+        let code = "onda-2-abc123";
+        let question = change_question(2, "A onda 2 precisa da 1 antes.");
         let options = ["Aceitar", "Recusar"];
+        let ask = |answer: Value| ask_with(&question, code, &options, answer);
 
-        let said = witness(root, &ask_on(&question, &options, json!("Aceitar")));
-        let expected = say("change.witness.accepted", lang(root), &[("{code}", "onda-2-abc123")]);
+        let said = witness(root, &ask(json!("Aceitar")));
+        let expected = say("change.witness.accepted", lang(root), &[("{code}", code)]);
         assert_eq!(said, Verdict::Inject { context: expected });
 
-        let said = witness(root, &ask_on(&question, &options, json!("Recusar")));
-        let expected = say("change.witness.declined", lang(root), &[("{code}", "onda-2-abc123")]);
+        let said = witness(root, &ask(json!("Recusar")));
+        let expected = say("change.witness.declined", lang(root), &[("{code}", code)]);
         assert_eq!(said, Verdict::Inject { context: expected });
 
-        match witness(root, &ask_on(&question, &options, json!("Aceitar, pode seguir"))) {
+        match witness(root, &ask(json!("Aceitar, pode seguir"))) {
             Verdict::Inject { context } => {
                 assert!(context.contains("\"Aceitar\", \"Recusar\""), "shows the menu: {context}");
             }
             other => panic!("free text is explained, got {other:?}"),
         }
 
-        let clicked = |answer: &str| Some(json!({ "question": question, "answer": answer }));
+        let clicked = |answer: &str| Some(json!({ "question": question, "answer": answer, "change": code }));
         assert_eq!(
             witnessed(root),
             [
@@ -648,35 +733,42 @@ mod tests {
         );
 
         let none = tempdir().unwrap();
-        let said = witness(none.path(), &ask_on(&question, &options, json!("Aceitar")));
-        let expected = say("change.witness.no_spec", lang(none.path()), &[("{code}", "onda-2-abc123")]);
+        let said = witness(none.path(), &ask(json!("Aceitar")));
+        let expected = say("change.witness.no_spec", lang(none.path()), &[("{code}", code)]);
         assert_eq!(said, Verdict::Inject { context: expected });
         assert!(!none.path().join(".claude").exists(), "no spec, nothing recorded");
     }
 
-    /// O gesto se reconhece pelo código da mudança mesmo quando a pergunta
-    /// traz uma explicação em volta do texto do catálogo: o clique na opção
-    /// do catálogo grava a testemunha e destrava a rodada do mesmo jeito.
-    /// Texto livre segue sem destravar nada, mesmo na pergunta explicada.
+    /// O gesto se reconhece pelas opções da mudança, com a pergunta escrita
+    /// com as palavras do usuário: o clique na opção do catálogo grava a
+    /// testemunha com o código do cabeçalho ao lado da resposta. Sem código
+    /// no cabeçalho nada é aceito, e a testemunha diz o que fazer.
     #[test]
-    fn o_gesto_e_reconhecido_na_pergunta_explicada() {
+    fn o_gesto_e_reconhecido_na_pergunta_escrita_com_as_palavras_do_usuario() {
         if ambient_override() {
             return;
         }
         let dir = spec_with(&[json!({ "phase": "running", "branch": "feature/epic" })]);
         let root = dir.path();
-        let question =
-            format!("A onda 3 terminou. {} Isso fecha a etapa.", change_question("onda-3-a1b2c3"));
+        let code = "onda-3-a1b2c3";
+        let question = "A onda 3 travou e quer a onda 2 antes dela. Posso seguir assim?";
         let options = ["Aceitar", "Recusar"];
 
-        let said = witness(root, &ask_on(&question, &options, json!("Aceitar")));
-        let expected = say("change.witness.accepted", lang(root), &[("{code}", "onda-3-a1b2c3")]);
+        let said = witness(root, &ask_with(question, code, &options, json!("Aceitar")));
+        let expected = say("change.witness.accepted", lang(root), &[("{code}", code)]);
         assert_eq!(said, Verdict::Inject { context: expected });
 
-        let clicked = Some(json!({ "question": question, "answer": "Aceitar" }));
+        let clicked = Some(json!({ "question": question, "answer": "Aceitar", "change": code }));
         assert_eq!(witnessed(root), [(format!("{question}\nAceitar"), clicked)]);
 
-        match witness(root, &ask_on(&question, &options, json!("Aceitar, obrigado"))) {
+        // A mesma pergunta sem o código no cabeçalho não aceita nada, e o
+        // clique fica gravado sem código nenhum ao lado da resposta.
+        let said = witness(root, &ask_with(question, "Mudança", &options, json!("Aceitar")));
+        assert_eq!(said, Verdict::Inject { context: say("change.witness.no_code", lang(root), &[]) });
+        let last = witnessed(root).pop().expect("o clique gravado");
+        assert_eq!(last.1, Some(json!({ "question": question, "answer": "Aceitar" })), "sem código: {last:?}");
+
+        match witness(root, &ask_with(question, code, &options, json!("Aceitar, obrigado"))) {
             Verdict::Inject { context } => {
                 assert!(context.contains("\"Aceitar\", \"Recusar\""), "shows the menu: {context}");
             }

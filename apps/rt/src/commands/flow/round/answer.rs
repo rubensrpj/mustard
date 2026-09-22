@@ -148,7 +148,8 @@ impl RoundRefusal {
                 &[
                     ("{wave}", wave.to_string()),
                     ("{change}", change.clone()),
-                    ("{question}", change_question(code, lang)),
+                    ("{question}", change_question(*wave, change, lang)),
+                    ("{code}", code.clone()),
                     ("{yes}", translate("change.accept", lang).to_string()),
                     ("{no}", translate("change.decline", lang).to_string()),
                 ],
@@ -169,10 +170,13 @@ impl RoundRefusal {
 
     pub(crate) fn to_value(&self, lang: Locale) -> Value {
         let mut out = json!({ "ok": false, "reason": self.reason(), "hint": self.message(lang) });
-        // A pergunta da mudança vai pronta, com as opções, como a revisão de
-        // um bloco do levantamento: é ela, e só ela, que a testemunha lê.
-        if let Self::Replan { code, .. } = self {
-            out["question"] = json!(change_question(code, lang));
+        // A pergunta da mudança vai pronta, em palavras, com as opções e com
+        // o código que vai no cabeçalho dela: o enunciado quem pergunta pode
+        // reescrever com as palavras do usuário, e é o cabeçalho, não a
+        // frase, que diz à testemunha qual mudança o clique decide.
+        if let Self::Replan { wave, change, code } = self {
+            out["question"] = json!(change_question(*wave, change, lang));
+            out["header"] = json!(code);
             out["options"] = json!([translate("change.accept", lang), translate("change.decline", lang)]);
         }
         out

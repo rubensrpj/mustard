@@ -207,9 +207,18 @@ pub(crate) fn take_report_with_mine(
         // Cópia sem diff nenhum (comum nos testes, que escrevem direto na
         // raiz do checkout em vez da cópia da onda) não conta como
         // divergência nem apaga a lista declarada: sem nada de real para
-        // comparar, a conferência não tem o que dizer.
+        // comparar, a conferência não tem o que dizer. É também a cópia da
+        // onda que só foi conferir: sem arquivo mudado, não há o que comitar.
         if actual.is_empty() {
             continue;
+        }
+        // A cópia mudou arquivo de verdade: a entrega precisa do resumo do
+        // commit, mesmo tendo voltado sem citar arquivo nenhum. É esta
+        // conferência, contra a cópia, que guarda o que a exigência da lista
+        // de arquivos guardava na gravação: o que a onda mexeu nunca entra no
+        // repositório principal sem título de commit.
+        if wave.commit.is_none() {
+            return Err(RoundRefusal::LineField { line: DELIVERED_LINE, field: "commit" });
         }
         let declared: BTreeSet<&str> = wave.files.iter().map(String::as_str).collect();
         let actual_set: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
@@ -413,9 +422,9 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         let field = |field| RoundRefusal::LineField { line: DELIVERED_LINE, field };
         let wave = wave.ok_or_else(|| field("wave"))?;
         let delivered = text(&fields, "text").ok_or_else(|| field("text"))?;
-        // Sem `files`, a entrega volta sem arquivo nenhum: a exigência de
-        // quando isso vale (só sem replanejamento) fica com a gravação, que
-        // já confere a mesma regra para o resto dos campos da situação.
+        // Sem `files`, a entrega volta sem arquivo nenhum: é a onda que só
+        // foi conferir, e o texto dela diz o que conferiu. Quem confere se
+        // mexeu em arquivo mesmo assim é a rodada, contra a cópia da onda.
         let files: Vec<String> = match fields.get("files") {
             None => Vec::new(),
             Some(value) => value
@@ -990,23 +999,52 @@ mod tests {
         assert_eq!(current.str_field("proof"), Some("cargo test a && cargo test b && cargo test c"), "{raw}");
     }
 
+    /// A onda que só foi conferir volta sem arquivo nenhum: a rodada grava a
+    /// entrega e segue, sem recusar por falta de arquivo e sem parar para
+    /// perguntar nada ao usuário, e nenhum commit sai dessa onda. A proteção
+    /// que a exigência da lista de arquivos fazia continua de pé noutro
+    /// lugar: a onda cuja cópia mudou arquivo de verdade é recusada enquanto
+    /// não trouxer o título do commit, e nada é gravado.
+    #[test]
+    fn a_onda_que_so_conferiu_e_gravada_sem_pergunta() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        round(root, "x", None);
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
+
+        let checked = line("DELIVERED", json!({"wave": 1,
+            "text": "Nada a mudar: o conserto já tinha sido entregue por outra onda. \
+                     Rodei a prova do critério e a suíte inteira, e as duas passaram."}));
+        let out = round(root, "x", Some(&checked));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(out.get("question").is_none(), "nada a perguntar ao usuário: {out}");
+        assert!(out.get("commit").is_none(), "a onda que só conferiu não comita: {out}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nenhum commit novo: {out}");
+        assert_eq!(delivered_count(root), 1, "a entrega foi gravada: {out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let recorded = log.visible().into_iter().find(|e| e.event_type == "delivered").expect("a entrega");
+        assert_eq!(recorded.fields.get("files").and_then(Value::as_array).map_or(0, Vec::len), 0, "{:?}", recorded.fields);
+
+        // A cópia que mudou arquivo de verdade continua pedindo o título do
+        // commit, mesmo sem citar arquivo nenhum na entrega.
+        let copy = wave_prompt::copy_path(root, "x", 2, false);
+        std::fs::write(copy.join("src/b.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
+        let hidden = line("DELIVERED", json!({"wave": 2, "text": "Mexi no arquivo e não contei."}));
+        let refused = round(root, "x", Some(&hidden));
+        assert_eq!(refused["reason"], json!("round-line-field-missing"), "{refused}");
+        assert_eq!(delivered_count(root), 1, "nada foi gravado: {refused}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {refused}");
+    }
+
     /// Uma onda que volta com pedido de replanejamento e sem arquivo nenhum
-    /// tem a entrega gravada, sem recusa; sem o replanejamento, a falta de
-    /// arquivo continua recusada.
+    /// tem a entrega gravada, depois do sim do usuário.
     #[test]
     fn a_replan_without_files_is_recorded() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
-        let lines_before = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
-
-        let no_replan = line("DELIVERED", json!({"wave": 1, "text": "Parei sem mexer em arquivo."}));
-        let refused = round(root, "x", Some(&no_replan));
-        assert_eq!(refused["ok"], json!(false), "{refused}");
-        let lines_after = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
-        assert_eq!(lines_after, lines_before, "nothing was recorded: {refused}");
-
         let change = "o plano não serve mais";
         let with_replan = line("DELIVERED", json!({"wave": 1, "text": "Parei sem mexer em arquivo.", "replan": change}));
         let stopped = round(root, "x", Some(&with_replan));
@@ -1014,8 +1052,8 @@ mod tests {
         let session = "s-replan-sem-arquivo";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
         let question = stopped["question"].as_str().unwrap_or_default().to_string();
-        assert_eq!(question, super::super::stops::change_question(&replan_code(1, change), Locale::PtBr), "{stopped}");
-        click(root, session, &question, "Aceitar");
+        assert_eq!(question, super::super::stops::change_question(1, change, Locale::PtBr), "{stopped}");
+        click(root, session, &question, &replan_code(1, change), "Aceitar");
         let out = round(root, "x", Some(&with_replan));
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(delivered_count(root), 1, "{out}");
