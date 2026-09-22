@@ -205,10 +205,13 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
     let need = |f: &str| if has(f) { Ok(()) } else { Err(missing(event_type, f)) };
     let word = |f: &str| event.get(f).and_then(Value::as_str).unwrap_or_default();
     match event_type {
-        // A forma é obrigatória na gravação nova; o critério já gravado sem
-        // ela continua válido, porque esta conferência só corre na escrita,
-        // nunca na leitura do que já existe.
-        "criterion" if !has("form") => Err(Refusal::CriterionFormMissing),
+        // A forma é obrigatória na gravação de um critério novo; o critério
+        // já gravado sem ela continua válido, porque esta conferência só
+        // corre na escrita, nunca na leitura do que já existe. A emenda de um
+        // critério antigo (`replaces` presente) não tem, aqui, como saber se
+        // a versão anterior já declarava a forma ou não — essa parte da
+        // conferência, que depende do arquivo, fica para `check_against`.
+        "criterion" if !has("form") && !has("replaces") => Err(Refusal::CriterionFormMissing),
         "state" => match word("phase") {
             "approved" => need("witness"),
             "discarded" => need("reason"),

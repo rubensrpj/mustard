@@ -88,6 +88,10 @@ pub fn check_against(
     new_id: u64,
 ) -> Result<Effects, Refusal> {
     let event_type = event.get("type").and_then(Value::as_str).unwrap_or_default();
+    // `None` quando o evento não é a emenda de nada; `Some(true)` ou
+    // `Some(false)` quando é, conforme a versão substituída já declarava a
+    // forma do critério ou não.
+    let mut replaces_form = None;
     if let Some(old) = event.get("replaces").and_then(Value::as_u64) {
         let Some(previous) = log.get(old) else {
             return Err(Refusal::UnknownTarget { target: EventRef::Id(old) });
@@ -99,6 +103,16 @@ pub fn check_against(
                 event_type: event_type.to_string(),
             });
         }
+        if event_type == "criterion" {
+            replaces_form = Some(previous.str_field("form").is_some_and(|form| !form.trim().is_empty()));
+        }
+    }
+    // A forma é obrigatória para o critério que nasce agora; a emenda de um
+    // critério escrito antes de a forma virar campo obrigatório herda a
+    // ausência dela, sem travar. A emenda de um critério que já declarava
+    // forma continua exigindo o campo.
+    if event_type == "criterion" && event.get("form").is_none_or(is_empty) && replaces_form != Some(false) {
+        return Err(Refusal::CriterionFormMissing);
     }
     // De onde o evento veio é um evento que já está no arquivo: o número que
     // não existe, e o número do próprio evento, não dizem origem nenhuma.

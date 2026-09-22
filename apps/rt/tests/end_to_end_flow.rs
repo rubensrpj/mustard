@@ -533,6 +533,51 @@ fn o_criterio_sem_forma_declarada_e_recusado() {
     assert_eq!(accepted["ok"], json!(true), "{accepted}");
 }
 
+/// A exigência da forma vale só para o critério que nasce agora, nunca para a
+/// emenda de um critério antigo: um critério gravado direto no arquivo, sem
+/// forma, como as specs de antes da exigência têm, recebe a emenda dele
+/// também sem forma, e a gravação passa.
+#[test]
+fn a_emenda_de_criterio_antigo_nao_exige_forma() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    let said = user_says(&project, "O plano é uma onda só, que muda a saudação.");
+
+    // Um critério sem forma, escrito direto no arquivo, como as specs
+    // antigas — de antes da exigência — têm.
+    let path = store::spec_file(&project.root, SPEC).expect("spec file");
+    let old_id = store::read(&path).expect("readable").expect("the spec file").max_id() + 1;
+    let old_criterion = json!({"v": 1, "id": old_id, "code": "MSTD-CRIT-0001", "at": "2026-01-01T10:00:00-03:00",
+        "type": "criterion", "author": "binary",
+        "when": "o programa roda", "then": "a saudação antiga aparece", "proof": "git --version"});
+    let mut content = std::fs::read_to_string(&path).expect("read the spec file");
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&old_criterion.to_string());
+    content.push('\n');
+    std::fs::write(&path, content).expect("write the old criterion");
+
+    // A emenda dele, sem forma, passa: a exigência não vale para o critério
+    // antigo.
+    let amended = project.write(
+        "criterion",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "origin": said, "replaces": old_id}),
+    );
+    assert_eq!(amended["ok"], json!(true), "{amended}");
+
+    // Um critério novo (sem `replaces`) continua exigindo a forma: a
+    // exigência segue protegida para quem nasce agora.
+    let new_criterion =
+        json!({"when": "outra coisa", "then": "outro efeito", "proof": "git --version", "origin": said});
+    let refused_new =
+        project.answer(&["write", "criterion", "--spec", SPEC, "--json", &new_criterion.to_string()]);
+    assert_eq!(refused_new["ok"], json!(false), "{refused_new}");
+    assert_eq!(refused_new["reason"], json!("criterion-form-missing"), "{refused_new}");
+}
+
 /// Os três termos internos usam o nome de mercado, nos dois idiomas: o que
 /// era "combinado" vira "requisitos acordados", o que era "prova" vira
 /// "verificação", e o que era "revisão final" vira "aceitação" — sem sobra do

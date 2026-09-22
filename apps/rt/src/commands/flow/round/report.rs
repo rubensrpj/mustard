@@ -1173,12 +1173,13 @@ mod tests {
 
     /// A onda de lote — formada pelo binário a partir da cesta — cujo Claude
     /// Code fecha no meio do trabalho, sem deixar a marca obrigatória no
-    /// relatório final, devolve as tarefas dela à cesta, soltas de novo, sem a
-    /// onda que as levou: a rodada segue sem recusar nada e sem gravar
-    /// entrega, veredito ou commit nenhum.
+    /// relatório final, devolve à cesta todas as tarefas que levava, sem
+    /// separar nenhuma: mesmo a que o texto cortado cita pelo código como já
+    /// entregue perde a onda e volta solta, porque o agente morreu no meio e
+    /// não deixou prova nem commit.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_onda_cortada_devolve_as_tarefas_nao_feitas() {
+    fn a_onda_cortada_devolve_todas_as_tarefas() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -1186,16 +1187,33 @@ mod tests {
         let log = store::read(&path).unwrap().unwrap();
         let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
         let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
-        let t1 = id_of(&write(
+        let t1 = write(
             root,
             "x",
             "task",
-            json!({"text": "Tarefa solta.", "files": [{"path": "src/b.rs"}], "depends_on": [],
+            json!({"text": "Tarefa um.", "files": [{"path": "src/b.rs"}], "depends_on": [],
                 "covers": [crit], "origin": said}),
-        ));
+        );
+        let t2 = write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Tarefa dois.", "files": [{"path": "src/c.rs"}], "depends_on": [],
+                "covers": [crit], "origin": said}),
+        );
+        let t3 = write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Tarefa três.", "files": [{"path": "src/d.rs"}], "depends_on": [],
+                "covers": [crit], "origin": said}),
+        );
+        let (id1, id2, id3) = (id_of(&t1), id_of(&t2), id_of(&t3));
+        let code2 = t2["code"].as_str().expect("o código da tarefa dois").to_string();
+
         let log = store::read(&path).unwrap().unwrap();
         let formed = dispatch_basket(root, "x", &log).expect("formou o lote");
-        assert_eq!(formed, vec![2], "o lote da cesta virou a onda 2: {formed:?}");
+        assert_eq!(formed, vec![2], "as três tarefas soltas viram junto a mesma onda de lote: {formed:?}");
 
         let out = round(root, "x", None);
         assert!(waves_in(&out, "dispatch").contains(&2), "a onda de lote sai como qualquer outra: {out}");
@@ -1217,7 +1235,13 @@ mod tests {
         store::write_at(&path, "send", draft, &[], &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string())
             .unwrap();
 
-        let cut = round(root, "x", Some("Texto corrido, sem marca nenhuma — o corte chegou no meio da escrita."));
+        // O texto cortado cita a tarefa dois, pelo código, como já entregue —
+        // mas sem a marca obrigatória, e sem prova nem commit atrás dela.
+        let cut = round(
+            root,
+            "x",
+            Some(&format!("Texto corrido, sem marca nenhuma — a tarefa {code2} já saiu pronta antes do corte.")),
+        );
         assert_eq!(cut["ok"], json!(true), "o corte da onda de lote não recusa a rodada: {cut}");
         assert!(
             !waves_in(&cut, "dispatch").contains(&2),
@@ -1225,11 +1249,13 @@ mod tests {
         );
 
         let after = store::read(&path).unwrap().unwrap();
-        assert!(
-            after.current(t1).unwrap().wave().is_none(),
-            "a tarefa que a onda de lote levava volta solta, sem a onda: {:?}",
-            after.current(t1).unwrap().fields
-        );
+        for (label, id) in [("um", id1), ("dois, citada como feita no texto cortado", id2), ("três", id3)] {
+            assert!(
+                after.current(id).unwrap().wave().is_none(),
+                "a tarefa {label} ganha versão nova sem onda e volta à cesta, sem separar nenhuma: {:?}",
+                after.current(id).unwrap().fields
+            );
+        }
         assert!(
             after.visible().iter().all(|e| e.event_type != "delivered" || e.wave() != Some(2)),
             "nenhuma entrega da onda cortada foi gravada"

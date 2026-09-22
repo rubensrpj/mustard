@@ -626,6 +626,39 @@ pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -
     out
 }
 
+/// Os campos que o registro de um lote deriva das tarefas que o compõem
+/// agora: os critérios que elas cobrem (`covers`, sem repetir), o texto
+/// delas juntado por espaço e o pronto-quando — a prova de cada critério
+/// coberto, ligada por " && ", ou, sem prova nenhuma (o caso do item
+/// combinado sem dono, que não tem prova), o próprio texto das tarefas. A
+/// formação do lote e a atualização dele depois de uma tarefa sair pela
+/// cesta usam esta mesma conta, sobre as tarefas que a leitura de agora
+/// mostra, para as duas nunca discordarem.
+pub struct BasketFields {
+    pub criteria: Vec<u64>,
+    pub text: String,
+    pub done_when: String,
+}
+
+/// Calcula [`BasketFields`] a partir das tarefas `tasks` de um lote, lendo em
+/// `log` a prova de cada critério que elas cobrem.
+#[must_use]
+pub fn basket_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BasketFields {
+    let mut criteria: BTreeSet<u64> = BTreeSet::new();
+    let mut text_parts: Vec<String> = Vec::new();
+    for task in tasks {
+        criteria.extend(task.ints("covers"));
+        if let Some(text) = task.str_field("text") {
+            text_parts.push(text.to_string());
+        }
+    }
+    let criteria: Vec<u64> = criteria.into_iter().collect();
+    let proof =
+        criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof")).collect::<Vec<_>>().join(" && ");
+    let done_when = if proof.is_empty() { text_parts.join(" ") } else { proof };
+    BasketFields { criteria, text: text_parts.join(" "), done_when }
+}
+
 /// A gravação de um item combinado novo depois da aprovação: ele nasce com
 /// dono. Olha o arquivo antes e depois da gravação; o item que já existia, a
 /// spec ainda não aprovada e a gravação de outro tipo passam.

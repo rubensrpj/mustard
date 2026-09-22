@@ -879,6 +879,11 @@ fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Ma
 /// onda pelo `n`/`wave` gravado em cada evento. A onda já entregue ou
 /// aprovada fica como história, e a tarefa dela nunca volta para cá.
 ///
+/// Na mesma chamada, [`refresh_stale_baskets`] atualiza o lote já formado
+/// que perdeu alguma tarefa para um evento de remoção depois de gravado —
+/// sem isso o pedido dele abriria pelo `done_when` congelado na formação,
+/// citando texto de tarefa que já não existe.
+///
 /// A prontidão e o empacotamento são o mesmo motor de [`crate::shared::dag`]
 /// que já prova, sozinho, o desempate e a régua de arquivos: esta função só
 /// lê a spec, monta a população de tarefas e grava o que ele decidiu.
@@ -937,6 +942,7 @@ pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result
         .map(|t| t.id)
         .collect();
     let order: Vec<u64> = ready_tasks(&population).into_iter().filter(|id| basket_ids.contains(id)).collect();
+    refresh_stale_baskets(start, spec, log)?;
     if order.is_empty() {
         return Ok(Vec::new());
     }
@@ -946,28 +952,17 @@ pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result
     let mut written = Vec::new();
     for batch in &batches {
         next_n += 1;
-        let mut criteria: BTreeSet<u64> = BTreeSet::new();
-        let mut text_parts: Vec<String> = Vec::new();
-        for id in &batch.tasks {
-            if let Some(task) = by_id.get(id) {
-                criteria.extend(task.ints("covers"));
-                if let Some(text) = task.str_field("text") {
-                    text_parts.push(text.to_string());
-                }
-            }
-        }
-        let criteria: Vec<u64> = criteria.into_iter().collect();
+        let tasks: Vec<&SpecEvent> = batch.tasks.iter().filter_map(|id| by_id.get(id).copied()).collect();
         // A tarefa nascida de uma onda cobre critério, com prova para juntar
         // aqui; a que nasce do item combinado sem onda dona (a cesta da
         // revisão final) cobre o item, que não tem prova — o texto de quem
         // marcou o item sem atender é o que diz quando a onda entrega.
-        let done_when = criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof")).collect::<Vec<_>>().join(" && ");
-        let done_when = if done_when.is_empty() { text_parts.join(" ") } else { done_when };
+        let fields = mustard_core::domain::wave_prompt::basket_fields(log, &tasks);
         let draft = json!({
             "n": next_n,
-            "text": text_parts.join(" "),
-            "criteria": criteria,
-            "done_when": done_when,
+            "text": fields.text,
+            "criteria": fields.criteria,
+            "done_when": fields.done_when,
             "order": batch.tasks,
             "author": "binary",
         });
@@ -981,6 +976,68 @@ pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result
         written.push(next_n);
     }
     Ok(written)
+}
+
+/// Atualiza o registro de uma onda de lote (autor `binary`) que ainda não
+/// foi enviada, quando uma tarefa dela saiu da cesta por evento de remoção
+/// depois de o lote ter sido formado: sem isso o pedido abriria pelo
+/// `done_when` congelado na formação, que pode citar o texto de uma tarefa
+/// que não existe mais, mesmo com a lista de tarefas do pedido já saindo
+/// certa. Recalcula critério, texto e pronto-quando
+/// ([`mustard_core::domain::wave_prompt::basket_fields`]) a partir das
+/// tarefas que a leitura de agora mostra visíveis naquela onda — o mesmo
+/// conjunto que alimenta a lista de tarefas do pedido — e grava uma versão
+/// nova só quando a ordem gravada perdeu alguma tarefa. A onda já enviada
+/// fica intocada: o pedido dela já foi montado, e mudar o registro não muda
+/// o que o agente já recebeu. A onda que perdeu todas as tarefas fica de
+/// fora: sem tarefa nenhuma ela não é mais candidata a sair
+/// ([`emptied_basket_waves`]), e não há o que recalcular.
+///
+/// # Errors
+///
+/// A recusa da primeira gravação que falhar.
+fn refresh_stale_baskets(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
+    let sent: BTreeSet<u64> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "send")
+        .filter_map(SpecEvent::wave)
+        .collect();
+    let mut updated = Vec::new();
+    for n in log.planned_waves() {
+        if sent.contains(&n) || !basket_wave(log, n) {
+            continue;
+        }
+        let items = log.block(BlockQuery::Wave(n));
+        let Some(wave_event) = items.iter().copied().find(|e| e.event_type == "wave") else { continue };
+        let tasks: Vec<&SpecEvent> = items.iter().copied().filter(|e| e.event_type == "task").collect();
+        if tasks.is_empty() {
+            continue;
+        }
+        // A ordem gravada aponta os números de antes da tarefa ganhar a
+        // versão nova com o `wave` (`task_revision`, acima): segue a cadeia
+        // de substituição até a versão vigente de cada uma, e só conta como
+        // viva a que ainda está entre as tarefas visíveis desta onda.
+        let recorded_order = wave_event.ints("order");
+        let live_ids: BTreeSet<u64> = tasks.iter().map(|t| t.id).collect();
+        let live_order: Vec<u64> =
+            recorded_order.iter().filter_map(|id| log.current(*id)).map(|t| t.id).filter(|id| live_ids.contains(id)).collect();
+        if live_order.len() == recorded_order.len() {
+            continue;
+        }
+        let fields = mustard_core::domain::wave_prompt::basket_fields(log, &tasks);
+        let extra = Map::from_iter([
+            ("text".to_string(), json!(fields.text)),
+            ("criteria".to_string(), json!(fields.criteria)),
+            ("done_when".to_string(), json!(fields.done_when)),
+            ("order".to_string(), json!(live_order)),
+        ]);
+        if let Some(revised) = task_revision(log, wave_event.id, extra) {
+            record(start, spec, "wave", revised, PhaseWriter::Binary)?;
+        }
+        updated.push(n);
+    }
+    Ok(updated)
 }
 
 /// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
@@ -2153,5 +2210,84 @@ mod tests {
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.contains('4') && hint.contains('7'), "o ciclo aparece na recusa: {out}");
         assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "nenhuma onda sai com o ciclo: {out}");
+    }
+
+    /// A tarefa que sai de um lote de duas por evento de remoção, depois de o
+    /// lote já ter sido formado, não deixa rastro no pedido dele: nem na
+    /// lista de tarefas, nem no parágrafo de abertura que abre pelo
+    /// `done_when` — que, sem critério com prova (o caso do item combinado
+    /// sem dono, que não tem prova), é o texto das próprias tarefas unido
+    /// por espaço, exatamente o caminho pelo qual o texto da tarefa retirada
+    /// vazou na onda 21. A prova atravessa `round`, o comando de verdade,
+    /// para exercitar o pedido como o agente o recebe.
+    #[test]
+    fn o_pedido_da_onda_nao_cita_tarefa_retirada() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+
+        // Dois itens combinados sem dono (uma decisão cada), sem prova — o
+        // caso que a cesta empacota quando o levantamento marca um item sem
+        // onda: `waves` os dá dono antes mesmo de a onda 2 existir.
+        let item1 = id_of(&write(
+            root,
+            "x",
+            "decision",
+            json!({"text": "Um item.", "keys": ["k1"], "why": "porque sim", "waves": [2], "origin": said}),
+        ));
+        let item2 = id_of(&write(
+            root,
+            "x",
+            "decision",
+            json!({"text": "Outro item.", "keys": ["k2"], "why": "porque sim", "waves": [2], "origin": said}),
+        ));
+
+        // Duas tarefas soltas, sem arquivo em comum, cada uma cobrindo um
+        // item sem prova: o pronto-quando do lote cai no texto delas, unido
+        // por espaço — o mesmo caminho que vazou o texto da tarefa retirada
+        // na onda 21.
+        let t1 = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Gravar a versao nova de uma decisao ja feita fora da onda.",
+                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item1], "origin": said}),
+        ));
+        id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Trocar a mensagem de erro do campo vazio.",
+                "files": [{"path": "src/c.rs"}], "depends_on": [], "covers": [item2], "origin": said}),
+        ));
+
+        let log = store::read(&path).unwrap().unwrap();
+        let formed = dispatch_basket(root, "x", &log).expect("formou o lote");
+        assert_eq!(formed, vec![2], "as duas tarefas soltas viram um lote só: {formed:?}");
+
+        // A tarefa 1 sai da cesta por remoção, depois de o lote já ter sido
+        // formado: o trabalho dela já foi feito fora da onda. A gravação do
+        // lote deu a ela uma versão nova, com o número da onda — é essa
+        // versão vigente que a remoção precisa apontar, não a original.
+        let log = store::read(&path).unwrap().unwrap();
+        let current_t1 = log.current(t1).expect("a tarefa 1 tem versão vigente").id;
+        write(root, "x", "remove", json!({"targets": [current_t1], "reason": "o trabalho ja foi feito fora da onda"}));
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
+        let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
+        let entry = dispatched.iter().find(|d| d["wave"] == json!(2)).unwrap_or_else(|| panic!("wave 2: {out}"));
+        let prompt = entry["prompt"].as_str().unwrap_or_default();
+        assert!(
+            !prompt.contains("Gravar a versao nova de uma decisao"),
+            "o texto da tarefa retirada nao pode aparecer no pedido: {prompt}"
+        );
+        assert!(
+            prompt.contains("Trocar a mensagem de erro do campo vazio"),
+            "o pronto-quando nasce das tarefas visiveis agora: {prompt}"
+        );
     }
 }
