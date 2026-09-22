@@ -396,8 +396,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
     // O nome do agente, pelo número de tarefas do lote, escolhe o arquivo:
-    // cada um já traz o teto de turnos certo no próprio `maxTurns`, então
-    // não há mais o que escrever em memória — só ler o molde certo.
+    // nenhum dos dois limita as idas e voltas do agente, então não há mais o
+    // que escrever em memória — só ler o molde certo.
     let agent = wave_prompt::agent_role(of_type("task").len()).to_string();
     let template = agent_template(root, &agent);
     let model = wave_prompt::requested_model(&agent).to_string();
@@ -627,8 +627,8 @@ mod tests {
         ])
     }
 
-    /// Uma onda `n` com `tasks` tarefas, para testar o teto de turnos do
-    /// cabeçalho conforme o número delas.
+    /// Uma onda `n` com `tasks` tarefas, para testar o molde de agente que
+    /// o número delas escolhe.
     fn plan_log_with_tasks(tasks: usize) -> SpecLog {
         let mut events: Vec<(&str, Value)> =
             vec![("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))];
@@ -638,22 +638,16 @@ mod tests {
         log_of(&events)
     }
 
-    /// Os dois moldes de agente da onda, instalados em `root`, cada um com o
-    /// `maxTurns` que os moldes de verdade trazem: dez em `wave-solo.md`,
-    /// quinze em `wave.md`.
+    /// Os moldes de agente de verdade, os que o Mustard instala no projeto,
+    /// gravados em `root` como o instalador os grava. É o molde do produto,
+    /// e não uma cópia de mentira escrita aqui, que o teste lê: assim um
+    /// teto de idas e voltas que voltasse ao cabeçalho derrubaria o teste.
     fn write_agent_template(root: &Path) {
         let dir = root.join(".claude").join("agents").join("mustard");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("wave.md"),
-            "---\nname: mustard-wave\nmodel: sonnet\nmaxTurns: 15\n---\n\nCorpo do agente.\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("wave-solo.md"),
-            "---\nname: mustard-wave-solo\nmodel: sonnet\nmaxTurns: 10\n---\n\nCorpo do agente.\n",
-        )
-        .unwrap();
+        for (name, body) in crate::platform::seeds::agent_texts(Locale::PtBr) {
+            std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
+        }
     }
 
     fn write_skill(root: &Path, subproject: &str, name: &str, text: &str) {
@@ -669,13 +663,14 @@ mod tests {
         std::fs::write(crate::io::project_map::model_path(root), model.to_string()).unwrap();
     }
 
-    /// O teto de turnos vai lido do cabeçalho do molde de agente certo: o de
-    /// tarefa única (`wave-solo.md`, dez turnos) para a onda de uma tarefa
-    /// só, o de várias (`wave.md`, quinze) para a de mais — quem aplica o
-    /// corte é a própria plataforma, pelo `maxTurns` do frontmatter de cada
-    /// arquivo; o binário só escolhe qual dos dois ler.
+    /// O molde que o pedido da onda leva não traz teto de idas e voltas,
+    /// nem o de tarefa única (`wave-solo.md`) nem o de várias (`wave.md`).
+    /// A medição de treze agentes de onda deste projeto deu de 36 a 315
+    /// idas e voltas, e a onda mais curta gastou 36: qualquer teto cortava
+    /// a onda no meio e a fazia recomeçar do zero, gastando mais do que se
+    /// não houvesse teto. O binário só escolhe qual dos dois moldes ler.
     #[test]
-    fn the_agent_header_carries_ten_turns_for_one_task_and_fifteen_for_several() {
+    fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write_agent_template(root);
@@ -683,14 +678,12 @@ mod tests {
         let solo = prompts(root, "teste", &plan_log_with_tasks(1), Locale::PtBr, &Flight::default());
         assert_eq!(solo.len(), 1);
         assert_eq!(solo[0].agent, "wave-solo", "{}", solo[0].agent);
-        assert!(solo[0].template.contains("maxTurns: 10"), "{}", solo[0].template);
-        assert!(!solo[0].template.contains("maxTurns: 15"), "{}", solo[0].template);
+        assert!(!solo[0].template.contains("maxTurns"), "{}", solo[0].template);
 
         let several = prompts(root, "teste", &plan_log_with_tasks(2), Locale::PtBr, &Flight::default());
         assert_eq!(several.len(), 1);
         assert_eq!(several[0].agent, "wave", "{}", several[0].agent);
-        assert!(several[0].template.contains("maxTurns: 15"), "{}", several[0].template);
-        assert!(!several[0].template.contains("maxTurns: 10"), "{}", several[0].template);
+        assert!(!several[0].template.contains("maxTurns"), "{}", several[0].template);
     }
 
     /// A skill que a tarefa nomeia entra no pedido pelo caminho do arquivo e

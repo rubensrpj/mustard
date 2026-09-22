@@ -499,7 +499,7 @@ pub(super) fn run_round_with_mine(
         draft.insert("lines".into(), json!(prompt.lines));
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
         // O nome do agente escolhido pelo tamanho do lote (`wave` ou
-        // `wave-solo`) não é campo do envio — o teto de turnos já viaja no
+        // `wave-solo`) não é campo do envio — o molde inteiro já viaja no
         // próprio `template` — mas a resposta desta rodada o repete, para
         // quem despacha saber qual dos dois chamar.
         let agent = prompt.agent.clone();
@@ -778,30 +778,26 @@ mod tests {
         assert_eq!(sent[0].wave(), Some(1));
     }
 
-    /// Os dois moldes de agente instalados em `root`, cada um com o
-    /// `maxTurns` que os moldes de verdade trazem: quinze em `wave.md`, dez
-    /// em `wave-solo.md`.
+    /// Os moldes de agente de verdade, os que o Mustard instala no projeto,
+    /// gravados em `root` como o instalador os grava. É o molde do produto,
+    /// e não uma cópia de mentira escrita aqui, que o envio da rodada leva:
+    /// assim um teto de idas e voltas que voltasse ao cabeçalho derrubaria
+    /// o teste.
     fn write_agent_template(root: &Path) {
         let dir = root.join(".claude").join("agents").join("mustard");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("wave.md"),
-            "---\nname: mustard-wave\nmodel: sonnet\nmaxTurns: 15\n---\n\nCorpo do agente.\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("wave-solo.md"),
-            "---\nname: mustard-wave-solo\nmodel: sonnet\nmaxTurns: 10\n---\n\nCorpo do agente.\n",
-        )
-        .unwrap();
+        for (name, body) in mustard_core::platform::seeds::agent_texts(Locale::PtBr) {
+            std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
+        }
     }
 
-    /// O envio grava, no cabeçalho do molde despachado, o teto de turnos do
-    /// arquivo escolhido pelo tamanho do lote: dez (`wave-solo.md`) para a
-    /// onda de uma tarefa só, quinze (`wave.md`) para a de várias — os dois
-    /// números combinados desta onda.
+    /// O molde que o envio da rodada grava não traz teto de idas e voltas,
+    /// nem o da onda de uma tarefa só (`wave-solo.md`) nem o da onda de
+    /// várias (`wave.md`). A medição de treze agentes de onda deste projeto
+    /// deu de 36 a 315 idas e voltas: nenhuma onda cabia no teto que havia,
+    /// então toda onda era cortada no meio e recomeçava do zero.
     #[test]
-    fn the_dispatched_template_carries_ten_or_fifteen_turns_by_task_count() {
+    fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
         let solo_dir = tempdir().unwrap();
         let solo_root = solo_dir.path();
         write_agent_template(solo_root);
@@ -810,8 +806,7 @@ mod tests {
         let solo_log = store::read(&store::spec_file(solo_root, "x").unwrap()).unwrap().unwrap();
         let solo_sent = solo_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
         let solo_template = solo_sent.str_field("template").unwrap_or_default();
-        assert!(solo_template.contains("maxTurns: 10"), "{solo_template}");
-        assert!(!solo_template.contains("maxTurns: 15"), "{solo_template}");
+        assert!(!solo_template.contains("maxTurns"), "{solo_template}");
 
         let multi_dir = tempdir().unwrap();
         let multi_root = multi_dir.path();
@@ -824,8 +819,7 @@ mod tests {
         let multi_log = store::read(&store::spec_file(multi_root, "x").unwrap()).unwrap().unwrap();
         let multi_sent = multi_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
         let multi_template = multi_sent.str_field("template").unwrap_or_default();
-        assert!(multi_template.contains("maxTurns: 15"), "{multi_template}");
-        assert!(!multi_template.contains("maxTurns: 10"), "{multi_template}");
+        assert!(!multi_template.contains("maxTurns"), "{multi_template}");
     }
 
     /// A resposta da rodada diz qual dos dois arquivos de agente usar em

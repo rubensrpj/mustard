@@ -4,7 +4,6 @@ description: Implements the single task of one wave of a Mustard spec from the r
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: opus
 effort: xhigh
-maxTurns: 10
 ---
 
 ## Goal

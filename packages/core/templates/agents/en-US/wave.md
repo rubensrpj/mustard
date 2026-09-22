@@ -4,7 +4,6 @@ description: Implements one wave of a Mustard spec from the request the binary a
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: opus
 effort: xhigh
-maxTurns: 15
 ---
 
 ## Goal

@@ -151,10 +151,9 @@
 //! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
 //! de toda porta que grava o estado.
 //!
-//! A onda não tem mais teto de tarefas nem de provas de critério: quem corta
-//! o custo dela é o teto de turnos do próprio agente, no cabeçalho do molde
-//! (`mustard_core::domain::wave_prompt::requested_turns`), aplicado pela
-//! plataforma — não a gravação.
+//! A onda não tem mais teto de tarefas nem de provas de critério, e o agente
+//! dela também não tem teto de idas e voltas: a gravação não corta o custo da
+//! onda, e nem o molde do agente corta.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1622,10 +1621,10 @@ mod tests {
     }
 
     /// A onda não nasce mais pequena por contagem: a quarta tarefa é gravada
-    /// que nem a terceira, e do mesmo jeito a quarta prova de critério — quem
-    /// corta o custo agora é o teto de turnos do agente, não a gravação. Este
-    /// é o caso que a recusa `wave-too-big` barrava antes desta onda; ela
-    /// saiu do código, e nenhuma recusa a substitui aqui.
+    /// que nem a terceira, e do mesmo jeito a quarta prova de critério — a
+    /// gravação não corta o custo da onda. Este é o caso que a recusa
+    /// `wave-too-big` barrava antes desta onda; ela saiu do código, e nenhuma
+    /// recusa a substitui aqui.
     #[test]
     fn a_fourth_task_and_a_fourth_proof_are_recorded_like_the_third() {
         let dir = tempdir().unwrap();

@@ -12,9 +12,9 @@
 //! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
 //! indica; e cada comando do fluxo responde o próximo passo, que o modelo não
 //! escolhe sozinho. O que prende o texto de um agente é o que ele diz, não
-//! quantos bytes ele tem. Os dois agentes de onda trazem o teto de turnos no
-//! próprio `maxTurns` do cabeçalho — dez para o de tarefa única, quinze para
-//! o de várias —, porque é a plataforma, não o binário, quem aplica o corte.
+//! quantos bytes ele tem. Nenhum dos dois agentes de onda traz teto de idas e
+//! voltas no cabeçalho: os tetos de dez e quinze cortavam toda onda real no
+//! meio, e a onda cortada recomeçava do zero.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -186,28 +186,37 @@ fn the_project_receives_exactly_four_agents_in_its_text_language() {
     assert!(!repo_root().join("plugin/agents").exists(), "the plugin ships agent texts of its own");
 }
 
-/// Os dois moldes de agente de onda que o instalador grava carregam o teto
-/// de turnos no próprio `maxTurns` do cabeçalho — dez no de tarefa única,
-/// quinze no de várias. É a plataforma, pelo cabeçalho do agente de verdade
-/// em `.claude/agents/mustard/`, quem aplica o corte agora; antes, o teto só
-/// existia dentro do campo de molde do evento de envio, e o arquivo do
-/// agente nunca chegava a carregá-lo. Nenhum dos dois pede mais um relatório
-/// pelo tamanho: a última mensagem tem só as duas linhas do formato (onda 13).
+/// O cabeçalho de um molde de agente: o que está entre as duas linhas de três
+/// traços no começo do arquivo, que é onde a plataforma lê os campos dele.
+fn frontmatter(body: &str) -> &str {
+    body.strip_prefix("---\n").and_then(|rest| rest.split_once("\n---")).map(|(head, _)| head).unwrap_or(body)
+}
+
+/// O instalador escreve os dois moldes de agente de onda — o de lote de uma
+/// tarefa (`wave-solo.md`) e o de lote de várias (`wave.md`) —, e nenhum dos
+/// dois traz teto de idas e voltas no cabeçalho. A medição das vinte e cinco
+/// ondas entregues desta obra deu gasto de 36 a 403 idas, com média de 153:
+/// nenhuma onda real cabia nos tetos de dez e quinze que havia aqui, e a onda
+/// cortada recomeçava do zero. Quem cuida da janela cheia é a compactação e
+/// quem cuida da onda parada é o sinal de vida da rodada. Nenhum dos dois pede
+/// mais um relatório pelo tamanho: a última mensagem tem só as duas linhas do
+/// formato (onda 13).
 #[test]
-fn os_dois_arquivos_de_agente_trazem_o_teto_de_turnos() {
+fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
     for (lang, tokens) in [("pt-BR", "mil e dois mil tokens"), ("en-US", "one and two thousand tokens")] {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
 
-        let multi = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
-        assert!(multi.contains("maxTurns: 15"), "the {lang} multi-task wave agent has no maxTurns: 15: {multi}");
-        assert!(!multi.contains("maxTurns: 10"), "the {lang} multi-task wave agent must not carry the solo cap");
-        assert!(!multi.contains(tokens), "the {lang} multi-task wave agent still asks for a report by size");
-
-        let solo = std::fs::read_to_string(root.join(".claude/agents/mustard/wave-solo.md")).unwrap();
-        assert!(solo.contains("maxTurns: 10"), "the {lang} solo wave agent has no maxTurns: 10: {solo}");
-        assert!(!solo.contains("maxTurns: 15"), "the {lang} solo wave agent must not carry the multi-task cap");
-        assert!(!solo.contains(tokens), "the {lang} solo wave agent still asks for a report by size");
+        for name in ["wave", "wave-solo"] {
+            let path = root.join(format!(".claude/agents/mustard/{name}.md"));
+            assert!(path.is_file(), "the {lang} installation did not write the {name} agent");
+            let body = std::fs::read_to_string(&path).unwrap();
+            let head = frontmatter(&body);
+            let cap = head.lines().find(|line| line.to_lowercase().contains("turn"));
+            assert!(cap.is_none(), "the {lang} {name} agent header still carries a turn cap: {cap:?}");
+            assert!(!head.contains("10") && !head.contains("15"), "the {lang} {name} agent header still pins ten or fifteen: {head}");
+            assert!(!body.contains(tokens), "the {lang} {name} agent still asks for a report by size");
+        }
     }
 }
 
@@ -294,9 +303,10 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
 /// Os quatro moldes — onda de lote, onda de tarefa única, revisão e skill —
 /// declaram o modelo opus com o esforço xhigh, nos dois idiomas: cada agente
 /// sabe o próprio modelo e o próprio esforço, sem herdar o da sessão em
-/// silêncio. O teto de turnos não anda junto: o de lote continua em quinze e
-/// o de tarefa única em dez. Nenhum teste desta obra recusa um molde pelo
-/// tamanho em bytes — o que prende o texto é o que ele diz.
+/// silêncio. Teto de idas e voltas não anda junto: nenhum dos dois moldes de
+/// onda traz um, e quem prende isso é o teste do teto. Nenhum teste desta
+/// obra recusa um molde pelo tamanho em bytes — o que prende o texto é o que
+/// ele diz.
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
     for lang in ["pt-BR", "en-US"] {
@@ -310,11 +320,6 @@ fn each_agent_template_declares_its_own_model_and_effort() {
 
         let wave = template(lang, "wave");
         assert!(wave.len() as u64 > 3_072, "the {lang} wave agent is not over the old byte cap, so it proves nothing");
-        assert!(wave.contains("maxTurns: 15"), "the {lang} multi-task wave agent lost its turn cap:\n{wave}");
-        assert!(
-            template(lang, "wave-solo").contains("maxTurns: 10"),
-            "the {lang} solo wave agent lost its turn cap"
-        );
     }
 }
 

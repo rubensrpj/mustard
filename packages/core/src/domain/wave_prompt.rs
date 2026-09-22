@@ -35,32 +35,13 @@ use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecE
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
-/// O teto de turnos de uma onda com uma tarefa só: uma ida e volta do
-/// modelo, que pode conter várias chamadas de ferramenta.
-pub const SOLO_TASK_TURNS_CAP: u32 = 10;
-
-/// O teto de turnos de uma onda com mais de uma tarefa.
-pub const MULTI_TASK_TURNS_CAP: u32 = 15;
-
-/// O teto de turnos da onda com `tasks` tarefas, para o cabeçalho do agente:
-/// [`SOLO_TASK_TURNS_CAP`] com uma tarefa só, [`MULTI_TASK_TURNS_CAP`] com
-/// mais de uma. O corte é da própria plataforma, pelo campo `maxTurns` do
-/// molde do agente — o binário só escolhe o número e o escreve lá; o que
-/// sobrou quando ela corta volta para a fila como tarefa nova.
-#[must_use]
-pub fn requested_turns(tasks: usize) -> u32 {
-    if tasks <= 1 {
-        SOLO_TASK_TURNS_CAP
-    } else {
-        MULTI_TASK_TURNS_CAP
-    }
-}
-
 /// O nome do agente de onda a chamar, pelo número de tarefas do lote:
 /// `"wave-solo"` para uma tarefa só, `"wave"` para várias. É o nome do
-/// arquivo, sem a extensão, sob `.claude/agents/mustard/` — cada um já traz o
-/// teto de turnos certo no próprio `maxTurns`, então escolher o arquivo é o
-/// que fixa o corte; o binário não escreve mais o teto em memória.
+/// arquivo, sem a extensão, sob `.claude/agents/mustard/`. Nenhum dos dois
+/// limita as idas e voltas do agente: a medição das ondas já entregues deu de
+/// 36 a 403 idas, com média de 153, e nada que a montagem do lote conhece
+/// prevê esse gasto — quem cuida da janela cheia é a compactação, que o agente
+/// faz sozinho, e quem cuida da onda parada é o sinal de vida da rodada.
 #[must_use]
 pub fn agent_role(tasks: usize) -> &'static str {
     if tasks <= 1 {
@@ -1628,8 +1609,7 @@ mod tests {
 
     /// Cada tarefa ganhou linha própria — o arquivo dela e o que precisa ler
     /// antes —, então o número de tarefas soma linhas ao pedido, sem teto: o
-    /// pedido não corta onda grande, quem corta é o teto de turnos do
-    /// próprio agente.
+    /// pedido não corta onda grande, e nada mais corta.
     #[test]
     fn each_task_adds_one_line_and_the_request_has_no_task_count_cap() {
         const MANY: usize = 6;

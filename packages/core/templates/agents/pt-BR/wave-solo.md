@@ -4,7 +4,6 @@ description: Implementa a tarefa única de uma onda de uma spec do Mustard pelo 
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: opus
 effort: xhigh
-maxTurns: 10
 ---
 
 ## Objetivo
