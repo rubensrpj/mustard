@@ -82,6 +82,10 @@ pub(super) fn next_waves(
         .filter(|n| !replanned.contains(n))
         .chain(delivered.iter().copied())
         .filter(|n| !to_redo.contains(n))
+        // A onda de lote que o corte esvaziou nunca volta como candidata
+        // fresca: a cesta já é quem reempacota a tarefa que ela perdeu, numa
+        // onda nova, e despachar esta de novo seria um pedido sem nada dentro.
+        .chain(emptied_basket_waves(log, &graph))
         .collect();
     let mut depends: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for wave in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
@@ -637,6 +641,29 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
     open_sends(log).into_iter().filter(|(_, sent)| !claude_still_here(log, *sent)).collect()
 }
 
+/// A onda `n` é de lote — o binário a formou a partir da cesta, com autor
+/// binário — e não a combinação à mão do plano: só a de lote devolve tarefa
+/// à cesta quando cortada, porque só ela é o que a cesta empacota de novo.
+pub(crate) fn basket_wave(log: &SpecLog, n: u64) -> bool {
+    log.visible().into_iter().any(|event| {
+        event.event_type == "wave" && event.wave() == Some(n) && event.str_field("author") == Some("binary")
+    })
+}
+
+/// As ondas de lote que ficaram sem tarefa nenhuma: o corte de um lote em
+/// andamento devolveu a última tarefa dela à cesta, e sem tarefa não há mais
+/// o que despachar — nem como pedido fresco, nem reenviando o de antes. Só a
+/// onda de lote entra aqui: a combinada à mão que fica sem tarefa por uma
+/// mudança de plano continua candidata, porque a cesta nunca vai reempacotar
+/// o que ela perdeu.
+pub(crate) fn emptied_basket_waves(log: &SpecLog, graph: &WaveGraph) -> BTreeSet<u64> {
+    log.planned_waves()
+        .into_iter()
+        .filter(|n| !graph.tasks.get(n).is_some_and(|tasks| !tasks.is_empty()))
+        .filter(|n| basket_wave(log, *n))
+        .collect()
+}
+
 /// Minutos desde a última ação da onda `wave`: a hora do arquivo de sinal de
 /// vida que [`crate::hooks::observe::wave_alive_observer`] grava, ou, sem
 /// ele, a hora do envio `sent`. `None` sem nenhuma hora legível — a rodada
@@ -733,6 +760,11 @@ pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
 /// (`graph.cycle`) — a mesma leitura que já trava a aprovação do plano
 /// ([`crate::commands::flow::plan`]), não uma segunda conta à parte que
 /// pudesse discordar dela.
+///
+/// A onda de lote que perdeu todas as tarefas para a cesta já chega aqui
+/// dentro de `already_out`, marcada por quem chama: não é este código que
+/// distingue a onda esvaziada da onda combinada à mão que só está esperando
+/// uma tarefa nova, porque as duas têm `graph.tasks` vazio do mesmo jeito.
 fn ready_in_order(
     depends: &BTreeMap<u64, Vec<u64>>,
     graph: &WaveGraph,
@@ -850,14 +882,18 @@ fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Ma
     Some(draft)
 }
 
-/// Forma os lotes prontos da cesta — as tarefas sem onda própria ainda — e
-/// grava o evento de onda de cada um, com autor binário: os critérios são a
-/// união do que as tarefas do lote cobrem (`covers`), o pronta-quando é a
-/// prova desses critérios, ligadas por " && " quando são mais de uma, e a
-/// ordem de despacho do lote fica no campo que a onda já reservava para isso
+/// Forma os lotes prontos da cesta — as tarefas sem onda própria ainda, e
+/// também a tarefa de uma spec antiga que carrega um número de onda sem
+/// evento de onda nenhum atrás dele e que ainda não entregou — e grava o
+/// evento de onda de cada um, com autor binário: os critérios são a união do
+/// que as tarefas do lote cobrem (`covers`), o pronta-quando é a prova
+/// desses critérios, ligadas por " && " quando são mais de uma, e a ordem de
+/// despacho do lote fica no campo que a onda já reservava para isso
 /// (`order`). Cada tarefa do lote ganha, na mesma passada, uma versão nova
-/// com o número da onda formada — é o que liga o lote ao resto da leitura,
-/// que só conhece onda pelo `n`/`wave` gravado em cada evento.
+/// com o número da onda formada — o número velho, de spec antiga, é
+/// ignorado — e é isso que liga o lote ao resto da leitura, que só conhece
+/// onda pelo `n`/`wave` gravado em cada evento. A onda já entregue ou
+/// aprovada fica como história, e a tarefa dela nunca volta para cá.
 ///
 /// A prontidão e o empacotamento são o mesmo motor de [`crate::shared::dag`]
 /// que já prova, sozinho, o desempate e a régua de arquivos: esta função só
@@ -901,7 +937,21 @@ pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result
         })
         .collect();
 
-    let basket_ids: BTreeSet<u64> = all_tasks.iter().filter(|t| t.wave().is_none()).map(|t| t.id).collect();
+    // Solta para o lote: a tarefa sem onda nenhuma, e também a que carrega um
+    // número de onda que nunca virou evento de onda — a spec antiga, numerada
+    // à mão antes desta obra — desde que essa onda não tenha entregue. O
+    // número que ela trazia é ignorado: a tarefa nasce de novo com o número
+    // que o lote formar. A onda com evento próprio, gravada pelo plano ou por
+    // um lote anterior, nunca volta por aqui: quem a despacha é `next_waves`.
+    let planned = log.planned_waves();
+    let basket_ids: BTreeSet<u64> = all_tasks
+        .iter()
+        .filter(|t| match t.wave() {
+            None => true,
+            Some(w) => !done_waves.contains(&w) && !planned.contains(&w),
+        })
+        .map(|t| t.id)
+        .collect();
     let order: Vec<u64> = ready_tasks(&population).into_iter().filter(|id| basket_ids.contains(id)).collect();
     if order.is_empty() {
         return Ok(Vec::new());
@@ -1029,6 +1079,48 @@ mod tests {
 
         let task_now = after.current(t1).unwrap();
         assert_eq!(task_now.wave(), Some(2), "a tarefa ganha a onda do lote que a levou");
+    }
+
+    /// Uma spec antiga, com ondas numeradas à mão antes desta obra: a onda 1
+    /// já entregou, e vira história, sem mexer nela. Uma tarefa dela carrega
+    /// um número de onda — o 7 — que nunca virou evento de onda nenhum, e por
+    /// isso nunca pôde ser despachada: essa tarefa volta para a cesta mesmo
+    /// tendo onda gravada, o número velho é ignorado, e ela é relotada com o
+    /// próximo número livre.
+    #[test]
+    fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let before = read_log(root, "x");
+        let crit = before.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+        let said = before.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+
+        write(root, "x", "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
+
+        let old = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"wave": 7, "text": "Tarefa de spec antiga.", "files": [{"path": "src/b.rs"}],
+                "depends_on": [], "covers": [crit], "origin": said}),
+        ));
+
+        let log = read_log(root, "x");
+        let written = dispatch_basket(root, "x", &log).expect("relotou a tarefa da spec antiga");
+        assert_eq!(written, vec![2], "o número velho é ignorado, o lote ganha o próximo livre: {written:?}");
+
+        let after = read_log(root, "x");
+        let task_now = after.current(old).unwrap();
+        assert_eq!(
+            task_now.wave(),
+            Some(2),
+            "a tarefa não entregue volta para a cesta e é relotada: {:?}",
+            task_now.fields
+        );
+
+        let wave1 = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).unwrap();
+        assert_eq!(wave1.str_field("text"), Some("Onda 1."), "a onda já entregue fica como história, sem versão nova");
     }
 
     /// Duas ondas sem dependência e sem arquivo em comum saem juntas, cada

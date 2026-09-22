@@ -18,13 +18,14 @@ use serde_json::{json, Map, Value};
 
 use super::commit::git_lock;
 use super::queue::{
-    analyse, analysis_lines, dispatch_basket, first_unfinished, max_parallel, next_waves, only_analysis, open_copies,
-    open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
+    analyse, analysis_lines, dispatch_basket, emptied_basket_waves, first_unfinished, max_parallel, next_waves,
+    only_analysis, open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
 };
 use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::{read::checkout, write::record};
+use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::shared::spec_state::DiskSpecState;
 
 /// Por que a rodada não correu.
@@ -165,7 +166,10 @@ impl RoundRefusal {
 
 /// As ondas a reenviar nesta rodada, cada uma com o número do pedido
 /// anterior: as órfãs, de um Claude Code que fechou, e as pausadas por este
-/// relatório — a onda pausada sai de novo na mesma rodada.
+/// relatório — a onda pausada sai de novo na mesma rodada. A onda de lote que
+/// perdeu todas as tarefas para a cesta — o que o corte de uma onda de lote,
+/// no mesmo relatório, acabou de fazer — nunca entra aqui: sem tarefa
+/// nenhuma, reenviar seria despachar uma onda vazia.
 fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
     let last_sends = log.last_by_wave("send");
     let mut out = orphaned_waves(log);
@@ -174,6 +178,9 @@ fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
             out.entry(*wave).or_insert(*sent);
         }
     }
+    let graph = wave_graph(log);
+    let emptied = emptied_basket_waves(log, &graph);
+    out.retain(|wave, _| !emptied.contains(wave));
     out
 }
 
@@ -394,33 +401,24 @@ pub(super) fn run_round_with_mine(
     let entering = phase == "approved"
         && crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
 
-    let log = store::read(&path)
-        .map_err(RoundRefusal::Refused)?
-        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
-
-    // A cesta forma os lotes das tarefas prontas antes de qualquer escolha:
-    // o binário grava a onda e as tarefas dela, com autor próprio, e só
-    // depois a rodada lê as ondas que existem — as novas e as já entregues.
-    dispatch_basket(&opts.root, &spec, &log).map_err(RoundRefusal::Refused)?;
-    let log = store::read(&path)
-        .map_err(RoundRefusal::Refused)?
-        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
-    let codes = log.codes();
-
     // O mapa volta ao commit atual antes de montar os pedidos: um commit à
     // mão ou um pull podem ter mudado o código fora da rodada, e sem isto a
     // sugestão da onda seguinte apontaria linhas velhas.
     super::commit::refresh_map_if_stale(root, mine);
 
-    // A tarefa da cesta — a que a revisão final gravou sem onda dona, para o
-    // item do combinado que ela achou sem atender, numa chamada anterior —
-    // vira onda assim que fica pronta: esta rodada forma o lote antes de
-    // escolher o que despachar, e relê a spec para enxergar a onda nova
-    // junto das demais.
+    // A cesta forma os lotes das tarefas que já estavam prontas antes desta
+    // rodada começar, pela leitura de entrada (`log_on_entry`): o binário
+    // grava a onda e as tarefas dela, com autor próprio, e só depois a
+    // rodada lê as ondas que existem — as novas e as já entregues. A tarefa
+    // que o corte de uma onda de lote acabou de devolver solta, no relatório
+    // desta mesma chamada, fica solta até a rodada seguinte; formar o lote
+    // pela leitura já mexida pelo relatório a empacotaria de novo na mesma
+    // rodada que a soltou.
     dispatch_basket(&opts.root, &spec, &log_on_entry).map_err(RoundRefusal::Refused)?;
     let log = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    let codes = log.codes();
 
     // O despacho da rodada seguinte: as ondas prontas, no máximo o que o
     // projeto deixa compilar ao mesmo tempo contando as que já estão em

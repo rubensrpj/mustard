@@ -511,22 +511,13 @@ fn cesta_return(task: &SpecEvent) -> Map<String, Value> {
     draft
 }
 
-/// A onda `n` é de lote — o binário a formou a partir da cesta, com autor
-/// binário — e não a combinação à mão do plano: só a de lote devolve tarefa
-/// à cesta quando cortada, porque só ela é o que a cesta empacota de novo.
-fn basket_wave(log: &SpecLog, n: u64) -> bool {
-    log.visible().into_iter().any(|event| {
-        event.event_type == "wave" && event.wave() == Some(n) && event.str_field("author") == Some("binary")
-    })
-}
-
 /// As tarefas das ondas de lote em andamento cujo Claude Code já fechou — o
 /// corte que a plataforma deu nelas: cada uma ganha uma versão sem a onda que
 /// a levou. Onda combinada à mão, ou ainda com o Claude Code aberto, fica de
 /// fora: só a onda de lote órfã perde a tarefa que carregava.
 fn return_cut_baskets(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<Value>, Refusal> {
     let mut recorded = Vec::new();
-    for wave in super::queue::orphaned_waves(log).keys().copied().filter(|n| basket_wave(log, *n)) {
+    for wave in super::queue::orphaned_waves(log).keys().copied().filter(|n| super::queue::basket_wave(log, *n)) {
         for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)) {
             let written = record(start, spec, "task", cesta_return(task), PhaseWriter::Binary)?;
             recorded.push(json!({ "wave": wave, "type": "task", "id": written.written.id }));
@@ -1164,6 +1155,10 @@ mod tests {
 
         let cut = round(root, "x", Some("Texto corrido, sem marca nenhuma — o corte chegou no meio da escrita."));
         assert_eq!(cut["ok"], json!(true), "o corte da onda de lote não recusa a rodada: {cut}");
+        assert!(
+            !waves_in(&cut, "dispatch").contains(&2),
+            "a onda que o próprio corte acabou de esvaziar não sai de novo na mesma rodada: {cut}"
+        );
 
         let after = store::read(&path).unwrap().unwrap();
         assert!(
@@ -1175,6 +1170,20 @@ mod tests {
             after.visible().iter().all(|e| e.event_type != "delivered" || e.wave() != Some(2)),
             "nenhuma entrega da onda cortada foi gravada"
         );
+
+        // A onda 2 ficou sem tarefa nenhuma: a rodada seguinte não pode
+        // despachá-la de novo, nem como pedido fresco nem como reenvio do
+        // pedido antigo — não há mais o que entregar por ela.
+        let sends_before = after.visible().iter().filter(|e| e.event_type == "send" && e.wave() == Some(2)).count();
+        let again = round(root, "x", None);
+        assert!(
+            !waves_in(&again, "dispatch").contains(&2) && !waves_in(&again, "resend").contains(&2),
+            "a onda esvaziada pelo corte não sai de novo, nem fresca nem reenviada: {again}"
+        );
+        let after_again = store::read(&path).unwrap().unwrap();
+        let sends_after =
+            after_again.visible().iter().filter(|e| e.event_type == "send" && e.wave() == Some(2)).count();
+        assert_eq!(sends_before, sends_after, "nenhum pedido novo foi gravado para a onda esvaziada");
     }
 
     /// A mesma onda de lote, mas com o Claude Code ainda aberto por trás do

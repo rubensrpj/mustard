@@ -148,14 +148,19 @@ struct Answered<'a> {
     recorded: bool,
 }
 
-/// O que a vaga de `template` traz em `question`, quando a pergunta é a do
-/// modelo: vazio num modelo sem vaga. A vaga é uma palavra só, sem espaço.
+/// O que a vaga de `template` traz em `question`, quando o texto do catálogo
+/// está em `question`, com ou sem explicação antes, depois ou em volta dele:
+/// vazio num modelo sem vaga. A vaga é uma palavra só, sem espaço, colada ao
+/// resto do texto do catálogo — explicação não entra no meio dele.
 fn slot_of(template: &str, question: &str) -> Option<String> {
     let question = question.trim();
     let Some((head, tail)) = template.split_once(SLOT) else {
-        return (template.trim() == question).then(String::new);
+        return question.contains(template.trim()).then(String::new);
     };
-    let middle = question.strip_prefix(head.trim_start())?.strip_suffix(tail.trim_end())?.trim();
+    let head = head.trim_start();
+    let tail = tail.trim_end();
+    let after_head = &question[question.find(head)?..][head.len()..];
+    let middle = after_head[..after_head.find(tail)?].trim();
     (!middle.is_empty() && !middle.chars().any(char::is_whitespace)).then(|| middle.to_string())
 }
 
@@ -647,6 +652,36 @@ mod tests {
         let expected = say("change.witness.no_spec", lang(none.path()), &[("{code}", "onda-2-abc123")]);
         assert_eq!(said, Verdict::Inject { context: expected });
         assert!(!none.path().join(".claude").exists(), "no spec, nothing recorded");
+    }
+
+    /// O gesto se reconhece pelo código da mudança mesmo quando a pergunta
+    /// traz uma explicação em volta do texto do catálogo: o clique na opção
+    /// do catálogo grava a testemunha e destrava a rodada do mesmo jeito.
+    /// Texto livre segue sem destravar nada, mesmo na pergunta explicada.
+    #[test]
+    fn o_gesto_e_reconhecido_na_pergunta_explicada() {
+        if ambient_override() {
+            return;
+        }
+        let dir = spec_with(&[json!({ "phase": "running", "branch": "feature/epic" })]);
+        let root = dir.path();
+        let question =
+            format!("A onda 3 terminou. {} Isso fecha a etapa.", change_question("onda-3-a1b2c3"));
+        let options = ["Aceitar", "Recusar"];
+
+        let said = witness(root, &ask_on(&question, &options, json!("Aceitar")));
+        let expected = say("change.witness.accepted", lang(root), &[("{code}", "onda-3-a1b2c3")]);
+        assert_eq!(said, Verdict::Inject { context: expected });
+
+        let clicked = Some(json!({ "question": question, "answer": "Aceitar" }));
+        assert_eq!(witnessed(root), [(format!("{question}\nAceitar"), clicked)]);
+
+        match witness(root, &ask_on(&question, &options, json!("Aceitar, obrigado"))) {
+            Verdict::Inject { context } => {
+                assert!(context.contains("\"Aceitar\", \"Recusar\""), "shows the menu: {context}");
+            }
+            other => panic!("free text is explained, got {other:?}"),
+        }
     }
 
     /// "Não aprovar" não aprova, e numa chamada com duas perguntas o
