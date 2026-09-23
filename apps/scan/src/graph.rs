@@ -259,6 +259,12 @@ pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String
 /// resolution already applies.
 const MAX_SAME_NAME: usize = 8;
 
+/// The declaration kinds a use can point to: what is called or built by name.
+/// A field or a property is read, not called — `x.kind()` is the call of
+/// something else that happens to share the name — and a type alias, an
+/// interface or a trait is never the target of a call either.
+const CALLABLE_KINDS: &[&str] = &["function", "method", "class", "struct", "record", "enum_member", "const"];
+
 /// The named edges BETWEEN DECLARATIONS: for each declaration, which ones it
 /// calls and every place that uses it, with the file and the line. Until here
 /// the graph only counted file-to-file edges, which cannot answer "who calls
@@ -268,11 +274,15 @@ const MAX_SAME_NAME: usize = 8;
 /// from reading the file again — so a pass that read only the files that
 /// changed links exactly what a full pass links.
 ///
-/// A name is resolved to the declarations that carry it, preferring the ones
-/// declared in the calling file itself or in a file it imports; a name nobody
-/// declares is an outside call and is simply dropped. The links of every
-/// declaration are rewritten from scratch on each pass, so nothing survives a
-/// declaration that is gone.
+/// A name is resolved only to the declarations that can be called and that the
+/// calling file sees: the ones in the file itself, in a file it imports, or in
+/// a file that declares the same namespace in the same language (the languages
+/// that group files by namespace see each other that way, without importing a
+/// file). A name no file in sight declares is an outside call — `.join(` of the
+/// standard library, a field read as `x.kind()` — and is simply dropped, never
+/// tied to every declaration of that name across the project. The links of
+/// every declaration are rewritten from scratch on each pass, so nothing
+/// survives a declaration that is gone.
 pub fn link_declarations(modules: &mut [Module]) {
     let (calls, uses) = resolve_declaration_links(modules);
     for (m, (module_calls, module_uses)) in modules.iter_mut().zip(calls.into_iter().zip(uses)) {
@@ -299,11 +309,16 @@ fn resolve_declaration_links(modules: &[Module]) -> (CallsByDecl, UsesByDecl) {
     let mut by_name: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
     for (mi, m) in modules.iter().enumerate() {
         for (di, d) in m.declarations.iter().enumerate() {
-            if !d.name.is_empty() {
+            if !d.name.is_empty() && CALLABLE_KINDS.contains(&d.kind.as_str()) {
                 by_name.entry(d.name.as_str()).or_default().push((mi, di));
             }
         }
     }
+
+    // The namespaces each file declares, in the one segment form the import
+    // resolution uses, so `Demo.Models` and `Demo::Models` are the same one.
+    let namespaces: Vec<HashSet<String>> =
+        modules.iter().map(|m| m.namespaces.iter().map(|ns| canon_segments(ns)).collect()).collect();
 
     let mut calls: CallsByDecl = modules.iter().map(|m| vec![BTreeSet::new(); m.declarations.len()]).collect();
     let mut uses: UsesByDecl = modules.iter().map(|m| vec![Vec::new(); m.declarations.len()]).collect();
@@ -313,20 +328,21 @@ fn resolve_declaration_links(modules: &[Module]) -> (CallsByDecl, UsesByDecl) {
             continue;
         }
         let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
+        let sees = |mi: usize| {
+            mi == src
+                || imported.contains(modules[mi].path.as_str())
+                || (modules[mi].language == m.language
+                    && namespaces[mi].iter().any(|ns| namespaces[src].contains(ns)))
+        };
         for site in &m.calls {
             let Some(all) = by_name.get(site.name.as_str()) else { continue };
-            let near: Vec<(usize, usize)> = all
-                .iter()
-                .copied()
-                .filter(|(mi, _)| *mi == src || imported.contains(modules[*mi].path.as_str()))
-                .collect();
-            let chosen: &[(usize, usize)] = if near.is_empty() { all } else { &near };
-            if chosen.len() > MAX_SAME_NAME {
+            let chosen: Vec<(usize, usize)> = all.iter().copied().filter(|(mi, _)| sees(*mi)).collect();
+            if chosen.is_empty() || chosen.len() > MAX_SAME_NAME {
                 continue;
             }
             let from = enclosing(&m.declarations, site.line);
             let from_name = from.map_or(String::new(), |di| m.declarations[di].name.clone());
-            for &(dst_mi, dst_di) in chosen {
+            for (dst_mi, dst_di) in chosen {
                 uses[dst_mi][dst_di].push(UseSite {
                     file: m.path.clone(),
                     line: site.line,
