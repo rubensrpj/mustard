@@ -82,8 +82,8 @@ pub struct PlanOpts {
 /// O que a conferência do plano achou. Cada achado sabe se trava a pergunta
 /// de aprovação ou se só avisa.
 enum PlanFinding {
-    /// Uma recusa do arquivo de eventos: ponto aberto, pedido grande demais,
-    /// arquivo citado que não existe.
+    /// Uma recusa do arquivo de eventos: o ponto do levantamento que ficou
+    /// aberto.
     Refused(Refusal),
     /// Uma skill que a conferência recusou.
     Skill { name: String, refusal: MapRefusal },
@@ -861,8 +861,8 @@ mod tests {
     }
 
     /// Uma linha crua, direto no arquivo da spec, sem passar pela gravação:
-    /// simula uma onda grande que já existia antes da onda nascer pequena, ou
-    /// uma edição feita fora do binário — o caso que a rede do plano cobre.
+    /// simula uma onda que já existia no arquivo, de antes da cesta, ou uma
+    /// edição feita fora do binário.
     fn append_raw(root: &Path, spec: &str, event_type: &str, body: Value, id: u64) {
         let mut map = mustard_core::domain::spec_events::normalize(
             body.as_object().cloned().unwrap_or_default(),
@@ -880,10 +880,8 @@ mod tests {
 
     /// Um pedido bem além do antigo teto de 500 linhas não trava mais a
     /// pergunta: o teto não existe. As 600 tarefas vêm direto no arquivo,
-    /// sem passar pela gravação, porque a onda nasce pequena agora e uma
-    /// onda com tantas tarefas não seria mais gravada — mas o plano continua
-    /// conferindo a que já existe no arquivo, de antes da regra ou de uma
-    /// edição de fora.
+    /// sem passar pela gravação, e o plano confere a onda do arquivo do
+    /// mesmo jeito que a gravada.
     #[test]
     fn a_request_far_past_the_old_line_cap_does_not_block_the_question() {
         let dir = tempdir().unwrap();
@@ -911,8 +909,8 @@ mod tests {
     /// O plano não tem mais rede de tamanho: uma onda com mais de três
     /// tarefas no arquivo — nascida assim antes da regra sair, ou por uma
     /// edição de fora do binário — passa sem bloqueio nenhum. É o caso que a
-    /// recusa `wave-too-big` bloqueava antes desta onda; quem corta o custo
-    /// agora é o teto de turnos do agente, fora do plano.
+    /// recusa `wave-too-big` bloqueava antes desta onda, e nenhuma outra
+    /// recusa do plano a substitui.
     #[test]
     fn a_wave_grown_big_outside_the_write_is_not_blocked_by_the_plan() {
         let dir = tempdir().unwrap();

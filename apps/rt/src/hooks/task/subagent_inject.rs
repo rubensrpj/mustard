@@ -7,9 +7,9 @@
 //! itens, com as lições e as skills —, pela mesma montagem da rodada e da
 //! página, e o agente recebe o pedido já no corpo, sem ler arquivo nenhum.
 //!
-//! Antes de trocar, o gancho confere duas coisas: a spec está aprovada, e o
-//! pedido cabe no teto de linhas. Quando uma delas falha, ou quando o bilhete
-//! não se lê, o despacho é barrado, e o motivo diz o que falta. O gancho
+//! Antes de trocar, o gancho confere duas coisas: a spec está aprovada, e a
+//! onda do bilhete existe. Quando uma delas falha, ou quando o bilhete não se
+//! lê, o despacho é barrado, e o motivo diz o que falta. O gancho
 //! nunca manda o agente ler um arquivo no lugar do pedido.
 //!
 //! Um despacho sem bilhete é uma tarefa qualquer e passa como veio: o gancho

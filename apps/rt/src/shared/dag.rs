@@ -148,9 +148,9 @@ pub(crate) fn assign_levels<N: Ord + Clone>(deps: &BTreeMap<N, BTreeSet<N>>) -> 
     Levels { level, cycle }
 }
 
-/// A capacidade inicial de um lote: 5 arquivos distintos. Régua de partida,
-/// não verdade — as primeiras rodadas de despacho a corrigem, do jeito que já
-/// corrigiram o teto de turnos.
+/// A capacidade de um lote: 5 arquivos distintos, fixa no código. A rodada
+/// monta os lotes da cesta com ela; a tarefa que sozinha toca mais arquivos
+/// sai sozinha, acima dela, porque a capacidade nunca impede o despacho.
 pub(crate) const BASKET_CAPACITY: usize = 5;
 
 /// Uma tarefa da cesta: o que ela depende, os arquivos que declara e se o

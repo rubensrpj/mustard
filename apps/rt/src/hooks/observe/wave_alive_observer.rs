@@ -31,9 +31,7 @@ fn parse_wave_folder(folder: &str) -> Option<(String, u64)> {
 
 /// A onda dona da cópia em `cwd`, quando `cwd` está dentro de
 /// `<root>/.claude/worktrees/mustard-<spec>-<onda>` — o mesmo nome que
-/// [`crate::commands::flow::stuck`] reconhece como cópia de onda. Também lida
-/// por [`crate::hooks::session::conversation_size`], para achar a conversa do
-/// agente de onda.
+/// [`crate::commands::flow::stuck`] reconhece como cópia de onda.
 pub(crate) fn wave_of_copy(root: &Path, cwd: &Path) -> Option<(String, u64)> {
     let worktrees = root.join(".claude").join("worktrees");
     let rel = cwd.strip_prefix(&worktrees).ok()?;

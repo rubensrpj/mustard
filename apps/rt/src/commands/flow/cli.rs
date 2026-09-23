@@ -76,8 +76,7 @@ pub enum FlowCmd {
     /// O passo do plano, depois que a especificação, as ondas e as tarefas
     /// estão gravadas: monta o pedido de cada onda com as lições e as skills;
     /// confere que não há ponto do levantamento aberto, que o plano não tem
-    /// erro de montagem, que cada pedido cabe no teto de linhas, que os
-    /// arquivos e os nomes citados existem, que o arquivo citado está no git e
+    /// erro de montagem, que os arquivos e os nomes citados existem, que o arquivo citado está no git e
     /// que ondas da mesma rodada não dividem arquivo; avisa os itens sem
     /// tarefa; refaz o índice, prepara a cópia da spec para o banco de dados
     /// da página e responde o próximo passo: publicar a página que ainda não

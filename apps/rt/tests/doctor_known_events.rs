@@ -129,8 +129,9 @@ fn source(rel: &str) -> String {
 }
 
 /// As sobras da economia antiga: o teto de linhas do pedido de onda, o teto de
-/// três tarefas e três provas por onda, a pausa da conversa aos 200 mil tokens
-/// e a remoção da cópia pelo acerto do git saíram do código em obras
+/// três tarefas e três provas por onda, a pausa da conversa aos 200 mil tokens,
+/// o teto de turnos do agente, a remoção da cópia pelo acerto do git e a
+/// leitura da onda da cópia pelo tamanho da conversa saíram do código em obras
 /// anteriores. Esta prova fecha as três portas por onde elas voltam a aparecer
 /// para quem lê: um comentário que ainda descreva a regra que saiu; um teste
 /// composto que repita prova já existente em teste próprio; e o registro do
@@ -146,6 +147,22 @@ fn as_sobras_da_economia_antiga_nao_existem_mais() {
         ("apps/rt/src/commands/flow/plan.rs", "mais de três tarefas ou mais de três provas"),
         ("apps/rt/src/hooks/observe/wave_alive_observer.rs", "pausa aos 200 mil"),
         ("apps/rt/src/commands/git_settle.rs", "stays true only when WE removed it"),
+        // A capacidade do lote é fixa: nenhuma rodada a corrige, e o teto de
+        // turnos que teria sido corrigido do mesmo jeito saiu.
+        ("apps/rt/src/shared/dag.rs", "do jeito que já\n/// corrigiram o teto de turnos"),
+        ("apps/rt/src/shared/dag.rs", "as primeiras rodadas de despacho a corrigem"),
+        // O gancho do bilhete e a ajuda do plano não conferem mais o tamanho
+        // do pedido.
+        ("apps/rt/src/hooks/task/subagent_inject.rs", "pedido cabe no teto de linhas"),
+        ("apps/rt/src/commands/flow/cli.rs", "cada pedido cabe no teto de linhas"),
+        // Ninguém fora do observador lê a onda dona da cópia.
+        ("apps/rt/src/hooks/observe/wave_alive_observer.rs", "Também lida\n/// por [`crate::hooks::session::conversation_size`]"),
+        // O plano só recusa pelo ponto aberto; a onda não nasce mais pequena,
+        // e o teto de turnos do agente saiu.
+        ("apps/rt/src/commands/flow/plan.rs", "ponto aberto, pedido grande demais"),
+        ("apps/rt/src/commands/flow/plan.rs", "a onda nasce pequena agora"),
+        ("apps/rt/src/commands/flow/plan.rs", "antes da onda nascer pequena"),
+        ("apps/rt/src/commands/flow/plan.rs", "quem corta o custo\n    /// agora é o teto de turnos do agente"),
     ] {
         assert!(
             !source(rel).contains(frase),
