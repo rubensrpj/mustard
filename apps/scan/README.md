@@ -70,10 +70,7 @@ compartilhado, detectado por frequência, sem catálogo. **Detecção de linguag
 também é dado: vem da tabela de extensões do mesmo registro, não de um `match`.
 
 **Consciência de projeto.** Cada manifesto (`.csproj`, `package.json`, `go.mod`…)
-vira um projeto; cada arquivo é atribuído ao projeto de prefixo mais longo. O
-playbook lista o layout da solution e avisa que uma fatia de entidade costuma
-atravessar vários projetos (ex.: domínio em `DataAccess`, serviços em
-`Application`, endpoints em `Backend`).
+vira um projeto; cada arquivo é atribuído ao projeto de prefixo mais longo.
 
 **Relatório de cobertura.** Todo `scan`/`forge` imprime o que foi lido por
 diretório de topo, quais pastas de build foram puladas (`bin`, `obj`…) e quais
@@ -85,9 +82,9 @@ estrutura de pasta. Os papéis saem da frequência de nomes; os caminhos da regr
 são **abstraídos por entidade** — ele remove o token da entidade de *qualquer*
 caminho, então um projeto que aninha por feature vira `…/<Name>s/Services/` e um
 que centraliza fica `…/Entities/`, sem nenhuma suposição. Até as "dependências"
-no playbook são lidas cruas do manifesto do projeto, não mapeadas por uma lista
-minha. Um repositório de exemplo (`sample/`) acompanha o código apenas para
-demonstração — ele não é base de nada.
+são lidas cruas do manifesto do projeto, não mapeadas por uma lista minha. Um
+repositório de exemplo (`sample/`) acompanha o código apenas para demonstração
+— ele não é base de nada.
 
 Como o agrupamento é por nome de entidade, grain correlaciona **através da
 stack**: o slice do `Order` junta o `OrderController` (C#) e o `OrderList` (React)

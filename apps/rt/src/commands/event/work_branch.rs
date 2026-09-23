@@ -851,7 +851,8 @@ const HARNESS_SCRATCH_DIRS: &[&str] = &[
     "agent-memory",
     "knowledge",
     "memory",
-    // Cut by `work-unit-open`, pruned by `git-settle` — never branch content.
+    // The separate copies of each wave and of its reviewer, which the round
+    // and the close create and remove — never branch content.
     "worktrees",
 ];
 
@@ -1927,7 +1928,7 @@ mod tests {
     /// ever wrote — which is how they passed while the field refused.
     const SHIPPED_SEED_GITIGNORE: &str = "# Mustard harness scratch — runtime state, not versioned.\n\
          .cache/\n.harness/\n.metrics/\n.agent-state/\n.pipeline-states/\n\n\
-         # Work-unit worktrees (created by `work-unit-open`, pruned by git-settle).\n\
+         # Work-unit worktrees.\n\
          worktrees/\n\n\
          # Per-spec event log + blob spill.\n\
          spec/*/.events/\nspec/*/.blobs/\n";

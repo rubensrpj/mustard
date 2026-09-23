@@ -47,9 +47,9 @@
 //! with a cheerful "deleted" over a typo.
 //!
 //! Fail-open around the provider (an absent `gh` is an honest `ghError` field
-//! and exit 0) and around the remote delete, which is best-effort in the same
-//! way `git-settle`'s is. The three refusals above never degrade: they are the
-//! whole guard.
+//! and exit 0) and around the remote delete, which is best-effort: a push that
+//! fails leaves `remoteDeleted: false` in the report. The three refusals above
+//! never degrade: they are the whole guard.
 
 use std::path::Path;
 
@@ -234,12 +234,9 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     let (pr, pr_closed, gh_error) = close_open_pr(&main, unit);
 
     // Then the git side. The work-branch gate cuts every unit IN PLACE — no
-    // worktree of its own — so there is no separate floor to free here: the
-    // worktree table this door used to consult served `work-unit-open`, which
-    // opened a unit into its own worktree and no longer exists as a command
-    // (`apps/rt/src/commands/mod.rs`). `worktreeRemoved` stays in the report,
-    // permanently `false`, so a caller reading the old field shape keeps
-    // reading valid JSON.
+    // worktree of its own — so there is no separate floor to free here.
+    // `worktreeRemoved` stays in the report, permanently `false`, so a caller
+    // reading the field keeps reading valid JSON.
     //
     // `-D`, never `-d`: an abandoned unit is unmerged BY DEFINITION, and `-d`
     // would refuse exactly the branches this command exists to remove.
