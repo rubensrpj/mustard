@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 
 use super::commit::git_lock;
 use super::queue::{
-    analyse, analysis_lines, dispatch_basket, emptied_basket_waves, first_unfinished, max_parallel, next_waves,
+    analyse, analysis_lines, basket_left, basket_ready, dispatch_basket, emptied_basket_waves, first_unfinished, max_parallel, next_waves,
     only_analysis, open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
 };
 use super::report::Taken;
@@ -656,8 +656,9 @@ pub(super) fn run_round_with_mine(
     }
 
     // O próximo passo: despachar o que saiu agora; esperar as que estão em
-    // andamento; fechar, com tudo entregue e aprovado; ou dizer qual onda
-    // falta, quando nada se move. A rodada não pede revisão de onda nenhuma:
+    // andamento; dizer qual onda falta, quando nada se move; rodar de novo,
+    // ou nomear as tarefas presas, quando a cesta ainda tem tarefa; ou
+    // fechar, com tudo entregue e aprovado e a cesta vazia. A rodada não pede revisão de onda nenhuma:
     // quem confere o trabalho é o agente de teste dedicado que o fechamento
     // pede, uma vez por obra.
     let report_back = translate("round.report", lang);
@@ -673,6 +674,27 @@ pub(super) fn run_round_with_mine(
         String::new()
     } else if let Some(wave) = first_unfinished(&log, &running) {
         translate("round.missing", lang).replace("{wave}", &wave.to_string())
+    } else if !basket_left(&log).is_empty() {
+        // Toda onda planejada terminou, mas a cesta ainda tem tarefa: a obra
+        // não fecha. A tarefa que ficou pronta pela entrega desta mesma
+        // rodada só vira lote na rodada seguinte, porque a cesta foi formada
+        // pela leitura de entrada; sem tarefa pronta e sem nada em andamento,
+        // as que sobraram estão presas, e a resposta as nomeia.
+        let shown = |ids: &mut dyn Iterator<Item = u64>| -> String {
+            ids.map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string())).collect::<Vec<_>>().join(", ")
+        };
+        let ready = basket_ready(&log);
+        if ready.is_empty() {
+            translate("round.basket_stuck", lang).replace("{tasks}", &shown(&mut basket_left(&log).into_iter()))
+        } else {
+            let state = State::from_log(&log);
+            let step = crate::commands::flow::resume::step_command("round", &spec, &state);
+            let text = translate("round.basket_left", lang)
+                .replace("{tasks}", &shown(&mut ready.into_iter()))
+                .replace("{command}", step.as_deref().unwrap_or_default());
+            command = step;
+            text
+        }
     } else {
         let state = State::from_log(&log);
         // A obra já fechada não fecha de novo: a rodada acabou de receber o
@@ -1406,6 +1428,88 @@ mod tests {
         crate::commands::flow::resume::assert_parses(command);
         let close = translate("round.close", Locale::PtBr).replace("{command}", command);
         assert!(done["next"].as_str().unwrap_or_default().ends_with(&close), "{done}");
+    }
+
+    /// A última onda em andamento entrega e sobra tarefa na cesta: a rodada
+    /// nunca manda fechar. A tarefa que a entrega desta mesma rodada soltou
+    /// ainda não virou lote, e a resposta manda rodar de novo, com a linha
+    /// pronta; a rodada seguinte despacha o lote, e só com a cesta vazia a
+    /// rodada manda fechar. Com tarefa presa — nenhuma pronta e nada em
+    /// andamento — a resposta nomeia as tarefas presas e não manda fechar.
+    #[test]
+    fn a_rodada_nao_manda_fechar_com_tarefa_na_cesta() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let first = log.visible().into_iter().find(|e| e.event_type == "task").map(|e| e.id).unwrap();
+            let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+            write(root, "x", "task", json!({"text": "Tarefa que espera a da onda 1.",
+                "files": [{"path": "src/b.rs"}], "depends_on": [first], "covers": [crit], "origin": said}));
+        });
+        std::fs::write(root.join("src/b.rs"), "fn dois() {}\n").unwrap();
+
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "a tarefa solta ainda espera a onda 1: {first}");
+
+        let delivered_now = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(delivered_now["ok"], json!(true), "{delivered_now}");
+        assert_eq!(waves_in(&delivered_now, "dispatch"), Vec::<u64>::new(), "{delivered_now}");
+        let command = delivered_now["command"].as_str().unwrap_or_default();
+        assert_eq!(command, "mustard-rt run round --spec x", "com tarefa na cesta, a rodada manda rodar de novo: {delivered_now}");
+        crate::commands::flow::resume::assert_parses(command);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let loose = log
+            .visible()
+            .into_iter()
+            .find(|e| e.event_type == "task" && e.wave().is_none())
+            .map(|e| codes.get(&e.id).cloned().unwrap())
+            .expect("a tarefa solta segue na cesta");
+        let expected = translate("round.basket_left", Locale::PtBr).replace("{tasks}", &loose).replace("{command}", command);
+        assert!(delivered_now["next"].as_str().unwrap_or_default().ends_with(&expected), "{delivered_now}");
+
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![2], "a rodada de novo despacha o lote: {again}");
+
+        let done = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
+        assert_eq!(done["command"], json!("mustard-rt run close --spec x"), "cesta vazia, a rodada manda fechar: {done}");
+
+        // A tarefa presa: duas tarefas soltas que dependem uma da outra, com
+        // a onda 1 entregue e nada em andamento. Nenhuma fica pronta, e a
+        // rodada as nomeia em vez de mandar fechar.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+            let one = id_of(&write(root, "x", "task", json!({"text": "Tarefa presa um.",
+                "files": [{"path": "src/c.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
+            let two = id_of(&write(root, "x", "task", json!({"text": "Tarefa presa dois.",
+                "files": [{"path": "src/d.rs"}], "depends_on": [one], "covers": [crit], "origin": said})));
+            // A gravação recusa o círculo; ele chega pela spec gravada antes
+            // dessa trava, direto no arquivo de eventos.
+            crate::shared::spec_state::seed_event(root, "x", "task", json!({"text": "Tarefa presa um.",
+                "files": [{"path": "src/c.rs"}], "depends_on": [two], "covers": [crit], "origin": said,
+                "replaces": one}));
+        });
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "as tarefas presas não viram lote: {first}");
+        let stuck = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(stuck["ok"], json!(true), "{stuck}");
+        assert_eq!(waves_in(&stuck, "dispatch"), Vec::<u64>::new(), "{stuck}");
+        assert!(stuck.get("command").is_none(), "tarefa presa não tem linha de fechamento: {stuck}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let held: Vec<String> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task" && e.wave().is_none())
+            .map(|e| codes.get(&e.id).cloned().unwrap())
+            .collect();
+        assert_eq!(held.len(), 2, "{held:?}");
+        let expected = translate("round.basket_stuck", Locale::PtBr).replace("{tasks}", &held.join(", "));
+        assert!(stuck["next"].as_str().unwrap_or_default().ends_with(&expected), "{stuck}");
     }
 
     /// Duas rodadas ao mesmo tempo, sem relatório, com uma onda pronta. As

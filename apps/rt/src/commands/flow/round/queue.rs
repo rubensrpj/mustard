@@ -866,9 +866,73 @@ fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Ma
     Some(draft)
 }
 
-/// Forma os lotes prontos da cesta — as tarefas sem onda própria ainda, e
-/// também a tarefa de uma spec antiga que carrega um número de onda sem
-/// evento de onda nenhum atrás dele e que ainda não entregou — e grava o
+/// As tarefas vigentes da spec como o motor da cesta as lê: cada uma com as
+/// dependências resolvidas para a versão vigente, os arquivos que declara e
+/// se já está feita — a onda dela está entre as entregues e aprovadas
+/// (`done_waves`).
+fn basket_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BasketTask<u64>> {
+    let codes = log.codes();
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .map(|task| {
+            let depends_on: BTreeSet<u64> = task
+                .fields
+                .get("depends_on")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| basket_task_ref(log, &codes, value))
+                .collect();
+            let done = task.wave().is_some_and(|w| done_waves.contains(&w));
+            crate::shared::dag::BasketTask { id: task.id, depends_on, files: task_files(task), done }
+        })
+        .collect()
+}
+
+/// O que está na cesta: a tarefa sem onda nenhuma, e também a que carrega
+/// um número de onda que nunca virou evento de onda — a spec antiga,
+/// numerada à mão — desde que essa onda não tenha entregue. A tarefa de
+/// onda com evento próprio, gravada pelo plano ou por um lote anterior,
+/// nunca está aqui: quem a despacha é [`next_waves`]. A onda já entregue ou
+/// aprovada fica como história, e a tarefa dela nunca volta para a cesta.
+///
+/// É a leitura única da cesta: a formação do lote ([`dispatch_basket`]), o
+/// próximo passo da rodada e o fechamento leem daqui, para os três não
+/// discordarem de quando a cesta está vazia.
+pub(crate) fn basket_left(log: &SpecLog) -> BTreeSet<u64> {
+    let running = waves_in_progress(log);
+    let done_waves = waves_done(log, &running);
+    let planned = log.planned_waves();
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .filter(|t| match t.wave() {
+            None => true,
+            Some(w) => !done_waves.contains(&w) && !planned.contains(&w),
+        })
+        .map(|t| t.id)
+        .collect()
+}
+
+/// As tarefas da cesta ([`basket_left`]) que já estão prontas — todas as
+/// dependências entregues ou aprovadas —, na ordem em que o motor da cesta
+/// as empacota. Vazia quando a cesta está vazia ou quando toda tarefa dela
+/// ainda espera uma dependência.
+pub(crate) fn basket_ready(log: &SpecLog) -> Vec<u64> {
+    let running = waves_in_progress(log);
+    let done_waves = waves_done(log, &running);
+    let left = basket_left(log);
+    crate::shared::dag::ready_tasks(&basket_population(log, &done_waves))
+        .into_iter()
+        .filter(|id| left.contains(id))
+        .collect()
+}
+
+/// Forma os lotes prontos da cesta ([`basket_left`], [`basket_ready`]) — as
+/// tarefas sem onda própria ainda, e também a tarefa de uma spec antiga que
+/// carrega um número de onda sem evento de onda nenhum atrás dele e que
+/// ainda não entregou — e grava o
 /// evento de onda de cada um, com autor binário: os critérios são a união do
 /// que as tarefas do lote cobrem (`covers`), o pronta-quando é a prova
 /// desses critérios, ligadas por " && " quando são mais de uma, e a ordem de
@@ -902,46 +966,14 @@ fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Ma
 ///
 /// A recusa da primeira gravação que falhar.
 pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
-    use crate::shared::dag::{pack_batches, ready_tasks, BasketTask, BASKET_CAPACITY};
+    use crate::shared::dag::{pack_batches, BASKET_CAPACITY};
 
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
-    let codes = log.codes();
-    let all_tasks: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "task").collect();
-    let by_id: BTreeMap<u64, &SpecEvent> = all_tasks.iter().map(|t| (t.id, *t)).collect();
-
-    let population: Vec<BasketTask<u64>> = all_tasks
-        .iter()
-        .map(|task| {
-            let depends_on: BTreeSet<u64> = task
-                .fields
-                .get("depends_on")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|value| basket_task_ref(log, &codes, value))
-                .collect();
-            let done = task.wave().is_some_and(|w| done_waves.contains(&w));
-            BasketTask { id: task.id, depends_on, files: task_files(task), done }
-        })
-        .collect();
-
-    // Solta para o lote: a tarefa sem onda nenhuma, e também a que carrega um
-    // número de onda que nunca virou evento de onda — a spec antiga, numerada
-    // à mão antes desta obra — desde que essa onda não tenha entregue. O
-    // número que ela trazia é ignorado: a tarefa nasce de novo com o número
-    // que o lote formar. A onda com evento próprio, gravada pelo plano ou por
-    // um lote anterior, nunca volta por aqui: quem a despacha é `next_waves`.
-    let planned = log.planned_waves();
-    let basket_ids: BTreeSet<u64> = all_tasks
-        .iter()
-        .filter(|t| match t.wave() {
-            None => true,
-            Some(w) => !done_waves.contains(&w) && !planned.contains(&w),
-        })
-        .map(|t| t.id)
-        .collect();
-    let order: Vec<u64> = ready_tasks(&population).into_iter().filter(|id| basket_ids.contains(id)).collect();
+    let by_id: BTreeMap<u64, &SpecEvent> =
+        log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
+    let population = basket_population(log, &done_waves);
+    let order = basket_ready(log);
     refresh_stale_baskets(start, spec, log)?;
     if order.is_empty() {
         return Ok(Vec::new());

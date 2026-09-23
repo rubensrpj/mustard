@@ -93,6 +93,8 @@ enum CloseRefusal {
     WaveRejected { wave: u64 },
     /// Um pedido do usuário que nenhuma onda entregou.
     RequestNotDelivered { code: String },
+    /// A cesta ainda tem tarefa, com os códigos delas.
+    BasketNotEmpty { tasks: String },
     /// O lint do projeto falhou.
     LintFailed { command: String, output: String },
     /// A suíte inteira do projeto falhou.
@@ -117,6 +119,7 @@ impl CloseRefusal {
             Self::WaveWithoutCommit { .. } => "wave-without-commit".into(),
             Self::WaveRejected { .. } => "wave-rejected".into(),
             Self::RequestNotDelivered { .. } => "request-not-delivered".into(),
+            Self::BasketNotEmpty { .. } => "basket-not-empty".into(),
             Self::LintFailed { .. } => "lint-failed".into(),
             Self::SuiteFailed { .. } => "suite-failed".into(),
             Self::ReviewCopyDirty { .. } => "review-copy-dirty".into(),
@@ -141,6 +144,7 @@ impl CloseRefusal {
             Self::RequestNotDelivered { code } => {
                 fill("close.request_not_delivered", &[("{code}", code.clone())])
             }
+            Self::BasketNotEmpty { tasks } => fill("close.basket_not_empty", &[("{tasks}", tasks.clone())]),
             Self::LintFailed { command, output } => {
                 fill("close.lint_failed", &[("{command}", command.clone()), ("{output}", output.clone())])
             }
@@ -693,7 +697,8 @@ fn record_tracking_table(root: &Path, spec: &str, verdict: &SpecEvent) -> Result
 
 /// A obra terminou? Recusa enquanto houver onda sem commit, onda com o
 /// conserto pendente ([`crate::commands::flow::round::waves_pending_fix`]:
-/// a última revisão dela reprovou e nenhuma entrega chegou depois), ou
+/// a última revisão dela reprovou e nenhuma entrega chegou depois), tarefa
+/// ainda na cesta ([`crate::commands::flow::round::basket_left`]), ou
 /// pedido do usuário que nenhuma onda entregou. Não basta os testes
 /// passarem. As ondas e os vereditos são lidos como a rodada os lê: a onda
 /// que saiu do plano não é cobrada.
@@ -725,6 +730,15 @@ fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
         if !committed.contains(&wave) {
             return Err(CloseRefusal::WaveWithoutCommit { wave });
         }
+    }
+
+    // A tarefa que ainda está na cesta não foi entregue por onda nenhuma: a
+    // leitura da cesta é a mesma da rodada e da formação do lote.
+    let left = crate::commands::flow::round::basket_left(log);
+    if !left.is_empty() {
+        let codes = log.codes();
+        let tasks = left.iter().map(|id| codes.get(id).cloned().unwrap_or_else(|| id.to_string())).collect::<Vec<_>>();
+        return Err(CloseRefusal::BasketNotEmpty { tasks: tasks.join(", ") });
     }
 
     // Um pedido do usuário que chegou depois da última entrega não foi
@@ -2318,6 +2332,29 @@ exit "${2:-0}"
         crate::shared::spec_state::seed_request(root, "x", "Quero também a barra de status.");
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("request-not-delivered"), "{refused}");
+    }
+
+    /// O fechamento com tarefa na cesta recusa com a razão própria e nomeia a
+    /// tarefa; tirada a tarefa da spec, o mesmo fechamento passa.
+    #[test]
+    fn o_fechamento_recusa_com_tarefa_na_cesta() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "mais uma"})));
+        let task = id_of(&write(root, "x", "task", json!({"text": "Tarefa que ficou na cesta.",
+            "files": [{"path": "src/w1.rs"}], "depends_on": [], "origin": said})));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let code = log.codes().get(&task).cloned().expect("a tarefa tem código");
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("basket-not-empty"), "{refused}");
+        let expected = translate("close.basket_not_empty", Locale::PtBr).replace("{tasks}", &code);
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+
+        write(root, "x", "remove", json!({"targets": [task], "reason": "a tarefa saiu da obra"}));
+        let closed = close(root, "x");
+        assert_eq!(closed["ok"], json!(true), "{closed}");
     }
 
     /// A onda parada pelo limite de consertos trava o fechamento enquanto está
