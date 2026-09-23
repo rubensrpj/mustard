@@ -34,8 +34,16 @@
 //! which are never touched; `cleaned` says what was done. Nothing is staged or
 //! committed.
 //!
+//! Once the files are written, the same code-tool step `mustard init` runs
+//! (`mustard_core::platform::code_tools::ensure_code_tools`) sets up the
+//! language-server program and plugin of every language the project involves,
+//! so a project that only ever updates gets them too. What the step could not
+//! do by itself comes back in `codeToolWarnings`, each sentence naming the
+//! command a person runs to finish it; nothing it meets stops the upsert.
+//!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
-//! `UpsertReport` flattened, with `pluginRefresh` appended — deterministic
+//! `UpsertReport` flattened, with `pluginRefresh` and `codeToolWarnings`
+//! appended — deterministic
 //! (fixed field order, no timestamps, project-root-relative names only), per
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
 //! reported as a JSON `{"error": …}` object and the process still exits 0.
@@ -77,6 +85,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use mustard_core::platform::code_tools::{self, MachineRunner, ToolRunner};
 use mustard_core::InstallMode;
 use serde::Serialize;
 
@@ -158,18 +167,24 @@ struct PluginRefresh {
     restart: Option<String>,
 }
 
-/// The whole answer of `run upsert`: what the engine did to the project, plus
-/// what the plugin refresh did.
+/// The whole answer of `run upsert`: what the engine did to the project, what
+/// the plugin refresh did, and what the code-tool step left for a person.
 ///
 /// The engine's report is flattened, so every key callers already read
 /// (`installedBefore`, `created`, `private`, …) keeps its name and its place;
-/// `pluginRefresh` is appended after them.
+/// `pluginRefresh` and `codeToolWarnings` are appended after them.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Report {
     #[serde(flatten)]
     project: mustard_core::UpsertReport,
     plugin_refresh: PluginRefresh,
+    /// What the code-tool step could not do by itself, one sentence per
+    /// warning, in the order the step met them, each naming the command a
+    /// person runs to finish it. Always present: empty means every language
+    /// the project involves has its program and its plugin, or that it
+    /// involves none.
+    code_tool_warnings: Vec<String>,
 }
 
 /// Execute `mustard-rt run upsert`.
@@ -185,19 +200,11 @@ pub fn run() {
     // process cwd — the fresh-install path, where no anchor exists yet.
     let root = PathBuf::from(crate::shared::context::env::project_dir());
 
-    // Unconditional. The mode is not read from anywhere and not asked for
-    // anywhere: a harness that installs itself into someone else's repository
-    // is the failure this door exists to make unreachable, and a knob that can
-    // reach it is the same failure with an extra step.
-    let mode = InstallMode::Private;
-
-    let version = mustard_core::harness_version();
-    match mustard_core::upsert_project(&root, Some(&version), mode) {
-        Ok(report) => {
-            // The refresh is the LAST step, and only on the path where the
-            // project was really seeded: a run that wrote nothing has no
-            // installation to finish.
-            let outcome = Report { project: report, plugin_refresh: refresh_plugin(&root) };
+    // The code-tool commands find and spawn their programs against this
+    // process's own PATH, the way `mustard init` hands the same step its own.
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    match upsert(&root, &MachineRunner::new(&path_env), refresh_plugin) {
+        Ok(outcome) => {
             let json = serde_json::to_string_pretty(&outcome)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));
             println!("{json}");
@@ -226,6 +233,41 @@ pub fn run() {
             }
         }
     }
+}
+
+/// The whole door, short of printing: seed the project, set up the code tools
+/// of every language it involves, refresh the plugin.
+///
+/// `runner` runs the code-tool commands and `refresh` performs the plugin
+/// refresh. [`run`] hands both to the machine; the tests hand a fake runner and
+/// a canned refresh, so what they drive is the same sequence the command runs.
+fn upsert(
+    root: &Path,
+    runner: &impl ToolRunner,
+    refresh: impl FnOnce(&Path) -> PluginRefresh,
+) -> mustard_core::platform::error::Result<Report> {
+    // Unconditional. The mode is not read from anywhere and not asked for
+    // anywhere: a harness that installs itself into someone else's repository
+    // is the failure this door exists to make unreachable, and a knob that can
+    // reach it is the same failure with an extra step.
+    let mode = InstallMode::Private;
+
+    let version = mustard_core::harness_version();
+    let project = mustard_core::upsert_project(root, Some(&version), mode)?;
+
+    // Both steps below run only on the path where the project was really
+    // seeded: a run that wrote nothing has no installation to finish. The
+    // code tools come after the files, so a step that fails or stalls leaves
+    // the project already updated, and each failure is a sentence in the
+    // report, never an abort.
+    let code_tool_warnings =
+        code_tools::ensure_code_tools(root, &mustard_core::io::project_map::model_path(root), runner)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+    // The refresh is the LAST step.
+    Ok(Report { project, plugin_refresh: refresh(root), code_tool_warnings })
 }
 
 // ---------------------------------------------------------------------------
@@ -721,6 +763,7 @@ mod tests {
                 ..mustard_core::UpsertReport::default()
             },
             plugin_refresh: skipped(None, "no install".to_string()),
+            code_tool_warnings: Vec::new(),
         };
         let first = serde_json::to_string_pretty(&outcome).expect("serialize");
         let second = serde_json::to_string_pretty(&outcome).expect("serialize again");
@@ -731,6 +774,160 @@ mod tests {
         assert_eq!(value["version"], serde_json::json!("0.1.43"));
         assert_eq!(value["pluginRefresh"]["state"], serde_json::json!(SKIPPED));
         assert!(value["pluginRefresh"].get("restart").is_none());
+    }
+
+    /// A runner that installs nothing: it writes down each command it is asked
+    /// for and answers from memory. A present package manager puts on the PATH
+    /// the program it brings, as the machine would; a command line containing
+    /// one of `failing` exits with an error. It also notes whether the project
+    /// was already seeded when each command came, so the order of the two
+    /// steps is observable.
+    struct FakeRunner {
+        root: PathBuf,
+        on_path: std::cell::RefCell<std::collections::BTreeSet<String>>,
+        brings: Vec<(&'static str, &'static str)>,
+        failing: Vec<&'static str>,
+        log: std::cell::RefCell<Vec<String>>,
+        seeded_when_called: std::cell::RefCell<Vec<bool>>,
+    }
+
+    impl FakeRunner {
+        fn new(root: &Path, on_path: &[&str]) -> Self {
+            Self {
+                root: root.to_path_buf(),
+                on_path: std::cell::RefCell::new(on_path.iter().map(|p| (*p).to_string()).collect()),
+                brings: Vec::new(),
+                failing: Vec::new(),
+                log: std::cell::RefCell::new(Vec::new()),
+                seeded_when_called: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ToolRunner for FakeRunner {
+        fn on_path(&self, program: &str) -> bool {
+            self.on_path.borrow().contains(program)
+        }
+
+        fn run(&self, program: &str, args: &[&str]) -> bool {
+            let line = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+            self.log.borrow_mut().push(line.clone());
+            self.seeded_when_called.borrow_mut().push(self.root.join("mustard.json").is_file());
+            if !self.on_path(program) || self.failing.iter().any(|f| line.contains(f)) {
+                return false;
+            }
+            for (manager, brought) in &self.brings {
+                if *manager == program {
+                    self.on_path.borrow_mut().insert((*brought).to_string());
+                }
+            }
+            true
+        }
+
+        fn found_off_path(&self, _program: &str) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    /// A project in C# and Rust, updated: the files are written first, then the
+    /// same code-tool step `mustard init` runs sets up each language. Each one
+    /// lands on one side of the line: `csharp-ls` is missing and so is
+    /// `dotnet`, so nothing installs and the warning names the command; the
+    /// C# plugin install fails and becomes a warning with its command, and the
+    /// step moves on; `rust-analyzer` is missing but `rustup` is there, so it
+    /// runs. Both warnings reach the report the command prints, and the rest
+    /// of the report — the files and the plugin refresh — is still there.
+    #[test]
+    fn a_atualizacao_roda_a_etapa_das_ferramentas_de_codigo() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        std::fs::write(root.join("App.csproj"), "<Project/>\n").expect("write App.csproj");
+
+        let mut runner = FakeRunner::new(root, &["rustup", "claude"]);
+        runner.brings.push(("rustup", "rust-analyzer"));
+        runner.failing.push("claude plugin install csharp-lsp@claude-plugins-official");
+
+        let outcome = upsert(root, &runner, |_| skipped(None, "no registry in a test".to_string()))
+            .expect("a plain project is seeded");
+
+        assert_eq!(
+            *runner.log.borrow(),
+            vec![
+                "claude plugin install csharp-lsp@claude-plugins-official",
+                "claude plugin enable csharp-lsp@claude-plugins-official",
+                "rustup component add rust-analyzer",
+                "claude plugin install rust-analyzer-lsp@claude-plugins-official",
+                "claude plugin enable rust-analyzer-lsp@claude-plugins-official",
+            ],
+            "each language gets its program and its plugin, and the C# failure does not stop Rust",
+        );
+        assert!(
+            runner.seeded_when_called.borrow().iter().all(|seeded| *seeded),
+            "every code-tool command runs after the project files are written: {:?}",
+            runner.seeded_when_called.borrow(),
+        );
+
+        let first = serde_json::to_string_pretty(&outcome).expect("serialize");
+        let second = serde_json::to_string_pretty(&outcome).expect("serialize again");
+        assert_eq!(first, second, "the run face contracts byte-stable output");
+        let value: serde_json::Value = serde_json::from_str(&first).expect("valid JSON");
+        assert_eq!(
+            value["codeToolWarnings"],
+            serde_json::json!([
+                "csharp: csharp-ls not found on PATH - install manually: dotnet tool install --global csharp-ls",
+                "csharp: could not install the csharp-lsp@claude-plugins-official plugin - run manually: \
+                 claude plugin install csharp-lsp@claude-plugins-official",
+            ]),
+            "each warning reaches the report with the command to run: {first}",
+        );
+        assert!(
+            value["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")),
+            "the upsert itself went through: {first}",
+        );
+        assert_eq!(value["pluginRefresh"]["state"], serde_json::json!(SKIPPED), "{first}");
+        assert!(root.join(".claude/settings.local.json").is_file(), "the files are on disk");
+    }
+
+    /// The code-tool step runs only once the project was seeded. When the
+    /// seeding refuses — a repository whose exclude file cannot be written, so
+    /// a private install cannot hide itself — the upsert answers with the error,
+    /// and no code-tool command runs at all.
+    #[test]
+    #[cfg(unix)]
+    fn a_atualizacao_roda_a_etapa_das_ferramentas_de_codigo_so_depois_dos_arquivos() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .status()
+            .expect("run git init");
+        assert!(init.success(), "git init");
+        // Seal the directory the exclude file lives in: the write fails, while
+        // the file itself stays readable to git.
+        let info_dir = root.join(".git").join("info");
+        std::fs::create_dir_all(&info_dir).expect("the info directory exists");
+        if !info_dir.join("exclude").exists() {
+            std::fs::write(info_dir.join("exclude"), "").expect("seed an empty exclude file");
+        }
+        std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o555)).expect("seal");
+
+        let runner = FakeRunner::new(root, &["rustup", "claude"]);
+        let refused = upsert(root, &runner, |_| panic!("no refresh without a seeded project"));
+
+        // Unseal before asserting, so the temp dir can always be removed.
+        std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o755)).expect("unseal");
+        assert!(
+            matches!(refused, Err(mustard_core::platform::error::Error::NotHidden(_))),
+            "the seeding refused: {:?}",
+            refused.as_ref().map(|_| "a report"),
+        );
+        assert!(runner.log.borrow().is_empty(), "no code-tool command may run: {:?}", runner.log.borrow());
+        assert!(!root.join("mustard.json").exists(), "nothing was written");
     }
 
     /// A failed step's output becomes one bounded line — the report stays a
