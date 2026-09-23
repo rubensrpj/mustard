@@ -1771,9 +1771,58 @@ mod tests {
         }
     }
 
+    /// A coluna da página da spec tem no máximo 1040 pixels e fica no meio
+    /// da tela, como a da página do projeto; no celular, o recuo de 12
+    /// pixels continua. O gráfico das ondas tem altura fixa de 200 pixels e
+    /// a largura segue o desenho: não cresce com a largura da tela nem com
+    /// o número de barras, e a moldura rola de lado quando as barras não
+    /// cabem. Nenhuma regra do celular devolve ao gráfico uma largura mínima.
+    #[test]
+    fn a_pagina_da_spec_tem_coluna_de_1040_e_grafico_de_altura_fixa() {
+        // As declarações de cada regra do molde com exatamente esse seletor,
+        // na ordem, contando também as de dentro de um @media, numa linha
+        // própria ou na mesma linha dele. Um seletor mais longo que termina
+        // igual, como `.x .chart svg`, não conta.
+        let rules = |selector: &str| -> Vec<Vec<&str>> {
+            let open = format!("{selector}{{");
+            SPEC_PAGE
+                .match_indices(&open)
+                .filter(|(at, _)| {
+                    let before = &SPEC_PAGE[..*at];
+                    let start = before.rfind(['\n', '{', '}']).map_or(0, |i| i + 1);
+                    before[start..].trim().is_empty()
+                })
+                .filter_map(|(at, _)| SPEC_PAGE[at + open.len()..].split('}').next())
+                .map(|body| body.split(';').filter(|d| !d.is_empty()).collect())
+                .collect()
+        };
+
+        let page = rules(".page");
+        assert_eq!(page.len(), 2, "the column rule and the phone indent: {page:?}");
+        for decl in ["max-width:1040px", "margin-inline:auto"] {
+            assert!(page[0].contains(&decl), "the column lacks {decl}: {:?}", page[0]);
+        }
+        assert_eq!(page[1], ["padding-inline:12px"], "the phone keeps its 12 pixel indent");
+
+        assert_eq!(rules(".chart"), [["overflow-x:auto"]], "the chart frame scrolls sideways");
+        let svg = rules(".chart svg");
+        assert_eq!(svg.len(), 1, "a single rule sizes the chart, none on the phone: {svg:?}");
+        for decl in ["height:200px", "width:auto"] {
+            assert!(svg[0].contains(&decl), "the chart lacks {decl}: {:?}", svg[0]);
+        }
+        for decl in &svg[0] {
+            assert!(
+                !decl.starts_with("min-width") && *decl != "height:auto" && *decl != "width:100%",
+                "the chart would grow with the screen or the bars: {decl}",
+            );
+        }
+        // Cada onda continua ocupando 16 unidades do desenho: 12 de barra e 4
+        // de espaço.
+        assert!(SPEC_PAGE.contains("bw = 12, gap = 4"), "the drawing keeps 16 units per wave");
+    }
+
     /// As cores do painel moram em variáveis, com o tema escuro pelo sistema
-    /// e pela escolha da página, e o painel ocupa a largura toda, sem teto
-    /// de largura do texto, e cabe na tela do celular.
+    /// e pela escolha da página, e o painel cabe na tela do celular.
     #[test]
     fn o_painel_segue_o_tema_e_cabe_no_celular() {
         let html = spec_page_template(Locale::PtBr);
@@ -1788,8 +1837,6 @@ mod tests {
         }
         let body = html.split("\nbody{").nth(1).and_then(|b| b.split('}').next()).unwrap_or_default();
         assert!(body.contains("background"), "the body has its own background: {body}");
-        let page = html.split("\n.page{").nth(1).and_then(|b| b.split('}').next()).unwrap_or_default();
-        assert!(!page.is_empty() && !page.contains("max-width"), "the page takes the whole width: {page}");
     }
 
     /// Todo texto que os templates citam existe nos dois idiomas, e o

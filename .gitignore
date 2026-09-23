@@ -97,19 +97,14 @@ packages/cli/templates/.claude/.metrics/
 **/.claude/.dispatch/
 **/.claude/spec/*/.dispatch/
 
-# Full feature digest (`run feature` writes it; stdout is only a compact summary). Regenerable per query.
-**/.claude/feature-digest.json
-
 # Plan-mode plan files (harness carve-out, regenerable, never code).
 **/.claude/plans/
 
-# The two GATE MARKERS. Ignored not because they are regenerable — they are
-# not — but because versioning them would defeat the gate they stand for:
-# `approve-spec` decides on the PRESENCE of `.approved-by-user`, so a committed
-# marker would let `git clone` hand a fresh checkout an approval nobody gave.
-# `.clarified` is the same shape for the clarify gate.
+# The GATE MARKER. Ignored not because it is regenerable — it is not — but
+# because versioning it would defeat the gate it stands for: the approval gate
+# decides on the PRESENCE of `.approved-by-user`, so a committed marker would
+# let `git clone` hand a fresh checkout an approval nobody gave.
 **/.claude/spec/*/.approved-by-user
-**/.claude/spec/*/.clarified
 
 # The VERBATIM operator prompts, recorded word for word as they were typed.
 # Written for the operator to re-read, never to be published — and nobody
