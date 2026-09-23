@@ -51,9 +51,9 @@ pub(super) fn max_parallel(root: &Path) -> usize {
 /// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda.
 ///
 /// A onda de lote nasce sem dependência entre ondas, então uma dependência em
-/// círculo não tem de onde vir pela cesta, e o plano não a procura. O ciclo
+/// círculo não tem de onde vir pelo backlog, e o plano não a procura. O ciclo
 /// sai da leitura do grafo ([`wave_graph`]) que esta função reaproveita —
-/// nunca uma conta própria à parte —, e, se uma onda gravada antes da cesta
+/// nunca uma conta própria à parte —, e, se uma onda gravada antes do backlog
 /// trouxer um, a rodada devolve os números do ciclo em vez de escolher uma
 /// ordem às cegas.
 pub(super) fn next_waves(
@@ -88,9 +88,9 @@ pub(super) fn next_waves(
         .chain(delivered.iter().copied())
         .filter(|n| !to_redo.contains(n))
         // A onda de lote que o corte esvaziou nunca volta como candidata
-        // fresca: a cesta já é quem reempacota a tarefa que ela perdeu, numa
+        // fresca: o backlog já é quem reempacota a tarefa que ela perdeu, numa
         // onda nova, e despachar esta de novo seria um pedido sem nada dentro.
-        .chain(emptied_basket_waves(log, &graph))
+        .chain(emptied_backlog_waves(log, &graph))
         .collect();
     let mut depends: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for wave in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
@@ -638,26 +638,26 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
     open_sends(log).into_iter().filter(|(_, sent)| !claude_still_here(log, *sent)).collect()
 }
 
-/// A onda `n` é de lote — o binário a formou a partir da cesta, com autor
+/// A onda `n` é de lote — o binário a formou a partir do backlog, com autor
 /// binário — e não a combinação à mão do plano: só a de lote devolve tarefa
-/// à cesta quando cortada, porque só ela é o que a cesta empacota de novo.
-pub(crate) fn basket_wave(log: &SpecLog, n: u64) -> bool {
+/// ao backlog quando cortada, porque só ela é o que o backlog empacota de novo.
+pub(crate) fn backlog_wave(log: &SpecLog, n: u64) -> bool {
     log.visible().into_iter().any(|event| {
         event.event_type == "wave" && event.wave() == Some(n) && event.str_field("author") == Some("binary")
     })
 }
 
 /// As ondas de lote que ficaram sem tarefa nenhuma: o corte de um lote em
-/// andamento devolveu a última tarefa dela à cesta, e sem tarefa não há mais
+/// andamento devolveu a última tarefa dela ao backlog, e sem tarefa não há mais
 /// o que despachar — nem como pedido fresco, nem reenviando o de antes. Só a
 /// onda de lote entra aqui: a combinada à mão que fica sem tarefa por uma
-/// mudança de plano continua candidata, porque a cesta nunca vai reempacotar
+/// mudança de plano continua candidata, porque o backlog nunca vai reempacotar
 /// o que ela perdeu.
-pub(crate) fn emptied_basket_waves(log: &SpecLog, graph: &WaveGraph) -> BTreeSet<u64> {
+pub(crate) fn emptied_backlog_waves(log: &SpecLog, graph: &WaveGraph) -> BTreeSet<u64> {
     log.planned_waves()
         .into_iter()
         .filter(|n| graph.tasks.get(n).is_none_or(|tasks| tasks.is_empty()))
-        .filter(|n| basket_wave(log, *n))
+        .filter(|n| backlog_wave(log, *n))
         .collect()
 }
 
@@ -758,7 +758,7 @@ pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
 /// ([`crate::commands::flow::plan`]), não uma segunda conta à parte que
 /// pudesse discordar dela.
 ///
-/// A onda de lote que perdeu todas as tarefas para a cesta já chega aqui
+/// A onda de lote que perdeu todas as tarefas para o backlog já chega aqui
 /// dentro de `already_out`, marcada por quem chama: não é este código que
 /// distingue a onda esvaziada da onda combinada à mão que só está esperando
 /// uma tarefa nova, porque as duas têm `graph.tasks` vazio do mesmo jeito.
@@ -806,7 +806,7 @@ pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> V
 // ---------------------------------------------------------------------------
 
 /// Quantas ondas cada uma destrava: o tamanho do fecho transitivo de quem
-/// depende dela, direta ou por outra onda da cesta.
+/// depende dela, direta ou por outra onda do backlog.
 fn task_unlocks(deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeMap<u64, usize> {
     let mut unlocks: BTreeMap<u64, usize> = deps.keys().map(|&n| (n, 0)).collect();
     for &m in deps.keys() {
@@ -847,7 +847,7 @@ fn task_files(task: &SpecEvent) -> BTreeSet<String> {
 /// versão vigente dela — a mesma resolução que a gravação de uma tarefa nova
 /// já faz para conferir o `depends_on` dela, só que lida aqui, não repetida à
 /// parte por acaso: uma referência que não bate com tarefa nenhuma some.
-fn basket_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
+fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
     let raw = match EventRef::from_value(value)? {
         EventRef::Id(id) => id,
         EventRef::Code(code) => log
@@ -879,11 +879,11 @@ fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Ma
     Some(draft)
 }
 
-/// As tarefas vigentes da spec como o motor da cesta as lê: cada uma com as
+/// As tarefas vigentes da spec como o motor do backlog as lê: cada uma com as
 /// dependências resolvidas para a versão vigente, os arquivos que declara e
 /// se já está feita — a onda dela está entre as entregues e aprovadas
 /// (`done_waves`).
-fn basket_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BasketTask<u64>> {
+fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
     let codes = log.codes();
     log.visible()
         .into_iter()
@@ -895,25 +895,25 @@ fn basket_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::sh
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter_map(|value| basket_task_ref(log, &codes, value))
+                .filter_map(|value| backlog_task_ref(log, &codes, value))
                 .collect();
             let done = task.wave().is_some_and(|w| done_waves.contains(&w));
-            crate::shared::dag::BasketTask { id: task.id, depends_on, files: task_files(task), done }
+            crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done }
         })
         .collect()
 }
 
-/// O que está na cesta: a tarefa sem onda nenhuma, e também a que carrega
+/// O que está no backlog: a tarefa sem onda nenhuma, e também a que carrega
 /// um número de onda que nunca virou evento de onda — a spec antiga,
 /// numerada à mão — desde que essa onda não tenha entregue. A tarefa de
 /// onda com evento próprio, gravada pelo plano ou por um lote anterior,
 /// nunca está aqui: quem a despacha é [`next_waves`]. A onda já entregue ou
-/// aprovada fica como história, e a tarefa dela nunca volta para a cesta.
+/// aprovada fica como história, e a tarefa dela nunca volta para o backlog.
 ///
-/// É a leitura única da cesta: a formação do lote ([`dispatch_basket`]), o
+/// É a leitura única do backlog: a formação do lote ([`dispatch_backlog`]), o
 /// próximo passo da rodada e o fechamento leem daqui, para os três não
-/// discordarem de quando a cesta está vazia.
-pub(crate) fn basket_left(log: &SpecLog) -> BTreeSet<u64> {
+/// discordarem de quando o backlog está vazio.
+pub(crate) fn backlog_left(log: &SpecLog) -> BTreeSet<u64> {
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
     let planned = log.planned_waves();
@@ -928,21 +928,21 @@ pub(crate) fn basket_left(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
-/// As tarefas da cesta ([`basket_left`]) que já estão prontas — todas as
-/// dependências entregues ou aprovadas —, na ordem em que o motor da cesta
-/// as empacota. Vazia quando a cesta está vazia ou quando toda tarefa dela
+/// As tarefas do backlog ([`backlog_left`]) que já estão prontas — todas as
+/// dependências entregues ou aprovadas —, na ordem em que o motor do backlog
+/// as empacota. Vazia quando o backlog está vazio ou quando toda tarefa dele
 /// ainda espera uma dependência.
-pub(crate) fn basket_ready(log: &SpecLog) -> Vec<u64> {
+pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
-    let left = basket_left(log);
-    crate::shared::dag::ready_tasks(&basket_population(log, &done_waves))
+    let left = backlog_left(log);
+    crate::shared::dag::ready_tasks(&backlog_population(log, &done_waves))
         .into_iter()
         .filter(|id| left.contains(id))
         .collect()
 }
 
-/// Forma os lotes prontos da cesta ([`basket_left`], [`basket_ready`]) — as
+/// Forma os lotes prontos do backlog ([`backlog_left`], [`backlog_ready`]) — as
 /// tarefas sem onda própria ainda, e também a tarefa de uma spec antiga que
 /// carrega um número de onda sem evento de onda nenhum atrás dele e que
 /// ainda não entregou — e grava o
@@ -956,7 +956,7 @@ pub(crate) fn basket_ready(log: &SpecLog) -> Vec<u64> {
 /// onda pelo `n`/`wave` gravado em cada evento. A onda já entregue ou
 /// aprovada fica como história, e a tarefa dela nunca volta para cá.
 ///
-/// Na mesma chamada, [`refresh_stale_baskets`] atualiza o lote já formado
+/// Na mesma chamada, [`refresh_stale_batches`] atualiza o lote já formado
 /// que perdeu alguma tarefa para um evento de remoção depois de gravado —
 /// sem isso o pedido dele abriria pelo `done_when` congelado na formação,
 /// citando texto de tarefa que já não existe.
@@ -964,7 +964,7 @@ pub(crate) fn basket_ready(log: &SpecLog) -> Vec<u64> {
 /// A prontidão e o empacotamento são o mesmo motor de [`crate::shared::dag`]
 /// que já prova, sozinho, o desempate e a régua de arquivos: esta função só
 /// lê a spec, monta a população de tarefas e grava o que ele decidiu.
-/// `Ok(vec![])` sem tarefa pronta na cesta.
+/// `Ok(vec![])` sem tarefa pronta no backlog.
 ///
 /// `run_round_with_mine` (`apps/rt/src/commands/flow/round/answer.rs`) chama
 /// esta função antes de formar a lista de ondas prontas: quem decide as
@@ -978,20 +978,20 @@ pub(crate) fn basket_ready(log: &SpecLog) -> Vec<u64> {
 /// # Errors
 ///
 /// A recusa da primeira gravação que falhar.
-pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
-    use crate::shared::dag::{pack_batches, BASKET_CAPACITY};
+pub(crate) fn dispatch_backlog(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
+    use crate::shared::dag::{pack_batches, BACKLOG_CAPACITY};
 
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
     let by_id: BTreeMap<u64, &SpecEvent> =
         log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
-    let population = basket_population(log, &done_waves);
-    let order = basket_ready(log);
-    refresh_stale_baskets(start, spec, log)?;
+    let population = backlog_population(log, &done_waves);
+    let order = backlog_ready(log);
+    refresh_stale_batches(start, spec, log)?;
     if order.is_empty() {
         return Ok(Vec::new());
     }
-    let batches = pack_batches(&population, &order, BASKET_CAPACITY);
+    let batches = pack_batches(&population, &order, BACKLOG_CAPACITY);
 
     let mut next_n = log.planned_waves().into_iter().max().unwrap_or(0);
     let mut written = Vec::new();
@@ -999,10 +999,10 @@ pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result
         next_n += 1;
         let tasks: Vec<&SpecEvent> = batch.tasks.iter().filter_map(|id| by_id.get(id).copied()).collect();
         // A tarefa nascida de uma onda cobre critério, com prova para juntar
-        // aqui; a que nasce do item combinado sem onda dona (a cesta da
+        // aqui; a que nasce do item combinado sem onda dona (o backlog da
         // revisão final) cobre o item, que não tem prova — o texto de quem
         // marcou o item sem atender é o que diz quando a onda entrega.
-        let fields = mustard_core::domain::wave_prompt::basket_fields(log, &tasks);
+        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks);
         let draft = json!({
             "n": next_n,
             "text": fields.text,
@@ -1024,24 +1024,24 @@ pub(crate) fn dispatch_basket(start: &Path, spec: &str, log: &SpecLog) -> Result
 }
 
 /// Atualiza o registro de uma onda de lote (autor `binary`) que ainda não
-/// foi enviada, quando uma tarefa dela saiu da cesta por evento de remoção
+/// foi enviada, quando uma tarefa dela saiu do backlog por evento de remoção
 /// depois de o lote ter sido formado: sem isso o pedido abriria pelo
 /// `done_when` congelado na formação, que pode citar o texto de uma tarefa
 /// que não existe mais, mesmo com a lista de tarefas do pedido já saindo
 /// certa. Recalcula critério, texto e pronto-quando
-/// ([`mustard_core::domain::wave_prompt::basket_fields`]) a partir das
+/// ([`mustard_core::domain::wave_prompt::backlog_fields`]) a partir das
 /// tarefas que a leitura de agora mostra visíveis naquela onda — o mesmo
 /// conjunto que alimenta a lista de tarefas do pedido — e grava uma versão
 /// nova só quando a ordem gravada perdeu alguma tarefa. A onda já enviada
 /// fica intocada: o pedido dela já foi montado, e mudar o registro não muda
 /// o que o agente já recebeu. A onda que perdeu todas as tarefas fica de
 /// fora: sem tarefa nenhuma ela não é mais candidata a sair
-/// ([`emptied_basket_waves`]), e não há o que recalcular.
+/// ([`emptied_backlog_waves`]), e não há o que recalcular.
 ///
 /// # Errors
 ///
 /// A recusa da primeira gravação que falhar.
-fn refresh_stale_baskets(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
+fn refresh_stale_batches(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
     let sent: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))
         .into_iter()
@@ -1050,7 +1050,7 @@ fn refresh_stale_baskets(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<
         .collect();
     let mut updated = Vec::new();
     for n in log.planned_waves() {
-        if sent.contains(&n) || !basket_wave(log, n) {
+        if sent.contains(&n) || !backlog_wave(log, n) {
             continue;
         }
         let items = log.block(BlockQuery::Wave(n));
@@ -1070,7 +1070,7 @@ fn refresh_stale_baskets(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<
         if live_order.len() == recorded_order.len() {
             continue;
         }
-        let fields = mustard_core::domain::wave_prompt::basket_fields(log, &tasks);
+        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks);
         let extra = Map::from_iter([
             ("text".to_string(), json!(fields.text)),
             ("criteria".to_string(), json!(fields.criteria)),
@@ -2193,12 +2193,12 @@ mod tests {
     /// declara, com desempate pela quantidade de ondas que cada uma destrava
     /// — direta ou por outra —, da maior para a menor, e só depois pelo
     /// número: a onda 21 destrava a 22 e a 20 não destrava nada, então a 21
-    /// sai primeiro mesmo tendo o número maior. A mesma cesta, aprovada duas
+    /// sai primeiro mesmo tendo o número maior. O mesmo conjunto de ondas, aprovada duas
     /// vezes com as ondas declaradas em ordem diferente, despacha sempre na
     /// mesma sequência através das rodadas — a prova atravessa `round`, o
     /// comando de verdade, não a função auxiliar que só ordena.
     #[test]
-    fn a_mesma_cesta_de_ondas_produz_sempre_a_mesma_ordem_de_despacho() {
+    fn o_mesmo_conjunto_de_ondas_produz_sempre_a_mesma_ordem_de_despacho() {
         let plan_a: [(u64, &[&str], &[u64]); 4] = [
             (10, &["src/a.rs"], &[]),
             (20, &["src/b.rs"], &[10]),
@@ -2230,17 +2230,17 @@ mod tests {
             sequences.push(vec![waves_in(&first, "dispatch"), waves_in(&second, "dispatch"), waves_in(&third, "dispatch")]);
         }
         let expected = vec![vec![10], vec![21, 20], vec![22]];
-        assert_eq!(sequences[0], expected, "a cesta declarada numa ordem: {sequences:?}");
-        assert_eq!(sequences[1], expected, "a mesma cesta, declarada noutra ordem, despacha igual: {sequences:?}");
+        assert_eq!(sequences[0], expected, "o backlog declarada numa ordem: {sequences:?}");
+        assert_eq!(sequences[1], expected, "o mesmo conjunto de ondas, declarada noutra ordem, despacha igual: {sequences:?}");
     }
 
     /// Ondas que dependem umas das outras em círculo são recusadas pela
     /// própria rodada, mostrando o ciclo: nenhuma sai, e a resposta não é uma
-    /// fila vazia muda. A cesta nunca passa pela aprovação do plano — o
+    /// fila vazia muda. O backlog nunca passa pela aprovação do plano — o
     /// fixture grava o ciclo direto, como um evento gravado à mão poderia —
     /// e a prova atravessa `round`, o comando de verdade.
     #[test]
-    fn cesta_de_ondas_com_dependencia_em_circulo_e_recusada_pela_rodada_mostrando_o_ciclo() {
+    fn conjunto_de_ondas_com_dependencia_em_circulo_e_recusado_pela_rodada_mostrando_o_ciclo() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(4, &["src/a.rs"], &[7]), (7, &["src/b.rs"], &[4])]);
@@ -2337,7 +2337,7 @@ mod tests {
         let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
 
         // Dois itens combinados sem dono (uma decisão cada), sem prova — o
-        // caso que a cesta empacota quando o levantamento marca um item sem
+        // caso que o backlog empacota quando o levantamento marca um item sem
         // onda: `waves` os dá dono antes mesmo de a onda 2 existir.
         let item1 = id_of(&write(
             root,
@@ -2372,10 +2372,10 @@ mod tests {
         ));
 
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_basket(root, "x", &log).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log).expect("formou o lote");
         assert_eq!(formed, vec![2], "as duas tarefas soltas viram um lote só: {formed:?}");
 
-        // A tarefa 1 sai da cesta por remoção, depois de o lote já ter sido
+        // A tarefa 1 sai do backlog por remoção, depois de o lote já ter sido
         // formado: o trabalho dela já foi feito fora da onda. A gravação do
         // lote deu a ela uma versão nova, com o número da onda — é essa
         // versão vigente que a remoção precisa apontar, não a original.
@@ -2410,9 +2410,9 @@ mod tests {
     ];
 
     /// Um projeto com `src/a.rs` e `src/b.rs` no git e uma spec aprovada sem
-    /// onda nenhuma: as tarefas vão para a cesta. Devolve o número da fala
+    /// onda nenhuma: as tarefas vão para o backlog. Devolve o número da fala
     /// do usuário e o do critério, que as tarefas citam.
-    fn basket_project(root: &Path) -> (u64, u64) {
+    fn backlog_project(root: &Path) -> (u64, u64) {
         std::fs::create_dir_all(root.join("src")).unwrap();
         for name in ["a.rs", "b.rs"] {
             std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
@@ -2443,8 +2443,8 @@ mod tests {
         (first("message"), first("criterion"))
     }
 
-    /// Uma tarefa da cesta, gravada pela porta do modelo, num arquivo só.
-    fn basket_task(root: &Path, said: u64, crit: u64, text: &str, file: &str) -> u64 {
+    /// Uma tarefa do backlog, gravada pela porta do modelo, num arquivo só.
+    fn backlog_task(root: &Path, said: u64, crit: u64, text: &str, file: &str) -> u64 {
         id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}], "depends_on": [],
             "covers": [crit], "origin": said})))
     }
@@ -2494,17 +2494,17 @@ mod tests {
     fn o_plano_nao_fala_de_onda_dividindo_arquivo() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (said, crit) = basket_project(root);
-        basket_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let (said, crit) = backlog_project(root);
+        backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
         let record = write(root, "x", "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
         assert_eq!(record["ok"], json!(true), "{record}");
 
-        let again = basket_task(root, said, crit, "Mexer de novo no código de um.", "src/a.rs");
-        let other = basket_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
+        let again = backlog_task(root, said, crit, "Mexer de novo no código de um.", "src/a.rs");
+        let other = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(dispatch_basket(root, "x", &log), Ok(vec![2]), "as duas tarefas novas viram um lote só");
+        assert_eq!(dispatch_backlog(root, "x", &log), Ok(vec![2]), "as duas tarefas novas viram um lote só");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let waves: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "wave").collect();
@@ -2525,8 +2525,8 @@ mod tests {
     fn o_plano_nao_confere_o_texto_da_tarefa_contra_a_onda() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (said, crit) = basket_project(root);
-        let task = basket_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
 

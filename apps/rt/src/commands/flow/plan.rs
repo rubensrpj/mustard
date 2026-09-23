@@ -12,11 +12,9 @@
 //! para ser expurgado; ele fica fora da cópia.
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
-//! levantamento aberto; erro de montagem do plano (ciclo entre ondas, e
-//! tarefa ou dependência apontando uma onda que não existe); skill que a
-//! conferência recusa; arquivo citado que não existe e não está marcado
-//! como novo; e tarefa que mexe em código sem dizer em que arquivo, que
-//! volta com os arquivos que o mapa sugere.
+//! levantamento aberto; skill que a conferência recusa; arquivo citado que
+//! não existe e não está marcado como novo; e tarefa que mexe em código sem
+//! dizer em que arquivo, que volta com os arquivos que o mapa sugere.
 //!
 //! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
 //! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
@@ -766,7 +764,7 @@ mod tests {
     }
 
     /// Uma linha crua, direto no arquivo da spec, sem passar pela gravação:
-    /// simula uma onda que já existia no arquivo, de antes da cesta, ou uma
+    /// simula uma onda que já existia no arquivo, de antes do backlog, ou uma
     /// edição feita fora do binário.
     fn append_raw(root: &Path, spec: &str, event_type: &str, body: Value, id: u64) {
         let mut map = mustard_core::domain::spec_events::normalize(

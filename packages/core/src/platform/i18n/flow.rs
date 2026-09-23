@@ -225,12 +225,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Request {code} arrived after the last delivery and no wave delivered it: \
              take it into a wave before closing."
         }
-        ("close.basket_not_empty", Locale::PtBr) => {
-            "A cesta ainda tem as tarefas {tasks}, que nenhuma onda entregou: rode a rodada de novo \
+        ("close.backlog_not_empty", Locale::PtBr) => {
+            "O backlog ainda tem as tarefas {tasks}, que nenhuma onda entregou: rode a rodada de novo \
              para formar o lote delas antes de fechar, ou retire da spec a que não vai mais ser feita."
         }
-        ("close.basket_not_empty", Locale::EnUs) => {
-            "The basket still holds tasks {tasks}, which no wave delivered: run the round again to \
+        ("close.backlog_not_empty", Locale::EnUs) => {
+            "The backlog still holds tasks {tasks}, which no wave delivered: run the round again to \
              form their batch before closing, or remove from the spec the one that will no longer be done."
         }
         ("close.criterion_failed", Locale::PtBr) => {
@@ -624,20 +624,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.close", Locale::EnUs) => {
             "Every wave is delivered and approved: close the spec with `{command}`."
         }
-        ("round.basket_left", Locale::PtBr) => {
-            "Toda onda planejada terminou, mas a cesta ainda tem as tarefas {tasks}, prontas para \
-             virar lote: a obra não fecha com tarefa na cesta. Rode a rodada de novo com `{command}`."
+        ("round.backlog_left", Locale::PtBr) => {
+            "Toda onda planejada terminou, mas o backlog ainda tem as tarefas {tasks}, prontas para \
+             virar lote: a obra não fecha com tarefa no backlog. Rode a rodada de novo com `{command}`."
         }
-        ("round.basket_left", Locale::EnUs) => {
-            "Every planned wave is done, but the basket still holds tasks {tasks}, ready to become a \
-             batch: the work does not close with a task in the basket. Run the round again with `{command}`."
+        ("round.backlog_left", Locale::EnUs) => {
+            "Every planned wave is done, but the backlog still holds tasks {tasks}, ready to become a \
+             batch: the work does not close with a task in the backlog. Run the round again with `{command}`."
         }
-        ("round.basket_stuck", Locale::PtBr) => {
-            "Nada a despachar e nada em andamento, mas a cesta ainda tem as tarefas {tasks}, presas: \
+        ("round.backlog_stuck", Locale::PtBr) => {
+            "Nada a despachar e nada em andamento, mas o backlog ainda tem as tarefas {tasks}, presas: \
              nenhuma tem todas as dependências entregues. Mostre ao usuário o que as segura antes de fechar."
         }
-        ("round.basket_stuck", Locale::EnUs) => {
-            "Nothing to dispatch and nothing in flight, but the basket still holds tasks {tasks}, stuck: \
+        ("round.backlog_stuck", Locale::EnUs) => {
+            "Nothing to dispatch and nothing in flight, but the backlog still holds tasks {tasks}, stuck: \
              none has every dependency delivered. Show the user what holds them before closing."
         }
         ("round.fix_push", Locale::PtBr) => {
@@ -1115,12 +1115,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              commit was pushed to the branch {branch}."
         }
         ("request.new_waves", Locale::PtBr) => {
-            "Pedido gravado. Grave as tarefas novas, sem `wave`: elas entram na cesta, e o programa \
+            "Pedido gravado. Grave as tarefas novas, sem `wave`: elas entram no backlog, e o programa \
              as junta em ondas na hora de despachar; a spec e a branch continuam as mesmas, e não há \
              nova aprovação."
         }
         ("request.new_waves", Locale::EnUs) => {
-            "Request recorded. Record the new tasks, without `wave`: they go into the basket, and \
+            "Request recorded. Record the new tasks, without `wave`: they go into the backlog, and \
              the program groups them into waves when it dispatches; the spec and the branch stay the \
              same, and there is no new approval."
         }
@@ -1152,7 +1152,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             149,
-            0xe9bf_d136_d979_1dce,
+            0x2036_9578_6082_5200,
         );
     }
 
@@ -1266,7 +1266,7 @@ mod tests {
             ("close.wave_without_commit", &["{wave}"][..]),
             ("close.wave_rejected", &["{wave}"][..]),
             ("close.request_not_delivered", &["{code}"][..]),
-            ("close.basket_not_empty", &["{tasks}"][..]),
+            ("close.backlog_not_empty", &["{tasks}"][..]),
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
@@ -1321,8 +1321,8 @@ mod tests {
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
             ("round.missing", &["{wave}"][..]),
-            ("round.basket_left", &["{tasks}", "{command}"][..]),
-            ("round.basket_stuck", &["{tasks}"][..]),
+            ("round.backlog_left", &["{tasks}", "{command}"][..]),
+            ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.analysis", &["{waves}"][..]),

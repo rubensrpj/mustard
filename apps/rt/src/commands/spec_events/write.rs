@@ -60,12 +60,12 @@
 //! {"ok": true, "id": 10, "type": "lesson", "retired": [4]}
 //! ```
 //!
-//! A onda nasce da cesta, e só o programa a grava: pelo `run write`, a onda é
+//! A onda nasce do backlog, e só o programa a grava: pelo `run write`, a onda é
 //! recusada, e a tarefa que traz um número de onda também, a não ser na
 //! versão nova de uma tarefa que repete a onda da versão que ela substitui.
 //! Tirar uma onda continua valendo. Um pedido (`request`) devolve em `next` o
-//! passo seguinte, pelo `effect`: gravar as tarefas novas, que entram na
-//! cesta, ou as versões novas das que mudam, na mesma spec e na mesma branch.
+//! passo seguinte, pelo `effect`: gravar as tarefas novas, que entram no
+//! backlog, ou as versões novas das que mudam, na mesma spec e na mesma branch.
 //!
 //! Um pedido adiado (`deferred`) aponta uma pendência aberta da lista do
 //! projeto, a do checkout principal num worktree: o número pode vir escrito
@@ -279,10 +279,10 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     if BINARY_ONLY.contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
     }
-    // A onda nasce da cesta, e a recusa vem antes da conferência dos campos:
+    // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
     // uma onda sem pronto-quando não pode mandar completar o que nunca passa.
     if event_type == "wave" {
-        return refuse(Refusal::WaveByBasket);
+        return refuse(Refusal::WaveByBacklog);
     }
     if event_type == "message" && hook_only_message(&draft) {
         return refuse(Refusal::UserMessageByHook { spec: spec.trim().to_string() });
@@ -403,7 +403,7 @@ pub(crate) fn seed_at(opts: &WriteOpts) -> Value {
     let by_hooks = matches!(event_type, "delivered" | "commit") || (event_type == "message" && by_user(&draft));
     let by_program = event_type == "wave" || (event_type == "task" && draft.contains_key("wave"));
     if !(by_hooks || by_program) || spec_was_opened(&project.root, spec).is_err() {
-        // A tarefa da cesta vai pela porta do modelo, que exige o título: o
+        // A tarefa do backlog vai pela porta do modelo, que exige o título: o
         // ajudante manda um quando o teste não deu o seu.
         if event_type == "task" && !draft.contains_key("title") {
             draft.insert("title".to_string(), json!("Entregar a tarefa"));
@@ -623,7 +623,7 @@ fn record_rules(
 ) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
     if by.is_none() {
-        wave_by_basket_rule(before, after)?;
+        wave_by_backlog_rule(before, after)?;
     }
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
@@ -632,12 +632,12 @@ fn record_rules(
     owner_rule(before, after)
 }
 
-/// A onda nasce da cesta: só o programa a grava, na hora de despachar. Pelo
+/// A onda nasce do backlog: só o programa a grava, na hora de despachar. Pelo
 /// `run write`, a gravação de uma onda é recusada, e a de uma tarefa com
 /// número de onda também, a não ser na versão nova de uma tarefa que repete a
 /// onda da versão que ela substitui — rever a tarefa de uma onda que já saiu
-/// não pode jogá-la de volta na cesta. Tirar uma onda continua valendo.
-fn wave_by_basket_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+/// não pode jogá-la de volta no backlog. Tirar uma onda continua valendo.
+fn wave_by_backlog_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
     for event in after.events.iter().filter(|event| !had.contains(&event.id)) {
         let refused = match event.event_type.as_str() {
@@ -649,7 +649,7 @@ fn wave_by_basket_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal>
             _ => false,
         };
         if refused {
-            return Err(Refusal::WaveByBasket);
+            return Err(Refusal::WaveByBacklog);
         }
     }
     Ok(())
@@ -2231,7 +2231,7 @@ mod tests {
         assert_eq!(specs, ["teste"], "no spec was opened");
     }
 
-    /// A onda nasce da cesta: pela porta do modelo, a onda nova e a versão
+    /// A onda nasce do backlog: pela porta do modelo, a onda nova e a versão
     /// nova de uma onda são recusadas, antes e depois da aprovação, e nada é
     /// gravado. Tirar uma onda continua valendo.
     #[test]
@@ -2248,8 +2248,8 @@ mod tests {
             for (n, replaces) in [(5, None), (4, Some(fourth))] {
                 let before = lines(root);
                 let out = write_wave(root, n, msg, criterion, replaces);
-                assert_eq!(out["reason"], json!("wave-by-basket"), "aprovada {approved}, onda {n}: {out}");
-                assert_eq!(out["hint"], json!(translate("spec_events.wave_by_basket", Locale::PtBr)), "{out}");
+                assert_eq!(out["reason"], json!("wave-by-backlog"), "aprovada {approved}, onda {n}: {out}");
+                assert_eq!(out["hint"], json!(translate("spec_events.wave_by_backlog", Locale::PtBr)), "{out}");
                 assert_eq!(lines(root), before, "nada foi gravado");
             }
         }

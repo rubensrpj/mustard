@@ -6,7 +6,7 @@
 //! A revisão final responde por todo o combinado vigente, mesmo pelo item
 //! que nenhuma onda carregou: o pedido lista todo mundo, o veredito malformado
 //! é recusado nomeando quem faltou, e o item que ela marca sem atender vira
-//! tarefa na cesta — a rodada seguinte forma o lote, despacha, e o
+//! tarefa no backlog — a rodada seguinte forma o lote, despacha, e o
 //! fechamento só fecha depois de uma revisão final nova com tudo atendido.
 //! Prova de ponta a ponta, pelo binário de verdade, num repositório
 //! temporário.
@@ -171,7 +171,7 @@ fn survey(project: &Project) -> Vec<Value> {
 }
 
 /// O plano de uma tarefa só: o critério com a prova e a tarefa que o cobre e
-/// muda `src/main.rs`, sem onda. A onda nasce da rodada, pela cesta.
+/// muda `src/main.rs`, sem onda. A onda nasce da rodada, pelo backlog.
 fn plan(project: &Project) {
     let said = user_says(project, "O plano é uma tarefa só, que soma dois números.");
     let criterion = project.write(
@@ -330,14 +330,14 @@ fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
 }
 
 /// O item combinado que a revisão final marca `met:false`, com o que falta e
-/// os arquivos do conserto, vira o veredito reprovado e uma tarefa nova na
-/// cesta cobrindo esse item; a rodada seguinte forma o lote com ela e
+/// os arquivos do conserto, vira o veredito reprovado e uma tarefa nova no
+/// backlog cobrindo esse item; a rodada seguinte forma o lote com ela e
 /// despacha; o fechamento segue pedindo a revisão final até uma nova que
-/// atenda todos, e só então fecha. Antes desta obra a tarefa da cesta nunca
-/// virava onda sozinha: a prova corta o laço que liga `dispatch_basket` à
-/// rodada e vê a tarefa parada na cesta, sem onda, rodada após rodada.
+/// atenda todos, e só então fecha. Antes desta obra a tarefa do backlog nunca
+/// virava onda sozinha: a prova corta o laço que liga `dispatch_backlog` à
+/// rodada e vê a tarefa parada no backlog, sem onda, rodada após rodada.
 #[test]
-fn item_nao_atendido_vira_tarefa_na_cesta_e_a_revisao_final_roda_de_novo() {
+fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
     let project = Project::new();
     let decisions = ready(&project);
     let target = decisions.first().expect("at least one decision").clone();
@@ -357,9 +357,9 @@ fn item_nao_atendido_vira_tarefa_na_cesta_e_a_revisao_final_roda_de_novo() {
     let verdict = json!({"final": true, "result": "approved", "text": "Quase tudo certo.", "agreed": agreed});
     let after_verdict = project.answer(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
     // A obra não fecha: o item de fora força o veredito a reprovado e vira
-    // tarefa na cesta, e o fechamento recusa enquanto a cesta tiver tarefa —
+    // tarefa no backlog, e o fechamento recusa enquanto o backlog tiver tarefa —
     // o veredito já ficou gravado, e o passo seguinte é a rodada.
-    assert_eq!(after_verdict["reason"], json!("basket-not-empty"), "{after_verdict}");
+    assert_eq!(after_verdict["reason"], json!("backlog-not-empty"), "{after_verdict}");
 
     let log = project.log();
     let recorded = log.visible().into_iter().rfind(|e| e.event_type == "verdict").expect("the recorded verdict");
@@ -369,7 +369,7 @@ fn item_nao_atendido_vira_tarefa_na_cesta_e_a_revisao_final_roda_de_novo() {
         .visible()
         .into_iter()
         .rfind(|e| e.event_type == "task" && e.wave().is_none() && e.ints("covers").contains(&target_id))
-        .unwrap_or_else(|| panic!("nenhuma tarefa da cesta cobre o item não atendido"));
+        .unwrap_or_else(|| panic!("nenhuma tarefa do backlog cobre o item não atendido"));
     assert_eq!(task.str_field("text"), Some("Falta ajustar a soma para três parcelas."), "{task:?}");
     let code = log.codes().get(&task.id).cloned().expect("a tarefa tem código");
     assert!(after_verdict["hint"].as_str().unwrap_or_default().contains(&code), "a recusa nomeia a tarefa: {after_verdict}");
@@ -377,7 +377,7 @@ fn item_nao_atendido_vira_tarefa_na_cesta_e_a_revisao_final_roda_de_novo() {
         task.fields.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(|f| f["path"].as_str().map(str::to_string)).collect();
     assert_eq!(files, vec!["src/main.rs".to_string()], "{task:?}");
 
-    // A rodada seguinte forma o lote com a tarefa da cesta e despacha.
+    // A rodada seguinte forma o lote com a tarefa do backlog e despacha.
     dispatch_wave(&project, 2);
     deliver_wave(&project, 2, "Ajustei a soma.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 1 + 1 + 1);\n}\n")]);
 

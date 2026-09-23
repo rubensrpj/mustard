@@ -135,14 +135,14 @@ pub(crate) fn take_report_with_mine(
         Ok(report) => report,
         // Sem marca nenhuma, o texto é o que o corte da plataforma no meio da
         // escrita deixa para trás: o agente não chegou a fechar a linha
-        // obrigatória. Onda de lote — a que o binário formou a partir da
-        // cesta — em andamento cujo Claude Code já fechou é a onda cortada;
-        // as tarefas dela voltam à cesta soltas, sem a onda que as levou, e a
+        // obrigatória. Onda de lote — a que o binário formou a partir do
+        // backlog — em andamento cujo Claude Code já fechou é a onda cortada;
+        // as tarefas dela voltam ao backlog soltas, sem a onda que as levou, e a
         // rodada segue sem gravar entrega nem commit nenhum. Onda combinada à
         // mão, ou ainda com o Claude Code aberto, não é o que o corte
         // descreve, e o relatório sem marca continua recusado, como sempre.
         Err(refusal) if without_any_mark(raw) => {
-            let recorded = return_cut_baskets(start, spec, log).map_err(RoundRefusal::Refused)?;
+            let recorded = return_cut_batches(start, spec, log).map_err(RoundRefusal::Refused)?;
             if recorded.is_empty() {
                 return Err(refusal);
             }
@@ -556,10 +556,10 @@ fn looks_like_commit_sha(summary: &str) -> bool {
     (7..=40).contains(&text.len()) && text.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// A versão nova da tarefa `task`, devolvida à cesta: os mesmos campos dela,
+/// A versão nova da tarefa `task`, devolvida ao backlog: os mesmos campos dela,
 /// tirando a onda que a levou — sem `wave`, ela volta a nascer solta, pronta
-/// para o lote que a cesta formar na rodada seguinte.
-pub(super) fn cesta_return(task: &SpecEvent) -> Map<String, Value> {
+/// para o lote que o backlog formar na rodada seguinte.
+pub(super) fn backlog_return(task: &SpecEvent) -> Map<String, Value> {
     let mut draft: Map<String, Value> = task
         .fields
         .iter()
@@ -574,11 +574,11 @@ pub(super) fn cesta_return(task: &SpecEvent) -> Map<String, Value> {
 /// corte que a plataforma deu nelas: cada uma ganha uma versão sem a onda que
 /// a levou. Onda combinada à mão, ou ainda com o Claude Code aberto, fica de
 /// fora: só a onda de lote órfã perde a tarefa que carregava.
-fn return_cut_baskets(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<Value>, Refusal> {
+fn return_cut_batches(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<Value>, Refusal> {
     let mut recorded = Vec::new();
-    for wave in super::queue::orphaned_waves(log).keys().copied().filter(|n| super::queue::basket_wave(log, *n)) {
+    for wave in super::queue::orphaned_waves(log).keys().copied().filter(|n| super::queue::backlog_wave(log, *n)) {
         for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)) {
-            let written = record(start, spec, "task", cesta_return(task), PhaseWriter::Binary)?;
+            let written = record(start, spec, "task", backlog_return(task), PhaseWriter::Binary)?;
             recorded.push(json!({ "wave": wave, "type": "task", "id": written.written.id }));
         }
     }
@@ -651,7 +651,7 @@ struct CheckedReport {
     /// A versão nova do envio de cada onda cuja entrega trouxe o modelo
     /// usado, os passos, os tokens ou o consumo de quem despacha.
     sends: Vec<(u64, Map<String, Value>)>,
-    /// Uma tarefa nova na cesta por item combinado que a revisão final
+    /// Uma tarefa nova no backlog por item combinado que a revisão final
     /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
     agreed_tasks: Vec<Map<String, Value>>,
 }
@@ -697,7 +697,7 @@ fn check_reports(
             // A revisão final responde por todo o combinado vigente, item a
             // item, em `agreed`: faltar algum, ou a lista inteira, é
             // veredito malformado, e nada é gravado. Quem vem `met:false`
-            // força o resultado a reprovado e vira uma tarefa nova na cesta,
+            // força o resultado a reprovado e vira uma tarefa nova no backlog,
             // cobrindo esse item.
             let vigent = agreed_prompt::all_agreed(check.log());
             let codes = check.log().codes();
@@ -910,7 +910,7 @@ mod tests {
     use mustard_core::domain::spec_events::SpecEvent;
     use tempfile::tempdir;
 
-    use crate::commands::flow::round::queue::{dispatch_basket, waves_to_redo};
+    use crate::commands::flow::round::queue::{dispatch_backlog, waves_to_redo};
 
     use super::*;
     use crate::commands::flow::round::tests::*;
@@ -1233,9 +1233,9 @@ mod tests {
         assert_eq!(lines_after, lines_before, "nothing was recorded");
     }
 
-    /// A onda de lote — formada pelo binário a partir da cesta — cujo Claude
+    /// A onda de lote — formada pelo binário a partir do backlog — cujo Claude
     /// Code fecha no meio do trabalho, sem deixar a marca obrigatória no
-    /// relatório final, devolve à cesta todas as tarefas que levava, sem
+    /// relatório final, devolve ao backlog todas as tarefas que levava, sem
     /// separar nenhuma: mesmo a que o texto cortado cita pelo código como já
     /// entregue perde a onda e volta solta, porque o agente morreu no meio e
     /// não deixou prova nem commit.
@@ -1274,7 +1274,7 @@ mod tests {
         let code2 = t2["code"].as_str().expect("o código da tarefa dois").to_string();
 
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_basket(root, "x", &log).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log).expect("formou o lote");
         assert_eq!(formed, vec![2], "as três tarefas soltas viram junto a mesma onda de lote: {formed:?}");
 
         let out = round(root, "x", None);
@@ -1314,7 +1314,7 @@ mod tests {
         for (label, id) in [("um", id1), ("dois, citada como feita no texto cortado", id2), ("três", id3)] {
             assert!(
                 after.current(id).unwrap().wave().is_none(),
-                "a tarefa {label} ganha versão nova sem onda e volta à cesta, sem separar nenhuma: {:?}",
+                "a tarefa {label} ganha versão nova sem onda e volta ao backlog, sem separar nenhuma: {:?}",
                 after.current(id).unwrap().fields
             );
         }
@@ -1341,7 +1341,7 @@ mod tests {
     /// A mesma onda de lote, mas com o Claude Code ainda aberto por trás do
     /// pedido — o processo deste próprio teste: sem processo morto, não há
     /// corte a reconhecer, e o relatório sem marca nenhuma segue recusado como
-    /// antes, sem devolver tarefa nenhuma à cesta.
+    /// antes, sem devolver tarefa nenhuma ao backlog.
     #[test]
     fn uma_onda_de_lote_ainda_viva_nao_devolve_tarefa_com_relatorio_sem_marca() {
         let dir = tempdir().unwrap();
@@ -1359,8 +1359,8 @@ mod tests {
                 "covers": [crit], "origin": said}),
         ));
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_basket(root, "x", &log).expect("formou o lote");
-        assert_eq!(formed, vec![2], "o lote da cesta virou a onda 2: {formed:?}");
+        let formed = dispatch_backlog(root, "x", &log).expect("formou o lote");
+        assert_eq!(formed, vec![2], "o lote do backlog virou a onda 2: {formed:?}");
 
         let out = round(root, "x", None);
         assert!(waves_in(&out, "dispatch").contains(&2), "a onda de lote sai como qualquer outra: {out}");

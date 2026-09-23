@@ -399,16 +399,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The author `binary` is kept for the writes made inside the binary, and nothing was \
              written: `run write` records the author who writes, `assistant` (the default) or `user`."
         }
-        ("spec_events.wave_by_basket", Locale::PtBr) => {
-            "A onda não é gravada pelo `run write`, e nada foi gravado: a onda nasce da cesta, e é \
+        ("spec_events.wave_by_backlog", Locale::PtBr) => {
+            "A onda não é gravada pelo `run write`, e nada foi gravado: a onda nasce do backlog, e é \
              o programa que monta o lote na hora de despachar. Grave só a tarefa, sem `wave`, com o \
              que ela faz (`text`), os arquivos (`files`) e as tarefas de que depende \
              (`depends_on`). Na versão nova de uma tarefa que já está numa onda, repita o `wave` da \
              versão que ela substitui."
         }
-        ("spec_events.wave_by_basket", Locale::EnUs) => {
+        ("spec_events.wave_by_backlog", Locale::EnUs) => {
             "A wave is not written by `run write`, and nothing was written: the wave is born from \
-             the basket, and the program puts the batch together when it dispatches. Write only \
+             the backlog, and the program puts the batch together when it dispatches. Write only \
              the task, without `wave`, with what it does (`text`), the files (`files`) and the \
              tasks it depends on (`depends_on`). In the new version of a task that is already in a \
              wave, repeat the `wave` of the version it replaces."
@@ -607,7 +607,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             84,
-            0x8a4e_4357_0d4b_79aa,
+            0x4596_c2f0_5703_cfaa,
         );
     }
 
@@ -668,7 +668,7 @@ mod tests {
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
             ("spec_events.binary_author", &[][..]),
-            ("spec_events.wave_by_basket", &[][..]),
+            ("spec_events.wave_by_backlog", &[][..]),
             ("spec_events.user_message_by_hook", &["{spec}"][..]),
             ("spec_events.old_format_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),

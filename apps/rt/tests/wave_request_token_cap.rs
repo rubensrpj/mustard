@@ -3,13 +3,13 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! A cesta e o teto do pedido, ligados à rodada de verdade, pelo binário numa
+//! O backlog e o teto do pedido, ligados à rodada de verdade, pelo binário numa
 //! pasta temporária.
 //!
-//! Uma spec aprovada com tarefas soltas na cesta, sem onda gravada nenhuma,
+//! Uma spec aprovada com tarefas soltas no backlog, sem onda gravada nenhuma,
 //! tem a rodada formando o lote sozinha, com o evento de onda de autor
 //! binário — antes disso, quem decidia as ondas prontas só lia onda já
-//! gravada, e a cesta ficava presa, formada só por teste.
+//! gravada, e o backlog ficava preso, formado só por teste.
 //!
 //! Uma spec aprovada com uma tarefa cujo texto passa do teto de tokens do
 //! pedido tem a rodada recusada, com o tamanho medido e o teto, sem gravar
@@ -27,9 +27,9 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-const SPEC: &str = "cesta";
+const SPEC: &str = "backlog";
 const GOAL: &str = "Trocar a saudação do programa.";
-const SESSION: &str = "s-cesta";
+const SESSION: &str = "s-backlog";
 
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git").args(args).current_dir(root).output().expect("git");
@@ -196,12 +196,12 @@ fn approve(project: &Project) {
     assert_eq!(State::from_log(&project.log()).phase, Some("approved"));
 }
 
-/// Uma spec aprovada sem onda gravada, só com tarefas soltas na cesta: a
+/// Uma spec aprovada sem onda gravada, só com tarefas soltas no backlog: a
 /// rodada, antes de escolher as ondas prontas, forma o lote sozinha e grava
 /// o evento de onda com autor binário — sem esse fio, quem decide as ondas
-/// prontas só lê onda já gravada, e a cesta nunca sai do lugar.
+/// prontas só lê onda já gravada, e o backlog nunca sai do lugar.
 #[test]
-fn a_round_forms_a_lot_from_the_basket_and_records_it_as_the_binarys_wave() {
+fn a_round_forms_a_lot_from_the_backlog_and_records_it_as_the_binarys_wave() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -224,19 +224,19 @@ fn a_round_forms_a_lot_from_the_basket_and_records_it_as_the_binarys_wave() {
     project.run(&["round", "--spec", SPEC]);
 
     let after = project.log();
-    let wave = after.visible().into_iter().find(|e| e.event_type == "wave").expect("the round forms a lot from the basket");
+    let wave = after.visible().into_iter().find(|e| e.event_type == "wave").expect("the round forms a lot from the backlog");
     assert_eq!(wave.str_field("author"), Some("binary"), "the lot the round forms is the binary's, not hand-designed");
 }
 
 /// Uma spec aprovada com uma tarefa cujo pedido passa do teto de tokens: a
-/// rodada forma o lote pela cesta, mede o pedido antes de gravar o envio e
+/// rodada forma o lote pelo backlog, mede o pedido antes de gravar o envio e
 /// recusa, dizendo o tamanho medido e o teto de 25 mil, sem gravar nada.
 #[test]
 fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
-    // O pronto-quando da onda abre o pedido de verdade, e a onda que a cesta
+    // O pronto-quando da onda abre o pedido de verdade, e a onda que o backlog
     // forma o tira da prova do critério que a tarefa cobre: é a prova que
     // precisa ser grande, bem acima do teto de 25 mil tokens (perto de quatro
     // caracteres por token) — cento e vinte mil caracteres passam do teto.

@@ -239,7 +239,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
         &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
     let c2 = write(root, "criterion",
         &json!({"when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
-    // A onda nasce da cesta: as duas ondas e a tarefa da onda 2 entram como o
+    // A onda nasce do backlog: as duas ondas e a tarefa da onda 2 entram como o
     // programa as grava ao montar os lotes, e a tarefa sem onda, pelo `write`.
     seed_binary(root, "wave", &json!({"author": "binary", "n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
     write(root, "task", &json!({"title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
@@ -466,7 +466,7 @@ fn write_out(root: &Path, event_type: &str, fields: &Value) -> (Option<i32>, Val
     (out.status.code(), stdout_json(&out))
 }
 
-/// A onda nasce da cesta, e só o programa a grava. Pela linha de comando, a
+/// A onda nasce do backlog, e só o programa a grava. Pela linha de comando, a
 /// onda é recusada sem gravar nada, com o texto que manda gravar só a
 /// tarefa; a tarefa que traz um número de onda novo também. A versão nova de
 /// uma tarefa que repete a onda da versão que ela substitui passa, e a
@@ -482,23 +482,23 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
     let crit = write(root, "criterion",
         &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
-    let refusal_text = [Locale::PtBr, Locale::EnUs].map(|lang| translate("spec_events.wave_by_basket", lang));
+    let refusal_text = [Locale::PtBr, Locale::EnUs].map(|lang| translate("spec_events.wave_by_backlog", lang));
 
     // A onda gravada pelo modelo: recusada, e nada foi gravado.
     let before = event_lines(root);
     let (code, out) = write_out(root, "wave",
         &json!({"n": 1, "text": "Um.", "criteria": [crit], "done_when": "x", "origin": msg}));
-    assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-basket")), "{out}");
+    assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-backlog")), "{out}");
     let hint = out["hint"].as_str().unwrap_or_default();
     assert!(refusal_text.contains(&hint), "{out}");
-    assert!(hint.contains("cesta") || hint.contains("basket"), "{hint}");
+    assert!(hint.contains("backlog"), "{hint}");
     assert!(hint.contains("sem `wave`") || hint.contains("without `wave`"), "{hint}");
     assert_eq!(event_lines(root), before, "nada foi gravado");
 
     // A tarefa com um número de onda que nenhuma versão dela tinha: recusada.
     let (code, out) = write_out(root, "task",
         &json!({"wave": 1, "title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
-    assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-basket")), "{out}");
+    assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-backlog")), "{out}");
     assert_eq!(event_lines(root), before, "nada foi gravado");
 
     // A onda e a tarefa dela como a rodada as grava ao montar o lote.
@@ -514,7 +514,7 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
     let before = event_lines(root);
     let (code, out) = write_out(root, "task", &json!({"wave": 2, "title": "Entregar o T1", "text": "T1, noutra onda.",
         "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg, "replaces": revised}));
-    assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-basket")), "{out}");
+    assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-backlog")), "{out}");
     assert_eq!(event_lines(root), before, "nada foi gravado");
 
     // O item combinado novo, depois da aprovação, sem dono: a recusa manda dar

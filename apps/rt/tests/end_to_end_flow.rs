@@ -339,7 +339,7 @@ fn survey(project: &Project) {
 }
 
 /// O plano de uma tarefa só: o critério com a prova e a tarefa que o cobre,
-/// sem onda. A onda nasce da rodada, pela cesta, com autor binário.
+/// sem onda. A onda nasce da rodada, pelo backlog, com autor binário.
 fn plan(project: &Project) {
     plan_files(project, &["src/main.rs"]);
 }
@@ -490,7 +490,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
 
 /// O fluxo inteiro, da abertura ao pull request, não grava onda pela linha de
 /// comando: o plano leva só o critério e a tarefa, e a onda que sai nasce da
-/// rodada, pela cesta. No fim, toda linha de onda do arquivo da spec — lida
+/// rodada, pelo backlog. No fim, toda linha de onda do arquivo da spec — lida
 /// crua, com as versões antigas e as removidas — tem autor binário, e há ao
 /// menos uma, para a conferência não passar num arquivo sem onda.
 #[test]

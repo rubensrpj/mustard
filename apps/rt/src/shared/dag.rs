@@ -26,9 +26,9 @@
 //!
 //! Deterministic regardless of input order: every collection here is ordered.
 //!
-//! ## A cesta
+//! ## O backlog
 //!
-//! Além do nível, o módulo também forma a cesta de despacho: tarefa pronta —
+//! Além do nível, o módulo também forma o backlog de despacho: tarefa pronta —
 //! toda dependência entregue ou aprovada —, o desempate entre prontas por
 //! quantas outras cada uma destrava, e o empacotamento delas em lotes com
 //! capacidade de arquivos distintos, sem nunca dividir um arquivo entre dois
@@ -154,14 +154,14 @@ pub(crate) fn assign_levels<N: Ord + Clone>(deps: &BTreeMap<N, BTreeSet<N>>) -> 
 }
 
 /// A capacidade de um lote: 5 arquivos distintos, fixa no código. A rodada
-/// monta os lotes da cesta com ela; a tarefa que sozinha toca mais arquivos
+/// monta os lotes do backlog com ela; a tarefa que sozinha toca mais arquivos
 /// sai sozinha, acima dela, porque a capacidade nunca impede o despacho.
-pub(crate) const BASKET_CAPACITY: usize = 5;
+pub(crate) const BACKLOG_CAPACITY: usize = 5;
 
-/// Uma tarefa da cesta: o que ela depende, os arquivos que declara e se o
+/// Uma tarefa do backlog: o que ela depende, os arquivos que declara e se o
 /// trabalho dela já está entregue ou aprovado.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BasketTask<N> {
+pub(crate) struct BacklogTask<N> {
     pub(crate) id: N,
     pub(crate) depends_on: BTreeSet<N>,
     pub(crate) files: BTreeSet<String>,
@@ -176,10 +176,10 @@ pub(crate) struct Batch<N> {
     pub(crate) files: BTreeSet<String>,
 }
 
-/// O nível topológico de cada tarefa da cesta, pelo mesmo peelamento que já
-/// ordena qualquer grafo do binário — a cesta não é um segundo motor ao lado
+/// O nível topológico de cada tarefa do backlog, pelo mesmo peelamento que já
+/// ordena qualquer grafo do binário — o backlog não é um segundo motor ao lado
 /// de [`assign_levels`], é o mesmo, sobre o grafo de dependência das tarefas.
-pub(crate) fn task_levels<N: Ord + Clone>(tasks: &[BasketTask<N>]) -> Levels<N> {
+pub(crate) fn task_levels<N: Ord + Clone>(tasks: &[BacklogTask<N>]) -> Levels<N> {
     let deps: BTreeMap<N, BTreeSet<N>> =
         tasks.iter().map(|t| (t.id.clone(), t.depends_on.clone())).collect();
     assign_levels(&deps)
@@ -188,14 +188,14 @@ pub(crate) fn task_levels<N: Ord + Clone>(tasks: &[BasketTask<N>]) -> Levels<N> 
 /// As tarefas prontas — todas as dependências entregues ou aprovadas —, na
 /// ordem de despacho: quem destrava mais tarefas primeiro, empate pelo
 /// próprio número, do menor para o maior. "Destravar" conta só a aresta
-/// direta de volta (quantas tarefas da cesta, prontas ou não, apontam esta
+/// direta de volta (quantas tarefas do backlog, prontas ou não, apontam esta
 /// como dependência) — uma tarefa dois saltos adiante não está presa só
 /// nesta.
-pub(crate) fn ready_tasks<N: Ord + Clone>(tasks: &[BasketTask<N>]) -> Vec<N> {
+pub(crate) fn ready_tasks<N: Ord + Clone>(tasks: &[BacklogTask<N>]) -> Vec<N> {
     let done: BTreeSet<&N> = tasks.iter().filter(|t| t.done).map(|t| &t.id).collect();
     let unlocks = |id: &N| -> usize { tasks.iter().filter(|t| t.depends_on.contains(id)).count() };
 
-    let mut ready: Vec<&BasketTask<N>> =
+    let mut ready: Vec<&BacklogTask<N>> =
         tasks.iter().filter(|t| !t.done && t.depends_on.iter().all(|d| done.contains(d))).collect();
     ready.sort_by(|a, b| unlocks(&b.id).cmp(&unlocks(&a.id)).then_with(|| a.id.cmp(&b.id)));
     ready.into_iter().map(|t| t.id.clone()).collect()
@@ -272,8 +272,8 @@ pub(crate) fn sets_cross<'a, 'b>(
 /// parte própria, sozinha, e nenhuma outra entra nela: ela cruza com todas,
 /// e quem a impede de rodar ao lado de outra onda é a rodada, que nunca a
 /// solta junto de ninguém.
-fn clustered_by_file<N: Ord + Clone>(tasks: &[BasketTask<N>], order: &[N]) -> Vec<Batch<N>> {
-    let by_id: BTreeMap<&N, &BasketTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
+fn clustered_by_file<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N]) -> Vec<Batch<N>> {
+    let by_id: BTreeMap<&N, &BacklogTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
     let mut groups: Vec<Batch<N>> = Vec::new();
     for id in order {
         let Some(task) = by_id.get(id).copied() else { continue };
@@ -309,7 +309,7 @@ fn clustered_by_file<N: Ord + Clone>(tasks: &[BasketTask<N>], order: &[N]) -> Ve
 /// mais baixo da leva, e a rodada, que solta pela ordem do número, a solta
 /// primeiro e segura as outras até ela entregar.
 pub(crate) fn pack_batches<N: Ord + Clone>(
-    tasks: &[BasketTask<N>],
+    tasks: &[BacklogTask<N>],
     order: &[N],
     capacity: usize,
 ) -> Vec<Batch<N>> {
@@ -406,10 +406,10 @@ mod tests {
         assert!(l.cycle.is_empty());
     }
 
-    /// Uma tarefa da cesta, para os testes: número, dependências, arquivos e
+    /// Uma tarefa do backlog, para os testes: número, dependências, arquivos e
     /// se já está entregue ou aprovada.
-    fn task(id: u32, depends_on: &[u32], files: &[&str], done: bool) -> BasketTask<u32> {
-        BasketTask {
+    fn task(id: u32, depends_on: &[u32], files: &[&str], done: bool) -> BacklogTask<u32> {
+        BacklogTask {
             id,
             depends_on: depends_on.iter().copied().collect(),
             files: files.iter().map(|f| f.to_string()).collect(),
@@ -417,7 +417,7 @@ mod tests {
         }
     }
 
-    /// O nível topológico de uma tarefa da cesta espera a dependência dela:
+    /// O nível topológico de uma tarefa do backlog espera a dependência dela:
     /// mesmo grafo do teste de ponta a ponta do despacho
     /// (`apps/rt/tests/round_dispatch.rs`), só que sobre o nível, não o lote.
     #[test]
@@ -485,7 +485,7 @@ mod tests {
             task(3, &[], &["c1.rs"], false),
         ];
         let order = ready_tasks(&tasks);
-        let batches = pack_batches(&tasks, &order, BASKET_CAPACITY);
+        let batches = pack_batches(&tasks, &order, BACKLOG_CAPACITY);
         assert_eq!(batches.len(), 2, "{batches:?}");
         assert_eq!(batches[0].tasks, vec![1, 3], "a maior abre, a menor fecha o lote em 5");
         assert_eq!(batches[0].files.len(), 5);
@@ -498,7 +498,7 @@ mod tests {
     fn a_task_alone_over_capacity_ships_alone() {
         let tasks = [task(1, &[], &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs"], false)];
         let order = ready_tasks(&tasks);
-        let batches = pack_batches(&tasks, &order, BASKET_CAPACITY);
+        let batches = pack_batches(&tasks, &order, BACKLOG_CAPACITY);
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].tasks, vec![1]);
         assert_eq!(batches[0].files.len(), 6, "acima da capacidade de 5, e mesmo assim despachada");
@@ -510,17 +510,17 @@ mod tests {
     fn two_ready_tasks_sharing_a_file_never_split_across_batches() {
         let tasks = [task(1, &[], &["shared.rs"], false), task(2, &[], &["shared.rs"], false)];
         let order = ready_tasks(&tasks);
-        let batches = pack_batches(&tasks, &order, BASKET_CAPACITY);
+        let batches = pack_batches(&tasks, &order, BACKLOG_CAPACITY);
         assert_eq!(batches.len(), 1, "{batches:?}");
         assert_eq!(batches[0].tasks.len(), 2);
     }
 
-    /// Cesta vazia: nenhuma tarefa pronta, nenhum lote.
+    /// Backlog vazio: nenhuma tarefa pronta, nenhum lote.
     #[test]
-    fn an_empty_basket_has_no_ready_task_and_no_batch() {
-        let tasks: [BasketTask<u32>; 0] = [];
+    fn an_empty_backlog_has_no_ready_task_and_no_batch() {
+        let tasks: [BacklogTask<u32>; 0] = [];
         assert!(ready_tasks(&tasks).is_empty());
-        assert!(pack_batches(&tasks, &[], BASKET_CAPACITY).is_empty());
+        assert!(pack_batches(&tasks, &[], BACKLOG_CAPACITY).is_empty());
     }
 
     /// O casamento de padrão, na divisa: o padrão cruza com o caminho que
@@ -544,13 +544,13 @@ mod tests {
     fn a_tarefa_com_curinga_sai_sozinha_no_empacotamento() {
         let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["**"], false), task(3, &[], &["b.rs"], false)];
         let order = ready_tasks(&tasks);
-        let batches = pack_batches(&tasks, &order, BASKET_CAPACITY);
+        let batches = pack_batches(&tasks, &order, BACKLOG_CAPACITY);
         assert_eq!(batches.len(), 2, "{batches:?}");
         assert_eq!(batches[0].tasks, vec![2], "o curinga primeiro, sozinho");
         assert_eq!(batches[1].tasks, vec![1, 3]);
     }
 
-    // A cesta inteira, com dependência e arquivo compartilhado, despachada
+    // O backlog inteiro, com dependência e arquivo compartilhado, despachada
     // de verdade — não só pela função pura — mora agora em
     // `apps/rt/tests/round_dispatch.rs`: o critério fala em despacho pelo
     // binário, num repositório temporário, e não em chamar `pack_batches`

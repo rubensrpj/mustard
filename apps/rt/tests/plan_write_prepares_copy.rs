@@ -158,7 +158,7 @@ fn survey(project: &Project) {
 }
 
 /// O plano de uma tarefa só: o critério com a prova e a tarefa que o cobre,
-/// sem onda — a onda nasce da rodada, pela cesta; devolve o número da
+/// sem onda — a onda nasce da rodada, pelo backlog; devolve o número da
 /// mensagem que o origina e o do critério.
 fn plan(project: &Project) -> (u64, u64) {
     let said = user_says(project, "O plano é uma tarefa só, que soma dois números.");
@@ -250,7 +250,7 @@ fn copied_items(project: &Project) -> Vec<u64> {
 /// antes desta obra só o pedido do usuário preparava a cópia, e ele vinha
 /// antes do plano novo: a cópia saía sem ele, e a página ficava sem o item
 /// novo até a rodada seguinte. A onda não entra no caso: ela nasce só da
-/// rodada, pela cesta.
+/// rodada, pelo backlog.
 #[test]
 fn gravacao_no_plano_depois_da_aprovacao_prepara_a_copia_da_pagina() {
     let project = Project::new();

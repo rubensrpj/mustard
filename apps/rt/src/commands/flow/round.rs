@@ -10,9 +10,9 @@
 //! principal os arquivos que cada cópia entregou, comita e apaga a cópia — e
 //! só então despacha a rodada seguinte.
 //!
-//! **A spec antiga passa para a cesta.** Antes de tudo, a rodada converte a
+//! **A spec antiga passa para o backlog.** Antes de tudo, a rodada converte a
 //! spec uma vez, no módulo `convert`: a onda desenhada à mão que nunca saiu deixa de
-//! valer, e as tarefas dela voltam para a cesta. A entregue ou aprovada fica
+//! valer, e as tarefas dela voltam para o backlog. A entregue ou aprovada fica
 //! como história; a que já saiu termina como saiu.
 //!
 //! **A escolha antes do envio.** Antes de criar a cópia de uma onda pronta,
@@ -109,7 +109,7 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
 pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{basket_left, ensure_copy, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use queue::{backlog_left, ensure_copy, wave_states, waves_in_progress, waves_pending_fix};
 pub(crate) use report::take_report;
 
 /// As opções de `mustard-rt run round`.

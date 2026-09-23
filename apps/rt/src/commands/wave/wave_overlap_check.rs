@@ -3,7 +3,7 @@
 //! Cada onda é um nó e o `depends_on` dela é uma aresta; o nível topológico
 //! diz quais saem na mesma rodada, e o ciclo nomeia as ondas que dependem
 //! umas das outras em círculo. A dependência e a tarefa que apontam uma onda
-//! que o plano não tem ficam fora do grafo: a tarefa está na cesta.
+//! que o plano não tem ficam fora do grafo: a tarefa está no backlog.
 //!
 //! Junto do grafo vão os arquivos que as tarefas de cada onda declaram, que
 //! a rodada lê para não soltar dois lotes em paralelo sobre o mesmo arquivo.
@@ -41,7 +41,7 @@ pub(crate) struct WaveGraph {
     /// Os arquivos que as tarefas de cada onda declaram.
     pub(crate) files: BTreeMap<u64, BTreeSet<String>>,
     /// As tarefas de cada onda, pelo código, com os arquivos que cada uma
-    /// declara: a onda sem tarefa nenhuma é a que a cesta esvaziou.
+    /// declara: a onda sem tarefa nenhuma é a que o backlog esvaziou.
     pub(crate) tasks: BTreeMap<u64, Vec<(String, BTreeSet<String>)>>,
 }
 
@@ -65,7 +65,7 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
     let mut by_task: BTreeMap<u64, Vec<(String, BTreeSet<String>)>> = BTreeMap::new();
     for task in events.iter().filter(|e| e.event_type == "task") {
         let Some(n) = task.wave() else { continue };
-        // A tarefa de uma onda que o plano não tem está na cesta.
+        // A tarefa de uma onda que o plano não tem está no backlog.
         if !declared.contains(&n) {
             continue;
         }
@@ -133,7 +133,7 @@ mod tests {
     }
 
     /// A dependência que aponta uma onda que não existe não vira aresta, e a
-    /// tarefa de uma onda que não existe fica fora do grafo: está na cesta.
+    /// tarefa de uma onda que não existe fica fora do grafo: está no backlog.
     #[test]
     fn a_dependency_and_a_task_pointing_at_a_missing_wave_stay_out_of_the_graph() {
         let log = spec_log(&[wave(1, &[7]), task(1, &["src/a.rs"]), task(9, &["src/b.rs"])]);

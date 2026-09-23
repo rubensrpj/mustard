@@ -1,5 +1,5 @@
-//! A conversão da spec antiga para a cesta: a onda desenhada à mão que nunca
-//! saiu deixa de valer, e as tarefas dela voltam para a cesta, de onde o
+//! A conversão da spec antiga para o backlog: a onda desenhada à mão que nunca
+//! saiu deixa de valer, e as tarefas dela voltam para o backlog, de onde o
 //! programa monta os lotes.
 //!
 //! **Quem é convertida.** Toda onda visível com autor diferente do programa,
@@ -40,7 +40,7 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use super::report::cesta_return;
+use super::report::backlog_return;
 use crate::commands::spec_events::write::{record, RecordCheck};
 
 /// O arquivo que a tarefa sem arquivo nenhum leva, nem dela nem da onda.
@@ -265,7 +265,7 @@ fn planned_writes(log: &SpecLog, lang: Locale) -> Vec<(String, Map<String, Value
     for (n, list) in &members {
         let wave_on = waves.get(n).map(|w| w.event.ints("depends_on")).unwrap_or_default();
         for (_, task) in list.iter().filter(|(_, t)| t.fields.contains_key("wave")) {
-            let mut draft = cesta_return(task);
+            let mut draft = backlog_return(task);
             draft.remove("points");
             let files: Vec<Value> = files_of(task, *n).into_iter().map(|path| json!({ "path": path })).collect();
             draft.insert("files".into(), json!(files));
@@ -497,7 +497,7 @@ mod tests {
         }
 
         // Cada tarefa delas ganha uma versão sem onda e sem nota: a que
-        // substitui a antiga. O lote que a cesta forma depois dá outra, com o
+        // substitui a antiga. O lote que o backlog forma depois dá outra, com o
         // número dele.
         for name in ["dois", "tres_a", "tres_b", "quatro_a", "quatro_b"] {
             let versions: Vec<&SpecEvent> =
@@ -534,7 +534,7 @@ mod tests {
 
     /// A rodada começa numa spec no formato da pi-kpis-plantio: a onda 1 fica
     /// como história, as ondas desenhadas à mão que nunca saíram saem da
-    /// leitura com o motivo, as tarefas delas voltam para a cesta com a
+    /// leitura com o motivo, as tarefas delas voltam para o backlog com a
     /// dependência entre ondas virada dependência entre tarefas, o critério
     /// comum fica numa tarefa só, e o primeiro lote sai com o número 2, sem
     /// número de onda repetido.
@@ -614,7 +614,7 @@ mod tests {
 
     /// A onda desenhada à mão que já saiu e ainda roda termina como saiu, e a
     /// entregue ou aprovada fica como história: nenhuma tarefa delas vai para
-    /// a cesta. Só a que nunca saiu é convertida.
+    /// o backlog. Só a que nunca saiu é convertida.
     #[test]
     fn a_onda_que_ja_saiu_termina_como_saiu() {
         let dir = tempdir().unwrap();
@@ -646,10 +646,10 @@ mod tests {
             assert_eq!(now(&log, waves[&n]).id, waves[&n], "a onda {n} fica como está");
             let task = now(&log, tasks[&n]);
             assert_eq!(task.id, tasks[&n], "a tarefa da onda {n} não ganha versão nova");
-            assert_eq!(task.wave(), Some(n), "a tarefa da onda {n} não vai para a cesta");
+            assert_eq!(task.wave(), Some(n), "a tarefa da onda {n} não vai para o backlog");
         }
         let four = now(&log, tasks[&4]);
-        assert_ne!(four.id, tasks[&4], "a tarefa da onda que nunca saiu volta para a cesta");
+        assert_ne!(four.id, tasks[&4], "a tarefa da onda que nunca saiu volta para o backlog");
     }
 
     /// A regra que diz em `waves` uma onda que a conversão remove ganha a

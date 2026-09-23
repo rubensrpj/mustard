@@ -229,8 +229,8 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
         // A revisão final do agente de teste dedicado não aponta onda
         // nenhuma, aprovada ou reprovada: ela vale para a obra inteira, e
         // responde pelo combinado vigente item a item, não por onda — a
-        // reprovação por um item que nenhuma onda carrega vira tarefa na
-        // cesta, sem onda para apontar. Uma obra sem onda nenhuma (até 3
+        // reprovação por um item que nenhuma onda carrega vira tarefa no
+        // backlog, sem onda para apontar. Uma obra sem onda nenhuma (até 3
         // pontos, feita pelo orquestrador) também não tem o que apontar. Nem
         // uma nem outra confere critério: quem confere o encaixe do que a
         // obra fez é o combinado, não o critério de uma onda, e cobrar os
@@ -519,7 +519,7 @@ mod tests {
     /// aprovada ou reprovada: é a única que entra assim, para a obra sem
     /// onda (até 3 pontos, feita pelo orquestrador) também poder fechar, e
     /// para o item combinado que nenhuma onda carrega poder reprovar sem
-    /// apontar onda — ele vira tarefa na cesta, não conserto de uma onda. A
+    /// apontar onda — ele vira tarefa no backlog, não conserto de uma onda. A
     /// revisão de uma onda continua apontando a dela.
     #[test]
     fn only_the_final_review_of_the_whole_is_recorded_without_a_wave() {

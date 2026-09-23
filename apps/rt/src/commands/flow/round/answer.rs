@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 
 use super::commit::git_lock;
 use super::queue::{
-    analyse, analysis_lines, basket_left, basket_ready, dispatch_basket, emptied_basket_waves, first_unfinished, max_parallel, next_waves,
+    analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, emptied_backlog_waves, first_unfinished, max_parallel, next_waves,
     only_analysis, open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
 };
 use super::report::Taken;
@@ -202,7 +202,7 @@ fn wave_loop_message(cycle: &[u64], lang: Locale) -> String {
 /// As ondas a reenviar nesta rodada, cada uma com o número do pedido
 /// anterior: as órfãs, de um Claude Code que fechou, e as pausadas por este
 /// relatório — a onda pausada sai de novo na mesma rodada. A onda de lote que
-/// perdeu todas as tarefas para a cesta — o que o corte de uma onda de lote,
+/// perdeu todas as tarefas para o backlog — o que o corte de uma onda de lote,
 /// no mesmo relatório, acabou de fazer — nunca entra aqui: sem tarefa
 /// nenhuma, reenviar seria despachar uma onda vazia.
 fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
@@ -214,7 +214,7 @@ fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
         }
     }
     let graph = wave_graph(log);
-    let emptied = emptied_basket_waves(log, &graph);
+    let emptied = emptied_backlog_waves(log, &graph);
     out.retain(|wave, _| !emptied.contains(wave));
     out
 }
@@ -407,9 +407,9 @@ pub(super) fn run_round_with_mine(
         return Err(RoundRefusal::NotApproved { phase });
     }
 
-    // A spec antiga passa para a cesta antes de qualquer leitura das ondas:
+    // A spec antiga passa para o backlog antes de qualquer leitura das ondas:
     // a onda desenhada à mão que nunca saiu sai da leitura, e as tarefas dela
-    // entram na cesta. Numa spec já convertida nada é gravado, e a leitura
+    // entram no backlog. Numa spec já convertida nada é gravado, e a leitura
     // segue a mesma.
     let log = if super::convert::convert_hand_waves(&opts.root, root, &spec, lang)
         .map_err(RoundRefusal::Refused)?
@@ -422,7 +422,7 @@ pub(super) fn run_round_with_mine(
             .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
     };
 
-    // A cesta é lida como estava ao entrar na rodada, antes de o relatório
+    // O backlog é lido como estava ao entrar na rodada, antes de o relatório
     // dela mexer em onda ou tarefa: a tarefa que o corte de uma onda de lote
     // devolve solta, agora mesmo, fica solta até a rodada seguinte — só a que
     // já estava pronta antes desta rodada começar é empacotada aqui.
@@ -462,7 +462,7 @@ pub(super) fn run_round_with_mine(
     // sugestão da onda seguinte apontaria linhas velhas.
     super::commit::refresh_map_if_stale(root, mine);
 
-    // A cesta forma os lotes das tarefas que já estavam prontas antes desta
+    // O backlog forma os lotes das tarefas que já estavam prontas antes desta
     // rodada começar, pela leitura de entrada (`log_on_entry`): o binário
     // grava a onda e as tarefas dela, com autor próprio, e só depois a
     // rodada lê as ondas que existem — as novas e as já entregues. A tarefa
@@ -470,7 +470,7 @@ pub(super) fn run_round_with_mine(
     // desta mesma chamada, fica solta até a rodada seguinte; formar o lote
     // pela leitura já mexida pelo relatório a empacotaria de novo na mesma
     // rodada que a soltou.
-    dispatch_basket(&opts.root, &spec, &log_on_entry).map_err(RoundRefusal::Refused)?;
+    dispatch_backlog(&opts.root, &spec, &log_on_entry).map_err(RoundRefusal::Refused)?;
     let log = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
@@ -657,8 +657,8 @@ pub(super) fn run_round_with_mine(
 
     // O próximo passo: despachar o que saiu agora; esperar as que estão em
     // andamento; dizer qual onda falta, quando nada se move; rodar de novo,
-    // ou nomear as tarefas presas, quando a cesta ainda tem tarefa; ou
-    // fechar, com tudo entregue e aprovado e a cesta vazia. A rodada não pede revisão de onda nenhuma:
+    // ou nomear as tarefas presas, quando o backlog ainda tem tarefa; ou
+    // fechar, com tudo entregue e aprovado e o backlog vazio. A rodada não pede revisão de onda nenhuma:
     // quem confere o trabalho é o agente de teste dedicado que o fechamento
     // pede, uma vez por obra.
     let report_back = translate("round.report", lang);
@@ -674,22 +674,22 @@ pub(super) fn run_round_with_mine(
         String::new()
     } else if let Some(wave) = first_unfinished(&log, &running) {
         translate("round.missing", lang).replace("{wave}", &wave.to_string())
-    } else if !basket_left(&log).is_empty() {
-        // Toda onda planejada terminou, mas a cesta ainda tem tarefa: a obra
+    } else if !backlog_left(&log).is_empty() {
+        // Toda onda planejada terminou, mas o backlog ainda tem tarefa: a obra
         // não fecha. A tarefa que ficou pronta pela entrega desta mesma
-        // rodada só vira lote na rodada seguinte, porque a cesta foi formada
+        // rodada só vira lote na rodada seguinte, porque o backlog foi formado
         // pela leitura de entrada; sem tarefa pronta e sem nada em andamento,
         // as que sobraram estão presas, e a resposta as nomeia.
         let shown = |ids: &mut dyn Iterator<Item = u64>| -> String {
             ids.map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string())).collect::<Vec<_>>().join(", ")
         };
-        let ready = basket_ready(&log);
+        let ready = backlog_ready(&log);
         if ready.is_empty() {
-            translate("round.basket_stuck", lang).replace("{tasks}", &shown(&mut basket_left(&log).into_iter()))
+            translate("round.backlog_stuck", lang).replace("{tasks}", &shown(&mut backlog_left(&log).into_iter()))
         } else {
             let state = State::from_log(&log);
             let step = crate::commands::flow::resume::step_command("round", &spec, &state);
-            let text = translate("round.basket_left", lang)
+            let text = translate("round.backlog_left", lang)
                 .replace("{tasks}", &shown(&mut ready.into_iter()))
                 .replace("{command}", step.as_deref().unwrap_or_default());
             command = step;
@@ -1430,14 +1430,14 @@ mod tests {
         assert!(done["next"].as_str().unwrap_or_default().ends_with(&close), "{done}");
     }
 
-    /// A última onda em andamento entrega e sobra tarefa na cesta: a rodada
+    /// A última onda em andamento entrega e sobra tarefa no backlog: a rodada
     /// nunca manda fechar. A tarefa que a entrega desta mesma rodada soltou
     /// ainda não virou lote, e a resposta manda rodar de novo, com a linha
-    /// pronta; a rodada seguinte despacha o lote, e só com a cesta vazia a
+    /// pronta; a rodada seguinte despacha o lote, e só com o backlog vazio a
     /// rodada manda fechar. Com tarefa presa — nenhuma pronta e nada em
     /// andamento — a resposta nomeia as tarefas presas e não manda fechar.
     #[test]
-    fn a_rodada_nao_manda_fechar_com_tarefa_na_cesta() {
+    fn a_rodada_nao_manda_fechar_com_tarefa_no_backlog() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
@@ -1456,7 +1456,7 @@ mod tests {
         assert_eq!(delivered_now["ok"], json!(true), "{delivered_now}");
         assert_eq!(waves_in(&delivered_now, "dispatch"), Vec::<u64>::new(), "{delivered_now}");
         let command = delivered_now["command"].as_str().unwrap_or_default();
-        assert_eq!(command, "mustard-rt run round --spec x", "com tarefa na cesta, a rodada manda rodar de novo: {delivered_now}");
+        assert_eq!(command, "mustard-rt run round --spec x", "com tarefa no backlog, a rodada manda rodar de novo: {delivered_now}");
         crate::commands::flow::resume::assert_parses(command);
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
@@ -1465,15 +1465,15 @@ mod tests {
             .into_iter()
             .find(|e| e.event_type == "task" && e.wave().is_none())
             .map(|e| codes.get(&e.id).cloned().unwrap())
-            .expect("a tarefa solta segue na cesta");
-        let expected = translate("round.basket_left", Locale::PtBr).replace("{tasks}", &loose).replace("{command}", command);
+            .expect("a tarefa solta segue no backlog");
+        let expected = translate("round.backlog_left", Locale::PtBr).replace("{tasks}", &loose).replace("{command}", command);
         assert!(delivered_now["next"].as_str().unwrap_or_default().ends_with(&expected), "{delivered_now}");
 
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![2], "a rodada de novo despacha o lote: {again}");
 
         let done = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
-        assert_eq!(done["command"], json!("mustard-rt run close --spec x"), "cesta vazia, a rodada manda fechar: {done}");
+        assert_eq!(done["command"], json!("mustard-rt run close --spec x"), "backlog vazio, a rodada manda fechar: {done}");
 
         // A tarefa presa: duas tarefas soltas que dependem uma da outra, com
         // a onda 1 entregue e nada em andamento. Nenhuma fica pronta, e a
@@ -1508,7 +1508,7 @@ mod tests {
             .map(|e| codes.get(&e.id).cloned().unwrap())
             .collect();
         assert_eq!(held.len(), 2, "{held:?}");
-        let expected = translate("round.basket_stuck", Locale::PtBr).replace("{tasks}", &held.join(", "));
+        let expected = translate("round.backlog_stuck", Locale::PtBr).replace("{tasks}", &held.join(", "));
         assert!(stuck["next"].as_str().unwrap_or_default().ends_with(&expected), "{stuck}");
     }
 

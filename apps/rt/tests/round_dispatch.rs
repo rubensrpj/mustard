@@ -3,7 +3,7 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! A cesta despachada pelo binário de verdade, numa pasta temporária: seis
+//! O backlog despachado pelo binário de verdade, numa pasta temporária: seis
 //! tarefas com dependência e arquivo compartilhado, e os lotes que a rodada
 //! grava, como onda de autor `binary`, sempre saem os mesmos — quem
 //! compartilha arquivo cai junto, ninguém divide arquivo entre lotes, e a
@@ -27,9 +27,9 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-const SPEC: &str = "cesta-lotes";
+const SPEC: &str = "backlog-lotes";
 const GOAL: &str = "Trocar a saudação do programa.";
-const SESSION: &str = "s-cesta-lotes";
+const SESSION: &str = "s-backlog-lotes";
 
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git").args(args).current_dir(root).output().expect("git");
@@ -204,10 +204,10 @@ fn approve(project: &Project) {
     assert_eq!(State::from_log(&project.log()).phase, Some("approved"));
 }
 
-/// Uma tarefa da cesta, gravada sem onda: `files` como caminhos soltos e
+/// Uma tarefa do backlog, gravada sem onda: `files` como caminhos soltos e
 /// `depends_on` como a lista de ids das tarefas de que ela depende.
 /// Devolve o `id` gravado.
-fn basket_task(project: &Project, criterion: u64, said: u64, files: &[&str], depends_on: &[u64]) -> u64 {
+fn backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str], depends_on: &[u64]) -> u64 {
     // `"new": true` marca um arquivo que a tarefa ainda vai criar: sem isso
     // o plano recusa a pergunta de aprovação, porque o arquivo sintético do
     // teste não existe no repositório.
@@ -215,20 +215,20 @@ fn basket_task(project: &Project, criterion: u64, said: u64, files: &[&str], dep
     let depends_on: Vec<Value> = depends_on.iter().map(|id| json!(id)).collect();
     let written = project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Tarefa da cesta.", "files": files, "depends_on": depends_on,
+        &json!({"title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
             "covers": [criterion], "origin": said}),
     );
     written["id"].as_u64().expect("the recorded task has an id")
 }
 
-/// A cesta inteira, numa spec de seis tarefas com dependências e arquivos
+/// O backlog inteiro, numa spec de seis tarefas com dependências e arquivos
 /// declarados, despachada pelo binário de verdade: o nível topológico, a
 /// prontidão com desempate e o empacotamento sempre devolvem os mesmos
 /// lotes — o mesmo grafo do teste que antes vivia só como unidade pura do
 /// módulo do grafo (`apps/rt/src/shared/dag.rs`), agora conferido na saída
 /// de uma rodada de verdade.
 #[test]
-fn a_cesta_de_tarefas_vira_sempre_os_mesmos_lotes() {
+fn o_backlog_vira_sempre_os_mesmos_lotes() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -241,12 +241,12 @@ fn a_cesta_de_tarefas_vira_sempre_os_mesmos_lotes() {
 
     // O mesmo grafo do teste puro: 1 e 5 dividem `b.rs`; 4 é a maior parte,
     // sozinha; 2 não compartilha arquivo com ninguém; 3 espera 1, 6 espera 4.
-    let t1 = basket_task(&project, crit_id, said, &["a.rs", "b.rs"], &[]);
-    let t2 = basket_task(&project, crit_id, said, &["c.rs"], &[]);
-    let t3 = basket_task(&project, crit_id, said, &["d.rs"], &[t1]);
-    let t4 = basket_task(&project, crit_id, said, &["e.rs", "f.rs", "g.rs"], &[]);
-    let t5 = basket_task(&project, crit_id, said, &["b.rs"], &[]);
-    let t6 = basket_task(&project, crit_id, said, &["h.rs"], &[t4]);
+    let t1 = backlog_task(&project, crit_id, said, &["a.rs", "b.rs"], &[]);
+    let t2 = backlog_task(&project, crit_id, said, &["c.rs"], &[]);
+    let t3 = backlog_task(&project, crit_id, said, &["d.rs"], &[t1]);
+    let t4 = backlog_task(&project, crit_id, said, &["e.rs", "f.rs", "g.rs"], &[]);
+    let t5 = backlog_task(&project, crit_id, said, &["b.rs"], &[]);
+    let t6 = backlog_task(&project, crit_id, said, &["h.rs"], &[t4]);
 
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
@@ -282,7 +282,7 @@ fn a_cesta_de_tarefas_vira_sempre_os_mesmos_lotes() {
     assert!(big_n < small_n, "o lote maior abre antes do menor: {big_n} vs {small_n}");
 }
 
-/// Uma tarefa solta na cesta, sem onda própria, forma um lote sozinha: o
+/// Uma tarefa solta no backlog, sem onda própria, forma um lote sozinha: o
 /// binário, despachado pela rodada de verdade, grava o evento de onda com o
 /// autor binário, a tarefa do lote na ordem de despacho, os critérios que são
 /// a união do que ela cobre e o pronta-quando tirado da prova desse critério.
@@ -298,7 +298,7 @@ fn o_binario_grava_o_evento_de_onda_do_lote() {
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
 
-    let t1 = basket_task(&project, crit_id, said, &["src/b.rs"], &[]);
+    let t1 = backlog_task(&project, crit_id, said, &["src/b.rs"], &[]);
 
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
@@ -322,7 +322,7 @@ fn o_binario_grava_o_evento_de_onda_do_lote() {
 /// Uma spec antiga, com a onda 1 numerada à mão e já entregue de ponta a
 /// ponta, pelo binário de verdade: ela vira história, sem mexer nela. Uma
 /// tarefa carrega o número de onda 7, que nunca virou evento de onda nenhum e
-/// por isso nunca pôde ser despachada — essa tarefa volta para a cesta mesmo
+/// por isso nunca pôde ser despachada — essa tarefa volta para o backlog mesmo
 /// tendo onda gravada, o número velho é ignorado, e ela é relotada com o
 /// próximo número livre, numa rodada seguinte de verdade.
 #[test]
@@ -384,7 +384,7 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     assert_eq!(
         task_now.wave(),
         Some(2),
-        "a tarefa não entregue volta para a cesta e é relotada: {:?}",
+        "a tarefa não entregue volta para o backlog e é relotada: {:?}",
         task_now.fields
     );
 
@@ -417,10 +417,10 @@ fn dispatch_ready(project: &Project) -> (Vec<u64>, Vec<u64>) {
     (asked, out)
 }
 
-/// Uma spec aprovada com uma tarefa na cesta para cada lista de arquivos de
+/// Uma spec aprovada com uma tarefa no backlog para cada lista de arquivos de
 /// `files`, sem dependência entre elas. Devolve o projeto, o critério, a fala
 /// do usuário e as tarefas, na ordem de `files`.
-fn basket_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
+fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -430,19 +430,19 @@ fn basket_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
-    let tasks = files.iter().map(|f| basket_task(&project, crit_id, said, f, &[])).collect();
+    let tasks = files.iter().map(|f| backlog_task(&project, crit_id, said, f, &[])).collect();
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
     (project, crit_id, said, tasks)
 }
 
-/// Uma tarefa semeada na cesta depois da aprovação, sem onda, como a
+/// Uma tarefa semeada no backlog depois da aprovação, sem onda, como a
 /// conversão da spec antiga ou o conserto a deixam. Devolve o `id` gravado.
-fn seed_basket_task(project: &Project, criterion: u64, said: u64, files: &[&str]) -> u64 {
+fn seed_backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str]) -> u64 {
     let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
     project.seed(
         "task",
-        &json!({"author": "assistant", "text": "Tarefa da cesta.", "files": files, "depends_on": [],
+        &json!({"author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
             "covers": [criterion], "origin": said}),
     )
 }
@@ -457,7 +457,7 @@ fn wave_of(project: &Project, task: u64) -> Option<u64> {
 /// onda dela em andamento, nada mais sai.
 #[test]
 fn a_tarefa_com_curinga_sai_sozinha() {
-    let (project, _, _, tasks) = basket_project(&[&["**"], &["a.rs"], &["b.rs"]]);
+    let (project, _, _, tasks) = backlog_project(&[&["**"], &["a.rs"], &["b.rs"]]);
 
     let (asked, out) = dispatch_ready(&project);
     let star = wave_of(&project, tasks[0]).expect("a tarefa do curinga vira onda");
@@ -476,16 +476,16 @@ fn a_tarefa_com_curinga_sai_sozinha() {
     assert!(asked.is_empty() && out.is_empty(), "com o curinga em andamento nada mais sai: {asked:?} {out:?}");
 }
 
-/// O outro lado: com uma onda em andamento, a tarefa do curinga que chega à
-/// cesta vira lote, mas não sai ao lado dela.
+/// O outro lado: com uma onda em andamento, a tarefa do curinga que chega ao
+/// backlog vira lote, mas não sai ao lado dela.
 #[test]
 fn a_tarefa_com_curinga_sai_sozinha_e_espera_a_onda_em_andamento() {
-    let (project, crit, said, tasks) = basket_project(&[&["a.rs"]]);
+    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
     let (_, out) = dispatch_ready(&project);
     let first = wave_of(&project, tasks[0]).expect("a primeira tarefa vira onda");
     assert_eq!(out, vec![first], "a onda de a.rs sai");
 
-    let star = seed_basket_task(&project, crit, said, &["**"]);
+    let star = seed_backlog_task(&project, crit, said, &["**"]);
     let (asked, out) = dispatch_ready(&project);
     assert!(wave_of(&project, star).is_some(), "a tarefa do curinga vira lote");
     assert!(asked.is_empty() && out.is_empty(), "o curinga não sai ao lado de a.rs em andamento: {asked:?} {out:?}");
@@ -498,15 +498,15 @@ fn a_tarefa_com_curinga_sai_sozinha_e_espera_a_onda_em_andamento() {
 #[test]
 fn a_tarefa_com_curinga_sai_sozinha_e_o_padrao_junta_com_o_arquivo_que_casa() {
     let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
-    let (project, crit, said, tasks) = basket_project(&[&own, &["src/**"]]);
+    let (project, crit, said, tasks) = backlog_project(&[&own, &["src/**"]]);
     let (_, out) = dispatch_ready(&project);
     let joined = wave_of(&project, tasks[0]).expect("a tarefa de src/a.rs vira onda");
     assert_eq!(wave_of(&project, tasks[1]), Some(joined), "src/** junta com src/a.rs, acima da capacidade");
     assert_eq!(out, vec![joined]);
 
-    let inside = seed_basket_task(&project, crit, said, &["src/b.rs"]);
+    let inside = seed_backlog_task(&project, crit, said, &["src/b.rs"]);
     let docs = ["docs/1.md", "docs/2.md", "docs/3.md", "docs/4.md", "docs/5.md"];
-    let outside = seed_basket_task(&project, crit, said, &docs);
+    let outside = seed_backlog_task(&project, crit, said, &docs);
     let (_, out) = dispatch_ready(&project);
     let inside_wave = wave_of(&project, inside).expect("src/b.rs vira lote");
     let outside_wave = wave_of(&project, outside).expect("docs vira lote");

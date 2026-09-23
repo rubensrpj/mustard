@@ -293,7 +293,7 @@ pub enum Owner {
     /// diz no campo `waves`.
     Waves(BTreeSet<u64>),
     /// Dos arquivos que ele diz em `applies_to`: vai no pedido da onda em que
-    /// algum arquivo das tarefas casa um desses padrões. É o dono da cesta,
+    /// algum arquivo das tarefas casa um desses padrões. É o dono do backlog,
     /// em que o número da onda só existe quando o lote sai.
     Files(Vec<String>),
 }
@@ -634,19 +634,19 @@ pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -
 /// delas juntado por espaço e o pronto-quando — a prova de cada critério
 /// coberto, ligada por " && ", ou, sem prova nenhuma (o caso do item
 /// combinado sem dono, que não tem prova), o próprio texto das tarefas. A
-/// formação do lote e a atualização dele depois de uma tarefa sair pela
-/// cesta usam esta mesma conta, sobre as tarefas que a leitura de agora
+/// formação do lote e a atualização dele depois de uma tarefa sair pelo
+/// backlog usam esta mesma conta, sobre as tarefas que a leitura de agora
 /// mostra, para as duas nunca discordarem.
-pub struct BasketFields {
+pub struct BacklogFields {
     pub criteria: Vec<u64>,
     pub text: String,
     pub done_when: String,
 }
 
-/// Calcula [`BasketFields`] a partir das tarefas `tasks` de um lote, lendo em
+/// Calcula [`BacklogFields`] a partir das tarefas `tasks` de um lote, lendo em
 /// `log` a prova de cada critério que elas cobrem.
 #[must_use]
-pub fn basket_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BasketFields {
+pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
     let mut criteria: BTreeSet<u64> = BTreeSet::new();
     let mut text_parts: Vec<String> = Vec::new();
     for task in tasks {
@@ -659,7 +659,7 @@ pub fn basket_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BasketFields {
     let proof =
         criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof")).collect::<Vec<_>>().join(" && ");
     let done_when = if proof.is_empty() { text_parts.join(" ") } else { proof };
-    BasketFields { criteria, text: text_parts.join(" "), done_when }
+    BacklogFields { criteria, text: text_parts.join(" "), done_when }
 }
 
 /// Os executores que o binário reconhece abrindo a prova de um critério,
@@ -722,7 +722,7 @@ pub fn proof_rule(criterion: &str, proof: &str) -> Result<(), Refusal> {
 /// dono. Olha o arquivo antes e depois da gravação; o item que já existia, a
 /// spec ainda não aprovada e a gravação de outro tipo passam.
 ///
-/// Com a cesta, o número da onda só existe quando o lote sai: o dono se dá
+/// Com o backlog, o número da onda só existe quando o lote sai: o dono se dá
 /// pelos arquivos, em `applies_to`, com os arquivos das tarefas que cobrem ou
 /// vão cobrir o item. Vale mesmo antes de a tarefa existir: a decisão costuma
 /// vir antes da tarefa que a faz. O item dos arquivos vai no pedido da onda
