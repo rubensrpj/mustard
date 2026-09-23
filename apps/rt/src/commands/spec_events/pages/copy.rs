@@ -241,7 +241,7 @@ fn prepare_in(
     // e a desta spec já estaria presa. Só num marco, e só com a página do
     // projeto já publicada como template, há carimbo a conferir.
     let others = if moment == Moment::Milestone && template_project_url(&index).is_some() {
-        other_project_publications(root, spec.trim())
+        other_project_logs(root, spec.trim())
     } else {
         Vec::new()
     };
@@ -263,7 +263,7 @@ fn build(
     place: &Place,
     log: &SpecLog,
     rtk: &[RtkDay],
-    others: &[ProjectPublication],
+    others: &[ProjectLog],
     moment: Moment,
     lang: Locale,
 ) -> Result<Option<Prepared>, Refusal> {
@@ -372,37 +372,64 @@ fn spec_page(log: &SpecLog) -> SpecPage {
 }
 
 /// Uma publicação do template da página do projeto que deu certo, gravada
-/// numa spec: a hora, o endereço e o carimbo do molde publicado.
+/// numa spec: o número dela no arquivo, a hora, o endereço e o carimbo do
+/// molde publicado.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectPublication {
+    id: u64,
     at: String,
     url: String,
     stamp: Option<String>,
 }
 
-/// As publicações do template da página do projeto gravadas em `log`, na
-/// ordem do arquivo.
-fn project_publications(log: &SpecLog) -> Vec<ProjectPublication> {
-    log.visible()
-        .into_iter()
+/// Uma cópia para o banco da página do projeto gravada numa spec: o número
+/// dela no arquivo e a hora.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectCopy {
+    id: u64,
+    at: String,
+}
+
+/// A página do projeto como o arquivo de eventos de uma spec a conta: a hora
+/// do primeiro evento, quando a pasta da spec nasceu, e as publicações do
+/// template e as cópias para o banco dela, na ordem do arquivo.
+#[derive(Debug, Clone, Default)]
+struct ProjectLog {
+    born: Option<String>,
+    publications: Vec<ProjectPublication>,
+    copies: Vec<ProjectCopy>,
+}
+
+/// A página do projeto como o arquivo `log` a conta.
+fn project_log(log: &SpecLog) -> ProjectLog {
+    let visible = log.visible();
+    let publications = visible
+        .iter()
         .filter(|e| is_template(e))
         .filter_map(|e| {
             published_to(e, PROJECT_PAGE).map(|url| ProjectPublication {
+                id: e.id,
                 at: e.at().to_string(),
                 url: url.to_string(),
                 stamp: e.str_field("stamp").map(str::to_string),
             })
         })
-        .collect()
+        .collect();
+    let copies = visible
+        .iter()
+        .filter(|e| copy_of(e) == Some(PROJECT_PAGE))
+        .map(|e| ProjectCopy { id: e.id, at: e.at().to_string() })
+        .collect();
+    ProjectLog { born: log.events.first().map(|e| e.at().to_string()), publications, copies }
 }
 
-/// As publicações do template da página do projeto gravadas nas specs vivas
-/// do projeto `root` fora da spec `spec`.
-fn other_project_publications(root: &Path, spec: &str) -> Vec<ProjectPublication> {
+/// A página do projeto como a contam as specs vivas do projeto `root` fora
+/// da spec `spec`.
+fn other_project_logs(root: &Path, spec: &str) -> Vec<ProjectLog> {
     mustard_core::io::spec_index::read_specs(root)
         .into_iter()
         .filter(|(name, _)| name != spec)
-        .flat_map(|(_, log)| project_publications(&log))
+        .map(|(_, log)| project_log(&log))
         .collect()
 }
 
@@ -716,7 +743,7 @@ fn state_name(state: WaveState) -> &'static str {
 fn project_rows(
     place: &Place,
     log: &SpecLog,
-    others: &[ProjectPublication],
+    others: &[ProjectLog],
     lang: Locale,
 ) -> Result<Option<Target>, Refusal> {
     let page = mustard_core::io::fs::lock::read_shared(&place.index).ok().and_then(|content| project_page(&content));
@@ -732,8 +759,10 @@ fn project_rows(
     let copied_phase = copied.and_then(|e| e.str_field("phase")).map(str::to_string);
     // As publicações do template em todas as specs, as desta por último: no
     // mesmo segundo, a desta vale.
-    let own_publications = project_publications(log);
-    let all: Vec<&ProjectPublication> = others.iter().chain(own_publications.iter()).collect();
+    let own_log = project_log(log);
+    let own_publications = &own_log.publications;
+    let all: Vec<&ProjectPublication> =
+        others.iter().flat_map(|l| l.publications.iter()).chain(own_publications.iter()).collect();
     // A república no mesmo endereço não zera o banco dele: não conta como
     // página nova, que pede todas as linhas.
     let same_address = own_publications.last().is_some_and(|last| {
@@ -763,6 +792,24 @@ fn project_rows(
     if url.is_none() || republish {
         ensure_template(place.root, PROJECT_TEMPLATE, &template)?;
     }
+    // A linha desta spec já está no banco do endereço de agora quando uma
+    // cópia anterior para esse endereço a levou: uma cópia desta spec, que
+    // leva sempre a própria linha, ou a cópia de todas as linhas feita por
+    // outra spec depois que a pasta desta nasceu. O banco recusa a troca sem
+    // a versão, e a ordem a nomeia.
+    let logs: Vec<&ProjectLog> = others.iter().chain(std::iter::once(&own_log)).collect();
+    let ours = logs.len() - 1;
+    let own_there = url.as_deref().is_some_and(|url| {
+        logs.iter().enumerate().any(|(spec, project)| {
+            project.copies.iter().any(|copy| {
+                went_to(copy, spec, &logs, url)
+                    && (spec == ours
+                        || (carries_all(copy, spec, &logs)
+                            && own_log.born.as_deref().is_some_and(|born| !later(born, &copy.at))))
+            })
+        })
+    });
+    let existing = if own_there { vec![format!("{SPECS}/{}", own.name)] } else { Vec::new() };
     let mut writes = Vec::new();
     for row in chosen {
         writes.push(set(place, SPECS, &row.name, &row_body(row))?);
@@ -779,8 +826,60 @@ fn project_rows(
         old,
         republish,
         stamp,
-        existing: Vec::new(),
+        existing,
     }))
+}
+
+/// A publicação `p`, gravada na spec de posição `p_spec` em `logs`, veio
+/// antes do evento `id`, da hora `at`, gravado na spec de posição `spec`: na
+/// mesma spec, pelo número no arquivo; em outra, pela hora, e no mesmo
+/// segundo conta como antes.
+fn precedes(p: &ProjectPublication, p_spec: usize, spec: usize, id: u64, at: &str) -> bool {
+    if p_spec == spec { p.id < id } else { !later(&p.at, at) }
+}
+
+/// A cópia `copy`, gravada na spec de posição `spec` em `logs`, foi para o
+/// endereço `url`: o da última publicação do template antes dela, gravada em
+/// qualquer spec, e no mesmo segundo a da própria spec vale. Sem publicação
+/// antes dela, a página nasceu fora das specs, com o endereço gravado direto
+/// no índice: a cópia foi para `url` quando toda publicação depois dela foi
+/// para `url` também.
+fn went_to(copy: &ProjectCopy, spec: usize, logs: &[&ProjectLog], url: &str) -> bool {
+    let all: Vec<(usize, &ProjectPublication)> =
+        logs.iter().enumerate().flat_map(|(i, l)| l.publications.iter().map(move |p| (i, p))).collect();
+    // As da própria spec por último: no mesmo segundo, elas valem.
+    let ordered = all.iter().filter(|(i, _)| *i != spec).chain(all.iter().filter(|(i, _)| *i == spec));
+    let latest = ordered.filter(|(i, p)| precedes(p, *i, spec, copy.id, &copy.at)).fold(
+        None::<&ProjectPublication>,
+        |best, (_, p)| match best {
+            Some(best) if later(&best.at, &p.at) => Some(best),
+            _ => Some(p),
+        },
+    );
+    match latest {
+        Some(p) => p.url == url,
+        None => all.iter().all(|(_, p)| p.url == url),
+    }
+}
+
+/// A cópia `copy`, gravada na spec de posição `spec` em `logs`, levou todas
+/// as linhas do índice. O registro da cópia não diz quais linhas levou, então
+/// a conta segue a regra que a escolhe: é a primeira cópia daquela spec
+/// depois de uma publicação dela num endereço que nenhuma spec tinha
+/// publicado antes, com o banco vazio.
+fn carries_all(copy: &ProjectCopy, spec: usize, logs: &[&ProjectLog]) -> bool {
+    let project = logs[spec];
+    let Some(publication) = project.publications.iter().rfind(|p| p.id < copy.id) else {
+        return false;
+    };
+    if project.copies.iter().any(|c| c.id > publication.id && c.id < copy.id) {
+        return false;
+    }
+    !logs.iter().enumerate().any(|(i, l)| {
+        l.publications
+            .iter()
+            .any(|p| p.url == publication.url && precedes(p, i, spec, publication.id, &publication.at))
+    })
 }
 
 /// A linha de uma spec como vai para o banco da página do projeto.
@@ -1510,6 +1609,61 @@ mod tests {
 
         let second = round(root);
         assert!(second["copy"].get("project").is_none(), "the phase did not change: {second}");
+    }
+
+    /// A linha da spec copiada antes para a página do projeto já está no
+    /// banco daquele endereço, e o banco recusa trocá-la sem a versão: a
+    /// cópia seguinte para o mesmo endereço nomeia o documento dela entre os
+    /// que já existem. A primeira cópia, para um endereço novo com o banco
+    /// vazio, não nomeia nada.
+    #[test]
+    fn a_linha_do_projeto_ja_copiada_pede_a_versao_antes_de_trocar() {
+        let dir = approved_project();
+        let root = dir.path();
+        let lang = Locale::PtBr;
+        let named = translate("page.copy.existing", lang).replace("{docs}", &format!("`{SPECS}/x`"));
+
+        // O marco da aprovação publica a página do projeto num endereço novo
+        // e copia a linha da spec na fase de então.
+        let approval = prepare_milestone(root, "x", lang).expect("the approval copy");
+        let project = approval.project.as_ref().expect("the project row goes");
+        assert!(project.url.is_none() && project.existing.is_empty(), "a new address has nothing yet");
+        let first = approval.order("x", Some("approval"), lang).join(" ");
+        assert!(!first.contains(&named), "the first copy names nothing: {first}");
+        write(root, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "template": true,
+            "stamp": stamp_of("project"), "url": PROJECT_URL}));
+        write(root, "copy", project.record.clone());
+
+        // A rodada muda a fase, e a linha vai de novo para o mesmo endereço.
+        let second = round(root);
+        assert_eq!(second["copy"]["project"]["record"], json!({"page": "project", "phase": "running"}), "{second}");
+        let next = full_next(root, &second);
+        assert!(next.contains(PROJECT_URL) && next.contains(&named), "the row already there is named: {next}");
+    }
+
+    /// Outra spec publica a página do projeto num endereço novo e copia
+    /// todas as linhas do índice, a desta spec junto: a primeira cópia desta
+    /// spec para esse endereço já acha a linha dela no banco e a nomeia.
+    #[test]
+    fn a_linha_levada_pela_copia_de_outra_spec_tambem_pede_a_versao() {
+        let dir = approved_project();
+        let root = dir.path();
+        let lang = Locale::PtBr;
+        let named = translate("page.copy.existing", lang).replace("{docs}", &format!("`{SPECS}/x`"));
+        let other = root.join(".claude/spec/y/spec.ndjson");
+        let put = |event_type: &str, fields: Value| {
+            store::write(&other, event_type, fields.as_object().cloned().unwrap(), &[]).unwrap();
+        };
+        put("state", json!({"phase": "survey"}));
+        put("publish", json!({"page": "project", "milestone": "round", "ok": true, "template": true,
+            "stamp": stamp_of(PROJECT_PAGE), "url": PROJECT_URL}));
+        put("copy", json!({"page": "project", "phase": "survey"}));
+
+        let first = round(root);
+        assert!(!first["publish"].as_array().is_some_and(|p| p.contains(&json!("project"))), "{first}");
+        assert_eq!(first["copy"]["project"]["record"], json!({"page": "project", "phase": "running"}), "{first}");
+        let next = full_next(root, &first);
+        assert!(next.contains(PROJECT_URL) && next.contains(&named), "the row the other spec carried is named: {next}");
     }
 
     /// A cópia de uma spec longa vai em lotes de até 50 escritas, na ordem
