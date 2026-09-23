@@ -810,18 +810,30 @@ tr:last-child td{border-bottom:0}
     // A cesta: a tarefa vigente sem onda nenhuma.
     function basketTasks() { return ofType('task').filter(function (e) { return waveOf(e) === null; }); }
     function counted(n, one, many) { return { n: n, label: t(n === 1 ? one : many) }; }
-    // O quadro do que falta, no topo da página: a contagem das ondas em
-    // andamento, das tarefas na cesta e das ondas entregues; depois, numa
-    // linha cada, a onda em andamento com o título das tarefas dela, a
+    // O quadro do que falta, no topo da página: a contagem das ondas por
+    // entregar, das tarefas na cesta e das ondas entregues; depois, numa
+    // linha cada, a onda por entregar com a situação dela (em andamento,
+    // espera sair ou volta para conserto) e o título das tarefas dela, a
     // tarefa da cesta com o que ela espera (as dependências que ainda não
-    // entregaram) ou que está pronta, e o total de entregues. Com a cesta
-    // vazia e nenhuma onda rodando, falta a revisão final e o fechamento;
-    // depois do fechamento, nada falta.
+    // entregaram) ou que está pronta, e o total de entregues. Onda por
+    // entregar é toda onda conhecida que não foi entregue nem aprovada: a
+    // que roda, a que a cesta já formou e ainda não saiu, e a reprovada.
+    // Sem nenhuma delas e com a cesta vazia, falta a revisão final e o
+    // fechamento; depois do fechamento, nada falta.
     function remaining() {
       var DONE = ['approved', 'delivered'];
-      var numbers = Object.keys(waves).filter(function (k) { return /^\d+$/.test(k); }).map(Number)
-        .sort(function (a, b) { return a - b; });
-      var running = numbers.filter(function (n) { return waveState(n) === 'running'; });
+      // As ondas conhecidas: as que têm estado calculado e as que só a
+      // própria onda ou as tarefas dela citam, porque a onda que ainda não
+      // saiu não tem estado nenhum.
+      var known = new Set(Object.keys(waves).filter(function (k) { return /^\d+$/.test(k); }).map(Number));
+      visible.forEach(function (e) {
+        if (e.type !== 'wave' && e.type !== 'task') return;
+        var n = waveOf(e);
+        if (n !== null) known.add(n);
+      });
+      var numbers = Array.from(known).sort(function (a, b) { return a - b; });
+      var SAYS = { running: 'page.remaining.wave.running', todo: 'page.remaining.wave.waits', rejected: 'page.remaining.wave.fix' };
+      var open = numbers.filter(function (n) { return has(SAYS, waveState(n)); });
       var done = numbers.filter(function (n) { return DONE.indexOf(waveState(n)) >= 0; });
       var tasks = ofType('task'), basket = basketTasks();
       function delivered(task) { var n = waveOf(task); return n !== null && DONE.indexOf(waveState(n)) >= 0; }
@@ -835,10 +847,10 @@ tr:last-child td{border-bottom:0}
       var lines = [];
       if (closed) lines.push({ href: null, lead: '', sep: '', text: t('page.remaining.nothing') });
       else {
-        running.forEach(function (n) {
+        open.forEach(function (n) {
           var titles = tasks.filter(function (e) { return waveOf(e) === n; }).map(taskTitle);
           lines.push({ href: '#waves-' + n, lead: say('page.wave.heading', { n: n }), sep: ' ',
-            text: titles.length ? say('page.remaining.wave', { tasks: titles.join('; ') }) : t('page.value.wave_running') });
+            text: t(SAYS[waveState(n)]) + (titles.length ? ': ' + titles.join('; ') : '') });
         });
         basket.forEach(function (e) {
           var waits = [];
@@ -849,12 +861,12 @@ tr:last-child td{border-bottom:0}
           lines.push({ href: '#' + code(e.id), lead: taskTitle(e), sep: ' — ',
             text: waits.length ? say('page.remaining.waits', { tasks: waits.map(taskTitle).join('; ') }) : t('page.remaining.ready') });
         });
-        if (!running.length && !basket.length) lines.push({ href: null, lead: '', sep: '', text: t('page.remaining.review_and_close') });
+        if (!open.length && !basket.length) lines.push({ href: null, lead: '', sep: '', text: t('page.remaining.review_and_close') });
       }
       lines.push({ href: null, lead: '', sep: '',
         text: say(done.length === 1 ? 'page.remaining.delivered.one' : 'page.remaining.delivered.many', { n: done.length }) });
       return { heading: t('page.remaining.heading'), lines: lines, counts: [
-        counted(running.length, 'page.remaining.running.one', 'page.remaining.running.many'),
+        counted(open.length, 'page.remaining.open.one', 'page.remaining.open.many'),
         counted(basket.length, 'page.remaining.basket.one', 'page.remaining.basket.many'),
         counted(done.length, 'page.remaining.done.one', 'page.remaining.done.many')] };
     }

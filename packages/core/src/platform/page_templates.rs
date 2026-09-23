@@ -1353,7 +1353,7 @@ mod tests {
         let board = &page["remaining"];
         assert_eq!(board["tag"], json!("SECTION"), "the board never folds: {board}");
         assert_eq!(board["heading"], json!("O que falta"));
-        assert_eq!(board["count"], json!("1 onda em andamento · 2 tarefas na cesta · 2 ondas entregues"));
+        assert_eq!(board["count"], json!("1 onda por entregar · 2 tarefas na cesta · 2 ondas entregues"));
         assert_eq!(
             board["lines"],
             json!([
@@ -1397,8 +1397,82 @@ mod tests {
         let closed: Vec<Value> = [vec![state(1, "running")], history, vec![state(12, "closed")]].concat();
         let got = open(closed, all_done, false);
         let board = &got["page"]["remaining"];
-        assert_eq!(board["count"], json!("0 ondas em andamento · 0 tarefas na cesta · 3 ondas entregues"), "{board}");
+        assert_eq!(board["count"], json!("0 ondas por entregar · 0 tarefas na cesta · 3 ondas entregues"), "{board}");
         assert_eq!(board["lines"], json!(["Nada falta.", "3 ondas já entregues."]), "{board}");
+    }
+
+    /// O quadro do que falta mostra toda onda que não foi entregue nem
+    /// aprovada, e não só a que roda: a onda que a cesta já formou e espera
+    /// sair (sem estado calculado nenhum) e a reprovada que volta para
+    /// conserto entram cada uma na sua linha, com o link, o título das
+    /// tarefas e a situação, e a contagem do alto soma as três. Enquanto
+    /// uma delas existir, o quadro nunca diz que faltam só a revisão final e
+    /// o fechamento, nem com a cesta vazia e nenhuma onda rodando.
+    #[test]
+    fn o_quadro_mostra_a_onda_que_espera_e_a_reprovada() {
+        let task = |id: u64, code: &str, wave: u64, title: &str| {
+            json!({"v":1,"id":id,"code":code,"at":"2026-09-22T10:00:00-03:00","type":"task","author":"assistant",
+                "title":title,"text":"O texto da tarefa.","files":[],"depends_on":[],"origin":1,"wave":wave})
+        };
+        let wave = |id: u64, n: u64| {
+            json!({"v":1,"id":id,"at":"2026-09-22T09:00:00-03:00","type":"wave","author":"binary","n":n,
+                "text":format!("O lote {n}."),"criteria":[],"done_when":"A suíte passa.","origin":1})
+        };
+        let state = json!({"v":1,"id":1,"at":"2026-09-22T08:00:00-03:00","type":"state","author":"binary","phase":"running"});
+        let delivered = vec![wave(2, 1), task(3, "MSTD-TASK-0001", 1, "A base entregue")];
+        let running = vec![wave(4, 2), task(5, "MSTD-TASK-0002", 2, "O lote que roda")];
+        let waiting = vec![wave(6, 3), task(7, "MSTD-TASK-0003", 3, "O scan lê tudo"), task(8, "MSTD-TASK-0004", 3, "O mapa mostra o uso")];
+        let rejected = vec![wave(9, 4), task(10, "MSTD-TASK-0005", 4, "O conserto do quadro")];
+        let open = |lines: Vec<Value>, waves: Value, lang: Locale| {
+            let db = json!({"ranges": range_docs(&lines),
+                "computed": [{"id": "current", "data": {"spec": "demo", "waves": waves, "prompts": {}, "rtk": []}}]});
+            let got = run("spec", &spec_page_template(lang), Some(db), json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]));
+            got["page"]["remaining"].clone()
+        };
+
+        // Uma onda em andamento, uma que espera sair e uma reprovada; a onda
+        // que espera não tem estado calculado, como a rodada o grava.
+        let all: Vec<Value> = [vec![state.clone()], delivered.clone(), running, waiting.clone(), rejected.clone()].concat();
+        let states = json!({"1": "approved", "2": "running", "4": "rejected"});
+        let board = open(all.clone(), states.clone(), Locale::PtBr);
+        assert_eq!(board["count"], json!("3 ondas por entregar · 0 tarefas na cesta · 1 onda entregue"), "{board}");
+        assert_eq!(
+            board["lines"],
+            json!([
+                "Onda 2 em andamento: O lote que roda",
+                "Onda 3 espera sair: O scan lê tudo; O mapa mostra o uso",
+                "Onda 4 volta para conserto: O conserto do quadro",
+                "1 onda já entregue.",
+            ]),
+            "{board}"
+        );
+        assert_eq!(board["links"], json!([["#waves-2", "Onda 2"], ["#waves-3", "Onda 3"], ["#waves-4", "Onda 4"]]), "{board}");
+        let board = open(all, states, Locale::EnUs);
+        assert_eq!(
+            board["lines"],
+            json!([
+                "Wave 2 in progress: O lote que roda",
+                "Wave 3 waiting to go out: O scan lê tudo; O mapa mostra o uso",
+                "Wave 4 back for a fix: O conserto do quadro",
+                "1 wave already delivered.",
+            ]),
+            "{board}"
+        );
+
+        // Só a onda que espera sair, com a cesta vazia e nada rodando: o caso
+        // em que o quadro diria, falso, que faltam a revisão e o fechamento.
+        let board = open([vec![state.clone()], delivered.clone(), waiting].concat(), json!({"1": "approved"}), Locale::PtBr);
+        assert_eq!(board["count"], json!("1 onda por entregar · 0 tarefas na cesta · 1 onda entregue"), "{board}");
+        assert_eq!(
+            board["lines"],
+            json!(["Onda 3 espera sair: O scan lê tudo; O mapa mostra o uso", "1 onda já entregue."]),
+            "{board}"
+        );
+
+        // Só a onda reprovada, do mesmo jeito.
+        let board = open([vec![state], delivered, rejected].concat(), json!({"1": "approved", "4": "rejected"}), Locale::PtBr);
+        assert_eq!(board["count"], json!("1 onda por entregar · 0 tarefas na cesta · 1 onda entregue"), "{board}");
+        assert_eq!(board["lines"], json!(["Onda 4 volta para conserto: O conserto do quadro", "1 onda já entregue."]), "{board}");
     }
 
     /// Todo texto que os templates citam existe nos dois idiomas, e o

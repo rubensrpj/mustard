@@ -444,14 +444,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.group.basket", Locale::EnUs) => "Basket",
 
         // O quadro do que falta, no topo da página da spec: a contagem, a
-        // linha de cada onda em andamento e de cada tarefa da cesta, e o
-        // total de entregues.
+        // linha de cada onda por entregar (em andamento, esperando sair ou
+        // de volta para conserto) e de cada tarefa da cesta, e o total de
+        // entregues.
         ("page.remaining.heading", Locale::PtBr) => "O que falta",
         ("page.remaining.heading", Locale::EnUs) => "What is left",
-        ("page.remaining.running.one", Locale::PtBr) => "onda em andamento",
-        ("page.remaining.running.one", Locale::EnUs) => "wave in progress",
-        ("page.remaining.running.many", Locale::PtBr) => "ondas em andamento",
-        ("page.remaining.running.many", Locale::EnUs) => "waves in progress",
+        ("page.remaining.open.one", Locale::PtBr) => "onda por entregar",
+        ("page.remaining.open.one", Locale::EnUs) => "wave still to deliver",
+        ("page.remaining.open.many", Locale::PtBr) => "ondas por entregar",
+        ("page.remaining.open.many", Locale::EnUs) => "waves still to deliver",
         ("page.remaining.basket.one", Locale::PtBr) => "tarefa na cesta",
         ("page.remaining.basket.one", Locale::EnUs) => "task in the basket",
         ("page.remaining.basket.many", Locale::PtBr) => "tarefas na cesta",
@@ -460,8 +461,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.remaining.done.one", Locale::EnUs) => "wave delivered",
         ("page.remaining.done.many", Locale::PtBr) => "ondas entregues",
         ("page.remaining.done.many", Locale::EnUs) => "waves delivered",
-        ("page.remaining.wave", Locale::PtBr) => "em andamento: {tasks}",
-        ("page.remaining.wave", Locale::EnUs) => "in progress: {tasks}",
+        ("page.remaining.wave.running", Locale::PtBr) => "em andamento",
+        ("page.remaining.wave.running", Locale::EnUs) => "in progress",
+        ("page.remaining.wave.waits", Locale::PtBr) => "espera sair",
+        ("page.remaining.wave.waits", Locale::EnUs) => "waiting to go out",
+        ("page.remaining.wave.fix", Locale::PtBr) => "volta para conserto",
+        ("page.remaining.wave.fix", Locale::EnUs) => "back for a fix",
         ("page.remaining.waits", Locale::PtBr) => "espera: {tasks}",
         ("page.remaining.waits", Locale::EnUs) => "waits for: {tasks}",
         ("page.remaining.ready", Locale::PtBr) => "pronta para sair",
@@ -920,8 +925,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            353,
-            0x1c96_d5b2_3b79_d694,
+            355,
+            0x0422_6193_b31e_f34a,
         );
     }
 
