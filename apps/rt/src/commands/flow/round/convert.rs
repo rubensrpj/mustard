@@ -18,10 +18,11 @@
 //! depender das outras tarefas de todas as ondas que o listavam: o critério
 //! só roda quando tudo o que ele cobre entregou.
 //!
-//! O item combinado que diz a onda convertida em `waves` fica como está: a
-//! versão nova dele sem `waves`, só com `applies_to` pelos arquivos das
-//! tarefas, é recusada pela conferência do dono depois da aprovação, que só
-//! aceita dono por onda, por tarefa de onda do plano ou pelo curinga.
+//! O item combinado que diz a onda convertida em `waves` ganha uma versão
+//! nova sem ela, com o dono pelos arquivos: `applies_to` leva os arquivos das
+//! tarefas das ondas convertidas que ele dizia, e o item vai no pedido do lote
+//! que tocar um deles. A onda que ele diz e que fica como história continua
+//! em `waves`.
 //!
 //! **Sem meio caminho.** Tudo passa antes pela conferência inteira da
 //! gravação, que também recusa um círculo no grafo das tarefas, e só então
@@ -33,7 +34,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{EventRef, Hidden, Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::spec_events::{Block, EventRef, Hidden, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -260,6 +261,7 @@ fn planned_writes(log: &SpecLog, lang: Locale) -> Vec<(String, Map<String, Value
         let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
         writes.push(("remove".to_string(), draft));
     }
+    writes.extend(agreed_versions(log, &waves, &wave_files));
     for (n, list) in &members {
         let wave_on = waves.get(n).map(|w| w.event.ints("depends_on")).unwrap_or_default();
         for (_, task) in list.iter().filter(|(_, t)| t.fields.contains_key("wave")) {
@@ -286,6 +288,59 @@ fn planned_writes(log: &SpecLog, lang: Locale) -> Vec<(String, Map<String, Value
             }
             writes.push(("task".to_string(), draft));
         }
+    }
+    writes
+}
+
+/// A versão nova de cada item combinado que diz uma onda convertida em
+/// `waves`: sem essas ondas, e com `applies_to` somando aos arquivos que ele
+/// já dizia os das tarefas delas. A onda convertida sem arquivo nenhum dá o
+/// curinga, como a tarefa sem arquivo. O item que já perdeu as ondas
+/// convertidas, numa conversão anterior, não muda.
+fn agreed_versions(
+    log: &SpecLog,
+    waves: &BTreeMap<u64, HandWave<'_>>,
+    wave_files: &BTreeMap<u64, Vec<String>>,
+) -> Vec<(String, Map<String, Value>)> {
+    let mut writes = Vec::new();
+    let agreed = log.visible().into_iter().filter(|e| e.block() == Some(Block::Agreed));
+    for item in agreed.filter(|e| e.ints("waves").iter().any(|n| waves.contains_key(n))) {
+        let said = item.ints("waves");
+        let mut files: Vec<String> = item
+            .fields
+            .get("applies_to")
+            .and_then(|at| at.get("files"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        for n in said.iter().filter(|n| waves.contains_key(n)) {
+            let of_wave = wave_files.get(n).cloned().unwrap_or_default();
+            let of_wave = if of_wave.is_empty() { vec![ANY_FILE.to_string()] } else { of_wave };
+            for file in of_wave {
+                if !files.contains(&file) {
+                    files.push(file);
+                }
+            }
+        }
+        let mut draft: Map<String, Value> = item
+            .fields
+            .iter()
+            .filter(|(key, _)| !["v", "id", "code", "at", "type", "search", "author", "waves"].contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let kept: Vec<u64> = said.into_iter().filter(|n| !waves.contains_key(n)).collect();
+        if !kept.is_empty() {
+            draft.insert("waves".into(), json!(kept));
+        }
+        let mut at = item.fields.get("applies_to").and_then(Value::as_object).cloned().unwrap_or_default();
+        at.insert("files".into(), json!(files));
+        draft.insert("applies_to".into(), Value::Object(at));
+        draft.insert("replaces".into(), json!(item.id));
+        draft.insert("author".into(), json!("binary"));
+        writes.push((item.event_type.clone(), draft));
     }
     writes
 }
@@ -595,5 +650,41 @@ mod tests {
         }
         let four = now(&log, tasks[&4]);
         assert_ne!(four.id, tasks[&4], "a tarefa da onda que nunca saiu volta para a cesta");
+    }
+
+    /// A regra que diz em `waves` uma onda que a conversão remove ganha a
+    /// versão nova sem `waves`, com o dono pelos arquivos das tarefas daquela
+    /// onda; a rodada segue sem pedir a análise, e a regra vai no pedido do
+    /// lote que toca esses arquivos.
+    #[test]
+    fn o_item_com_dono_pelos_arquivos_vai_no_pedido_da_onda_que_toca_neles_depois_da_conversao() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let old = old_spec(root);
+        let said = seed_event(root, "x", "message", json!({"author": "user", "text": "a três segue a um"}));
+        let rule = seed_event(root, "x", "rule", json!({"text": "A parte três segue o molde da parte um.",
+            "keys": ["molde"], "example": "o mesmo formato da um", "waves": [3], "origin": said}));
+
+        let out = round(root, "x", None);
+        assert_ne!(out["ok"], json!(false), "a rodada não trava: {out}");
+        assert_converted(root, &old);
+        let log = log_of(root);
+        let version = now(&log, rule);
+        assert_ne!(version.id, rule, "a regra ganha versão nova");
+        assert!(!version.fields.contains_key("waves"), "sem a onda removida: {:?}", version.fields);
+        assert_eq!(version.fields.get("applies_to"), Some(&json!({"files": ["src/tres.rs"]})), "{:?}", version.fields);
+        assert_eq!(version.str_field("text"), Some("A parte três segue o molde da parte um."));
+
+        assert!(out.get("analysis").is_none(), "a regra com dono não pede a análise: {out}");
+        let code = log.codes().get(&version.id).cloned().expect("o código da regra");
+        let prompt = out["dispatch"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|d| d["wave"] == json!(2))
+            .and_then(|d| d["prompt"].as_str())
+            .unwrap_or_else(|| panic!("o lote 2 sai: {out}"))
+            .to_string();
+        assert!(prompt.contains(&code), "o lote que toca src/tres.rs leva a regra: {prompt}");
     }
 }

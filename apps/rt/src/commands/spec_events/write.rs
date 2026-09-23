@@ -162,6 +162,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::lessons::{LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
     type_spec, Block, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+    TASK_TITLE_MAX,
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
@@ -402,6 +403,17 @@ pub(crate) fn seed_at(opts: &WriteOpts) -> Value {
     let by_hooks = matches!(event_type, "delivered" | "commit") || (event_type == "message" && by_user(&draft));
     let by_program = event_type == "wave" || (event_type == "task" && draft.contains_key("wave"));
     if !(by_hooks || by_program) || spec_was_opened(&project.root, spec).is_err() {
+        // A tarefa da cesta vai pela porta do modelo, que exige o título: o
+        // ajudante manda um quando o teste não deu o seu.
+        if event_type == "task" && !draft.contains_key("title") {
+            draft.insert("title".to_string(), json!("Entregar a tarefa"));
+            return write_at(&WriteOpts {
+                root: opts.root.clone(),
+                spec: opts.spec.clone(),
+                event_type: opts.event_type.clone(),
+                json: Value::Object(draft).to_string(),
+            });
+        }
         return write_at(opts);
     }
     if event_type == "wave" {
@@ -493,11 +505,15 @@ pub fn record(
     record_in(&super::project(start), start, spec, event_type, draft, Some(by))
 }
 
-/// As três declarações que faltam num rascunho de tarefa: o que ela faz, os
-/// arquivos que toca e de quais tarefas depende. `files` e `depends_on`
-/// contam como declarados só pela chave estar presente, mesmo com a lista
-/// vazia — uma tarefa sem dependência declara `"depends_on": []`.
-fn task_declarations_missing(draft: &Map<String, Value>) -> Vec<TaskDeclaration> {
+/// As declarações que faltam num rascunho de tarefa: o que ela faz, os
+/// arquivos que toca, de quais tarefas depende e, na tarefa gravada pelo
+/// modelo (`by_model`), o título curto que diz o que ela entrega. `files` e
+/// `depends_on` contam como declarados só pela chave estar presente, mesmo
+/// com a lista vazia — uma tarefa sem dependência declara `"depends_on": []`.
+/// O título vazio ou com mais de [`TASK_TITLE_MAX`] caracteres conta como
+/// faltando. A versão que o programa grava não precisa dele: herda o da
+/// versão que substitui ([`inherit_task_title`]).
+fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<TaskDeclaration> {
     let mut missing = Vec::new();
     let what = draft.get("text").and_then(Value::as_str).is_none_or(|text| text.trim().is_empty());
     if what {
@@ -509,7 +525,26 @@ fn task_declarations_missing(draft: &Map<String, Value>) -> Vec<TaskDeclaration>
     if !draft.contains_key("depends_on") {
         missing.push(TaskDeclaration::DependsOn);
     }
+    let title = draft.get("title").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+    if by_model && (title.is_empty() || title.chars().count() > TASK_TITLE_MAX) {
+        missing.push(TaskDeclaration::Title);
+    }
     missing
+}
+
+/// A versão de tarefa gravada pelo programa sem título leva o título da
+/// versão que ela substitui, quando essa tinha um. O evento gravado não muda
+/// mais, então ler a versão antiga antes da trava não perde nada.
+fn inherit_task_title(path: &Path, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
+    if draft.get("title").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty()) {
+        return Ok(());
+    }
+    let Some(old) = draft.get("replaces").and_then(Value::as_u64) else { return Ok(()) };
+    let Some(log) = store::read(path)? else { return Ok(()) };
+    if let Some(title) = log.get(old).and_then(|e| e.fields.get("title")).filter(|t| t.is_string()) {
+        draft.insert("title".into(), title.clone());
+    }
+    Ok(())
 }
 
 /// A única gravação no arquivo de eventos de uma spec: toda porta chega
@@ -530,12 +565,16 @@ fn record_in(
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
     if event_type == "task" {
-        let missing = task_declarations_missing(&draft);
+        let missing = task_declarations_missing(&draft, by.is_none());
         if !missing.is_empty() {
             return Err(Refusal::TaskDeclarationMissing { missing });
         }
     }
+    let mut draft = draft;
     let path = store::spec_file(&project.root, spec)?;
+    if event_type == "task" && by.is_some() {
+        inherit_task_title(&path, &mut draft)?;
+    }
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
@@ -3752,5 +3791,37 @@ mod tests {
         );
         let line = spec_index::spec_line("um", &log).expect("the spec has a line");
         assert!(index.lines().any(|l| l == line), "the spec line lost its last write: {index}");
+    }
+
+    /// A versão de tarefa que o programa grava sem título é aceita e fica com
+    /// o título da versão que ela substitui; a mesma versão pela porta do
+    /// modelo é recusada sem gravar nada.
+    #[test]
+    fn tarefa_sem_titulo_e_recusada_e_com_titulo_e_gravada_e_a_versao_do_programa_herda_o_titulo() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = write(root, "message", r#"{"text":"o plano"}"#)["id"].as_u64().unwrap();
+        let by_model = |body: Value| {
+            write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                event_type: "task".into(),
+                json: body.to_string(),
+            })
+        };
+        let first = by_model(json!({"title": "Fechamento confere cada critério", "text": "Conferir.",
+            "files": [], "depends_on": [], "origin": said}));
+        let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa com título grava: {first}"));
+
+        let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "origin": said,
+            "replaces": first});
+        let refused = by_model(version.clone());
+        assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+
+        let draft = version.as_object().cloned().unwrap();
+        let recorded = record(root, "teste", "task", draft, PhaseWriter::Binary).expect("o programa grava");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let written = log.get(recorded.written.id).expect("a versão gravada");
+        assert_eq!(written.str_field("title"), Some("Fechamento confere cada critério"), "{:?}", written.fields);
     }
 }

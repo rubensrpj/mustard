@@ -50,6 +50,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.task_declaration_files", Locale::EnUs) => "the files it touches",
         ("spec_events.task_declaration_depends_on", Locale::PtBr) => "de quais tarefas depende",
         ("spec_events.task_declaration_depends_on", Locale::EnUs) => "which tasks it depends on",
+        ("spec_events.task_declaration_title", Locale::PtBr) => {
+            "um título curto, de até 70 caracteres, que diga o que ela entrega, e não o que a coisa \
+             é (exemplo: \"Fechamento confere cada critério contra o código\")"
+        }
+        ("spec_events.task_declaration_title", Locale::EnUs) => {
+            "a short title, of up to 70 characters, saying what it delivers, not what the thing is \
+             (example: \"Closing checks each criterion against the code\")"
+        }
         ("spec_events.task_depends_on_unknown", Locale::PtBr) => {
             "A tarefa {task} depende de {depends_on}, que não existe nesta spec. Nada foi gravado."
         }
@@ -598,8 +606,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            83,
-            0x5d86_3f1c_0ad7_4925,
+            84,
+            0x8a4e_4357_0d4b_79aa,
         );
     }
 
@@ -615,6 +623,7 @@ mod tests {
             ("spec_events.task_declaration_what", &[][..]),
             ("spec_events.task_declaration_files", &[][..]),
             ("spec_events.task_declaration_depends_on", &[][..]),
+            ("spec_events.task_declaration_title", &[][..]),
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),

@@ -214,7 +214,7 @@ fn basket_task(project: &Project, criterion: u64, said: u64, files: &[&str], dep
     let depends_on: Vec<Value> = depends_on.iter().map(|id| json!(id)).collect();
     let written = project.write(
         "task",
-        &json!({"text": "Tarefa da cesta.", "files": files, "depends_on": depends_on,
+        &json!({"title": "Entregar a tarefa", "text": "Tarefa da cesta.", "files": files, "depends_on": depends_on,
             "covers": [criterion], "origin": said}),
     );
     written["id"].as_u64().expect("the recorded task has an id")

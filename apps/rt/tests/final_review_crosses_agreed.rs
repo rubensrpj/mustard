@@ -181,7 +181,7 @@ fn plan(project: &Project) {
     );
     project.write(
         "task",
-        &json!({"text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion["id"]], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);

@@ -355,7 +355,7 @@ fn plan_files(project: &Project, files: &[&str]) {
     let files: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
     project.write(
         "task",
-        &json!({"text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
+        &json!({"title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
             "covers": [criterion["id"]], "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);

@@ -535,7 +535,7 @@ fn check(
     let owners = wave_prompt::owners(log);
     for item in &agreed {
         match owners.get(&item.id) {
-            None | Some(Owner::Project) => {}
+            None | Some(Owner::Project | Owner::Files(_)) => {}
             Some(Owner::Waves(_)) => {
                 if !covered.contains(&item.id) && item.str_field("no_code").is_none() {
                     out.push(PlanFinding::ItemWithoutTask { code: code_of(item) });

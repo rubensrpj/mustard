@@ -171,7 +171,7 @@ fn plan(project: &Project) -> (u64, u64) {
         .expect("the criterion id");
     project.write(
         "task",
-        &json!({"text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);
@@ -280,7 +280,7 @@ fn gravacao_no_plano_depois_da_aprovacao_prepara_a_copia_da_pagina() {
     );
     let task2 = project.write(
         "task",
-        &json!({"text": "Subtrair dois números no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"title": "Entregar a tarefa", "text": "Subtrair dois números no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion2["id"]], "origin": said2}),
     );
     let rule2 = project.write(

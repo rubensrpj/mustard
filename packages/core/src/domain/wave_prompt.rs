@@ -293,14 +293,20 @@ pub enum Owner {
     /// Das ondas do plano que o têm: as das tarefas que o cobrem e as que ele
     /// diz no campo `waves`.
     Waves(BTreeSet<u64>),
+    /// Dos arquivos que ele diz em `applies_to`: vai no pedido da onda em que
+    /// algum arquivo das tarefas casa um desses padrões. É o dono da cesta,
+    /// em que o número da onda só existe quando o lote sai.
+    Files(Vec<String>),
 }
 
 /// O dono de cada item combinado, pelo número do item. O item sem dono não
 /// entra: nenhuma tarefa de uma onda do plano o cobre, ele não diz uma onda
-/// do plano em `waves` e não vale no projeto todo.
+/// do plano em `waves`, não diz arquivos em `applies_to` e não vale no
+/// projeto todo.
 ///
 /// O item do projeto é o que diz, em `applies_to`, que vale no projeto todo:
-/// a mesma leitura que acha a lição do projeto todo. A busca por palavras não
+/// a mesma leitura que acha a lição do projeto todo. O que diz arquivos, sem
+/// o curinga, e não tem onda dona, é dos arquivos. A busca por palavras não
 /// decide dono nenhum.
 #[must_use]
 pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
@@ -336,23 +342,43 @@ pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
         waves.extend(item.ints("waves").into_iter().filter(|n| planned.contains(n)));
         if !waves.is_empty() {
             out.insert(item.id, Owner::Waves(waves));
+            continue;
+        }
+        let files = applies_to_files(item);
+        if !files.is_empty() {
+            out.insert(item.id, Owner::Files(files));
         }
     }
     out
 }
 
+/// Os padrões de arquivo que um item diz em `applies_to`, sem os vazios.
+fn applies_to_files(item: &SpecEvent) -> Vec<String> {
+    item.fields
+        .get("applies_to")
+        .and_then(|at| at.get("files"))
+        .and_then(Value::as_array)
+        .map(|files| {
+            files.iter().filter_map(Value::as_str).map(str::trim).filter(|f| !f.is_empty()).map(str::to_string).collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Os itens combinados que vão no pedido da onda `wave`, como a montagem os
-/// escolhe antes da análise: os de que ela é dona e os do projeto. O item sem
-/// dono não entra aqui; só a análise antes do envio ([`dispatch_items`]) pode
-/// pô-lo num pedido.
+/// escolhe antes da análise: os de que ela é dona, os dos arquivos que as
+/// tarefas dela tocam e os do projeto. O item dos arquivos casa pela mesma
+/// leitura de `applies_to` que acha a lição. O item sem dono não entra aqui;
+/// só a análise antes do envio ([`dispatch_items`]) pode pô-lo num pedido.
 #[must_use]
 pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let owners = owners(log);
+    let touched = Scope { files: wave_files(log, wave), ..Scope::default() };
     agreed_items(log)
         .into_iter()
         .filter(|item| match owners.get(&item.id) {
             Some(Owner::Project) => true,
             Some(Owner::Waves(waves)) => waves.contains(&wave),
+            Some(Owner::Files(_)) => applies_to(item, &touched),
             None => false,
         })
         .collect()
@@ -431,7 +457,7 @@ pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
         match owners.get(&item.id) {
             Some(Owner::Project) => out.project.push(item),
             None => out.unowned.push(item),
-            Some(Owner::Waves(_)) => {}
+            Some(Owner::Waves(_) | Owner::Files(_)) => {}
         }
     }
     out
@@ -700,9 +726,9 @@ pub fn proof_rule(criterion: &str, proof: &str) -> Result<(), Refusal> {
 /// Com a cesta, o número da onda só existe quando o lote sai: o dono se dá
 /// pelos arquivos, em `applies_to`, com os arquivos das tarefas que cobrem ou
 /// vão cobrir o item. Vale mesmo antes de a tarefa existir: a decisão costuma
-/// vir antes da tarefa que a faz. Até o item ter onda dona, só a análise antes
-/// do envio pode pô-lo num pedido. A onda dita em `waves`, do plano antigo,
-/// continua valendo.
+/// vir antes da tarefa que a faz. O item dos arquivos vai no pedido da onda
+/// cujas tarefas tocam um deles ([`agreed_for`]), sem passar pela análise
+/// antes do envio. A onda dita em `waves`, do plano antigo, continua valendo.
 ///
 /// # Errors
 ///
@@ -713,14 +739,7 @@ pub fn owner_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     }
     let had: BTreeSet<u64> = before.events.iter().map(|e| e.id).collect();
     let owners = owners(after);
-    let by_files = |item: &SpecEvent| {
-        item.fields
-            .get("applies_to")
-            .and_then(|at| at.get("files"))
-            .and_then(Value::as_array)
-            .is_some_and(|files| files.iter().filter_map(Value::as_str).any(|file| !file.trim().is_empty()))
-    };
-    let declared = |item: &SpecEvent| item.ints("waves").iter().any(|n| *n > 0) || by_files(item);
+    let declared = |item: &SpecEvent| item.ints("waves").iter().any(|n| *n > 0) || !applies_to_files(item).is_empty();
     let orphan = |item: &&SpecEvent| !had.contains(&item.id) && !owners.contains_key(&item.id) && !declared(item);
     match agreed_items(after).into_iter().find(orphan) {
         Some(item) => Err(Refusal::OwnerMissing { event_type: item.event_type.clone() }),
@@ -855,6 +874,7 @@ pub fn owner_list(log: &SpecLog, given: &[GivenOwner]) -> Result<Vec<OwnerLine>,
             && match &entry.owner {
                 Owner::Project => true,
                 Owner::Waves(waves) => !waves.is_empty() && waves.is_subset(&planned),
+                Owner::Files(files) => files.iter().any(|f| !f.trim().is_empty()),
             };
         let line = lines.iter_mut().find(|line| codes.get(&line.item) == Some(&entry.code));
         match line {
@@ -1956,7 +1976,8 @@ mod tests {
     /// A proposta dá a cada item sem dono as ondas da primeira regra que
     /// acha onda do plano — as tarefas que nasceram dele ou citam o código,
     /// a onda que o texto cita, os arquivos em comum —, e deixa sem dono o
-    /// que nenhuma resolve. O item do projeto e o que já tem dono ficam fora.
+    /// que nenhuma resolve. O item do projeto, o que já tem dono e o que diz
+    /// arquivos em `applies_to`, que é dono deles, ficam fora.
     #[test]
     fn the_proposal_gives_each_unowned_item_the_waves_of_the_first_rule_that_finds_one() {
         let log = unowned_plan();
@@ -1972,7 +1993,6 @@ mod tests {
                 (10, None, OwnerFrom::Nothing),
                 (11, waves(&[2]), OwnerFrom::Cited),
                 (12, waves(&[2]), OwnerFrom::Files(vec!["rt/src/pagina.rs".into()])),
-                (13, waves(&[1]), OwnerFrom::Files(vec!["src/**".into()])),
                 (14, waves(&[1]), OwnerFrom::Cited),
             ]
         );

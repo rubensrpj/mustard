@@ -1397,6 +1397,8 @@ mod tests {
                 match owners.get(&item.id) {
                     Some(Owner::Project) => {}
                     Some(Owner::Waves(waves)) if waves.contains(&prompt.wave) => {}
+                    Some(Owner::Files(_))
+                        if wave_prompt::agreed_for(&log, prompt.wave).iter().any(|e| e.id == item.id) => {}
                     other => panic!("o pedido da onda {} cita {code}, que é de {other:?}", prompt.wave),
                 }
             }

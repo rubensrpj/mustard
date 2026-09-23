@@ -212,7 +212,7 @@ fn a_round_forms_a_lot_from_the_basket_and_records_it_as_the_binarys_wave() {
     );
     project.write(
         "task",
-        &json!({"text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion["id"]], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);
@@ -248,7 +248,7 @@ fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
     );
     project.write(
         "task",
-        &json!({"text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion["id"]], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);

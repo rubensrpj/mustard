@@ -472,6 +472,10 @@ pub const TYPES: &[TypeSpec] = &[
             // ganhá-lo depois, no plano.
             opt("wave", Kind::Int),
             TEXT,
+            // O nome curto da tarefa, que diz o que ela entrega. Opcional no
+            // tipo porque a tarefa antiga não tem; o gravador o exige da
+            // tarefa gravada pelo modelo (`spec_events::write::record_in`).
+            opt("title", Kind::Text),
             // A tarefa sem arquivo que já se sabe qual é declara a lista
             // vazia; a ausência do campo é outra coisa, e o gravador a
             // recusa (`spec_events::write::record_in`), junto da falta de

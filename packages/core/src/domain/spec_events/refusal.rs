@@ -148,7 +148,7 @@ pub enum Refusal {
     Io { detail: String },
 }
 
-/// Uma das três declarações que toda tarefa precisa trazer na gravação.
+/// Uma das declarações que toda tarefa precisa trazer na gravação.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskDeclaration {
     /// O que a tarefa faz, em uma frase (`text`).
@@ -159,7 +159,14 @@ pub enum TaskDeclaration {
     /// As tarefas de que esta depende (`depends_on`), mesmo que a lista
     /// fique vazia.
     DependsOn,
+    /// O título curto (`title`), de até [`TASK_TITLE_MAX`] caracteres, que
+    /// diz o que a tarefa entrega. Falta tanto quando não vem quanto quando
+    /// passa do tamanho.
+    Title,
 }
+
+/// O tamanho máximo do título de uma tarefa, em caracteres.
+pub const TASK_TITLE_MAX: usize = 70;
 
 impl TaskDeclaration {
     fn label(self, lang: Locale) -> &'static str {
@@ -167,6 +174,7 @@ impl TaskDeclaration {
             Self::What => translate("spec_events.task_declaration_what", lang),
             Self::Files => translate("spec_events.task_declaration_files", lang),
             Self::DependsOn => translate("spec_events.task_declaration_depends_on", lang),
+            Self::Title => translate("spec_events.task_declaration_title", lang),
         }
     }
 }
