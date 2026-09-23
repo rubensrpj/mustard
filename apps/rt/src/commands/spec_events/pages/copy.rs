@@ -55,6 +55,20 @@
 //! Quando o template nasce num marco que não é a aprovação — a spec foi
 //! aprovada por uma versão antiga —, a cópia segue igual, sem nota nenhuma.
 //!
+//! ## O molde novo na página já publicada
+//!
+//! A publicação do template grava em `stamp` o carimbo do molde publicado: a
+//! versão do Mustard e a impressão do conteúdo montado
+//! (`page_templates::template_stamp`). Num marco, quando o molde que o
+//! programa rodando monta tem outro carimbo que o da última publicação que deu
+//! certo, ou ela não tem carimbo, o molde novo é escrito no projeto e a ordem
+//! manda publicá-lo de novo no mesmo endereço, antes dos lotes, e gravar a
+//! publicação com o carimbo. O banco da página continua no mesmo endereço:
+//! a cópia depois da república segue de onde parou, sem levar a spec inteira
+//! de novo. Com o mesmo carimbo, nada é publicado de novo. O mesmo vale para
+//! a página do projeto, cujo carimbo é o da última publicação dela gravada em
+//! qualquer spec do projeto.
+//!
 //! ## A linha da spec na página do projeto
 //!
 //! Nos marcos, a linha da spec vai para o banco da página do projeto quando a
@@ -81,9 +95,10 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{BlockQuery, Hidden, Refusal, SpecEvent, SpecLog, PURGED_MARK};
 use mustard_core::domain::spec_index::{is_template, project_page, published_to, ProjectRow, PROJECT_PAGE, SPEC_PAGE};
 use mustard_core::io::spec_events as store;
+use mustard_core::io::spec_index::later;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::platform::page_templates::{
-    project_page_template, spec_page_template, template_version, COMPUTED, PROJECT_CAPABILITIES, RANGES,
+    project_page_template, spec_page_template, template_stamp, COMPUTED, PROJECT_CAPABILITIES, RANGES,
     RANGE_MAX_BYTES, RANGE_WIDTH, SPECS, SPEC_CAPABILITIES,
 };
 use mustard_core::view::document::{RtkDay, WaveState};
@@ -148,6 +163,13 @@ pub(crate) struct Target {
     /// A página já foi publicada inteira por uma versão antiga, sem banco: o
     /// template sai num link novo, e a antiga fica parada.
     pub old: bool,
+    /// A página já tem endereço, mas foi publicada com um molde de outro
+    /// carimbo, ou sem carimbo: o marco a publica de novo no mesmo endereço,
+    /// antes dos lotes.
+    pub republish: bool,
+    /// O carimbo do molde que o programa rodando monta, gravado com a
+    /// publicação.
+    pub stamp: String,
     /// `{coleção}/{doc_id}` de cada documento que já existe no banco antes
     /// desta cópia: o banco recusa a troca de um documento assim sem a
     /// versão dele. Vazio na primeira cópia, quando nada existe ainda.
@@ -213,8 +235,18 @@ fn prepare_in(
     let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
     // O rtk roda antes da trava: ninguém espera por ele para gravar.
     let rtk = super::rtk_days(root);
-    let place = Place { root, spec: spec.trim(), folder: copy_folder, index: paths.spec_index_path() };
-    store::with_locked_log(spec_ndjson, |log| build(&place, log, &rtk, moment, lang))?
+    let index = paths.spec_index_path();
+    // As publicações da página do projeto gravadas nas outras specs também
+    // são lidas antes da trava: a leitura de cada arquivo pega a trava dele,
+    // e a desta spec já estaria presa. Só num marco, e só com a página do
+    // projeto já publicada como template, há carimbo a conferir.
+    let others = if moment == Moment::Milestone && template_project_url(&index).is_some() {
+        other_project_publications(root, spec.trim())
+    } else {
+        Vec::new()
+    };
+    let place = Place { root, spec: spec.trim(), folder: copy_folder, index };
+    store::with_locked_log(spec_ndjson, |log| build(&place, log, &rtk, &others, moment, lang))?
         .unwrap_or_else(|| Err(Refusal::NoSpecFile { spec: spec.trim().to_string() }))
 }
 
@@ -231,10 +263,11 @@ fn build(
     place: &Place,
     log: &SpecLog,
     rtk: &[RtkDay],
+    others: &[ProjectPublication],
     moment: Moment,
     lang: Locale,
 ) -> Result<Option<Prepared>, Refusal> {
-    let SpecPage { url, since, old, republished } = spec_page(log);
+    let SpecPage { url, since, old, republished, stamp: published } = spec_page(log);
     if moment == Moment::Request && url.is_none() {
         return Ok(None);
     }
@@ -262,8 +295,13 @@ fn build(
     if since != 0 || republished {
         existing.push(COMPUTED.to_string());
     }
-    if url.is_none() {
-        ensure_template(place.root, SPEC_TEMPLATE, || spec_page_template(lang))?;
+    let template = spec_page_template(lang);
+    let stamp = template_stamp(&template).unwrap_or_default().to_string();
+    // Só um marco publica: depois de um pedido, a página com molde velho
+    // fica para o próximo marco.
+    let republish = moment == Moment::Milestone && url.is_some() && published.as_deref() != Some(stamp.as_str());
+    if url.is_none() || republish {
+        ensure_template(place.root, SPEC_TEMPLATE, &template)?;
     }
     let spec = Target {
         url,
@@ -271,10 +309,12 @@ fn build(
         record: json!({ "page": SPEC_PAGE, "last": log.max_id() }),
         first: since == 0,
         old,
+        republish,
+        stamp,
         existing,
     };
     let project = match moment {
-        Moment::Milestone => project_rows(place, log, lang)?,
+        Moment::Milestone => project_rows(place, log, others, lang)?,
         Moment::Request => None,
     };
     Ok(Some(Prepared {
@@ -290,35 +330,87 @@ struct SpecPage {
     /// O endereço da última publicação do template que deu certo.
     url: Option<String>,
     /// O número do último item copiado para o banco dela: o maior `last` das
-    /// cópias gravadas depois dessa publicação, ou zero.
+    /// cópias gravadas para esse endereço, ou zero. A república no mesmo
+    /// endereço não zera a conta: o banco continua lá.
     since: u64,
     /// Uma versão antiga publicou a página inteira, sem template.
     old: bool,
     /// O endereço da última publicação já tinha sido publicado antes dela: o
     /// documento calculado já está no banco desde essa publicação anterior.
     republished: bool,
+    /// O carimbo do molde dessa publicação; `None` na publicação de antes do
+    /// carimbo.
+    stamp: Option<String>,
 }
 
 /// A página da spec do arquivo `log`. Só a publicação do template conta: a
 /// página inteira de uma versão antiga não tem banco de dados.
 fn spec_page(log: &SpecLog) -> SpecPage {
     let visible = log.visible();
-    let published: Vec<(u64, &str, bool)> = visible
+    let published: Vec<(u64, &str, bool, Option<&str>)> = visible
         .iter()
-        .filter_map(|e| published_to(e, SPEC_PAGE).map(|url| (e.id, url, is_template(e))))
+        .filter_map(|e| published_to(e, SPEC_PAGE).map(|url| (e.id, url, is_template(e), e.str_field("stamp"))))
         .collect();
-    let old = published.iter().any(|(_, _, template)| !template);
-    let Some((at, url, _)) = published.iter().copied().rfind(|(_, _, template)| *template) else {
-        return SpecPage { url: None, since: 0, old, republished: false };
+    let old = published.iter().any(|(_, _, template, _)| !template);
+    let Some((at, url, _, stamp)) = published.iter().copied().rfind(|(_, _, template, _)| *template) else {
+        return SpecPage { url: None, since: 0, old, republished: false, stamp: None };
     };
-    let republished = published.iter().any(|&(id, other, _)| id < at && other == url);
-    let since = visible
-        .iter()
-        .filter(|e| e.id > at && copy_of(e) == Some(SPEC_PAGE))
-        .filter_map(|e| e.int("last"))
-        .max()
-        .unwrap_or(0);
-    SpecPage { url: Some(url.to_string()), since, old, republished }
+    let republished = published.iter().any(|&(id, other, _, _)| id < at && other == url);
+    // Cada cópia foi para o endereço da última publicação do template antes
+    // dela: conta a que foi para o endereço de agora, mesmo antes de uma
+    // república nele.
+    let mut current: Option<&str> = None;
+    let mut since = 0;
+    for event in &visible {
+        if let Some(to) = published_to(event, SPEC_PAGE).filter(|_| is_template(event)) {
+            current = Some(to);
+        } else if copy_of(event) == Some(SPEC_PAGE) && current == Some(url) {
+            since = since.max(event.int("last").unwrap_or(0));
+        }
+    }
+    SpecPage { url: Some(url.to_string()), since, old, republished, stamp: stamp.map(str::to_string) }
+}
+
+/// Uma publicação do template da página do projeto que deu certo, gravada
+/// numa spec: a hora, o endereço e o carimbo do molde publicado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectPublication {
+    at: String,
+    url: String,
+    stamp: Option<String>,
+}
+
+/// As publicações do template da página do projeto gravadas em `log`, na
+/// ordem do arquivo.
+fn project_publications(log: &SpecLog) -> Vec<ProjectPublication> {
+    log.visible()
+        .into_iter()
+        .filter(|e| is_template(e))
+        .filter_map(|e| {
+            published_to(e, PROJECT_PAGE).map(|url| ProjectPublication {
+                at: e.at().to_string(),
+                url: url.to_string(),
+                stamp: e.str_field("stamp").map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+/// As publicações do template da página do projeto gravadas nas specs vivas
+/// do projeto `root` fora da spec `spec`.
+fn other_project_publications(root: &Path, spec: &str) -> Vec<ProjectPublication> {
+    mustard_core::io::spec_index::read_specs(root)
+        .into_iter()
+        .filter(|(name, _)| name != spec)
+        .flat_map(|(_, log)| project_publications(&log))
+        .collect()
+}
+
+/// O endereço da página do projeto no índice `index`, quando ela é o
+/// template do Mustard.
+fn template_project_url(index: &Path) -> Option<String> {
+    let content = mustard_core::io::fs::lock::read_shared(index).ok()?;
+    project_page(&content).filter(|page| page.template).map(|page| page.url)
 }
 
 /// A página de um registro de cópia.
@@ -596,7 +688,12 @@ fn state_name(state: WaveState) -> &'static str {
 /// mudou desde a última cópia; senão, nenhuma. A página antiga, publicada
 /// inteira por uma versão antiga, conta como a que ainda não tem endereço: o
 /// endereço dela nunca recebe lote.
-fn project_rows(place: &Place, log: &SpecLog, lang: Locale) -> Result<Option<Target>, Refusal> {
+fn project_rows(
+    place: &Place,
+    log: &SpecLog,
+    others: &[ProjectPublication],
+    lang: Locale,
+) -> Result<Option<Target>, Refusal> {
     let page = mustard_core::io::fs::lock::read_shared(&place.index).ok().and_then(|content| project_page(&content));
     let old = page.as_ref().is_some_and(|page| !page.template);
     let url = page.filter(|page| page.template).map(|page| page.url);
@@ -608,20 +705,38 @@ fn project_rows(place: &Place, log: &SpecLog, lang: Locale) -> Result<Option<Tar
     let published = visible.iter().filter(|e| published_to(e, PROJECT_PAGE).is_some()).map(|e| e.id).next_back();
     let copied = visible.iter().rfind(|e| copy_of(e) == Some(PROJECT_PAGE));
     let copied_phase = copied.and_then(|e| e.str_field("phase")).map(str::to_string);
-    let fresh = match (published, copied) {
-        (Some(published), Some(copied)) => published > copied.id,
-        (Some(_), None) => true,
-        _ => false,
-    };
+    // As publicações do template em todas as specs, as desta por último: no
+    // mesmo segundo, a desta vale.
+    let own_publications = project_publications(log);
+    let all: Vec<&ProjectPublication> = others.iter().chain(own_publications.iter()).collect();
+    // A república no mesmo endereço não zera o banco dele: não conta como
+    // página nova, que pede todas as linhas.
+    let same_address = own_publications.last().is_some_and(|last| {
+        all.iter().any(|p| p.url == last.url && !std::ptr::eq(*p, last) && !later(&p.at, &last.at))
+    });
+    let fresh = !same_address
+        && match (published, copied) {
+            (Some(published), Some(copied)) => published > copied.id,
+            (Some(_), None) => true,
+            _ => false,
+        };
+    let latest = all.iter().copied().fold(None::<&ProjectPublication>, |best, p| match best {
+        Some(best) if later(&best.at, &p.at) => Some(best),
+        _ => Some(p),
+    });
+    let published_stamp = latest.filter(|p| url.as_deref() == Some(p.url.as_str())).and_then(|p| p.stamp.as_deref());
+    let template = project_page_template(lang);
+    let stamp = template_stamp(&template).unwrap_or_default().to_string();
+    let republish = url.is_some() && published_stamp != Some(stamp.as_str());
     let chosen: Vec<&ProjectRow> = if url.is_none() || fresh {
         rows.iter().collect()
-    } else if copied.is_none() || own.phase != copied_phase {
+    } else if copied.is_none() || own.phase != copied_phase || republish {
         vec![own]
     } else {
         return Ok(None);
     };
-    if url.is_none() {
-        ensure_template(place.root, PROJECT_TEMPLATE, || project_page_template(lang))?;
+    if url.is_none() || republish {
+        ensure_template(place.root, PROJECT_TEMPLATE, &template)?;
     }
     let mut writes = Vec::new();
     for row in chosen {
@@ -631,7 +746,16 @@ fn project_rows(place: &Place, log: &SpecLog, lang: Locale) -> Result<Option<Tar
     if let Some(phase) = &own.phase {
         record["phase"] = json!(phase);
     }
-    Ok(Some(Target { url, batches: batches(place, "project", &writes)?, record, first: false, old, existing: Vec::new() }))
+    Ok(Some(Target {
+        url,
+        batches: batches(place, "project", &writes)?,
+        record,
+        first: false,
+        old,
+        republish,
+        stamp,
+        existing: Vec::new(),
+    }))
 }
 
 /// A linha de uma spec como vai para o banco da página do projeto.
@@ -671,19 +795,22 @@ fn clear(folder: &Path) -> Result<(), Refusal> {
     mustard_core::io::fs::remove_dir_all(folder).map_err(|e| Refusal::Io { detail: e.to_string() })
 }
 
-/// Deixa no projeto o template que a ordem manda publicar: escreve quando ele
-/// falta, e também quando a versão gravada no começo dele — o selo que
-/// [`spec_page_template`] e [`project_page_template`] deixam ([`template_version`]) —
-/// não é a do binário rodando. O modelo velho ficaria lendo uma coleção que a
-/// cópia de agora não escreve mais, e a página abriria sem dizer por quê.
-fn ensure_template(root: &Path, template: &str, body: impl FnOnce() -> String) -> Result<(), Refusal> {
+/// Deixa no projeto o template que a ordem manda publicar, `built`, o que o
+/// binário rodando monta: escreve quando ele falta, e também quando o carimbo
+/// gravado no começo dele — a versão e a impressão do conteúdo, que
+/// [`spec_page_template`] e [`project_page_template`] deixam
+/// ([`template_stamp`]) — não é o de `built`. O modelo velho ficaria lendo uma
+/// coleção que a cópia de agora não escreve mais, ou sem o que a versão nova
+/// mostra, e a página abriria sem dizer por quê.
+fn ensure_template(root: &Path, template: &str, built: &str) -> Result<(), Refusal> {
     let path = root.join(template);
     if let Ok(existing) = std::fs::read_to_string(&path)
-        && template_version(&existing) == Some(mustard_core::harness_version().as_str())
+        && template_stamp(&existing).is_some()
+        && template_stamp(&existing) == template_stamp(built)
     {
         return Ok(());
     }
-    write(&path, &body())
+    write(&path, built)
 }
 
 fn write(path: &Path, text: &str) -> Result<(), Refusal> {
@@ -698,6 +825,9 @@ impl Prepared {
             if t.first {
                 out["first"] = json!(true);
             }
+            if t.republish {
+                out["republish"] = json!(true);
+            }
             out
         };
         let mut out = json!({ "folder": self.folder, "spec": target(&self.spec) });
@@ -707,14 +837,15 @@ impl Prepared {
         out
     }
 
-    /// As páginas que ainda precisam da primeira publicação, na ordem em que
-    /// são publicadas.
+    /// As páginas que o marco publica, na ordem em que são publicadas: a que
+    /// ainda não tem endereço e a que é publicada de novo no mesmo endereço,
+    /// com o molde novo.
     pub(crate) fn to_publish(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
-        if self.spec.url.is_none() {
+        if self.spec.url.is_none() || self.spec.republish {
             out.push(SPEC_PAGE);
         }
-        if self.project.as_ref().is_some_and(|p| p.url.is_none()) {
+        if self.project.as_ref().is_some_and(|p| p.url.is_none() || p.republish) {
             out.push(PROJECT_PAGE);
         }
         out
@@ -722,7 +853,8 @@ impl Prepared {
 
     /// A ordem da cópia, uma frase por passo: publicar a página que ainda não
     /// tem endereço, no marco `milestone`, num link novo quando ela ainda é a
-    /// página inteira de uma versão antiga; copiar os lotes de cada
+    /// página inteira de uma versão antiga, e publicar de novo no mesmo
+    /// endereço a que foi publicada com um molde de outro carimbo; copiar os lotes de cada
     /// página, nomeando os documentos que já existem no banco para ler a
     /// versão de cada um antes de trocar, e, fora do descarte, gravar cada
     /// cópia feita, com a primeira cópia da spec entregue a um agente
@@ -744,11 +876,25 @@ impl Prepared {
                         .replace("{capabilities}", capabilities)
                         .replace("{spec}", spec)
                         .replace("{key}", key)
-                        .replace("{milestone}", milestone),
+                        .replace("{milestone}", milestone)
+                        .replace("{stamp}", &target.stamp),
                 );
                 if target.old {
                     out.push(translate("page.copy.old_page", lang).replace("{page}", page));
                 }
+            }
+            if let (true, Some(milestone), Some(url)) = (target.republish, milestone, target.url.as_deref()) {
+                out.push(
+                    translate("page.copy.republish", lang)
+                        .replace("{page}", page)
+                        .replace("{template}", template)
+                        .replace("{capabilities}", capabilities)
+                        .replace("{spec}", spec)
+                        .replace("{key}", key)
+                        .replace("{milestone}", milestone)
+                        .replace("{stamp}", &target.stamp)
+                        .replace("{url}", url),
+                );
             }
             let url = target.url.clone().unwrap_or_else(|| translate("page.copy.new_address", lang).to_string());
             let files: Vec<String> = target.batches.iter().map(|b| format!("`{b}`")).collect();
@@ -923,6 +1069,14 @@ mod tests {
         out
     }
 
+    /// O carimbo do molde da página `page` que o programa rodando monta, como
+    /// a publicação o grava.
+    fn stamp_of(page: &str) -> String {
+        let template =
+            if page == PROJECT_PAGE { project_page_template(Locale::PtBr) } else { spec_page_template(Locale::PtBr) };
+        template_stamp(&template).expect("the stamp").to_string()
+    }
+
     fn id_of(report: &Value) -> u64 {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
@@ -1012,14 +1166,16 @@ mod tests {
     }
 
     /// O que a conversa faz com a ordem de um marco: publica cada página que
-    /// ainda não tem endereço e grava o endereço, copia os lotes e grava cada
-    /// cópia feita com o `--json` que a ordem traz.
+    /// a ordem manda publicar e grava o endereço, com o carimbo do molde,
+    /// copia os lotes e grava cada cópia feita com o `--json` que a ordem
+    /// traz.
     fn follow(root: &Path, report: &Value) {
         let milestone = "round";
         for page in report["publish"].as_array().cloned().unwrap_or_default() {
-            let url = if page == json!("spec") { SPEC_URL } else { PROJECT_URL };
-            write(root, "publish",
-                json!({"page": page, "milestone": milestone, "ok": true, "template": true, "url": url}));
+            let page = page.as_str().unwrap_or_default();
+            let url = if page == SPEC_PAGE { SPEC_URL } else { PROJECT_URL };
+            write(root, "publish", json!({"page": page, "milestone": milestone, "ok": true, "template": true,
+                "stamp": stamp_of(page), "url": url}));
         }
         for page in ["spec", "project"] {
             if !report["copy"][page].is_null() {
@@ -1141,34 +1297,37 @@ mod tests {
         assert_eq!(sent_items(root, &first).first(), Some(&1), "the first copy: {first}");
 
         write(root, "publish",
-            json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "url": REPUBLISHED_URL}));
+            json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "stamp": stamp_of("spec"), "url": REPUBLISHED_URL}));
 
         let second = round(root);
         assert_eq!(second["copy"]["spec"]["first"], json!(true), "the republish restarts the copy: {second}");
         assert_eq!(sent_items(root, &second).first(), Some(&1), "the whole spec goes again: {second}");
     }
 
-    /// A república no mesmo endereço também zera a contagem, mas o documento
-    /// calculado já está no banco desde a primeira publicação daquele
-    /// endereço: a ordem da primeira cópia depois da república tem de
-    /// nomeá-lo entre os que já existem, senão o banco recusa a troca sem
-    /// versão.
+    /// A república no mesmo endereço não zera a contagem: o banco continua
+    /// no mesmo endereço, e a cópia seguinte leva só o que falta, nomeando
+    /// entre os que já existem a faixa tocada e o documento calculado, senão
+    /// o banco recusa a troca sem versão.
     #[test]
-    fn the_first_copy_after_a_republish_names_the_computed_doc() {
+    fn the_copy_after_a_same_address_republish_sends_only_what_is_missing() {
         let dir = approved_project();
         let root = dir.path();
         let lang = Locale::PtBr;
         let first = round(root);
         follow(root, &first);
+        let copied = first["copy"]["spec"]["record"]["last"].as_u64().expect("the number copied");
 
-        write(root, "publish",
-            json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "url": SPEC_URL}));
+        write(root, "publish", json!({"page": "spec", "milestone": "round", "ok": true, "template": true,
+            "stamp": stamp_of("spec"), "url": SPEC_URL}));
 
         let second = round(root);
-        assert_eq!(second["copy"]["spec"]["first"], json!(true), "the republish resets the count: {second}");
+        assert!(second["copy"]["spec"].get("first").is_none(), "the database is still there: {second}");
+        let items = sent_items(root, &second);
+        assert!(items.iter().any(|id| *id > copied), "what came after the copy goes: {items:?}");
+        let touched = format!("{RANGES}/{}", range_start(copied + 1));
         let next2 = full_next(root, &second);
-        let expected2 = batches_order_with(&second, "x", SPEC_URL, &[COMPUTED], lang);
-        assert!(next2.contains(&expected2), "the computed document is pinned after a same-address republish: {next2}");
+        let expected2 = batches_order_with(&second, "x", SPEC_URL, &[touched.as_str(), COMPUTED], lang);
+        assert!(next2.contains(&expected2), "the documents already there are pinned: {next2}");
     }
 
     /// Um pedido que muda o plano, gravado pelo `run write`, faz a cópia sair
@@ -1311,7 +1470,7 @@ mod tests {
         let root = dir.path();
         // O marco da aprovação copiou a linha na fase de então.
         write(root, "publish",
-            json!({"page": "project", "milestone": "approval", "ok": true, "template": true, "url": PROJECT_URL}));
+            json!({"page": "project", "milestone": "approval", "ok": true, "template": true, "stamp": stamp_of("project"), "url": PROJECT_URL}));
         write(root, "copy", json!({"page": "project", "phase": "approved"}));
 
         let first = round(root);
@@ -1370,7 +1529,7 @@ mod tests {
         store::write(&other, "state", json!({"phase": "survey"}).as_object().cloned().unwrap(), &[]).unwrap();
         // A página da spec já é o template, com a cópia gravada: só a do
         // projeto é antiga.
-        write(root, "publish", json!({"page": "spec", "milestone": "approval", "ok": true, "template": true,
+        write(root, "publish", json!({"page": "spec", "milestone": "approval", "ok": true, "template": true, "stamp": stamp_of("spec"),
             "url": SPEC_URL}));
         write(root, "copy", json!({"page": "spec", "last": log(root).max_id()}));
         // A versão antiga publicou a página do projeto inteira.
@@ -1391,7 +1550,8 @@ mod tests {
             .replace("{capabilities}", PROJECT_CAPABILITIES)
             .replace("{spec}", "x")
             .replace("{key}", PROJECT_PAGE)
-            .replace("{milestone}", "round");
+            .replace("{milestone}", "round")
+            .replace("{stamp}", &stamp_of(PROJECT_PAGE));
         let old = old_page_order(PROJECT_PAGE, lang);
         let files: Vec<String> = first["copy"]["project"]["batches"]
             .as_array()
@@ -1415,7 +1575,7 @@ mod tests {
         assert!(!format!("{batches:?}").contains(OLD_URL), "nothing goes to the old page: {batches:?}");
 
         // A conversa publica o template no link novo e grava a cópia.
-        write(root, "publish", json!({"page": "project", "milestone": "round", "ok": true, "template": true,
+        write(root, "publish", json!({"page": "project", "milestone": "round", "ok": true, "template": true, "stamp": stamp_of("project"),
             "url": PROJECT_URL}));
         write(root, "copy", first["copy"]["project"]["record"].clone());
         let second = round(root);
@@ -1475,8 +1635,11 @@ mod tests {
         let next = full_next(root, &first);
         // O template nasce num link novo, e a página antiga fica parada.
         assert_eq!(first["publish"], json!(["spec", "project"]), "the old page is not the template: {first}");
-        let record = r#"'{"page":"spec","milestone":"round","ok":true,"template":true,"url":"…"}'"#;
-        assert!(next.contains(record), "{next}");
+        let record = format!(
+            r#"'{{"page":"spec","milestone":"round","ok":true,"template":true,"stamp":"{}","url":"…"}}'"#,
+            stamp_of(SPEC_PAGE)
+        );
+        assert!(next.contains(&record), "{next}");
         assert!(next.contains(&old_page_order(SPEC_PAGE, lang)), "{next}");
         assert!(!next.contains(&old_page_order(PROJECT_PAGE, lang)), "the project page is new: {next}");
         assert!(!first.to_string().contains(OLD_URL), "the old page is never touched: {first}");
@@ -1489,9 +1652,9 @@ mod tests {
         assert!(first.get("migration").is_none(), "the old-note migration is gone: {first}");
 
         // A conversa publica o template; o agente não grava a cópia.
-        write(root, "publish", json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "url": SPEC_URL}));
+        write(root, "publish", json!({"page": "spec", "milestone": "round", "ok": true, "template": true, "stamp": stamp_of("spec"), "url": SPEC_URL}));
         write(root, "publish",
-            json!({"page": "project", "milestone": "round", "ok": true, "template": true, "url": PROJECT_URL}));
+            json!({"page": "project", "milestone": "round", "ok": true, "template": true, "stamp": stamp_of("project"), "url": PROJECT_URL}));
         let second = round(root);
         let next = full_next(root, &second);
         assert!(second.get("publish").is_none(), "the link does not change: {second}");
@@ -1636,10 +1799,10 @@ mod tests {
         assert_eq!(got, expected, "the page shows every item, in order, as before");
     }
 
-    /// Um modelo velho já instalado no projeto — de antes do selo da versão,
-    /// sem catálogo nenhum — é reescrito pelo modelo de agora antes do
-    /// primeiro marco publicar a página: o passo confere o selo contra a
-    /// versão do binário, e a diferença manda gravar o modelo fresco, não o
+    /// Um modelo velho já instalado no projeto — de antes do carimbo, sem
+    /// catálogo nenhum — é reescrito pelo modelo de agora antes do primeiro
+    /// marco publicar a página: o passo confere o carimbo contra o do molde
+    /// que o binário monta, e a diferença manda gravar o modelo fresco, não o
     /// deixar como estava.
     #[test]
     fn an_old_installed_template_is_rewritten_before_the_first_publish() {
@@ -1653,29 +1816,139 @@ mod tests {
         assert_eq!(first["publish"], json!(["spec", "project"]), "{first}");
 
         let installed = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            template_version(&installed),
-            Some(mustard_core::harness_version().as_str()),
-            "o modelo velho foi trocado pelo de agora antes de publicar: {installed}"
-        );
-        assert_eq!(installed, spec_page_template(Locale::PtBr), "o mesmo conteúdo que um modelo fresco teria");
+        assert_eq!(installed, spec_page_template(Locale::PtBr), "o modelo velho foi trocado pelo de agora");
     }
 
-    /// O modelo já com o selo da versão rodando não é reescrito: a conferência
-    /// só troca o que está diferente, e um modelo já em dia fica como está —
-    /// sem chamar `body` de novo.
+    /// O modelo instalado com a mesma versão e outro conteúdo — o molde do
+    /// programa instalado, lido por um programa compilado no meio de uma
+    /// obra — é reescrito; o modelo com o carimbo de agora fica como está.
     #[test]
-    fn a_template_already_at_the_running_version_is_left_alone() {
+    fn the_installed_template_is_compared_by_the_whole_stamp() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let path = root.join(SPEC_TEMPLATE);
         std::fs::create_dir_all(path.parent().expect("a pasta do modelo")).unwrap();
-        let current = format!("<!-- mustard: {} -->\nmodelo já em dia", mustard_core::harness_version());
+        let built = spec_page_template(Locale::PtBr);
+
+        let same_version = format!("<!-- mustard: {} -->\nmolde de ontem", mustard_core::harness_version());
+        std::fs::write(&path, &same_version).unwrap();
+        ensure_template(root, SPEC_TEMPLATE, &built).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), built, "a mesma versão com outro conteúdo é trocada");
+
+        let current = format!("<!-- mustard: {} -->\nmolde já em dia", template_stamp(&built).expect("the stamp"));
         std::fs::write(&path, &current).unwrap();
+        ensure_template(root, SPEC_TEMPLATE, &built).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), current, "o mesmo carimbo fica como está");
+    }
 
-        ensure_template(root, SPEC_TEMPLATE, || panic!("a mesma versão não pede um modelo novo")).unwrap();
+    /// A página já publicada com um molde velho é publicada de novo no mesmo
+    /// endereço, antes do lote de cópia: sem carimbo, com o carimbo de outra
+    /// versão e com o carimbo da mesma versão e outro conteúdo, as três. O
+    /// molde novo é escrito no projeto, e a ordem manda gravar a publicação
+    /// com o carimbo. Com o carimbo de agora, nada é publicado de novo. O
+    /// mesmo vale para a página do projeto.
+    #[test]
+    fn a_pagina_publicada_com_molde_antigo_e_publicada_de_novo_no_mesmo_endereco() {
+        let lang = Locale::PtBr;
+        // O molde da mesma versão com outro conteúdo: o mesmo template
+        // montado com o catálogo em outro idioma.
+        let other_content = |page: &str| {
+            let template =
+                if page == PROJECT_PAGE { project_page_template(Locale::EnUs) } else { spec_page_template(Locale::EnUs) };
+            let stamp = template_stamp(&template).expect("the stamp").to_string();
+            assert!(stamp.starts_with(mustard_core::harness_version().as_str()), "the same version: {stamp}");
+            stamp
+        };
+        let other_version = "0.0.1 0123456789abcdef".to_string();
+        // O carimbo velho de cada caso, o da página da spec e o da do projeto.
+        let cases: [(&str, Option<(String, String)>); 3] = [
+            ("sem carimbo", None),
+            ("outra versão", Some((other_version.clone(), other_version))),
+            ("outro conteúdo", Some((other_content(SPEC_PAGE), other_content(PROJECT_PAGE)))),
+        ];
+        for (case, old) in cases {
+            let dir = approved_project();
+            let root = dir.path();
+            for (page, url) in [(SPEC_PAGE, SPEC_URL), (PROJECT_PAGE, PROJECT_URL)] {
+                let mut publish =
+                    json!({"page": page, "milestone": "approval", "ok": true, "template": true, "url": url});
+                if let Some((spec, project)) = &old {
+                    publish["stamp"] = json!(if page == SPEC_PAGE { spec } else { project });
+                }
+                write(root, "publish", publish);
+            }
+            write(root, "copy", json!({"page": "spec", "last": log(root).max_id()}));
+            write(root, "copy", json!({"page": "project", "phase": "approved"}));
+            std::fs::create_dir_all(root.join(SPEC_TEMPLATE).parent().expect("a pasta")).unwrap();
+            for template in [SPEC_TEMPLATE, PROJECT_TEMPLATE] {
+                std::fs::write(root.join(template), "<!-- mustard: 0.0.1 -->\nmolde velho").unwrap();
+            }
 
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), current, "o arquivo continua como estava");
+            let first = round(root);
+            assert_eq!(first["publish"], json!(["spec", "project"]), "{case}: {first}");
+            let next = full_next(root, &first);
+            for (page, url, template, capabilities, name) in [
+                (SPEC_PAGE, SPEC_URL, SPEC_TEMPLATE, SPEC_CAPABILITIES, "page.name.spec"),
+                (PROJECT_PAGE, PROJECT_URL, PROJECT_TEMPLATE, PROJECT_CAPABILITIES, "page.name.project"),
+            ] {
+                let republish = translate("page.copy.republish", lang)
+                    .replace("{page}", translate(name, lang))
+                    .replace("{template}", template)
+                    .replace("{capabilities}", capabilities)
+                    .replace("{spec}", "x")
+                    .replace("{key}", page)
+                    .replace("{milestone}", "round")
+                    .replace("{stamp}", &stamp_of(page))
+                    .replace("{url}", url);
+                let copy = translate("page.copy.batches", lang)
+                    .replace("{page}", translate(name, lang))
+                    .replace("{url}", url);
+                let copy = copy.split("{files}").next().unwrap_or_default();
+                let at = |s: &str| next.find(s).unwrap_or_else(|| panic!("{case}: missing «{s}» in {next}"));
+                assert!(at(&republish) < at(copy), "{case}: publish again before the batches: {next}");
+                let installed = std::fs::read_to_string(root.join(template)).unwrap();
+                assert_eq!(template_stamp(&installed), Some(stamp_of(page).as_str()), "{case}: the new template");
+            }
+            assert!(!next.contains(translate("page.copy.new_address", lang)), "{case}: the same address: {next}");
+            assert!(first["copy"]["spec"].get("first").is_none(), "{case}: the database is still there: {first}");
+
+            // A conversa publica de novo com o carimbo: o marco seguinte não
+            // publica mais.
+            follow(root, &first);
+            let second = round(root);
+            assert!(second.get("publish").is_none(), "{case}: the same stamp publishes nothing: {second}");
+            let next = full_next(root, &second);
+            assert!(!next.contains("write publish"), "{case}: {next}");
+        }
+    }
+
+    /// A página do projeto publicada de novo noutra spec, com o carimbo de
+    /// agora, vale para esta: o carimbo da página do projeto é o da última
+    /// publicação dela em qualquer spec do projeto.
+    #[test]
+    fn the_project_page_stamp_recorded_in_another_spec_counts() {
+        let dir = approved_project();
+        let root = dir.path();
+        for page in [SPEC_PAGE, PROJECT_PAGE] {
+            let url = if page == SPEC_PAGE { SPEC_URL } else { PROJECT_URL };
+            write(root, "publish", json!({"page": page, "milestone": "approval", "ok": true, "template": true,
+                "url": url, "stamp": if page == SPEC_PAGE { stamp_of(page) } else { "0.0.1 0123456789abcdef".into() }}));
+        }
+        write(root, "copy", json!({"page": "spec", "last": log(root).max_id()}));
+        write(root, "copy", json!({"page": "project", "phase": "approved"}));
+        let other = root.join(".claude/spec/y/spec.ndjson");
+        store::write(&other, "state", json!({"phase": "survey"}).as_object().cloned().unwrap(), &[]).unwrap();
+        // A publicação da outra spec vem depois, numa hora bem à frente: no
+        // mesmo segundo, a desta spec valeria.
+        let again = json!({"v": 1, "id": 2, "at": "2099-01-01T00:00:00-03:00", "type": "publish",
+            "author": "assistant", "code": "MSTD-PUB-0001", "page": "project", "milestone": "round", "ok": true,
+            "template": true, "url": PROJECT_URL, "stamp": stamp_of(PROJECT_PAGE)});
+        let mut content = std::fs::read_to_string(&other).unwrap();
+        content.push_str(&format!("{again}\n"));
+        std::fs::write(&other, content).unwrap();
+
+        let first = round(root);
+        assert!(first.get("publish").is_none(), "the other spec already published the new template: {first}");
     }
 
     /// A linha do gasto soma os tokens de toda onda enviada e toma o maior

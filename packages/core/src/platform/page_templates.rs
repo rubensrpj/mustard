@@ -150,25 +150,39 @@ fn fill(template: &str, catalog: &Value) -> String {
     stamp(&body)
 }
 
-/// O que vem antes da versão na marca do começo do modelo, na primeira linha
-/// dele.
+/// O que vem antes do carimbo na marca do começo do modelo, na primeira
+/// linha dele.
 const VERSION_MARK_PREFIX: &str = "<!-- mustard:";
 
-/// O que vem depois da versão na marca do começo do modelo.
+/// O que vem depois do carimbo na marca do começo do modelo.
 const VERSION_MARK_SUFFIX: &str = "-->";
 
-/// `body` com o selo da versão do Mustard rodando na frente, numa linha só: é
-/// por ele que o passo que publica compara o modelo instalado no projeto com
-/// a versão do binário, sem reconstruir o catálogo inteiro.
+/// `body` com o carimbo do modelo na frente, numa linha só: a versão do
+/// Mustard rodando e a impressão do conteúdo montado, o template com o
+/// catálogo já no lugar. É pelo carimbo inteiro que o passo que publica
+/// compara o modelo instalado no projeto e o da última publicação com o que
+/// o binário monta agora, sem reconstruir o catálogo inteiro: dois programas
+/// com a mesma versão e moldes diferentes, um instalado e outro compilado no
+/// meio de uma obra, dão carimbos diferentes.
 fn stamp(body: &str) -> String {
-    format!("{VERSION_MARK_PREFIX} {} {VERSION_MARK_SUFFIX}\n{body}", harness_version())
+    format!("{VERSION_MARK_PREFIX} {} {:016x} {VERSION_MARK_SUFFIX}\n{body}", harness_version(), fingerprint(body))
 }
 
-/// A versão do Mustard que gerou o modelo `text`, lida do selo da primeira
-/// linha. `None` quando o selo não está lá — um modelo de antes dele, ou
-/// qualquer outro texto.
+/// A impressão do conteúdo `body`: o FNV-1a de 64 bits sobre os bytes dele,
+/// estável entre versões do Rust e entre máquinas, ao contrário do hasher da
+/// biblioteca padrão. Qualquer mudança no template ou no catálogo muda a
+/// impressão.
+fn fingerprint(body: &str) -> u64 {
+    body.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// O carimbo do modelo `text`, lido da primeira linha: a versão do Mustard
+/// que o gerou e a impressão do conteúdo, juntas, como a publicação o grava.
+/// `None` quando a marca não está lá — um modelo de antes dela, ou qualquer
+/// outro texto. O modelo de antes da impressão tem só a versão no carimbo, e
+/// por isso nunca é igual ao de agora.
 #[must_use]
-pub fn template_version(text: &str) -> Option<&str> {
+pub fn template_stamp(text: &str) -> Option<&str> {
     let line = text.lines().next()?;
     let rest = line.strip_prefix(VERSION_MARK_PREFIX)?.trim();
     rest.strip_suffix(VERSION_MARK_SUFFIX).map(str::trim)
@@ -276,22 +290,43 @@ mod tests {
     use crate::domain::spec_index::ProjectRow;
     use crate::view::document::{RtkDay, WaveState, WaveStates};
 
-    /// O modelo gerado leva o selo da versão do binário rodando, na primeira
-    /// linha: é essa marca que o passo que publica confere contra a versão de
-    /// agora para saber se o modelo instalado no projeto está velho.
+    /// O modelo gerado leva na primeira linha o carimbo: a versão do binário
+    /// rodando e a impressão do conteúdo montado. É essa marca que o passo
+    /// que publica confere para saber se o modelo instalado no projeto, ou o
+    /// da página publicada, está velho.
     #[test]
-    fn the_generated_template_is_stamped_with_the_running_version() {
+    fn the_generated_template_is_stamped_with_the_version_and_the_content() {
         for html in [spec_page_template(Locale::PtBr), project_page_template(Locale::PtBr)] {
-            assert_eq!(template_version(&html), Some(harness_version().as_str()), "{html}");
+            let stamp = template_stamp(&html).expect("the stamp");
+            let (version, print) = stamp.split_once(' ').expect("the version and the fingerprint");
+            assert_eq!(version, harness_version(), "{stamp}");
+            let body = html.split_once('\n').map(|(_, body)| body).expect("the body after the stamp");
+            assert_eq!(print, format!("{:016x}", fingerprint(body)), "{stamp}");
         }
     }
 
-    /// Um modelo sem o selo — de antes dele, ou qualquer outro texto — não
-    /// tem versão nenhuma: a leitura não inventa uma.
+    /// Com a mesma versão, um molde de conteúdo diferente dá outro carimbo:
+    /// o idioma do catálogo muda o conteúdo, e muda o carimbo; o mesmo molde
+    /// montado duas vezes dá o mesmo carimbo.
     #[test]
-    fn a_template_without_the_stamp_has_no_version() {
-        assert_eq!(template_version("<!doctype html><html></html>"), None);
-        assert_eq!(template_version(""), None);
+    fn the_same_version_with_another_content_has_another_stamp() {
+        let pt = spec_page_template(Locale::PtBr);
+        let en = spec_page_template(Locale::EnUs);
+        assert_ne!(template_stamp(&pt), template_stamp(&en), "the content differs");
+        assert_eq!(template_stamp(&pt), template_stamp(&spec_page_template(Locale::PtBr)), "the same content");
+        assert_ne!(stamp("a"), stamp("b"), "one byte is enough");
+    }
+
+    /// Um modelo sem a marca — de antes dela, ou qualquer outro texto — não
+    /// tem carimbo nenhum: a leitura não inventa um. O de antes da impressão
+    /// tem só a versão, e por isso não é o carimbo de agora.
+    #[test]
+    fn a_template_without_the_stamp_has_no_stamp() {
+        assert_eq!(template_stamp("<!doctype html><html></html>"), None);
+        assert_eq!(template_stamp(""), None);
+        let only_version = format!("<!-- mustard: {} -->\n<html></html>", harness_version());
+        assert_eq!(template_stamp(&only_version), Some(harness_version().as_str()));
+        assert_ne!(template_stamp(&only_version), template_stamp(&spec_page_template(Locale::PtBr)));
     }
 
     /// O apoio que roda um template no Node, com o DOM e as capacidades do

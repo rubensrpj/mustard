@@ -349,7 +349,11 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     // A publicação de uma página. A do template do Mustard, que lê o banco de
     // dados guardado junto da página, traz `template: true`; a que não traz é
-    // a página inteira de uma versão antiga, que fica parada como está.
+    // a página inteira de uma versão antiga, que fica parada como está. O
+    // `stamp` é o carimbo do molde publicado, a versão do Mustard e a
+    // impressão do conteúdo: o molde que o programa rodando monta com outro
+    // carimbo, ou a publicação sem ele, manda publicar de novo no mesmo
+    // endereço.
     ty(
         "publish",
         "PUB",
@@ -362,6 +366,7 @@ pub const TYPES: &[TypeSpec] = &[
             opt("url", Kind::Text),
             opt("reason", Kind::Text),
             opt("template", Kind::Bool),
+            opt("stamp", Kind::Text),
         ],
     ),
     // A cópia dos itens para o banco de dados de uma página publicada, gravada

@@ -1715,8 +1715,13 @@ mod tests {
             assert_eq!(report["ok"], json!(true), "{old}: {report}");
             let next = report["next"].as_str().unwrap_or_default();
             assert_eq!(report["publish"], json!(["spec", "project"]), "{old}: {report}");
-            let record = r#"'{"page":"spec","milestone":"approval","ok":true,"template":true,"url":"…"}'"#;
-            assert!(next.contains(record), "{old}: {next}");
+            // A publicação grava o carimbo do molde que o programa monta.
+            let stamp = mustard_core::platform::page_templates::spec_page_template(lang);
+            let stamp = mustard_core::platform::page_templates::template_stamp(&stamp).expect("the stamp");
+            let record = format!(
+                r#"'{{"page":"spec","milestone":"approval","ok":true,"template":true,"stamp":"{stamp}","url":"…"}}'"#
+            );
+            assert!(next.contains(&record), "{old}: {next}");
             assert_eq!(next.contains(&old_page_order("spec", lang)), old, "{old}: {next}");
             assert_eq!(report["copy"]["spec"]["first"], json!(true), "{old}: {report}");
             assert_eq!(sent_items(root, &report).first(), Some(&1), "{old}: the whole spec");

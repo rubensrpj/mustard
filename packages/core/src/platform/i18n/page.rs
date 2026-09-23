@@ -22,13 +22,32 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.copy.publish", Locale::PtBr) => {
             "A {page} ainda não foi publicada: publique o template `{template}` com a ferramenta \
              `Artifact`, passando em `capabilities` o valor `{capabilities}`, e grave o endereço com \
-             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"…\"}'`, \
              com `\"ok\":false` e `\"reason\"` quando falhar."
         }
         ("page.copy.publish", Locale::EnUs) => {
             "The {page} is not published yet: publish the template `{template}` with the `Artifact` \
              tool, passing `{capabilities}` as `capabilities`, and record the address with \
-             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"…\"}'`, \
+             with `\"ok\":false` and a `\"reason\"` when it fails."
+        }
+        // A página já publicada com um molde de outro carimbo, ou sem carimbo,
+        // é publicada de novo no mesmo endereço, antes do lote de cópia: o
+        // banco dela continua lá, e a cópia segue de onde parou.
+        ("page.copy.republish", Locale::PtBr) => {
+            "A {page} foi publicada com um molde diferente do que esta versão do Mustard monta: \
+             publique de novo o template `{template}` com a ferramenta `Artifact` no mesmo endereço, \
+             {url}, passando em `capabilities` o valor `{capabilities}`, antes de copiar os lotes, e \
+             grave a publicação com \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
+             com `\"ok\":false` e `\"reason\"` quando falhar."
+        }
+        ("page.copy.republish", Locale::EnUs) => {
+            "The {page} was published with a template other than the one this Mustard version builds: \
+             publish the template `{template}` again with the `Artifact` tool at the same address, \
+             {url}, passing `{capabilities}` as `capabilities`, before copying the batches, and record \
+             the publication with \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
         // A página da spec, ou a do projeto, que uma versão antiga publicou
@@ -463,6 +482,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.url", Locale::EnUs) => "Address",
         ("page.field.template", Locale::PtBr) => "Template do Mustard",
         ("page.field.template", Locale::EnUs) => "Mustard template",
+        ("page.field.stamp", Locale::PtBr) => "Carimbo do molde",
+        ("page.field.stamp", Locale::EnUs) => "Template stamp",
         ("page.field.last", Locale::PtBr) => "Último item copiado",
         ("page.field.last", Locale::EnUs) => "Last item copied",
         ("page.field.kinds", Locale::PtBr) => "Tipos",
@@ -867,9 +888,26 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            337,
-            0xd374_d145_20c8_9e17,
+            339,
+            0x5832_c868_6337_c029,
         );
+    }
+
+    /// As duas ordens de publicar levam o carimbo do molde na gravação da
+    /// publicação, nos dois idiomas; a de publicar de novo leva também o
+    /// endereço de agora, na publicação e na gravação.
+    #[test]
+    fn the_publish_orders_record_the_template_stamp() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let publish = super::text("page.copy.publish", lang).expect("page.copy.publish");
+            assert!(publish.contains(r#""stamp":"{stamp}""#), "{publish}");
+            let again = super::text("page.copy.republish", lang).expect("page.copy.republish");
+            for slot in ["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"] {
+                assert!(again.contains(slot), "{slot}: {again}");
+            }
+            assert!(again.contains(r#""stamp":"{stamp}","url":"{url}""#), "{again}");
+            assert!(again.matches("{url}").count() >= 2, "{again}");
+        }
     }
 
     /// `page.copy.new_address` sempre entra em `{url}` de `page.copy.batches`,
