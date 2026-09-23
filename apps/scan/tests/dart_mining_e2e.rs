@@ -30,10 +30,9 @@ fn fixture(name: &str) -> PathBuf {
 /// Scan a fixture into a temp `grain.model.json` and return (temp dir, parsed
 /// model). Mirrors `stack_detection_e2e.rs`: a temp dir owned by the test,
 /// removed at the end.
-fn scan_fixture(name: &str, label: &str) -> (PathBuf, serde_json::Value) {
-    let dir = std::env::temp_dir().join(format!("scan-dart-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn scan_fixture(name: &str, label: &str) -> (tempfile::TempDir, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-dart-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
@@ -42,7 +41,7 @@ fn scan_fixture(name: &str, label: &str) -> (PathBuf, serde_json::Value) {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    (dir, v)
+    (temp, v)
 }
 
 fn module<'a>(v: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
@@ -60,7 +59,7 @@ fn strings(v: &serde_json::Value) -> Vec<&str> {
 
 #[test]
 fn dart_module_is_mined_with_nonempty_declarations_and_imports() {
-    let (dir, v) = scan_fixture("flutter_app", "mine");
+    let (_dir, v) = scan_fixture("flutter_app", "mine");
 
     // The hand-written entrypoint, mined by the generic Dart query (NOT the
     // empty agnostic fallback).
@@ -90,12 +89,11 @@ fn dart_module_is_mined_with_nonempty_declarations_and_imports() {
         "the material import is mined: {imports:?}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn flutter_stack_detected_with_high_confidence() {
-    let (dir, v) = scan_fixture("flutter_app", "stack");
+    let (_dir, v) = scan_fixture("flutter_app", "stack");
 
     // (b) The registry-driven engine names exactly `flutter`, with confidence
     // at least the two-class tier (here all three classes converge → the high
@@ -118,12 +116,11 @@ fn flutter_stack_detected_with_high_confidence() {
     assert!(signals.iter().any(|s| s.starts_with("path:")), "a path marker fired: {signals:?}");
     assert!(signals.iter().any(|s| s.starts_with("code:")), "a code signature fired: {signals:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn generated_dart_file_is_classed_generated() {
-    let (dir, v) = scan_fixture("flutter_app", "generated");
+    let (_dir, v) = scan_fixture("flutter_app", "generated");
 
     // (c) The `**/*.g.dart` path marker classes the build_runner output as
     // generated, with the matching marker recorded as provenance — so it is
@@ -142,5 +139,4 @@ fn generated_dart_file_is_classed_generated() {
     assert_eq!(stacks.len(), 1, "exactly one stack, from hand-written code: {stacks:?}");
     assert_eq!(stacks[0]["name"], "flutter");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

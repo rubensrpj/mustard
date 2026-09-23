@@ -291,8 +291,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
         // O gesto da mudança que parte de um agente: a pergunta, as duas
         // opções e o que a testemunha diz depois do clique.
-        ("change.question", Locale::PtBr) => "Aceitar a mudança {code}?",
-        ("change.question", Locale::EnUs) => "Accept the change {code}?",
+        ("change.question", Locale::PtBr) => {
+            "A onda {wave} diz que o plano dela não funciona e propõe esta mudança: {change} \
+             Aceitar? Aceitando, a rodada grava o que a onda entregou e segue com o plano mudado; \
+             recusando, nada é gravado e a onda fica parada até você dizer o que fazer com ela."
+        }
+        ("change.question", Locale::EnUs) => {
+            "Wave {wave} says its plan does not work and proposes this change: {change} \
+             Accept it? If you accept, the round records what the wave delivered and goes on with \
+             the changed plan; if you decline, nothing is recorded and the wave stays put until \
+             you say what to do with it."
+        }
         ("change.accept", Locale::PtBr) => "Aceitar",
         ("change.accept", Locale::EnUs) => "Accept",
         ("change.decline", Locale::PtBr) => "Recusar",
@@ -318,6 +327,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("change.witness.free_text", Locale::EnUs) => {
             "[Mustard] Nothing was accepted for the change {code}: the answer {selected} is not \
              one of the offered options ({offered}). Free text never accepts; ask again."
+        }
+        ("change.witness.no_code", Locale::PtBr) => {
+            "[Mustard] Nada foi aceito: a pergunta da mudança veio sem o código dela no cabeçalho, \
+             e é o cabeçalho que diz qual mudança o clique decide. Faça a pergunta de novo com o \
+             código no cabeçalho; o enunciado você escreve com as palavras que o usuário entender."
+        }
+        ("change.witness.no_code", Locale::EnUs) => {
+            "[Mustard] Nothing was accepted: the change's question came without its code in the \
+             header, and it is the header that says which change the click decides. Ask again with \
+             the code in the header; the question itself you write in words the user understands."
         }
         ("change.witness.no_spec", Locale::PtBr) => {
             "[Mustard] Nada foi gravado para a mudança {code}: não há spec atual nesta sessão."
@@ -503,8 +522,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            66,
-            0xde1f_3976_85dc_e39f,
+            67,
+            0x23e8_612d_ede2_f27c,
         );
     }
 
@@ -530,6 +549,7 @@ mod tests {
             ("change.witness.declined", &["{code}"][..]),
             ("change.witness.free_text", &["{code}", "{selected}", "{offered}"][..]),
             ("change.witness.no_spec", &["{code}"][..]),
+            ("change.witness.no_code", &[][..]),
             ("subagent.ticket_unreadable", &["{ticket}", "{found}"][..]),
             ("subagent.not_approved", &["{spec}", "{phase}"][..]),
             ("subagent.no_wave", &["{spec}", "{wave}"][..]),
@@ -559,8 +579,11 @@ mod tests {
         assert_eq!(translate("approval.option", Locale::EnUs), "Approve");
         // O gesto da mudança que parte de um agente: a pergunta leva o código
         // da mudança, e as duas opções são as do catálogo.
-        assert_eq!(translate("change.question", Locale::PtBr), "Aceitar a mudança {code}?");
-        assert_eq!(translate("change.question", Locale::EnUs), "Accept the change {code}?");
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let question = translate("change.question", lang);
+            assert!(question.contains("{wave}") && question.contains("{change}"), "{question}");
+            assert!(!question.contains("{code}"), "o código nunca vai no enunciado: {question}");
+        }
         assert_eq!(translate("change.accept", Locale::PtBr), "Aceitar");
         assert_eq!(translate("change.decline", Locale::PtBr), "Recusar");
         assert_eq!(translate("change.accept", Locale::EnUs), "Accept");

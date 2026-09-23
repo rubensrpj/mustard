@@ -76,8 +76,7 @@ pub enum FlowCmd {
     /// O passo do plano, depois que a especificação, as ondas e as tarefas
     /// estão gravadas: monta o pedido de cada onda com as lições e as skills;
     /// confere que não há ponto do levantamento aberto, que o plano não tem
-    /// erro de montagem, que cada pedido cabe no teto de linhas, que os
-    /// arquivos e os nomes citados existem, que o arquivo citado está no git e
+    /// erro de montagem, que os arquivos e os nomes citados existem, que o arquivo citado está no git e
     /// que ondas da mesma rodada não dividem arquivo; avisa os itens sem
     /// tarefa; refaz o índice, prepara a cópia da spec para o banco de dados
     /// da página e responde o próximo passo: publicar a página que ainda não
@@ -120,12 +119,13 @@ pub enum FlowCmd {
     },
     /// Fecha uma spec: grava o que voltou da última rodada, confere se a obra
     /// terminou (nenhuma onda sem commit, nenhuma reprovada sem o conserto e
-    /// nenhum pedido do usuário sem onda que o entregue), roda o lint do
-    /// projeto inteiro e cada critério uma vez, gravando a execução de cada
-    /// um, e então grava a fase fechada, solta a spec da sessão e prepara a
-    /// cópia para o banco de dados das páginas. Toda obra, mesmo a de uma
-    /// onda só, recebe antes o pedido do agente de teste dedicado, e só fecha
-    /// com a linha dele aprovada.
+    /// nenhum pedido do usuário sem onda que o entregue), roda em ambiente
+    /// limpo o lint e a suíte que o `mustard.json` declara e cada critério uma
+    /// vez, gravando a execução de cada um, e então grava a fase fechada,
+    /// solta a spec da sessão e prepara a cópia para o banco de dados das
+    /// páginas. Toda obra, mesmo a de uma onda só, recebe antes o pedido do
+    /// agente de teste dedicado, numa cópia que o fechamento cria e apaga, e
+    /// só fecha com a linha dele aprovada.
     #[command(display_order = 4)]
     Close {
         /// A spec que fecha. Sem ela, a spec atual.
@@ -186,6 +186,12 @@ pub enum FlowCmd {
     /// novo, e os pontos novos convivem com o que já foi decidido. Nada do
     /// que está gravado é apagado. Uma spec fechada, com o pull request
     /// aberto, entregue ou descartada é recusada, dizendo a fase em que está.
+    ///
+    /// A exceção é a obra fechada cujo pull request o servidor reprovou:
+    /// aí este passo é a porta de conserto. Ele abre a onda de conserto
+    /// dentro da mesma spec, com o vermelho relatado, e, depois que a rodada
+    /// a entrega e comita na mesma branch, empurra a branch para o servidor
+    /// rodar de novo — sem reabrir a obra e sem spec nova.
     #[command(display_order = 11)]
     Reopen {
         /// Por que a spec volta ao levantamento, numa frase. Obrigatório: é

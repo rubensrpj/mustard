@@ -42,8 +42,8 @@ fn scan_root(root: &Path, out_dir: &Path) -> serde_json::Value {
 
 #[test]
 fn scan_skips_harness_claude_dir() {
-    let dir = std::env::temp_dir().join(format!("scan-skip-claude-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let temp = tempfile::Builder::new().prefix("scan-skip-claude-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
 
     // Real project: a TypeScript-only fixture (no Python of its own).
     let root = dir.join("repo");
@@ -87,5 +87,4 @@ fn scan_skips_harness_claude_dir() {
     assert!(none_under_claude(&v["projects"], "dir"), "no project unit under .claude: {:?}", v["projects"]);
     assert!(none_under_claude(&v["manifests"], "path"), "no manifest under .claude: {:?}", v["manifests"]);
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

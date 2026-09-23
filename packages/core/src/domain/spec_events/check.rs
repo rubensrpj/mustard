@@ -157,6 +157,7 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("send", "skills", &["name", "sha"]),
     ("verdict", "criteria", &["criterion", "tests_rule"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
+    ("tracking", "items", &["item", "met"]),
     ("state", "witness", &["question", "answer"]),
     ("message", "witness", &["question", "answer"]),
     ("remove", "filter", &["type", "from", "to"]),
@@ -204,6 +205,13 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
     let need = |f: &str| if has(f) { Ok(()) } else { Err(missing(event_type, f)) };
     let word = |f: &str| event.get(f).and_then(Value::as_str).unwrap_or_default();
     match event_type {
+        // A forma é obrigatória na gravação de um critério novo; o critério
+        // já gravado sem ela continua válido, porque esta conferência só
+        // corre na escrita, nunca na leitura do que já existe. A emenda de um
+        // critério antigo (`replaces` presente) não tem, aqui, como saber se
+        // a versão anterior já declarava a forma ou não — essa parte da
+        // conferência, que depende do arquivo, fica para `check_against`.
+        "criterion" if !has("form") && !has("replaces") => Err(Refusal::CriterionFormMissing),
         "state" => match word("phase") {
             "approved" => need("witness"),
             "discarded" => need("reason"),
@@ -218,20 +226,20 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
             }
         }
         // A revisão de uma onda aponta a onda e diz quais critérios conferiu.
-        // A aprovação do agente de teste dedicado não aponta onda nenhuma —
-        // ela vale para a obra inteira, e uma obra sem onda nenhuma (até 3
-        // pontos, feita pelo orquestrador) não tem o que apontar —, nem
-        // confere critério: ela confere o encaixe do que a obra fez, e cobrar
-        // os dois campos dela travava o fechamento de toda obra, que não
-        // fecha sem essa aprovação.
-        "verdict" => {
-            let approved = word("result") == "approved";
-            match event.get("final").and_then(Value::as_bool) {
-                Some(true) if approved => Ok(()),
-                Some(true) => need("wave"),
-                _ => need("wave").and_then(|()| need("criteria")),
-            }
-        }
+        // A revisão final do agente de teste dedicado não aponta onda
+        // nenhuma, aprovada ou reprovada: ela vale para a obra inteira, e
+        // responde pelo combinado vigente item a item, não por onda — a
+        // reprovação por um item que nenhuma onda carrega vira tarefa no
+        // backlog, sem onda para apontar. Uma obra sem onda nenhuma (até 3
+        // pontos, feita pelo orquestrador) também não tem o que apontar. Nem
+        // uma nem outra confere critério: quem confere o encaixe do que a
+        // obra fez é o combinado, não o critério de uma onda, e cobrar os
+        // dois campos dela travava o fechamento de toda obra, que não fecha
+        // sem essa aprovação.
+        "verdict" => match event.get("final").and_then(Value::as_bool) {
+            Some(true) => Ok(()),
+            _ => need("wave").and_then(|()| need("criteria")),
+        },
         "point" => {
             let reminders = event.get("reminders").and_then(Value::as_array).map_or(0, Vec::len);
             if reminders > 3 {
@@ -262,18 +270,16 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
             if has("result") || has("reason") { Ok(()) } else { Err(missing(event_type, "result")) }
         }
         // O entregou volta para a janela principal a cada onda: ele conta o
-        // que mudou, e não repete o pedido. Sem plano novo, exige a lista de
-        // arquivos; com ele, a onda pode ter voltado sem mexer em nenhum.
+        // que mudou, e não repete o pedido. A lista de arquivos não é exigida:
+        // a onda que foi conferir e achou o trabalho já feito volta sem mexer
+        // em nenhum, e o texto dela diz o que conferiu. O que a onda mudou de
+        // verdade quem confere é a rodada, contra a cópia da onda.
         "delivered" => {
             let chars = word("text").chars().count();
             if chars > DELIVERED_MAX_CHARS {
                 return Err(Refusal::DeliveredTooLong { chars, max: DELIVERED_MAX_CHARS });
             }
-            if has("replan") {
-                Ok(())
-            } else {
-                need("files")
-            }
+            Ok(())
         }
         "skill" if word("action") == "create" => {
             need("examples")?;
@@ -428,7 +434,7 @@ mod tests {
     /// `spec.md` entra sem `origin`, e o mesmo critério pelo assistente, não.
     #[test]
     fn what_the_binary_writes_needs_no_origin() {
-        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test"});
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous"});
         let mut by_binary = criterion.clone();
         by_binary["author"] = json!("binary");
         assert!(checked("criterion", by_binary).is_ok());
@@ -509,21 +515,19 @@ mod tests {
         );
     }
 
-    /// A aprovação do agente de teste dedicado, sem onda nenhuma: é a única
-    /// que entra assim, para a obra sem onda (até 3 pontos, feita pelo
-    /// orquestrador) também poder fechar. A reprovação final continua
-    /// apontando a onda do conserto, e a revisão de uma onda continua
-    /// apontando a dela.
+    /// A revisão final do agente de teste dedicado, sem onda nenhuma, entra
+    /// aprovada ou reprovada: é a única que entra assim, para a obra sem
+    /// onda (até 3 pontos, feita pelo orquestrador) também poder fechar, e
+    /// para o item combinado que nenhuma onda carrega poder reprovar sem
+    /// apontar onda — ele vira tarefa no backlog, não conserto de uma onda. A
+    /// revisão de uma onda continua apontando a dela.
     #[test]
-    fn only_the_dedicated_test_agents_approval_is_recorded_without_a_wave() {
+    fn only_the_final_review_of_the_whole_is_recorded_without_a_wave() {
         let approved = json!({"author": "review", "final": true, "result": "approved", "text": "pronto"});
         assert_eq!(checked("verdict", approved), Ok(()));
 
         let rejected = json!({"author": "review", "final": true, "result": "rejected", "text": "faltou"});
-        assert_eq!(
-            checked("verdict", rejected).unwrap_err(),
-            Refusal::MissingField { event_type: "verdict".into(), field: "wave".into() }
-        );
+        assert_eq!(checked("verdict", rejected), Ok(()));
 
         let no_wave = json!({"author": "review", "result": "approved", "text": "passou",
             "criteria": [{"criterion": 7, "tests_rule": true}]});

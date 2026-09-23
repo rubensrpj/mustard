@@ -15,10 +15,13 @@
 //! namespaces are first normalized to one canonical segment form (`\`, `::`
 //! and the dots of a dotted namespace all become `/`), then every import is
 //! tried against a union of resolution shapes and the ones that don't apply
-//! return nothing.
-//!   * namespace/package match — an import that names a declared namespace,
-//!     retried with the final segment dropped when the import names a TYPE
-//!     inside a namespace (the fully-qualified-name shape);
+//! return nothing. An import that ends in an extension of the importer's own
+//! language (registry data) is a file path: its dots stay dots, and it is read
+//! from the importer's folder first.
+//!   * namespace/package match — an import that names a namespace declared in
+//!     the importer's own language, retried with the final segment dropped
+//!     when the import names a TYPE inside a namespace (the
+//!     fully-qualified-name shape);
 //!   * module-prefixed path — strip a declared module prefix, match a directory;
 //!   * file path — resolve a relative/path-ish import to a module file;
 //!   * root-alias path — only for imports whose first segment is one of the
@@ -26,12 +29,16 @@
 //!     alias segment and probe the tail against the importer's ancestor dirs.
 //!     Languages that declare no aliases never take this branch, so an external
 //!     package path can never be mistaken for an internal module.
+//!   * workspace package path — the longest leading run of segments that names
+//!     a package the project declares (`@scope/core` included), the rest read
+//!     inside that package's folder.
 //!     Nothing here switches on a language name, so a new language needs no change.
 //!     Imports that resolve to nothing internal are treated as external deps.
 
-use crate::model::{GraphStats, LayerInfo, Module, NodeDegree, Touchpoint};
+use crate::model::{Decl, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
 use petgraph::graph::{DiGraph, NodeIndex};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Catalog cap for `top_fan_in` / `top_fan_out`. The digest filters these BY
 /// QUERY VOCABULARY, so the catalog must be wide enough for a domain-specific
@@ -76,30 +83,13 @@ pub fn resolve_edges(modules: &[Module], go_module: &Option<String>, packages: &
     for (i, m) in modules.iter().enumerate() {
         pos.insert(m.path.as_str(), i);
     }
-
-    // Indexes for resolution.
-    let mut ns_index: HashMap<String, Vec<String>> = HashMap::new(); // namespace -> module paths
-    let mut dir_index: HashMap<String, Vec<String>> = HashMap::new(); // dir -> module paths
-    for m in modules {
-        for ns in &m.namespaces {
-            // Index namespaces in canonical segment form so a lookup never
-            // depends on which separator the language writes (`\`, `.`, `::`).
-            ns_index.entry(canon_segments(ns)).or_default().push(m.path.clone());
-        }
-        let dir = parent_dir(&m.path);
-        dir_index.entry(dir).or_default().push(m.path.clone());
-    }
-    let module_paths: HashSet<&str> = modules.iter().map(|m| m.path.as_str()).collect();
-    let stem_index = build_stem_index(modules);
+    let resolver = Resolver::new(modules, go_module, packages);
 
     // The strongest evidence per (src, dst) pair wins; re-imports never inflate.
     let mut edge_w: HashMap<(usize, usize), u64> = HashMap::new();
     for (src, m) in modules.iter().enumerate() {
-        let root_aliases = crate::extract::root_aliases(&m.language);
         for imp in &m.imports {
-            let targets = resolve(
-                imp, &m.path, root_aliases, &ns_index, &stem_index, &dir_index, &module_paths, go_module, packages,
-            );
+            let targets = resolver.resolve(imp, m);
             let w = (1024 / targets.len().max(1) as u64).max(1);
             for t in targets {
                 if let Some(&dst) = pos.get(t.as_str())
@@ -253,6 +243,289 @@ pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String
     (stats, degree_map, depth_by_path)
 }
 
+/// A name declared by more declarations than this is a common word (`new`,
+/// `build`, `run`), not a link: tying every call of it to all of them would
+/// fill the map with noise instead of answers. Same bucket ceiling the import
+/// resolution already applies.
+const MAX_SAME_NAME: usize = 8;
+
+/// The declaration kinds a use can point to: what is called or built by name.
+/// A field or a property is read, not called — `x.kind()` is the call of
+/// something else that happens to share the name — and a type alias, an
+/// interface or a trait is never the target of a call either.
+const CALLABLE_KINDS: &[&str] = &["function", "method", "class", "struct", "record", "enum_member", "const"];
+
+/// The declaration kinds a citation can point to: what is named without being
+/// called — a constant compared against, a type written in a parameter, an
+/// enum member picked out.
+pub(crate) const CITED_KINDS: &[&str] =
+    &["const", "constant", "struct", "enum", "enum_member", "type", "trait", "class", "interface"];
+
+/// The named edges BETWEEN DECLARATIONS: for each declaration, which ones it
+/// calls and every place that uses it, with the file and the line. Until here
+/// the graph only counted file-to-file edges, which cannot answer "who calls
+/// this function".
+///
+/// The call sites and the citations come from what each module carries
+/// (`Module::calls`, `Module::cites`), never from reading the file again — so a pass that read only the files that
+/// changed links exactly what a full pass links.
+///
+/// A name is resolved only to the declarations that can be called and that the
+/// calling file sees: the ones in the file itself, in a file it imports, in a
+/// file a global import of its language puts in sight (one written anywhere
+/// under the folder of the nearest manifest above the file that writes it, or
+/// under that file's own folder when no manifest is above it), or in a file
+/// that declares the same namespace in the same language (the languages that
+/// group files by namespace see each other that way, without importing a
+/// file). How a namespace is seen is registry data: in a language whose
+/// namespace holds together with its folder, the same name in another folder
+/// is another namespace; in a language whose namespaces nest, a file also sees
+/// the namespaces above its own. A qualified name (`q::name`, `q.name`) also reaches the declarations
+/// of a file of the same language whose name or folder is `q` — `crate::preco::total(`
+/// and `model.User{}` need no import. A name no file in sight declares is an
+/// outside call — `.join(` of the
+/// standard library, a field read as `x.kind()` — and is simply dropped, never
+/// tied to every declaration of that name across the project. The links of
+/// every declaration are rewritten from scratch on each pass, so nothing
+/// survives a declaration that is gone.
+///
+/// Each module keeps, in `Module::cites`, only the citations that linked: a
+/// name the file cites and that no file in its sight declares, like a type of
+/// the standard library, is not a use of anything in the project, and is
+/// dropped from the map. What a later pass gains from a name that comes to be
+/// declared is read again by [`crate::refresh::stale_citers`].
+pub fn link_declarations(
+    modules: &mut [Module],
+    go_module: &Option<String>,
+    packages: &[(String, String)],
+    manifests: &[crate::model::Manifest],
+) {
+    let (calls, uses, linked) = resolve_declaration_links(modules, go_module, packages, manifests);
+    for (m, linked) in modules.iter_mut().zip(linked) {
+        m.cites = std::mem::take(&mut m.cites)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, site)| linked.contains(&i).then_some(site))
+            .collect();
+    }
+    for (m, (module_calls, module_uses)) in modules.iter_mut().zip(calls.into_iter().zip(uses)) {
+        for (decl, (called, used)) in m.declarations.iter_mut().zip(module_calls.into_iter().zip(module_uses)) {
+            decl.calls = called.into_iter().collect();
+            let mut used: Vec<UseSite> = used;
+            used.sort();
+            used.dedup();
+            decl.used_by = used;
+        }
+    }
+}
+
+/// What each declaration calls, per module and per declaration.
+type CallsByDecl = Vec<Vec<BTreeSet<String>>>;
+
+/// The uses each declaration receives, per module and per declaration.
+type UsesByDecl = Vec<Vec<Vec<UseSite>>>;
+
+/// The citations of each module that linked to a declaration, by position in
+/// `Module::cites`.
+type LinkedCites = Vec<HashSet<usize>>;
+
+/// The links, per module and per declaration: the names it calls and the uses
+/// it receives, and which citations of each module linked. Split out of
+/// [`link_declarations`] so the whole project is read before any declaration
+/// is written to.
+fn resolve_declaration_links(
+    modules: &[Module],
+    go_module: &Option<String>,
+    packages: &[(String, String)],
+    manifests: &[crate::model::Manifest],
+) -> (CallsByDecl, UsesByDecl, LinkedCites) {
+    let index = |kinds: &[&str]| {
+        let mut by_name: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        for (mi, m) in modules.iter().enumerate() {
+            for (di, d) in m.declarations.iter().enumerate() {
+                if !d.name.is_empty() && kinds.contains(&d.kind.as_str()) {
+                    by_name.entry(d.name.as_str()).or_default().push((mi, di));
+                }
+            }
+        }
+        by_name
+    };
+    let callable = index(CALLABLE_KINDS);
+    let cited = index(CITED_KINDS);
+
+    // The namespaces each file declares, in the one segment form the import
+    // resolution uses, so `Demo.Models` and `Demo::Models` are the same one,
+    // each paired with the folder it holds in when the language's namespace
+    // holds together with its folder (an empty folder otherwise).
+    let declared: Vec<HashSet<(String, String)>> = modules
+        .iter()
+        .map(|m| {
+            let folder = match crate::extract::namespace_scope(&m.language) {
+                "folder" => parent_dir(&m.path),
+                _ => String::new(),
+            };
+            m.namespaces.iter().map(|ns| (folder.clone(), canon_segments(ns))).collect()
+        })
+        .collect();
+    // The namespaces each file sees: its own, and in a language whose
+    // namespaces nest, every one above them (`A/B` sees `A`).
+    let in_sight: Vec<HashSet<(String, String)>> = modules
+        .iter()
+        .zip(&declared)
+        .map(|(m, own)| {
+            let mut all = own.clone();
+            if crate::extract::namespace_scope(&m.language) == "nested" {
+                for (folder, ns) in own {
+                    let mut cur = ns.as_str();
+                    while let Some((above, _)) = cur.rsplit_once('/') {
+                        all.insert((folder.clone(), above.to_string()));
+                        cur = above;
+                    }
+                }
+            }
+            all
+        })
+        .collect();
+    let globals = global_sight(modules, go_module, packages, manifests);
+    // The names a qualifier can give a file: its own name and its folder's.
+    let own_names: Vec<[String; 2]> = modules
+        .iter()
+        .map(|m| {
+            let dir = parent_dir(&m.path);
+            let folder = dir.rsplit('/').next().unwrap_or_default().to_string();
+            [file_stem(&m.path), folder]
+        })
+        .collect();
+
+    let mut calls: CallsByDecl = modules.iter().map(|m| vec![BTreeSet::new(); m.declarations.len()]).collect();
+    let mut uses: UsesByDecl = modules.iter().map(|m| vec![Vec::new(); m.declarations.len()]).collect();
+    let mut linked: LinkedCites = vec![HashSet::new(); modules.len()];
+
+    for (src, m) in modules.iter().enumerate() {
+        if m.calls.is_empty() && m.cites.is_empty() {
+            continue;
+        }
+        let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
+        let sees = |mi: usize, qualifier: &str| {
+            mi == src
+                || imported.contains(modules[mi].path.as_str())
+                || globals.sees(src, &modules[mi].path)
+                || (modules[mi].language == m.language
+                    && (declared[mi].iter().any(|ns| in_sight[src].contains(ns))
+                        || (!qualifier.is_empty() && own_names[mi].iter().any(|n| n == qualifier))))
+        };
+        let sites = m
+            .calls
+            .iter()
+            .map(|s| (s, &callable, None))
+            .chain(m.cites.iter().enumerate().map(|(i, s)| (s, &cited, Some(i))));
+        for (site, by_name, cite_at) in sites {
+            let is_call = cite_at.is_none();
+            let Some(all) = by_name.get(site.name.as_str()) else { continue };
+            let from = enclosing(&m.declarations, site.line);
+            let chosen: Vec<(usize, usize)> = all
+                .iter()
+                .copied()
+                .filter(|&(mi, _)| sees(mi, &site.qualifier))
+                // A type named inside its own body is not a use of it.
+                .filter(|&(mi, di)| is_call || !(mi == src && from == Some(di)))
+                .collect();
+            if chosen.is_empty() || chosen.len() > MAX_SAME_NAME {
+                continue;
+            }
+            if let Some(i) = cite_at {
+                linked[src].insert(i);
+            }
+            let from_name = from.map_or(String::new(), |di| m.declarations[di].name.clone());
+            for (dst_mi, dst_di) in chosen {
+                uses[dst_mi][dst_di].push(UseSite {
+                    file: m.path.clone(),
+                    line: site.line,
+                    from: from_name.clone(),
+                });
+                if is_call && let Some(di) = from {
+                    calls[src][di].insert(site.name.clone());
+                }
+            }
+        }
+    }
+    (calls, uses, linked)
+}
+
+/// The files the global imports put in sight: each file that writes one gives
+/// a group, the files its imports resolve to, and every file of its language
+/// under its project folder sees that group.
+struct GlobalSight {
+    /// The files each group puts in sight.
+    groups: Vec<HashSet<String>>,
+    /// The groups each module sees, by position in `modules`.
+    seen_by: Vec<Vec<usize>>,
+}
+
+impl GlobalSight {
+    fn sees(&self, src: usize, path: &str) -> bool {
+        self.seen_by[src].iter().any(|&g| self.groups[g].contains(path))
+    }
+}
+
+/// What the global imports of the project put in sight of each file. The
+/// scope of a global import is the folder of the nearest manifest above the
+/// file that writes it, or that file's own folder when no manifest is above
+/// it, and only files of the same language see it.
+fn global_sight(
+    modules: &[Module],
+    go_module: &Option<String>,
+    packages: &[(String, String)],
+    manifests: &[crate::model::Manifest],
+) -> GlobalSight {
+    let mut sight = GlobalSight { groups: Vec::new(), seen_by: vec![Vec::new(); modules.len()] };
+    if modules.iter().all(|m| m.global_imports.is_empty()) {
+        return sight;
+    }
+    let resolver = Resolver::new(modules, go_module, packages);
+    let manifest_dirs: Vec<String> = manifests.iter().map(|m| parent_dir(&m.path)).collect();
+    for g in modules.iter().filter(|g| !g.global_imports.is_empty()) {
+        let scope = manifest_dirs
+            .iter()
+            .filter(|d| is_under(&g.path, d))
+            .max_by_key(|d| d.len())
+            .cloned()
+            .unwrap_or_else(|| parent_dir(&g.path));
+        let targets: HashSet<String> = g.global_imports.iter().flat_map(|imp| resolver.resolve(imp, g)).collect();
+        if targets.is_empty() {
+            continue;
+        }
+        let group = sight.groups.len();
+        sight.groups.push(targets);
+        for (si, m) in modules.iter().enumerate() {
+            if m.language == g.language && is_under(&m.path, &scope) {
+                sight.seen_by[si].push(group);
+            }
+        }
+    }
+    sight
+}
+
+/// The path sits somewhere under `dir` (the root holds everything).
+fn is_under(path: &str, dir: &str) -> bool {
+    dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// The declaration a line falls inside: the innermost one that starts at or
+/// above it and has not ended yet. `None` when the line sits outside every
+/// declaration (top-level code). A declaration with no end line recorded
+/// covers only what starts after it, which is the best an older map allows.
+fn enclosing(declarations: &[Decl], line: usize) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, d) in declarations.iter().enumerate() {
+        let covers = d.line <= line && (d.end_line == 0 || d.end_line >= line);
+        if covers && best.is_none_or(|b| declarations[b].line <= d.line) {
+            best = Some(i);
+        }
+    }
+    best
+}
+
 fn build_stem_index(modules: &[Module]) -> HashMap<String, Vec<String>> {
     let mut m: HashMap<String, Vec<String>> = HashMap::new();
     for module in modules {
@@ -262,74 +535,127 @@ fn build_stem_index(modules: &[Module]) -> HashMap<String, Vec<String>> {
     m
 }
 
-#[allow(clippy::too_many_arguments)]
-fn resolve(
-    imp: &str,
-    from: &str,
-    root_aliases: &[&str],
-    ns_index: &HashMap<String, Vec<String>>,
-    stem_index: &HashMap<String, Vec<String>>,
-    dir_index: &HashMap<String, Vec<String>>,
-    module_paths: &HashSet<&str>,
-    go_module: &Option<String>,
-    packages: &[(String, String)],
-) -> Vec<String> {
-    // Try every resolution shape; whichever applies wins. No language switch.
-    // Lookups run on the canonical segment form so no shape ever cares which
-    // separator the import was written with.
-    let canon = canon_segments(imp);
-    // 1) Namespace/package match: the import names a declared namespace (the
-    //    common case for namespace languages — a using shared by many files).
-    if let Some(v) = ns_index.get(&canon) {
-        return v.clone();
+/// Everything import resolution reads, indexed once for the whole project.
+struct Resolver<'a> {
+    /// Per language, each declared namespace in canonical segment form -> the
+    /// files that declare it. Split by language: a namespace of another
+    /// language never answers an import.
+    ns_index: HashMap<&'a str, HashMap<String, Vec<String>>>,
+    stem_index: HashMap<String, Vec<String>>,
+    dir_index: HashMap<String, Vec<String>>,
+    module_paths: HashSet<&'a str>,
+    go_module: &'a Option<String>,
+    packages: &'a [(String, String)],
+    /// What each `(package, rest)` pair resolved to, once asked.
+    package_hits: RefCell<HashMap<(String, String), Vec<String>>>,
+}
+
+impl<'a> Resolver<'a> {
+    fn new(modules: &'a [Module], go_module: &'a Option<String>, packages: &'a [(String, String)]) -> Self {
+        let mut ns_index: HashMap<&str, HashMap<String, Vec<String>>> = HashMap::new();
+        let mut dir_index: HashMap<String, Vec<String>> = HashMap::new(); // dir -> module paths
+        for m in modules {
+            for ns in &m.namespaces {
+                // Index namespaces in canonical segment form so a lookup never
+                // depends on which separator the language writes (`\`, `.`, `::`).
+                ns_index
+                    .entry(m.language.as_str())
+                    .or_default()
+                    .entry(canon_segments(ns))
+                    .or_default()
+                    .push(m.path.clone());
+            }
+            dir_index.entry(parent_dir(&m.path)).or_default().push(m.path.clone());
+        }
+        Resolver {
+            ns_index,
+            stem_index: build_stem_index(modules),
+            dir_index,
+            module_paths: modules.iter().map(|m| m.path.as_str()).collect(),
+            go_module,
+            packages,
+            package_hits: RefCell::new(HashMap::new()),
+        }
     }
-    // 1b) Fully-qualified-name match: the import names a TYPE inside a
-    //     declared namespace — retry with the final segment dropped, narrowed
-    //     to the file named after the type (the file-per-type convention) so
-    //     one FQCN doesn't edge to every file in the namespace. When no file
-    //     carries the type's name, keep the whole bucket: coupling at
-    //     namespace granularity, the same evidence shape (1) accepts.
-    if let Some((ns, type_name)) = canon.rsplit_once('/')
-        && let Some(v) = ns_index.get(ns) {
+
+    /// The project files one import of `importer` names. Empty when it names
+    /// nothing inside the project: an external dependency.
+    fn resolve(&self, imp: &str, importer: &Module) -> Vec<String> {
+        let from = importer.path.as_str();
+        let (stem_index, dir_index, module_paths) = (&self.stem_index, &self.dir_index, &self.module_paths);
+        // Try every resolution shape; whichever applies wins. No language switch.
+        // Lookups run on the canonical segment form so no shape ever cares which
+        // separator the import was written with — except for an import that
+        // ends in an extension of the importer's own language, which is a file
+        // path: its dots are the file's, not separators.
+        let file_path = ends_in_own_extension(imp, crate::extract::extensions(&importer.language));
+        let canon = if file_path { imp.replace('\\', "/").replace("::", "/") } else { canon_segments(imp) };
+        let cleaned = canon.strip_prefix("package:").unwrap_or(&canon);
+        // 0) A file path is read first from the importer's own folder.
+        if file_path && !cleaned.starts_with('.') {
+            let beside = join_relative(from, cleaned);
+            if module_paths.contains(beside.as_str()) {
+                return vec![beside];
+            }
+        }
+        let namespaces = self.ns_index.get(importer.language.as_str());
+        // 1) Namespace/package match: the import names a namespace declared in
+        //    the importer's language (the common case for namespace languages —
+        //    a using shared by many files).
+        if let Some(v) = namespaces.and_then(|ix| ix.get(&canon)) {
+            return v.clone();
+        }
+        // 1b) Fully-qualified-name match: the import names a TYPE inside a
+        //     declared namespace — retry with the final segment dropped,
+        //     narrowed to the file named after the type (the file-per-type
+        //     convention) so one FQCN doesn't edge to every file in the
+        //     namespace. When no file carries the type's name, keep the whole
+        //     bucket: coupling at namespace granularity, the same evidence
+        //     shape (1) accepts.
+        if let Some((ns, type_name)) = canon.rsplit_once('/')
+            && let Some(v) = namespaces.and_then(|ix| ix.get(ns))
+        {
             let named: Vec<String> = v.iter().filter(|p| file_stem(p) == type_name).cloned().collect();
             return if named.is_empty() { v.clone() } else { named };
         }
-    // 2) Module-prefixed path: strip a declared module prefix and match the
-    //    directory it points at (the import-as-package-path shape). Raw on
-    //    both sides: these imports and the declared prefix are already
-    //    slash-separated, and canonicalizing a dotted module domain would
-    //    corrupt it.
-    if let Some(modpath) = go_module
-        && let Some(rest) = imp.strip_prefix(modpath.as_str()) {
+        // 2) Module-prefixed path: strip a declared module prefix and match the
+        //    directory it points at (the import-as-package-path shape). Raw on
+        //    both sides: these imports and the declared prefix are already
+        //    slash-separated, and canonicalizing a dotted module domain would
+        //    corrupt it.
+        if let Some(modpath) = self.go_module
+            && let Some(rest) = imp.strip_prefix(modpath.as_str())
+        {
             let rest = rest.trim_start_matches('/');
             if let Some(v) = dir_index.get(rest) {
                 return v.clone();
             }
         }
-    // 3) File path: a relative or path-ish import resolved to a module file.
-    //    The canonical form means dotted / `::` module paths take this branch
-    //    too — they are paths spelled with another separator.
-    let cleaned = canon.strip_prefix("package:").unwrap_or(&canon);
-    if cleaned.starts_with('.') {
-        let joined = join_relative(from, cleaned);
-        return resolve_path_candidate(&joined, stem_index, dir_index, module_paths);
-    }
-    if cleaned.contains('/') {
-        let hits = resolve_path_candidate(cleaned, stem_index, dir_index, module_paths);
-        if !hits.is_empty() {
-            return hits;
+        // 3) File path: a relative or path-ish import resolved to a module file.
+        //    The canonical form means dotted / `::` module paths take this branch
+        //    too — they are paths spelled with another separator.
+        if cleaned.starts_with('.') {
+            let joined = join_relative(from, cleaned);
+            return resolve_path_candidate(&joined, stem_index, dir_index, module_paths);
         }
-    }
-    // 4) Root-alias path: only for imports whose FIRST segment is one of the
-    //    importer language's declared root aliases (registry data — the engine
-    //    never spells one); any other first segment names an external
-    //    package, never the project root. Drop the alias and probe the tail
-    //    (and, because the final segment may name an ITEM inside the module,
-    //    the tail minus its last segment) against the importer's ancestor
-    //    directories, nearest first. The fixed probe order keeps resolution
-    //    deterministic. No aliases declared -> this branch never runs.
-    if let Some((alias, tail)) = canon.split_once('/')
-        && root_aliases.contains(&alias) {
+        if cleaned.contains('/') || file_path {
+            let hits = resolve_path_candidate(cleaned, stem_index, dir_index, module_paths);
+            if !hits.is_empty() {
+                return hits;
+            }
+        }
+        // 4) Root-alias path: only for imports whose FIRST segment is one of the
+        //    importer language's declared root aliases (registry data — the engine
+        //    never spells one); any other first segment names an external
+        //    package, never the project root. Drop the alias and probe the tail
+        //    (and, because the final segment may name an ITEM inside the module,
+        //    the tail minus its last segment) against the importer's ancestor
+        //    directories, nearest first. The fixed probe order keeps resolution
+        //    deterministic. No aliases declared -> this branch never runs.
+        let root_aliases = crate::extract::root_aliases(&importer.language);
+        if let Some((alias, tail)) = canon.split_once('/')
+            && root_aliases.contains(&alias)
+        {
             let mut tails = vec![tail.to_string()];
             if let Some((head, _)) = tail.rsplit_once('/') {
                 tails.push(head.to_string());
@@ -349,33 +675,74 @@ fn resolve(
                 }
             }
         }
-    // 5) Workspace package path: the first segment names a package the project
-    //    itself declares (its manifest's own name, `-` read as `_`). Drop it
-    //    and probe the tail (and the tail minus its last segment, which may
-    //    name an item) under that package's directory, the shallowest
-    //    directory first. Any other first segment stays an external package.
-    if let Some((first, tail)) = canon.split_once('/') {
-        let folded = fold_package(first);
-        for (_, dir) in packages.iter().filter(|(name, _)| *name == folded) {
-            let inside = |d: &String| dir.is_empty() || d == dir || d.starts_with(&format!("{dir}/"));
-            let mut bases: Vec<&String> = dir_index.keys().filter(|d| inside(d)).collect();
-            bases.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()).then_with(|| a.cmp(b)));
-            let mut tails = vec![tail.to_string()];
-            if let Some((head, _)) = tail.rsplit_once('/') {
-                tails.push(head.to_string());
-            }
-            for t in &tails {
-                for base in &bases {
-                    let cand = if base.is_empty() { t.clone() } else { format!("{base}/{t}") };
-                    let hits = resolve_path_candidate(&cand, stem_index, dir_index, module_paths);
-                    if !hits.is_empty() {
-                        return hits;
-                    }
-                }
+        // 5) Workspace package path: the longest leading run of segments that
+        //    names a package the project itself declares (its manifest's own
+        //    name, `-` read as `_`, a scoped `@scope/name` included). The rest
+        //    is probed (and the rest minus its last segment, which may name an
+        //    item) under that package's directory, the shallowest directory
+        //    first; failing that, the package file whose path ends in the rest
+        //    answers — the one a manifest that maps the package's paths onto a
+        //    deeper folder (`./x` onto `./src/x`) points at. Any other leading
+        //    run stays an external package.
+        let segments: Vec<&str> = canon.split('/').collect();
+        for cut in (1..segments.len()).rev() {
+            let name = fold_package(&segments[..cut].join("/"));
+            if self.packages.iter().any(|(n, _)| *n == name) {
+                return self.in_package(name, segments[cut..].join("/"));
             }
         }
+        Vec::new()
     }
-    Vec::new()
+
+    /// The files `tail` names inside the declared package `name` (resolution
+    /// shape 5). It depends on nothing but the two, and a package's module is
+    /// imported by many files, so each answer is kept for the next import.
+    fn in_package(&self, name: String, tail: String) -> Vec<String> {
+        let key = (name, tail);
+        if let Some(hits) = self.package_hits.borrow().get(&key) {
+            return hits.clone();
+        }
+        let (name, tail) = &key;
+        let (stem_index, dir_index, module_paths) = (&self.stem_index, &self.dir_index, &self.module_paths);
+        let dirs: Vec<&String> = self.packages.iter().filter(|(n, _)| n == name).map(|(_, d)| d).collect();
+        let mut tails = vec![tail.clone()];
+        if let Some((head, _)) = tail.rsplit_once('/') {
+            tails.push(head.to_string());
+        }
+        let probed = dirs.iter().find_map(|dir| {
+            let inside = |d: &String| is_under(d, dir) || d == *dir;
+            let mut bases: Vec<&String> = dir_index.keys().filter(|d| inside(d)).collect();
+            bases.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()).then_with(|| a.cmp(b)));
+            tails.iter().find_map(|t| {
+                bases.iter().find_map(|base| {
+                    let cand = if base.is_empty() { t.clone() } else { format!("{base}/{t}") };
+                    let hits = resolve_path_candidate(&cand, stem_index, dir_index, module_paths);
+                    (!hits.is_empty()).then_some(hits)
+                })
+            })
+        });
+        let hits = probed.unwrap_or_else(|| {
+            let ending = format!("/{}", strip_ext(tail));
+            let mut hits: Vec<String> = stem_index
+                .iter()
+                .filter(|(stem, _)| stem.ends_with(&ending) && dirs.iter().any(|d| is_under(stem, d)))
+                .flat_map(|(_, v)| v.iter().cloned())
+                .collect();
+            hits.sort(); // stable output: HashMap iteration order varies per run
+            hits
+        });
+        self.package_hits.borrow_mut().insert(key, hits.clone());
+        hits
+    }
+}
+
+/// The import ends in `.<ext>` for one of the importer language's own
+/// extensions, compared case for case: for a language whose extension is
+/// `ext`, `conta.ext` is a file while `Acme.Ext` stays a namespace.
+fn ends_in_own_extension(imp: &str, extensions: &[&str]) -> bool {
+    extensions.iter().any(|ext| {
+        imp.strip_suffix(ext).is_some_and(|head| head.len() > 1 && head.ends_with('.'))
+    })
 }
 
 /// A package name as imports spell it: lowercase, with `-` read as `_`.

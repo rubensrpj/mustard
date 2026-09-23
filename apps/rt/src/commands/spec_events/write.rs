@@ -60,11 +60,12 @@
 //! {"ok": true, "id": 10, "type": "lesson", "retired": [4]}
 //! ```
 //!
-//! Uma onda gravada depois da aprovação que leva a spec a ter mais ondas do
-//! que tinha quando foi aprovada avisa o crescimento em `warnings`, com as
-//! duas contas; o aviso nunca recusa. Um pedido (`request`) devolve em `next`
-//! o passo seguinte, pelo `effect`: gravar as ondas novas no fim ou as versões
-//! novas das que mudam, na mesma spec e na mesma branch.
+//! A onda nasce do backlog, e só o programa a grava: pelo `run write`, a onda é
+//! recusada, e a tarefa que traz um número de onda também, a não ser na
+//! versão nova de uma tarefa que repete a onda da versão que ela substitui.
+//! Tirar uma onda continua valendo. Um pedido (`request`) devolve em `next` o
+//! passo seguinte, pelo `effect`: gravar as tarefas novas, que entram no
+//! backlog, ou as versões novas das que mudam, na mesma spec e na mesma branch.
 //!
 //! Um pedido adiado (`deferred`) aponta uma pendência aberta da lista do
 //! projeto, a do checkout principal num worktree: o número pode vir escrito
@@ -151,18 +152,21 @@
 //! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
 //! de toda porta que grava o estado.
 //!
-//! A onda não tem mais teto de tarefas nem de provas de critério: quem corta
-//! o custo dela é o teto de turnos do próprio agente, no cabeçalho do molde
-//! (`mustard_core::domain::wave_prompt::requested_turns`), aplicado pela
-//! plataforma — não a gravação.
+//! A onda não tem mais teto de tarefas nem de provas de critério, e o agente
+//! dela também não tem teto de idas e voltas: a gravação não corta o custo da
+//! onda, e nem o molde do agente corta.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::{LESSON, RETIRE};
-use mustard_core::domain::spec_events::{type_spec, Hidden, Refusal, SpecLog, TaskDeclaration, PHASES};
+use mustard_core::domain::spec_events::{
+    type_spec, Block, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+    TASK_TITLE_MAX,
+};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, waves_grown_by, PhaseWriter, SpecState,
+    birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, PhaseWriter, SpecState,
     State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
@@ -176,10 +180,12 @@ use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
 /// fechamento grava ao rodar a prova; o veredito, o envio do pedido de uma
-/// onda, o que ela entregou e o commit, que só a rodada grava; e a resposta do
-/// assistente, que o despachante grava no fim de cada resposta.
+/// onda, o que ela entregou e o commit, que só a rodada grava; a tabela de
+/// rastreabilidade, que o fechamento grava ao aceitar o veredito final; e a
+/// resposta do assistente, que o despachante grava no fim de cada resposta.
 /// O `run write` não os grava, nem tira ou revê um deles.
-const BINARY_ONLY: &[&str] = &["criterion_run", "verdict", "send", "delivered", "commit", "response"];
+const BINARY_ONLY: &[&str] =
+    &["criterion_run", "verdict", "send", "delivered", "commit", "tracking", "response"];
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
@@ -273,6 +279,11 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     if BINARY_ONLY.contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
     }
+    // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
+    // uma onda sem pronto-quando não pode mandar completar o que nunca passa.
+    if event_type == "wave" {
+        return refuse(Refusal::WaveByBacklog);
+    }
     if event_type == "message" && hook_only_message(&draft) {
         return refuse(Refusal::UserMessageByHook { spec: spec.trim().to_string() });
     }
@@ -290,7 +301,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
         .flatten();
     match record_in(&project, &opts.root, spec, event_type, draft, None) {
-        Ok(Recorded { written, grew, survey }) => {
+        Ok(Recorded { written, survey }) => {
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -316,32 +327,45 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             for (fact, finding) in &written.citation_warnings {
                 warnings.extend(finding.warning(*fact, lang));
             }
-            // O crescimento das ondas depois da aprovação só avisa.
-            if let Some((approved, now)) = grew {
-                warnings.push(
-                    translate("spec_events.waves_grew", lang)
-                        .replace("{approved}", &approved.to_string())
-                        .replace("{now}", &now.to_string()),
-                );
-            }
             // O pedido muda o plano: a cópia para o banco da página sai logo
-            // depois dele. A que não pôde ser preparada só avisa, e a cópia
-            // seguinte leva os mesmos itens.
+            // depois dele. Toda gravação que muda o plano de uma spec já
+            // aprovada — onda, tarefa, critério ou item do combinado — leva
+            // a mesma cópia, sem esperar um pedido: sem isso a cópia do
+            // pedido saía antes das ondas novas, e a página ficava sem elas
+            // até a rodada seguinte. A que não pôde ser preparada só avisa, e
+            // a cópia seguinte leva os mesmos itens.
             let mut next = next.map(|key| translate(&key, lang).to_string());
-            if let Some(said) = next.as_mut() {
+            let changes_plan =
+                matches!(type_spec(event_type).map(|t| t.block), Some(Block::Waves | Block::Criteria | Block::Agreed));
+            let already_approved = store::spec_file(&project.root, spec)
+                .ok()
+                .and_then(|path| store::read(&path).ok().flatten())
+                .is_some_and(|log| State::from_log(&log).approved);
+            if next.is_some() || (changes_plan && already_approved) {
                 match super::pages::copy::prepare(&project.root, spec, super::pages::copy::Moment::Request, lang) {
                     Ok(Some(prepared)) => {
                         report["copy"] = prepared.to_value();
-                        for sentence in prepared.order(spec.trim(), None, lang) {
-                            said.push(' ');
-                            said.push_str(&sentence);
+                        let sentences = prepared.order(spec.trim(), None, lang);
+                        match next.as_mut() {
+                            Some(said) => {
+                                for sentence in sentences {
+                                    said.push(' ');
+                                    said.push_str(&sentence);
+                                }
+                            }
+                            None => next = Some(sentences.join(" ")),
                         }
                     }
                     Ok(None) => {}
                     Err(refusal) => {
                         warnings.push(refusal.message(lang));
-                        said.push(' ');
-                        said.push_str(translate("page.copy.failed", lang));
+                        match next.as_mut() {
+                            Some(said) => {
+                                said.push(' ');
+                                said.push_str(translate("page.copy.failed", lang));
+                            }
+                            None => next = Some(translate("page.copy.failed", lang).to_string()),
+                        }
                     }
                 }
             }
@@ -363,20 +387,37 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 
 /// Para os testes: grava como a produção grava. A mensagem do usuário chega
 /// pelos ganchos, e o que uma onda entregou e o commit, pela rodada; os três
-/// passam por [`record`], como lá. O resto passa pelo `run write`. O relatório
-/// tem a forma do `run write`, e a spec que não foi aberta é recusada do
-/// mesmo jeito.
+/// passam por [`record`], como lá. A onda e a tarefa que já traz o número da
+/// onda são do programa, que monta os lotes: também passam por [`record`], e
+/// a onda sai com o autor do programa, como a rodada a grava. O resto passa
+/// pelo `run write`. O relatório tem a forma do `run write`, e a spec que não
+/// foi aberta é recusada do mesmo jeito.
 #[cfg(test)]
 pub(crate) fn seed_at(opts: &WriteOpts) -> Value {
     let event_type = opts.event_type.trim();
     let draft = serde_json::from_str::<Value>(&opts.json).ok().and_then(|v| v.as_object().cloned());
-    let (Some(spec), Some(draft)) = (opts.spec.as_deref(), draft) else {
+    let (Some(spec), Some(mut draft)) = (opts.spec.as_deref(), draft) else {
         return write_at(opts);
     };
     let project = super::project(&opts.root);
     let by_hooks = matches!(event_type, "delivered" | "commit") || (event_type == "message" && by_user(&draft));
-    if !by_hooks || spec_was_opened(&project.root, spec).is_err() {
+    let by_program = event_type == "wave" || (event_type == "task" && draft.contains_key("wave"));
+    if !(by_hooks || by_program) || spec_was_opened(&project.root, spec).is_err() {
+        // A tarefa do backlog vai pela porta do modelo, que exige o título: o
+        // ajudante manda um quando o teste não deu o seu.
+        if event_type == "task" && !draft.contains_key("title") {
+            draft.insert("title".to_string(), json!("Entregar a tarefa"));
+            return write_at(&WriteOpts {
+                root: opts.root.clone(),
+                spec: opts.spec.clone(),
+                event_type: opts.event_type.clone(),
+                json: Value::Object(draft).to_string(),
+            });
+        }
         return write_at(opts);
+    }
+    if event_type == "wave" {
+        draft.insert("author".to_string(), json!("binary"));
     }
     match record(&opts.root, spec, event_type, draft, PhaseWriter::Binary) {
         Ok(Recorded { written, .. }) => {
@@ -439,13 +480,9 @@ fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result
     }
 }
 
-/// O que uma gravação deixou: o evento, o crescimento das ondas e o passo do
-/// levantamento.
+/// O que uma gravação deixou: o evento e o passo do levantamento.
 pub struct Recorded {
     pub(crate) written: store::Written,
-    /// As ondas aprovadas e as de agora, quando a onda gravada fez a spec
-    /// passar das ondas que tinha na aprovação que vale.
-    pub(crate) grew: Option<(usize, usize)>,
     /// O passo do levantamento depois de uma gravação do modelo, como o
     /// relatório o mostra ([`survey_report`]).
     pub(crate) survey: Option<Map<String, Value>>,
@@ -468,11 +505,15 @@ pub fn record(
     record_in(&super::project(start), start, spec, event_type, draft, Some(by))
 }
 
-/// As três declarações que faltam num rascunho de tarefa: o que ela faz, os
-/// arquivos que toca e de quais tarefas depende. `files` e `depends_on`
-/// contam como declarados só pela chave estar presente, mesmo com a lista
-/// vazia — uma tarefa sem dependência declara `"depends_on": []`.
-fn task_declarations_missing(draft: &Map<String, Value>) -> Vec<TaskDeclaration> {
+/// As declarações que faltam num rascunho de tarefa: o que ela faz, os
+/// arquivos que toca, de quais tarefas depende e, na tarefa gravada pelo
+/// modelo (`by_model`), o título curto que diz o que ela entrega. `files` e
+/// `depends_on` contam como declarados só pela chave estar presente, mesmo
+/// com a lista vazia — uma tarefa sem dependência declara `"depends_on": []`.
+/// O título vazio ou com mais de [`TASK_TITLE_MAX`] caracteres conta como
+/// faltando. A versão que o programa grava não precisa dele: herda o da
+/// versão que substitui ([`inherit_task_title`]).
+fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<TaskDeclaration> {
     let mut missing = Vec::new();
     let what = draft.get("text").and_then(Value::as_str).is_none_or(|text| text.trim().is_empty());
     if what {
@@ -484,7 +525,26 @@ fn task_declarations_missing(draft: &Map<String, Value>) -> Vec<TaskDeclaration>
     if !draft.contains_key("depends_on") {
         missing.push(TaskDeclaration::DependsOn);
     }
+    let title = draft.get("title").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+    if by_model && (title.is_empty() || title.chars().count() > TASK_TITLE_MAX) {
+        missing.push(TaskDeclaration::Title);
+    }
     missing
+}
+
+/// A versão de tarefa gravada pelo programa sem título leva o título da
+/// versão que ela substitui, quando essa tinha um. O evento gravado não muda
+/// mais, então ler a versão antiga antes da trava não perde nada.
+fn inherit_task_title(path: &Path, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
+    if draft.get("title").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty()) {
+        return Ok(());
+    }
+    let Some(old) = draft.get("replaces").and_then(Value::as_u64) else { return Ok(()) };
+    let Some(log) = store::read(path)? else { return Ok(()) };
+    if let Some(title) = log.get(old).and_then(|e| e.fields.get("title")).filter(|t| t.is_string()) {
+        draft.insert("title".into(), title.clone());
+    }
+    Ok(())
 }
 
 /// A única gravação no arquivo de eventos de uma spec: toda porta chega
@@ -505,20 +565,20 @@ fn record_in(
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
     if event_type == "task" {
-        let missing = task_declarations_missing(&draft);
+        let missing = task_declarations_missing(&draft, by.is_none());
         if !missing.is_empty() {
             return Err(Refusal::TaskDeclarationMissing { missing });
         }
     }
+    let mut draft = draft;
     let path = store::spec_file(&project.root, spec)?;
+    if event_type == "task" && by.is_some() {
+        inherit_task_title(&path, &mut draft)?;
+    }
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
-    // A conta das ondas sai com a trava presa: duas ondas gravadas ao mesmo
-    // tempo nunca avisam a mesma conta.
-    let mut grew = None;
     let mut survey = None;
-    let wave = event_type == "wave";
     let lang = project.lang;
     let written = store::write_guarded(
         &path,
@@ -534,13 +594,9 @@ fn record_in(
             }
             Ok(())
         },
-        |log| {
-            if wave {
-                grew = waves_grown_by(log, log.max_id());
-            }
-        },
+        |_| {},
     )?;
-    Ok(Recorded { written, grew, survey })
+    Ok(Recorded { written, survey })
 }
 
 /// A fase que uma gravação de `state` traz e o `state` que ela revê; nos
@@ -555,7 +611,8 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 
 /// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
 /// depois dela: a mudança de fase, a mensagem que a resposta responde, o
-/// objetivo, o levantamento e o dono do item combinado.
+/// objetivo, o levantamento, o dono do item combinado e a dependência entre
+/// tarefas.
 fn record_rules(
     spec: &str,
     before: &SpecLog,
@@ -565,10 +622,141 @@ fn record_rules(
     by: Option<PhaseWriter>,
 ) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
+    if by.is_none() {
+        wave_by_backlog_rule(before, after)?;
+    }
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
     survey_rule(spec, before, after)?;
+    task_dependency_rule(before, after)?;
     owner_rule(before, after)
+}
+
+/// A onda nasce do backlog: só o programa a grava, na hora de despachar. Pelo
+/// `run write`, a gravação de uma onda é recusada, e a de uma tarefa com
+/// número de onda também, a não ser na versão nova de uma tarefa que repete a
+/// onda da versão que ela substitui — rever a tarefa de uma onda que já saiu
+/// não pode jogá-la de volta no backlog. Tirar uma onda continua valendo.
+fn wave_by_backlog_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
+    for event in after.events.iter().filter(|event| !had.contains(&event.id)) {
+        let refused = match event.event_type.as_str() {
+            "wave" => true,
+            "task" => event.wave().is_some_and(|n| {
+                let revised = event.int("replaces").and_then(|id| before.get(id));
+                revised.and_then(SpecEvent::wave) != Some(n)
+            }),
+            _ => false,
+        };
+        if refused {
+            return Err(Refusal::WaveByBacklog);
+        }
+    }
+    Ok(())
+}
+
+/// A tarefa que uma gravação acrescenta a `after` e não estava em `before`;
+/// nenhuma para uma gravação que não é de uma tarefa nova.
+fn new_task<'a>(before: &SpecLog, after: &'a SpecLog) -> Option<&'a SpecEvent> {
+    let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
+    after.events.iter().find(|event| event.event_type == "task" && !had.contains(&event.id))
+}
+
+/// O número da versão vigente da tarefa desta spec que `value` aponta (pelo
+/// número do evento ou pelo código), ou `None` quando não existe tarefa
+/// nenhuma com esse número ou código. Um número ou código que aponta uma
+/// versão já substituída resolve para a versão nova, do mesmo jeito que o
+/// resto do arquivo trata a identidade de um item.
+fn task_ref(after: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
+    let raw = match EventRef::from_value(value)? {
+        EventRef::Id(id) => id,
+        EventRef::Code(code) => after
+            .events
+            .iter()
+            .filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code))
+            .map(|event| event.id)
+            .next_back()?,
+    };
+    after.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
+}
+
+/// O texto que nomeia, na recusa, uma dependência que não bateu com tarefa
+/// nenhuma: exatamente o que `value` trazia, código ou número.
+fn dependency_label(value: &Value) -> String {
+    value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())
+}
+
+/// As tarefas de que `task` depende, já resolvidas a números; uma referência
+/// que não aponta tarefa nenhuma desta spec some da lista — quem confere a
+/// existência da dependência é [`task_dependency_rule`], não este helper.
+fn task_depends_on(task: &SpecEvent, after: &SpecLog, codes: &BTreeMap<u64, String>) -> Vec<u64> {
+    task.fields
+        .get("depends_on")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| task_ref(after, codes, value))
+        .collect()
+}
+
+/// O primeiro círculo que se fecha partindo de `start`, pelo grafo de
+/// dependências `graph`: a lista de números, na ordem, terminando de volta em
+/// `start`. `None` quando nenhum círculo se fecha.
+fn find_cycle(start: u64, graph: &BTreeMap<u64, Vec<u64>>) -> Option<Vec<u64>> {
+    fn walk(
+        node: u64,
+        start: u64,
+        graph: &BTreeMap<u64, Vec<u64>>,
+        path: &mut Vec<u64>,
+        seen: &mut BTreeSet<u64>,
+    ) -> Option<Vec<u64>> {
+        for &next in graph.get(&node).map(Vec::as_slice).unwrap_or_default() {
+            if next == start {
+                let mut cycle = path.clone();
+                cycle.push(next);
+                return Some(cycle);
+            }
+            if seen.insert(next) {
+                path.push(next);
+                if let Some(found) = walk(next, start, graph, path, seen) {
+                    return Some(found);
+                }
+                path.pop();
+            }
+        }
+        None
+    }
+    let mut path = vec![start];
+    let mut seen = BTreeSet::from([start]);
+    walk(start, start, graph, &mut path, &mut seen)
+}
+
+/// A tarefa recém-gravada só aponta, em `depends_on`, tarefas desta spec, e
+/// nenhum círculo se fecha entre elas: a recusa nomeia a dependência que não
+/// existe, ou o círculo inteiro, na ordem, voltando ao começo.
+fn task_dependency_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    let Some(task) = new_task(before, after) else {
+        return Ok(());
+    };
+    let codes = after.codes();
+    let task_label = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+    let raw: Vec<Value> = task.fields.get("depends_on").and_then(Value::as_array).cloned().unwrap_or_default();
+    for value in &raw {
+        if task_ref(after, &codes, value).is_none() {
+            return Err(Refusal::TaskDependsOnUnknown { task: task_label, depends_on: dependency_label(value) });
+        }
+    }
+    let graph: BTreeMap<u64, Vec<u64>> = after
+        .visible()
+        .into_iter()
+        .filter(|event| event.event_type == "task")
+        .map(|event| (event.id, task_depends_on(event, after, &codes)))
+        .collect();
+    if let Some(cycle) = find_cycle(task.id, &graph) {
+        let names = cycle.into_iter().map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string())).collect();
+        return Err(Refusal::TaskDependencyCycle { cycle: names });
+    }
+    Ok(())
 }
 
 /// Gravações do binário na spec conferidas antes, sem gravar nada: cada uma
@@ -1071,7 +1259,7 @@ mod tests {
         let decision = r#"{"author":"binary","text":"t","keys":["k"],"why":"w"}"#;
         assert_eq!(write(root, "decision", decision)["reason"], json!("binary-author"));
 
-        let criterion = format!(r#"{{"when":"w","then":"t","proof":"cd .","origin":{msg}}}"#);
+        let criterion = format!(r#"{{"when":"w","then":"t","proof":"cd .","form":"ubiquitous","origin":{msg}}}"#);
         let accepted = write(root, "criterion", &criterion);
         assert_eq!(accepted["ok"], json!(true), "a spec rendered from its events takes a criterion: {accepted}");
         let md = root.join(".claude").join("spec").join("teste").join("spec.md");
@@ -1080,7 +1268,7 @@ mod tests {
         let events = lines(root);
 
         let removal = format!(r#"{{"targets":[{}],"reason":"engano"}}"#, accepted["id"]);
-        let revision = format!(r#"{{"when":"w","then":"t","proof":"cd ..","origin":{msg},"replaces":{}}}"#, accepted["id"]);
+        let revision = format!(r#"{{"when":"w","then":"t","proof":"cd ..","form":"ubiquitous","origin":{msg},"replaces":{}}}"#, accepted["id"]);
         for (event_type, payload) in [
             ("criterion", criterion.as_str()),
             ("remove", removal.as_str()),
@@ -1455,16 +1643,18 @@ mod tests {
     }
 
     /// Depois da aprovação, o item combinado que o modelo grava nasce com
-    /// dono: sem onda nem o projeto todo, a gravação é recusada com o jeito de
-    /// dar dono, e nada é gravado; a onda que ainda vai entrar no plano vale.
-    /// Antes da aprovação, o dono vem do plano, e a gravação passa.
+    /// dono: sem dono, a gravação é recusada com o jeito de dar dono pelos
+    /// arquivos, e nada é gravado; os arquivos das tarefas, o projeto todo e a
+    /// onda dita do plano antigo valem. Antes da aprovação, o dono vem do
+    /// plano, e a gravação passa.
     #[test]
     fn after_the_approval_a_new_agreed_item_is_written_only_with_an_owner() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         born(root);
         let said = write(root, "message", r#"{"author":"user","text":"decidi"}"#)["id"].as_u64().unwrap();
-        let crit = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": said}).to_string());
+        let crit = write(root, "criterion",
+            &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}).to_string());
         let wave = json!({"n": 1, "text": "Onda.", "criteria": [crit["id"]], "done_when": "passa", "origin": said});
         assert_eq!(write(root, "wave", &wave.to_string())["ok"], json!(true));
         let decision = |extra: Value| {
@@ -1475,24 +1665,29 @@ mod tests {
         assert_eq!(write(root, "decision", &decision(json!({})))["ok"], json!(true), "em plano o dono vem do plano");
 
         witness_approves(root);
-        for refused_owner in [json!({}), json!({"applies_to": {"files": ["src/**"]}})] {
+        for refused_owner in [json!({}), json!({"applies_to": {"files": [" "]}})] {
             let before = lines(root);
             let refused = write(root, "decision", &decision(refused_owner.clone()));
             assert_eq!(refused["reason"], json!("owner-missing"), "{refused_owner}: {refused}");
-            assert!(refused["hint"].as_str().unwrap().contains("`\"waves\":[3]`"), "{refused}");
+            let hint = refused["hint"].as_str().unwrap();
+            assert!(hint.contains("applies_to") && !hint.contains("waves"), "{refused}");
             assert_eq!(lines(root), before, "nada foi gravado");
         }
-        for owner in [json!({"waves": [1]}), json!({"waves": [2]}), json!({"applies_to": {"files": ["**"]}})] {
+        for owner in [
+            json!({"applies_to": {"files": ["src/**"]}}),
+            json!({"waves": [1]}),
+            json!({"applies_to": {"files": ["**"]}}),
+        ] {
             let out = write(root, "decision", &decision(owner.clone()));
             assert_eq!(out["ok"], json!(true), "{owner}: {out}");
         }
     }
 
     /// A onda não nasce mais pequena por contagem: a quarta tarefa é gravada
-    /// que nem a terceira, e do mesmo jeito a quarta prova de critério — quem
-    /// corta o custo agora é o teto de turnos do agente, não a gravação. Este
-    /// é o caso que a recusa `wave-too-big` barrava antes desta onda; ela
-    /// saiu do código, e nenhuma recusa a substitui aqui.
+    /// que nem a terceira, e do mesmo jeito a quarta prova de critério — a
+    /// gravação não corta o custo da onda. Este é o caso que a recusa
+    /// `wave-too-big` barrava antes desta onda; ela saiu do código, e nenhuma
+    /// recusa a substitui aqui.
     #[test]
     fn a_fourth_task_and_a_fourth_proof_are_recorded_like_the_third() {
         let dir = tempdir().unwrap();
@@ -1500,7 +1695,7 @@ mod tests {
         born(root);
         let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
         let crit1 = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p1", "origin": said}).to_string())["id"].as_u64().unwrap();
+            &json!({"when": "a", "then": "b", "proof": "p1", "form": "ubiquitous", "origin": said}).to_string())["id"].as_u64().unwrap();
         let wave = write(root, "wave",
             &json!({"n": 1, "text": "Onda 1.", "criteria": [crit1], "done_when": "passa", "origin": said}).to_string());
         assert_eq!(wave["ok"], json!(true), "{wave}");
@@ -1517,7 +1712,8 @@ mod tests {
 
         // Quatro provas de critério passam, do mesmo jeito.
         let crit = |proof: &str| {
-            write(root, "criterion", &json!({"when": "a", "then": "b", "proof": proof, "origin": said}).to_string())["id"]
+            write(root, "criterion",
+                &json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous", "origin": said}).to_string())["id"]
                 .as_u64()
                 .unwrap()
         };
@@ -1667,7 +1863,7 @@ mod tests {
         // O mesmo campo, agora declarado pelo tipo da onda, passa.
         let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
         let crit = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p", "origin": said}).to_string())["id"]
+            &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}).to_string())["id"]
             .as_u64()
             .unwrap();
         let wave = write(root, "wave",
@@ -1969,10 +2165,12 @@ mod tests {
     fn planned_with_waves(root: &std::path::Path, waves: u64) -> (u64, u64) {
         born(root);
         let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
-        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "origin": msg});
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
         let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        // As ondas entram como o programa as grava ao montar os lotes.
         for n in 1..=waves {
-            assert_eq!(write_wave(root, n, msg, criterion, None)["ok"], json!(true));
+            let wave = json!({"n": n, "text": format!("Onda {n}."), "criteria": [criterion], "done_when": "d", "origin": msg});
+            assert_eq!(write(root, "wave", &wave.to_string())["ok"], json!(true));
         }
         (msg, criterion)
     }
@@ -1982,7 +2180,15 @@ mod tests {
         if let Some(old) = replaces {
             wave["replaces"] = json!(old);
         }
-        write(root, "wave", &wave.to_string())
+        // A onda entra pela porta do modelo, a do `run write`, e não pela
+        // semente dos testes, que grava a onda como o programa.
+        open_spec(root, "teste");
+        write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            event_type: "wave".into(),
+            json: wave.to_string(),
+        })
     }
 
     /// Um pedido do usuário depois da aprovação entra na mesma spec, na mesma
@@ -2025,34 +2231,67 @@ mod tests {
         assert_eq!(specs, ["teste"], "no spec was opened");
     }
 
-    /// Quatro ondas aprovadas e duas novas: cada onda nova é gravada, sai
-    /// sem recusa e avisa a conta; a segunda diz "tinha 4, agora tem 6". A
-    /// versão nova de uma onda não avisa.
+    /// A onda nasce do backlog: pela porta do modelo, a onda nova e a versão
+    /// nova de uma onda são recusadas, antes e depois da aprovação, e nada é
+    /// gravado. Tirar uma onda continua valendo.
     #[test]
-    fn new_waves_after_approval_warn_the_growth_and_are_written() {
+    fn a_wave_through_the_models_door_is_refused_before_and_after_approval() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (msg, criterion) = planned_with_waves(root, 4);
-        let before = write_wave(root, 5, msg, criterion, None);
-        assert!(before.get("warnings").is_none(), "no approval yet, no growth: {before}");
-        let removed = write(root, "remove", &json!({"targets": [before["id"]], "reason": "cedo"}).to_string());
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let fourth = log.visible().into_iter().rev().find(|e| e.event_type == "wave").unwrap().id;
+        for approved in [false, true] {
+            if approved {
+                witness_approves(root);
+            }
+            for (n, replaces) in [(5, None), (4, Some(fourth))] {
+                let before = lines(root);
+                let out = write_wave(root, n, msg, criterion, replaces);
+                assert_eq!(out["reason"], json!("wave-by-backlog"), "aprovada {approved}, onda {n}: {out}");
+                assert_eq!(out["hint"], json!(translate("spec_events.wave_by_backlog", Locale::PtBr)), "{out}");
+                assert_eq!(lines(root), before, "nada foi gravado");
+            }
+        }
+        let removed = write(root, "remove", &json!({"targets": [fourth], "reason": "sai"}).to_string());
         assert_eq!(removed["ok"], json!(true), "{removed}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 3, "a onda tirada saiu");
+        assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
+    }
+
+    /// A onda semeada pelos testes sai como a rodada a grava: com o autor do
+    /// programa, pela porta do binário. A tarefa que traz o número da onda
+    /// vai pela mesma porta. Nada passa pela gravação do modelo: ela recusa o
+    /// autor do programa, e numa spec aprovada juntaria ao relatório a cópia
+    /// para o banco da página.
+    #[test]
+    fn a_onda_semeada_pelos_testes_sai_com_autor_binario() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
+        let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
         witness_approves(root);
 
-        let fifth = write_wave(root, 5, msg, criterion, None);
-        assert_eq!(fifth["ok"], json!(true), "{fifth}");
-        assert_eq!(fifth["warnings"], json!(["A spec tinha 4 ondas aprovadas, agora tem 5."]), "{fifth}");
-        let sixth = write_wave(root, 6, msg, criterion, None);
-        assert_eq!(sixth["ok"], json!(true), "{sixth}");
-        assert_eq!(sixth["warnings"], json!(["A spec tinha 4 ondas aprovadas, agora tem 6."]), "{sixth}");
-
-        let revised = write_wave(root, 6, msg, criterion, sixth["id"].as_u64());
-        assert_eq!(revised["ok"], json!(true), "{revised}");
-        assert!(revised.get("warnings").is_none(), "a new version of a wave is not growth: {revised}");
+        let wave = json!({"n": 1, "text": "Onda 1.", "criteria": [criterion], "done_when": "d", "origin": msg});
+        let seeded = write(root, "wave", &wave.to_string());
+        let task = json!({"wave": 1, "text": "Tarefa 1.", "files": [], "depends_on": [], "origin": msg});
+        let task = write(root, "task", &task.to_string());
+        for report in [&seeded, &task] {
+            assert_eq!(report["ok"], json!(true), "{report}");
+            let model_only: Vec<&str> =
+                ["copy", "next", "warnings"].into_iter().filter(|key| report.get(*key).is_some()).collect();
+            assert!(model_only.is_empty(), "the seed went through the model's write: {report}");
+        }
 
         let log = DiskSpecState::new(root).log("teste").unwrap();
-        assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 6, "the new waves are in the file");
-        assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
+        let written = log.get(seeded["id"].as_u64().unwrap()).unwrap();
+        assert_eq!((written.event_type.as_str(), written.str_field("author")), ("wave", Some("binary")));
+        let written = log.get(task["id"].as_u64().unwrap()).unwrap();
+        assert_eq!((written.event_type.as_str(), written.wave()), ("task", Some(1)));
+        assert!(!root.join(".claude/spec/teste/copy").exists(), "no copy for the page was prepared");
     }
 
     /// Acrescenta na lista de pendências do projeto em `root` uma pendência
@@ -3552,5 +3791,37 @@ mod tests {
         );
         let line = spec_index::spec_line("um", &log).expect("the spec has a line");
         assert!(index.lines().any(|l| l == line), "the spec line lost its last write: {index}");
+    }
+
+    /// A versão de tarefa que o programa grava sem título é aceita e fica com
+    /// o título da versão que ela substitui; a mesma versão pela porta do
+    /// modelo é recusada sem gravar nada.
+    #[test]
+    fn tarefa_sem_titulo_e_recusada_e_com_titulo_e_gravada_e_a_versao_do_programa_herda_o_titulo() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = write(root, "message", r#"{"text":"o plano"}"#)["id"].as_u64().unwrap();
+        let by_model = |body: Value| {
+            write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                event_type: "task".into(),
+                json: body.to_string(),
+            })
+        };
+        let first = by_model(json!({"title": "Fechamento confere cada critério", "text": "Conferir.",
+            "files": [], "depends_on": [], "origin": said}));
+        let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa com título grava: {first}"));
+
+        let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "origin": said,
+            "replaces": first});
+        let refused = by_model(version.clone());
+        assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+
+        let draft = version.as_object().cloned().unwrap();
+        let recorded = record(root, "teste", "task", draft, PhaseWriter::Binary).expect("o programa grava");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let written = log.get(recorded.written.id).expect("a versão gravada");
+        assert_eq!(written.str_field("title"), Some("Fechamento confere cada critério"), "{:?}", written.fields);
     }
 }

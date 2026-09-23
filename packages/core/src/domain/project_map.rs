@@ -10,6 +10,9 @@
 //!   o motivo de cada um;
 //! - [`importers`]: quem importa um arquivo;
 //! - [`tests_for`]: que testes cobrem um arquivo;
+//! - [`declaration`] com [`lines_of`]: o trecho de uma declaração, do começo
+//!   ao fim, sem que quem pergunta abra o arquivo;
+//! - [`users`]: quem usa uma declaração pelo nome, em que arquivo e linha;
 //! - [`search`]: a busca por conceito, com a mesma preparação de texto e o
 //!   mesmo BM25 das lições e das specs;
 //! - [`summary`]: o resumo para o início da sessão, até 3 kB;
@@ -291,6 +294,62 @@ pub struct MapDecl {
     /// campo, ou quando o scan não resolveu — nesses casos a leitura
     /// obrigatória de uma tarefa cita só o nome, sem linha.
     pub end_line: u64,
+    /// O comentário de documentação escrito em cima da declaração, sem as
+    /// marcas de comentário. Vazio quando não há um ali.
+    pub doc: String,
+    /// A assinatura da declaração, sem o corpo. Vazia quando o scan não
+    /// gravou uma.
+    pub signature: String,
+    /// Cada uso da declaração no projeto: o arquivo, a linha e a declaração
+    /// de onde parte a chamada. Vazio num mapa antigo, sem o campo.
+    pub used_by: Vec<UseSite>,
+}
+
+/// Um uso de uma declaração: o arquivo em que a chamada está escrita, a linha
+/// e a declaração de onde ela parte (vazia quando a chamada fica fora de toda
+/// declaração). É a ligação com nome: quem chama quem, e onde.
+///
+/// O scan grava o uso num texto só, `arquivo:linha:quem` (`arquivo:linha`
+/// quando a chamada fica fora de toda declaração), o mesmo `arquivo:linha` que
+/// um compilador imprime. O tipo mora aqui, e o scan o reexporta: quem grava o
+/// mapa e quem responde a partir dele leem o mesmo texto do mesmo jeito.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UseSite {
+    pub file: String,
+    pub line: usize,
+    pub from: String,
+}
+
+impl Serialize for UseSite {
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        if self.from.is_empty() {
+            out.collect_str(&format_args!("{}:{}", self.file, self.line))
+        } else {
+            out.collect_str(&format_args!("{}:{}:{}", self.file, self.line, self.from))
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UseSite {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let text = String::deserialize(input)?;
+        let wrong = || D::Error::custom(format!("a use reads `file:line[:from]`, not `{text}`"));
+        let (head, tail) = text.rsplit_once(':').ok_or_else(wrong)?;
+        // `arquivo:linha` ou `arquivo:linha:quem`: quem diz qual dos dois é o
+        // número da linha, que é sempre a última parte que é um número.
+        Ok(match tail.parse() {
+            Ok(line) => Self { file: head.to_string(), line, from: String::new() },
+            Err(_) => {
+                let (file, line) = head.rsplit_once(':').ok_or_else(wrong)?;
+                Self {
+                    file: file.to_string(),
+                    line: line.parse().map_err(D::Error::custom)?,
+                    from: tail.to_string(),
+                }
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -351,6 +410,10 @@ pub enum MapRefusal {
     SkillMissingPaths { paths: Vec<String> },
     /// A skill passa do limite de linhas.
     SkillTooLong { lines: usize },
+    /// O arquivo está no mapa e não tem uma declaração com esse nome.
+    UnknownDeclaration { file: String, name: String },
+    /// O arquivo está no mapa e não pôde ser lido do disco.
+    FileUnreadable { file: String, detail: String },
 }
 
 impl MapRefusal {
@@ -365,6 +428,8 @@ impl MapRefusal {
             Self::SkillUnreadable { .. } => "skill-unreadable",
             Self::SkillMissingPaths { .. } => "skill-missing-path",
             Self::SkillTooLong { .. } => "skill-too-long",
+            Self::UnknownDeclaration { .. } => "unknown-declaration",
+            Self::FileUnreadable { .. } => "file-unreadable",
         }
     }
 
@@ -389,6 +454,12 @@ impl MapRefusal {
                 "map.skill_too_long",
                 &[("{lines}", lines.to_string()), ("{max}", SKILL_MAX_LINES.to_string())],
             ),
+            Self::UnknownDeclaration { file, name } => {
+                fill("map.unknown_declaration", &[("{file}", file.clone()), ("{name}", name.clone())])
+            }
+            Self::FileUnreadable { file, detail } => {
+                fill("map.file_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
+            }
         }
     }
 }
@@ -475,6 +546,103 @@ pub struct TestCoverage {
 pub fn tests_for(map: &ProjectMap, file: &str) -> Result<TestCoverage, MapRefusal> {
     let module = map.known(file)?;
     Ok(TestCoverage { inline: module.has_tests, files: module.tests.clone() })
+}
+
+// ---------------------------------------------------------------------------
+// O trecho de uma declaração
+// ---------------------------------------------------------------------------
+
+/// Onde uma declaração mora: o arquivo e as linhas dela, mais o que o mapa já
+/// guarda dela. É o que quem pergunta precisa para ter o trecho sem abrir o
+/// arquivo atrás dele.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclPlace {
+    pub file: String,
+    pub kind: String,
+    pub name: String,
+    pub line: u64,
+    /// A última linha da declaração. Quando o mapa não a tem, a primeira: o
+    /// trecho é então a linha em que ela começa.
+    pub end_line: u64,
+    pub doc: String,
+    pub signature: String,
+}
+
+/// Onde a declaração `name` de `file` começa e termina. Recusa
+/// [`MapRefusal::UnknownFile`] quando o arquivo não está no mapa e
+/// [`MapRefusal::UnknownDeclaration`] quando ele está e a declaração não.
+/// Havendo mais de uma com o mesmo nome no arquivo, vale a primeira.
+pub fn declaration(map: &ProjectMap, file: &str, name: &str) -> Result<DeclPlace, MapRefusal> {
+    let module = map.known(file)?;
+    let name = name.trim();
+    let found = module.declarations.iter().find(|d| d.name == name).ok_or_else(|| {
+        MapRefusal::UnknownDeclaration { file: module.path.clone(), name: name.to_string() }
+    })?;
+    Ok(DeclPlace {
+        file: module.path.clone(),
+        kind: found.kind.clone(),
+        name: found.name.clone(),
+        line: found.line,
+        end_line: found.end_line.max(found.line),
+        doc: found.doc.clone(),
+        signature: found.signature.clone(),
+    })
+}
+
+/// Onde o scan grava o mapa, a partir da raiz do projeto. É o que a recusa de
+/// [`users`] cita quando o nome não está declarado em arquivo nenhum.
+pub const MAP_FILE: &str = ".claude/grain.model.json";
+
+/// Uma declaração com o nome perguntado, onde ela mora e quem a usa.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclUsers {
+    pub file: String,
+    pub kind: String,
+    pub name: String,
+    pub line: u64,
+    pub end_line: u64,
+    pub used_by: Vec<UseSite>,
+}
+
+/// Cada declaração chamada `name`, com os usos de cada uma, em ordem de
+/// caminho e de linha. Com `file`, só as desse arquivo. Recusa
+/// [`MapRefusal::UnknownFile`] quando o arquivo não está no mapa e
+/// [`MapRefusal::UnknownDeclaration`] quando nenhuma declaração tem o nome:
+/// no arquivo pedido, ou no mapa inteiro, que a recusa cita por [`MAP_FILE`].
+pub fn users(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<DeclUsers>, MapRefusal> {
+    let name = name.trim();
+    let modules: Vec<&MapModule> = match file {
+        Some(file) => vec![map.known(file)?],
+        None => map.modules.iter().collect(),
+    };
+    let mut found: Vec<DeclUsers> = modules
+        .iter()
+        .flat_map(|m| {
+            m.declarations.iter().filter(|d| d.name == name).map(|d| DeclUsers {
+                file: m.path.clone(),
+                kind: d.kind.clone(),
+                name: d.name.clone(),
+                line: d.line,
+                end_line: d.end_line.max(d.line),
+                used_by: d.used_by.clone(),
+            })
+        })
+        .collect();
+    if found.is_empty() {
+        let file = modules.first().filter(|_| file.is_some()).map_or_else(|| MAP_FILE.to_string(), |m| m.path.clone());
+        return Err(MapRefusal::UnknownDeclaration { file, name: name.to_string() });
+    }
+    found.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    Ok(found)
+}
+
+/// O trecho de `text` da linha `line` à linha `end_line`, contadas a partir de
+/// 1. Sem nenhuma dessas linhas, o trecho é vazio.
+#[must_use]
+pub fn lines_of(text: &str, line: u64, end_line: u64) -> String {
+    let first = line.max(1) as usize;
+    let last = end_line.max(line) as usize;
+    text.lines().skip(first - 1).take(last + 1 - first).collect::<Vec<_>>().join("\n")
 }
 
 // ---------------------------------------------------------------------------

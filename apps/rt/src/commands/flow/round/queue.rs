@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::State;
+use mustard_core::domain::spec_state::{PhaseWriter, State};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, TaskChoice, WaveCopy};
 use mustard_core::io::fs::lock::LockedFile;
@@ -22,7 +22,9 @@ use super::report::{has_agent_lines, tagged};
 use super::stops::waves_replanned;
 use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
+use crate::commands::spec_events::write::record;
 use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
+use crate::shared::dag::{sets_cross, touches_whole_tree};
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
 /// é quanto a máquina aguenta compilando ao mesmo tempo agora que é o arquivo
@@ -36,20 +38,24 @@ pub(super) fn max_parallel(root: &Path) -> usize {
 
 /// As ondas que saem nesta rodada: as que ainda não saíram nem entregaram,
 /// cujas dependências já foram entregues, no máximo `limit` junto com as que
-/// estão em andamento (`running`). Duas ondas que declaram o mesmo arquivo
-/// nunca saem juntas, nem uma delas sai por cima de uma onda em andamento que
-/// já declarou aquele arquivo: a que perde a vez volta para a fila e espera
-/// quem está com o arquivo entregar. A onda órfã — em andamento sem o
+/// estão em andamento (`running`). Duas ondas cujos arquivos se cruzam — o
+/// mesmo caminho, ou um padrão que casa o outro
+/// ([`crate::shared::dag::files_cross`]) — nunca saem juntas, nem uma delas
+/// sai por cima de uma onda em andamento que já declarou aquele arquivo: a
+/// que perde a vez volta para a fila e espera quem está com o arquivo
+/// entregar. A onda com o curinga da árvore inteira (`**`) nunca sai ao lado
+/// de outra: nem com outra em andamento, nem com ela em andamento. A onda órfã — em andamento sem o
 /// processo que a mandou — não conta como vaga ocupada para as outras
 /// entrarem, porque ela não está compilando nada; a cópia dela é limpa à
 /// parte, em [`open_copies`]. A onda parada pelo limite de consertos
 /// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda.
 ///
-/// Uma dependência em círculo entre ondas já é recusada na aprovação do
-/// plano ([`crate::commands::flow::plan`]), pela mesma leitura do grafo
-/// ([`wave_graph`]) que esta função reaproveita — nunca uma conta própria à
-/// parte. Se, mesmo assim, uma chegar aqui, a rodada devolve os números do
-/// ciclo em vez de escolher uma ordem às cegas.
+/// A onda de lote nasce sem dependência entre ondas, então uma dependência em
+/// círculo não tem de onde vir pelo backlog, e o plano não a procura. O ciclo
+/// sai da leitura do grafo ([`wave_graph`]) que esta função reaproveita —
+/// nunca uma conta própria à parte —, e, se uma onda gravada antes do backlog
+/// trouxer um, a rodada devolve os números do ciclo em vez de escolher uma
+/// ordem às cegas.
 pub(super) fn next_waves(
     log: &SpecLog,
     limit: usize,
@@ -81,6 +87,10 @@ pub(super) fn next_waves(
         .filter(|n| !replanned.contains(n))
         .chain(delivered.iter().copied())
         .filter(|n| !to_redo.contains(n))
+        // A onda de lote que o corte esvaziou nunca volta como candidata
+        // fresca: o backlog já é quem reempacota a tarefa que ela perdeu, numa
+        // onda nova, e despachar esta de novo seria um pedido sem nada dentro.
+        .chain(emptied_backlog_waves(log, &graph))
         .collect();
     let mut depends: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for wave in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
@@ -98,23 +108,31 @@ pub(super) fn next_waves(
     let effective_running = running.keys().filter(|n| !orphans.contains_key(n)).count();
     let slots = limit.saturating_sub(effective_running);
     // O arquivo que cada onda em andamento já declarou trava a vaga dela: uma
-    // onda pronta que declara o mesmo arquivo espera, mesmo com vaga livre —
-    // e a que sai primeiro nesta rodada tranca o arquivo para a próxima da
-    // mesma leva.
-    let mut taken: BTreeSet<&String> = running.keys().flat_map(|n| graph.files.get(n).into_iter().flatten()).collect();
+    // onda pronta cujo arquivo cruza com ele — o mesmo caminho, ou um padrão
+    // que o casa — espera, mesmo com vaga livre, e a que sai primeiro nesta
+    // rodada tranca o arquivo para a próxima da mesma leva.
+    let mut taken: Vec<&String> = running.keys().flat_map(|n| graph.files.get(n).into_iter().flatten()).collect();
+    // A onda com o curinga da árvore inteira cruza com todas, até com a que
+    // não declara arquivo: com ela em andamento nada mais sai, e ela só sai
+    // sem nenhuma outra em andamento nem saindo junto.
+    let mut busy = !running.is_empty();
+    let mut whole_tree_out = running.keys().any(|n| graph.files.get(n).is_some_and(touches_whole_tree));
     let mut go = Vec::new();
     for n in ready_in_order(&depends, &graph, &already_out, &delivered, &done)? {
-        if go.len() >= slots {
+        if go.len() >= slots || whole_tree_out {
             break;
         }
         if stuck.contains_key(&n) || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d)) {
             continue;
         }
         let files: Vec<&String> = graph.files.get(&n).into_iter().flatten().collect();
-        if files.iter().any(|f| taken.contains(f)) {
+        let whole_tree = touches_whole_tree(files.iter().copied());
+        if (whole_tree && busy) || sets_cross(files.iter().copied(), taken.iter().copied()) {
             continue;
         }
         taken.extend(files);
+        busy = true;
+        whole_tree_out = whole_tree;
         go.push(n);
     }
     Ok(go)
@@ -502,28 +520,12 @@ pub(super) fn open_copies(
     (copies, warnings)
 }
 
-/// Alguma tarefa das ondas `waves` mexe num arquivo de dentro de um
-/// submódulo? A obra de até 3 pontos que toca submódulo continua com a cópia
-/// separada, mesmo pequena: sem cópia não há onde a rodada pôr o submódulo na
-/// branch da unidade ([`copy_submodule`]) antes de o orquestrador editar, e
-/// essa conta só compensa dentro da cópia que já resolve isso.
-pub(super) fn touches_a_submodule(root: &Path, log: &SpecLog, waves: &[u64]) -> bool {
-    let subs = submodules_of(root);
-    if subs.is_empty() {
-        return false;
-    }
-    let files = wave_graph(log).files;
-    waves.iter().any(|wave| {
-        files.get(wave).into_iter().flatten().any(|file| submodule_holding(&subs, file).is_some())
-    })
-}
-
 /// A cópia em `path`, criada no commit `head` do checkout `root`. A pasta que
 /// já é uma cópia ligada ao repositório, de um envio anterior da mesma onda, e
 /// está limpa vai para o commit `head`, porque um commit fora da rodada pode
 /// ter avançado o checkout principal desde a criação dela. A que tem mudança,
 /// como a de uma retomada em andamento, fica como está.
-fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), String> {
+pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), String> {
     if path.join(".git").is_file() {
         let clean = git::run(path, &["status", "--porcelain", "--untracked-files=all"])
             .out()
@@ -636,6 +638,29 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
     open_sends(log).into_iter().filter(|(_, sent)| !claude_still_here(log, *sent)).collect()
 }
 
+/// A onda `n` é de lote — o binário a formou a partir do backlog, com autor
+/// binário — e não a combinação à mão do plano: só a de lote devolve tarefa
+/// ao backlog quando cortada, porque só ela é o que o backlog empacota de novo.
+pub(crate) fn backlog_wave(log: &SpecLog, n: u64) -> bool {
+    log.visible().into_iter().any(|event| {
+        event.event_type == "wave" && event.wave() == Some(n) && event.str_field("author") == Some("binary")
+    })
+}
+
+/// As ondas de lote que ficaram sem tarefa nenhuma: o corte de um lote em
+/// andamento devolveu a última tarefa dela ao backlog, e sem tarefa não há mais
+/// o que despachar — nem como pedido fresco, nem reenviando o de antes. Só a
+/// onda de lote entra aqui: a combinada à mão que fica sem tarefa por uma
+/// mudança de plano continua candidata, porque o backlog nunca vai reempacotar
+/// o que ela perdeu.
+pub(crate) fn emptied_backlog_waves(log: &SpecLog, graph: &WaveGraph) -> BTreeSet<u64> {
+    log.planned_waves()
+        .into_iter()
+        .filter(|n| graph.tasks.get(n).is_none_or(|tasks| tasks.is_empty()))
+        .filter(|n| backlog_wave(log, *n))
+        .collect()
+}
+
 /// Minutos desde a última ação da onda `wave`: a hora do arquivo de sinal de
 /// vida que [`crate::hooks::observe::wave_alive_observer`] grava, ou, sem
 /// ele, a hora do envio `sent`. `None` sem nenhuma hora legível — a rodada
@@ -732,6 +757,11 @@ pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
 /// (`graph.cycle`) — a mesma leitura que já trava a aprovação do plano
 /// ([`crate::commands::flow::plan`]), não uma segunda conta à parte que
 /// pudesse discordar dela.
+///
+/// A onda de lote que perdeu todas as tarefas para o backlog já chega aqui
+/// dentro de `already_out`, marcada por quem chama: não é este código que
+/// distingue a onda esvaziada da onda combinada à mão que só está esperando
+/// uma tarefa nova, porque as duas têm `graph.tasks` vazio do mesmo jeito.
 fn ready_in_order(
     depends: &BTreeMap<u64, Vec<u64>>,
     graph: &WaveGraph,
@@ -776,7 +806,7 @@ pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> V
 // ---------------------------------------------------------------------------
 
 /// Quantas ondas cada uma destrava: o tamanho do fecho transitivo de quem
-/// depende dela, direta ou por outra onda da cesta.
+/// depende dela, direta ou por outra onda do backlog.
 fn task_unlocks(deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeMap<u64, usize> {
     let mut unlocks: BTreeMap<u64, usize> = deps.keys().map(|&n| (n, 0)).collect();
     for &m in deps.keys() {
@@ -797,6 +827,262 @@ fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet
         }
     }
     reached
+}
+
+/// Os arquivos que uma tarefa declara: cada item de `files` é o caminho, seja
+/// como texto solto ou como `{"path": ...}`.
+fn task_files(task: &SpecEvent) -> BTreeSet<String> {
+    task.fields
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str)))
+        .map(|path| path.trim().replace('\\', "/"))
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+/// A tarefa que `value` aponta, pelo número do evento ou pelo código, na
+/// versão vigente dela — a mesma resolução que a gravação de uma tarefa nova
+/// já faz para conferir o `depends_on` dela, só que lida aqui, não repetida à
+/// parte por acaso: uma referência que não bate com tarefa nenhuma some.
+fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
+    let raw = match EventRef::from_value(value)? {
+        EventRef::Id(id) => id,
+        EventRef::Code(code) => log
+            .visible()
+            .into_iter()
+            .filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code))
+            .map(|event| event.id)
+            .next_back()?,
+    };
+    log.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
+}
+
+/// A versão nova da tarefa `id`: os campos dela, tirando `v`, `id`, `code`,
+/// `at`, `type` e `search`, com `replaces` apontando para ela e os campos de
+/// `extra` somados por cima — a mesma forma de [`send_revision`], para a
+/// tarefa em vez do envio.
+fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+    let event = log.get(id)?;
+    let mut draft: Map<String, Value> = event
+        .fields
+        .iter()
+        .filter(|(key, _)| !["v", "id", "code", "at", "type", "search"].contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    draft.insert("replaces".into(), json!(id));
+    for (key, value) in extra {
+        draft.insert(key, value);
+    }
+    Some(draft)
+}
+
+/// As tarefas vigentes da spec como o motor do backlog as lê: cada uma com as
+/// dependências resolvidas para a versão vigente, os arquivos que declara e
+/// se já está feita — a onda dela está entre as entregues e aprovadas
+/// (`done_waves`).
+fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
+    let codes = log.codes();
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .map(|task| {
+            let depends_on: BTreeSet<u64> = task
+                .fields
+                .get("depends_on")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| backlog_task_ref(log, &codes, value))
+                .collect();
+            let done = task.wave().is_some_and(|w| done_waves.contains(&w));
+            crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done }
+        })
+        .collect()
+}
+
+/// O que está no backlog: a tarefa sem onda nenhuma, e também a que carrega
+/// um número de onda que nunca virou evento de onda — a spec antiga,
+/// numerada à mão — desde que essa onda não tenha entregue. A tarefa de
+/// onda com evento próprio, gravada pelo plano ou por um lote anterior,
+/// nunca está aqui: quem a despacha é [`next_waves`]. A onda já entregue ou
+/// aprovada fica como história, e a tarefa dela nunca volta para o backlog.
+///
+/// É a leitura única do backlog: a formação do lote ([`dispatch_backlog`]), o
+/// próximo passo da rodada e o fechamento leem daqui, para os três não
+/// discordarem de quando o backlog está vazio.
+pub(crate) fn backlog_left(log: &SpecLog) -> BTreeSet<u64> {
+    let running = waves_in_progress(log);
+    let done_waves = waves_done(log, &running);
+    let planned = log.planned_waves();
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .filter(|t| match t.wave() {
+            None => true,
+            Some(w) => !done_waves.contains(&w) && !planned.contains(&w),
+        })
+        .map(|t| t.id)
+        .collect()
+}
+
+/// As tarefas do backlog ([`backlog_left`]) que já estão prontas — todas as
+/// dependências entregues ou aprovadas —, na ordem em que o motor do backlog
+/// as empacota. Vazia quando o backlog está vazio ou quando toda tarefa dele
+/// ainda espera uma dependência.
+pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
+    let running = waves_in_progress(log);
+    let done_waves = waves_done(log, &running);
+    let left = backlog_left(log);
+    crate::shared::dag::ready_tasks(&backlog_population(log, &done_waves))
+        .into_iter()
+        .filter(|id| left.contains(id))
+        .collect()
+}
+
+/// Forma os lotes prontos do backlog ([`backlog_left`], [`backlog_ready`]) — as
+/// tarefas sem onda própria ainda, e também a tarefa de uma spec antiga que
+/// carrega um número de onda sem evento de onda nenhum atrás dele e que
+/// ainda não entregou — e grava o
+/// evento de onda de cada um, com autor binário: os critérios são a união do
+/// que as tarefas do lote cobrem (`covers`), o pronta-quando é a prova
+/// desses critérios, ligadas por " && " quando são mais de uma, e a ordem de
+/// despacho do lote fica no campo que a onda já reservava para isso
+/// (`order`). Cada tarefa do lote ganha, na mesma passada, uma versão nova
+/// com o número da onda formada — o número velho, de spec antiga, é
+/// ignorado — e é isso que liga o lote ao resto da leitura, que só conhece
+/// onda pelo `n`/`wave` gravado em cada evento. A onda já entregue ou
+/// aprovada fica como história, e a tarefa dela nunca volta para cá.
+///
+/// Na mesma chamada, [`refresh_stale_batches`] atualiza o lote já formado
+/// que perdeu alguma tarefa para um evento de remoção depois de gravado —
+/// sem isso o pedido dele abriria pelo `done_when` congelado na formação,
+/// citando texto de tarefa que já não existe.
+///
+/// A prontidão e o empacotamento são o mesmo motor de [`crate::shared::dag`]
+/// que já prova, sozinho, o desempate e a régua de arquivos: esta função só
+/// lê a spec, monta a população de tarefas e grava o que ele decidiu.
+/// `Ok(vec![])` sem tarefa pronta no backlog.
+///
+/// `run_round_with_mine` (`apps/rt/src/commands/flow/round/answer.rs`) chama
+/// esta função antes de formar a lista de ondas prontas: quem decide as
+/// ondas prontas para o pedido ([`next_waves`], acima) só lê o evento de
+/// onda já gravado, e é por isso que o lote precisa existir como onda antes
+/// de `next_waves` rodar, na mesma chamada. A leitura que ela recebe é a de
+/// quando a rodada começou, antes do relatório dela mexer em onda ou tarefa:
+/// a que o corte de uma onda de lote devolve solta agora mesmo só empacota
+/// na rodada seguinte, nunca na mesma que a soltou.
+///
+/// # Errors
+///
+/// A recusa da primeira gravação que falhar.
+pub(crate) fn dispatch_backlog(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
+    use crate::shared::dag::{pack_batches, BACKLOG_CAPACITY};
+
+    let running = waves_in_progress(log);
+    let done_waves = waves_done(log, &running);
+    let by_id: BTreeMap<u64, &SpecEvent> =
+        log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
+    let population = backlog_population(log, &done_waves);
+    let order = backlog_ready(log);
+    refresh_stale_batches(start, spec, log)?;
+    if order.is_empty() {
+        return Ok(Vec::new());
+    }
+    let batches = pack_batches(&population, &order, BACKLOG_CAPACITY);
+
+    let mut next_n = log.planned_waves().into_iter().max().unwrap_or(0);
+    let mut written = Vec::new();
+    for batch in &batches {
+        next_n += 1;
+        let tasks: Vec<&SpecEvent> = batch.tasks.iter().filter_map(|id| by_id.get(id).copied()).collect();
+        // A tarefa nascida de uma onda cobre critério, com prova para juntar
+        // aqui; a que nasce do item combinado sem onda dona (o backlog da
+        // revisão final) cobre o item, que não tem prova — o texto de quem
+        // marcou o item sem atender é o que diz quando a onda entrega.
+        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks);
+        let draft = json!({
+            "n": next_n,
+            "text": fields.text,
+            "criteria": fields.criteria,
+            "done_when": fields.done_when,
+            "order": batch.tasks,
+            "author": "binary",
+        });
+        let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
+        record(start, spec, "wave", draft, PhaseWriter::Binary)?;
+        for id in &batch.tasks {
+            if let Some(revised) = task_revision(log, *id, Map::from_iter([("wave".to_string(), json!(next_n))])) {
+                record(start, spec, "task", revised, PhaseWriter::Binary)?;
+            }
+        }
+        written.push(next_n);
+    }
+    Ok(written)
+}
+
+/// Atualiza o registro de uma onda de lote (autor `binary`) que ainda não
+/// foi enviada, quando uma tarefa dela saiu do backlog por evento de remoção
+/// depois de o lote ter sido formado: sem isso o pedido abriria pelo
+/// `done_when` congelado na formação, que pode citar o texto de uma tarefa
+/// que não existe mais, mesmo com a lista de tarefas do pedido já saindo
+/// certa. Recalcula critério, texto e pronto-quando
+/// ([`mustard_core::domain::wave_prompt::backlog_fields`]) a partir das
+/// tarefas que a leitura de agora mostra visíveis naquela onda — o mesmo
+/// conjunto que alimenta a lista de tarefas do pedido — e grava uma versão
+/// nova só quando a ordem gravada perdeu alguma tarefa. A onda já enviada
+/// fica intocada: o pedido dela já foi montado, e mudar o registro não muda
+/// o que o agente já recebeu. A onda que perdeu todas as tarefas fica de
+/// fora: sem tarefa nenhuma ela não é mais candidata a sair
+/// ([`emptied_backlog_waves`]), e não há o que recalcular.
+///
+/// # Errors
+///
+/// A recusa da primeira gravação que falhar.
+fn refresh_stale_batches(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
+    let sent: BTreeSet<u64> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "send")
+        .filter_map(SpecEvent::wave)
+        .collect();
+    let mut updated = Vec::new();
+    for n in log.planned_waves() {
+        if sent.contains(&n) || !backlog_wave(log, n) {
+            continue;
+        }
+        let items = log.block(BlockQuery::Wave(n));
+        let Some(wave_event) = items.iter().copied().find(|e| e.event_type == "wave") else { continue };
+        let tasks: Vec<&SpecEvent> = items.iter().copied().filter(|e| e.event_type == "task").collect();
+        if tasks.is_empty() {
+            continue;
+        }
+        // A ordem gravada aponta os números de antes da tarefa ganhar a
+        // versão nova com o `wave` (`task_revision`, acima): segue a cadeia
+        // de substituição até a versão vigente de cada uma, e só conta como
+        // viva a que ainda está entre as tarefas visíveis desta onda.
+        let recorded_order = wave_event.ints("order");
+        let live_ids: BTreeSet<u64> = tasks.iter().map(|t| t.id).collect();
+        let live_order: Vec<u64> =
+            recorded_order.iter().filter_map(|id| log.current(*id)).map(|t| t.id).filter(|id| live_ids.contains(id)).collect();
+        if live_order.len() == recorded_order.len() {
+            continue;
+        }
+        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks);
+        let extra = Map::from_iter([
+            ("text".to_string(), json!(fields.text)),
+            ("criteria".to_string(), json!(fields.criteria)),
+            ("done_when".to_string(), json!(fields.done_when)),
+            ("order".to_string(), json!(live_order)),
+        ]);
+        if let Some(revised) = task_revision(log, wave_event.id, extra) {
+            record(start, spec, "wave", revised, PhaseWriter::Binary)?;
+        }
+        updated.push(n);
+    }
+    Ok(updated)
 }
 
 /// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
@@ -1306,6 +1592,17 @@ mod tests {
         log.codes().into_iter().map(|(id, code)| (code, id)).collect()
     }
 
+    /// O veredito final reprovado, com o combinado inteiro vigente
+    /// atendido: os testes daqui provam o mecanismo da escolha (`ANALYSIS`),
+    /// não o do combinado — sem a lista `agreed` cobrindo todo mundo, a
+    /// revisão final seria recusada por faltar item, antes de chegar à
+    /// escolha que o teste quer provar.
+    fn verdict_with_agreed(wave: u64, result: &str, text: &str, agreed: &[&str]) -> String {
+        let agreed: Vec<Value> = agreed.iter().map(|item| json!({"item": item, "met": true})).collect();
+        line("VERDICT", json!({"wave": wave, "result": result, "final": true, "text": text,
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}], "agreed": agreed}))
+    }
+
     /// A linha da escolha da onda 1: o que sai e o que entra, com o motivo.
     fn analysis(removed: Value, added: Value) -> String {
         line("ANALYSIS", json!({"wave": 1, "removed": removed, "added": added}))
@@ -1468,7 +1765,9 @@ mod tests {
 
         // O conserto, com os mesmos itens a julgar, sai com a escolha gravada.
         round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
-        let fix = round(root, "x", Some(&verdict(1, "rejected", "faltou o índice")));
+        let vigent_before = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003",
+            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
+        let fix = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o índice", &vigent_before)));
         assert_eq!(waves_in(&fix, "dispatch"), vec![1], "{fix}");
         let sent = sends();
         assert_eq!(sent.len(), 2, "{fix}");
@@ -1481,7 +1780,9 @@ mod tests {
             .visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
         let newer = id_of(&write(root, "x", "rule", json!({"text": "Vale sempre: o nome é curto.", "example": "e",
             "keys": ["k"], "applies_to": {"files": ["**"]}, "origin": said})));
-        let again = round(root, "x", Some(&verdict(1, "rejected", "faltou o nome")));
+        let vigent_with_newer = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-RULE-0004",
+            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
+        let again = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o nome", &vigent_with_newer)));
         assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "{again}");
         assert_eq!(codes_in(&again["analysis"][0], "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0004"], "{again}");
         assert_eq!(sends().len(), 2, "{again}");
@@ -1521,7 +1822,9 @@ mod tests {
         // O conserto, com os mesmos candidatos — a mesma lição, nenhuma nova
         // —, reusa a escolha gravada, sem perguntar de novo.
         round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
-        let fix = round(root, "x", Some(&verdict(1, "rejected", "faltou algo")));
+        let vigent = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003",
+            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
+        let fix = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou algo", &vigent)));
         assert_eq!(waves_in(&fix, "dispatch"), vec![1], "o conserto com os mesmos candidatos reusa a escolha: {fix}");
         let sent = sends();
         assert_eq!(sent.len(), 2, "{fix}");
@@ -1533,7 +1836,7 @@ mod tests {
         let newer = id_of(&write(root, "x", "lesson", json!({"class": "defect",
             "text": "O índice novo evita busca lenta.", "keys": ["índice"], "applies_to": {"files": ["**"]}})));
         round(root, "x", Some(&delivered(root, 1, "O índice entrou.", &["src/a.rs"])));
-        let again = round(root, "x", Some(&verdict(1, "rejected", "faltou o nome")));
+        let again = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o nome", &vigent)));
         assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "a lição nova pede a escolha de novo: {again}");
         let lessons: Vec<u64> = again["analysis"][0]["lessons"].as_array().unwrap_or(&Vec::new())
             .iter().filter_map(|l| l["lesson"].as_u64()).collect();
@@ -1890,12 +2193,12 @@ mod tests {
     /// declara, com desempate pela quantidade de ondas que cada uma destrava
     /// — direta ou por outra —, da maior para a menor, e só depois pelo
     /// número: a onda 21 destrava a 22 e a 20 não destrava nada, então a 21
-    /// sai primeiro mesmo tendo o número maior. A mesma cesta, aprovada duas
+    /// sai primeiro mesmo tendo o número maior. O mesmo conjunto de ondas, aprovada duas
     /// vezes com as ondas declaradas em ordem diferente, despacha sempre na
     /// mesma sequência através das rodadas — a prova atravessa `round`, o
     /// comando de verdade, não a função auxiliar que só ordena.
     #[test]
-    fn a_mesma_cesta_de_ondas_produz_sempre_a_mesma_ordem_de_despacho() {
+    fn o_mesmo_conjunto_de_ondas_produz_sempre_a_mesma_ordem_de_despacho() {
         let plan_a: [(u64, &[&str], &[u64]); 4] = [
             (10, &["src/a.rs"], &[]),
             (20, &["src/b.rs"], &[10]),
@@ -1927,25 +2230,323 @@ mod tests {
             sequences.push(vec![waves_in(&first, "dispatch"), waves_in(&second, "dispatch"), waves_in(&third, "dispatch")]);
         }
         let expected = vec![vec![10], vec![21, 20], vec![22]];
-        assert_eq!(sequences[0], expected, "a cesta declarada numa ordem: {sequences:?}");
-        assert_eq!(sequences[1], expected, "a mesma cesta, declarada noutra ordem, despacha igual: {sequences:?}");
+        assert_eq!(sequences[0], expected, "o backlog declarada numa ordem: {sequences:?}");
+        assert_eq!(sequences[1], expected, "o mesmo conjunto de ondas, declarada noutra ordem, despacha igual: {sequences:?}");
     }
 
     /// Ondas que dependem umas das outras em círculo são recusadas pela
     /// própria rodada, mostrando o ciclo: nenhuma sai, e a resposta não é uma
-    /// fila vazia muda. A cesta nunca passa pela aprovação do plano — o
+    /// fila vazia muda. O backlog nunca passa pela aprovação do plano — o
     /// fixture grava o ciclo direto, como um evento gravado à mão poderia —
     /// e a prova atravessa `round`, o comando de verdade.
     #[test]
-    fn cesta_de_ondas_com_dependencia_em_circulo_e_recusada_pela_rodada_mostrando_o_ciclo() {
+    fn conjunto_de_ondas_com_dependencia_em_circulo_e_recusado_pela_rodada_mostrando_o_ciclo() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(4, &["src/a.rs"], &[7]), (7, &["src/b.rs"], &[4])]);
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(false), "{out}");
         assert_eq!(out["reason"], json!("waves-loop"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains('4') && hint.contains('7'), "o ciclo aparece na recusa: {out}");
+        assert_eq!(out["hint"], json!(WAVE_LOOP_4_7), "a recusa nomeia as ondas do ciclo: {out}");
         assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "nenhuma onda sai com o ciclo: {out}");
+        // Sem relatório, a rodada não gravou entrega nem comitou nada antes
+        // de achar o ciclo: a resposta não inventa gravação.
+        assert_eq!(out["recorded"], json!([]), "{out}");
+        assert!(out.get("commit").is_none(), "{out}");
+    }
+
+    /// A recusa das ondas 4 e 7, que dependem uma da outra, como a pessoa a
+    /// lê: as duas pelo número, e nenhuma outra.
+    const WAVE_LOOP_4_7: &str =
+        "As ondas 4, 7 dependem umas das outras em círculo, e nenhuma pode começar. Corte uma das dependências.";
+
+    /// A rodada que recebe a entrega da onda 1 junta, comita e grava a
+    /// entrega, e só depois, ao escolher as ondas seguintes, acha as ondas 4 e
+    /// 7 em círculo. A recusa não troca a resposta: ela vem junto do que foi
+    /// gravado, do commit e das instruções de cópia da página, e nomeia só as
+    /// ondas do ciclo — a 1, entregue, fica fora dela. A prova atravessa
+    /// `round`, o comando de verdade.
+    #[test]
+    fn a_recusa_de_ciclo_devolve_o_que_a_rodada_gravou() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+
+        // O ciclo entra depois do despacho da onda 1, gravado direto, como um
+        // evento gravado à mão poderia: a rodada seguinte só o encontra
+        // depois de juntar a entrega.
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let visible = log.visible();
+        let said = visible.iter().find(|e| e.event_type == "message").unwrap().id;
+        let crit = visible.iter().find(|e| e.event_type == "criterion").unwrap().id;
+        for (n, on, file) in [(4u64, 7u64, "src/b.rs"), (7, 4, "src/c.rs")] {
+            write(root, "x", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+                "done_when": "A suíte passa.", "depends_on": [on], "origin": said}));
+            write(root, "x", "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
+                "files": [{"path": file}], "depends_on": [], "origin": said}));
+        }
+
+        let out = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("waves-loop"), "{out}");
+        assert_eq!(out["hint"], json!(WAVE_LOOP_4_7), "a recusa nomeia as ondas do ciclo, e só elas: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "nenhuma onda sai com o ciclo: {out}");
+
+        // O que foi gravado: a entrega da onda 1, que está no arquivo de
+        // eventos com o número que a resposta traz.
+        let recorded = out["recorded"].as_array().cloned().unwrap_or_default();
+        let entry = recorded
+            .iter()
+            .find(|r| r["type"] == json!("delivered") && r["wave"] == json!(1))
+            .unwrap_or_else(|| panic!("a entrega da onda 1 na resposta: {out}"));
+        let log = store::read(&path).unwrap().unwrap();
+        let written = log.get(entry["id"].as_u64().unwrap_or_default()).unwrap_or_else(|| panic!("{out}"));
+        assert_eq!(written.event_type, "delivered", "{out}");
+
+        // O commit da rodada: na resposta e no git.
+        assert!(out.get("commit").is_some_and(|c| !c.is_null()), "o commit vem na resposta: {out}");
+        let subject = Command::new("git").args(["log", "-1", "--format=%s"]).current_dir(root).output().unwrap();
+        assert!(String::from_utf8_lossy(&subject.stdout).contains("a onda 1 saiu"), "{out}");
+
+        // As instruções de cópia da página, com a recusa como o passo seguinte.
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains("Leia `.claude/spec/x/copy/next.md`"), "{next}");
+        assert!(next.ends_with(WAVE_LOOP_4_7), "{next}");
+        assert!(out["copy"].is_object(), "{out}");
+        let order = std::fs::read_to_string(root.join(".claude/spec/x/copy/next.md")).expect("a ordem de cópia");
+        assert!(order.contains("ArtifactData"), "{order}");
+    }
+
+    /// A tarefa que sai de um lote de duas por evento de remoção, depois de o
+    /// lote já ter sido formado, não deixa rastro no pedido dele: nem na
+    /// lista de tarefas, nem no parágrafo de abertura que abre pelo
+    /// `done_when` — que, sem critério com prova (o caso do item combinado
+    /// sem dono, que não tem prova), é o texto das próprias tarefas unido
+    /// por espaço, exatamente o caminho pelo qual o texto da tarefa retirada
+    /// vazou na onda 21. A prova atravessa `round`, o comando de verdade,
+    /// para exercitar o pedido como o agente o recebe.
+    #[test]
+    fn o_pedido_da_onda_nao_cita_tarefa_retirada() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+
+        // Dois itens combinados sem dono (uma decisão cada), sem prova — o
+        // caso que o backlog empacota quando o levantamento marca um item sem
+        // onda: `waves` os dá dono antes mesmo de a onda 2 existir.
+        let item1 = id_of(&write(
+            root,
+            "x",
+            "decision",
+            json!({"text": "Um item.", "keys": ["k1"], "why": "porque sim", "waves": [2], "origin": said}),
+        ));
+        let item2 = id_of(&write(
+            root,
+            "x",
+            "decision",
+            json!({"text": "Outro item.", "keys": ["k2"], "why": "porque sim", "waves": [2], "origin": said}),
+        ));
+
+        // Duas tarefas soltas, sem arquivo em comum, cada uma cobrindo um
+        // item sem prova: o pronto-quando do lote cai no texto delas, unido
+        // por espaço — o mesmo caminho que vazou o texto da tarefa retirada
+        // na onda 21.
+        let t1 = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Gravar a versao nova de uma decisao ja feita fora da onda.",
+                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item1], "origin": said}),
+        ));
+        id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Trocar a mensagem de erro do campo vazio.",
+                "files": [{"path": "src/c.rs"}], "depends_on": [], "covers": [item2], "origin": said}),
+        ));
+
+        let log = store::read(&path).unwrap().unwrap();
+        let formed = dispatch_backlog(root, "x", &log).expect("formou o lote");
+        assert_eq!(formed, vec![2], "as duas tarefas soltas viram um lote só: {formed:?}");
+
+        // A tarefa 1 sai do backlog por remoção, depois de o lote já ter sido
+        // formado: o trabalho dela já foi feito fora da onda. A gravação do
+        // lote deu a ela uma versão nova, com o número da onda — é essa
+        // versão vigente que a remoção precisa apontar, não a original.
+        let log = store::read(&path).unwrap().unwrap();
+        let current_t1 = log.current(t1).expect("a tarefa 1 tem versão vigente").id;
+        write(root, "x", "remove", json!({"targets": [current_t1], "reason": "o trabalho ja foi feito fora da onda"}));
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
+        let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
+        let entry = dispatched.iter().find(|d| d["wave"] == json!(2)).unwrap_or_else(|| panic!("wave 2: {out}"));
+        let prompt = entry["prompt"].as_str().unwrap_or_default();
+        assert!(
+            !prompt.contains("Gravar a versao nova de uma decisao"),
+            "o texto da tarefa retirada nao pode aparecer no pedido: {prompt}"
+        );
+        assert!(
+            prompt.contains("Trocar a mensagem de erro do campo vazio"),
+            "o pronto-quando nasce das tarefas visiveis agora: {prompt}"
+        );
+    }
+
+    /// Os motivos dos avisos do plano que conferiam onda como desenho: ondas
+    /// da mesma rodada dividindo arquivo, onda ou spec que podia sair
+    /// dividida, e tarefa cujo texto não casa com o da onda.
+    const WAVE_DRAWING_REASONS: [&str; 5] = [
+        "waves-share-a-file",
+        "wave-should-split",
+        "spec-should-split",
+        "task-in-the-wrong-wave",
+        "task-matches-no-wave",
+    ];
+
+    /// Um projeto com `src/a.rs` e `src/b.rs` no git e uma spec aprovada sem
+    /// onda nenhuma: as tarefas vão para o backlog. Devolve o número da fala
+    /// do usuário e o do critério, que as tarefas citam.
+    fn backlog_project(root: &Path) -> (u64, u64) {
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for name in ["a.rs", "b.rs"] {
+            std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
+        }
+        approved_with(root, "x", &[], |said| {
+            // O levantamento fechado, ponto a ponto, como o plano exige.
+            let goal = "Mexer no código de um e de dois.";
+            id_of(&write(root, "x", "context", json!({"text": goal, "origin": said})));
+            let opts = crate::commands::flow::grill::GrillOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                kinds: Some("fix".into()),
+                condensed: false,
+            };
+            let listed = crate::commands::flow::grill::grill_for(&opts, None);
+            for item in listed["points"].as_array().cloned().unwrap_or_default() {
+                let mut point = item.clone();
+                point["status"] = json!("open");
+                point["facts"] = json!([{"text": goal, "source": "src/a.rs:1"}]);
+                let opened = write(root, "x", "point", point);
+                let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap",
+                    "status": "not_applicable", "closes": id_of(&opened), "reason": "Já respondido.", "origin": said});
+                assert_eq!(write(root, "x", "point", closing)["ok"], json!(true));
+            }
+        });
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let first = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
+        (first("message"), first("criterion"))
+    }
+
+    /// Uma tarefa do backlog, gravada pela porta do modelo, num arquivo só.
+    fn backlog_task(root: &Path, said: u64, crit: u64, text: &str, file: &str) -> u64 {
+        id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}], "depends_on": [],
+            "covers": [crit], "origin": said})))
+    }
+
+    /// A spec reaberta, de volta ao levantamento, e o plano rodado de novo
+    /// nela, com as anotações que ele gravou.
+    fn replanned(root: &Path) -> (Value, Vec<Value>) {
+        let reopened = crate::commands::flow::reopen::reopen_for(
+            &crate::commands::flow::reopen::ReopenOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                reason: "Mais trabalho na mesma obra.".into(),
+            },
+            None,
+        );
+        assert_eq!(reopened["ok"], json!(true), "{reopened}");
+        let report = crate::commands::flow::plan::plan_for(
+            &crate::commands::flow::plan::PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) },
+            None,
+        );
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let notes = log.visible().into_iter().filter(|e| e.event_type == "note").map(|e| Value::Object(e.fields.clone())).collect();
+        (report, notes)
+    }
+
+    /// Os motivos de desenho de onda que o plano disse: na resposta, entre as
+    /// travas e os avisos, e nas anotações que ele gravou.
+    fn wave_drawing_said(report: &Value, notes: &[Value]) -> Vec<String> {
+        let answered = ["blocking", "warnings"]
+            .iter()
+            .flat_map(|field| report[*field].as_array().cloned().unwrap_or_default())
+            .filter_map(|f| f["reason"].as_str().map(str::to_string));
+        let noted = notes
+            .iter()
+            .flat_map(|n| n["keys"].as_array().cloned().unwrap_or_default())
+            .filter_map(|k| k.as_str().map(str::to_string));
+        answered.chain(noted).filter(|r| WAVE_DRAWING_REASONS.contains(&r.as_str())).collect()
+    }
+
+    /// Numa spec reaberta, a primeira rodada leva a tarefa de `src/a.rs` na
+    /// onda 1, que entrega; a segunda leva numa onda só uma tarefa nova de
+    /// `src/a.rs` e outra de `src/b.rs`. As duas ondas de lote nascem sem
+    /// dependência entre elas e tocam o mesmo arquivo, e a segunda tem duas
+    /// tarefas que não dividem arquivo: o plano rodado depois não fala de
+    /// ondas dividindo arquivo, nem de onda ou spec que podia sair dividida.
+    #[test]
+    fn o_plano_nao_fala_de_onda_dividindo_arquivo() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let record = write(root, "x", "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
+        assert_eq!(record["ok"], json!(true), "{record}");
+
+        let again = backlog_task(root, said, crit, "Mexer de novo no código de um.", "src/a.rs");
+        let other = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert_eq!(dispatch_backlog(root, "x", &log), Ok(vec![2]), "as duas tarefas novas viram um lote só");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let waves: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "wave").collect();
+        assert_eq!(waves.len(), 2, "{waves:?}");
+        assert!(waves.iter().all(|w| w.ints("depends_on").is_empty() && w.str_field("author") == Some("binary")));
+        let order: Vec<u64> = waves[1].ints("order");
+        assert_eq!(order, vec![again, other], "a onda 2 leva as duas tarefas");
+
+        let (report, notes) = replanned(root);
+        assert_eq!(wave_drawing_said(&report, &notes), Vec::<String>::new(), "{report}");
+    }
+
+    /// A tarefa da onda de lote em andamento ganha versão nova, pela porta do
+    /// modelo, com um texto que não casa com o da onda — o texto da onda de
+    /// lote é a junção dos textos da versão velha. O plano rodado depois não
+    /// trava, e nenhum aviso fala de tarefa na onda errada ou sem onda.
+    #[test]
+    fn o_plano_nao_confere_o_texto_da_tarefa_contra_a_onda() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(waves_in_progress(&log).contains_key(&1), "a onda 1 está em andamento");
+        let current = log.current(task).expect("a tarefa tem versão vigente");
+        assert_eq!(current.wave(), Some(1), "o lote deu a ela o número da onda");
+        let revised = crate::commands::spec_events::write::write_at(&crate::commands::spec_events::write::WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".into()),
+            event_type: "task".into(),
+            json: json!({"replaces": current.id, "wave": 1, "title": "Somar", "text": "Somar dois números inteiros.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said})
+            .to_string(),
+        });
+        assert_eq!(revised["ok"], json!(true), "{revised}");
+
+        let (report, notes) = replanned(root);
+        assert_eq!(report["blocking"], Value::Null, "o plano não trava: {report}");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(wave_drawing_said(&report, &notes), Vec::<String>::new(), "{report}");
     }
 }

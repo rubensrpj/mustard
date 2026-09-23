@@ -105,9 +105,8 @@ fn fresh_model(root: &std::path::Path, dir: &std::path::Path) -> PathBuf {
 #[test]
 fn a_module_is_found_by_the_words_it_declares() {
     let root = crate_dir().join("..").join("..");
-    let tmp = std::env::temp_dir().join(format!("scan-self-recall-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("create temp dir");
+    let temp = tempfile::Builder::new().prefix("scan-self-recall-").tempdir().unwrap();
+    let tmp = temp.path().to_path_buf();
     let model_path = fresh_model(&root, &tmp);
     let raw = std::fs::read_to_string(&model_path).expect("the scan wrote the model");
     let model: serde_json::Value = serde_json::from_str(&raw).expect("valid model JSON");
@@ -197,7 +196,6 @@ fn a_module_is_found_by_the_words_it_declares() {
         }
     }
 
-    let _ = std::fs::remove_dir_all(&tmp);
     assert!(asked >= 10, "too few askable modules to measure: {asked}");
     #[allow(clippy::cast_precision_loss)]
     let (r1, r5) = (top1 as f32 / asked as f32, top5 as f32 / asked as f32);

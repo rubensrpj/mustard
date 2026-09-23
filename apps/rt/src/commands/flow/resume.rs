@@ -282,7 +282,7 @@ mod tests {
         crate::shared::spec_state::stand_on_spec_branch(root, "x");
         let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
         let said = seed("message", json!({"author": "user", "text": "o plano"}));
-        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
         for n in 1..=4 {
             seed("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x", "origin": said}));
         }
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
         let said = seed("message", json!({"author": "user", "text": "o plano"}));
-        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
         let wave = |n: u64| json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x", "origin": said});
         seed("wave", wave(1));
         let second = seed("wave", wave(2));

@@ -2,7 +2,8 @@
 // e diz em JSON o que a página mostra. É o apoio do teste dos templates
 // (`platform::page_templates`): o teste escreve na entrada padrão o HTML
 // preenchido, o banco de dados da página e os passos (ler a tela, buscar,
-// filtrar, baixar o .md, receber uma cópia nova), e lê a resposta na saída.
+// trocar de aba, abrir uma onda pelo gráfico ou pelo endereço, baixar o .md,
+// receber uma cópia nova), e lê a resposta na saída.
 //
 // A página roda com uma imitação pequena do DOM (só o que os templates usam)
 // e das capacidades do claude.ai: o banco de dados (`db`), com a leitura em
@@ -88,7 +89,7 @@ class Element extends Node_ {
     if (this.html) this.appendChild(new Text(htmlText(this.html)));
   }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
-  fire(type) { return (this.listeners[type] || []).map((fn) => fn({ type, target: this, preventDefault() {} })); }
+  fire(type, extra) { return (this.listeners[type] || []).map((fn) => fn(Object.assign({ type, target: this, preventDefault() {} }, extra || {}))); }
   click() { this.clicked = true; }
   closest() { return null; }
 }
@@ -129,6 +130,8 @@ body.appendChild(catalogEl);
 const document = {
   documentElement, head, body, title: '',
   createElement: (tag) => new Element(tag),
+  // O gráfico das ondas é SVG: o elemento é o mesmo, só o nome muda.
+  createElementNS: (ns, tag) => { const el = new Element(tag); el.ns = ns; return el; },
   createTextNode: (s) => new Text(s),
   getElementById: (id) => one(documentElement, (e) => e.getAttribute('id') === id),
 };
@@ -206,7 +209,15 @@ const hasDownloads = input.downloads !== false;
 const downloads = { save: async (req) => { saves.push({ filename: req.filename, data: String(req.data) }); return { status: 'saved' }; } };
 const claude = { use: async (name) => (name === 'db' ? (store ? store.db : null) : name === 'downloads' ? (hasDownloads ? downloads : null) : null) };
 
-const sandbox = { document, console, setTimeout, clearTimeout, URL, Blob, claude };
+// O endereço da página: `input.hash` é o `#…` com que ela abre, e o passo
+// `hash` troca o endereço e avisa, como o navegador faz.
+const location = { hash: input.hash || '' };
+const windowListeners = {};
+const sandbox = {
+  document, console, setTimeout, clearTimeout, URL, Blob, claude, location,
+  requestAnimationFrame: (fn) => setTimeout(fn, 0),
+  addEventListener: (type, fn) => { (windowListeners[type] = windowListeners[type] || []).push(fn); },
+};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
 try {
@@ -228,49 +239,145 @@ function fieldsOf(el) {
   return out;
 }
 function tagOf(el, cls) { const t = one(el, (e) => has(e, 'tag') && has(e, cls)); return t ? t.textContent : null; }
+// Como `walk`, sem entrar num <details> de dentro: o cartão de um critério
+// traz as execuções dele, e o de um ponto traz a resposta, cada qual no seu
+// próprio cartão.
+function own(root, pred, out) {
+  out = out || [];
+  (root.childNodes || []).forEach((c) => {
+    if (c instanceof Element) {
+      if (pred(c)) out.push(c);
+      if (c.tagName !== 'DETAILS') own(c, pred, out);
+    }
+  });
+  return out;
+}
+const ownOne = (root, pred) => own(root, pred)[0] || null;
+function ownFields(el) {
+  const dl = ownOne(el, (e) => e.tagName === 'DL');
+  if (!dl) return [];
+  const out = [];
+  for (let i = 0; i + 1 < dl.childNodes.length; i += 2) {
+    out.push([dl.childNodes[i].textContent, dl.childNodes[i + 1].textContent, dl.childNodes[i + 1].innerHTML]);
+  }
+  return out;
+}
+// Um cartão: no alto (`top`, os nomes de classe na ordem) o código, o selo
+// do tipo, as marcas, o selo da prova e a data; embaixo o título.
 function scrapeItem(el) {
-  const summary = one(el, (e) => e.tagName === 'SUMMARY');
-  const prose = byClass(el, 'prose');
+  const summary = el.childNodes[0];
+  const top = byClass(summary, 'top');
+  const bodyEl = el.childNodes[1];
+  const prose = bodyEl ? ownOne(bodyEl, (e) => has(e, 'prose')) : null;
+  const runs = bodyEl ? ownOne(bodyEl, (e) => has(e, 'runs')) : null;
+  const answer = bodyEl ? ownOne(bodyEl, (e) => has(e, 'answer')) : null;
+  const typeTag = top ? top.childNodes.find((c) => has(c, 'tag') && !has(c, 'mark') && !has(c, 'extra')) : null;
+  const pill = top ? top.childNodes.find((c) => has(c, 'pill')) : null;
   return {
     code: el.getAttribute('data-code'), type: el.getAttribute('data-type'), anchored: el.getAttribute('id') !== null,
-    title: text(byClass(summary, 't')), who: text(byClass(summary, 'who')), mark: tagOf(summary, 'mark'),
-    status: tagOf(summary, 'state'), date: text(byClass(summary, 'when')), text: prose ? prose.textContent : '',
-    html: prose ? prose.innerHTML : '', fields: fieldsOf(el), hidden: el.hidden,
+    top: top ? top.childNodes.map((c) => c.className) : [], below: summary.childNodes.map((c) => c.className),
+    codeShown: top ? text(byClass(top, 'c')) : null,
+    title: text(byClass(summary, 't')), tag: typeTag ? typeTag.textContent : null,
+    who: typeTag && has(typeTag, 'who') ? typeTag.textContent : null, mark: tagOf(summary, 'mark'),
+    extra: top ? top.childNodes.filter((c) => has(c, 'extra')).map((c) => c.textContent) : [],
+    status: pill ? pill.textContent : null, statusClass: pill ? pill.className : null,
+    date: text(byClass(summary, 'when')), text: prose ? prose.textContent : '',
+    html: prose ? prose.innerHTML : '', fields: bodyEl ? ownFields(bodyEl) : [], hidden: el.hidden, open: el.open,
+    runs: runs ? runs.childNodes.filter((c) => c.tagName === 'DETAILS').map(scrapeItem) : [],
+    answer: answer ? scrapeItem(answer.childNodes.find((c) => c.tagName === 'DETAILS')) : null,
   };
 }
+function scrapeTable(t) {
+  return { headers: walk(t, (e) => e.tagName === 'TH').map((c) => c.textContent),
+    rows: walk(t, (e) => e.tagName === 'TR').filter((r) => r.childNodes[0].tagName === 'TD').map((r) => r.childNodes.map((c) => c.textContent)) };
+}
+// O texto que está à vista: fora de todo elemento escondido.
+function shownText(el) {
+  if (el instanceof Text) return el.data;
+  if (el.hidden) return '';
+  return el.childNodes.map(shownText).join('');
+}
+function scrapePrompt(d) {
+  return { owner: d.getAttribute('data-owner'), summary: text(d.firstChild), text: text(d.lastChild), html: d.lastChild.innerHTML, hidden: d.hidden, open: d.open };
+}
 function scrapeSpec() {
-  const sections = walk(appEl, (e) => e.tagName === 'SECTION' && has(e, 'block')).map((s) => {
-    const h2 = one(s, (e) => e.tagName === 'H2');
-    const overview = byClass(s, 'overview');
-    return {
-      id: s.getAttribute('id'), heading: text(h2.firstChild), hidden: s.hidden,
-      overview: overview ? { hidden: overview.hidden, legend: text(overview.firstChild.lastChild),
-        spend: text(byClass(overview, 'ov-spend')),
-        cards: walk(overview, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.textContent, a.className]) } : null,
-      paragraphs: s.childNodes.filter((c) => c.tagName === 'P').map((p) => p.textContent),
-      groups: walk(s, (e) => e.tagName === 'DETAILS' && has(e, 'group')).map((g) => ({
-        id: g.getAttribute('id'), title: text(byClass(g, 'gt')), summary: text(byClass(g, 'gs')),
-        count: text(byClass(g, 'count')), open: g.open, hidden: g.hidden,
-        items: walk(g, (e) => e.tagName === 'DETAILS' && has(e, 'item')).map(scrapeItem),
-        prompts: walk(g, (e) => e.tagName === 'DETAILS' && has(e, 'prompt')).map((d) => ({
-          owner: d.getAttribute('data-owner'), summary: text(d.firstChild), text: text(d.lastChild), html: d.lastChild.innerHTML, hidden: d.hidden,
-        })),
-      })),
-    };
-  });
-  const select = document.getElementById('type');
+  const board = document.getElementById('board');
+  const byId = (id) => document.getElementById(id);
+  const tiles = byId('tiles');
+  const now = byId('now');
+  const chart = byId('chart');
+  const detail = byId('detail');
+  const tabs = byId('tabs');
+  const phase = byClass(appEl, 'phase');
+  const branch = byClass(appEl, 'branch');
+  const work = now ? byClass(now, 'work') : null;
   return {
+    // A ordem dos blocos do painel, pelo id de cada um.
+    blocks: board ? board.childNodes.map((c) => c.getAttribute('id')) : [],
+    head: (byId('head') || { childNodes: [] }).childNodes.map((c) => c.tagName + (c.className ? '.' + c.className : '')),
+    title: text(one(appEl, (e) => e.tagName === 'H1')),
+    phase: phase && !phase.hidden ? phase.textContent : null,
+    branch: branch && !branch.hidden ? branch.textContent : null,
+    goal: byId('goal') ? { label: text(byClass(byId('goal'), 'lbl')), text: text(byClass(byId('goal'), 'prose')), html: byClass(byId('goal'), 'prose').innerHTML } : null,
+    tiles: tiles ? tiles.childNodes.map((x) => ({
+      id: x.getAttribute('data-tile'), tag: x.tagName, href: x.getAttribute('href'), key: text(byClass(x, 'k')),
+      value: text(byClass(x, 'v')), meter: byClass(x, 'meter') !== null,
+      meterWidth: byClass(x, 'meter') ? byClass(x, 'meter').childNodes[0].getAttribute('style') : null,
+      lines: x.childNodes.filter((c) => has(c, 's')).map((c) => c.textContent),
+    })) : [],
+    now: work ? {
+      heading: text(one(now, (e) => e.tagName === 'H2')),
+      parts: work.childNodes.map((c) => {
+        if (has(c, 'grp')) return { kind: 'group', id: c.getAttribute('id'), text: c.textContent };
+        if (has(c, 'after')) return { kind: 'after', text: c.textContent };
+        const sum = c.childNodes[0];
+        return { kind: c.getAttribute('data-kind'), id: c.getAttribute('id'), open: c.open,
+          pill: text(byClass(sum, 'pill')), pillClass: byClass(sum, 'pill').className,
+          title: text(byClass(sum, 'w-title')), meta: text(byClass(sum, 'w-meta')),
+          body: text(c.childNodes[1]), tasks: walk(c.childNodes[1], (e) => e.tagName === 'LI').map((li) => li.textContent),
+          files: walk(c.childNodes[1], (e) => e.tagName === 'CODE').map((x) => x.textContent) };
+      }),
+    } : null,
+    chart: chart ? {
+      heading: text(one(chart, (e) => e.tagName === 'H2')),
+      bars: walk(chart, (e) => e.tagName === 'RECT').map((r) => ({ wave: Number(r.getAttribute('data-wave')), class: r.getAttribute('class'),
+        title: text(one(r, (e) => e.tagName === 'TITLE')), height: Number(r.getAttribute('height')), focusable: r.getAttribute('tabindex') === '0' })),
+      labels: walk(chart, (e) => e.tagName === 'TEXT').map((x) => x.textContent),
+      legend: walk(byClass(chart, 'legend') || chart, (e) => e.tagName === 'I').map((i) => [i.className, i.parentNode.textContent]),
+    } : null,
+    detail: detail ? {
+      wave: detail.getAttribute('data-wave') === null ? null : Number(detail.getAttribute('data-wave')),
+      number: text(byClass(detail, 'dn')), meta: text(detail.childNodes[1] || null),
+      tasks: walk(detail, (e) => e.tagName === 'OL').flatMap((o) => o.childNodes.map((li) => li.textContent)),
+      measures: fieldsOf(detail).map((f) => [f[0], f[1]]),
+      prompts: walk(detail, (e) => e.tagName === 'DETAILS' && has(e, 'prompt') && !has(e, 'delivered')).map(scrapePrompt),
+      steps: walk(byClass(detail, 'steps') || new Element('x'), (e) => e.tagName === 'LI').map((li) => li.textContent),
+      delivered: (() => { const d = one(detail, (e) => has(e, 'delivered')); return d ? text(d.lastChild) : null; })(),
+      commit: text(byClass(detail, 'commit')),
+      text: detail.textContent,
+    } : null,
+    findBeforeTabs: board ? board.childNodes.findIndex((c) => c.getAttribute('id') === 'find') + 1 === board.childNodes.findIndex((c) => c.getAttribute('id') === 'tabs') : false,
+    tabs: tabs ? tabs.childNodes.map((b) => ({ anchor: b.getAttribute('data-tab'), label: text(byClass(b, 'tl')),
+      count: text(one(b, (e) => e.tagName === 'I')), selected: b.getAttribute('aria-selected') === 'true' })) : [],
+    sections: walk(byId('panels') || new Element('x'), (e) => e.tagName === 'SECTION' && has(e, 'panel')).map((p) => ({
+      id: p.getAttribute('id'), hidden: p.hidden,
+      items: p.childNodes.filter((c) => c.tagName === 'DETAILS' && has(c, 'item')).map(scrapeItem),
+      tables: p.childNodes.filter((c) => has(c, 'table')).map(scrapeTable),
+      more: (() => { const m = p.childNodes.find((c) => has(c, 'more')); return m && !m.hidden ? m.textContent : null; })(),
+      empty: (() => { const m = p.childNodes.find((c) => has(c, 'empty-tab')); return m && !m.hidden ? m.textContent : null; })(),
+    })),
+    // Todo o texto que a página tem, e o que está à vista.
+    text: appEl.textContent,
+    shown: shownText(appEl),
+    classes: walk(appEl, () => true).map((e) => e.className).join(' '),
+    tags: walk(appEl, () => true).map((e) => e.tagName).join(' '),
+    ids: walk(appEl, (e) => e.getAttribute('id') !== null).map((e) => e.getAttribute('id')),
     state: appEl.getAttribute('data-state'), status: text(document.getElementById('status')),
-    statusHidden: document.getElementById('status').hidden, title: text(one(appEl, (e) => e.tagName === 'H1')),
-    meta: walk(byClass(appEl, 'meta') || appEl, (e) => e.tagName === 'LI').map((li) => li.textContent),
-    search: document.getElementById('q') ? document.getElementById('q').getAttribute('placeholder') : null,
-    filter: select ? select.childNodes.map((o) => [o.getAttribute('value'), o.textContent]) : null,
+    statusHidden: document.getElementById('status').hidden,
+    search: byId('q') ? byId('q').getAttribute('placeholder') : null,
     download: text(document.getElementById('download')),
     downloadHidden: document.getElementById('download') ? document.getElementById('download').hidden : null,
-    hits: text(byClass(appEl, 'hits')), notFound: document.getElementById('notFound') ? !document.getElementById('notFound').hidden : null,
-    nav: walk(byClass(appEl, 'nav') || appEl, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.hidden || a.parentNode.hidden]),
     headings: walk(appEl, (e) => /^H[1-6]$/.test(e.tagName)).map((e) => e.tagName),
-    sections,
   };
 }
 function scrapeProject() {
@@ -311,10 +418,22 @@ async function until(check) {
       const q = document.getElementById('q');
       q.value = step.value;
       q.fire('input');
-    } else if (step.do === 'filter') {
-      const select = document.getElementById('type');
-      select.value = step.value;
-      select.fire('change');
+    } else if (step.do === 'tab') {
+      document.getElementById('tab-' + step.value).fire('click');
+    } else if (step.do === 'bar') {
+      // Abre uma onda pelo gráfico: um clique, ou o Enter com a barra em foco.
+      const bar = one(appEl, (e) => e.tagName === 'RECT' && e.getAttribute('data-wave') === String(step.value));
+      if (!bar) errors.push('no bar for wave ' + step.value);
+      else if (step.key) bar.fire('keydown', { key: step.key });
+      else bar.fire('click');
+    } else if (step.do === 'hash') {
+      location.hash = '#' + step.value;
+      (windowListeners.hashchange || []).forEach((fn) => fn({ type: 'hashchange' }));
+    } else if (step.do === 'more') {
+      const panel = document.getElementById(step.value);
+      const more = panel && panel.childNodes.find((c) => has(c, 'more'));
+      if (!more) errors.push('no show-more in ' + step.value);
+      else more.childNodes[0].fire('click');
     } else if (step.do === 'download') {
       await Promise.all(document.getElementById('download').fire('click'));
       results[step.as] = saves.length ? saves[saves.length - 1] : null;

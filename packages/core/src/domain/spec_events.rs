@@ -1,7 +1,7 @@
 //! `spec_events` — o arquivo de eventos de uma spec (`spec.ndjson`).
 //!
 //! Uma spec é um arquivo só, com um evento por linha. Este módulo guarda o que
-//! vale para toda linha: os 35 tipos, o envelope, os campos obrigatórios de
+//! vale para toda linha: os 36 tipos, o envelope, os campos obrigatórios de
 //! cada tipo, o bloco de cada tipo e a leitura por bloco e por passo.
 //!
 //! Funciona porque os tipos são fixos: o tipo mora sempre no campo `type`,
@@ -49,7 +49,7 @@ pub use line::{render_line, shown_line, stamp};
 pub use message::{check_message, pr_message, MessageRefusal, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX};
 pub use purge::{purge_excerpts, purge_lines};
 pub use read::{parse_log, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter};
-pub use refusal::{Refusal, TaskDeclaration};
+pub use refusal::{Refusal, TaskDeclaration, TASK_TITLE_MAX};
 pub use search::{found_by, refresh_search_lines, search_field, search_terms};
 pub use types::{
     type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, TypeSpec, DELIVERED_MAX_CHARS, METRIC_TYPES,

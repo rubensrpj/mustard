@@ -24,10 +24,9 @@ fn fixture() -> PathBuf {
 /// `label` keeps each test's temp dir distinct — both tests in this file run in
 /// the same binary in parallel, so a process-id-only path would collide and one
 /// test's cleanup would yank the dir out from under the other.
-fn scan_fixture(label: &str) -> (PathBuf, serde_json::Value) {
-    let dir = std::env::temp_dir().join(format!("scan-php-laravel-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn scan_fixture(label: &str) -> (tempfile::TempDir, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-php-laravel-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["scan", fixture().to_str().unwrap(), "--out", model.to_str().unwrap()])
@@ -36,12 +35,12 @@ fn scan_fixture(label: &str) -> (PathBuf, serde_json::Value) {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    (dir, v)
+    (temp, v)
 }
 
 #[test]
 fn composer_manifest_carries_deps_scripts_in_document_order() {
-    let (dir, v) = scan_fixture("composer");
+    let (_dir, v) = scan_fixture("composer");
 
     // The composer manifest is discovered (data-driven via manifests.toml).
     let manifest = v["manifests"]
@@ -70,12 +69,11 @@ fn composer_manifest_carries_deps_scripts_in_document_order() {
         "the composer `scripts` block must surface: {scripts:?}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn php_laravel_fixture_yields_php_composer_and_laravel_signal() {
-    let (dir, v) = scan_fixture("model");
+    let (_dir, v) = scan_fixture("model");
 
     // (a) php present in languages and on the modules.
     assert!(
@@ -100,5 +98,4 @@ fn php_laravel_fixture_yields_php_composer_and_laravel_signal() {
     let frameworks: Vec<&str> = v["frameworks"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert!(frameworks.contains(&"laravel/framework"), "Laravel dep ranked in frameworks: {frameworks:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

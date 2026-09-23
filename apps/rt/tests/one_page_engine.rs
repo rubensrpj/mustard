@@ -200,7 +200,7 @@ fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
             &["text"]),
         ("criterion", "criteria",
             serde_json::json!({"when": "O pedido de uma onda passa de 500 linhas.",
-                "then": "O binário recusa o despacho.", "proof": "cargo test", "origin": 2}),
+                "then": "O binário recusa o despacho.", "proof": "cargo test", "form": "ubiquitous", "origin": 2}),
             &["when", "then"]),
         ("limit", "agreed",
             serde_json::json!({"text": "Tamanho do pedido de cada onda.", "value": "500 linhas",

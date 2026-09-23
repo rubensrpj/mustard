@@ -67,13 +67,13 @@ fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
 }
 
-/// Scan a fixture into a temp model and return its path. Per-call temp dir so
-/// parallel tests never share output.
-fn model_of(fixture_dir: &str) -> PathBuf {
-    let tmp = std::env::temp_dir()
-        .join(format!("scan-i18n-{}-{}", fixture_dir, std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("create temp dir");
+/// Scan a fixture into a temp model and return its path, together with the
+/// temp dir that holds it. Per-call temp dir so parallel tests never share
+/// output; the caller keeps the dir alive, and dropping it deletes the folder,
+/// also when an assertion fails.
+fn model_of(fixture_dir: &str) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-i18n-{}-", fixture_dir)).tempdir().unwrap();
+    let tmp = temp.path().to_path_buf();
     let model = tmp.join("grain.model.json");
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args([
@@ -85,7 +85,7 @@ fn model_of(fixture_dir: &str) -> PathBuf {
         .output()
         .expect("run scan over fixture");
     assert!(out.status.success(), "scan failed: {}", String::from_utf8_lossy(&out.stderr));
-    model
+    (temp, model)
 }
 
 /// Rank of `target` in the digest's file list for `query`, or `None` when the
@@ -130,8 +130,8 @@ fn hits(model: &Path, asks: &[Ask], phrase: impl Fn(&Ask) -> &'static str) -> us
 
 #[test]
 fn the_four_cells_of_prompt_language_by_code_language() {
-    let en_model = model_of("i18n_code_en");
-    let pt_model = model_of("i18n_code_pt");
+    let (_en_dir, en_model) = model_of("i18n_code_en");
+    let (_pt_dir, pt_model) = model_of("i18n_code_pt");
 
     let same_en = hits(&en_model, ASKS_EN_CODE, |a| a.en);
     let same_pt = hits(&pt_model, ASKS_PT_CODE, |a| a.pt);

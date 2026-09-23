@@ -1,6 +1,14 @@
 ; Rust — use imports and item definitions.
 (use_declaration argument: (_) @import)
 
+; The names `use m::limite` brings into the file: what it brought, not a use
+; of it. The whole path is already the import's.
+(use_declaration argument: (scoped_identifier name: (identifier) @imported))
+(use_declaration argument: (identifier) @imported)
+(use_list (identifier) @imported)
+(use_list (scoped_identifier name: (identifier) @imported))
+(use_as_clause alias: (identifier) @imported)
+
 (struct_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait
@@ -11,6 +19,9 @@
 ; `mine.rs::is_significant` leaves the kind out of both allowlists, so a
 ; constant never becomes an architectural unit.
 (const_item name: (identifier) @name) @definition.constant
+; The value of a `const` is not its header: `pub const LIMITE: u32 = 10;`
+; reads `pub const LIMITE: u32`.
+(const_item name: (identifier) @name value: (_) @value) @definition.constant
 (static_item name: (identifier) @name) @definition.constant
 
 ; Functions — a free function is a UNIT, a method is a MEMBER. Rust spells both
@@ -31,3 +42,9 @@
 ; them as units.
 (field_declaration name: (field_identifier) @name) @definition.field
 (enum_variant name: (identifier) @name) @definition.enum_member
+
+; Decorations — an attribute is not code of the declaration it adorns: the
+; engine passes over it to find the doc comment above, starts the header after
+; it, and reads no call out of it (`#[derive(Debug)]` calls nothing).
+(attribute_item) @decoration
+(inner_attribute_item) @decoration

@@ -38,8 +38,8 @@ pub(crate) mod theme;
 
 use crate::shared::rtk_gain::{get_rtk_gain, RtkGain};
 use segment::{
-    context_segment, duration_segment, git_segment, inert_segment, model_segment, module_segment, mustard_segment,
-    savings_segment, unit_segment, Segment,
+    compact_segment, context_segment, duration_segment, git_segment, inert_segment, model_segment, module_segment,
+    mustard_segment, savings_segment, unit_segment, Segment,
 };
 use serde_json::Value;
 use std::io::Read;
@@ -52,7 +52,13 @@ use theme::{render_line, Theme, ThemeId};
 ///
 /// Builders that return `None` (zero duration, no git, etc.) are quietly
 /// skipped, so the line stays compact when state is sparse.
-fn build_segments(data: &Value, gain: Option<&RtkGain>) -> Vec<Segment> {
+///
+/// `machine` é o valor de `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, lido pelo
+/// chamador (`render`, uma vez, do ambiente real do processo) e recebido
+/// aqui como parâmetro — nunca lido direto nesta função — para o teste poder
+/// variá-lo sem tocar o ambiente, que nesta máquina já traz a variável
+/// definida.
+fn build_segments(data: &Value, gain: Option<&RtkGain>, machine: Option<&str>) -> Vec<Segment> {
     let cwd: PathBuf = data
         .get("workspace")
         .and_then(|w| w.get("current_dir"))
@@ -83,6 +89,7 @@ fn build_segments(data: &Value, gain: Option<&RtkGain>) -> Vec<Segment> {
         segs.push(mustard_segment());
     }
     segs.extend(savings_segment(gain, lang));
+    segs.extend(compact_segment(data, machine, lang));
     segs.push(model_segment(data));
     segs
 }
@@ -95,7 +102,7 @@ fn build_segments(data: &Value, gain: Option<&RtkGain>) -> Vec<Segment> {
 /// não é impressa.
 const fn is_place_row(kind: segment::SegmentKind) -> bool {
     use segment::SegmentKind as K;
-    !matches!(kind, K::Mustard | K::Savings | K::Model)
+    !matches!(kind, K::Mustard | K::Savings | K::Compact | K::Model)
 }
 
 /// Render the statusline from a parsed payload: one row per non-empty group,
@@ -103,7 +110,8 @@ const fn is_place_row(kind: segment::SegmentKind) -> bool {
 /// than printed blank — with a sparse payload the bar stays a single line, the
 /// shape it had before this split.
 fn render(data: &Value) -> Vec<String> {
-    rows(ThemeId::from_env().theme(), build_segments(data, get_rtk_gain().as_ref()))
+    let machine = std::env::var("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").ok();
+    rows(ThemeId::from_env().theme(), build_segments(data, get_rtk_gain().as_ref(), machine.as_deref()))
 }
 
 /// The rows of `segs` in `theme`: the partition by [`is_place_row`], one
@@ -277,9 +285,20 @@ mod tests {
 
     /// The two rows as the terminal shows them in the `minimal` theme, without
     /// the red warning of a switched-off plugin: that one reads this machine's
-    /// plugin settings, not the project.
+    /// plugin settings, not the project. `machine` (`None` here) keeps these
+    /// exact-match tests deterministic no matter what this shell's own
+    /// `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is set to — the compact segment gets
+    /// its own tests, below.
     fn shown_rows(data: &Value) -> Vec<String> {
-        let mut segs = build_segments(data, Some(&GAIN));
+        let mut segs = build_segments(data, Some(&GAIN), None);
+        segs.retain(|s| s.kind != segment::SegmentKind::Inert);
+        rows(ThemeId::Minimal.theme(), segs).iter().map(|line| visible(line)).collect()
+    }
+
+    /// `shown_rows`, mas com a fatia de compactação da máquina explícita —
+    /// para as duas linhas próprias do ponto de corte, abaixo.
+    fn shown_rows_with_machine(data: &Value, machine: &str) -> Vec<String> {
+        let mut segs = build_segments(data, Some(&GAIN), Some(machine));
         segs.retain(|s| s.kind != segment::SegmentKind::Inert);
         rows(ThemeId::Minimal.theme(), segs).iter().map(|line| visible(line)).collect()
     }
@@ -310,7 +329,7 @@ mod tests {
         let data = example_payload(&root);
         assert_eq!((data["cost"]["total_lines_added"].as_i64(), data["cost"]["total_lines_removed"].as_i64()), (Some(156), Some(23)));
 
-        let segs = build_segments(&data, Some(&GAIN));
+        let segs = build_segments(&data, Some(&GAIN), None);
         let text = |kind: segment::SegmentKind| {
             segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"))
         };
@@ -355,6 +374,43 @@ mod tests {
         assert_eq!(rows[1], "\u{26A1} rtk poupou 64%  Opus 5 (1M context)", "no Mustard, no version: {rows:?}");
     }
 
+    /// O ponto de corte e a distância entram na segunda linha, depois da
+    /// economia do rtk e antes do modelo, no formato `compacta em Nk -
+    /// faltam Nk`: a fatia da máquina (aqui, 25) vezes a janela do modelo
+    /// (aqui, 1 milhão, porque o nome do exemplo cita "1M") dá o ponto de
+    /// corte; ele menos os tokens já usados (230 mil + 10 mil, do exemplo
+    /// aprovado) dá quanto falta.
+    #[test]
+    fn a_segunda_linha_mostra_o_ponto_de_corte_e_quanto_falta() {
+        let version = mustard_core::harness_version();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        project_on_branch(&root, "dev", "pt-BR");
+        let rows = shown_rows_with_machine(&example_payload(&root), "25");
+        assert_eq!(
+            rows[1],
+            format!("Mustard {version}  \u{26A1} rtk poupou 64%  compacta em 250k - faltam 10k  Opus 5 (1M context)"),
+            "{rows:?}"
+        );
+    }
+
+    /// Sem a variável de compactação definida na máquina, a segunda linha
+    /// fica exatamente como era antes desta onda — nenhum ponto de corte
+    /// inventado, e a barra não perde nem ganha nada além disso.
+    #[test]
+    fn sem_a_fatia_na_maquina_a_segunda_linha_nao_muda() {
+        let version = mustard_core::harness_version();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        project_on_branch(&root, "dev", "pt-BR");
+        let rows = shown_rows(&example_payload(&root));
+        assert_eq!(
+            rows[1],
+            format!("Mustard {version}  \u{26A1} rtk poupou 64%  Opus 5 (1M context)"),
+            "{rows:?}"
+        );
+    }
+
     /// Sem o endereço da página do projeto — a lista das specs falta, está
     /// ilegível ou não o traz —, o nome do projeto sai sem link, e o resto da
     /// barra sai igual ao de quando o endereço existe, sem erro.
@@ -378,7 +434,7 @@ mod tests {
                 std::fs::write(root.join(".claude").join("spec").join("index.ndjson"), bytes).unwrap();
             }
             let data = example_payload(&root);
-            let module = build_segments(&data, Some(&GAIN))
+            let module = build_segments(&data, Some(&GAIN), None)
                 .into_iter()
                 .find(|s| s.kind == segment::SegmentKind::Module)
                 .expect("the project name is always on the bar");
@@ -434,7 +490,7 @@ mod tests {
             "model": { "display_name": "Claude Opus 5" },
             "version": "2.1.267",
         });
-        let segs = build_segments(&data, None);
+        let segs = build_segments(&data, None, None);
         let text = |kind: segment::SegmentKind| {
             segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"))
         };
@@ -475,7 +531,7 @@ mod tests {
             "version": "2.1.146",
             "cost": { "total_cost_usd": 0.42, "total_duration_ms": 1000 }
         });
-        let built = build_segments(&data, None);
+        let built = build_segments(&data, None, None);
         let placed = built.iter().filter(|s| is_place_row(s.kind)).count();
         let spent = built.iter().filter(|s| !is_place_row(s.kind)).count();
         assert_eq!(placed + spent, built.len(), "the partition is total by construction");

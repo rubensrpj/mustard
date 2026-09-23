@@ -1068,8 +1068,9 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
     // settle that could not free the local floor has no business killing the
     // server branch: that branch is then the only ref of the unit this pass is
     // certain it did not strand, and deleting it is the single step of the three
-    // no rerun can undo. `worktreeRemoved` stays true only when WE removed it (an
-    // already-absent worktree reports false, matching the prior happy path).
+    // no rerun can undo. `worktreeRemoved` is permanently `false` on every one of
+    // the three outcomes below — no pass removes a worktree any more; the field
+    // survives only so a caller reading the old shape keeps reading valid JSON.
     let (action, worktree_removed, branch_deleted, remote_deleted) =
         if unit_entry.is_some_and(|e| cwd.starts_with(&e.path)) {
             // Inside our own worktree we cannot remove our floor; verify+update

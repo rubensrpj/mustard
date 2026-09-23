@@ -35,9 +35,8 @@ fn fixture(name: &str) -> PathBuf {
 /// + pid) so parallel tests scanning the same fixture never yank each other's
 ///   dir (the per-language test and the non-regression test share fixtures).
 fn scan_fixture_labeled(label: &str, name: &str) -> serde_json::Value {
-    let dir = std::env::temp_dir().join(format!("scan-graph-{}-{}-{}", label, name, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new().prefix(&format!("scan-graph-{}-{}-", label, name)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
@@ -46,7 +45,6 @@ fn scan_fixture_labeled(label: &str, name: &str) -> serde_json::Value {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    let _ = std::fs::remove_dir_all(&dir);
     v
 }
 

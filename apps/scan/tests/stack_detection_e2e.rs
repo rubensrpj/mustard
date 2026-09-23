@@ -32,10 +32,9 @@ fn fixture(name: &str) -> PathBuf {
 /// this file run in the same binary in parallel, so a process-id-only path
 /// would collide and one test's cleanup would yank the dir out from under the
 /// other.
-fn scan_fixture(name: &str, label: &str) -> (PathBuf, serde_json::Value) {
-    let dir = std::env::temp_dir().join(format!("scan-stacks-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn scan_fixture(name: &str, label: &str) -> (tempfile::TempDir, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-stacks-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
@@ -44,7 +43,7 @@ fn scan_fixture(name: &str, label: &str) -> (PathBuf, serde_json::Value) {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    (dir, v)
+    (temp, v)
 }
 
 /// Run the digest command over an already-written `grain.model.json` (so the
@@ -116,7 +115,7 @@ fn stack_detection_e2e_laravel_converges_three_signal_classes_at_high_confidence
 
     // DIGEST copies the model's detections verbatim (a projection of the
     // model, never a re-inference): same array, byte-for-byte as JSON values.
-    let digest = digest_of_model(&dir);
+    let digest = digest_of_model(dir.path());
     let digest_stacks = digest["detected_stacks"].as_array().expect("digest carries detected_stacks");
     assert_eq!(digest_stacks.len(), 1, "digest carries laravel: {digest_stacks:?}");
     assert_eq!(digest_stacks[0]["name"], "laravel");
@@ -125,12 +124,11 @@ fn stack_detection_e2e_laravel_converges_three_signal_classes_at_high_confidence
         "digest must copy the model's detected_stacks verbatim"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn stack_detection_e2e_django_converges_path_and_code_classes_at_medium_confidence() {
-    let (dir, v) = scan_fixture("python_django", "django");
+    let (_dir, v) = scan_fixture("python_django", "django");
 
     let stacks = v["detected_stacks"].as_array().expect("model carries detected_stacks");
     assert_eq!(stacks.len(), 1, "only django detected: {stacks:?}");
@@ -158,5 +156,4 @@ fn stack_detection_e2e_django_converges_path_and_code_classes_at_medium_confiden
     // And by construction: no dependency evidence at all.
     assert!(!sigs.iter().any(|s| s.starts_with("dep:")), "no dep signals expected: {sigs:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

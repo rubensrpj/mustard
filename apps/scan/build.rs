@@ -18,6 +18,14 @@ fn main() {
 
     println!("cargo:rerun-if-changed=languages.toml");
     println!("cargo:rerun-if-changed=queries");
+    println!("cargo:rerun-if-changed=src");
+
+    // The map format: a digest of everything that decides what the scan
+    // yields from a file — the engine (src), the queries, and the data tables
+    // at the crate root. A map written by a scan built from other sources is
+    // read again in full, so no change to the scan can leave a stale map
+    // behind, and nobody has to remember to bump a number by hand.
+    println!("cargo:rustc-env=SCAN_MAP_DIGEST={}", source_digest(Path::new(&manifest)));
 
     let registry_src = fs::read_to_string(&registry_path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", registry_path.display()));
@@ -48,6 +56,13 @@ fn main() {
     let mut alias_table = String::new();
     alias_table.push_str("pub(crate) static LANG_ROOT_ALIASES: &[(&str, &[&str])] = &[\n");
 
+    // (name, namespace_scope) table — the OPTIONAL rule for how a declared
+    // namespace is seen by the other files of the language ("folder" or
+    // "nested"). A language without the field gets an empty string: a
+    // namespace is seen only by the files that declare the same one.
+    let mut scope_table = String::new();
+    scope_table.push_str("pub(crate) static LANG_NAMESPACE_SCOPE: &[(&str, &str)] = &[\n");
+
     for lang in languages {
         let tbl = lang.as_table().expect("each [[language]] must be a table");
         let name = str_field(tbl, "name");
@@ -70,6 +85,26 @@ fn main() {
                     .collect()
             })
             .unwrap_or_default();
+        // The OPTIONAL markup tags the language writes its documentation
+        // comments with: the engine drops them and keeps the text.
+        let doc_tags: Vec<String> = tbl
+            .get("doc_tags")
+            .map(|v| {
+                v.as_array()
+                    .expect("language.doc_tags must be an array")
+                    .iter()
+                    .map(|e| e.as_str().expect("doc tag must be a string").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let namespace_scope = tbl
+            .get("namespace_scope")
+            .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
+            .unwrap_or_default();
+        assert!(
+            matches!(namespace_scope.as_str(), "" | "folder" | "nested"),
+            "language.namespace_scope of `{name}` must be \"folder\" or \"nested\", not {namespace_scope:?}"
+        );
 
         // Concatenate every .scm under queries/<dir>/, in stable filename order.
         let query = read_queries(&queries_root, &dir);
@@ -84,14 +119,16 @@ fn main() {
             .map(|a| format!("{a:?}"))
             .collect::<Vec<_>>()
             .join(", ");
+        let tags = doc_tags.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
 
         writeln!(
             body,
-            "        RawLang {{ name: {name:?}, query: {query:?}, language: {grammar}.into() }},"
+            "        RawLang {{ name: {name:?}, query: {query:?}, language: {grammar}.into(), doc_tags: &[{tags}] }},"
         )
         .expect("the generated body is a String, which never fails to write");
         writeln!(ext_table, "    ({name:?}, &[{exts}]),").expect("the generated table is a String, which never fails to write");
         writeln!(alias_table, "    ({name:?}, &[{aliases}]),").expect("the generated table is a String, which never fails to write");
+        writeln!(scope_table, "    ({name:?}, {namespace_scope:?}),").expect("the generated table is a String, which never fails to write");
     }
 
     body.push_str("    ]\n}\n");
@@ -99,6 +136,8 @@ fn main() {
     body.push_str(&ext_table);
     alias_table.push_str("];\n");
     body.push_str(&alias_table);
+    scope_table.push_str("];\n");
+    body.push_str(&scope_table);
 
     let out_path = Path::new(&out_dir).join("langs_generated.rs");
     fs::write(&out_path, body).expect("write langs_generated.rs");
@@ -131,4 +170,62 @@ fn read_queries(root: &Path, dir: &str) -> String {
         combined.push('\n');
     }
     combined
+}
+
+/// A digest of the scan's own sources: every file under `src/` and `queries/`,
+/// and every data `.toml` at the crate root (the package manifest apart, whose
+/// version already enters the format). Paths are relative and sorted, so the
+/// digest depends on the content only, never on where the crate is checked
+/// out. FNV-1a over 64 bits: stable across builds and toolchains, with no
+/// dependency to add.
+fn source_digest(crate_root: &Path) -> String {
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    collect_files(&crate_root.join("src"), &mut files);
+    collect_files(&crate_root.join("queries"), &mut files);
+    for entry in fs::read_dir(crate_root).expect("read the crate root").flatten() {
+        let path = entry.path();
+        let is_data_toml = path.extension().and_then(|e| e.to_str()) == Some("toml")
+            && path.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml");
+        if is_data_toml && path.is_file() {
+            println!("cargo:rerun-if-changed={}", path.display());
+            files.push(path);
+        }
+    }
+    let mut named: Vec<(String, std::path::PathBuf)> = files
+        .into_iter()
+        .map(|p| {
+            let rel = p.strip_prefix(crate_root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            (rel, p)
+        })
+        .collect();
+    named.sort();
+
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for (rel, path) in named {
+        let body = fs::read(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        feed(rel.as_bytes());
+        feed(&[0]);
+        feed(&(body.len() as u64).to_le_bytes());
+        feed(&body);
+    }
+    format!("{hash:016x}")
+}
+
+/// Every file under `dir`, at any depth.
+fn collect_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
 }

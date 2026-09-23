@@ -12,15 +12,9 @@
 //! para ser expurgado; ele fica fora da cópia.
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
-//! levantamento aberto; erro de montagem do plano (ciclo entre ondas, e
-//! tarefa ou dependência apontando uma onda que não existe); pedido de onda
-//! acima do teto de linhas; skill que a conferência recusa; arquivo citado
-//! que não existe e não está marcado como novo; tarefa que mexe em código
-//! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere;
-//! tarefa sem nota de trabalho, que volta com a escala e o exemplo de cada
-//! nota; tarefa cujo texto não casa com onda nenhuma do plano; e onda que
-//! ainda vem com mais de três tarefas ou mais de três provas de critério,
-//! que volta com a divisão sugerida em duas ondas e as tarefas de cada uma.
+//! levantamento aberto; skill que a conferência recusa; arquivo citado que
+//! não existe e não está marcado como novo; e tarefa que mexe em código sem
+//! dizer em que arquivo, que volta com os arquivos que o mapa sugere.
 //!
 //! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
 //! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
@@ -28,26 +22,25 @@
 //!
 //! **O que só avisa**, e a decisão fica com quem aprova: arquivo citado fora
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
-//! mapa não acha; ondas que saem na mesma rodada e dividem arquivo; onda com
-//! partes independentes, que deve sair dividida em ondas paralelas; spec com
-//! partes independentes, pela mesma conta, que pode ser dividida; onda cuja
-//! soma das notas passa do teto; item
-//! combinado de uma onda que nenhuma tarefa cobre — menos o marcado como "não
-//! vira código", que traz o motivo na linha dele, e o do projeto, que vale
-//! sempre; contrato que nenhum critério cita; tarefa que podia nomear uma
-//! skill; tarefa cujo texto não casa com o texto da onda dela, que volta
-//! dizendo com qual onda ele casaria melhor; e o comando de compilar ou de
-//! testar que o `mustard.json` ainda não declara, com o campo a preencher.
+//! mapa não acha; item combinado de uma onda que nenhuma tarefa cobre — menos
+//! o marcado como "não vira código", que traz o motivo na linha dele, e o do
+//! projeto, que vale sempre; contrato que nenhum critério cita; tarefa que
+//! podia nomear uma skill; e o comando de compilar ou de testar que o
+//! `mustard.json` ainda não declara, com o campo a preencher.
+//!
+//! O plano não confere onda: a onda é um lote que o binário forma na hora de
+//! despachar, e não um desenho do plano. Não há aviso de ondas que dividem
+//! arquivo, de onda ou spec que podia sair dividida, nem de tarefa cujo texto
+//! não casa com o da onda; a trava de dois lotes em paralelo nunca dividirem
+//! arquivo mora na rodada.
+//!
+//! A tarefa não tem nota de trabalho: a nota do Scrum saiu inteira, campo,
+//! recusas e soma, e nenhum texto impresso por este passo cita a escala.
 //!
 //! As conferências das tarefas olham só as ondas que ainda vêm: a tarefa de
 //! onda que já tem registro de entrega não é conferida, porque o que ela fez
 //! está provado pelo código que entrou, pelo commit que a carrega e pela
 //! revisão que a aprovou, e não pelo texto que a descreveu.
-//!
-//! A leitura das notas ([`wave_points`]) é uma só: serve à conferência e à
-//! migração de uma spec aprovada por uma versão antiga, que não pedia nota —
-//! no marco em que o template da página dela nasce, a ordem manda dar nota às
-//! tarefas das ondas que ainda não saíram ([`migration_points`]).
 //!
 //! Cada achado, dos que travam e dos que só avisam, é gravado como anotação
 //! no arquivo de eventos quando este comando roda, com o rótulo do achado do
@@ -57,7 +50,7 @@
 //! nunca ao desenhar a página. Rodar o comando de novo não repete a anotação
 //! que já está no arquivo.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
@@ -74,7 +67,6 @@ use serde_json::{json, Map, Value};
 
 use crate::commands::flow::skill_search::{best_skill, skills_on_disk, MAP_SUGGESTIONS};
 use crate::commands::spec_events::{self, read::checkout, write::record};
-use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// As opções de `mustard-rt run plan`.
@@ -88,30 +80,11 @@ pub struct PlanOpts {
 /// O que a conferência do plano achou. Cada achado sabe se trava a pergunta
 /// de aprovação ou se só avisa.
 enum PlanFinding {
-    /// Uma recusa do arquivo de eventos: ponto aberto, pedido grande demais,
-    /// arquivo citado que não existe.
+    /// Uma recusa do arquivo de eventos: o ponto do levantamento que ficou
+    /// aberto.
     Refused(Refusal),
     /// Uma skill que a conferência recusou.
     Skill { name: String, refusal: MapRefusal },
-    /// Ondas que saem na mesma rodada e declaram o mesmo arquivo.
-    SharedFile { waves: String, files: String, chain: String },
-    /// Uma onda com partes independentes, que deve sair dividida em ondas
-    /// paralelas, uma por parte.
-    WaveShouldSplit { wave: u64, parts: String },
-    /// Uma spec com partes independentes, que pode ser dividida, uma spec
-    /// por parte.
-    SpecShouldSplit { parts: String },
-    /// As tarefas sem nota de trabalho, pelos códigos, numa recusa só: a
-    /// escala e os exemplos vêm uma vez, e não uma por tarefa.
-    TasksWithoutPoints { tasks: String },
-    /// Uma onda cuja soma das notas passa do teto.
-    WavePointsOverCap { wave: u64, points: u64 },
-    /// Um ciclo de dependência entre ondas.
-    WaveLoop { waves: String },
-    /// Uma onda que depende de outra que o plano não tem.
-    DependsOnMissing { wave: u64, on: u64 },
-    /// Uma tarefa que aponta uma onda que o plano não tem.
-    TaskWithoutWave { task: String, wave: u64 },
     /// Um arquivo que a tarefa cita e que o git não guarda.
     FileOutsideGit { task: String, path: String },
     /// Um nome citado que o mapa do projeto não confirma.
@@ -123,11 +96,6 @@ enum PlanFinding {
     /// Uma tarefa que mexe em código e não diz em que arquivo mexe, com os
     /// arquivos que o mapa sugere para ela.
     TaskWithoutFile { task: String, files: String },
-    /// Uma tarefa cujo texto não casa com a onda dela, com a onda com que ele
-    /// casa mais forte.
-    TaskInTheWrongWave { task: String, wave: u64, best: u64 },
-    /// Uma tarefa cujo texto não casa com onda nenhuma do plano.
-    TaskMatchesNoWave { task: String, wave: u64 },
     /// Uma tarefa sem skill para a qual já existe uma skill que serve.
     TaskCouldNameASkill { task: String, skill: String },
     /// Uma tarefa sem skill cujo trabalho se repete no projeto: o plano
@@ -142,23 +110,11 @@ impl PlanFinding {
     /// `true` para o achado que segura a pergunta de aprovação.
     fn blocks(&self) -> bool {
         match self {
-            Self::Refused(_)
-            | Self::Skill { .. }
-            | Self::WaveLoop { .. }
-            | Self::DependsOnMissing { .. }
-            | Self::TaskWithoutWave { .. }
-            | Self::TaskWithoutFile { .. }
-            | Self::TasksWithoutPoints { .. }
-            | Self::TaskMatchesNoWave { .. } => true,
+            Self::Refused(_) | Self::Skill { .. } | Self::TaskWithoutFile { .. } => true,
             Self::Cited { finding, .. } => finding.is_refusal(),
-            Self::SharedFile { .. }
-            | Self::WaveShouldSplit { .. }
-            | Self::SpecShouldSplit { .. }
-            | Self::WavePointsOverCap { .. }
-            | Self::FileOutsideGit { .. }
+            Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
-            | Self::TaskInTheWrongWave { .. }
             | Self::TaskCouldNameASkill { .. }
             | Self::SkillToBeBorn { .. }
             | Self::CommandNotDeclared { .. } => false,
@@ -170,14 +126,6 @@ impl PlanFinding {
         match self {
             Self::Refused(refusal) => refusal.reason().to_string(),
             Self::Skill { refusal, .. } => refusal.reason().to_string(),
-            Self::SharedFile { .. } => "waves-share-a-file".into(),
-            Self::WaveShouldSplit { .. } => "wave-should-split".into(),
-            Self::SpecShouldSplit { .. } => "spec-should-split".into(),
-            Self::TasksWithoutPoints { .. } => "task-without-points".into(),
-            Self::WavePointsOverCap { .. } => "wave-points-over-cap".into(),
-            Self::WaveLoop { .. } => "waves-loop".into(),
-            Self::DependsOnMissing { .. } => "depends-on-missing-wave".into(),
-            Self::TaskWithoutWave { .. } => "task-without-wave".into(),
             Self::FileOutsideGit { .. } => "file-outside-git".into(),
             Self::Cited { finding, .. } => match finding {
                 Finding::MissingFile { .. } => "cited-file-missing".into(),
@@ -189,8 +137,6 @@ impl PlanFinding {
             Self::ItemWithoutTask { .. } => "item-without-task".into(),
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
-            Self::TaskInTheWrongWave { .. } => "task-in-the-wrong-wave".into(),
-            Self::TaskMatchesNoWave { .. } => "task-matches-no-wave".into(),
             Self::TaskCouldNameASkill { .. } => "task-could-name-a-skill".into(),
             Self::SkillToBeBorn { .. } => "skill-to-be-born".into(),
             Self::CommandNotDeclared { .. } => "command-not-declared".into(),
@@ -206,30 +152,6 @@ impl PlanFinding {
             Self::Refused(refusal) => refusal.message(lang),
             Self::Skill { name, refusal } => {
                 format!("{name}: {}", refusal.message(lang))
-            }
-            Self::SharedFile { waves, files, chain } => fill(
-                "plan.shared_file",
-                &[("{waves}", waves.clone()), ("{files}", files.clone()), ("{chain}", chain.clone())],
-            ),
-            Self::WaveShouldSplit { wave, parts } => fill(
-                "plan.wave_should_split",
-                &[("{wave}", wave.to_string()), ("{parts}", parts.clone())],
-            ),
-            Self::SpecShouldSplit { parts } => fill("plan.spec_should_split", &[("{parts}", parts.clone())]),
-            Self::TasksWithoutPoints { tasks } => fill(
-                "plan.task_without_points",
-                &[("{tasks}", tasks.clone()), ("{scale}", translate("plan.points_scale", lang).to_string())],
-            ),
-            Self::WavePointsOverCap { wave, points } => fill(
-                "plan.wave_points_over_cap",
-                &[("{wave}", wave.to_string()), ("{points}", points.to_string()), ("{cap}", WAVE_POINTS_CAP.to_string())],
-            ),
-            Self::WaveLoop { waves } => fill("plan.wave_loop", &[("{waves}", waves.clone())]),
-            Self::DependsOnMissing { wave, on } => {
-                fill("plan.depends_on_missing", &[("{wave}", wave.to_string()), ("{on}", on.to_string())])
-            }
-            Self::TaskWithoutWave { task, wave } => {
-                fill("plan.task_without_wave", &[("{task}", task.clone()), ("{wave}", wave.to_string())])
             }
             Self::FileOutsideGit { task, path } => {
                 fill("plan.file_outside_git", &[("{task}", task.clone()), ("{path}", path.clone())])
@@ -256,13 +178,6 @@ impl PlanFinding {
                     files.clone()
                 };
                 fill("plan.task_without_file", &[("{task}", task.clone()), ("{files}", suggested)])
-            }
-            Self::TaskInTheWrongWave { task, wave, best } => fill(
-                "plan.task_wrong_wave",
-                &[("{task}", task.clone()), ("{wave}", wave.to_string()), ("{best}", best.to_string())],
-            ),
-            Self::TaskMatchesNoWave { task, wave } => {
-                fill("plan.task_matches_no_wave", &[("{task}", task.clone()), ("{wave}", wave.to_string())])
             }
             Self::TaskCouldNameASkill { task, skill } => {
                 fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())])
@@ -381,58 +296,13 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     if let Some(id) = recorded {
         report["id"] = json!(id);
     }
-    // Quem executa vem da soma das notas de todas as tarefas do plano e do
-    // número de ondas que o plano já tem, antes da pergunta de aprovação: em
-    // todo tamanho, a obra termina com o agente de teste dedicado.
-    let points = wave_points(&log, &BTreeSet::new());
-    let total: u64 = points.sums.values().sum();
     // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
     // só reconhece essa pergunta, e outro texto não aprova nada.
-    let ask = format!(
-        "{} {}",
-        who_executes(total, points.sums.len(), lang),
-        translate("plan.next", lang)
-            .replace("{question}", translate("approval.question", lang))
-            .replace("{option}", translate("approval.option", lang)),
-    );
+    let ask = translate("plan.next", lang)
+        .replace("{question}", translate("approval.question", lang))
+        .replace("{option}", translate("approval.option", lang));
     spec_events::pages::end_milestone(&mut report, Ok(&prepared), &spec, "approval", &ask, lang);
     report
-}
-
-/// Quem executa a obra, pela soma das notas de todas as tarefas do plano
-/// (`total`) e pelo número de ondas que o plano já tem (`waves`): com uma
-/// onda só e até 3 pontos, o orquestrador faz, sem cópia nem agente; de 4 a
-/// 13, ainda com uma onda só, um agente faz; acima de 13, ou com duas ondas
-/// ou mais já no plano — mesmo somando até 3 pontos —, a obra vai em ondas de
-/// até [`WAVE_POINTS_CAP`] pontos cada, uma por agente. O plano com mais de
-/// uma onda nunca diz "numa onda só" nem fica com o orquestrador, mesmo com o
-/// total dentro do teto de uma onda ou do orquestrador. Em todo tamanho, a
-/// obra termina com o agente de teste dedicado.
-fn who_executes(total: u64, waves: usize, lang: Locale) -> String {
-    let key = if waves <= 1 && total <= SOLO_POINTS_CAP {
-        "plan.execution.solo"
-    } else if waves <= 1 && total <= WAVE_POINTS_CAP {
-        "plan.execution.one_wave"
-    } else {
-        "plan.execution.many_waves"
-    };
-    let scale = translate(key, lang).replace("{points}", &total.to_string());
-    format!("{scale} {}", translate("plan.execution.ends_with_test_agent", lang))
-}
-
-/// O plano tem uma onda só, com nota em cada tarefa dela, e a soma não passa
-/// de [`SOLO_POINTS_CAP`] pontos? É a mesma soma de [`who_executes`], pela
-/// mesma leitura ([`wave_points`]), para a rodada nunca discordar de quem
-/// executa: só então a rodada manda o orquestrador fazer a onda na própria
-/// janela, sem cópia separada e sem agente. Com duas ondas ou mais, mesmo
-/// somando até o teto, cada onda vai para um agente — o orquestrador nunca
-/// divide a obra em partes. A tarefa sem nota nunca conta como obra pequena —
-/// ela travaria a pergunta de aprovação antes de a rodada rodar — e por isso
-/// tira a obra do caminho do orquestrador, em vez de arriscar uma soma que
-/// ainda falta.
-pub(crate) fn is_solo_work(log: &SpecLog) -> bool {
-    let points = wave_points(log, &BTreeSet::new());
-    points.unrated.is_empty() && points.sums.len() == 1 && points.sums.values().sum::<u64>() <= SOLO_POINTS_CAP
 }
 
 /// Grava cada achado da conferência como anotação, no idioma do projeto, que
@@ -493,47 +363,10 @@ fn check(
         out.push(PlanFinding::Refused(open_refusal(spec, log, &open)));
     }
 
-    // Nenhum erro de montagem do plano, e ondas em paralelo sem arquivo em
-    // comum: as ondas se montam por grafo.
-    let graph = wave_graph(log);
-    if !graph.cycle.is_empty() {
-        out.push(PlanFinding::WaveLoop { waves: join(graph.cycle.iter().map(u64::to_string)) });
-    }
-    for (wave, missing) in &graph.missing_depends {
-        for on in missing {
-            out.push(PlanFinding::DependsOnMissing { wave: *wave, on: *on });
-        }
-    }
-    for (task, wave) in &graph.missing_task_waves {
-        out.push(PlanFinding::TaskWithoutWave { task: task.clone(), wave: *wave });
-    }
-    for collision in &graph.collisions {
-        out.push(PlanFinding::SharedFile {
-            waves: join(collision.waves.iter().map(u32::to_string)),
-            files: collision.files.join(", "),
-            chain: collision.chain.clone(),
-        });
-    }
-
-    // A onda cujas tarefas não dividem arquivo entre si tem partes
-    // independentes, e sai dividida: uma onda por parte, para rodarem em
-    // paralelo. É aviso, e não recusa — nem toda divisão compensa, e a
-    // decisão fica com quem aprova. A onda já entregue não é mais divisível.
+    // A onda já entregue: as conferências das tarefas olham só o que ainda
+    // vem.
     let delivered = log.delivered_waves();
-    let listed = |parts: &[Vec<String>]| parts.iter().map(|part| part.join(" + ")).collect::<Vec<_>>().join("; ");
-    for (wave, parts) in &graph.parts {
-        if delivered.contains(wave) {
-            continue;
-        }
-        out.push(PlanFinding::WaveShouldSplit { wave: *wave, parts: listed(parts) });
-    }
-    // A mesma conta, olhando a spec inteira: as tarefas de todas as ondas que
-    // ainda vêm entram juntas, e a spec cujas partes não dividem arquivo entre
-    // si pode ser dividida, uma spec por parte. Também só avisa.
-    let spec_parts = graph.spec_parts(&delivered);
-    if spec_parts.len() > 1 {
-        out.push(PlanFinding::SpecShouldSplit { parts: listed(&spec_parts) });
-    }
+
     // O comando de compilar e o de testar, do mesmo `mustard.json` que
     // `prompts` já leu para montar `built`: o campo ainda não declarado, ou
     // só com o provisório do `init`, sai como aviso, com o campo a
@@ -563,18 +396,6 @@ fn check(
         .into_iter()
         .filter(|e| e.event_type == "task")
         .collect();
-    // A nota de cada tarefa, na mesma leitura que acabou de montar `tasks`,
-    // sem refazer o filtro do bloco: a tarefa sem nota numa onda que ainda
-    // não saiu segura a pergunta, como a tarefa sem arquivo, e a onda cuja
-    // soma passa do teto só avisa — o aviso nunca recusa nem divide a onda.
-    // A onda já entregue fica de fora das duas.
-    let points = wave_points_of(&tasks, &delivered, &codes);
-    if !points.unrated.is_empty() {
-        out.push(PlanFinding::TasksWithoutPoints { tasks: points.unrated.join(", ") });
-    }
-    for (wave, points) in points.over_cap() {
-        out.push(PlanFinding::WavePointsOverCap { wave, points });
-    }
     // A conferência olha só o que ainda vem: a tarefa de onda que já tem
     // registro de entrega está provada pelo código que entrou, pelo commit
     // que a carrega e pela revisão que a aprovou, e conferir de novo o texto
@@ -642,7 +463,7 @@ fn check(
     let owners = wave_prompt::owners(log);
     for item in &agreed {
         match owners.get(&item.id) {
-            None | Some(Owner::Project) => {}
+            None | Some(Owner::Project | Owner::Files(_)) => {}
             Some(Owner::Waves(_)) => {
                 if !covered.contains(&item.id) && item.str_field("no_code").is_none() {
                     out.push(PlanFinding::ItemWithoutTask { code: code_of(item) });
@@ -650,27 +471,6 @@ fn check(
             }
         }
     }
-    // Cada tarefa casa com a onda em que está: a nota dessa onda contra as
-    // das outras, pela mesma busca do recorte dos itens. A pergunta é se a
-    // tarefa pertence à onda dela, e tem resposta; qual das ondas casaria mais
-    // forte é outra pergunta, sempre tem um vencedor e recusaria quase tudo,
-    // então só entra no aviso, para dizer para onde a tarefa iria. Esse aviso
-    // não trava: medido contra uma spec real, ele apontava uma em cada seis
-    // tarefas que estavam no lugar certo e deixava passar quatro em cada dez
-    // postas fora do lugar. A tarefa que não casa com onda nenhuma não tem
-    // destino a apontar, e essa trava.
-    for task in &ahead {
-        let Some(mine) = task.int("wave") else { continue };
-        let text = task.str_field("text").unwrap_or_default();
-        if wave_prompt::matches_wave(log, mine, text) {
-            continue;
-        }
-        out.push(match wave_prompt::closest_wave(log, text) {
-            Some(best) => PlanFinding::TaskInTheWrongWave { task: code_of(task), wave: mine, best },
-            None => PlanFinding::TaskMatchesNoWave { task: code_of(task), wave: mine },
-        });
-    }
-
     // A skill nasce por demanda e é escolhida pela tarefa: a tarefa que não
     // nomeia skill ganha o nome da que já existe e serve; quando nenhuma
     // serve e o trabalho dela se repete no projeto, o plano precisa da tarefa
@@ -707,72 +507,6 @@ fn check(
     out
 }
 
-/// As notas de trabalho das tarefas de um plano: as tarefas sem nota, pelos
-/// códigos, na ordem do arquivo, e a soma das notas de cada onda.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct WavePoints {
-    pub unrated: Vec<String>,
-    pub sums: BTreeMap<u64, u64>,
-}
-
-impl WavePoints {
-    /// Cada onda cuja soma passa do teto de [`WAVE_POINTS_CAP`], com a soma.
-    pub(crate) fn over_cap(&self) -> Vec<(u64, u64)> {
-        self.sums.iter().filter(|(_, points)| **points > WAVE_POINTS_CAP).map(|(wave, points)| (*wave, *points)).collect()
-    }
-
-    /// Nenhuma tarefa sem nota e nenhuma onda acima do teto.
-    pub(crate) fn is_clear(&self) -> bool {
-        self.unrated.is_empty() && self.over_cap().is_empty()
-    }
-}
-
-/// A conta que soma e marca as tarefas sem nota, sobre uma lista de tarefas
-/// já lida do bloco de ondas: quem já tem as tarefas em mãos — como a
-/// conferência do plano, que as lê para as citações — acumula a nota no
-/// mesmo laço, sem pedir ao log uma segunda leitura do bloco.
-fn wave_points_of<'a>(
-    tasks: impl IntoIterator<Item = &'a &'a SpecEvent>,
-    skip: &BTreeSet<u64>,
-    codes: &BTreeMap<u64, String>,
-) -> WavePoints {
-    let mut out = WavePoints::default();
-    for task in tasks {
-        let Some(wave) = task.wave() else { continue };
-        if skip.contains(&wave) {
-            continue;
-        }
-        match task.int("points") {
-            Some(points) => *out.sums.entry(wave).or_default() += points,
-            None => out.unrated.push(codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string())),
-        }
-    }
-    out
-}
-
-/// A leitura das notas das tarefas do plano, a mesma da conferência do plano
-/// e da migração de uma spec antiga: a tarefa de uma onda em `skip` não conta.
-pub(crate) fn wave_points(log: &SpecLog, skip: &BTreeSet<u64>) -> WavePoints {
-    let codes = log.codes();
-    let tasks: Vec<&SpecEvent> =
-        log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task").collect();
-    wave_points_of(&tasks, skip, &codes)
-}
-
-/// As notas das tarefas das ondas que ainda não saíram, lidas na migração de
-/// uma spec aprovada por uma versão antiga, que não pedia nota: a onda com
-/// pedido de onda gravado já saiu, e a entregue também, e nenhuma delas conta.
-pub(crate) fn migration_points(log: &SpecLog) -> WavePoints {
-    let gone: BTreeSet<u64> = log
-        .visible()
-        .into_iter()
-        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("wave"))
-        .filter_map(SpecEvent::wave)
-        .chain(log.delivered_waves())
-        .collect();
-    wave_points(log, &gone)
-}
-
 /// `true` quando o trabalho de uma tarefa se repete no projeto: o mapa acha
 /// arquivos do mesmo tipo dos que ela mexe. É o sinal de que vale uma skill.
 fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
@@ -780,16 +514,6 @@ fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
     let Ok(map) = mustard_core::io::project_map::read(root) else { return false };
     !mustard_core::domain::project_map::examples(&map, &target, Locale::PtBr).picks.is_empty()
 }
-
-/// O teto da soma das notas de uma onda: acima dele, o plano avisa, sem
-/// segurar a aprovação. Fica no código, sem chave de configuração.
-pub(crate) const WAVE_POINTS_CAP: u64 = 13;
-
-/// O teto da soma das notas da obra inteira até onde o orquestrador a faz
-/// sozinho, sem onda dividida em agente. [`who_executes`] e a rodada
-/// ([`is_solo_work`]) leem esta mesma constante, para nunca discordarem da
-/// soma. Fica no código, sem chave de configuração.
-pub(crate) const SOLO_POINTS_CAP: u64 = 3;
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
 /// nenhum — a de prosa, a de decisão, a de medida e a que só escreve na spec.
@@ -826,10 +550,6 @@ pub(super) fn declared_files(task: &SpecEvent) -> Vec<(String, bool)> {
                 .then(|| (path, file.get("new").and_then(Value::as_bool) == Some(true)))
         })
         .collect()
-}
-
-fn join(items: impl Iterator<Item = String>) -> String {
-    items.collect::<Vec<_>>().join(", ")
 }
 
 
@@ -913,14 +633,15 @@ mod tests {
     /// Um critério da spec, que toda onda precisa apontar.
     fn criterion(root: &Path, spec: &str, said: u64) -> u64 {
         id_of(&write(root, Some(spec), "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "origin": said})))
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "form": "ubiquitous",
+                "origin": said})))
     }
 
     /// Uma onda com uma tarefa, num plano que passa em tudo.
     fn sound_plan(root: &Path, spec: &str, said: u64) {
         let crit = criterion(root, spec, said);
         write(root, Some(spec), "wave", json!({"n": 1, "text": "Escrever a soma.", "criteria": [crit], "done_when": "A suíte passa.", "origin": said}));
-        write(root, Some(spec), "task", json!({"points": 1, "wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some(spec), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
     }
 
     fn plan(root: &Path, spec: &str) -> Value {
@@ -1004,9 +725,9 @@ mod tests {
         write(root, Some("x"), "rule", json!({"text": "No máximo 3 tentativas de compilação.",
             "example": "a quarta para", "keys": ["tentativas"], "applies_to": {"files": ["**"]}, "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Escrever a soma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Escrever a subtração.", "criteria": [crit], "done_when": "passa", "depends_on": [1], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Escrever a subtração.", "files": [{"path": "src/b.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 2, "text": "Escrever a subtração.", "files": [{"path": "src/b.rs"}], "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
@@ -1042,30 +763,9 @@ mod tests {
         assert_eq!(State::from_log(&log).phase, Some("survey"), "a fase não andou");
     }
 
-    /// Os erros de montagem do plano travam a pergunta: o ciclo entre ondas, a
-    /// dependência que aponta uma onda que não existe e a tarefa de uma onda
-    /// que não existe.
-    #[test]
-    fn a_plan_that_does_not_assemble_blocks_the_question() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "depends_on": [2], "origin": said}));
-        write(root, Some("x"), "wave", json!({"n": 2, "text": "Outra.", "criteria": [crit], "done_when": "passa", "depends_on": [1, 9], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 7, "text": "Perdida.", "files": [{"path": "src/a.rs"}], "origin": said}));
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let blocking = reasons(&report, "blocking");
-        for reason in ["waves-loop", "depends-on-missing-wave", "task-without-wave"] {
-            assert!(blocking.contains(&reason.to_string()), "{reason}: {report}");
-        }
-    }
-
     /// Uma linha crua, direto no arquivo da spec, sem passar pela gravação:
-    /// simula uma onda grande que já existia antes da onda nascer pequena, ou
-    /// uma edição feita fora do binário — o caso que a rede do plano cobre.
+    /// simula uma onda que já existia no arquivo, de antes do backlog, ou uma
+    /// edição feita fora do binário.
     fn append_raw(root: &Path, spec: &str, event_type: &str, body: Value, id: u64) {
         let mut map = mustard_core::domain::spec_events::normalize(
             body.as_object().cloned().unwrap_or_default(),
@@ -1083,10 +783,8 @@ mod tests {
 
     /// Um pedido bem além do antigo teto de 500 linhas não trava mais a
     /// pergunta: o teto não existe. As 600 tarefas vêm direto no arquivo,
-    /// sem passar pela gravação, porque a onda nasce pequena agora e uma
-    /// onda com tantas tarefas não seria mais gravada — mas o plano continua
-    /// conferindo a que já existe no arquivo, de antes da regra ou de uma
-    /// edição de fora.
+    /// sem passar pela gravação, e o plano confere a onda do arquivo do
+    /// mesmo jeito que a gravada.
     #[test]
     fn a_request_far_past_the_old_line_cap_does_not_block_the_question() {
         let dir = tempdir().unwrap();
@@ -1102,7 +800,7 @@ mod tests {
             let skill = root.join(".claude").join("skills").join(format!("s{i}"));
             std::fs::create_dir_all(&skill).unwrap();
             std::fs::write(skill.join("SKILL.md"), format!("# s{i}\n")).unwrap();
-            append_raw(root, "x", "task", json!({"points": 1, "wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
+            append_raw(root, "x", "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}],
                 "skill": format!("s{i}"), "origin": said}), first_id + i);
         }
 
@@ -1114,8 +812,8 @@ mod tests {
     /// O plano não tem mais rede de tamanho: uma onda com mais de três
     /// tarefas no arquivo — nascida assim antes da regra sair, ou por uma
     /// edição de fora do binário — passa sem bloqueio nenhum. É o caso que a
-    /// recusa `wave-too-big` bloqueava antes desta onda; quem corta o custo
-    /// agora é o teto de turnos do agente, fora do plano.
+    /// recusa `wave-too-big` bloqueava antes desta onda, e nenhuma outra
+    /// recusa do plano a substitui.
     #[test]
     fn a_wave_grown_big_outside_the_write_is_not_blocked_by_the_plan() {
         let dir = tempdir().unwrap();
@@ -1126,7 +824,7 @@ mod tests {
             json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
         let first_id = id_of(&wave) + 1;
         for i in 0..4 {
-            append_raw(root, "x", "task", json!({"points": 1, "wave": 1, "text": format!("Tarefa {i}."),
+            append_raw(root, "x", "task", json!({"wave": 1, "text": format!("Tarefa {i}."),
                 "files": [{"path": "src/a.rs"}], "origin": said}), first_id + i);
         }
 
@@ -1144,9 +842,9 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Some com o `Somador`.",
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Some com o `Somador`.",
             "files": [{"path": "src/nao-existe.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Escreve o resto.",
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Escreve o resto.",
             "files": [{"path": "src/novo.rs", "new": true}], "origin": said}));
 
         let report = plan(root, "x");
@@ -1156,10 +854,9 @@ mod tests {
         assert!(reasons(&report, "warnings").contains(&"names-unchecked".to_string()), "{report}");
     }
 
-    /// Só avisam, e a pergunta segue: arquivo fora do git, ondas da mesma
-    /// rodada dividindo arquivo, item de uma onda sem tarefa e contrato sem
-    /// critério. A
-    /// tarefa que diz no texto que não mexe em arquivo passa sem o campo.
+    /// Só avisam, e a pergunta segue: arquivo fora do git, item de uma onda
+    /// sem tarefa e contrato sem critério. A tarefa que diz no texto que não
+    /// mexe em arquivo passa sem o campo.
     #[test]
     fn the_advisory_findings_never_block_the_question() {
         let dir = tempdir().unwrap();
@@ -1169,15 +866,15 @@ mod tests {
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no código.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}, {"path": "src/fora.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}, {"path": "src/fora.rs"}], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Mexer na spec.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer também.", "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer também.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 2, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
         let warnings = reasons(&report, "warnings");
-        for reason in ["file-outside-git", "waves-share-a-file", "item-without-task", "contract-without-criterion"] {
+        for reason in ["file-outside-git", "item-without-task", "contract-without-criterion"] {
             assert!(warnings.contains(&reason.to_string()), "{reason}: {report}");
         }
         assert!(!warnings.contains(&"task-without-file".to_string()), "{report}");
@@ -1221,143 +918,6 @@ mod tests {
         }
     }
 
-    /// A onda cujas tarefas não dividem arquivo entre si tem partes
-    /// independentes: o plano diz quais são e que ela sai dividida, uma onda
-    /// por parte, em paralelo — e só avisa, nunca segura a pergunta. A onda
-    /// cujas tarefas se tocam pelo mesmo arquivo é uma parte só, e sobre ela
-    /// o plano não diz nada.
-    #[test]
-    fn a_wave_with_independent_parts_is_told_to_go_out_split() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no código.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de um.",
-            "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de dois.",
-            "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de três.",
-            "files": [{"path": "src/c.rs", "new": true}], "origin": said}));
-        write(root, Some("x"), "wave", json!({"n": 2, "text": "Mexer na página.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer na página de um.",
-            "files": [{"path": "src/d.rs", "new": true}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer na página de dois.",
-            "files": [{"path": "src/d.rs", "new": true}], "origin": said}));
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(true), "o aviso não segura a pergunta: {report}");
-        let split = hints_of(&report, "warnings", "wave-should-split");
-        assert_eq!(split.len(), 1, "só a onda de duas partes é avisada: {report}");
-        let expected = translate("plan.wave_should_split", Locale::PtBr)
-            .replace("{wave}", "1")
-            .replace("{parts}", "MSTD-TASK-0001 + MSTD-TASK-0002; MSTD-TASK-0003");
-        assert_eq!(split[0], expected, "{split:?}");
-        assert!(!split[0].contains("MSTD-TASK-0004"), "a onda de uma parte só não entra: {split:?}");
-    }
-
-    /// A onda que já tem registro de entrega não é avisada para sair
-    /// dividida: o que ela fez já entrou, e dividir agora não divide nada. A
-    /// onda de partes independentes que ainda vem, ao lado dela, continua
-    /// avisada.
-    #[test]
-    fn a_delivered_wave_is_not_told_to_go_out_split() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        for n in [1, 2] {
-            write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
-                "done_when": "passa", "origin": said}));
-            write(root, Some("x"), "task", json!({"points": 1, "wave": n, "text": "Mexer no código de um.",
-                "files": [{"path": format!("src/a{n}.rs"), "new": true}], "origin": said}));
-            write(root, Some("x"), "task", json!({"points": 1, "wave": n, "text": "Mexer no código de dois.",
-                "files": [{"path": format!("src/b{n}.rs"), "new": true}], "origin": said}));
-        }
-        let record = write(root, Some("x"), "delivered",
-            json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a1.rs", "src/b1.rs"]}));
-        assert_eq!(record["ok"], json!(true), "{record}");
-
-        let report = plan(root, "x");
-        let split = hints_of(&report, "warnings", "wave-should-split");
-        assert_eq!(split.len(), 1, "só a onda que ainda vem é avisada: {report}");
-        let expected = translate("plan.wave_should_split", Locale::PtBr)
-            .replace("{wave}", "2")
-            .replace("{parts}", "MSTD-TASK-0003; MSTD-TASK-0004");
-        assert_eq!(split[0], expected, "{split:?}");
-    }
-
-    /// A spec cujas tarefas, em ondas diferentes, não dividem arquivo entre
-    /// si tem partes independentes: o plano avisa, pela mesma conta que avisa
-    /// a onda, que ela pode ser dividida, e a pergunta segue. Nenhuma onda
-    /// aqui tem duas partes, então o aviso é só o da spec. Na divisa: com duas
-    /// partes o aviso sai; a tarefa que liga as duas por um arquivo em comum
-    /// deixa a spec com uma parte só, e o aviso some.
-    #[test]
-    fn a_spec_with_independent_parts_across_waves_is_told_it_can_be_split() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        for (n, depends_on) in [(1, json!([])), (2, json!([1])), (3, json!([2]))] {
-            write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
-                "done_when": "passa", "depends_on": depends_on, "origin": said}));
-        }
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de um.",
-            "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer no código de dois.",
-            "files": [{"path": "src/b.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 3, "text": "Mexer no código de três.",
-            "files": [{"path": "src/a.rs"}, {"path": "src/c.rs", "new": true}], "origin": said}));
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(true), "o aviso não segura a pergunta: {report}");
-        assert!(hints_of(&report, "blocking", "spec-should-split").is_empty(), "{report}");
-        assert!(hints_of(&report, "warnings", "wave-should-split").is_empty(), "nenhuma onda tem duas partes: {report}");
-        let split = hints_of(&report, "warnings", "spec-should-split");
-        let expected = translate("plan.spec_should_split", Locale::PtBr)
-            .replace("{parts}", "MSTD-TASK-0001 + MSTD-TASK-0003; MSTD-TASK-0002");
-        assert_eq!(split, vec![expected], "as partes se juntam pelo arquivo, não pela onda: {report}");
-
-        // A tarefa que toca os dois arquivos junta as duas partes numa só.
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer no código de um e de dois.",
-            "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}], "origin": said}));
-        let joined = plan(root, "x");
-        assert_eq!(joined["ok"], json!(true), "{joined}");
-        assert!(hints_of(&joined, "warnings", "spec-should-split").is_empty(), "uma parte só não é avisada: {joined}");
-    }
-
-    /// A onda já entregue não entra na conta da spec: o que ela fez já está
-    /// na spec e não sai para outra. As duas ondas que ainda vêm, que só a
-    /// entregue ligava por arquivo, são duas partes, e o aviso sai.
-    #[test]
-    fn a_delivered_wave_does_not_join_the_parts_of_the_spec() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        for (n, depends_on) in [(1, json!([])), (2, json!([1])), (3, json!([2]))] {
-            write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
-                "done_when": "passa", "depends_on": depends_on, "origin": said}));
-        }
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer no código de um e de dois.",
-            "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": "Mexer no código de um.",
-            "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 3, "text": "Mexer no código de dois.",
-            "files": [{"path": "src/b.rs"}], "origin": said}));
-        let before = plan(root, "x");
-        assert!(hints_of(&before, "warnings", "spec-should-split").is_empty(), "a onda 1 liga as outras: {before}");
-
-        let record = write(root, Some("x"), "delivered",
-            json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs", "src/b.rs"]}));
-        assert_eq!(record["ok"], json!(true), "{record}");
-        let after = plan(root, "x");
-        let expected = translate("plan.spec_should_split", Locale::PtBr)
-            .replace("{parts}", "MSTD-TASK-0002; MSTD-TASK-0003");
-        assert_eq!(hints_of(&after, "warnings", "spec-should-split"), vec![expected], "{after}");
-    }
-
     /// A tarefa que não nomeia skill ganha o nome da skill que já existe e
     /// serve para ela; a que não tem skill nenhuma que sirva, e cujo trabalho
     /// se repete no projeto, pede a tarefa que faz a skill nascer.
@@ -1376,9 +936,9 @@ mod tests {
         )
         .unwrap();
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
             "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
             "files": [{"path": "src/b.rs"}], "origin": said}));
 
         let report = plan(root, "x");
@@ -1406,75 +966,6 @@ mod tests {
             .collect()
     }
 
-    /// A tarefa cujo texto não casa com o texto da onda dela gera um aviso,
-    /// que diz com qual onda ele casaria melhor, e o plano segue. A que casa
-    /// com a onda dela não gera nada, mesmo quando o texto de outra onda casa
-    /// mais forte: a pergunta é se a tarefa pertence à onda dela, não qual das
-    /// ondas vence.
-    #[test]
-    fn a_task_that_does_not_match_its_own_wave_is_warned_about_and_says_where_it_would_go() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Os ganchos da sessão: bloquear, avisar e injetar texto.",
-            "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "wave", json!({"n": 2, "text": "A página da spec: o desenho, os blocos e a publicação.",
-            "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "wave", json!({"n": 3, "text": "O instalador: semear o projeto e as permissões.",
-            "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "O gancho que bloqueia a gravação avisa o motivo.",
-            "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "A publicação da página da spec sai no fim do passo.",
-            "files": [{"path": "src/b.rs"}], "origin": said}));
-        let torn = "O gancho avisa que a publicação da página da spec saiu.";
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": torn, "files": [{"path": "src/a.rs"}], "origin": said}));
-
-        // A terceira tarefa casa com a onda dela, e a onda que casa mais forte
-        // com ela é outra.
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert!(wave_prompt::matches_wave(&log, 1, torn), "a onda dela responde que casa");
-        assert_eq!(wave_prompt::closest_wave(&log, torn), Some(2), "a onda mais forte é outra");
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(true), "o aviso não trava o plano: {report}");
-        assert!(hints_of(&report, "blocking", "task-in-the-wrong-wave").is_empty(), "{report}");
-        let wrong = hints_of(&report, "warnings", "task-in-the-wrong-wave");
-        assert_eq!(wrong.len(), 1, "só a tarefa que não casa com a onda dela é apontada: {report}");
-        assert!(wrong[0].contains("MSTD-TASK-0002"), "{wrong:?}");
-        assert!(wrong[0].contains("onda 2"), "o aviso diz para onde a tarefa iria: {wrong:?}");
-    }
-
-    /// A tarefa cujo texto não casa com onda nenhuma do plano trava o plano, e
-    /// a recusa não aponta destino, porque não há para onde ela ir.
-    #[test]
-    fn a_task_that_matches_no_wave_blocks_the_plan_without_a_destination() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Os ganchos da sessão: bloquear e avisar.",
-            "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "wave", json!({"n": 2, "text": "A página da spec e a publicação.",
-            "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "O gancho avisa o motivo.",
-            "files": [{"path": "src/a.rs"}], "origin": said}));
-        let lost = "Somar dois números inteiros.";
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 2, "text": lost, "files": [{"path": "src/b.rs"}], "origin": said}));
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(wave_prompt::closest_wave(&log, lost), None, "o texto não casa com onda nenhuma");
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let refused = hints_of(&report, "blocking", "task-matches-no-wave");
-        assert_eq!(refused.len(), 1, "só a tarefa sem onda que case é recusada: {report}");
-        let expected = translate("plan.task_matches_no_wave", Locale::PtBr)
-            .replace("{task}", "MSTD-TASK-0002")
-            .replace("{wave}", "2");
-        assert_eq!(refused[0], expected, "a recusa não traz destino");
-        assert!(hints_of(&report, "warnings", "task-in-the-wrong-wave").is_empty(), "{report}");
-    }
-
     /// O aviso de que uma tarefa podia nomear uma skill olha só as ondas que
     /// ainda vêm: a mesma tarefa sem skill avisa na onda sem registro de
     /// entrega e se cala na onda entregue.
@@ -1495,7 +986,7 @@ mod tests {
         for n in [1, 2] {
             write(root, Some("x"), "wave", json!({"n": n, "text": "Os comandos de execução novos.",
                 "criteria": [crit], "done_when": "passa", "origin": said}));
-            write(root, Some("x"), "task", json!({"points": 1, "wave": n, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
+            write(root, Some("x"), "task", json!({"wave": n, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
                 "files": [{"path": "src/a.rs"}], "origin": said}));
         }
         let record = write(root, Some("x"), "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
@@ -1523,7 +1014,7 @@ mod tests {
         // A mesma tarefa quebrada nas duas ondas: cita um arquivo que não
         // existe e não está marcado como novo.
         for wave in [1, 2] {
-            write(root, Some("x"), "task", json!({"points": 1, "wave": wave, "text": "Somar dois números.",
+            write(root, Some("x"), "task", json!({"wave": wave, "text": "Somar dois números.",
                 "files": [{"path": "src/somar.rs"}], "origin": said}));
         }
         let record = write(root, Some("x"), "delivered",
@@ -1556,7 +1047,7 @@ mod tests {
         write(root, Some("x"), "decision", json!({"text": "A rodada formata os arquivos dela.", "keys": ["formatador"],
             "why": "o commit sai formatado", "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
 
         let report = plan(root, "x");
         let uncovered: Vec<String> = report["warnings"]
@@ -1576,7 +1067,7 @@ mod tests {
     /// que nada cobre e o que diz uma onda que o plano não tem. Os outros
     /// seguem como eram: o item que a tarefa cobre e o do projeto todo não
     /// avisam, e o que diz a onda dele sem tarefa que o cubra avisa. Na divisa,
-    /// o plano continua travando o que trava: a tarefa sem nota segura a
+    /// o plano continua travando o que trava: a tarefa sem arquivo segura a
     /// pergunta, e o item sem dono não aparece entre os motivos.
     #[test]
     fn the_plan_accepts_an_item_without_owner() {
@@ -1595,7 +1086,7 @@ mod tests {
         decision("Do projeto.", json!({"applies_to": {"files": ["**"]}}));
         decision("Da onda que não existe.", json!({"waves": [9]}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no código.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
             "covers": [covered], "origin": said}));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
@@ -1618,10 +1109,10 @@ mod tests {
         assert!(uncovered[0].contains("MSTD-DEC-0003"), "{uncovered:?}");
 
         // O que trava continua travando, e o item sem dono não entra na conta.
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer mais.", "files": [{"path": "src/b.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer mais.", "origin": said}));
         let held = plan(root, "x");
         assert_eq!(held["ok"], json!(false), "{held}");
-        assert_eq!(reasons(&held, "blocking"), ["task-without-points"], "{held}");
+        assert_eq!(reasons(&held, "blocking"), ["task-without-file"], "{held}");
     }
 
     /// A tarefa que mexe em código e não nomeia arquivo trava o plano, e a
@@ -1634,8 +1125,8 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Somar dois números.", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Não mexe em arquivo de código: é escrita na spec.", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar dois números.", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Não mexe em arquivo de código: é escrita na spec.", "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
@@ -1659,8 +1150,8 @@ mod tests {
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no arquivo e na spec.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/fora.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/fora.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
@@ -1699,12 +1190,12 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit],
-            "done_when": "passa", "depends_on": [7], "origin": said}));
-        write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
+            "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/nao-existe.rs"}], "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
-        assert!(reasons(&report, "blocking").contains(&"depends-on-missing-wave".to_string()), "{report}");
+        assert_eq!(reasons(&report, "blocking").first().map(String::as_str), Some("cited-file-missing"), "{report}");
         let hint = report["blocking"][0]["hint"].as_str().unwrap().to_string();
         assert!(read_notes(root, "x").contains(&hint), "o achado que trava não virou anotação");
         assert!(report.get("copy").is_none() && report.get("publish").is_none(), "{report}");
@@ -1804,13 +1295,9 @@ mod tests {
         }
     }
 
-    /// Uma tarefa da onda `wave`, num arquivo novo só dela, com a nota dada
-    /// ou sem nota nenhuma.
-    fn rated(root: &Path, said: u64, wave: u64, file: &str, points: Option<u64>) -> Value {
-        let mut body = json!({"wave": wave, "text": "Mexer no código.", "files": [{"path": file, "new": true}], "origin": said});
-        if let Some(points) = points {
-            body["points"] = json!(points);
-        }
+    /// Uma tarefa da onda `wave`, num arquivo novo só dela.
+    fn rated(root: &Path, said: u64, wave: u64, file: &str) -> Value {
+        let body = json!({"wave": wave, "text": "Mexer no código.", "files": [{"path": file, "new": true}], "origin": said});
         write(root, Some("x"), "task", body)
     }
 
@@ -1823,287 +1310,35 @@ mod tests {
         }
     }
 
-    /// A tarefa sem nota segura a aprovação, e a recusa traz a escala com o
-    /// exemplo de cada nota, o texto único do catálogo. A spec não anda. Só
-    /// depois de a tarefa ganhar a nota, numa versão nova, o plano passa.
+    /// A tarefa sem nota não segura a aprovação, não soma nada e o texto da
+    /// pergunta não cita a nota do Scrum: o plano segue só com o que o
+    /// catálogo já dizia antes de a nota existir.
     #[test]
-    fn a_task_without_points_holds_the_approval_and_shows_the_scale() {
+    fn o_plano_nao_pede_nem_soma_nota() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
         waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/um.rs", Some(3));
-        let unrated = id_of(&rated(root, said, 1, "src/dois.rs", None));
+        rated(root, said, 1, "src/um.rs");
+        rated(root, said, 1, "src/dois.rs");
 
         let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let scale = translate("plan.points_scale", Locale::PtBr);
-        let expected = translate("plan.task_without_points", Locale::PtBr)
-            .replace("{tasks}", "MSTD-TASK-0002")
-            .replace("{scale}", scale);
-        assert_eq!(hints_of(&report, "blocking", "task-without-points"), vec![expected], "{report}");
-        for example in ["1: trocar um texto", "5: mexer no caminho que grava", "13: tarefa grande e incerta"] {
-            assert!(scale.contains(example), "a escala perdeu o exemplo {example:?}");
-        }
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(State::from_log(&log).phase, Some("survey"), "a fase não andou");
-
-        let rated_again = write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no código.",
-            "files": [{"path": "src/dois.rs", "new": true}], "points": 2, "replaces": unrated, "origin": said}));
-        assert_eq!(rated_again["ok"], json!(true), "{rated_again}");
-        let after = plan(root, "x");
-        assert_eq!(after["ok"], json!(true), "com a nota, a tarefa não segura mais: {after}");
-        assert!(hints_of(&after, "blocking", "task-without-points").is_empty(), "{after}");
-    }
-
-    /// Duas tarefas sem nota, em ondas diferentes: a recusa lista as duas,
-    /// pelo código, na mesma linha — não só a primeira que o laço encontra.
-    #[test]
-    fn two_tasks_without_points_are_both_listed_in_the_refusal() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/um.rs", Some(3));
-        rated(root, said, 2, "src/dois.rs", Some(3));
-        let first_unrated = rated(root, said, 1, "src/tres.rs", None);
-        let second_unrated = rated(root, said, 2, "src/quatro.rs", None);
-
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let codes = log.codes();
-        let first_code = codes[&id_of(&first_unrated)].clone();
-        let second_code = codes[&id_of(&second_unrated)].clone();
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let scale = translate("plan.points_scale", Locale::PtBr);
-        let expected = translate("plan.task_without_points", Locale::PtBr)
-            .replace("{tasks}", &format!("{first_code}, {second_code}"))
-            .replace("{scale}", scale);
-        assert_eq!(hints_of(&report, "blocking", "task-without-points"), vec![expected], "{report}");
-    }
-
-    /// Na divisa do teto: a onda que soma 13 passa sem aviso; a que soma 14
-    /// ganha o aviso, com a soma e o teto, e a aprovação segue.
-    #[test]
-    fn a_wave_over_the_points_cap_is_warned_about_without_holding_the_approval() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", Some(8));
-        rated(root, said, 1, "src/b1.rs", Some(5));
-        rated(root, said, 2, "src/a2.rs", Some(8));
-        rated(root, said, 2, "src/b2.rs", Some(5));
-        rated(root, said, 2, "src/c2.rs", Some(1));
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(true), "o aviso não segura a aprovação: {report}");
-        assert!(hints_of(&report, "blocking", "wave-points-over-cap").is_empty(), "{report}");
-        let expected = translate("plan.wave_points_over_cap", Locale::PtBr)
-            .replace("{wave}", "2")
-            .replace("{points}", "14")
-            .replace("{cap}", "13");
-        assert_eq!(
-            hints_of(&report, "warnings", "wave-points-over-cap"),
-            vec![expected],
-            "só a onda de 14 é avisada, a de 13 não: {report}"
-        );
-    }
-
-    /// A onda já entregue fica de fora: as tarefas dela sem nota não seguram
-    /// nada, e a soma dela acima do teto não avisa. Antes da entrega, a mesma
-    /// onda segura a aprovação e ganha o aviso.
-    #[test]
-    fn a_delivered_wave_without_points_holds_nothing() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", None);
-        rated(root, said, 1, "src/b1.rs", Some(13));
-        rated(root, said, 1, "src/c1.rs", Some(8));
-        rated(root, said, 2, "src/a2.rs", Some(3));
-
-        let before = plan(root, "x");
-        assert_eq!(before["ok"], json!(false), "{before}");
-        assert_eq!(hints_of(&before, "blocking", "task-without-points").len(), 1, "{before}");
-        assert!(hints_of(&before, "blocking", "task-without-points")[0].contains("MSTD-TASK-0001"), "{before}");
-        assert_eq!(hints_of(&before, "warnings", "wave-points-over-cap").len(), 1, "{before}");
-
-        let delivered = write(root, Some("x"), "delivered",
-            json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a1.rs", "src/b1.rs", "src/c1.rs"]}));
-        assert_eq!(delivered["ok"], json!(true), "{delivered}");
-        let after = plan(root, "x");
-        assert_eq!(after["ok"], json!(true), "a onda entregue não segura nada: {after}");
-        assert!(hints_of(&after, "blocking", "task-without-points").is_empty(), "{after}");
-        assert!(hints_of(&after, "warnings", "wave-points-over-cap").is_empty(), "{after}");
-    }
-
-    /// O plano diz quem executa pela soma das notas de todas as tarefas: até
-    /// 3 pontos, sem ondas, o orquestrador faz; de 4 a 13, com uma onda só,
-    /// um agente faz; acima de 13, ou com mais de uma onda já no plano, a
-    /// obra vai em ondas de até 13 pontos. Em todos os tamanhos, o aviso diz
-    /// que a obra termina com o agente de teste dedicado. A divisa de cada
-    /// faixa entra: 3 e 4 pontos, que separam o orquestrador do agente numa
-    /// onda só; e 13 e 14 pontos, que separam a onda só das ondas de até 13.
-    /// E o caso de 13 pontos já divididos em duas ondas, que não pode dizer
-    /// "numa onda só" só porque o total cabe no teto de uma.
-    #[test]
-    fn the_plan_says_who_executes_by_the_points() {
-        let expect_solo = |points: &str, root: &Path| {
-            let out = plan(root, "x");
-            assert_eq!(out["ok"], json!(true), "{out}");
-            let next = out["next"].as_str().unwrap_or_default();
-            let expected = translate("plan.execution.solo", Locale::PtBr).replace("{points}", points);
-            assert!(next.contains(&expected), "{points} pontos deveria ser solo: {next}");
-            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
-        };
-        let expect_one_wave = |points: &str, root: &Path| {
-            let out = plan(root, "x");
-            assert_eq!(out["ok"], json!(true), "{out}");
-            let next = out["next"].as_str().unwrap_or_default();
-            let expected = translate("plan.execution.one_wave", Locale::PtBr).replace("{points}", points);
-            assert!(next.contains(&expected), "{points} pontos deveria ser onda só: {next}");
-            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
-        };
-        let expect_many_waves = |points: &str, root: &Path| {
-            let out = plan(root, "x");
-            assert_eq!(out["ok"], json!(true), "{out}");
-            let next = out["next"].as_str().unwrap_or_default();
-            let expected = translate("plan.execution.many_waves", Locale::PtBr).replace("{points}", points);
-            assert!(next.contains(&expected), "{points} pontos deveria ser ondas: {next}");
-            assert!(next.contains(translate("plan.execution.ends_with_test_agent", Locale::PtBr)), "{next}");
-        };
-
-        // 3 pontos: sem ondas, o orquestrador faz.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/a.rs", Some(3));
-        expect_solo("3", root);
-
-        // Os mesmos 3 pontos (1 + 2), mas já em duas ondas: a divisa não é só
-        // o total, é também o número de ondas. Com duas ondas ou mais, cada
-        // uma vai para um agente, mesmo dentro do teto do orquestrador.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", Some(1));
-        rated(root, said, 2, "src/a2.rs", Some(2));
-        expect_many_waves("3", root);
-        // A razão de ir em ondas aqui é o número de ondas já no plano, não o
-        // total: com 3 pontos, a frase não pode mentir dizendo que passou de
-        // 13.
-        let out = plan(root, "x");
-        let next = out["next"].as_str().unwrap_or_default();
-        assert!(!next.contains("acima de 13"), "3 pontos não passou de 13: {next}");
-        // A mesma guarda nos dois idiomas, no próprio catálogo: a frase cita
-        // o teto da onda uma vez só. A versão antiga dizia 13 duas vezes, e a
-        // primeira era a razão inventada — o inglês tinha a mesma mentira.
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let phrase = translate("plan.execution.many_waves", lang);
-            assert_eq!(phrase.matches("13").count(), 1, "a frase cita o teto uma vez só: {phrase}");
-        }
-
-        // 4 pontos (3 + 1, porque a escala não tem o número 4 sozinho), a
-        // divisa de cima da faixa do orquestrador: já é um agente numa onda
-        // só, não mais o orquestrador sozinho.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/a1.rs", Some(3));
-        rated(root, said, 1, "src/a2.rs", Some(1));
-        expect_one_wave("4", root);
-
-        // 8 pontos: um agente faz, numa onda só.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/a.rs", Some(8));
-        expect_one_wave("8", root);
-
-        // 13 pontos, o teto exato de uma onda, numa onda só: ainda é um
-        // agente numa onda só, não ondas de até 13.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        rated(root, said, 1, "src/a.rs", Some(13));
-        expect_one_wave("13", root);
-
-        // 13 pontos já divididos em duas ondas: o total cabe no teto de uma
-        // onda, mas o plano já tem duas — a resposta não pode dizer "numa
-        // onda só".
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", Some(8));
-        rated(root, said, 2, "src/a2.rs", Some(5));
-        expect_many_waves("13", root);
-
-        // 14 pontos, em duas ondas dentro do teto de cada uma: a obra vai em
-        // ondas de até 13 pontos.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 2);
-        rated(root, said, 1, "src/a1.rs", Some(8));
-        rated(root, said, 2, "src/a2.rs", Some(5));
-        rated(root, said, 2, "src/b2.rs", Some(1));
-        expect_many_waves("14", root);
-    }
-
-    /// A gravação pelo comando aceita só as notas da escala: na divisa, 3, 5
-    /// e 13 entram; 4, 14, 0 e o texto "5" são recusados, a recusa diz os
-    /// números aceitos, e o arquivo de eventos fica como estava.
-    #[test]
-    fn a_task_with_points_off_the_scale_is_refused_and_nothing_is_written() {
-        use crate::commands::spec_events::write::write_at;
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        waves_of_code(root, said, 1);
-        let file = store::spec_file(root, "x").unwrap();
-        let task = |points: Value| {
-            write_at(&WriteOpts {
-                root: root.to_path_buf(),
-                spec: Some("x".into()),
-                event_type: "task".into(),
-                json: json!({"wave": 1, "text": "Mexer no código.", "files": [{"path": "src/a.rs"}],
-                    "depends_on": [], "points": points, "origin": said})
-                .to_string(),
-            })
-        };
-        let refusal = translate("spec_events.invalid_value", Locale::PtBr)
-            .replace("{field}", "points")
-            .replace("{type}", "task")
-            .replace("{expected}", "um destes números: 1, 2, 3, 5, 8, 13");
-        for off in [json!(4), json!(14), json!(0), json!("5")] {
-            let before = std::fs::read(&file).unwrap();
-            let report = task(off.clone());
-            assert_eq!(report["ok"], json!(false), "{off}: {report}");
-            assert_eq!(report["reason"], json!("invalid-value"), "{off}: {report}");
-            assert_eq!(report["hint"], json!(refusal), "{off}: {report}");
-            assert_eq!(std::fs::read(&file).unwrap(), before, "{off}: nada é gravado");
-        }
-        for on in [3, 5, 13] {
-            assert_eq!(task(json!(on))["ok"], json!(true), "{on} está na escala");
-        }
+        assert_eq!(report["ok"], json!(true), "a tarefa sem nota não trava o plano: {report}");
+        assert!(hints_of(&report, "blocking", "task-without-points").is_empty(), "{report}");
+        assert!(hints_of(&report, "warnings", "wave-points-over-cap").is_empty(), "{report}");
+        let next = report["next"].as_str().unwrap_or_default();
+        let plain = translate("plan.next", Locale::PtBr)
+            .replace("{question}", translate("approval.question", Locale::PtBr))
+            .replace("{option}", translate("approval.option", Locale::PtBr));
+        assert!(next.ends_with(&plain), "a pergunta não leva prefixo de nota: {report}");
+        assert!(!next.contains("ponto"), "nenhum texto impresso cita a nota do Scrum: {next}");
     }
 
     /// A aprovação é o primeiro marco de uma spec nova, que ainda não tem
     /// template: a ordem manda publicar o template, sem falar de página
     /// antiga, e entregar a primeira cópia, a spec inteira, a um agente
-    /// separado, antes da pergunta. A onda acima do teto fica no aviso da
-    /// conferência, como sempre, e a ordem da migração não se repete. Uma spec
-    /// que uma versão antiga publicou inteira, ainda no plano, ganha o
-    /// template num link novo na aprovação.
+    /// separado, antes da pergunta. Uma spec que uma versão antiga publicou
+    /// inteira, ainda no plano, ganha o template num link novo na aprovação.
     #[test]
     fn the_first_copy_goes_to_an_agent_at_the_approval_of_a_new_spec() {
         use crate::commands::spec_events::pages::copy::{agent_order, batches_order, old_page_order};
@@ -2113,9 +1348,9 @@ mod tests {
             let root = dir.path();
             let said = surveyed(root, "x");
             waves_of_code(root, said, 1);
-            rated(root, said, 1, "src/a1.rs", Some(8));
-            rated(root, said, 1, "src/b1.rs", Some(5));
-            rated(root, said, 1, "src/c1.rs", Some(1));
+            rated(root, said, 1, "src/a1.rs");
+            rated(root, said, 1, "src/b1.rs");
+            rated(root, said, 1, "src/c1.rs");
             if old {
                 let page = json!({"page": "spec", "milestone": "approval", "ok": true,
                     "url": "https://claude.ai/code/artifact/pagina-antiga"});
@@ -2126,8 +1361,13 @@ mod tests {
             assert_eq!(report["ok"], json!(true), "{old}: {report}");
             let next = report["next"].as_str().unwrap_or_default();
             assert_eq!(report["publish"], json!(["spec", "project"]), "{old}: {report}");
-            let record = r#"'{"page":"spec","milestone":"approval","ok":true,"template":true,"url":"…"}'"#;
-            assert!(next.contains(record), "{old}: {next}");
+            // A publicação grava o carimbo do molde que o programa monta.
+            let stamp = mustard_core::platform::page_templates::spec_page_template(lang);
+            let stamp = mustard_core::platform::page_templates::template_stamp(&stamp).expect("the stamp");
+            let record = format!(
+                r#"'{{"page":"spec","milestone":"approval","ok":true,"template":true,"stamp":"{stamp}","url":"…"}}'"#
+            );
+            assert!(next.contains(&record), "{old}: {next}");
             assert_eq!(next.contains(&old_page_order("spec", lang)), old, "{old}: {next}");
             assert_eq!(report["copy"]["spec"]["first"], json!(true), "{old}: {report}");
             assert_eq!(sent_items(root, &report).first(), Some(&1), "{old}: the whole spec");
@@ -2138,8 +1378,7 @@ mod tests {
                 .replace("{question}", translate("approval.question", lang))
                 .replace("{option}", translate("approval.option", lang));
             assert!(next.find(&agent) < next.find(&ask) && next.ends_with(&ask), "{old}: {next}");
-            assert!(report.get("migration").is_none(), "{old}: the plan check already asks for the points: {report}");
-            assert_eq!(hints_of(&report, "warnings", "wave-points-over-cap").len(), 1, "{old}: {report}");
+            assert!(report.get("migration").is_none(), "{old}: a migração de nota não existe mais: {report}");
         }
     }
 }

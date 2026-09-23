@@ -97,9 +97,9 @@ flowchart LR
     C --> PR["pr-open"]
 ```
 
-Cada passo é uma chamada só, e cada comando termina dizendo qual é o próximo. O `open` abre a spec; o `grill` levanta o que falta, pergunta por pergunta; o `plan` monta as ondas e as põe para aprovação; a aprovação é o clique do usuário, que o gancho da conversa registra; o `round` despacha as ondas que podem sair juntas, cada uma na sua cópia, e grava o que elas entregaram e o veredito de cada revisão; o `close` roda o lint do projeto e cada critério uma vez e, numa spec de duas ondas ou mais, pede a revisão final do conjunto; o `pr-open` abre o pull request. O merge é o único passo que só acontece quando o usuário pede.
+Cada passo é uma chamada só, e cada comando termina dizendo qual é o próximo. O `open` abre a spec; o `grill` levanta o que falta, pergunta por pergunta; o `plan` monta as ondas e as põe para aprovação; a aprovação é o clique do usuário, que o gancho da conversa registra; o `round` despacha as ondas que podem sair juntas, cada uma na sua cópia, e grava o que elas entregaram e o veredito de cada revisão; o `close` roda em ambiente limpo o lint e a suíte que o `mustard.json` declara e cada critério uma vez e, numa spec de duas ondas ou mais, pede a revisão final do conjunto; o `pr-open` abre o pull request. O merge é o único passo que só acontece quando o usuário pede.
 
-O fechamento não fecha enquanto algum critério não tiver a última execução aprovada no `spec.ndjson`, enquanto o lint do projeto falhar, ou enquanto a revisão final do conjunto não tiver sido aprovada.
+O fechamento não fecha enquanto algum critério não tiver a última execução aprovada no `spec.ndjson`, enquanto o lint ou a suíte do projeto falharem, ou enquanto a revisão final do conjunto não tiver sido aprovada.
 
 ---
 

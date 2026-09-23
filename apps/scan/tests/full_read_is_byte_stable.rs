@@ -18,13 +18,11 @@ fn full_read(root: &Path, out: &Path) -> Vec<u8> {
 #[test]
 fn two_full_reads_of_the_same_tree_give_the_same_bytes() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures");
-    let dir = std::env::temp_dir().join(format!("scan-byte-stable-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-byte-stable-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let first = full_read(&root, &dir.join("first.json"));
     for round in 0..3 {
         let again = full_read(&root, &dir.join(format!("again-{round}.json")));
         assert!(first == again, "full read {round} gave different bytes");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

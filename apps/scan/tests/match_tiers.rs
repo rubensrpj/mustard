@@ -21,14 +21,13 @@ use std::process::Command;
 
 /// Write a synthetic `grain.model.json` into a temp dir owned by the test.
 /// Mirrors `term_index.rs`; the `label` keeps parallel tests' dirs distinct.
-fn write_model(label: &str, modules: serde_json::Value) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("scan-match-tiers-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_model(label: &str, modules: serde_json::Value) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-match-tiers-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let v = serde_json::json!({ "root": dir.to_string_lossy(), "modules": modules });
     std::fs::write(&model, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    (dir, model)
+    (temp, model)
 }
 
 /// One synthetic module carrying the given declaration names.
@@ -66,7 +65,7 @@ fn plural_singular_with_stem_backing_matches_and_bare_prefix_stays_dead() {
     // the English stemmer collapses to one key is genuine plural/singular
     // morphology and lands at tier `stem`; a bare prefix whose stems differ
     // ("pay" ~ "payables") stays an honest miss on every rung.
-    let (dir, model) = write_model("payables", serde_json::json!([module("src/finance/payable.rs", &["PayableInvoice"])]));
+    let (_dir, model) = write_model("payables", serde_json::json!([module("src/finance/payable.rs", &["PayableInvoice"])]));
     let (_, q) = run_query(&model, "payables", "q.json");
     let matched: Vec<&str> =
         q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
@@ -79,7 +78,6 @@ fn plural_singular_with_stem_backing_matches_and_bare_prefix_stays_dead() {
     let (_, q) = run_query(&model, "pay", "q-pay.json");
     assert!(q["matched_terms"].as_array().unwrap().is_empty(), "bare prefix without stem backing: {q}");
     assert_eq!(sole_report_term(&q)["tier"], "none", "named miss, not silence: {q}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -91,7 +89,7 @@ fn shared_root_form_bridges_via_the_trigram_rescue() {
     // as `bridged` (real evidence, form-not-literal), so the consumer keeps
     // planning. (The rescue's precision cost is confined here: it only fires
     // because the strict ladder already failed.)
-    let (dir, model) = write_model("natureza", serde_json::json!([module("src/eco/nature.rs", &["NatureTrail"])]));
+    let (_dir, model) = write_model("natureza", serde_json::json!([module("src/eco/nature.rs", &["NatureTrail"])]));
     let (_, q) = run_query(&model, "natureza", "q.json");
     let matched: Vec<&str> =
         q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
@@ -102,7 +100,6 @@ fn shared_root_form_bridges_via_the_trigram_rescue() {
     assert_eq!(t["tier"], "trigram", "the fuzzy rescue rung is reported: {q}");
     assert_eq!(q["report"]["reason"], "weak", "fuzzy-only evidence is weak, never false confidence: {q}");
     assert_eq!(q["report"]["bridged"], true, "the trigram rescue carries a non-thin query: {q}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -110,14 +107,13 @@ fn cancelado_bridges_via_the_trigram_rescue() {
     // "cancelado" vs the identifier token "cancel": a truncation pair no STRICT
     // tier bridges by form. The strict ladder is weak/none, so the `trigram`
     // RESCUE bridges it onto "cancel" by shared root (tier "trigram", `bridged`).
-    let (dir, model) = write_model("cancelado", serde_json::json!([module("src/billing/cancel.rs", &["CancelCharge"])]));
+    let (_dir, model) = write_model("cancelado", serde_json::json!([module("src/billing/cancel.rs", &["CancelCharge"])]));
     let (_, q) = run_query(&model, "cancelado", "q.json");
     let matched: Vec<&str> =
         q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
     assert!(matched.contains(&"cancel"), "trigram rescue bridges without a glossary: {q}");
     assert_eq!(sole_report_term(&q)["tier"], "trigram", "the fuzzy rescue rung is reported: {q}");
     assert_eq!(q["report"]["bridged"], true, "the trigram rescue is flagged bridged: {q}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -126,7 +122,7 @@ fn whole_identifier_matches_exactly() {
     // token floor) — the OLD index could never answer "parentid". The whole
     // lowercased identifier is now one extra entry per declaration, an exact
     // tier-1 key.
-    let (dir, model) = write_model("ident", serde_json::json!([module("src/titles/parent.rs", &["ParentId", "SplitAsync"])]));
+    let (_dir, model) = write_model("ident", serde_json::json!([module("src/titles/parent.rs", &["ParentId", "SplitAsync"])]));
     let (_, q) = run_query(&model, "parentid", "q-ident.json");
 
     let matched: Vec<&str> = q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
@@ -139,7 +135,6 @@ fn whole_identifier_matches_exactly() {
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert_eq!(files, vec!["src/titles/parent.rs"], "ident match anchors its defining file: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -148,7 +143,7 @@ fn same_language_stem_bridges_real_morphology_only() {
     // a bare truncation pair — tier `stem`, language named. Recall the dead
     // prefix rule never had (neither form is a prefix of the other), gained
     // without resurrecting false cognates.
-    let (dir, model) = write_model("stem", serde_json::json!([module("src/plan/study.rs", &["StudyPlan"])]));
+    let (_dir, model) = write_model("stem", serde_json::json!([module("src/plan/study.rs", &["StudyPlan"])]));
     let (_, q) = run_query(&model, "studies", "q-stem.json");
 
     let matched: Vec<&str> = q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
@@ -162,7 +157,6 @@ fn same_language_stem_bridges_real_morphology_only() {
     assert_eq!(q["report"]["reason"], "weak", "stem-only is weak: {q}");
     assert_eq!(q["report"]["bridged"], false, "a stem guess is never a bridge: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -170,7 +164,7 @@ fn report_aggregates_matched_k_of_n_and_is_byte_stable() {
     // Two terms, one hit: the aggregate is matched 1/2 and every term gets a
     // named outcome. Two binary invocations emit identical bytes — the whole
     // ladder (stems, trigram, report) is deterministic.
-    let (dir, model) = write_model("aggregate", serde_json::json!([module("src/billing/cancel.rs", &["CancelCharge"])]));
+    let (_dir, model) = write_model("aggregate", serde_json::json!([module("src/billing/cancel.rs", &["CancelCharge"])]));
     let (raw1, q) = run_query(&model, "cancelado,hierarquia", "q1.json");
     let (raw2, _) = run_query(&model, "cancelado,hierarquia", "q2.json");
     assert_eq!(raw1, raw2, "identical bytes across runs");
@@ -188,5 +182,4 @@ fn report_aggregates_matched_k_of_n_and_is_byte_stable() {
     assert_eq!(terms[1]["term"], "hierarquia");
     assert_eq!(terms[1]["tier"], "none", "the missed term is a NAMED miss: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

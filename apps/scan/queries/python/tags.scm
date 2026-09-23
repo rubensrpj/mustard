@@ -6,6 +6,17 @@
 
 (class_definition name: (identifier) @name) @definition.class
 
+; Constants — a name given a value at the top of the module, a direct child of
+; `module`. Inside a function it is a local, and inside a class a field.
+(module
+  (expression_statement
+    (assignment left: (identifier) @name right: (_) @value) @definition.const))
+
+; The names `from m import limite` brings into the file: what it brought, not
+; a use of it.
+(import_from_statement name: (dotted_name) @imported)
+(import_from_statement name: (aliased_import) @imported)
+
 ; Functions — a module-level function is a UNIT, a method is a MEMBER. Python
 ; spells both with `function_definition`, so the line is drawn by CONTEXT: a
 ; module-level function is a DIRECT child of `module`, a method is a direct
@@ -26,3 +37,47 @@
   body: (block
     (expression_statement
       (assignment left: (identifier) @name) @definition.field)))
+
+; Decorated functions — a decorator wraps the def in a `decorated_definition`,
+; so the two patterns above never see it. The same line is drawn by the
+; wrapper's parent: the module for a function, a class body for a method.
+(module
+  (decorated_definition
+    definition: (function_definition name: (identifier) @name) @definition.function))
+(class_definition
+  body: (block
+    (decorated_definition
+      definition: (function_definition name: (identifier) @name) @definition.method)))
+
+; Docstrings — the first string of a body documents the def or the class. One
+; pattern per form above, each with the same kind, so the docstring joins the
+; declaration the pattern above already gives. `string_content` is the text
+; without its quotes.
+(class_definition
+  name: (identifier) @name
+  body: (block . (expression_statement (string (string_content) @doc)))) @definition.class
+(module
+  (function_definition
+    name: (identifier) @name
+    body: (block . (expression_statement (string (string_content) @doc)))) @definition.function)
+(class_definition
+  body: (block
+    (function_definition
+      name: (identifier) @name
+      body: (block . (expression_statement (string (string_content) @doc)))) @definition.method))
+(module
+  (decorated_definition
+    definition: (function_definition
+      name: (identifier) @name
+      body: (block . (expression_statement (string (string_content) @doc)))) @definition.function))
+(class_definition
+  body: (block
+    (decorated_definition
+      definition: (function_definition
+        name: (identifier) @name
+        body: (block . (expression_statement (string (string_content) @doc)))) @definition.method)))
+
+; Decorations — a decorator (`@app.get("/")`, `@dataclass`) is not code of the
+; declaration it adorns: the engine passes over it to find the comment above
+; and reads no call out of it.
+(decorator) @decoration

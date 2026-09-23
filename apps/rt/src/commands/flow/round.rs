@@ -10,6 +10,11 @@
 //! principal os arquivos que cada cópia entregou, comita e apaga a cópia — e
 //! só então despacha a rodada seguinte.
 //!
+//! **A spec antiga passa para o backlog.** Antes de tudo, a rodada converte a
+//! spec uma vez, no módulo `convert`: a onda desenhada à mão que nunca saiu deixa de
+//! valer, e as tarefas dela voltam para o backlog. A entregue ou aprovada fica
+//! como história; a que já saiu termina como saiu.
+//!
 //! **A escolha antes do envio.** Antes de criar a cópia de uma onda pronta,
 //! a rodada olha os candidatos dela: os itens combinados do projeto todo, os
 //! sem dono e as lições do banco que casam com ela. Com algum, a onda só sai
@@ -42,7 +47,10 @@
 //! disco nem no git, nem no repositório principal nem na cópia; uma mensagem
 //! de commit fora do
 //! modelo (título e corpo acima do teto, link do claude.ai, o nome do modelo,
-//! assinatura de coautoria ou e-mail de alguém); o relatório em que um agente
+//! assinatura de coautoria ou e-mail de alguém); a prova de um critério que
+//! as ondas do relatório cobrem que não executa ou não passa — a rodada roda
+//! cada uma, na ordem do código, antes de comitar, e recusa nomeando o
+//! critério, o comando inteiro e a saída de erro; o relatório em que um agente
 //! diz que o plano da onda não funciona, que para a rodada e só segue com o
 //! "sim" do usuário. O "sim" da mudança de plano é o clique em "Aceitar" na
 //! pergunta dela, gravado pela testemunha como na aprovação da spec, e nunca a
@@ -81,11 +89,16 @@
 
 mod answer;
 mod commit;
+mod convert;
 mod queue;
 mod report;
 mod stops;
 
-pub(crate) use commit::refresh_map_if_stale;
+/// O código de mudança que um texto traz: a testemunha dos gestos o lê no
+/// cabeçalho da pergunta que decide a mudança.
+pub(crate) use stops::change_code_of;
+
+pub(crate) use commit::{reinstall_binary, refresh_map_if_stale, waves_checked_only};
 
 use std::path::PathBuf;
 
@@ -95,7 +108,8 @@ use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
-pub(crate) use queue::{wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use convert::convert_hand_waves;
+pub(crate) use queue::{backlog_left, ensure_copy, wave_states, waves_in_progress, waves_pending_fix};
 pub(crate) use report::take_report;
 
 /// As opções de `mustard-rt run round`.
@@ -161,15 +175,16 @@ mod tests {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
 
-    /// A resposta do usuário à pergunta `question`, dada pela testemunha dos
+    /// A resposta do usuário à pergunta `question`, feita com o cabeçalho
+    /// `header` — onde vai o código da mudança —, dada pela testemunha dos
     /// gestos, como o harness a entrega depois do clique.
-    pub(super) fn click(root: &Path, session: &str, question: &str, answer: &str) {
+    pub(super) fn click(root: &Path, session: &str, question: &str, header: &str, answer: &str) {
         use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
         let input = HookInput {
             hook_event_name: Some("PostToolUse".to_string()),
             tool_name: Some("AskUserQuestion".to_string()),
             session_id: Some(session.to_string()),
-            tool_input: json!({ "questions": [{ "question": question,
+            tool_input: json!({ "questions": [{ "question": question, "header": header,
                 "options": [{ "label": "Aceitar" }, { "label": "Recusar" }] }] }),
             raw: json!({ "tool_response": { "answers": { question: answer } } }),
             ..HookInput::default()
@@ -222,11 +237,17 @@ mod tests {
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
+        // A prova é um comando que sempre passa, sem exigir um projeto Cargo
+        // de verdade na cópia de teste: desde que a rodada roda a prova de
+        // cada critério coberto antes de comitar, `cargo test` recusaria
+        // todo commit destes testes, que escrevem em pastas soltas, sem
+        // `Cargo.toml`.
         let crit = id_of(&write(
             root,
             spec,
             "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "origin": said}),
+            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous",
+                "origin": said}),
         ));
         for (n, files, depends) in plan {
             let mut wave = json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],

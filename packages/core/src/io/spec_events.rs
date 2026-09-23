@@ -459,7 +459,7 @@ mod tests {
         put(path, &[], "message", &at("09:00"), json!({"author": "user", "text": "o pedido"}));
     }
 
-    /// Uma spec de teste com os 35 tipos, em três ondas, com uma remoção por
+    /// Uma spec de teste com os 36 tipos, em três ondas, com uma remoção por
     /// horário, um expurgo e um limite revisto.
     struct Spec {
         _dir: tempfile::TempDir,
@@ -505,8 +505,18 @@ mod tests {
         add("error", "error", "08:50", json!({"text": "Título longo.", "message": "O título passa de 60.", "keys": ["título"], "origin": msg}));
         add("point", "point", "08:51", json!({"block": "limits", "gap": "tamanho do pedido", "from": "gap", "status": "open", "facts": [{"text": "Não há teto.", "source": "src/render.rs:2"}], "origin": msg}));
         let old_limit = add("limit_old", "limit", "08:52", json!({"text": "Tamanho do pedido.", "value": "400 linhas", "keys": ["pedido"], "origin": msg}));
-        let c1 = add("criterion_1", "criterion", "08:53", json!({"when": "a", "then": "b", "proof": "cargo test a", "origin": msg}));
-        let c2 = add("criterion_2", "criterion", "08:54", json!({"when": "c", "then": "d", "proof": "cargo test c", "origin": msg}));
+        let c1 = add(
+            "criterion_1",
+            "criterion",
+            "08:53",
+            json!({"when": "a", "then": "b", "proof": "cargo test a", "form": "ubiquitous", "origin": msg}),
+        );
+        let c2 = add(
+            "criterion_2",
+            "criterion",
+            "08:54",
+            json!({"when": "c", "then": "d", "proof": "cargo test c", "form": "ubiquitous", "origin": msg}),
+        );
         add("wave_1", "wave", "08:55", json!({"n": 1, "text": "Preparo.", "criteria": [c1], "done_when": "A suíte passa.", "origin": msg}));
         let task1 = add("task_1", "task", "08:56", json!({"wave": 1, "text": "Juntar o texto.", "files": [{"path": "src/render.rs"}], "origin": msg}));
         add("step", "step", "08:56", json!({"wave": 1, "item": task1, "text": "A tarefa 1 ficou pronta."}));
@@ -517,6 +527,7 @@ mod tests {
         add("send", "send", "09:01", json!({"author": "binary", "wave": 2, "role": "wave", "text": "# teste — onda 2", "lines": 312, "chars": 21480, "items": [rule], "mustard": "0.2.0"}));
         add("delivered_2", "delivered", "09:02", json!({"author": "wave", "wave": 2, "text": "O portão lê a aprovação.", "files": ["src/gate.rs"]}));
         add("verdict", "verdict", "09:03", json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
+        add("tracking", "tracking", "09:03", json!({"author": "binary", "items": [{"item": rule, "verification": "A trava confere o programa.", "file": "src/gate.rs", "met": true}]}));
         add("commit", "commit", "09:04", json!({"author": "binary", "sha": "5e0c7a91", "title": "fix: a aprovação sai do estado", "waves": [2], "files": ["src/gate.rs"], "repo": "."}));
         add("criterion_run", "criterion_run", "09:05", json!({"author": "binary", "criterion": c2, "result": "pass", "exit": 0, "ms": 5990}));
         add("pr_summary", "pr_summary", "09:06", json!({"text": "O portão lê o estado.", "origin": msg}));

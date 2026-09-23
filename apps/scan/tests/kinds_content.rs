@@ -38,9 +38,8 @@ use std::process::Command;
 /// output directory.
 fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(fixture_dir);
-    let tmp = std::env::temp_dir().join(format!("scan-content-{}-{}", fixture_dir, std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("create temp dir");
+    let temp = tempfile::Builder::new().prefix(&format!("scan-content-{}-", fixture_dir)).tempdir().unwrap();
+    let tmp = temp.path().to_path_buf();
     let model = tmp.join("grain.model.json");
 
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
@@ -51,7 +50,7 @@ fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
 
     let text = std::fs::read_to_string(&model).expect("read model");
     let v: serde_json::Value = serde_json::from_str(&text).expect("valid model JSON");
-    let pairs = v["modules"]
+    v["modules"]
         .as_array()
         .expect("model.modules")
         .iter()
@@ -62,9 +61,7 @@ fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
                 d["kind"].as_str().expect("declaration.kind").to_string(),
             )
         })
-        .collect();
-    let _ = std::fs::remove_dir_all(&tmp);
-    pairs
+        .collect()
 }
 
 /// Build the expected set from `(name, kind)` literals.
@@ -121,6 +118,8 @@ fn python_files_a_module_level_def_as_unit_and_a_class_def_as_member() {
             ("name", "field"),
             ("rename", "method"),
             ("load", "function"),
+            // A name given a value at the top of the module is a constant.
+            ("DEFAULT_NAME", "const"),
         ],
     );
 }
@@ -135,12 +134,15 @@ fn dart_files_a_library_function_as_unit_and_a_body_member_as_member() {
         &[
             ("Role", "enum"),
             ("Account", "class"),
+            // The constructor is a member of its class, like a method.
+            ("Account", "method"),
             ("describe", "method"),
             ("Auditable", "mixin"),
             ("touch", "method"),
             ("AccountFormatting", "extension"),
             ("shout", "method"),
             ("summarize", "function"),
+            ("defaultRole", "const"),
         ],
     );
 }
@@ -154,8 +156,11 @@ fn go_files_a_top_level_func_as_unit_and_a_receiver_method_as_member() {
             ("Name", "field"),
             ("Display", "method"),
             ("Storer", "interface"),
+            // The interface method is a member, like a receiver method.
+            ("Load", "method"),
             ("ID", "type"),
             ("Load", "function"),
+            ("MaxNameLength", "const"),
         ],
     );
 }
@@ -203,6 +208,7 @@ fn php_files_a_top_level_function_as_unit_and_a_class_member_as_member() {
             ("Active", "enum_member"),
             ("Inactive", "enum_member"),
             ("helper", "function"),
+            ("DEFAULT_LABEL", "const"),
         ],
     );
 }
@@ -219,6 +225,9 @@ fn csharp_files_every_member_as_member_because_it_has_no_free_function() {
             ("Area", "method"),
             ("Point", "record"),
             ("Size", "struct"),
+            // A `const` is a constant, not a field, though the grammar writes
+            // both with the same node.
+            ("MaxWidth", "const"),
             ("Width", "field"),
             ("Status", "enum"),
             ("Active", "enum_member"),
