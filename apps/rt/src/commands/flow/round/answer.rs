@@ -407,6 +407,21 @@ pub(super) fn run_round_with_mine(
         return Err(RoundRefusal::NotApproved { phase });
     }
 
+    // A spec antiga passa para a cesta antes de qualquer leitura das ondas:
+    // a onda desenhada à mão que nunca saiu sai da leitura, e as tarefas dela
+    // entram na cesta. Numa spec já convertida nada é gravado, e a leitura
+    // segue a mesma.
+    let log = if super::convert::convert_hand_waves(&opts.root, root, &spec, lang)
+        .map_err(RoundRefusal::Refused)?
+        .is_empty()
+    {
+        log
+    } else {
+        store::read(&path)
+            .map_err(RoundRefusal::Refused)?
+            .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
+    };
+
     // A cesta é lida como estava ao entrar na rodada, antes de o relatório
     // dela mexer em onda ou tarefa: a tarefa que o corte de uma onda de lote
     // devolve solta, agora mesmo, fica solta até a rodada seguinte — só a que

@@ -559,7 +559,7 @@ fn looks_like_commit_sha(summary: &str) -> bool {
 /// A versão nova da tarefa `task`, devolvida à cesta: os mesmos campos dela,
 /// tirando a onda que a levou — sem `wave`, ela volta a nascer solta, pronta
 /// para o lote que a cesta formar na rodada seguinte.
-fn cesta_return(task: &SpecEvent) -> Map<String, Value> {
+pub(super) fn cesta_return(task: &SpecEvent) -> Map<String, Value> {
     let mut draft: Map<String, Value> = task
         .fields
         .iter()

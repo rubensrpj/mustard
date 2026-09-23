@@ -236,6 +236,10 @@ fn run_close(
         recorded = taken.recorded;
     }
 
+    // A spec antiga passa para a cesta antes de ler as ondas: a onda
+    // desenhada à mão que nunca saiu não recusa o fechamento, porque a versão
+    // nova a ignora.
+    crate::commands::flow::round::convert_hand_waves(&opts.root, root, &spec, lang).map_err(CloseRefusal::Refused)?;
     let log = read(&path)?;
     finished(&log)?;
 
