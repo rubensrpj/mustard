@@ -158,11 +158,6 @@ pub(crate) struct WaveGraph {
     pub(crate) level: BTreeMap<u64, u32>,
     /// As ondas que estão num ciclo de dependência; vazio num plano são.
     pub(crate) cycle: Vec<u64>,
-    /// As ondas que um `depends_on` aponta e que o plano não tem, por onda.
-    pub(crate) missing_depends: BTreeMap<u64, Vec<u64>>,
-    /// As tarefas que apontam uma onda que o plano não tem: o código da
-    /// tarefa e a onda que ela aponta.
-    pub(crate) missing_task_waves: Vec<(String, u64)>,
     /// Os pares de ondas do mesmo nível que declaram o mesmo arquivo.
     pub(crate) collisions: Vec<FileCollision>,
     /// As partes independentes das ondas que têm mais de uma: os códigos das
@@ -197,33 +192,26 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
     let declared: BTreeSet<u64> =
         events.iter().filter(|e| e.event_type == "wave").filter_map(|e| e.wave()).collect();
 
+    // A dependência que aponta uma onda que o plano não tem não vira aresta.
     let mut deps: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
-    let mut missing_depends: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for wave in events.iter().filter(|e| e.event_type == "wave") {
         let Some(n) = wave.wave() else { continue };
         let entry = deps.entry(n).or_default();
-        for on in wave.ints("depends_on") {
-            if declared.contains(&on) {
-                entry.insert(on);
-            } else {
-                missing_depends.entry(n).or_default().push(on);
-            }
-        }
+        entry.extend(wave.ints("depends_on").into_iter().filter(|on| declared.contains(on)));
     }
 
     let codes = log.codes();
-    let mut missing_task_waves: Vec<(String, u64)> = Vec::new();
     let mut files: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
     // Os arquivos de cada tarefa, por onda: é por eles que as partes
     // independentes de uma onda se separam.
     let mut by_task: BTreeMap<u64, Vec<(String, BTreeSet<String>)>> = BTreeMap::new();
     for task in events.iter().filter(|e| e.event_type == "task") {
         let Some(n) = task.wave() else { continue };
-        let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+        // A tarefa de uma onda que o plano não tem está na cesta.
         if !declared.contains(&n) {
-            missing_task_waves.push((code, n));
             continue;
         }
+        let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
         let mut mine: BTreeSet<String> = BTreeSet::new();
         let entry = files.entry(n).or_default();
         for path in task
@@ -261,8 +249,6 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
     WaveGraph {
         level: levels.level,
         cycle: levels.cycle,
-        missing_depends,
-        missing_task_waves,
         collisions: same_level_collisions(&census),
         parts,
         files,
@@ -338,19 +324,17 @@ mod tests {
         let log = spec_log(&[wave(1, &[]), wave(2, &[3]), wave(3, &[2])]);
         let graph = wave_graph(&log);
         assert_eq!(graph.cycle, vec![2, 3]);
-        assert!(graph.missing_depends.is_empty());
     }
 
-    /// A dependência e a tarefa que apontam uma onda que não existe são
-    /// nomeadas, cada uma no seu lugar.
+    /// A dependência que aponta uma onda que não existe não vira aresta, e a
+    /// tarefa de uma onda que não existe fica fora do grafo: está na cesta.
     #[test]
-    fn a_dependency_and_a_task_pointing_at_a_missing_wave_are_named() {
+    fn a_dependency_and_a_task_pointing_at_a_missing_wave_stay_out_of_the_graph() {
         let log = spec_log(&[wave(1, &[7]), task(1, &["src/a.rs"]), task(9, &["src/b.rs"])]);
         let graph = wave_graph(&log);
-        assert_eq!(graph.missing_depends.get(&1), Some(&vec![7]));
-        assert_eq!(graph.missing_task_waves.len(), 1);
-        assert_eq!(graph.missing_task_waves[0].1, 9);
-        assert!(graph.missing_task_waves[0].0.contains("TASK"), "{:?}", graph.missing_task_waves);
+        assert!(graph.cycle.is_empty());
+        assert_eq!(graph.level.keys().copied().collect::<Vec<_>>(), [1]);
+        assert!(!graph.tasks.contains_key(&9), "{:?}", graph.tasks);
     }
 
     /// As partes de uma onda se juntam pela corrente, e não só pelo par: a

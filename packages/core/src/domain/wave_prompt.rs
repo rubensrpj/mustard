@@ -697,9 +697,12 @@ pub fn proof_rule(criterion: &str, proof: &str) -> Result<(), Refusal> {
 /// dono. Olha o arquivo antes e depois da gravação; o item que já existia, a
 /// spec ainda não aprovada e a gravação de outro tipo passam.
 ///
-/// A onda que o item diz em `waves` vale mesmo antes de estar no plano: a
-/// decisão costuma vir antes da onda que a faz, e a tarefa entra numa onda no
-/// replanejamento. Até lá, só a análise antes do envio pode pô-lo num pedido.
+/// Com a cesta, o número da onda só existe quando o lote sai: o dono se dá
+/// pelos arquivos, em `applies_to`, com os arquivos das tarefas que cobrem ou
+/// vão cobrir o item. Vale mesmo antes de a tarefa existir: a decisão costuma
+/// vir antes da tarefa que a faz. Até o item ter onda dona, só a análise antes
+/// do envio pode pô-lo num pedido. A onda dita em `waves`, do plano antigo,
+/// continua valendo.
 ///
 /// # Errors
 ///
@@ -710,7 +713,14 @@ pub fn owner_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     }
     let had: BTreeSet<u64> = before.events.iter().map(|e| e.id).collect();
     let owners = owners(after);
-    let declared = |item: &SpecEvent| item.ints("waves").iter().any(|n| *n > 0);
+    let by_files = |item: &SpecEvent| {
+        item.fields
+            .get("applies_to")
+            .and_then(|at| at.get("files"))
+            .and_then(Value::as_array)
+            .is_some_and(|files| files.iter().filter_map(Value::as_str).any(|file| !file.trim().is_empty()))
+    };
+    let declared = |item: &SpecEvent| item.ints("waves").iter().any(|n| *n > 0) || by_files(item);
     let orphan = |item: &&SpecEvent| !had.contains(&item.id) && !owners.contains_key(&item.id) && !declared(item);
     match agreed_items(after).into_iter().find(orphan) {
         Some(item) => Err(Refusal::OwnerMissing { event_type: item.event_type.clone() }),
@@ -1868,9 +1878,10 @@ mod tests {
         log(&events)
     }
 
-    /// Depois da aprovação, o item combinado novo nasce com dono: a onda que
-    /// ele diz, o projeto todo ou a tarefa que já cobria a versão antiga. Sem
-    /// dono, é recusado; antes da aprovação, passa.
+    /// Depois da aprovação, o item combinado novo nasce com dono: os arquivos
+    /// das tarefas que o cobrem, o projeto todo, a onda que ele diz ou a
+    /// tarefa que já cobria a versão antiga. Sem dono, é recusado, com o texto
+    /// que manda dar o dono pelos arquivos; antes da aprovação, passa.
     #[test]
     fn a_new_agreed_item_after_the_approval_is_born_with_an_owner() {
         let before = approved_then(None);
@@ -1883,8 +1894,11 @@ mod tests {
         assert_eq!(refused.reason(), "owner-missing");
         for lang in [Locale::PtBr, Locale::EnUs] {
             let message = refused.message(lang);
-            assert!(message.contains("decision") && message.contains("waves") && message.contains("**"), "{message}");
+            assert!(message.contains("decision") && message.contains("applies_to") && message.contains("**"), "{message}");
+            assert!(!message.contains("waves"), "{message}");
         }
+        assert_eq!(owner_rule(&before, &decision(json!({"applies_to": {"files": ["src/a.rs"]}}))), Ok(()));
+        assert!(owner_rule(&before, &decision(json!({"applies_to": {"files": []}}))).is_err(), "sem arquivo não é dono");
         assert_eq!(owner_rule(&before, &decision(json!({"waves": [1]}))), Ok(()));
         assert_eq!(owner_rule(&before, &decision(json!({"applies_to": {"files": ["**"]}}))), Ok(()));
         assert_eq!(owner_rule(&before, &decision(json!({"replaces": 1}))), Ok(()), "a tarefa cobre a versão antiga");

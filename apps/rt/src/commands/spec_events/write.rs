@@ -60,11 +60,12 @@
 //! {"ok": true, "id": 10, "type": "lesson", "retired": [4]}
 //! ```
 //!
-//! Uma onda gravada depois da aprovação que leva a spec a ter mais ondas do
-//! que tinha quando foi aprovada avisa o crescimento em `warnings`, com as
-//! duas contas; o aviso nunca recusa. Um pedido (`request`) devolve em `next`
-//! o passo seguinte, pelo `effect`: gravar as ondas novas no fim ou as versões
-//! novas das que mudam, na mesma spec e na mesma branch.
+//! A onda nasce da cesta, e só o programa a grava: pelo `run write`, a onda é
+//! recusada, e a tarefa que traz um número de onda também, a não ser na
+//! versão nova de uma tarefa que repete a onda da versão que ela substitui.
+//! Tirar uma onda continua valendo. Um pedido (`request`) devolve em `next` o
+//! passo seguinte, pelo `effect`: gravar as tarefas novas, que entram na
+//! cesta, ou as versões novas das que mudam, na mesma spec e na mesma branch.
 //!
 //! Um pedido adiado (`deferred`) aponta uma pendência aberta da lista do
 //! projeto, a do checkout principal num worktree: o número pode vir escrito
@@ -164,7 +165,7 @@ use mustard_core::domain::spec_events::{
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, waves_grown_by, PhaseWriter, SpecState,
+    birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, PhaseWriter, SpecState,
     State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
@@ -277,6 +278,11 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     if BINARY_ONLY.contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
     }
+    // A onda nasce da cesta, e a recusa vem antes da conferência dos campos:
+    // uma onda sem pronto-quando não pode mandar completar o que nunca passa.
+    if event_type == "wave" {
+        return refuse(Refusal::WaveByBasket);
+    }
     if event_type == "message" && hook_only_message(&draft) {
         return refuse(Refusal::UserMessageByHook { spec: spec.trim().to_string() });
     }
@@ -294,7 +300,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
         .flatten();
     match record_in(&project, &opts.root, spec, event_type, draft, None) {
-        Ok(Recorded { written, grew, survey }) => {
+        Ok(Recorded { written, survey }) => {
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -319,14 +325,6 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             }
             for (fact, finding) in &written.citation_warnings {
                 warnings.extend(finding.warning(*fact, lang));
-            }
-            // O crescimento das ondas depois da aprovação só avisa.
-            if let Some((approved, now)) = grew {
-                warnings.push(
-                    translate("spec_events.waves_grew", lang)
-                        .replace("{approved}", &approved.to_string())
-                        .replace("{now}", &now.to_string()),
-                );
             }
             // O pedido muda o plano: a cópia para o banco da página sai logo
             // depois dele. Toda gravação que muda o plano de uma spec já
@@ -470,13 +468,9 @@ fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result
     }
 }
 
-/// O que uma gravação deixou: o evento, o crescimento das ondas e o passo do
-/// levantamento.
+/// O que uma gravação deixou: o evento e o passo do levantamento.
 pub struct Recorded {
     pub(crate) written: store::Written,
-    /// As ondas aprovadas e as de agora, quando a onda gravada fez a spec
-    /// passar das ondas que tinha na aprovação que vale.
-    pub(crate) grew: Option<(usize, usize)>,
     /// O passo do levantamento depois de uma gravação do modelo, como o
     /// relatório o mostra ([`survey_report`]).
     pub(crate) survey: Option<Map<String, Value>>,
@@ -545,11 +539,7 @@ fn record_in(
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
-    // A conta das ondas sai com a trava presa: duas ondas gravadas ao mesmo
-    // tempo nunca avisam a mesma conta.
-    let mut grew = None;
     let mut survey = None;
-    let wave = event_type == "wave";
     let lang = project.lang;
     let written = store::write_guarded(
         &path,
@@ -565,13 +555,9 @@ fn record_in(
             }
             Ok(())
         },
-        |log| {
-            if wave {
-                grew = waves_grown_by(log, log.max_id());
-            }
-        },
+        |_| {},
     )?;
-    Ok(Recorded { written, grew, survey })
+    Ok(Recorded { written, survey })
 }
 
 /// A fase que uma gravação de `state` traz e o `state` que ela revê; nos
@@ -597,11 +583,37 @@ fn record_rules(
     by: Option<PhaseWriter>,
 ) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
+    if by.is_none() {
+        wave_by_basket_rule(before, after)?;
+    }
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
     survey_rule(spec, before, after)?;
     task_dependency_rule(before, after)?;
     owner_rule(before, after)
+}
+
+/// A onda nasce da cesta: só o programa a grava, na hora de despachar. Pelo
+/// `run write`, a gravação de uma onda é recusada, e a de uma tarefa com
+/// número de onda também, a não ser na versão nova de uma tarefa que repete a
+/// onda da versão que ela substitui — rever a tarefa de uma onda que já saiu
+/// não pode jogá-la de volta na cesta. Tirar uma onda continua valendo.
+fn wave_by_basket_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
+    for event in after.events.iter().filter(|event| !had.contains(&event.id)) {
+        let refused = match event.event_type.as_str() {
+            "wave" => true,
+            "task" => event.wave().is_some_and(|n| {
+                let revised = event.int("replaces").and_then(|id| before.get(id));
+                revised.and_then(SpecEvent::wave) != Some(n)
+            }),
+            _ => false,
+        };
+        if refused {
+            return Err(Refusal::WaveByBasket);
+        }
+    }
+    Ok(())
 }
 
 /// A tarefa que uma gravação acrescenta a `after` e não estava em `before`;
@@ -1592,9 +1604,10 @@ mod tests {
     }
 
     /// Depois da aprovação, o item combinado que o modelo grava nasce com
-    /// dono: sem onda nem o projeto todo, a gravação é recusada com o jeito de
-    /// dar dono, e nada é gravado; a onda que ainda vai entrar no plano vale.
-    /// Antes da aprovação, o dono vem do plano, e a gravação passa.
+    /// dono: sem dono, a gravação é recusada com o jeito de dar dono pelos
+    /// arquivos, e nada é gravado; os arquivos das tarefas, o projeto todo e a
+    /// onda dita do plano antigo valem. Antes da aprovação, o dono vem do
+    /// plano, e a gravação passa.
     #[test]
     fn after_the_approval_a_new_agreed_item_is_written_only_with_an_owner() {
         let dir = tempdir().unwrap();
@@ -1613,14 +1626,19 @@ mod tests {
         assert_eq!(write(root, "decision", &decision(json!({})))["ok"], json!(true), "em plano o dono vem do plano");
 
         witness_approves(root);
-        for refused_owner in [json!({}), json!({"applies_to": {"files": ["src/**"]}})] {
+        for refused_owner in [json!({}), json!({"applies_to": {"files": [" "]}})] {
             let before = lines(root);
             let refused = write(root, "decision", &decision(refused_owner.clone()));
             assert_eq!(refused["reason"], json!("owner-missing"), "{refused_owner}: {refused}");
-            assert!(refused["hint"].as_str().unwrap().contains("`\"waves\":[3]`"), "{refused}");
+            let hint = refused["hint"].as_str().unwrap();
+            assert!(hint.contains("applies_to") && !hint.contains("waves"), "{refused}");
             assert_eq!(lines(root), before, "nada foi gravado");
         }
-        for owner in [json!({"waves": [1]}), json!({"waves": [2]}), json!({"applies_to": {"files": ["**"]}})] {
+        for owner in [
+            json!({"applies_to": {"files": ["src/**"]}}),
+            json!({"waves": [1]}),
+            json!({"applies_to": {"files": ["**"]}}),
+        ] {
             let out = write(root, "decision", &decision(owner.clone()));
             assert_eq!(out["ok"], json!(true), "{owner}: {out}");
         }
@@ -2110,8 +2128,10 @@ mod tests {
         let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
         let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
         let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        // As ondas entram como o programa as grava ao montar os lotes.
         for n in 1..=waves {
-            assert_eq!(write_wave(root, n, msg, criterion, None)["ok"], json!(true));
+            let wave = json!({"n": n, "text": format!("Onda {n}."), "criteria": [criterion], "done_when": "d", "origin": msg});
+            assert_eq!(write(root, "wave", &wave.to_string())["ok"], json!(true));
         }
         (msg, criterion)
     }
@@ -2172,33 +2192,32 @@ mod tests {
         assert_eq!(specs, ["teste"], "no spec was opened");
     }
 
-    /// Quatro ondas aprovadas e duas novas: cada onda nova é gravada, sai
-    /// sem recusa e avisa a conta; a segunda diz "tinha 4, agora tem 6". A
-    /// versão nova de uma onda não avisa.
+    /// A onda nasce da cesta: pela porta do modelo, a onda nova e a versão
+    /// nova de uma onda são recusadas, antes e depois da aprovação, e nada é
+    /// gravado. Tirar uma onda continua valendo.
     #[test]
-    fn new_waves_after_approval_warn_the_growth_and_are_written() {
+    fn a_wave_through_the_models_door_is_refused_before_and_after_approval() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (msg, criterion) = planned_with_waves(root, 4);
-        let before = write_wave(root, 5, msg, criterion, None);
-        assert!(before.get("warnings").is_none(), "no approval yet, no growth: {before}");
-        let removed = write(root, "remove", &json!({"targets": [before["id"]], "reason": "cedo"}).to_string());
-        assert_eq!(removed["ok"], json!(true), "{removed}");
-        witness_approves(root);
-
-        let fifth = write_wave(root, 5, msg, criterion, None);
-        assert_eq!(fifth["ok"], json!(true), "{fifth}");
-        assert_eq!(fifth["warnings"], json!(["A spec tinha 4 ondas aprovadas, agora tem 5."]), "{fifth}");
-        let sixth = write_wave(root, 6, msg, criterion, None);
-        assert_eq!(sixth["ok"], json!(true), "{sixth}");
-        assert_eq!(sixth["warnings"], json!(["A spec tinha 4 ondas aprovadas, agora tem 6."]), "{sixth}");
-
-        let revised = write_wave(root, 6, msg, criterion, sixth["id"].as_u64());
-        assert_eq!(revised["ok"], json!(true), "{revised}");
-        assert!(revised.get("warnings").is_none(), "a new version of a wave is not growth: {revised}");
-
         let log = DiskSpecState::new(root).log("teste").unwrap();
-        assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 6, "the new waves are in the file");
+        let fourth = log.visible().into_iter().rev().find(|e| e.event_type == "wave").unwrap().id;
+        for approved in [false, true] {
+            if approved {
+                witness_approves(root);
+            }
+            for (n, replaces) in [(5, None), (4, Some(fourth))] {
+                let before = lines(root);
+                let out = write_wave(root, n, msg, criterion, replaces);
+                assert_eq!(out["reason"], json!("wave-by-basket"), "aprovada {approved}, onda {n}: {out}");
+                assert_eq!(out["hint"], json!(translate("spec_events.wave_by_basket", Locale::PtBr)), "{out}");
+                assert_eq!(lines(root), before, "nada foi gravado");
+            }
+        }
+        let removed = write(root, "remove", &json!({"targets": [fourth], "reason": "sai"}).to_string());
+        assert_eq!(removed["ok"], json!(true), "{removed}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 3, "a onda tirada saiu");
         assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
     }
 

@@ -61,6 +61,10 @@ pub enum Refusal {
     /// O `run write` com o autor `binary`, que fica só para as gravações de
     /// dentro do binário.
     BinaryAuthor,
+    /// O `run write` com uma onda, ou com uma tarefa que traz um número de
+    /// onda que a versão revista dela não tinha: a onda nasce da cesta, e só
+    /// o programa monta o lote.
+    WaveByBasket,
     /// O `run write` com uma mensagem do usuário, ou uma gravação dele que
     /// tiraria ou reveria uma: a fala do usuário chega pelos ganchos.
     UserMessageByHook { spec: String },
@@ -199,6 +203,7 @@ impl Refusal {
             Self::StateByFlowOnly { .. } => "state-by-flow-only",
             Self::BinaryOnlyType { .. } => "binary-only-type",
             Self::BinaryAuthor => "binary-author",
+            Self::WaveByBasket => "wave-by-basket",
             Self::UserMessageByHook { .. } => "user-message-by-hook",
             Self::OldFormatSpec { .. } => "old-format-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
@@ -352,6 +357,7 @@ impl Refusal {
                 &[("{type}", event_type.clone()), ("{spec}", spec.clone())],
             ),
             Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
+            Self::WaveByBasket => fill("spec_events.wave_by_basket", &[]),
             Self::UserMessageByHook { spec } => {
                 fill("spec_events.user_message_by_hook", &[("{spec}", spec.clone())])
             }

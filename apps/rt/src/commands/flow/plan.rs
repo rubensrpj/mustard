@@ -95,12 +95,6 @@ enum PlanFinding {
     /// Uma spec com partes independentes, que pode ser dividida, uma spec
     /// por parte.
     SpecShouldSplit { parts: String },
-    /// Um ciclo de dependência entre ondas.
-    WaveLoop { waves: String },
-    /// Uma onda que depende de outra que o plano não tem.
-    DependsOnMissing { wave: u64, on: u64 },
-    /// Uma tarefa que aponta uma onda que o plano não tem.
-    TaskWithoutWave { task: String, wave: u64 },
     /// Um arquivo que a tarefa cita e que o git não guarda.
     FileOutsideGit { task: String, path: String },
     /// Um nome citado que o mapa do projeto não confirma.
@@ -133,9 +127,6 @@ impl PlanFinding {
         match self {
             Self::Refused(_)
             | Self::Skill { .. }
-            | Self::WaveLoop { .. }
-            | Self::DependsOnMissing { .. }
-            | Self::TaskWithoutWave { .. }
             | Self::TaskWithoutFile { .. }
             | Self::TaskMatchesNoWave { .. } => true,
             Self::Cited { finding, .. } => finding.is_refusal(),
@@ -160,9 +151,6 @@ impl PlanFinding {
             Self::SharedFile { .. } => "waves-share-a-file".into(),
             Self::WaveShouldSplit { .. } => "wave-should-split".into(),
             Self::SpecShouldSplit { .. } => "spec-should-split".into(),
-            Self::WaveLoop { .. } => "waves-loop".into(),
-            Self::DependsOnMissing { .. } => "depends-on-missing-wave".into(),
-            Self::TaskWithoutWave { .. } => "task-without-wave".into(),
             Self::FileOutsideGit { .. } => "file-outside-git".into(),
             Self::Cited { finding, .. } => match finding {
                 Finding::MissingFile { .. } => "cited-file-missing".into(),
@@ -201,13 +189,6 @@ impl PlanFinding {
                 &[("{wave}", wave.to_string()), ("{parts}", parts.clone())],
             ),
             Self::SpecShouldSplit { parts } => fill("plan.spec_should_split", &[("{parts}", parts.clone())]),
-            Self::WaveLoop { waves } => fill("plan.wave_loop", &[("{waves}", waves.clone())]),
-            Self::DependsOnMissing { wave, on } => {
-                fill("plan.depends_on_missing", &[("{wave}", wave.to_string()), ("{on}", on.to_string())])
-            }
-            Self::TaskWithoutWave { task, wave } => {
-                fill("plan.task_without_wave", &[("{task}", task.clone()), ("{wave}", wave.to_string())])
-            }
             Self::FileOutsideGit { task, path } => {
                 fill("plan.file_outside_git", &[("{task}", task.clone()), ("{path}", path.clone())])
             }
@@ -425,20 +406,12 @@ fn check(
         out.push(PlanFinding::Refused(open_refusal(spec, log, &open)));
     }
 
-    // Nenhum erro de montagem do plano, e ondas em paralelo sem arquivo em
-    // comum: as ondas se montam por grafo.
+    // Ondas em paralelo sem arquivo em comum: as ondas se montam por grafo.
+    // A onda nasce da cesta, gravada só pelo programa, sem dependência entre
+    // ondas e sempre com as tarefas do lote: o ciclo entre ondas, a
+    // dependência de uma onda que não existe e a tarefa de uma onda que não
+    // existe não têm mais de onde vir, e a conferência não os procura.
     let graph = wave_graph(log);
-    if !graph.cycle.is_empty() {
-        out.push(PlanFinding::WaveLoop { waves: join(graph.cycle.iter().map(u64::to_string)) });
-    }
-    for (wave, missing) in &graph.missing_depends {
-        for on in missing {
-            out.push(PlanFinding::DependsOnMissing { wave: *wave, on: *on });
-        }
-    }
-    for (task, wave) in &graph.missing_task_waves {
-        out.push(PlanFinding::TaskWithoutWave { task: task.clone(), wave: *wave });
-    }
     for collision in &graph.collisions {
         out.push(PlanFinding::SharedFile {
             waves: join(collision.waves.iter().map(u32::to_string)),
@@ -885,27 +858,6 @@ mod tests {
         assert!(reasons(&report, "blocking").contains(&"survey-open".to_string()), "{report}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(State::from_log(&log).phase, Some("survey"), "a fase não andou");
-    }
-
-    /// Os erros de montagem do plano travam a pergunta: o ciclo entre ondas, a
-    /// dependência que aponta uma onda que não existe e a tarefa de uma onda
-    /// que não existe.
-    #[test]
-    fn a_plan_that_does_not_assemble_blocks_the_question() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "depends_on": [2], "origin": said}));
-        write(root, Some("x"), "wave", json!({"n": 2, "text": "Outra.", "criteria": [crit], "done_when": "passa", "depends_on": [1, 9], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 7, "text": "Perdida.", "files": [{"path": "src/a.rs"}], "origin": said}));
-
-        let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let blocking = reasons(&report, "blocking");
-        for reason in ["waves-loop", "depends-on-missing-wave", "task-without-wave"] {
-            assert!(blocking.contains(&reason.to_string()), "{reason}: {report}");
-        }
     }
 
     /// Uma linha crua, direto no arquivo da spec, sem passar pela gravação:
@@ -1544,12 +1496,12 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit],
-            "done_when": "passa", "depends_on": [7], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
+            "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/nao-existe.rs"}], "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
-        assert!(reasons(&report, "blocking").contains(&"depends-on-missing-wave".to_string()), "{report}");
+        assert_eq!(reasons(&report, "blocking").first().map(String::as_str), Some("cited-file-missing"), "{report}");
         let hint = report["blocking"][0]["hint"].as_str().unwrap().to_string();
         assert!(read_notes(root, "x").contains(&hint), "o achado que trava não virou anotação");
         assert!(report.get("copy").is_none() && report.get("publish").is_none(), "{report}");

@@ -46,20 +46,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Waves {waves} depend on each other in a circle, and none of them can start. Cut one of \
              the dependencies."
         }
-        ("plan.depends_on_missing", Locale::PtBr) => {
-            "A onda {wave} depende da onda {on}, que o plano não tem. Corrija o número ou grave a onda."
-        }
-        ("plan.depends_on_missing", Locale::EnUs) => {
-            "Wave {wave} depends on wave {on}, which the plan does not have. Fix the number or record \
-             the wave."
-        }
-        ("plan.task_without_wave", Locale::PtBr) => {
-            "A tarefa {task} é da onda {wave}, que o plano não tem. Corrija o número ou grave a onda."
-        }
-        ("plan.task_without_wave", Locale::EnUs) => {
-            "Task {task} belongs to wave {wave}, which the plan does not have. Fix the number or \
-             record the wave."
-        }
         ("plan.shared_file", Locale::PtBr) => {
             "As ondas {waves} saem na mesma rodada e mexem em {files}. Encadeie uma na outra ou divida \
              o arquivo entre elas ({chain})."
@@ -102,15 +88,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // com dono.
         ("plan.owner_missing", Locale::PtBr) => {
             "O item novo do tipo {type} não tem dono, e a spec já foi aprovada: todo requisito acordado tem \
-             dono. Diga em `waves` as ondas cujas tarefas o cobrem ou vão cobrir, como `\"waves\":[3]`, \
-             ou, quando ele vale para todas as ondas, grave-o com \
-             `\"applies_to\":{\"files\":[\"**\"]}`. Nada foi gravado."
+             dono, e nada foi gravado. Dê o dono pelos arquivos: grave-o com `applies_to` e os arquivos \
+             das tarefas que o cobrem ou vão cobrir, como `\"applies_to\":{\"files\":[\"src/a.rs\"]}`, \
+             ou, quando ele vale para todas as tarefas, com `\"applies_to\":{\"files\":[\"**\"]}`."
         }
         ("plan.owner_missing", Locale::EnUs) => {
             "The new {type} item has no owner, and the spec is already approved: every agreed requirement has \
-             an owner. Name in `waves` the waves whose tasks cover it or will cover it, as in \
-             `\"waves\":[3]`, or, when it holds for every wave, record it with \
-             `\"applies_to\":{\"files\":[\"**\"]}`. Nothing was written."
+             an owner, and nothing was written. Give the owner by the files: record it with `applies_to` \
+             and the files of the tasks that cover it or will cover it, as in \
+             `\"applies_to\":{\"files\":[\"src/a.rs\"]}`, or, when it holds for every task, with \
+             `\"applies_to\":{\"files\":[\"**\"]}`."
         }
         ("plan.contract_without_criterion", Locale::PtBr) => {
             "Nenhum critério cita o contrato {code}: nada prova que ele foi cumprido."
@@ -1146,20 +1133,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              commit was pushed to the branch {branch}."
         }
         ("request.new_waves", Locale::PtBr) => {
-            "Pedido gravado. Grave as ondas novas no fim do plano; a spec e a branch continuam as \
-             mesmas, e não há nova aprovação."
+            "Pedido gravado. Grave as tarefas novas, sem `wave`: elas entram na cesta, e o programa \
+             as junta em ondas na hora de despachar; a spec e a branch continuam as mesmas, e não há \
+             nova aprovação."
         }
         ("request.new_waves", Locale::EnUs) => {
-            "Request recorded. Record the new waves at the end of the plan; the spec and the branch \
-             stay the same, and there is no new approval."
+            "Request recorded. Record the new tasks, without `wave`: they go into the basket, and \
+             the program groups them into waves when it dispatches; the spec and the branch stay the \
+             same, and there is no new approval."
         }
         ("request.adjust_waves", Locale::PtBr) => {
-            "Pedido gravado. Grave as versões novas das ondas que mudam, com `replaces`; a spec e a \
-             branch continuam as mesmas, e não há nova aprovação."
+            "Pedido gravado. Grave as versões novas das tarefas que mudam, com `replaces`, repetindo \
+             o `wave` da versão antiga quando ela já está numa onda; a spec e a branch continuam as \
+             mesmas, e não há nova aprovação."
         }
         ("request.adjust_waves", Locale::EnUs) => {
-            "Request recorded. Record the new versions of the waves that change, with `replaces`; \
-             the spec and the branch stay the same, and there is no new approval."
+            "Request recorded. Record the new versions of the tasks that change, with `replaces`, \
+             repeating the `wave` of the old version when it is already in a wave; the spec and the \
+             branch stay the same, and there is no new approval."
         }
         _ => return None,
     })
@@ -1178,8 +1169,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            153,
-            0x5677_a16f_6668_dc3a,
+            151,
+            0xe399_c4f6_e7cc_727b,
         );
     }
 
@@ -1261,8 +1252,6 @@ mod tests {
             ("page.copy.failed", &[][..]),
             ("page.purge_pending", &["{codes}", "{spec}"][..]),
             ("plan.wave_loop", &["{waves}"][..]),
-            ("plan.depends_on_missing", &["{wave}", "{on}"][..]),
-            ("plan.task_without_wave", &["{task}", "{wave}"][..]),
             ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
             ("plan.wave_should_split", &["{wave}", "{parts}"][..]),
             ("plan.spec_should_split", &["{parts}"][..]),
