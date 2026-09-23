@@ -33,10 +33,9 @@ fn scan(dir: &Path) -> Value {
 
 /// Um projeto de mentira: uma função documentada em português, e outro arquivo
 /// que a chama duas vezes de dentro de uma função sua.
-fn project(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("scan-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn project(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-{name}-")).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     write(&dir, "Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\n");
     write(&dir, "src/lib.rs", "pub mod preco;\npub mod pedido;\n");
     write(
@@ -62,7 +61,7 @@ fn project(name: &str) -> PathBuf {
              total(parcial, 1)\n\
          }\n",
     );
-    dir
+    (temp, dir)
 }
 
 /// A declaração `name` do arquivo `file`, como o mapa a gravou.
@@ -83,7 +82,7 @@ fn declaration<'a>(map: &'a Value, file: &str, name: &str) -> &'a Value {
 
 #[test]
 fn o_mapa_guarda_o_comentario_e_a_assinatura_de_cada_declaracao() {
-    let dir = project("doc-e-assinatura");
+    let (_temp, dir) = project("doc-e-assinatura");
     let map = scan(&dir);
 
     let total = declaration(&map, "src/preco.rs", "total");
@@ -106,12 +105,11 @@ fn o_mapa_guarda_o_comentario_e_a_assinatura_de_cada_declaracao() {
     assert_eq!(sem.get("doc").map_or("", |d| d.as_str().unwrap_or("")), "", "{sem}");
     assert_eq!(sem["signature"], "pub fn sem_documento() -> u32", "{sem}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn o_mapa_guarda_cada_uso_de_cada_declaracao() {
-    let dir = project("usos");
+    let (_temp, dir) = project("usos");
     let map = scan(&dir);
 
     // Quem é usado: as duas chamadas, cada uma com o arquivo, a linha e a
@@ -133,16 +131,14 @@ fn o_mapa_guarda_cada_uso_de_cada_declaracao() {
     // e não substitui o que o grafo já dizia dos arquivos.
     assert!(map["graph"]["nodes"].as_u64().unwrap() >= 3, "{}", map["graph"]);
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Um projeto de mentira com um arquivo por linguagem, cada um com uma
 /// declaração documentada atrás do seu enfeite: o atributo, o decorador ou a
 /// anotação que a linguagem escreve entre o comentário e a declaração.
-fn decorated_project(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("scan-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn decorated_project(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-{name}-")).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     write(&dir, "Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\n");
     write(&dir, "src/lib.rs", "pub mod item;\n");
     write(
@@ -254,7 +250,7 @@ fn decorated_project(name: &str) -> PathBuf {
              }\n\
          }\n",
     );
-    dir
+    (temp, dir)
 }
 
 /// Todas as declarações do mapa, com o arquivo de cada uma.
@@ -272,7 +268,7 @@ fn every_declaration(map: &Value) -> Vec<(&str, &Value)> {
 
 #[test]
 fn o_atributo_e_o_decorador_nao_escondem_o_comentario_nem_viram_chamada() {
-    let dir = decorated_project("enfeite");
+    let (_temp, dir) = decorated_project("enfeite");
     let map = scan(&dir);
 
     // Cada declaração tem o seu comentário, com o enfeite no meio ou com a
@@ -355,16 +351,14 @@ fn o_atributo_e_o_decorador_nao_escondem_o_comentario_nem_viram_chamada() {
     assert_eq!((soma["line"].as_u64(), soma["end_line"].as_u64()), (Some(1), Some(3)), "{soma}");
     assert_eq!(soma["used_by"], serde_json::json!(["dart/lib/pedido.dart:14:total"]), "{soma}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Um projeto de mentira com uma declaração de cada jeito que a leitura do
 /// cabeçalho, do comentário e da linha precisa tratar, uma linguagem por
 /// arquivo.
-fn header_project(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("scan-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn header_project(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-{name}-")).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     write(&dir, "Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\n");
     write(&dir, "src/lib.rs", "pub mod caixa;\n");
     write(
@@ -402,7 +396,7 @@ fn header_project(name: &str) -> PathBuf {
          export const soma = (a: number, b: number) => { return a + b; };\n",
     );
     write(&dir, "py/total.py", "def total(a):\n    \"\"\"Soma o pedido.\"\"\"\n    return a\n");
-    dir
+    (temp, dir)
 }
 
 /// A lista de parâmetros do método do C#, com mais de 200 caracteres.
@@ -413,7 +407,7 @@ const PARAMETROS: &str = "int primeiroValorDaSoma, int segundoValorDaSoma, int t
 #[test]
 fn o_cabecalho_o_comentario_e_a_linha_saem_do_mesmo_jeito_em_toda_linguagem() {
     assert!(PARAMETROS.len() > 200, "a lista precisa passar do corte antigo");
-    let dir = header_project("cabecalho");
+    let (_temp, dir) = header_project("cabecalho");
     let map = scan(&dir);
 
     // O comentário do C# sai sem as marcas, e a marca fechada deixa o valor.
@@ -455,5 +449,4 @@ fn o_cabecalho_o_comentario_e_a_linha_saem_do_mesmo_jeito_em_toda_linguagem() {
     assert!(calls.contains(&"from"), "from é chamada: {calls:?}");
     assert!(!calls.contains(&"var"), "var não é chamada: {calls:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

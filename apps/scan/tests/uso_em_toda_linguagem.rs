@@ -30,12 +30,22 @@
 //! não é uso na linha do import, e a leitura que relê só o que mudou liga o
 //! tipo novo ao arquivo que não mudou, como a leitura inteira. O mesmo projeto
 //! mostra que o comando que declara duas constantes dá as duas.
+//!
+//! E a pasta do projeto de teste some mesmo quando o teste quebra no meio, e
+//! nenhum teste do scan monta essa pasta à mão.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
+
+/// A pasta do projeto de teste, numa pasta temporária. Quem chama guarda o
+/// valor até o fim do teste: quando ele sai de cena, a pasta some, também
+/// quando uma conferência quebra no meio.
+fn pasta_do_projeto(nome: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(&format!("scan-{nome}-")).tempdir().unwrap()
+}
 
 fn write(dir: &Path, rel: &str, body: &str) {
     let path = dir.join(rel);
@@ -215,8 +225,8 @@ fn linha_de(corpo: &str, texto: &str) -> usize {
 
 #[test]
 fn o_uso_so_liga_a_quem_se_chama_e_a_quem_o_arquivo_enxerga() {
-    let dir = std::env::temp_dir().join(format!("scan-uso-em-toda-linguagem-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let temp = pasta_do_projeto("uso-em-toda-linguagem");
+    let dir = temp.path().to_path_buf();
     let todas = linguagens();
     for l in &todas {
         for (rel, corpo) in l.arquivos {
@@ -288,7 +298,6 @@ fn o_uso_so_liga_a_quem_se_chama_e_a_quem_o_arquivo_enxerga() {
         }
     }
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// O que o Rust ganha a mais para o uso sem chamada: uma constante e uma
@@ -301,8 +310,8 @@ const CAIXA: &str = "pub fn pagar() -> u32 {\n    crate::preco::total(1, 2)\n}\n
 
 #[test]
 fn a_constante_e_o_tipo_citados_ganham_quem_os_usa() {
-    let dir = std::env::temp_dir().join(format!("scan-citacao-em-toda-linguagem-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let temp = pasta_do_projeto("citacao-em-toda-linguagem");
+    let dir = temp.path().to_path_buf();
     let todas = linguagens();
     for l in &todas {
         for (rel, corpo) in l.arquivos {
@@ -358,7 +367,6 @@ fn a_constante_e_o_tipo_citados_ganham_quem_os_usa() {
         faltas.push(format!("a função total tem só o uso {esperado}: {total:?}"));
     }
 
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(faltas.is_empty(), "{}", faltas.join("\n"));
 }
 
@@ -412,14 +420,13 @@ fn projeto_a_vista() -> Vec<(&'static str, &'static str)> {
 
 #[test]
 fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
-    let dir = std::env::temp_dir().join(format!("scan-o-que-a-linguagem-poe-a-vista-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let temp = pasta_do_projeto("o-que-a-linguagem-poe-a-vista");
+    let dir = temp.path().to_path_buf();
     let arquivos = projeto_a_vista();
     for (rel, corpo) in &arquivos {
         write(&dir, rel, corpo);
     }
     let map = scan(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
     let modules = map["modules"].as_array().expect("modules");
     let modulo = |arquivo: &str| -> &Value {
         modules.iter().find(|m| m["path"] == arquivo).unwrap_or_else(|| panic!("{arquivo} no mapa"))
@@ -551,14 +558,13 @@ fn fim_do_corpo(corpo: &str, cabecalho: &str) -> usize {
 
 #[test]
 fn o_dart_termina_cada_declaracao_no_fim_do_corpo_e_a_parte_enxerga_o_dono() {
-    let dir = std::env::temp_dir().join(format!("scan-dart-fim-do-corpo-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let temp = pasta_do_projeto("dart-fim-do-corpo");
+    let dir = temp.path().to_path_buf();
     write(&dir, "lib/caixa.dart", CAIXA_DART);
     write(&dir, "lib/caixa_parte.dart", CAIXA_PARTE_DART);
     write(&dir, "lib/conta.dart", CONTA_DART);
     write(&dir, "lib/conta_parte.dart", CONTA_PARTE_DART);
     let map = scan(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
     let modules = map["modules"].as_array().expect("modules");
     let modulo = |arquivo: &str| -> &Value {
         modules.iter().find(|m| m["path"] == arquivo).unwrap_or_else(|| panic!("{arquivo} no mapa"))
@@ -708,9 +714,8 @@ fn ler(dir: &Path, extra: &[&str]) -> (Value, Vec<u8>, bool) {
 
 #[test]
 fn a_citacao_liga_pelo_que_o_projeto_declara_e_nao_pela_letra() {
-    let dir = std::env::temp_dir().join(format!("scan-citacao-que-liga-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = pasta_do_projeto("citacao-que-liga");
+    let dir = temp.path().to_path_buf();
     let projeto = projeto_da_citacao();
     for (rel, corpo) in &projeto {
         write(&dir, rel, corpo);
@@ -815,6 +820,54 @@ fn a_citacao_liga_pelo_que_o_projeto_declara_e_nao_pela_letra() {
         faltas.push("a leitura que relê só o que mudou dá o mesmo mapa que a leitura inteira".to_string());
     }
 
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+}
+
+/// Todos os arquivos de texto debaixo de `dir`, menos a pasta da compilação.
+fn arquivos_de_texto(dir: &Path, achados: &mut Vec<(std::path::PathBuf, String)>) {
+    for entrada in std::fs::read_dir(dir).unwrap() {
+        let caminho = entrada.unwrap().path();
+        if caminho.is_dir() {
+            if caminho.file_name().is_some_and(|n| n == "target") {
+                continue;
+            }
+            arquivos_de_texto(&caminho, achados);
+        } else if let Ok(texto) = std::fs::read_to_string(&caminho) {
+            achados.push((caminho, texto));
+        }
+    }
+}
+
+/// Um teste que quebra no meio não deixa a pasta do projeto para trás: ela é
+/// criada, lida pelo scan, e o teste quebra numa linha de execução separada,
+/// para o teste de fora seguir e conferir que a pasta sumiu. E nenhum arquivo
+/// do scan monta a pasta à mão, que é o que deixava as pastas em `/tmp` quando
+/// uma conferência falhava.
+#[test]
+fn a_pasta_do_projeto_de_teste_some_mesmo_quando_o_teste_falha() {
+    let (envia, recebe) = std::sync::mpsc::channel();
+    let quebra = std::thread::spawn(move || {
+        let temp = pasta_do_projeto("quebra-no-meio");
+        let dir = temp.path().to_path_buf();
+        write(&dir, "src/lib.rs", "pub fn total() -> u32 {\n    1\n}\n");
+        let map = scan(&dir);
+        assert!(dir.join(".claude").join("grain.model.json").is_file(), "o scan grava o mapa na pasta");
+        envia.send(dir).unwrap();
+        assert!(map["modules"].as_array().unwrap().is_empty(), "esta conferência quebra de propósito");
+    });
+    assert!(quebra.join().is_err(), "o teste de dentro devia ter quebrado");
+    let dir = recebe.recv().expect("a pasta foi criada antes da quebra");
+    assert!(!dir.exists(), "a pasta {} ficou depois da quebra", dir.display());
+
+    // O nome da chamada é montado em partes, para este arquivo não se acusar.
+    let chamada = concat!("temp", "_dir", "()");
+    let mut achados = Vec::new();
+    arquivos_de_texto(Path::new(env!("CARGO_MANIFEST_DIR")), &mut achados);
+    assert!(achados.iter().any(|(c, _)| c.ends_with("src/refresh.rs")), "a busca percorre o scan inteiro");
+    let a_mao: Vec<String> = achados
+        .iter()
+        .filter(|(_, texto)| texto.contains(chamada))
+        .map(|(caminho, _)| caminho.display().to_string())
+        .collect();
+    assert!(a_mao.is_empty(), "estes arquivos montam a pasta do teste à mão: {a_mao:?}");
 }

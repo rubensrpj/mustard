@@ -23,9 +23,8 @@ fn php_extraction_pulls_imports_namespaces_and_declarations() {
     // A self-contained PHP file with a namespace, two `use` imports, a class that
     // extends a base, and a method. Written to a temp dir so the test owns its
     // input and stays deterministic (no dependence on the committed fixture).
-    let dir = std::env::temp_dir().join(format!("scan-php-extract-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-php-extract-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     std::fs::write(
         dir.join("Account.php"),
         "<?php\n\
@@ -69,5 +68,4 @@ fn php_extraction_pulls_imports_namespaces_and_declarations() {
     assert!(supers.contains(&"Auditable"), "implements interface captured: {supers:?}");
     assert!(decls.iter().any(|d| d["name"] == "balance" && d["kind"] == "method"), "method captured: {decls:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

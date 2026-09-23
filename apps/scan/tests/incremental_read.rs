@@ -44,9 +44,8 @@ fn write(dir: &Path, rel: &str, body: &str) {
 
 #[test]
 fn a_second_pass_reads_only_the_changed_file_and_leaves_git_clean() {
-    let dir = std::env::temp_dir().join(format!("scan-incremental-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-incremental-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     git(&dir, &["init", "-q"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
@@ -108,5 +107,4 @@ fn a_second_pass_reads_only_the_changed_file_and_leaves_git_clean() {
     assert_eq!(alpha["used_by"], json!(["src/b.rs:3:beta"]), "{alpha}");
     assert_eq!(git(&dir, &["status", "--porcelain"]), "");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

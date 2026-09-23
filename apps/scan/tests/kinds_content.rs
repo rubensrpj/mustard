@@ -38,9 +38,8 @@ use std::process::Command;
 /// output directory.
 fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(fixture_dir);
-    let tmp = std::env::temp_dir().join(format!("scan-content-{}-{}", fixture_dir, std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("create temp dir");
+    let temp = tempfile::Builder::new().prefix(&format!("scan-content-{}-", fixture_dir)).tempdir().unwrap();
+    let tmp = temp.path().to_path_buf();
     let model = tmp.join("grain.model.json");
 
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
@@ -63,7 +62,6 @@ fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
             )
         })
         .collect();
-    let _ = std::fs::remove_dir_all(&tmp);
     pairs
 }
 

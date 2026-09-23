@@ -360,10 +360,9 @@ mod tests {
     /// passada sem commit grava.
     #[test]
     fn a_repository_with_no_commit_yet_is_not_read_in_full_forever() {
-        let dir = std::env::temp_dir().join(format!("scan-refresh-no-commit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        let root = dir.as_path();
+        // A pasta some quando o teste termina, também quando ele quebra.
+        let dir = tempfile::Builder::new().prefix("scan-refresh-no-commit-").tempdir().expect("pasta temporária");
+        let root = dir.path();
         let _ = git_exec::run(root, &["init", "-q"]);
         std::fs::write(root.join("a.rs"), "fn a() {}\n").expect("a.rs");
         std::fs::write(root.join("b.rs"), "fn b() {}\n").expect("b.rs");
@@ -384,6 +383,5 @@ mod tests {
             }
             Plan::Full => panic!("sem commit também é um estado válido: devia ler só o não comitado, não tudo de novo"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

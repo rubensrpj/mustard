@@ -55,8 +55,8 @@ fn scan_root(root: &Path, out_dir: &Path) -> serde_json::Value {
 
 #[test]
 fn stack_evidence_excludes_nested_fixture_stack_from_repo_level() {
-    let dir = std::env::temp_dir().join(format!("scan-stack-excludes-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let temp = tempfile::Builder::new().prefix("scan-stack-excludes-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
 
     // Parent fixture: a real django project at the root + a laravel fixture
     // nested under a conventional test tree.
@@ -99,5 +99,4 @@ fn stack_evidence_excludes_nested_fixture_stack_from_repo_level() {
     let unit_stacks = nested_unit["detected_stacks"].as_array().expect("unit carries detected_stacks");
     assert!(unit_stacks.is_empty(), "no stack from inside a test tree: {unit_stacks:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
