@@ -11,6 +11,9 @@
 ; `mine.rs::is_significant` leaves the kind out of both allowlists, so a
 ; constant never becomes an architectural unit.
 (const_item name: (identifier) @name) @definition.constant
+; The value of a `const` is not its header: `pub const LIMITE: u32 = 10;`
+; reads `pub const LIMITE: u32`.
+(const_item name: (identifier) @name value: (_) @value) @definition.constant
 (static_item name: (identifier) @name) @definition.constant
 
 ; Functions — a free function is a UNIT, a method is a MEMBER. Rust spells both

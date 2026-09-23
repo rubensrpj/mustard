@@ -346,13 +346,114 @@ fn o_atributo_e_o_decorador_nao_escondem_o_comentario_nem_viram_chamada() {
         }
     }
 
-    // No Dart o corpo mora ao lado do cabeçalho: o método termina no seu
-    // fecha-chave, e a chamada de dentro dele tem o método como quem usa.
+    // No Dart o corpo mora ao lado do cabeçalho: o método começa no seu
+    // enfeite, termina no seu fecha-chave, e a chamada de dentro dele tem o
+    // método como quem usa.
     let total = declaration(&map, "dart/lib/pedido.dart", "total");
-    assert_eq!((total["line"].as_u64(), total["end_line"].as_u64()), (Some(13), Some(16)), "{total}");
+    assert_eq!((total["line"].as_u64(), total["end_line"].as_u64()), (Some(12), Some(16)), "{total}");
     let soma = declaration(&map, "dart/lib/pedido.dart", "soma");
     assert_eq!((soma["line"].as_u64(), soma["end_line"].as_u64()), (Some(1), Some(3)), "{soma}");
     assert_eq!(soma["used_by"], serde_json::json!(["dart/lib/pedido.dart:14:total"]), "{soma}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Um projeto de mentira com uma declaração de cada jeito que a leitura do
+/// cabeçalho, do comentário e da linha precisa tratar, uma linguagem por
+/// arquivo.
+fn header_project(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("scan-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write(&dir, "Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\n");
+    write(&dir, "src/lib.rs", "pub mod caixa;\n");
+    write(
+        &dir,
+        "src/caixa.rs",
+        "/// Caixa do pedido.\n\
+         #[derive(Debug)]\n\
+         pub struct Caixa {\n    \
+             pub n: u32,\n\
+         }\n\n\
+         pub const LIMITE: u32 = 10;\n",
+    );
+    write(
+        &dir,
+        "cs/Contas.cs",
+        &format!(
+            "namespace Loja;\n\n\
+             public class Contas\n\
+             {{\n    \
+                 /// <summary>Soma <paramref name=\"a\"/> com <see cref=\"Base\"/>.</summary>\n    \
+                 [HttpGet]\n    \
+                 public int Somar({PARAMETROS})\n    \
+                 {{\n        \
+                     x.from(1);\n        \
+                     var (a, b) = Par();\n        \
+                     return a + b;\n    \
+                 }}\n\
+             }}\n"
+        ),
+    );
+    write(
+        &dir,
+        "ts/precos.ts",
+        "export const PRECOS = { a: 1, b: 2 };\n\
+         export const soma = (a: number, b: number) => { return a + b; };\n",
+    );
+    write(&dir, "py/total.py", "def total(a):\n    \"\"\"Soma o pedido.\"\"\"\n    return a\n");
+    dir
+}
+
+/// A lista de parâmetros do método do C#, com mais de 200 caracteres.
+const PARAMETROS: &str = "int primeiroValorDaSoma, int segundoValorDaSoma, int terceiroValorDaSoma, \
+     int quartoValorDaSoma, int quintoValorDaSoma, int sextoValorDaSoma, int setimoValorDaSoma, \
+     int oitavoValorDaSoma, int nonoValorDaSoma";
+
+#[test]
+fn o_cabecalho_o_comentario_e_a_linha_saem_do_mesmo_jeito_em_toda_linguagem() {
+    assert!(PARAMETROS.len() > 200, "a lista precisa passar do corte antigo");
+    let dir = header_project("cabecalho");
+    let map = scan(&dir);
+
+    // O comentário do C# sai sem as marcas, e a marca fechada deixa o valor.
+    let somar = declaration(&map, "cs/Contas.cs", "Somar");
+    assert_eq!(somar["doc"], "Soma a com Base.", "{somar}");
+    // O cabeçalho traz a lista de parâmetros inteira.
+    assert_eq!(somar["signature"], format!("public int Somar({PARAMETROS})"), "{somar}");
+
+    // A linha é a do primeiro enfeite: no C# ele fica dentro do nó, no Rust
+    // fica ao lado, e as duas saem iguais.
+    assert_eq!(somar["line"], 6, "a linha do [HttpGet]: {somar}");
+    let caixa = declaration(&map, "src/caixa.rs", "Caixa");
+    assert_eq!(caixa["line"], 2, "a linha do #[derive(Debug)]: {caixa}");
+    assert_eq!(caixa["doc"], "Caixa do pedido.", "{caixa}");
+
+    // O cabeçalho para onde começa o valor, sem o `=` que sobra.
+    let precos = declaration(&map, "ts/precos.ts", "PRECOS");
+    assert_eq!(precos["signature"], "export const PRECOS", "{precos}");
+    let limite = declaration(&map, "src/caixa.rs", "LIMITE");
+    assert_eq!(limite["signature"], "pub const LIMITE: u32", "{limite}");
+    // A função em seta fica com os parâmetros, e termina no `=>`.
+    let soma = declaration(&map, "ts/precos.ts", "soma");
+    let soma_signature = soma["signature"].as_str().unwrap();
+    assert!(soma_signature.ends_with("(a: number, b: number) =>"), "{soma}");
+
+    // Sem comentário em cima, a docstring do Python é o comentário.
+    let total = declaration(&map, "py/total.py", "total");
+    assert_eq!(total["doc"], "Soma o pedido.", "{total}");
+
+    // A palavra que a gramática embrulha num nó de nome é chamada; a palavra
+    // da linguagem antes de um parêntese não é.
+    let contas = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == "cs/Contas.cs").unwrap();
+    let calls: Vec<&str> = contas["calls"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| c.as_str().unwrap().rsplit_once(':').unwrap().0.rsplit('.').next().unwrap())
+        .collect();
+    assert!(calls.contains(&"from"), "from é chamada: {calls:?}");
+    assert!(!calls.contains(&"var"), "var não é chamada: {calls:?}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

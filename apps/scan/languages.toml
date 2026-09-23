@@ -30,6 +30,11 @@
 #                            (a file in A.B sees A);
 #                 without the field, a namespace is seen by the files that
 #                 declare that same namespace, and nothing else.
+#   doc_tags      OPTIONAL — the markup tags the language writes its documentation
+#                 comments with. The engine drops them from the comment and keeps
+#                 the text; a self-closing tag with a value leaves the value
+#                 (`<see cref="Base"/>` reads `Base`). A `<...>` not named here
+#                 stays as written. Without the field, the comment is kept as is.
 
 [[language]]
 name = "csharp"
@@ -37,6 +42,11 @@ extensions = ["cs"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
 namespace_scope = "nested"
+doc_tags = [
+    "summary", "remarks", "returns", "param", "typeparam", "value", "example",
+    "para", "c", "code", "list", "item", "term", "description", "exception",
+    "see", "seealso", "paramref", "typeparamref", "inheritdoc", "include",
+]
 
 [[language]]
 name = "typescript"

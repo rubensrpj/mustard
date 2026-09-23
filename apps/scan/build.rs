@@ -85,6 +85,18 @@ fn main() {
                     .collect()
             })
             .unwrap_or_default();
+        // The OPTIONAL markup tags the language writes its documentation
+        // comments with: the engine drops them and keeps the text.
+        let doc_tags: Vec<String> = tbl
+            .get("doc_tags")
+            .map(|v| {
+                v.as_array()
+                    .expect("language.doc_tags must be an array")
+                    .iter()
+                    .map(|e| e.as_str().expect("doc tag must be a string").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
         let namespace_scope = tbl
             .get("namespace_scope")
             .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
@@ -107,10 +119,11 @@ fn main() {
             .map(|a| format!("{a:?}"))
             .collect::<Vec<_>>()
             .join(", ");
+        let tags = doc_tags.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
 
         writeln!(
             body,
-            "        RawLang {{ name: {name:?}, query: {query:?}, language: {grammar}.into() }},"
+            "        RawLang {{ name: {name:?}, query: {query:?}, language: {grammar}.into(), doc_tags: &[{tags}] }},"
         )
         .expect("the generated body is a String, which never fails to write");
         writeln!(ext_table, "    ({name:?}, &[{exts}]),").expect("the generated table is a String, which never fails to write");

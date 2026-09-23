@@ -11,9 +11,17 @@
 ; Exported top-level consts (e.g. `export const userTable = pgTable(...)`).
 ; This is the syntax hook a convention like Drizzle/GraphQL plugs into — the
 ; engine never knows the framework; it just sees a recurring `export const`.
+; The declaration is the whole `export` statement, so the header reads
+; `export const userTable`. The second pattern marks the value, where the
+; header stops (`export const PRECOS = { ... }` reads `export const PRECOS`),
+; except for an arrow function, whose parameters are its header.
 (export_statement
   declaration: (lexical_declaration
-    (variable_declarator name: (identifier) @name) @definition.const))
+    (variable_declarator name: (identifier) @name))) @definition.const
+((export_statement
+  declaration: (lexical_declaration
+    (variable_declarator name: (identifier) @name value: (_) @value))) @definition.const
+  (#not-match? @value "=>"))
 
 ; Members — methods (class + interface), class fields, interface properties,
 ; enum members. Member kinds feed the digest's domain-term index only: the

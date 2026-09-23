@@ -20,6 +20,8 @@ lacuna sozinho.
 | `@supertype` | Um tipo-base, interface ou trait; o motor o liga, pelo nome, à declaração de mesmo `@name`, mesmo quando capturado num nó separado dela. |
 | `@decoration` | Um atributo ou anotação: o cabeçalho da declaração começa depois dele, o comentário acima passa por cima dele, e nada dentro dele vira chamada nem citação. |
 | `@body` | O corpo que a gramática põe ao lado da declaração, e não dentro dela: a declaração termina onde o corpo termina. |
+| `@value` | O valor dado à declaração: o cabeçalho para onde ele começa, e o `=` que sobra no fim sai (`export const PRECOS = { ... }` fica `export const PRECOS`). |
+| `@doc` | A documentação que a linguagem escreve dentro da declaração, e não em cima dela (a docstring do Python); o texto da captura já vem sem as aspas. O motor a junta à declaração do mesmo pattern, e o comentário de cima, quando existe, vale mais. |
 
 Qualquer outro nome de captura é ignorado.
 
