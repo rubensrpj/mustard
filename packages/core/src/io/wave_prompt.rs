@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::domain::lessons::{in_scope, related_to_tasks, Scope};
+use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
 use crate::domain::project_map::{check_skill, file_history, has_rust_part, tests_for, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{self, wave_files, Choice, Execution, Material, Skill, WaveCopy};
@@ -98,13 +98,17 @@ pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
 /// arquivos das tarefas dela ou para as skills que elas nomeiam e, de cada
 /// classe, só as mais ligadas ao texto das tarefas. Uma pasta com centenas
 /// delas passaria do teto de tokens do pedido, e a lição sem palavra em comum
-/// com a tarefa só ocupa o agente. São as que a rodada mostra ao orquestrador
-/// antes do envio, e as que o pedido leva, menos as que a escolha dele tirou.
+/// com a tarefa só ocupa o agente. Delas, ficam só as que servem à onda: a
+/// que cita um arquivo vai só à onda que mexe nele, e a onda só de texto não
+/// recebe lição do projeto todo nem do subprojeto ([`serving_wave`]). São as
+/// que a rodada mostra ao orquestrador antes do envio, e as que o pedido
+/// leva, menos as que a escolha dele tirou.
 #[must_use]
 pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a SpecEvent> {
     let files = wave_files(log, wave);
+    let skills = skills_named(log, wave);
     let mut found: Vec<&SpecEvent> = Vec::new();
-    for skill in std::iter::once(None).chain(skills_named(log, wave).into_iter().map(Some)) {
+    for skill in std::iter::once(None).chain(skills.iter().cloned().map(Some)) {
         let scope = Scope { files: files.clone(), subproject: None, skill };
         for lesson in in_scope(bank, &scope) {
             if !found.iter().any(|seen| seen.id == lesson.id) {
@@ -112,7 +116,7 @@ pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a 
             }
         }
     }
-    related_to_tasks(found, &tasks_text(log, wave))
+    serving_wave(related_to_tasks(found, &tasks_text(log, wave)), &files, &skills)
 }
 
 /// A pasta da cópia separada da onda `wave` da spec `spec`, dentro das cópias
@@ -1172,6 +1176,75 @@ mod tests {
         for out in [DISPATCH_LESSON, "Subagente nunca roda", "Quem tira uma proteção", "O teste tem de falhar"] {
             assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
         }
+    }
+
+    /// Os envios reais das treze ondas de uma obra deste projeto, com as
+    /// lições do banco que chegaram a cada uma, as que o orquestrador tirou
+    /// à mão (53) e as que ele manteve. Cada onda é remontada com os arquivos
+    /// e o texto reais das tarefas dela e um banco só com as lições que
+    /// chegaram a ela, e passa pela mesma leitura da rodada e do pedido. As
+    /// lições que servem à onda evitam 18 das tiradas — 11 nas duas ondas só
+    /// de markdown, 7 pelo arquivo citado que a onda não toca — e nenhuma das
+    /// mantidas se perde.
+    #[test]
+    fn as_licoes_que_o_orquestrador_tirou_nao_chegam_e_as_mantidas_continuam() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/licoes-por-onda.json"
+        )))
+        .unwrap();
+        let ids = |value: &Value| -> BTreeSet<u64> {
+            value.as_array().unwrap().iter().map(|id| id.as_u64().unwrap()).collect()
+        };
+        let lessons: BTreeMap<u64, &Value> =
+            fixture["lessons"].as_array().unwrap().iter().map(|l| (l["id"].as_u64().unwrap(), l)).collect();
+        let expected: BTreeMap<u64, BTreeSet<u64>> = [
+            (2, vec![52]),
+            (3, vec![98]),
+            (4, vec![52]),
+            (6, vec![3, 11, 12, 13, 14, 80, 101]),
+            (7, vec![52]),
+            (8, vec![52, 95]),
+            (9, vec![96, 101, 102, 110]),
+            (10, vec![98]),
+        ]
+        .into_iter()
+        .map(|(n, avoided)| (n, avoided.into_iter().collect()))
+        .collect();
+
+        let mut removed_total = 0;
+        let mut avoided_total = 0;
+        for wave in fixture["waves"].as_array().unwrap() {
+            let n = wave["n"].as_u64().unwrap();
+            let (arrived, removed, kept) = (ids(&wave["arrived"]), ids(&wave["removed"]), ids(&wave["kept"]));
+            assert_eq!(arrived, removed.union(&kept).copied().collect(), "onda {n}: chegaram as tiradas e as mantidas");
+            removed_total += removed.len();
+
+            let bank_text: String = arrived
+                .iter()
+                .map(|id| {
+                    let l = lessons[id];
+                    let keys: Vec<&str> = l["keys"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+                    keyed_line(*id, l["class"].as_str().unwrap(), l["text"].as_str().unwrap(), &keys, l["applies_to"].clone(), json!({"spec": "obra-real"}))
+                })
+                .collect();
+            let bank = crate::domain::spec_events::parse_log(&bank_text);
+            let paths: Vec<Value> = wave["files"].as_array().unwrap().iter().map(|path| json!({"path": path})).collect();
+            let log = log_of(&[
+                ("wave", json!({"n": n, "text": "A onda", "criteria": [], "done_when": "passa"})),
+                ("task", json!({"wave": n, "text": wave["text"], "files": paths})),
+            ]);
+
+            let got: BTreeSet<u64> = wave_lessons(&bank, &log, n).iter().map(|l| l.id).collect();
+            let avoided: BTreeSet<u64> = arrived.difference(&got).copied().collect();
+            assert!(got.is_subset(&arrived), "onda {n}: {got:?} fora de {arrived:?}");
+            let lost: Vec<&u64> = kept.difference(&got).collect();
+            assert!(lost.is_empty(), "onda {n}: perdeu as mantidas {lost:?}");
+            assert_eq!(avoided, expected.get(&n).cloned().unwrap_or_default(), "onda {n}");
+            avoided_total += avoided.len();
+        }
+        assert_eq!(removed_total, 53);
+        assert_eq!(avoided_total, 18);
     }
 
     /// A lição real sobre o envio do pedido de uma onda, do banco deste

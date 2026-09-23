@@ -27,7 +27,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use crate::domain::lessons::{applies_to, Scope};
+use crate::domain::lessons::{applies_to, same_file, text_only, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
@@ -368,14 +368,20 @@ fn applies_to_files(item: &SpecEvent) -> Vec<String> {
 /// tarefas dela tocam e os do projeto. O item dos arquivos casa pela mesma
 /// leitura de `applies_to` que acha a lição. O item sem dono não entra aqui;
 /// só a análise antes do envio ([`dispatch_items`]) pode pô-lo num pedido.
+/// A onda só de texto ([`text_only`]) não leva o item do projeto, pela mesma
+/// leitura que tira dela a lição do projeto todo; o item do projeto que as
+/// tarefas dela fazem vai mesmo assim, porque é o trabalho dela.
 #[must_use]
 pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let owners = owners(log);
-    let touched = Scope { files: wave_files(log, wave), ..Scope::default() };
+    let files = wave_files(log, wave);
+    let text = text_only(&files);
+    let done = done_by(log, wave);
+    let touched = Scope { files, ..Scope::default() };
     agreed_items(log)
         .into_iter()
         .filter(|item| match owners.get(&item.id) {
-            Some(Owner::Project) => true,
+            Some(Owner::Project) => !text || done.contains(&item.id),
             Some(Owner::Waves(waves)) => waves.contains(&wave),
             Some(Owner::Files(_)) => applies_to(item, &touched),
             None => false,
@@ -410,7 +416,8 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 /// escolha.
 #[derive(Debug, Default)]
 pub struct Candidates<'a> {
-    /// Os do projeto todo que as tarefas da onda não fazem.
+    /// Os do projeto todo que as tarefas da onda não fazem; vazio na onda
+    /// só de texto.
     pub project: Vec<&'a SpecEvent>,
     /// Os sem dono.
     pub unowned: Vec<&'a SpecEvent>,
@@ -440,26 +447,33 @@ impl Candidates<'_> {
 }
 
 /// Os dois grupos de itens da spec que o orquestrador julga para a onda
-/// `wave`; as lições, que moram no banco, quem lê o banco põe à parte.
+/// `wave`; as lições, que moram no banco, quem lê o banco põe à parte. A
+/// onda só de texto ([`text_only`]) não tem o grupo do projeto: o pedido
+/// dela não leva item do projeto, e não há o que julgar.
 #[must_use]
 pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
     let owners = owners(log);
-    let done: BTreeSet<u64> = log
-        .block(BlockQuery::Wave(wave))
+    let done = done_by(log, wave);
+    let text = text_only(&wave_files(log, wave));
+    let mut out = Candidates::default();
+    for item in agreed_items(log).into_iter().filter(|item| !done.contains(&item.id)) {
+        match owners.get(&item.id) {
+            Some(Owner::Project) if !text => out.project.push(item),
+            None => out.unowned.push(item),
+            Some(Owner::Project | Owner::Waves(_) | Owner::Files(_)) => {}
+        }
+    }
+    out
+}
+
+/// Os itens que as tarefas da onda `wave` fazem, na versão vigente.
+fn done_by(log: &SpecLog, wave: u64) -> BTreeSet<u64> {
+    log.block(BlockQuery::Wave(wave))
         .into_iter()
         .filter(|e| e.event_type == "task")
         .flat_map(|task| task.ints("covers"))
         .filter_map(|id| log.current(id).map(|e| e.id))
-        .collect();
-    let mut out = Candidates::default();
-    for item in agreed_items(log).into_iter().filter(|item| !done.contains(&item.id)) {
-        match owners.get(&item.id) {
-            Some(Owner::Project) => out.project.push(item),
-            None => out.unowned.push(item),
-            Some(Owner::Waves(_) | Owner::Files(_)) => {}
-        }
-    }
-    out
+        .collect()
 }
 
 /// A escolha do orquestrador antes do envio de uma onda, como o envio a grava
@@ -1008,12 +1022,6 @@ fn by_files(item: &SpecEvent, files: &BTreeMap<u64, Vec<String>>) -> Option<(BTr
     (!waves.is_empty()).then(|| (waves, OwnerFrom::Files(shared.into_iter().collect())))
 }
 
-/// `true` quando o arquivo que um texto cita é o arquivo de uma tarefa: o
-/// mesmo caminho ou o fim dele (`spec_events/mod.rs`).
-fn same_file(cited: &str, file: &str) -> bool {
-    file == cited || file.ends_with(&format!("/{cited}"))
-}
-
 // ---------------------------------------------------------------------------
 // O conserto
 // ---------------------------------------------------------------------------
@@ -1440,8 +1448,7 @@ mod tests {
     /// escolha: o campo `analysis` dele não tem `judged_lessons` nem
     /// `removed_lessons`, e a leitura vale mesmo assim, com as duas listas de
     /// lição vazias — não é lido como envio quebrado, e a onda não pede a
-    /// escolha de novo só por causa do formato antigo (`MSTD-TASK-0016`,
-    /// `MSTD-DEC-0009`).
+    /// escolha de novo só por causa do formato antigo.
     #[test]
     fn from_value_reads_an_old_send_without_the_lesson_fields() {
         let old = json!({
@@ -1805,6 +1812,42 @@ mod tests {
         assert!(texts(&plan, 1).contains(&general), "{:?}", texts(&plan, 1));
         assert!(texts(&plan, 2).contains(&general), "{:?}", texts(&plan, 2));
         assert_eq!(owners(&plan).get(&5), Some(&Owner::Project));
+    }
+
+    /// A onda só de texto não recebe o item do projeto todo: nem no pedido,
+    /// nem entre os candidatos que o orquestrador julga. O item do projeto
+    /// que a tarefa dela faz vai mesmo assim. Na divisa, um arquivo de
+    /// código entre os de texto devolve o item; a onda só em views Razor ou
+    /// só na página HTML também o recebe.
+    #[test]
+    fn onda_so_de_texto_nao_recebe_item_do_projeto_inteiro() {
+        let everywhere = json!({"files": ["**"]});
+        let wave = |n: u64, files: &[&str], covers: &[u64]| -> [(&'static str, Value); 2] {
+            let paths: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
+            [
+                ("wave", json!({"n": n, "text": "Onda", "criteria": [], "done_when": "pronto"})),
+                ("task", json!({"wave": n, "text": "Fazer", "files": paths, "covers": covers})),
+            ]
+        };
+        let mut events: Vec<(&str, Value)> = vec![
+            ("rule", json!({"text": "O comentário diz o que o código faz", "keys": ["c"], "example": "e", "applies_to": everywhere})),
+            ("rule", json!({"text": "O documento diz o comando de hoje", "keys": ["d"], "example": "e", "applies_to": everywhere})),
+        ];
+        events.extend(wave(1, &["docs/guia.md", "LEIA.txt", ".gitignore"], &[2]));
+        events.extend(wave(2, &["docs/guia.md", "src/a.rs"], &[]));
+        events.extend(wave(3, &["Views/Home/Index.cshtml"], &[]));
+        events.extend(wave(4, &["site/spec.html"], &[]));
+        let log = log(&events);
+        assert_eq!(owners(&log).get(&1), Some(&Owner::Project));
+
+        assert_eq!(ids(&agreed_for(&log, 1)), [2], "só o item que a tarefa da onda faz");
+        let dispatched = ids(&log.step(&Step::Dispatch { wave: 1 }));
+        assert!(!dispatched.contains(&1) && dispatched.contains(&2), "{dispatched:?}");
+        assert!(candidates(&log, 1).project.is_empty(), "{:?}", ids(&candidates(&log, 1).project));
+        for n in 2..=4 {
+            assert!(ids(&agreed_for(&log, n)).contains(&1), "a onda {n} recebe o item do projeto");
+            assert_eq!(ids(&candidates(&log, n).project), [1, 2], "a onda {n} julga os itens do projeto");
+        }
     }
 
     /// A busca por palavras não decide quem recebe o item: a regra que fala
