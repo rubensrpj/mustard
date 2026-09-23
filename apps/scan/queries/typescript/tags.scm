@@ -1,6 +1,13 @@
 ; TypeScript / TSX — imports and declarations. Same grammar family, one query set.
 (import_statement source: (string (string_fragment) @import))
 
+; The names an import brings into the file (`limite` in
+; `import { limite } from`): what it brought, not a use of it.
+(import_specifier name: (_) @imported)
+(import_specifier alias: (_) @imported)
+(import_clause (identifier) @imported)
+(namespace_import (identifier) @imported)
+
 (class_declaration name: (_) @name) @definition.class
 (abstract_class_declaration name: (_) @name) @definition.class
 (interface_declaration name: (_) @name) @definition.interface
@@ -21,6 +28,14 @@
 ((export_statement
   declaration: (lexical_declaration
     (variable_declarator name: (identifier) @name value: (_) @value))) @definition.const
+  (#not-match? @value "=>"))
+; A `const` at the top of the file that is not exported is a constant too.
+(program
+  (lexical_declaration kind: "const"
+    (variable_declarator name: (identifier) @name)) @definition.const)
+((program
+  (lexical_declaration kind: "const"
+    (variable_declarator name: (identifier) @name value: (_) @value)) @definition.const)
   (#not-match? @value "=>"))
 
 ; Members — methods (class + interface), class fields, interface properties,

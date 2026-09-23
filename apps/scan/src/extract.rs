@@ -15,9 +15,10 @@
 //! signature (its own text up to the body or up to the value), the call sites
 //! of the file (a named leaf that reads as an identifier and is followed by an
 //! opening parenthesis), and the names it cites without calling (the same
-//! leaf, starting with a capital letter and not followed by a parenthesis). A
-//! grammar that marks none of it simply yields nothing, as with every other
-//! generic rule here.
+//! leaf, not followed by a parenthesis, whatever letter it starts with: which
+//! of them name something of the project is decided by `graph`, with the whole
+//! project in hand). A grammar that marks none of it simply yields nothing, as
+//! with every other generic rule here.
 //!
 //! The per-language seam the old design called for is preserved: there is one
 //! [`Analyzer`] instance per language, but all are the same generic type, each
@@ -118,6 +119,10 @@ enum CapKind {
     /// An import that is in sight of every file of the language under the
     /// same project, not only of the file that writes it.
     ImportGlobal,
+    /// A name an import brings into the file (`limite` in
+    /// `import { limite } from`): it says what the file brought, and like the
+    /// import itself it is never a use.
+    Imported,
     Namespace,
     Name,
     Supertype,
@@ -139,6 +144,7 @@ fn classify(cap: &str) -> CapKind {
     match cap {
         "import" => CapKind::Import,
         "import.global" => CapKind::ImportGlobal,
+        "imported" => CapKind::Imported,
         "namespace" => CapKind::Namespace,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
@@ -200,12 +206,15 @@ impl Analyzer {
         let mut cursor = QueryCursor::new();
 
         // Declarations keyed by node start byte (so they emerge in document
-        // order); supertypes keyed by the cleaned declaration name so a base
-        // captured in a detached node attaches to the right decl.
+        // order) and then by where the name is written and the name itself:
+        // one statement may declare several names (`export const a = 1, b =
+        // 2;`), and each of them is a declaration of its own. Supertypes keyed
+        // by the cleaned declaration name so a base captured in a detached
+        // node attaches to the right decl.
         // The comment and the header are read only after every match, once the
         // decorations of the whole file are known: a decoration may be matched
         // after the declaration it adorns.
-        let mut decls: BTreeMap<usize, Header> = BTreeMap::new();
+        let mut decls: BTreeMap<(usize, usize, String), Header> = BTreeMap::new();
         let mut decorations: Spans = BTreeSet::new();
         // What an import or a namespace capture covers: the names written
         // there are the path of the import, not a use of what they name.
@@ -238,6 +247,9 @@ impl Analyzer {
                                 }
                             }
                         }
+                    }
+                    CapKind::Imported => {
+                        import_spans.insert((node.start_byte(), node.end_byte()));
                     }
                     CapKind::Namespace => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
@@ -283,8 +295,9 @@ impl Analyzer {
             }
 
             if let (Some((node, kind)), Some(name)) = (def, &name_text) {
-                let header = decls.entry(node.start_byte()).or_insert_with(|| Header {
+                let header = decls.entry((node.start_byte(), name_byte, name.clone())).or_insert_with(|| Header {
                     kind: kind.to_string(),
+                    pattern: m.pattern_index,
                     name: name.clone(),
                     node,
                     name_byte,
@@ -293,6 +306,13 @@ impl Analyzer {
                     value_start: None,
                     doc_inside: None,
                 });
+                // Two patterns may give the same declaration two kinds (a
+                // `const` field is a field too): the one written first in the
+                // query gives the kind, whatever order the matches come in.
+                if m.pattern_index < header.pattern {
+                    header.kind = kind.to_string();
+                    header.pattern = m.pattern_index;
+                }
                 header.body_end = header.body_end.max(body_end);
                 // Two patterns may give the same declaration: the earliest
                 // value and the earliest inner documentation win.
@@ -318,9 +338,22 @@ impl Analyzer {
         // The node types the declarations of this file write their names
         // with: a node of one of them standing for a single word is a name.
         let name_kinds: BTreeSet<&str> = decls.values().map(|h| h.name_kind).collect();
+        // Where each name of a statement that declares several is written,
+        // by the byte the statement starts at: each of them keeps the part of
+        // the header before the first name, and then only its own.
+        let mut names_by_start: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (start, name_byte, _) in decls.keys() {
+            names_by_start.entry(*start).or_default().push(*name_byte);
+        }
         out.declarations = decls
             .into_values()
             .map(|h| {
+                let shared = &names_by_start[&h.node.start_byte()];
+                let split = (shared.len() > 1).then(|| Split {
+                    first_name: shared[0],
+                    name: h.name_byte,
+                    next_name: shared.iter().copied().find(|&b| b > h.name_byte),
+                });
                 let key = simple_type_name(&h.name).unwrap_or_else(|| h.name.clone());
                 let supertypes = supers_by_name
                     .get(&key)
@@ -338,7 +371,7 @@ impl Analyzer {
                     end_line: (h.node.end_position().row + 1).max(h.body_end.unwrap_or(0)),
                     supertypes,
                     doc,
-                    signature: signature_of(h.node, bytes, &decorations, h.value_start),
+                    signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
                     calls: Vec::new(),
                     used_by: Vec::new(),
                 }
@@ -366,6 +399,8 @@ impl Analyzer {
 /// elsewhere in the file are attached to it.
 struct Header<'t> {
     kind: String,
+    /// The pattern that gave the kind: the first one of the query wins.
+    pattern: usize,
     name: String,
     node: Node<'t>,
     /// Where the name capture starts, which tells the header from a call.
@@ -379,6 +414,16 @@ struct Header<'t> {
     /// The documentation written inside the declaration (where it starts, and
     /// its text), when a query marks it.
     doc_inside: Option<(usize, String)>,
+}
+
+/// Where the names of a statement that declares several are written: the
+/// first of them, this declaration's own, and the next one after it, when
+/// there is one.
+#[derive(Clone, Copy)]
+struct Split {
+    first_name: usize,
+    name: usize,
+    next_name: Option<usize>,
 }
 
 /// The earlier of two optional positions; a missing one never wins.
@@ -551,7 +596,18 @@ fn quoted_value(text: &str) -> Option<String> {
 /// starts (`value_start`): the header stops there, and the `=` left at its end
 /// goes. It starts after the decorations and comments that open the node: an
 /// attribute is not the header of what it adorns.
-fn signature_of(node: Node, bytes: &[u8], decorations: &Spans, value_start: Option<usize>) -> String {
+///
+/// When the statement declares several names (`split`), each one's header is
+/// what comes before the first name, followed by its own name up to its own
+/// value or up to the next name: `export const a = 1, b = 2;` gives
+/// `export const a` and `export const b`.
+fn signature_of(
+    node: Node,
+    bytes: &[u8],
+    decorations: &Spans,
+    value_start: Option<usize>,
+    split: Option<Split>,
+) -> String {
     let mut start = node.start_byte();
     let mut walker = node.walk();
     for child in node.children(&mut walker) {
@@ -562,7 +618,25 @@ fn signature_of(node: Node, bytes: &[u8], decorations: &Spans, value_start: Opti
         start = child.end_byte();
     }
     let value = value_start.filter(|v| (start..=node.end_byte()).contains(v));
-    let Ok(text) = std::str::from_utf8(&bytes[start..value.unwrap_or(node.end_byte())]) else { return String::new() };
+    let until = value.unwrap_or(node.end_byte());
+    let own: Vec<u8> = match split.filter(|s| (start..until).contains(&s.first_name) && s.name < until) {
+        Some(s) => {
+            let own_end = s.next_name.map_or(until, |n| n.min(until));
+            // What comes from the last comma before the next name on is not
+            // part of this header (`, $` before `$q` in `public $p, $q;`).
+            let mut own = &bytes[s.name..own_end];
+            if s.next_name.is_some_and(|n| n <= until)
+                && let Some(comma) = own.iter().rposition(|b| *b == b',')
+            {
+                own = &own[..comma];
+            }
+            let mut joined = bytes[start..s.first_name].to_vec();
+            joined.extend_from_slice(own);
+            joined
+        }
+        None => bytes[start..until].to_vec(),
+    };
+    let Ok(text) = std::str::from_utf8(&own) else { return String::new() };
     let mut depth: i32 = 0;
     let mut end = text.len();
     for (i, ch) in text.char_indices() {
@@ -598,11 +672,11 @@ fn one_line(text: &str, max: usize) -> String {
 ///
 /// A call is a named leaf that reads as an identifier and is followed by an
 /// opening parenthesis — the one shape a call has in every language we parse.
-/// A citation is the same leaf starting with a capital letter and not followed
-/// by a parenthesis: a type, a constant or an enum member named in a parameter,
-/// a comparison or a path. Only the capitalised names are kept: every good
-/// link a citation gives comes from them, and keeping every lowercase name
-/// would weigh on the map five times as much for nothing.
+/// A citation is the same leaf not followed by a parenthesis: a type, a
+/// constant or an enum member named in a parameter, a comparison or a path.
+/// The letter a name starts with decides nothing, since how names are written
+/// is a convention of each language: every such name is a candidate here, and
+/// `graph` keeps only the ones that name a declaration the citing file sees.
 ///
 /// Read off the tree, so what is inside a comment is never a use, and a
 /// keyword never is either (it is not a named node). A citation right against
@@ -613,7 +687,9 @@ fn one_line(text: &str, max: usize) -> String {
 ///
 /// Nothing inside `quiet` is a use: not a decoration (an attribute calls
 /// nothing), not an import (`Modules` in `using App.Modules;` is the path of
-/// the import) and not a namespace name. A declaration's own name, at
+/// the import), not a name an import brings in (`limite` in
+/// `import { limite } from`, whose use comes later in the file) and not a
+/// namespace name. A declaration's own name, at
 /// `names_at`, is its header.
 ///
 /// A grammar may wrap a word in a name node (a keyword that is a name only in
@@ -652,7 +728,7 @@ fn use_sites(
         let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes));
         if followed_by_open_paren(node, bytes) {
             calls.insert(site);
-        } else if text.chars().next().is_some_and(char::is_uppercase) && !against_a_quote(node, bytes) {
+        } else if !against_a_quote(node, bytes) {
             cites.insert(site);
         }
     }

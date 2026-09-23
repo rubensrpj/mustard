@@ -17,6 +17,17 @@
 
 (function_definition name: (name) @name) @definition.function
 
+; Constants — each element of a `const` statement, in a class or at the top of
+; the file; the value is not its header.
+(const_declaration (const_element (name) @name (_) @value)) @definition.const
+
+; The names `use function` and `use const` bring into the file: what it
+; brought, not a use of it.
+(namespace_use_clause type: _ (qualified_name (name) @imported))
+(namespace_use_clause type: _ (name) @imported)
+(namespace_use_declaration type: _
+  body: (namespace_use_group (namespace_use_clause [(qualified_name (name) @imported) (name) @imported])))
+
 ; Members — methods, typed properties, enum cases. Member kinds feed the
 ; digest's domain-term index only: the miner's significance gate (mine.rs) is
 ; kind-based and never sees them. The method tag follows the upstream

@@ -192,12 +192,14 @@ pub struct Module {
     /// feeds the declaration links of a pass that only read what changed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<CallSite>,
-    /// Every name cited without being called: a name that starts with a
-    /// capital letter (a type, a constant, an enum member), outside comments,
-    /// quoted text, decorations, imports, namespace names and its own
-    /// declaration header, with the line
-    /// it is cited on. Raw for the same reason as [`Module::calls`], and
-    /// written the same way.
+    /// Every name cited without being called that links to a constant or a
+    /// type some file in sight of this one declares, with the line it is
+    /// cited on: outside comments, quoted text, decorations, imports, the
+    /// names an import brings in, namespace names and its own declaration
+    /// header. The letter the name starts with decides nothing; a name that
+    /// links to nothing of the project is not kept. Not resolved to a
+    /// declaration, for the same reason as [`Module::calls`], and written the
+    /// same way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cites: Vec<CallSite>,
 }

@@ -6,6 +6,17 @@
 
 (class_definition name: (identifier) @name) @definition.class
 
+; Constants — a name given a value at the top of the module, a direct child of
+; `module`. Inside a function it is a local, and inside a class a field.
+(module
+  (expression_statement
+    (assignment left: (identifier) @name right: (_) @value) @definition.const))
+
+; The names `from m import limite` brings into the file: what it brought, not
+; a use of it.
+(import_from_statement name: (dotted_name) @imported)
+(import_from_statement name: (aliased_import) @imported)
+
 ; Functions — a module-level function is a UNIT, a method is a MEMBER. Python
 ; spells both with `function_definition`, so the line is drawn by CONTEXT: a
 ; module-level function is a DIRECT child of `module`, a method is a direct

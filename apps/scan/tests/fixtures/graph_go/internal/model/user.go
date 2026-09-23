@@ -1,5 +1,7 @@
 package model
 
+const MaxNameLength = 64
+
 type User struct {
 	Name string
 }

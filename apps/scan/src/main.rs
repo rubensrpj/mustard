@@ -216,29 +216,30 @@ fn code_evidence<'a>(modules: impl Iterator<Item = &'a Module>) -> Vec<String> {
     }
 }
 
-/// Deterministic stages (no synthesis, no AI): produce the project model, and
-/// the dictionary sidecar when every file was read. With a `previous` model of
-/// the same project, only the files that changed since are read (see
-/// [`refresh`]); everything else is taken from it, and the result is the same
-/// model a pass reading every file would give.
-fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
-    use mustard_core::domain::project_map::History;
-    use mustard_core::domain::vocabulary::stacks::{code_signals, infer_stacks};
+/// What one read of the project gives before the declarations are linked:
+/// the walk, the modules with their imports resolved, the packages the
+/// manifests name and the file graph.
+struct Read {
+    ing: ingest::Ingested,
+    modules: Vec<Module>,
+    packages: Vec<(String, String)>,
+    graph: graph::GraphBuild,
+}
 
-    let plan = refresh::plan(root, previous);
-    let reuse = match (&plan, previous) {
-        (refresh::Plan::Only(changed), Some(prev)) => Some(ingest::Reuse::new(changed, prev)),
-        _ => None,
-    };
-    let full = reuse.is_none();
-    let ing = ingest::ingest(root, reuse.as_ref())?;
+/// Walk the project and read every file `reuse` does not keep from the
+/// previous map (all of them without one), then resolve what each module
+/// imports.
+fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
+    use mustard_core::domain::vocabulary::stacks::code_signals;
+
+    let mut ing = ingest::ingest(root, reuse)?;
     let analyzers = extract::registry();
     // Repo classification overrides (.gitattributes / .editorconfig) — loaded
     // once; they beat the marker catalog in both directions.
     let overrides = classify::Overrides::load(&ing.root);
 
     let mut modules: Vec<Module> = Vec::with_capacity(ing.files.len());
-    for walked in ing.files {
+    for walked in std::mem::take(&mut ing.files) {
         match walked {
             ingest::Walked::Kept(mut kept) => {
                 // Recomputed below from the whole set of modules. The call
@@ -284,7 +285,8 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     }
 
     let packages = graph::packages(&ing.manifests);
-    let (graph_stats, degrees, depth_by_path) = graph::build(&modules, &ing.go_module, &packages);
+    let graph = graph::build(&modules, &ing.go_module, &packages);
+    let degrees = &graph.1;
     // Persist each module's fan-in (graph::build already computed the full
     // degree map) — additive on the model, so digest projections rank anchors
     // without re-deriving the graph.
@@ -305,6 +307,37 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         named.sort();
         m.deps = named;
     }
+    Ok(Read { ing, modules, packages, graph })
+}
+
+/// Deterministic stages (no synthesis, no AI): produce the project model, and
+/// the dictionary sidecar when every file was read. With a `previous` model of
+/// the same project, only the files that changed since are read (see
+/// [`refresh`]); everything else is taken from it, and the result is the same
+/// model a pass reading every file would give.
+fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
+    use mustard_core::domain::project_map::History;
+    use mustard_core::domain::vocabulary::stacks::infer_stacks;
+
+    let plan = refresh::plan(root, previous);
+    let (full, read) = match (&plan, previous) {
+        (refresh::Plan::Only(changed), Some(prev)) => {
+            let first = read_modules(root, Some(&ingest::Reuse::new(changed, prev)))?;
+            // A file that did not change is read again when what changed may
+            // give its citations a link the previous map had no room for.
+            let fresh: BTreeSet<String> = first.ing.read.iter().cloned().collect();
+            let stale = refresh::stale_citers(&first.ing.root, prev, &first.modules, &fresh);
+            if stale.is_empty() {
+                (false, first)
+            } else {
+                let wider: BTreeSet<String> = changed.iter().cloned().chain(stale).collect();
+                (false, read_modules(root, Some(&ingest::Reuse::new(&wider, prev)))?)
+            }
+        }
+        _ => (true, read_modules(root, None)?),
+    };
+    let Read { ing, mut modules, packages, graph: (graph_stats, _, depth_by_path) } = read;
+
     // The named edges between declarations: who calls or cites whom, in which
     // file and on which line. Read from the call sites and the citations every
     // module carries, so a pass that read only what changed links the same

@@ -258,7 +258,7 @@ const CALLABLE_KINDS: &[&str] = &["function", "method", "class", "struct", "reco
 /// The declaration kinds a citation can point to: what is named without being
 /// called — a constant compared against, a type written in a parameter, an
 /// enum member picked out.
-const CITED_KINDS: &[&str] =
+pub(crate) const CITED_KINDS: &[&str] =
     &["const", "constant", "struct", "enum", "enum_member", "type", "trait", "class", "interface"];
 
 /// The named edges BETWEEN DECLARATIONS: for each declaration, which ones it
@@ -288,13 +288,26 @@ const CITED_KINDS: &[&str] =
 /// tied to every declaration of that name across the project. The links of
 /// every declaration are rewritten from scratch on each pass, so nothing
 /// survives a declaration that is gone.
+///
+/// Each module keeps, in `Module::cites`, only the citations that linked: a
+/// name the file cites and that no file in its sight declares, like a type of
+/// the standard library, is not a use of anything in the project, and is
+/// dropped from the map. What a later pass gains from a name that comes to be
+/// declared is read again by [`crate::refresh::stale_citers`].
 pub fn link_declarations(
     modules: &mut [Module],
     go_module: &Option<String>,
     packages: &[(String, String)],
     manifests: &[crate::model::Manifest],
 ) {
-    let (calls, uses) = resolve_declaration_links(modules, go_module, packages, manifests);
+    let (calls, uses, linked) = resolve_declaration_links(modules, go_module, packages, manifests);
+    for (m, linked) in modules.iter_mut().zip(linked) {
+        m.cites = std::mem::take(&mut m.cites)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, site)| linked.contains(&i).then_some(site))
+            .collect();
+    }
     for (m, (module_calls, module_uses)) in modules.iter_mut().zip(calls.into_iter().zip(uses)) {
         for (decl, (called, used)) in m.declarations.iter_mut().zip(module_calls.into_iter().zip(module_uses)) {
             decl.calls = called.into_iter().collect();
@@ -312,15 +325,20 @@ type CallsByDecl = Vec<Vec<BTreeSet<String>>>;
 /// The uses each declaration receives, per module and per declaration.
 type UsesByDecl = Vec<Vec<Vec<UseSite>>>;
 
+/// The citations of each module that linked to a declaration, by position in
+/// `Module::cites`.
+type LinkedCites = Vec<HashSet<usize>>;
+
 /// The links, per module and per declaration: the names it calls and the uses
-/// it receives. Split out of [`link_declarations`] so the whole project is
-/// read before any declaration is written to.
+/// it receives, and which citations of each module linked. Split out of
+/// [`link_declarations`] so the whole project is read before any declaration
+/// is written to.
 fn resolve_declaration_links(
     modules: &[Module],
     go_module: &Option<String>,
     packages: &[(String, String)],
     manifests: &[crate::model::Manifest],
-) -> (CallsByDecl, UsesByDecl) {
+) -> (CallsByDecl, UsesByDecl, LinkedCites) {
     let index = |kinds: &[&str]| {
         let mut by_name: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         for (mi, m) in modules.iter().enumerate() {
@@ -381,6 +399,7 @@ fn resolve_declaration_links(
 
     let mut calls: CallsByDecl = modules.iter().map(|m| vec![BTreeSet::new(); m.declarations.len()]).collect();
     let mut uses: UsesByDecl = modules.iter().map(|m| vec![Vec::new(); m.declarations.len()]).collect();
+    let mut linked: LinkedCites = vec![HashSet::new(); modules.len()];
 
     for (src, m) in modules.iter().enumerate() {
         if m.calls.is_empty() && m.cites.is_empty() {
@@ -395,8 +414,13 @@ fn resolve_declaration_links(
                     && (declared[mi].iter().any(|ns| in_sight[src].contains(ns))
                         || (!qualifier.is_empty() && own_names[mi].iter().any(|n| n == qualifier))))
         };
-        let sites = m.calls.iter().map(|s| (s, &callable, true)).chain(m.cites.iter().map(|s| (s, &cited, false)));
-        for (site, by_name, is_call) in sites {
+        let sites = m
+            .calls
+            .iter()
+            .map(|s| (s, &callable, None))
+            .chain(m.cites.iter().enumerate().map(|(i, s)| (s, &cited, Some(i))));
+        for (site, by_name, cite_at) in sites {
+            let is_call = cite_at.is_none();
             let Some(all) = by_name.get(site.name.as_str()) else { continue };
             let from = enclosing(&m.declarations, site.line);
             let chosen: Vec<(usize, usize)> = all
@@ -408,6 +432,9 @@ fn resolve_declaration_links(
                 .collect();
             if chosen.is_empty() || chosen.len() > MAX_SAME_NAME {
                 continue;
+            }
+            if let Some(i) = cite_at {
+                linked[src].insert(i);
             }
             let from_name = from.map_or(String::new(), |di| m.declarations[di].name.clone());
             for (dst_mi, dst_di) in chosen {
@@ -422,7 +449,7 @@ fn resolve_declaration_links(
             }
         }
     }
-    (calls, uses)
+    (calls, uses, linked)
 }
 
 /// The files the global imports put in sight: each file that writes one gives

@@ -22,6 +22,14 @@
 //!
 //! E um projeto em Dart mostra que cada declaração com corpo termina no fim do
 //! corpo, em classe, extensão e enum, e que o arquivo `part of` enxerga o dono.
+//!
+//! Por último, a citação liga pelo que o projeto declara, e não pela letra com
+//! que o nome começa: a constante minúscula do Go e do TypeScript ganha quem a
+//! usa, o nome da biblioteca que o projeto não declara (`DateTime` no C#) e a
+//! variável de dentro da função não ficam guardados, o nome trazido pelo import
+//! não é uso na linha do import, e a leitura que relê só o que mudou liga o
+//! tipo novo ao arquivo que não mudou, como a leitura inteira. O mesmo projeto
+//! mostra que o comando que declara duas constantes dá as duas.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -615,5 +623,198 @@ fn o_dart_termina_cada_declaracao_no_fim_do_corpo_e_a_parte_enxerga_o_dono() {
         faltas.push(format!("triplo tem o uso {uso}: {usos_triplo:?}"));
     }
 
+    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+}
+
+/// O projeto da citação que liga pelo que o projeto declara. Em cada uma das
+/// linguagens C#, Go, Python, PHP e Dart, uma constante é declarada num
+/// arquivo e citada sem chamar em outro que o enxerga; no Go, com minúscula,
+/// noutro arquivo do mesmo pacote. No TypeScript, `limiteDiario` é importada
+/// pelo nome e citada depois, `taxaPadrao` é citada no próprio arquivo, e
+/// `parcial` é uma variável de dentro da função. O C# cita `DateTime.Today`,
+/// que nenhum arquivo do projeto declara. E três linhas declaram duas
+/// constantes cada uma.
+fn projeto_da_citacao() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("src/limites.ts", "export const limiteDiario = 10;\n"),
+        (
+            "src/pedido.ts",
+            "import { limiteDiario } from './limites';\n\nexport function podeComprar(valor: number): boolean {\n  \
+             return valor <= limiteDiario;\n}\n",
+        ),
+        (
+            "src/taxa.ts",
+            "const taxaPadrao = 2;\n\nexport function calcular(valor: number): number {\n  \
+             const parcial = valor * 3;\n  return parcial + taxaPadrao;\n}\n",
+        ),
+        ("src/par.ts", "export const a = 1, b = 2;\n"),
+        ("src/tipos.ts", "export interface Velho {\n  nome: string;\n}\n"),
+        ("src/usa.ts", "import { Novo } from './tipos';\n\nexport function usar(x: Novo): void {\n  console.log(x);\n}\n"),
+        (
+            "cs/Regras.cs",
+            "namespace Loja;\n\npublic static class Regras\n{\n    public const int Limite = 10;\n    \
+             public const int A = 1, B = 2;\n}\n",
+        ),
+        (
+            "cs/Pedido.cs",
+            "namespace Loja;\n\npublic class Pedido\n{\n    public bool Pode(int valor)\n    {\n        \
+             var hoje = DateTime.Today;\n        return valor <= Regras.Limite;\n    }\n}\n",
+        ),
+        ("go/conta/limites.go", "package conta\n\nconst limite = 10\n"),
+        ("go/conta/pedido.go", "package conta\n\nfunc pode(valor int) bool {\n\treturn valor <= limite\n}\n"),
+        ("py/loja/regras.py", "LIMITE = 10\n"),
+        ("py/loja/pedido.py", "from loja.regras import LIMITE\n\n\ndef pode(valor):\n    return valor <= LIMITE\n"),
+        (
+            "php/Regras.php",
+            "<?php\n\nnamespace Loja;\n\nclass Regras\n{\n    const LIMITE = 10;\n    const A = 1, B = 2;\n}\n",
+        ),
+        (
+            "php/Pedido.php",
+            "<?php\n\nnamespace Loja;\n\nfunction pode(int $valor): bool\n{\n    return $valor <= Regras::LIMITE;\n}\n",
+        ),
+        ("dart/lib/regras.dart", "const limite = 10;\n\nclass Regras {\n  static const int teto = 20;\n}\n"),
+        (
+            "dart/lib/pedido.dart",
+            "import 'regras.dart';\n\nbool pode(int valor) {\n  return valor <= limite && valor < Regras.teto;\n}\n",
+        ),
+    ]
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(["-c", "user.email=scan@example.com", "-c", "user.name=scan", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// Uma leitura do scan, com os argumentos a mais: o mapa, os bytes dele e se
+/// a leitura foi inteira.
+fn ler(dir: &Path, extra: &[&str]) -> (Value, Vec<u8>, bool) {
+    let model = dir.join(".claude").join("grain.model.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
+        .args(extra)
+        .output()
+        .expect("run scan");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let relato: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or("{}"))
+        .expect("o relato é uma linha de JSON");
+    let bytes = std::fs::read(&model).unwrap();
+    (serde_json::from_slice(&bytes).unwrap(), bytes, relato["full"] == Value::Bool(true))
+}
+
+#[test]
+fn a_citacao_liga_pelo_que_o_projeto_declara_e_nao_pela_letra() {
+    let dir = std::env::temp_dir().join(format!("scan-citacao-que-liga-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let projeto = projeto_da_citacao();
+    for (rel, corpo) in &projeto {
+        write(&dir, rel, corpo);
+    }
+    git(&dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "primeiro"]);
+    let corpo = |rel: &str| projeto.iter().find(|(p, _)| *p == rel).unwrap().1;
+
+    let (map, _, _) = ler(&dir, &["--all"]);
+    let modules = map["modules"].as_array().expect("modules").clone();
+    let modulo = |arquivo: &str| -> Value {
+        modules.iter().find(|m| m["path"] == arquivo).cloned().unwrap_or_else(|| panic!("{arquivo} no mapa"))
+    };
+    let lista = |v: &Value| -> Vec<String> {
+        v.as_array().map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
+    };
+    let declaracao = |arquivo: &str, nome: &str| -> Option<Value> {
+        modulo(arquivo)["declarations"].as_array().into_iter().flatten().find(|d| d["name"] == nome).cloned()
+    };
+    // Junta as faltas antes de reprovar, para que cada regra que quebra
+    // apareça inteira de uma vez.
+    let mut faltas: Vec<String> = Vec::new();
+
+    // Em cada linguagem, a constante tem o tipo const e o uso com o arquivo e
+    // a linha da citação, e a declaração de onde a citação vem. No
+    // TypeScript, só a linha da citação: a do import não é uso.
+    let constantes = [
+        ("cs/Regras.cs", "Limite", "cs/Pedido.cs", "Regras.Limite", "Pode"),
+        ("go/conta/limites.go", "limite", "go/conta/pedido.go", "valor <= limite", "pode"),
+        ("py/loja/regras.py", "LIMITE", "py/loja/pedido.py", "valor <= LIMITE", "pode"),
+        ("php/Regras.php", "LIMITE", "php/Pedido.php", "Regras::LIMITE", "pode"),
+        ("dart/lib/regras.dart", "limite", "dart/lib/pedido.dart", "valor <= limite", "pode"),
+        ("dart/lib/regras.dart", "teto", "dart/lib/pedido.dart", "Regras.teto", "pode"),
+        ("src/limites.ts", "limiteDiario", "src/pedido.ts", "valor <= limiteDiario", "podeComprar"),
+        ("src/taxa.ts", "taxaPadrao", "src/taxa.ts", "parcial + taxaPadrao", "calcular"),
+    ];
+    for (dono, nome, quem, citacao, de) in constantes {
+        let esperado = vec![format!("{quem}:{}:{de}", linha_de(corpo(quem), citacao))];
+        match declaracao(dono, nome) {
+            Some(d) if d["kind"] == "const" && lista(&d["used_by"]) == esperado => {}
+            Some(d) => faltas.push(format!("{nome}, de {dono}, é const com só o uso {esperado:?}: {d}")),
+            None => faltas.push(format!("{nome} está declarado em {dono}")),
+        }
+    }
+
+    // A variável de dentro da função e o nome da biblioteca que o projeto não
+    // declara não ficam entre as citações do arquivo.
+    for (arquivo, nome) in [("src/taxa.ts", "parcial"), ("cs/Pedido.cs", "DateTime")] {
+        let citacoes = lista(&modulo(arquivo)["cites"]);
+        let achadas: Vec<&String> = citacoes
+            .iter()
+            .filter(|c| c.starts_with(&format!("{nome}:")) || c.contains(&format!(".{nome}:")))
+            .collect();
+        if !achadas.is_empty() {
+            faltas.push(format!("{nome} não liga a nada do projeto e não fica em {arquivo}: {citacoes:?}"));
+        }
+    }
+
+    // Cada linha que declara duas constantes dá as duas, cada uma com o
+    // próprio nome, o tipo const e o próprio cabeçalho.
+    let pares = [
+        ("src/par.ts", [("a", "export const a"), ("b", "export const b")]),
+        ("cs/Regras.cs", [("A", "public const int A"), ("B", "public const int B")]),
+        ("php/Regras.php", [("A", "const A"), ("B", "const B")]),
+    ];
+    for (arquivo, par) in pares {
+        for (nome, cabecalho) in par {
+            match declaracao(arquivo, nome) {
+                Some(d) if d["kind"] == "const" && d["signature"] == cabecalho => {}
+                Some(d) => faltas.push(format!("{nome}, de {arquivo}, é const com o cabeçalho {cabecalho}: {d}")),
+                None => faltas.push(format!("{nome} está declarado em {arquivo}")),
+            }
+        }
+    }
+
+    // O arquivo que muda passa a declarar o tipo que `src/usa.ts`, que não
+    // mudou, já citava: a leitura que relê só o que mudou dá o uso, e o mesmo
+    // mapa que a leitura inteira.
+    write(&dir, "src/tipos.ts", "export interface Velho {\n  nome: string;\n}\n\nexport interface Novo {\n  id: number;\n}\n");
+    let (passo, bytes_passo, inteira) = ler(&dir, &[]);
+    if inteira {
+        faltas.push("a segunda leitura relê só o que mudou".to_string());
+    }
+    let usa = corpo("src/usa.ts");
+    let esperado = vec![format!("src/usa.ts:{}:usar", linha_de(usa, "x: Novo"))];
+    let novo = passo["modules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["path"] == "src/tipos.ts")
+        .flat_map(|m| m["declarations"].as_array().cloned().unwrap_or_default())
+        .find(|d| d["name"] == "Novo");
+    match novo {
+        Some(d) if lista(&d["used_by"]) == esperado => {}
+        other => faltas.push(format!("o tipo novo tem o uso {esperado:?} do arquivo que não mudou: {other:?}")),
+    }
+    let (_, bytes_inteira, _) = ler(&dir, &["--all"]);
+    if bytes_passo != bytes_inteira {
+        faltas.push("a leitura que relê só o que mudou dá o mesmo mapa que a leitura inteira".to_string());
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(faltas.is_empty(), "{}", faltas.join("\n"));
 }

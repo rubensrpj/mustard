@@ -30,6 +30,7 @@ kinds = [
   "property",
   "field",
   "enum_member",
+  "const",
 ]
 
 [typescript]
@@ -54,6 +55,7 @@ kinds = [
   "function",
   "method",
   "field",
+  "const",
 ]
 
 [python]
@@ -62,6 +64,7 @@ kinds = [
   "function",
   "method",
   "field",
+  "const",
 ]
 
 [rust]
@@ -87,6 +90,7 @@ kinds = [
   "method",
   "property",
   "enum_member",
+  "const",
 ]
 
 [dart]
@@ -97,4 +101,5 @@ kinds = [
   "extension",
   "function",
   "method",
+  "const",
 ]

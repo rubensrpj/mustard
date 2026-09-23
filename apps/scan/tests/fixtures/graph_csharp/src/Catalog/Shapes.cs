@@ -9,6 +9,7 @@ public record Point(int X, int Y);
 
 public struct Size
 {
+    public const int MaxWidth = 100;
     public int Width;
 }
 

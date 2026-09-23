@@ -24,6 +24,14 @@
 ; tree-sitter-c-sharp tags.scm (MIT) — see queries/README.md.
 (method_declaration name: (identifier) @name) @definition.method
 (property_declaration name: (identifier) @name) @definition.property
+; A `const` is a constant, not a field. Its pattern comes before the field's
+; because the first pattern that matches a node gives the kind. A `static
+; readonly` stays a field: its names are the names of properties and of the
+; standard library, and a constant of the project is written `const`.
+((field_declaration
+  (modifier) @_modifier
+  (variable_declaration (variable_declarator name: (identifier) @name (_) @value))) @definition.const
+  (#eq? @_modifier "const"))
 (field_declaration (variable_declaration (variable_declarator name: (identifier) @name))) @definition.field
 (enum_member_declaration name: (identifier) @name) @definition.enum_member
 

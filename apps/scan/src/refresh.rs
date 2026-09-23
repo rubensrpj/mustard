@@ -12,14 +12,14 @@
 //! network: the first pass reads it whole, and the next ones read only the
 //! commits after the one the previous pass stopped at.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use mustard_core::platform::git as git_exec;
 
 use mustard_core::domain::project_map::{History, RawCommit, MAX_COMMITS};
 
-use crate::model::ProjectModel;
+use crate::model::{Module, ProjectModel};
 
 /// The scanner build tag written into the map. A map written by another
 /// build is read again in full, because what a file yields may have changed.
@@ -153,6 +153,86 @@ fn only_or_full(changed: BTreeSet<String>) -> Plan {
     } else {
         Plan::Only(changed)
     }
+}
+
+/// The files a pass that read only what changed has to read again, so that
+/// their citations link as a pass reading every file would link them.
+///
+/// A file keeps in the map only the citations that linked (see
+/// [`crate::graph::link_declarations`]): a name it cites that no file in its
+/// sight declared was dropped. A file that did not change still gains a link
+/// when that changes, and the name it cites is then no longer in the map. So
+/// a file taken from the previous map is read again when:
+///
+/// - its text has, as a whole word, a name some file now declares or no
+///   longer declares, as a constant or a type, where the previous map said
+///   otherwise — a file read now that declares a name it did not, a new file,
+///   a file whose namespaces changed (all it declares is then seen by other
+///   files), a file gone. Losing a declaration counts too: a name declared
+///   too many times links nowhere, and one fewer may make it link;
+/// - it imports a file of the project it did not import before;
+/// - a global import of its language was written, changed or removed, since
+///   it may put in sight files that did not change.
+///
+/// `fresh` holds the files this pass read; `modules`, what this pass has, with
+/// the imports already resolved.
+pub(crate) fn stale_citers(
+    root: &Path,
+    prev: &ProjectModel,
+    modules: &[Module],
+    fresh: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let before: HashMap<&str, &Module> = prev.modules.iter().map(|m| (m.path.as_str(), m)).collect();
+    let now: BTreeSet<&str> = modules.iter().map(|m| m.path.as_str()).collect();
+    let cited = |m: &Module| -> BTreeSet<String> {
+        m.declarations
+            .iter()
+            .filter(|d| crate::graph::CITED_KINDS.contains(&d.kind.as_str()))
+            .map(|d| d.name.clone())
+            .collect()
+    };
+
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut global_languages: BTreeSet<&str> = BTreeSet::new();
+    for m in modules.iter().filter(|m| fresh.contains(&m.path)) {
+        match before.get(m.path.as_str()) {
+            Some(old) if old.namespaces == m.namespaces && old.language == m.language => {
+                names.extend(cited(m).symmetric_difference(&cited(old)).cloned());
+            }
+            _ => names.extend(cited(m)),
+        }
+        let old_globals = before.get(m.path.as_str()).map_or(&[][..], |old| old.global_imports.as_slice());
+        if old_globals != m.global_imports.as_slice() {
+            global_languages.insert(m.language.as_str());
+        }
+    }
+    for gone in prev.modules.iter().filter(|m| !now.contains(m.path.as_str())) {
+        names.extend(cited(gone));
+        if !gone.global_imports.is_empty() {
+            global_languages.insert(gone.language.as_str());
+        }
+    }
+
+    modules
+        .iter()
+        .filter(|m| !fresh.contains(&m.path))
+        .filter(|m| {
+            global_languages.contains(m.language.as_str())
+                || before.get(m.path.as_str()).is_none_or(|old| m.deps.iter().any(|d| !old.deps.contains(d)))
+                || (!names.is_empty()
+                    && std::fs::read_to_string(root.join(&m.path)).is_ok_and(|text| names.iter().any(|n| has_word(&text, n))))
+        })
+        .map(|m| m.path.clone())
+        .collect()
+}
+
+/// `word` is written in `text` as a whole name: not inside a longer one.
+fn has_word(text: &str, word: &str) -> bool {
+    let part_of_name = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(word).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(part_of_name)
+            && !text[at + word.len()..].chars().next().is_some_and(part_of_name)
+    })
 }
 
 /// `true` when `ancestor` is in the history of `head`.

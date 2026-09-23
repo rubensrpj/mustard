@@ -121,6 +121,8 @@ fn python_files_a_module_level_def_as_unit_and_a_class_def_as_member() {
             ("name", "field"),
             ("rename", "method"),
             ("load", "function"),
+            // A name given a value at the top of the module is a constant.
+            ("DEFAULT_NAME", "const"),
         ],
     );
 }
@@ -143,6 +145,7 @@ fn dart_files_a_library_function_as_unit_and_a_body_member_as_member() {
             ("AccountFormatting", "extension"),
             ("shout", "method"),
             ("summarize", "function"),
+            ("defaultRole", "const"),
         ],
     );
 }
@@ -160,6 +163,7 @@ fn go_files_a_top_level_func_as_unit_and_a_receiver_method_as_member() {
             ("Load", "method"),
             ("ID", "type"),
             ("Load", "function"),
+            ("MaxNameLength", "const"),
         ],
     );
 }
@@ -207,6 +211,7 @@ fn php_files_a_top_level_function_as_unit_and_a_class_member_as_member() {
             ("Active", "enum_member"),
             ("Inactive", "enum_member"),
             ("helper", "function"),
+            ("DEFAULT_LABEL", "const"),
         ],
     );
 }
@@ -223,6 +228,9 @@ fn csharp_files_every_member_as_member_because_it_has_no_free_function() {
             ("Area", "method"),
             ("Point", "record"),
             ("Size", "struct"),
+            // A `const` is a constant, not a field, though the grammar writes
+            // both with the same node.
+            ("MaxWidth", "const"),
             ("Width", "field"),
             ("Status", "enum"),
             ("Active", "enum_member"),

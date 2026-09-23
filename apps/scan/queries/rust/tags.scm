@@ -1,6 +1,14 @@
 ; Rust — use imports and item definitions.
 (use_declaration argument: (_) @import)
 
+; The names `use m::limite` brings into the file: what it brought, not a use
+; of it. The whole path is already the import's.
+(use_declaration argument: (scoped_identifier name: (identifier) @imported))
+(use_declaration argument: (identifier) @imported)
+(use_list (identifier) @imported)
+(use_list (scoped_identifier name: (identifier) @imported))
+(use_as_clause alias: (identifier) @imported)
+
 (struct_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait

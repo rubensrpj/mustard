@@ -14,6 +14,7 @@ lacuna sozinho.
 |---------|---------------------------|
 | `@import` | Um import ou `using`; o texto é limpo até virar o caminho, que a resolução do grafo liga aos arquivos do projeto. O que fica dentro da captura nunca vira chamada nem citação: é o caminho do import, não um uso. |
 | `@import.global` | Um import que vale para todo arquivo da mesma linguagem sob a pasta do manifesto mais próximo acima de quem o escreve (sem manifesto, sob a pasta do próprio arquivo). Vai para `Module.global_imports`; o mesmo nó continua sendo `@import` do arquivo que o escreve, e a aresta do grafo de import fica só nele. |
+| `@imported` | Um nome que o import traz para o arquivo (`limite` em `import { limite } from`, `from m import limite`, `use m::limite`, `use function`/`use const`, `show limite`). Diz o que o arquivo trouxe; como no `@import`, o nome escrito ali não é uso: o uso de verdade vem depois, no corpo do arquivo. |
 | `@namespace` | O nome do namespace ou do pacote que o arquivo declara. Como o namespace se enxerga entre os arquivos é o campo `namespace_scope` do `languages.toml`. Como no `@import`, o nome escrito ali não é uso. |
 | `@definition.<kind>` | Uma declaração; o sufixo `<kind>` vira `Decl.kind` literalmente. |
 | `@name` | O nome da `@definition.*` do mesmo pattern. |

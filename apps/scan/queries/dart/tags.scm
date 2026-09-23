@@ -25,6 +25,21 @@
 (enum_declaration name: (identifier) @name) @definition.enum
 (extension_declaration name: (identifier) @name) @definition.extension
 
+; Constants — a `const` outside a class and a `static const` inside one. The
+; grammar writes the top-level `const` and its names as siblings, so the
+; pattern is anchored on the `const` right before them, with or without the
+; type between; inside a class the whole declaration is the constant.
+(program (const_builtin) . (static_final_declaration_list
+  (static_final_declaration (identifier) @name (_) @value) @definition.const))
+(program (const_builtin) . (_) . (static_final_declaration_list
+  (static_final_declaration (identifier) @name (_) @value) @definition.const))
+(declaration (const_builtin) (static_final_declaration_list
+  (static_final_declaration (identifier) @name (_) @value))) @definition.const
+
+; The names `show limite` brings into the file: what it brought, not a use of
+; it.
+(combinator "show" (identifier) @imported)
+
 ; Functions — a library-level function is a UNIT, a member is a MEMBER. Dart
 ; spells both with `function_signature`, so the line is drawn by CONTEXT: a
 ; library function is a DIRECT child of `program`, while a member is always
