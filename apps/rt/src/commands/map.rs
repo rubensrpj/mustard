@@ -7,6 +7,8 @@
 //! - `tests --file <arquivo>`: que testes o cobrem;
 //! - `slice --file <arquivo> --name <declaração>`: o trecho da declaração, do
 //!   começo ao fim, com o caminho e as linhas de onde ele saiu;
+//! - `users --name <declaração>` (com `--file`, só a desse arquivo): quem usa
+//!   a declaração, como `arquivo:linha:quem chama`;
 //! - `search --query "<palavras>"`: a busca por conceito;
 //! - `summary`: o resumo do início da sessão, até 3 kB;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
@@ -33,6 +35,7 @@ pub enum Question {
     Summary,
     Skill,
     Slice,
+    Users,
 }
 
 impl Question {
@@ -45,6 +48,7 @@ impl Question {
             Self::Summary => "summary",
             Self::Skill => "skill",
             Self::Slice => "slice",
+            Self::Users => "users",
         }
     }
 }
@@ -119,6 +123,7 @@ fn answer(opts: &MapOpts, root: &Path, lang: Locale) -> Result<Value, MapRefusal
             Ok(json!({ "ok": true, "question": "summary", "bytes": text.len(), "summary": text }))
         }
         Question::Slice => slice(opts, &map, root),
+        Question::Users => users(opts, &map, lang),
         Question::Examples => examples(opts, &map, lang),
         Question::Skill => skill(opts, root),
     }
@@ -147,6 +152,46 @@ fn slice(opts: &MapOpts, map: &ProjectMap, root: &Path) -> Result<Value, MapRefu
         "signature": place.signature,
         "slice": project_map::lines_of(&text, place.line, place.end_line),
     }))
+}
+
+/// Quem usa a declaração de `--name`: cada declaração com esse nome no mapa
+/// (só a do arquivo de `--file`, quando ele vem), com os usos que o scan
+/// gravou, como `arquivo:linha:quem chama`. A que ninguém usa leva a nota que
+/// diz isso, para que a lista vazia não pareça um mapa sem a informação.
+fn users(opts: &MapOpts, map: &ProjectMap, lang: Locale) -> Result<Value, MapRefusal> {
+    let name = required(opts.name.as_deref(), opts.question, "--name")?;
+    let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
+    let found = project_map::users(map, file, &name)?;
+    let declarations: Vec<Value> = found
+        .iter()
+        .map(|d| {
+            let mut entry = json!({
+                "file": d.file,
+                "name": d.name,
+                "kind": d.kind,
+                "line": d.line,
+                "end_line": d.end_line,
+                "used_by": d.used_by,
+            });
+            if d.used_by.is_empty() {
+                entry["note"] = json!(mustard_core::translate("map.users.none", lang)
+                    .replace("{name}", &d.name)
+                    .replace("{file}", &d.file));
+            }
+            entry
+        })
+        .collect();
+    let mut report = json!({
+        "ok": true,
+        "question": "users",
+        "name": name.trim(),
+        "head": mustard_core::translate("map.users.head", lang).replace("{name}", name.trim()),
+        "declarations": declarations,
+    });
+    if let Some(file) = file {
+        report["file"] = json!(project_map::clean_path(file));
+    }
+    Ok(report)
 }
 
 /// Os exemplos para o alvo de `--file`; sem ele, para a pasta do arquivo que

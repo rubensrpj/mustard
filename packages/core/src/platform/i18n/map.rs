@@ -127,12 +127,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.summary.recent", Locale::EnUs) => "Recently changed: {files}.",
         ("map.summary.ask", Locale::PtBr) => {
             "Pergunte ao mapa: `mustard-rt run map examples --file <caminho>`, `importers`, `tests`, \
-             `slice --file <caminho> --name <declaração>` ou `search --query \"<palavras>\"`."
+             `slice --file <caminho> --name <declaração>`, `users --name <declaração>` ou \
+             `search --query \"<palavras>\"`."
         }
         ("map.summary.ask", Locale::EnUs) => {
             "Ask the map: `mustard-rt run map examples --file <path>`, `importers`, `tests`, \
-             `slice --file <path> --name <declaration>` or `search --query \"<words>\"`."
+             `slice --file <path> --name <declaration>`, `users --name <declaration>` or \
+             `search --query \"<words>\"`."
         }
+        ("map.users.head", Locale::PtBr) => "Quem usa `{name}`, como arquivo:linha:quem chama:",
+        ("map.users.head", Locale::EnUs) => "Who uses `{name}`, as file:line:caller:",
+        ("map.users.none", Locale::PtBr) => "Ninguém usa `{name}` de `{file}`.",
+        ("map.users.none", Locale::EnUs) => "Nothing uses `{name}` from `{file}`.",
         _ => return None,
     })
 }
@@ -150,8 +156,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            29,
-            0xb13b_29d2_3cf8_12f4,
+            31,
+            0xa3f6_7039_3459_5433,
         );
     }
 
@@ -185,6 +191,8 @@ mod tests {
             ("map.summary.hubs", &["{files}"][..]),
             ("map.summary.recent", &["{files}"][..]),
             ("map.summary.ask", &[][..]),
+            ("map.users.head", &["{name}"][..]),
+            ("map.users.none", &["{name}", "{file}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

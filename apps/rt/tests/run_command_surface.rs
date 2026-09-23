@@ -249,3 +249,56 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
     );
     assert!(!publicados.contains(&"wave-scaffold".to_string()));
 }
+
+/// Quem vai mexer numa função pergunta ao mapa quem a usa, pelo comando que a
+/// pessoa roda: `run map users --name <declaração>`. A resposta cita onde a
+/// declaração mora e cada uso, como `arquivo:linha:quem chama`; um nome que o
+/// mapa não declara é recusado com o texto de declaração desconhecida.
+#[test]
+fn o_mapa_devolve_quem_usa_uma_declaracao_pelo_nome() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".claude")).unwrap();
+    // O mapa como o scan o grava: `total` em src/preco.rs, usada duas vezes
+    // por `fechar`, em src/pedido.rs.
+    fs::write(
+        root.join(".claude/grain.model.json"),
+        r#"{"modules": [
+             {"path": "src/preco.rs", "loc": 5, "declarations": [
+               {"kind": "function", "name": "total", "line": 1, "end_line": 3,
+                "used_by": ["src/pedido.rs:5:fechar", "src/pedido.rs:6:fechar"]}]},
+             {"path": "src/pedido.rs", "loc": 8, "declarations": [
+               {"kind": "function", "name": "fechar", "line": 4, "end_line": 7}]}
+           ]}"#,
+    )
+    .unwrap();
+    let ask = |name: &str| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["run", "map", "users", "--name", name, "--root"])
+            .arg(root)
+            .current_dir(root)
+            .output()
+            .expect("run map users");
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+        (out.status.success(), report)
+    };
+
+    let (ok, report) = ask("total");
+    assert!(ok, "{report}");
+    let declarations = report["declarations"].as_array().unwrap();
+    assert_eq!(declarations.len(), 1, "{report}");
+    assert_eq!(declarations[0]["file"], "src/preco.rs", "{report}");
+    assert_eq!(
+        declarations[0]["used_by"],
+        serde_json::json!(["src/pedido.rs:5:fechar", "src/pedido.rs:6:fechar"]),
+        "os dois usos, com o arquivo, a linha e quem chama: {report}"
+    );
+
+    let (ok, report) = ask("nao_existe");
+    assert!(!ok, "{report}");
+    assert_eq!(report["reason"], "unknown-declaration", "{report}");
+    let hint = report["hint"].as_str().unwrap();
+    assert!(hint.contains("nao_existe"), "a recusa diz o nome: {report}");
+    assert!(hint.contains("Confira o nome"), "o texto de declaração desconhecida: {report}");
+}

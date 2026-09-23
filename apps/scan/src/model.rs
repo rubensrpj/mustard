@@ -288,50 +288,10 @@ pub struct Decl {
     pub used_by: Vec<UseSite>,
 }
 
-/// One use of a declaration: the file the call is written in, the line, and
-/// the declaration it starts from (empty when the call sits outside any
-/// declaration). This is the named edge "who calls whom, where".
-///
-/// Written as one string, `file:line:from` (`file:line` when the call is
-/// outside every declaration) — the same reason as [`CallSite`], and the same
-/// `file:line` a compiler prints.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct UseSite {
-    pub file: String,
-    pub line: usize,
-    pub from: String,
-}
-
-impl Serialize for UseSite {
-    fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
-        if self.from.is_empty() {
-            out.collect_str(&format_args!("{}:{}", self.file, self.line))
-        } else {
-            out.collect_str(&format_args!("{}:{}:{}", self.file, self.line, self.from))
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for UseSite {
-    fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(input)?;
-        let wrong = || D::Error::custom(format!("a use reads `file:line[:from]`, not `{text}`"));
-        let (head, tail) = text.rsplit_once(':').ok_or_else(wrong)?;
-        // `file:line` or `file:line:from` — which one it is, the line number
-        // says: it is always the last part that is a number.
-        Ok(match tail.parse() {
-            Ok(line) => Self { file: head.to_string(), line, from: String::new() },
-            Err(_) => {
-                let (file, line) = head.rsplit_once(':').ok_or_else(wrong)?;
-                Self {
-                    file: file.to_string(),
-                    line: line.parse().map_err(D::Error::custom)?,
-                    from: tail.to_string(),
-                }
-            }
-        })
-    }
-}
+/// One use of a declaration, `file:line:from`. The type lives in the core,
+/// next to the map questions that read it, so the side that writes the map and
+/// the side that answers from it understand the same text.
+pub use mustard_core::domain::project_map::UseSite;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct GraphStats {
