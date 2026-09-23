@@ -97,9 +97,9 @@ pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
 /// As lições do banco que casam com a onda `wave`: as que valem para os
 /// arquivos das tarefas dela ou para as skills que elas nomeiam e, de cada
 /// classe, só as mais ligadas ao texto das tarefas. Uma pasta com centenas
-/// delas passaria do teto de linhas, e a lição sem palavra em comum com a
-/// tarefa só ocupa o agente. São as que a rodada mostra ao orquestrador antes
-/// do envio, e as que o pedido leva, menos as que a escolha dele tirou.
+/// delas passaria do teto de tokens do pedido, e a lição sem palavra em comum
+/// com a tarefa só ocupa o agente. São as que a rodada mostra ao orquestrador
+/// antes do envio, e as que o pedido leva, menos as que a escolha dele tirou.
 #[must_use]
 pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a SpecEvent> {
     let files = wave_files(log, wave);

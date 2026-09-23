@@ -163,6 +163,9 @@ fn as_sobras_da_economia_antiga_nao_existem_mais() {
         ("apps/rt/src/commands/flow/plan.rs", "a onda nasce pequena agora"),
         ("apps/rt/src/commands/flow/plan.rs", "antes da onda nascer pequena"),
         ("apps/rt/src/commands/flow/plan.rs", "quem corta o custo\n    /// agora é o teto de turnos do agente"),
+        // O pedido da onda tem teto em tokens, não em linhas: a escolha das
+        // lições não fala mais do teto que saiu.
+        ("packages/core/src/io/wave_prompt.rs", "passaria do teto de linhas"),
     ] {
         assert!(
             !source(rel).contains(frase),
