@@ -50,7 +50,7 @@ fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
 
     let text = std::fs::read_to_string(&model).expect("read model");
     let v: serde_json::Value = serde_json::from_str(&text).expect("valid model JSON");
-    let pairs = v["modules"]
+    v["modules"]
         .as_array()
         .expect("model.modules")
         .iter()
@@ -61,8 +61,7 @@ fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
                 d["kind"].as_str().expect("declaration.kind").to_string(),
             )
         })
-        .collect();
-    pairs
+        .collect()
 }
 
 /// Build the expected set from `(name, kind)` literals.
