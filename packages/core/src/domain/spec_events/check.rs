@@ -149,12 +149,17 @@ pub(super) fn missing(event_type: &str, field: &str) -> Refusal {
 
 /// Os objetos com campos obrigatórios próprios, dentro de uma lista ou de um
 /// campo: o tipo, o campo e os campos de dentro. A fonte de cada fato do ponto
-/// tem recusa própria e não entra aqui.
+/// tem recusa própria e não entra aqui. O que falta sai na mesma recusa dos
+/// campos do tipo, com o caminho de cada um (`leftovers[2].detail`).
 const NESTED: &[(&str, &str, &[&str])] = &[
     ("point", "facts", &["text"]),
     ("task", "files", &["path"]),
     ("skill", "examples", &["path", "why"]),
     ("send", "skills", &["name", "sha"]),
+    // A sobra que a onda relata vira pendência da spec: sem título ou sem
+    // detalhe, não há o que abrir.
+    ("delivered", "leftovers", &["title", "detail"]),
+    ("delivered", "proofs", &["criterion", "proof"]),
     ("verdict", "criteria", &["criterion", "tests_rule"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
     ("tracking", "items", &["item", "met"]),

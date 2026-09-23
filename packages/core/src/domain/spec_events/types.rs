@@ -262,6 +262,11 @@ const WAVES: Field = opt("waves", Kind::Ints);
 /// O item combinado que não vira código: o valor é o motivo. Quem o traz sai
 /// do aviso dos itens sem tarefa, porque não há tarefa que o implemente.
 const NO_CODE: Field = opt("no_code", Kind::Text);
+/// A volta que o próprio agente grava — a entrega da onda ou o veredito do
+/// revisor —, com `true`. Ela fica fora da leitura até a rodada ou o
+/// fechamento a assumir, gravando a versão oficial, sem o campo, com
+/// `replaces` para ela.
+const RETURNED: Field = opt("returned", Kind::Bool);
 
 const HOOK_ACTIONS: &[&str] = &["warn", "block"];
 const CALL_RESULTS: &[&str] = &["ok", "refused"];
@@ -570,9 +575,26 @@ pub const TYPES: &[TypeSpec] = &[
         "DELIV",
         Block::Waves,
         false,
-        // A lista de arquivos é opcional: a onda que só foi conferir volta sem
-        // mexer em nenhum, e o texto dela diz o que conferiu.
-        &[req("wave", Kind::Int), TEXT, opt("files", Kind::Texts), opt("replan", Kind::Text)],
+        &[
+            req("wave", Kind::Int),
+            TEXT,
+            // A lista de arquivos é opcional: a onda que só foi conferir volta
+            // sem mexer em nenhum, e o texto dela diz o que conferiu.
+            opt("files", Kind::Texts),
+            opt("replan", Kind::Text),
+            // O resumo do commit, em palavras, de onde a rodada monta o título.
+            opt("commit", Kind::Text),
+            // As provas dos testes de nome novo, cada uma com o critério e o
+            // comando (`criterion`, `proof`).
+            opt("proofs", Kind::Objects),
+            // As ondas que um conserto fecha.
+            opt("fixes", Kind::Ints),
+            // O que o agente achou fora da tarefa e não é dele consertar, cada
+            // sobra com título e detalhe (`title`, `detail`): vira pendência
+            // da spec quando a rodada assume a volta.
+            opt("leftovers", Kind::Objects),
+            RETURNED,
+        ],
     ),
     // O agente de onda grava um passo ao terminar cada tarefa e ao provar o
     // vermelho e o verde de cada critério: não substitui a entrega do fim.
@@ -607,6 +629,7 @@ pub const TYPES: &[TypeSpec] = &[
             // veredito (veja `check_conditions`).
             opt("final", Kind::Bool),
             opt("agreed", Kind::Objects),
+            RETURNED,
         ],
     ),
     // A tabela de rastreabilidade que a aceitação do veredito final grava:

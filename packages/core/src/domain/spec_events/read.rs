@@ -55,6 +55,13 @@ impl SpecEvent {
         self.int("replaces").map_or_else(|| self.ints("replaces"), |old| vec![old])
     }
 
+    /// `true` na volta que o próprio agente gravou (`returned`), que só a
+    /// rodada ou o fechamento assume.
+    #[must_use]
+    pub fn returned(&self) -> bool {
+        self.fields.get("returned") == Some(&Value::Bool(true))
+    }
+
     /// O bloco do tipo; `None` para um tipo que este binário não conhece.
     #[must_use]
     pub fn block(&self) -> Option<Block> {
@@ -153,6 +160,10 @@ pub enum Hidden {
     /// O expurgo de número `by`, no formato antigo, tirou o texto dele do
     /// arquivo.
     Purged { by: u64 },
+    /// É a volta que o próprio agente gravou (`returned`): a entrega da onda
+    /// ou o veredito do revisor, que só contam quando a rodada ou o
+    /// fechamento grava a versão oficial.
+    Returned,
 }
 
 /// Um filtro de remoção: um tipo e um intervalo de horário, na hora local de
@@ -297,7 +308,9 @@ impl SpecLog {
     }
 
     /// Os eventos que somem da leitura, cada um com o motivo. O expurgo vence;
-    /// entre remoção e substituição, vale a primeira.
+    /// entre remoção e substituição, vale a primeira; a volta do agente só
+    /// fica com o motivo dela quando nada mais a esconde — é assim que o
+    /// leitor de voltas separa a que espera a rodada da que já foi assumida.
     #[must_use]
     pub fn hidden(&self) -> BTreeMap<u64, Hidden> {
         let mut hidden = BTreeMap::new();
@@ -319,6 +332,9 @@ impl SpecLog {
             for old in event.replaced() {
                 hidden.entry(old).or_insert(Hidden::Replaced { by: event.id });
             }
+        }
+        for event in self.events.iter().filter(|e| e.returned()) {
+            hidden.entry(event.id).or_insert(Hidden::Returned);
         }
         hidden
     }
@@ -348,7 +364,8 @@ impl SpecLog {
     }
 
     /// As ondas que já têm registro de entrega. O que elas fizeram está
-    /// provado pelo código que entrou, e não pelo texto que o descreveu.
+    /// provado pelo código que entrou, e não pelo texto que o descreveu. A
+    /// volta que a rodada ainda não assumiu não conta: está fora da leitura.
     #[must_use]
     pub fn delivered_waves(&self) -> BTreeSet<u64> {
         self.block(BlockQuery::Block(Block::Waves))
@@ -356,6 +373,39 @@ impl SpecLog {
             .filter(|event| event.event_type == "delivered")
             .filter_map(SpecEvent::wave)
             .collect()
+    }
+
+    /// As voltas que a rodada ou o fechamento ainda não assumiu, em ordem de
+    /// número: a última de cada onda, uma por tipo — a entrega da onda e o
+    /// veredito do revisor —, e a do veredito final, que vem sem onda. A
+    /// volta é o evento que o próprio agente grava com `returned`, fora da
+    /// leitura; a rodada a assume gravando a versão oficial, sem o campo, com
+    /// `replaces` para ela. Da versão oficial para trás, nenhuma volta da
+    /// mesma onda espera mais, nem a que ela não apontou: só a gravada depois
+    /// dela.
+    #[must_use]
+    pub fn unassumed_returns(&self) -> Vec<&SpecEvent> {
+        let hidden = self.hidden();
+        let mut official: BTreeMap<(&str, Option<u64>), u64> = BTreeMap::new();
+        let mut last: BTreeMap<(&str, Option<u64>), &SpecEvent> = BTreeMap::new();
+        for event in self.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "verdict")) {
+            let key = (event.event_type.as_str(), event.wave());
+            if !event.returned() {
+                let newest = official.entry(key).or_insert(event.id);
+                *newest = (*newest).max(event.id);
+            } else if hidden.get(&event.id) == Some(&Hidden::Returned)
+                && last.get(&key).is_none_or(|kept| kept.id < event.id)
+            {
+                last.insert(key, event);
+            }
+        }
+        let mut out: Vec<&SpecEvent> = last
+            .into_iter()
+            .filter(|(key, event)| official.get(key).is_none_or(|id| *id < event.id))
+            .map(|(_, event)| event)
+            .collect();
+        out.sort_by_key(|event| event.id);
+        out
     }
 
     /// Os arquivos que os commits desta obra tocaram, de toda onda — a prova
