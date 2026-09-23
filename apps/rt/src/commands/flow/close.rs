@@ -489,8 +489,9 @@ fn machine(
         };
         // Nenhum dos dois é prova de critério: eles não prometem rodar um
         // teste pelo nome, e a leitura de quantos testes a saída diz fica
-        // fora do caminho deles.
-        let out = crate::commands::review::qa_run::run_command(&clean_env(&command), root);
+        // fora do caminho deles. O teto também é o deles, de uma hora, e não
+        // o de um critério: a suíte inteira leva o tempo que o projeto pede.
+        let out = crate::commands::review::qa_run::run_server_command(&clean_env(&command), root);
         if out.result != "pass" {
             return Err(if key == "lintCommand" {
                 CloseRefusal::LintFailed { command, output: out.output }
@@ -1381,6 +1382,39 @@ exit "${2:-0}"
             .collect();
         assert_eq!(hints.len(), 1, "{asked}");
         assert!(hints[0].contains("`testCommand`"), "{hints:?}");
+    }
+
+    /// A suíte e o lint que o fechamento repete do servidor não usam o teto
+    /// de uma prova de critério: o teto deles é de uma hora, com ou sem a
+    /// variável `MUSTARD_QA_AC_TIMEOUT_SECS`, que continua valendo só para a
+    /// prova. Pelo caminho de quem usa: com a variável injetada em 1 segundo,
+    /// a suíte que leva 2 segundos passa, e o fechamento segue até o revisor;
+    /// pela porta do critério ela seria cortada e o fechamento recusaria com
+    /// a suíte vermelha.
+    #[test]
+    fn a_suite_do_fechamento_nao_usa_o_teto_do_criterio() {
+        use crate::commands::review::qa_run::{ceiling_secs, with_timeout_variable, Ceiling};
+        let hour = 60 * 60;
+        for command in ["pnpm test", "pnpm lint"] {
+            assert_eq!(ceiling_secs(Ceiling::ServerCommand, command, None, &[]), hour, "{command}");
+            assert_eq!(ceiling_secs(Ceiling::ServerCommand, command, Some("1"), &[]), hour, "{command}");
+            let declared = [command.to_string()];
+            assert_eq!(ceiling_secs(Ceiling::ServerCommand, command, None, &declared), hour, "{command}");
+        }
+        assert_eq!(ceiling_secs(Ceiling::Criterion, "pnpm test", None, &[]), 120);
+        assert_eq!(ceiling_secs(Ceiling::Criterion, "pnpm test", Some("1"), &[]), 1);
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        std::fs::write(root.join("mustard.json"), json!({ "lintCommand": "sleep 2", "testCommand": "sleep 2" }).to_string())
+            .unwrap();
+        let asked = with_timeout_variable("1", || {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None)
+        });
+        assert_ne!(asked["reason"], json!("lint-failed"), "o lint não é cortado pelo teto do critério: {asked}");
+        assert_ne!(asked["reason"], json!("suite-failed"), "a suíte não é cortada pelo teto do critério: {asked}");
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     }
 
     /// O motor do comando `qa-run` saiu de `qa_run/mod.rs` e

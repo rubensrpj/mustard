@@ -157,10 +157,11 @@ fn survey(project: &Project) {
     }
 }
 
-/// O plano de uma onda: o critério com a prova, a onda e a tarefa; devolve o
-/// número da mensagem que o origina e o do critério.
+/// O plano de uma tarefa só: o critério com a prova e a tarefa que o cobre,
+/// sem onda — a onda nasce da rodada, pela cesta; devolve o número da
+/// mensagem que o origina e o do critério.
 fn plan(project: &Project) -> (u64, u64) {
-    let said = user_says(project, "O plano é uma onda só, que soma dois números.");
+    let said = user_says(project, "O plano é uma tarefa só, que soma dois números.");
     let criterion = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
@@ -169,14 +170,9 @@ fn plan(project: &Project) -> (u64, u64) {
         .as_u64()
         .expect("the criterion id");
     project.write(
-        "wave",
-        &json!({"n": 1, "text": "Onda 1: a soma.", "criteria": [criterion], "done_when": "A soma aparece.",
-            "origin": said}),
-    );
-    project.write(
         "task",
-        &json!({"wave": 1, "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
-            "depends_on": [], "origin": said}),
+        &json!({"text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
+            "depends_on": [], "covers": [criterion], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);
     (said, criterion)
@@ -248,12 +244,13 @@ fn copied_items(project: &Project) -> Vec<u64> {
     out
 }
 
-/// A onda, a tarefa, o critério ou o item do combinado gravado numa spec já
+/// A tarefa, o critério ou o item do combinado gravado numa spec já
 /// aprovada, sem pedido do usuário no mesmo passo, traz na própria resposta a
 /// cópia preparada para a página, com esse item dentro, e manda copiá-la —
 /// antes desta obra só o pedido do usuário preparava a cópia, e ele vinha
-/// antes das ondas novas: a cópia saía sem elas, e a página ficava sem a onda
-/// nova até a rodada seguinte.
+/// antes do plano novo: a cópia saía sem ele, e a página ficava sem o item
+/// novo até a rodada seguinte. A onda não entra no caso: ela nasce só da
+/// rodada, pela cesta.
 #[test]
 fn gravacao_no_plano_depois_da_aprovacao_prepara_a_copia_da_pagina() {
     let project = Project::new();
@@ -271,31 +268,39 @@ fn gravacao_no_plano_depois_da_aprovacao_prepara_a_copia_da_pagina() {
     follow(&project, &first_round);
     let before = copied_items(&project);
 
-    // Uma onda nova, gravada direto — sem pedido do usuário no mesmo passo —,
-    // numa spec já aprovada e já publicada: a resposta já traz a cópia
-    // preparada com essa onda dentro, e manda copiá-la.
+    // Um critério, uma tarefa e um item do combinado novos, gravados direto —
+    // sem pedido do usuário no mesmo passo —, numa spec já aprovada e já
+    // publicada: cada resposta já traz a cópia preparada com o item dentro, e
+    // manda copiá-la.
     let said2 = user_says(&project, "Incluir também a subtração.");
     let criterion2 = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a subtração aparece", "proof": "git --version", "form": "ubiquitous",
             "origin": said2}),
     );
-    let wave2 = project.write(
-        "wave",
-        &json!({"n": 2, "text": "Onda 2: a subtração.", "criteria": [criterion2["id"]],
-            "done_when": "A subtração aparece.", "origin": said2}),
+    let task2 = project.write(
+        "task",
+        &json!({"text": "Subtrair dois números no programa.", "files": [{"path": "src/main.rs"}],
+            "depends_on": [], "covers": [criterion2["id"]], "origin": said2}),
     );
-    assert!(wave2["copy"].is_object(), "a gravação do plano não trouxe a cópia preparada: {wave2}");
-    let next = wave2["next"].as_str().unwrap_or_default();
-    assert!(next.contains("write copy") && next.contains(SPEC_URL), "a resposta não manda copiar a página: {wave2}");
-    follow(&project, &wave2);
-
+    let rule2 = project.write(
+        "rule",
+        &json!({"text": "A subtração usa o mesmo formato da soma.", "keys": ["subtração"],
+            "example": "3 - 1 imprime 2, como 1 + 1 imprime 2.", "applies_to": {"files": ["**"]},
+            "origin": said2}),
+    );
+    for written in [&criterion2, &task2, &rule2] {
+        assert!(written["copy"].is_object(), "a gravação do plano não trouxe a cópia preparada: {written}");
+        let next = written["next"].as_str().unwrap_or_default();
+        assert!(next.contains("write copy") && next.contains(SPEC_URL), "a resposta não manda copiar a página: {written}");
+        follow(&project, written);
+        let after = copied_items(&project);
+        let id = written["id"].as_u64().expect("the item id");
+        assert!(!before.contains(&id), "o item novo não podia estar na cópia de antes: {before:?}");
+        assert!(after.contains(&id), "a cópia depois do item novo não o leva: {written} {after:?}");
+    }
+    // A cópia leva tudo desde a última cópia gravada, junto dos itens novos:
+    // a mensagem que originou o plano da primeira tarefa segue na faixa.
     let after = copied_items(&project);
-    let wave2_id = wave2["id"].as_u64().expect("the wave id");
-    assert!(!before.contains(&wave2_id), "a onda nova não podia estar na cópia de antes: {before:?}");
-    assert!(after.contains(&wave2_id), "a cópia depois da onda nova não a leva: {after:?}");
-    // A cópia leva tudo desde a última cópia gravada: o objetivo, os pontos
-    // do levantamento e o plano da onda 1 seguem na faixa, junto da onda
-    // nova.
     assert!(after.contains(&said), "a cópia não leva mais o que já estava desde a última cópia gravada: {after:?}");
 }

@@ -453,7 +453,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     // as ondas que dividem um mesmo arquivo, e este teste prova as duas
     // saindo juntas, sem cruzar arquivo nenhuma com a outra.
     for n in [1, 2] {
-        put("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "passa", "origin": said}));
+        put("wave", json!({"author": "binary", "n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "passa", "origin": said}));
         put("task", json!({"wave": n, "text": "Mexer no arquivo dela.", "files": [{"path": format!("src/onda{n}.rs")}], "origin": said}));
     }
     put("state", json!({"phase": "running", "branch": "feature/copia"}));

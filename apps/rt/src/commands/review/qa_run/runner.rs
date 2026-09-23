@@ -33,6 +33,26 @@ pub(super) const UNNAMEABLE_BINARY: &str = "the binary running this pass";
 /// silent `skip`). Mirrors `TIMEOUT_RUST_SECS` in `verify-pipeline`.
 const AC_TIMEOUT_CARGO_SECS: u64 = 600;
 
+/// Teto (uma hora) dos dois comandos que o servidor roda e que o fechamento
+/// repete — o `lintCommand` e o `testCommand` do `mustard.json`. Não é o teto
+/// de uma prova de critério: uma suíte inteira leva o tempo que o projeto
+/// precisa, e o `pnpm test` de um projeto Node passa com folga dos 2 minutos
+/// de um critério. Ele só existe para a máquina não ficar presa num processo
+/// travado, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` não o alcança.
+const SERVER_COMMAND_TIMEOUT_SECS: u64 = 3600;
+
+/// Que teto de tempo vale para um comando: o de uma prova de critério ou o
+/// de um comando do servidor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ceiling {
+    /// A prova de um critério: 2 minutos, 10 para o que compila, ou o valor
+    /// da variável `MUSTARD_QA_AC_TIMEOUT_SECS`.
+    Criterion,
+    /// O lint ou a suíte que o servidor roda: [`SERVER_COMMAND_TIMEOUT_SECS`],
+    /// sempre.
+    ServerCommand,
+}
+
 /// The cargo target directory a build launched from `cwd` would write into:
 /// `CARGO_TARGET_DIR` when it is set, otherwise `<workspace root>/target`,
 /// where the workspace root is the TOPMOST ancestor of `cwd` carrying a
@@ -296,14 +316,15 @@ pub(super) fn running_binary_label(cwd: &Path, running: &Path) -> String {
     }
 }
 
-/// Per-AC timeout for `command`, env-aware.
+/// Timeout for `command` under `ceiling`, env-aware: the environment is read
+/// here, and the choice itself is [`ceiling_secs`], a pure function.
 ///
 /// `MUSTARD_QA_AC_TIMEOUT_SECS` (whole seconds, `u64`) overrides BOTH defaults
 /// when set to a parseable value; an invalid value is ignored. Without the
 /// override, commands containing `cargo ` get [`AC_TIMEOUT_CARGO_SECS`]
 /// (compilation-bound) and everything else keeps [`AC_TIMEOUT_SECS`].
-fn ac_timeout_secs(command: &str) -> u64 {
-    let env = std::env::var("MUSTARD_QA_AC_TIMEOUT_SECS").ok();
+fn ac_timeout_secs(command: &str, ceiling: Ceiling) -> u64 {
+    let env = timeout_variable();
     // The project's OWN build and type-check commands, so the compile-bound
     // ceiling is not a list of tool names this file happens to know. Both are
     // already declared in `mustard.json`; fail-open to none.
@@ -315,7 +336,51 @@ fn ac_timeout_secs(command: &str) -> u64 {
         .into_iter()
         .flatten()
         .collect();
-    ac_timeout_secs_with_override(command, env.as_deref(), &compiling)
+    ceiling_secs(ceiling, command, env.as_deref(), &compiling)
+}
+
+/// O valor da variável `MUSTARD_QA_AC_TIMEOUT_SECS`. Nos testes, o valor
+/// injetado por [`with_timeout_variable`] vence o do ambiente, para que o
+/// caminho inteiro do fechamento seja testado com a variável ligada sem
+/// mexer no ambiente do processo.
+fn timeout_variable() -> Option<String> {
+    #[cfg(test)]
+    if let Some(value) = TIMEOUT_VARIABLE_FOR_TEST.with(|cell| cell.borrow().clone()) {
+        return Some(value);
+    }
+    std::env::var("MUSTARD_QA_AC_TIMEOUT_SECS").ok()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// O valor da variável de teto que um teste injeta nesta thread.
+    static TIMEOUT_VARIABLE_FOR_TEST: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Roda `f` como se a variável `MUSTARD_QA_AC_TIMEOUT_SECS` valesse `value`
+/// nesta thread, e a desliga depois.
+#[cfg(test)]
+pub(crate) fn with_timeout_variable<T>(value: &str, f: impl FnOnce() -> T) -> T {
+    TIMEOUT_VARIABLE_FOR_TEST.with(|cell| *cell.borrow_mut() = Some(value.to_string()));
+    let out = f();
+    TIMEOUT_VARIABLE_FOR_TEST.with(|cell| *cell.borrow_mut() = None);
+    out
+}
+
+/// A escolha do teto, função pura das entradas: sem relógio e sem ambiente
+/// lidos aqui dentro. O comando do servidor tem sempre o teto dele, com ou
+/// sem a variável; a prova de critério segue o teto de sempre.
+pub(crate) fn ceiling_secs(
+    ceiling: Ceiling,
+    command: &str,
+    env_override: Option<&str>,
+    compiling: &[String],
+) -> u64 {
+    match ceiling {
+        Ceiling::ServerCommand => SERVER_COMMAND_TIMEOUT_SECS,
+        Ceiling::Criterion => ac_timeout_secs_with_override(command, env_override, compiling),
+    }
 }
 
 /// Deterministic core of [`ac_timeout_secs`]: the env value is injected as a
@@ -456,7 +521,19 @@ fn excerpt(s: &str) -> String {
 /// evidence); an uncompilable pattern degrades to `skip` (fail-open). When
 /// absent, the exit-code-only verdict is byte-for-byte the historical one.
 pub(super) fn run_ac_command(command: &str, expect: Option<&str>, cwd: &Path) -> AcResult {
-    let timeout = Duration::from_secs(ac_timeout_secs(command));
+    run_with_ceiling(command, expect, cwd, Ceiling::Criterion)
+}
+
+/// Roda um dos dois comandos do servidor com o teto deles
+/// ([`SERVER_COMMAND_TIMEOUT_SECS`]), pelo mesmo executor e com a mesma
+/// classificação da prova de um critério.
+pub(super) fn run_server_command(command: &str, cwd: &Path) -> AcResult {
+    run_with_ceiling(command, None, cwd, Ceiling::ServerCommand)
+}
+
+/// O executor com o teto que `ceiling` escolhe.
+fn run_with_ceiling(command: &str, expect: Option<&str>, cwd: &Path, ceiling: Ceiling) -> AcResult {
+    let timeout = Duration::from_secs(ac_timeout_secs(command, ceiling));
     let running = std::env::current_exe().ok();
     run_ac_command_with_timeout(command, expect, cwd, timeout, running.as_deref())
 }

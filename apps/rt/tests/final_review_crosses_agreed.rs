@@ -170,24 +170,19 @@ fn survey(project: &Project) -> Vec<Value> {
     decisions
 }
 
-/// O plano de uma onda: o critério com a prova, a onda e a tarefa que muda
-/// `src/main.rs`.
+/// O plano de uma tarefa só: o critério com a prova e a tarefa que o cobre e
+/// muda `src/main.rs`, sem onda. A onda nasce da rodada, pela cesta.
 fn plan(project: &Project) {
-    let said = user_says(project, "O plano é uma onda só, que soma dois números.");
+    let said = user_says(project, "O plano é uma tarefa só, que soma dois números.");
     let criterion = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
             "origin": said}),
     );
     project.write(
-        "wave",
-        &json!({"n": 1, "text": "Onda 1: a soma.", "criteria": [criterion["id"]], "done_when": "A soma aparece.",
-            "origin": said}),
-    );
-    project.write(
         "task",
-        &json!({"wave": 1, "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
-            "depends_on": [], "origin": said}),
+        &json!({"text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
+            "depends_on": [], "covers": [criterion["id"]], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);
 }

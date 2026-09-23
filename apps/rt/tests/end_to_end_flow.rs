@@ -338,29 +338,25 @@ fn survey(project: &Project) {
     }
 }
 
-/// O plano de uma onda: o critério com a prova, a onda e a tarefa.
+/// O plano de uma tarefa só: o critério com a prova e a tarefa que o cobre,
+/// sem onda. A onda nasce da rodada, pela cesta, com autor binário.
 fn plan(project: &Project) {
     plan_files(project, &["src/main.rs"]);
 }
 
 /// [`plan`] com a tarefa mudando os arquivos `files`.
 fn plan_files(project: &Project, files: &[&str]) {
-    let said = user_says(project, "O plano é uma onda só, que muda a saudação.");
+    let said = user_says(project, "O plano é uma tarefa só, que muda a saudação.");
     let criterion = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
-    project.write(
-        "wave",
-        &json!({"n": 1, "text": "Onda 1: a saudação nova.", "criteria": [criterion["id"]],
-            "done_when": "A saudação nova aparece.", "origin": said}),
-    );
     let files: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
     project.write(
         "task",
-        &json!({"wave": 1, "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
-            "origin": said}),
+        &json!({"text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
+            "covers": [criterion["id"]], "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
@@ -490,6 +486,50 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .collect();
     names.sort();
     assert_eq!(names, ["copy", "spec.ndjson"], "the spec folder ends with the events and the copy, and no page");
+}
+
+/// O fluxo inteiro, da abertura ao pull request, não grava onda pela linha de
+/// comando: o plano leva só o critério e a tarefa, e a onda que sai nasce da
+/// rodada, pela cesta. No fim, toda linha de onda do arquivo da spec — lida
+/// crua, com as versões antigas e as removidas — tem autor binário, e há ao
+/// menos uma, para a conferência não passar num arquivo sem onda.
+#[test]
+fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    plan(&project);
+    approve(&project);
+
+    let first = first_round(&project);
+    assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
+        "commit": "a saudação vira olá"});
+    project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
+    project.run(&["close", "--spec", SPEC]);
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
+        "agreed": agreed_all_met(&project)});
+    let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
+    let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
+    let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
+    project.run(&argv);
+    assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"));
+
+    let path = store::spec_file(&project.root, SPEC).expect("spec file");
+    let content = std::fs::read_to_string(&path).expect("the spec file");
+    let waves: Vec<Value> = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["type"] == json!("wave"))
+        .collect();
+    assert!(!waves.is_empty(), "the round wrote the wave of the lot: {content}");
+    for wave in &waves {
+        assert_eq!(wave["author"], json!("binary"), "a wave that is not the binary's: {wave}");
+    }
 }
 
 /// Um critério gravado sem declarar a forma dele é recusado, e a recusa lista

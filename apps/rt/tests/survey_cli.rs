@@ -223,7 +223,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
             "--spec",
             SPEC,
             "--json",
-            &json!({"wave": 1, "text": "Somar dois números.", "files": [], "origin": said}).to_string(),
+            &json!({"text": "Somar dois números.", "files": [], "origin": said}).to_string(),
         ],
     );
     let refused = report(&out);
@@ -246,7 +246,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
             "--spec",
             SPEC,
             "--json",
-            &json!({"wave": 1, "text": "Somar dois números.", "origin": said}).to_string(),
+            &json!({"text": "Somar dois números.", "origin": said}).to_string(),
         ],
     );
     let refused = report(&out);
@@ -264,7 +264,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
     let written = write(
         root,
         "task",
-        &json!({"wave": 1, "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
+        &json!({"text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
     );
     assert!(written.get("id").is_some(), "{written}");
     assert_eq!(std::fs::read_to_string(&path).expect("the spec file").lines().count(), lines_before + 1);

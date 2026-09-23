@@ -127,6 +127,14 @@ impl Project {
     fn log(&self) -> SpecLog {
         store::read(&store::spec_file(&self.root, SPEC).expect("spec file")).expect("readable").expect("the spec file")
     }
+
+    /// Um evento semeado cru no arquivo da spec, sem passar pela linha de
+    /// comando: é assim que o teste monta o que uma spec antiga já traz
+    /// gravado. Devolve o `id` gravado.
+    fn seed(&self, event_type: &str, fields: &Value) -> u64 {
+        let path = store::spec_file(&self.root, SPEC).expect("spec file");
+        store::write(&path, event_type, fields.as_object().cloned().expect("an object"), &[]).expect(event_type).id
+    }
 }
 
 /// A fala do usuário, pelo gancho da entrada; devolve o número dela.
@@ -328,16 +336,18 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
 
-    // A onda 1, numerada à mão, como uma spec antiga gravava antes desta
-    // obra: o plano de uma tarefa só, no arquivo que já existe no projeto.
-    project.write(
+    // A onda 1, numerada, como uma spec antiga a trazia gravada antes desta
+    // obra: semeada crua no arquivo, com autor binário, e nunca pela linha de
+    // comando. O plano é de uma tarefa só, no arquivo que já existe.
+    project.seed(
         "wave",
-        &json!({"n": 1, "text": "Onda 1.", "criteria": [crit_id], "done_when": "git --version", "origin": said}),
-    );
-    project.write(
-        "task",
-        &json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/main.rs"}], "depends_on": [],
+        &json!({"author": "binary", "n": 1, "text": "Onda 1.", "criteria": [crit_id], "done_when": "git --version",
             "origin": said}),
+    );
+    project.seed(
+        "task",
+        &json!({"author": "assistant", "wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/main.rs"}],
+            "depends_on": [], "covers": [crit_id], "origin": said}),
     );
 
     project.run(&["plan", "--spec", SPEC]);
@@ -358,14 +368,13 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu"});
     project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
 
-    // Uma tarefa de spec antiga: carrega o número 7, que nunca virou onda.
-    let old = project.write(
+    // Uma tarefa de spec antiga: carrega o número 7, que nunca virou onda,
+    // semeada crua como a spec antiga a traz.
+    let old = project.seed(
         "task",
-        &json!({"wave": 7, "text": "Tarefa de spec antiga.", "files": [{"path": "src/b.rs", "new": true}],
-            "depends_on": [], "covers": [crit_id], "origin": said}),
-    )["id"]
-        .as_u64()
-        .expect("the recorded task has an id");
+        &json!({"author": "assistant", "wave": 7, "text": "Tarefa de spec antiga.",
+            "files": [{"path": "src/b.rs", "new": true}], "depends_on": [], "covers": [crit_id], "origin": said}),
+    );
 
     project.run(&["round", "--spec", SPEC]);
 

@@ -344,12 +344,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("close.final_review", Locale::PtBr) => {
             "A máquina passou: antes do pull request, despache ao agente de teste dedicado o pedido \
              em `review.prompt` e feche de novo com a linha do fim dele, como veio: \
-             `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`."
+             `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`. Rode-o em segundo \
+             plano e espere o aviso de fim: a suíte inteira pode passar dos 10 minutos que o terminal \
+             espera por um comando."
         }
         ("close.final_review", Locale::EnUs) => {
             "The machine passed: before the pull request, dispatch the request in `review.prompt` to \
              the dedicated test agent, and close again with its closing line, as it came: \
-             `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`."
+             `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`. Run it in the \
+             background and wait for the notice that it ended: the whole suite can take longer than \
+             the 10 minutes the terminal waits for a command."
         }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
@@ -1175,7 +1179,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             153,
-            0xa63e_7e2c_8789_de66,
+            0x5677_a16f_6668_dc3a,
         );
     }
 

@@ -228,32 +228,28 @@ fn a_round_forms_a_lot_from_the_basket_and_records_it_as_the_binarys_wave() {
     assert_eq!(wave.str_field("author"), Some("binary"), "the lot the round forms is the binary's, not hand-designed");
 }
 
-/// Uma spec aprovada com uma tarefa cujo texto passa do teto de tokens do
-/// pedido: a rodada mede o pedido antes de gravar o envio e recusa, dizendo
-/// o tamanho medido e o teto de 25 mil, sem gravar nada.
+/// Uma spec aprovada com uma tarefa cujo pedido passa do teto de tokens: a
+/// rodada forma o lote pela cesta, mede o pedido antes de gravar o envio e
+/// recusa, dizendo o tamanho medido e o teto de 25 mil, sem gravar nada.
 #[test]
 fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
+    // O pronto-quando da onda abre o pedido de verdade, e a onda que a cesta
+    // forma o tira da prova do critério que a tarefa cobre: é a prova que
+    // precisa ser grande, bem acima do teto de 25 mil tokens (perto de quatro
+    // caracteres por token) — cento e vinte mil caracteres passam do teto.
+    let huge = "a".repeat(120_000);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "form": "ubiquitous", "origin": said}),
-    );
-    // O `done_when` da onda abre o pedido de verdade, então é ele que
-    // precisa ser grande: um texto bem acima do teto de 25 mil tokens (perto
-    // de quatro caracteres por token) — cem mil caracteres passam do teto.
-    let huge = "a".repeat(120_000);
-    project.write(
-        "wave",
-        &json!({"n": 1, "text": "Onda 1: a saudação nova.", "criteria": [criterion["id"]],
-            "done_when": format!("A saudação nova aparece. {huge}"), "origin": said}),
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece",
+            "proof": format!("git --version {huge}"), "form": "ubiquitous", "origin": said}),
     );
     project.write(
         "task",
-        &json!({"wave": 1, "text": "Trocar a saudação no programa.",
-            "files": [{"path": "src/main.rs"}], "depends_on": [], "origin": said}),
+        &json!({"text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
+            "depends_on": [], "covers": [criterion["id"]], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);

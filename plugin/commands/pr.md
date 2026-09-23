@@ -9,7 +9,7 @@ Print each JSON answer as it came. The PR body is not yours to write. The binary
 
 ## open
 
-1. The spec closes first: `mustard-rt run close --spec {spec}`. A refusal says what is missing.
+1. The spec closes first: `mustard-rt run close --spec {spec}`. Run it in the background and wait for the notice that it ended: it runs the lint and the whole suite the server runs, which can take longer than the 10 minutes the terminal waits for a command. A refusal says what is missing.
 2. Record the summary for whoever reviews, in two or three sentences: `mustard-rt run write pr_summary --spec {spec} --json '{"text":"…"}'`. Every number in it is measured, and what is still open is named.
 3. Run `mustard-rt run pr-open --base <base> --head <branch> --spec {spec}`. An existing pull request only gets its body rewritten.
 4. It publishes: it does not judge and does not gate. A red suite is reported, never investigated here. A push refused by the repository's own tooling is reported, not routed around.

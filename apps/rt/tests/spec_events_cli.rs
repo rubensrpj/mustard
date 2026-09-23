@@ -62,7 +62,8 @@ fn seed_binary(root: &Path, event_type: &str, fields: &Value) -> u64 {
 }
 
 /// A spec aprovada com `waves` ondas soltas, cada uma com a sua tarefa e o
-/// seu arquivo.
+/// seu arquivo. As ondas saem com o autor do programa, como a rodada as
+/// grava ao montar os lotes.
 fn approved_with_waves(root: &Path, waves: u64) {
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
@@ -71,7 +72,7 @@ fn approved_with_waves(root: &Path, waves: u64) {
     let crit = seed_binary(root, "criterion",
         &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": said}));
     for n in 1..=waves {
-        seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+        seed_binary(root, "wave", &json!({"author": "binary", "n": n, "text": format!("Onda {n}."), "criteria": [crit],
             "done_when": "x", "origin": said}));
         seed_binary(root, "task", &json!({"wave": n, "text": format!("Tarefa {n}."),
             "files": [{"path": format!("a{n}.rs")}], "origin": said}));
@@ -239,7 +240,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let c2 = write(root, "criterion",
         &json!({"when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
     write(root, "wave", &json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
-    write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
+    write(root, "task", &json!({"text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
     write(root, "wave", &json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "depends_on": [1], "origin": msg}));
     write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": msg}));
     seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
@@ -329,7 +330,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     let crit = seed_binary(root, "criterion",
         &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": said}));
     for (n, files) in [(1u64, ["a1.rs"].as_slice()), (2u64, ["Makefile"].as_slice())] {
-        seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+        seed_binary(root, "wave", &json!({"author": "binary", "n": n, "text": format!("Onda {n}."), "criteria": [crit],
             "done_when": "x", "origin": said}));
         let declared: Vec<Value> = files.iter().map(|f| json!({"path": f})).collect();
         seed_binary(root, "task", &json!({"wave": n, "text": format!("Tarefa {n}."), "files": declared, "origin": said}));

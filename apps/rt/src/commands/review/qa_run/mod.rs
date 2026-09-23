@@ -2,8 +2,9 @@
 //! [`run_proof`], which runs one criterion's proof, [`run_criteria_proofs`],
 //! the loop that the close and the round both call to run a list of
 //! criteria in order and stop at the first that does not pass,
-//! [`run_command`], which the close calls for the project lint, and the
-//! section reader the page uses.
+//! [`run_command`], which runs a flow command that is not a proof,
+//! [`run_server_command`], which the close calls for the lint and the whole
+//! suite the server runs, and the section reader the page uses.
 //!
 //! As duas portas rodam o mesmo comando do mesmo jeito e se separam numa
 //! leitura só: quantos testes a saída diz ter rodado. Ela vale na prova de um
@@ -13,6 +14,9 @@
 use std::path::Path;
 
 mod runner;
+
+#[cfg(test)]
+pub(crate) use runner::{ceiling_secs, with_timeout_variable, Ceiling};
 
 /// One AC execution outcome.
 pub(crate) struct AcResult {
@@ -59,15 +63,24 @@ pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_ac_command(command, None, cwd), true)
 }
 
-/// Roda um comando do fluxo que não é prova de critério — hoje, o lint do
-/// projeto no fechamento — pelo mesmo executor do QA, com o mesmo shell e o
-/// mesmo teto de tempo.
+/// Roda um comando do fluxo que não é prova de critério — hoje, a
+/// compilação que a rodada confere — pelo mesmo executor do QA, com o mesmo
+/// shell e o mesmo teto de tempo.
 ///
 /// A leitura de quantos testes o comando rodou não vale aqui: um lint verde
 /// cuja saída cite "no tests" não é uma prova que deixou de provar, e quem
 /// lesse assim recusaria um verde legítimo.
 pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_ac_command(command, None, cwd), false)
+}
+
+/// Roda um dos dois comandos que o servidor roda — o `lintCommand` e o
+/// `testCommand` do `mustard.json` —, como o fechamento os repete. Mesmo
+/// executor e mesma leitura de [`run_command`], com um teto só deles, de uma
+/// hora: a suíte inteira de um projeto não cabe no teto de uma prova de
+/// critério, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` vale só para a prova.
+pub(crate) fn run_server_command(command: &str, cwd: &Path) -> ProofRun {
+    graded(runner::run_server_command(command, cwd), false)
 }
 
 /// A prova de um critério que não passou: o código dele, o comando inteiro

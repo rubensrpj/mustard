@@ -388,20 +388,26 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 
 /// Para os testes: grava como a produção grava. A mensagem do usuário chega
 /// pelos ganchos, e o que uma onda entregou e o commit, pela rodada; os três
-/// passam por [`record`], como lá. O resto passa pelo `run write`. O relatório
-/// tem a forma do `run write`, e a spec que não foi aberta é recusada do
-/// mesmo jeito.
+/// passam por [`record`], como lá. A onda e a tarefa que já traz o número da
+/// onda são do programa, que monta os lotes: também passam por [`record`], e
+/// a onda sai com o autor do programa, como a rodada a grava. O resto passa
+/// pelo `run write`. O relatório tem a forma do `run write`, e a spec que não
+/// foi aberta é recusada do mesmo jeito.
 #[cfg(test)]
 pub(crate) fn seed_at(opts: &WriteOpts) -> Value {
     let event_type = opts.event_type.trim();
     let draft = serde_json::from_str::<Value>(&opts.json).ok().and_then(|v| v.as_object().cloned());
-    let (Some(spec), Some(draft)) = (opts.spec.as_deref(), draft) else {
+    let (Some(spec), Some(mut draft)) = (opts.spec.as_deref(), draft) else {
         return write_at(opts);
     };
     let project = super::project(&opts.root);
     let by_hooks = matches!(event_type, "delivered" | "commit") || (event_type == "message" && by_user(&draft));
-    if !by_hooks || spec_was_opened(&project.root, spec).is_err() {
+    let by_program = event_type == "wave" || (event_type == "task" && draft.contains_key("wave"));
+    if !(by_hooks || by_program) || spec_was_opened(&project.root, spec).is_err() {
         return write_at(opts);
+    }
+    if event_type == "wave" {
+        draft.insert("author".to_string(), json!("binary"));
     }
     match record(&opts.root, spec, event_type, draft, PhaseWriter::Binary) {
         Ok(Recorded { written, .. }) => {
@@ -2115,7 +2121,15 @@ mod tests {
         if let Some(old) = replaces {
             wave["replaces"] = json!(old);
         }
-        write(root, "wave", &wave.to_string())
+        // A onda entra pela porta do modelo, a do `run write`, e não pela
+        // semente dos testes, que grava a onda como o programa.
+        open_spec(root, "teste");
+        write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            event_type: "wave".into(),
+            json: wave.to_string(),
+        })
     }
 
     /// Um pedido do usuário depois da aprovação entra na mesma spec, na mesma
@@ -2186,6 +2200,40 @@ mod tests {
         let log = DiskSpecState::new(root).log("teste").unwrap();
         assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 6, "the new waves are in the file");
         assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
+    }
+
+    /// A onda semeada pelos testes sai como a rodada a grava: com o autor do
+    /// programa, pela porta do binário. A tarefa que traz o número da onda
+    /// vai pela mesma porta. Nada passa pela gravação do modelo: ela recusa o
+    /// autor do programa, e numa spec aprovada juntaria ao relatório a cópia
+    /// para o banco da página.
+    #[test]
+    fn a_onda_semeada_pelos_testes_sai_com_autor_binario() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
+        let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        witness_approves(root);
+
+        let wave = json!({"n": 1, "text": "Onda 1.", "criteria": [criterion], "done_when": "d", "origin": msg});
+        let seeded = write(root, "wave", &wave.to_string());
+        let task = json!({"wave": 1, "text": "Tarefa 1.", "files": [], "depends_on": [], "origin": msg});
+        let task = write(root, "task", &task.to_string());
+        for report in [&seeded, &task] {
+            assert_eq!(report["ok"], json!(true), "{report}");
+            let model_only: Vec<&str> =
+                ["copy", "next", "warnings"].into_iter().filter(|key| report.get(*key).is_some()).collect();
+            assert!(model_only.is_empty(), "the seed went through the model's write: {report}");
+        }
+
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let written = log.get(seeded["id"].as_u64().unwrap()).unwrap();
+        assert_eq!((written.event_type.as_str(), written.str_field("author")), ("wave", Some("binary")));
+        let written = log.get(task["id"].as_u64().unwrap()).unwrap();
+        assert_eq!((written.event_type.as_str(), written.wave()), ("task", Some(1)));
+        assert!(!root.join(".claude/spec/teste/copy").exists(), "no copy for the page was prepared");
     }
 
     /// Acrescenta na lista de pendências do projeto em `root` uma pendência

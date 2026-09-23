@@ -215,7 +215,13 @@ mod tests {
     fn a_wave_replanned_after_its_send_goes_out_again_and_only_once() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        // A onda 2 é um lote do programa com duas tarefas, em arquivos
+        // diferentes: a que muda de onda não a esvazia, porque um lote vazio
+        // nunca sai, e não a prende à onda 1 por um arquivo dividido.
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], |said| {
+            write(root, "x", "task", json!({"wave": 2, "text": "Outra tarefa da onda 2.",
+                "files": [{"path": "src/c.rs"}], "depends_on": [], "origin": said}));
+        });
         let first = round(root, "x", None);
         assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(2), "{first}");
 
