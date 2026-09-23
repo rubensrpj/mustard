@@ -50,11 +50,12 @@ pub(super) fn max_parallel(root: &Path) -> usize {
 /// parte, em [`open_copies`]. A onda parada pelo limite de consertos
 /// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda.
 ///
-/// Uma dependência em círculo entre ondas já é recusada na aprovação do
-/// plano ([`crate::commands::flow::plan`]), pela mesma leitura do grafo
-/// ([`wave_graph`]) que esta função reaproveita — nunca uma conta própria à
-/// parte. Se, mesmo assim, uma chegar aqui, a rodada devolve os números do
-/// ciclo em vez de escolher uma ordem às cegas.
+/// A onda de lote nasce sem dependência entre ondas, então uma dependência em
+/// círculo não tem de onde vir pela cesta, e o plano não a procura. O ciclo
+/// sai da leitura do grafo ([`wave_graph`]) que esta função reaproveita —
+/// nunca uma conta própria à parte —, e, se uma onda gravada antes da cesta
+/// trouxer um, a rodada devolve os números do ciclo em vez de escolher uma
+/// ordem às cegas.
 pub(super) fn next_waves(
     log: &SpecLog,
     limit: usize,
@@ -2395,5 +2396,157 @@ mod tests {
             prompt.contains("Trocar a mensagem de erro do campo vazio"),
             "o pronto-quando nasce das tarefas visiveis agora: {prompt}"
         );
+    }
+
+    /// Os motivos dos avisos do plano que conferiam onda como desenho: ondas
+    /// da mesma rodada dividindo arquivo, onda ou spec que podia sair
+    /// dividida, e tarefa cujo texto não casa com o da onda.
+    const WAVE_DRAWING_REASONS: [&str; 5] = [
+        "waves-share-a-file",
+        "wave-should-split",
+        "spec-should-split",
+        "task-in-the-wrong-wave",
+        "task-matches-no-wave",
+    ];
+
+    /// Um projeto com `src/a.rs` e `src/b.rs` no git e uma spec aprovada sem
+    /// onda nenhuma: as tarefas vão para a cesta. Devolve o número da fala
+    /// do usuário e o do critério, que as tarefas citam.
+    fn basket_project(root: &Path) -> (u64, u64) {
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for name in ["a.rs", "b.rs"] {
+            std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
+        }
+        approved_with(root, "x", &[], |said| {
+            // O levantamento fechado, ponto a ponto, como o plano exige.
+            let goal = "Mexer no código de um e de dois.";
+            id_of(&write(root, "x", "context", json!({"text": goal, "origin": said})));
+            let opts = crate::commands::flow::grill::GrillOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                kinds: Some("fix".into()),
+                condensed: false,
+            };
+            let listed = crate::commands::flow::grill::grill_for(&opts, None);
+            for item in listed["points"].as_array().cloned().unwrap_or_default() {
+                let mut point = item.clone();
+                point["status"] = json!("open");
+                point["facts"] = json!([{"text": goal, "source": "src/a.rs:1"}]);
+                let opened = write(root, "x", "point", point);
+                let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap",
+                    "status": "not_applicable", "closes": id_of(&opened), "reason": "Já respondido.", "origin": said});
+                assert_eq!(write(root, "x", "point", closing)["ok"], json!(true));
+            }
+        });
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let first = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
+        (first("message"), first("criterion"))
+    }
+
+    /// Uma tarefa da cesta, gravada pela porta do modelo, num arquivo só.
+    fn basket_task(root: &Path, said: u64, crit: u64, text: &str, file: &str) -> u64 {
+        id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}], "depends_on": [],
+            "covers": [crit], "origin": said})))
+    }
+
+    /// A spec reaberta, de volta ao levantamento, e o plano rodado de novo
+    /// nela, com as anotações que ele gravou.
+    fn replanned(root: &Path) -> (Value, Vec<Value>) {
+        let reopened = crate::commands::flow::reopen::reopen_for(
+            &crate::commands::flow::reopen::ReopenOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                reason: "Mais trabalho na mesma obra.".into(),
+            },
+            None,
+        );
+        assert_eq!(reopened["ok"], json!(true), "{reopened}");
+        let report = crate::commands::flow::plan::plan_for(
+            &crate::commands::flow::plan::PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) },
+            None,
+        );
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let notes = log.visible().into_iter().filter(|e| e.event_type == "note").map(|e| Value::Object(e.fields.clone())).collect();
+        (report, notes)
+    }
+
+    /// Os motivos de desenho de onda que o plano disse: na resposta, entre as
+    /// travas e os avisos, e nas anotações que ele gravou.
+    fn wave_drawing_said(report: &Value, notes: &[Value]) -> Vec<String> {
+        let answered = ["blocking", "warnings"]
+            .iter()
+            .flat_map(|field| report[*field].as_array().cloned().unwrap_or_default())
+            .filter_map(|f| f["reason"].as_str().map(str::to_string));
+        let noted = notes
+            .iter()
+            .flat_map(|n| n["keys"].as_array().cloned().unwrap_or_default())
+            .filter_map(|k| k.as_str().map(str::to_string));
+        answered.chain(noted).filter(|r| WAVE_DRAWING_REASONS.contains(&r.as_str())).collect()
+    }
+
+    /// Numa spec reaberta, a primeira rodada leva a tarefa de `src/a.rs` na
+    /// onda 1, que entrega; a segunda leva numa onda só uma tarefa nova de
+    /// `src/a.rs` e outra de `src/b.rs`. As duas ondas de lote nascem sem
+    /// dependência entre elas e tocam o mesmo arquivo, e a segunda tem duas
+    /// tarefas que não dividem arquivo: o plano rodado depois não fala de
+    /// ondas dividindo arquivo, nem de onda ou spec que podia sair dividida.
+    #[test]
+    fn o_plano_nao_fala_de_onda_dividindo_arquivo() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = basket_project(root);
+        basket_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let record = write(root, "x", "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
+        assert_eq!(record["ok"], json!(true), "{record}");
+
+        let again = basket_task(root, said, crit, "Mexer de novo no código de um.", "src/a.rs");
+        let other = basket_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert_eq!(dispatch_basket(root, "x", &log), Ok(vec![2]), "as duas tarefas novas viram um lote só");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let waves: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "wave").collect();
+        assert_eq!(waves.len(), 2, "{waves:?}");
+        assert!(waves.iter().all(|w| w.ints("depends_on").is_empty() && w.str_field("author") == Some("binary")));
+        let order: Vec<u64> = waves[1].ints("order");
+        assert_eq!(order, vec![again, other], "a onda 2 leva as duas tarefas");
+
+        let (report, notes) = replanned(root);
+        assert_eq!(wave_drawing_said(&report, &notes), Vec::<String>::new(), "{report}");
+    }
+
+    /// A tarefa da onda de lote em andamento ganha versão nova, pela porta do
+    /// modelo, com um texto que não casa com o da onda — o texto da onda de
+    /// lote é a junção dos textos da versão velha. O plano rodado depois não
+    /// trava, e nenhum aviso fala de tarefa na onda errada ou sem onda.
+    #[test]
+    fn o_plano_nao_confere_o_texto_da_tarefa_contra_a_onda() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = basket_project(root);
+        let task = basket_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(waves_in_progress(&log).contains_key(&1), "a onda 1 está em andamento");
+        let current = log.current(task).expect("a tarefa tem versão vigente");
+        assert_eq!(current.wave(), Some(1), "o lote deu a ela o número da onda");
+        let revised = crate::commands::spec_events::write::write_at(&crate::commands::spec_events::write::WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".into()),
+            event_type: "task".into(),
+            json: json!({"replaces": current.id, "wave": 1, "title": "Somar", "text": "Somar dois números inteiros.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said})
+            .to_string(),
+        });
+        assert_eq!(revised["ok"], json!(true), "{revised}");
+
+        let (report, notes) = replanned(root);
+        assert_eq!(report["blocking"], Value::Null, "o plano não trava: {report}");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(wave_drawing_said(&report, &notes), Vec::<String>::new(), "{report}");
     }
 }

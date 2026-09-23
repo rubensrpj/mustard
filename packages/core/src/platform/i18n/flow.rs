@@ -46,30 +46,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Waves {waves} depend on each other in a circle, and none of them can start. Cut one of \
              the dependencies."
         }
-        ("plan.shared_file", Locale::PtBr) => {
-            "As ondas {waves} saem na mesma rodada e mexem em {files}. Encadeie uma na outra ou divida \
-             o arquivo entre elas ({chain})."
-        }
-        ("plan.shared_file", Locale::EnUs) => {
-            "Waves {waves} go out in the same round and both touch {files}. Chain one after the other \
-             or split the file between them ({chain})."
-        }
-        ("plan.wave_should_split", Locale::PtBr) => {
-            "A onda {wave} tem partes que não dividem arquivo entre si ({parts}): ela sai dividida, \
-             uma onda por parte, e as partes rodam em paralelo."
-        }
-        ("plan.wave_should_split", Locale::EnUs) => {
-            "Wave {wave} has parts that share no file with each other ({parts}): it goes out split, \
-             one wave per part, and the parts run in parallel."
-        }
-        ("plan.spec_should_split", Locale::PtBr) => {
-            "A spec tem partes que não dividem arquivo entre si ({parts}): ela pode ser dividida, \
-             uma spec por parte."
-        }
-        ("plan.spec_should_split", Locale::EnUs) => {
-            "The spec has parts that share no file with each other ({parts}): it can be split, one \
-             spec per part."
-        }
         ("plan.file_outside_git", Locale::PtBr) => {
             "A tarefa {task} cita {path}, que o git não guarda: um agente noutra sessão ou noutra \
              máquina não o vê."
@@ -112,24 +88,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("plan.task_without_file", Locale::EnUs) => {
             "Task {task} changes code and does not say which file. The map suggests: {files}. \
              A task that changes no file says so in its own text."
-        }
-        ("plan.task_wrong_wave", Locale::PtBr) => {
-            "A tarefa {task} está na onda {wave} e o texto dela casa com o dessa onda menos do que \
-             casa, em média, com o das outras; casa melhor com a onda {best}. Mova a tarefa ou \
-             reescreva o texto da onda."
-        }
-        ("plan.task_wrong_wave", Locale::EnUs) => {
-            "Task {task} sits in wave {wave} and its text matches that wave's text less than it \
-             matches the other waves' on average; it matches wave {best} better. Move the task or \
-             rewrite the wave's text."
-        }
-        ("plan.task_matches_no_wave", Locale::PtBr) => {
-            "A tarefa {task} está na onda {wave} e o texto dela não casa com o de onda nenhuma do \
-             plano. Reescreva o texto da tarefa ou o da onda."
-        }
-        ("plan.task_matches_no_wave", Locale::EnUs) => {
-            "Task {task} sits in wave {wave} and its text matches no wave of the plan. Rewrite the \
-             task's text or the wave's."
         }
         ("plan.task_could_name_a_skill", Locale::PtBr) => {
             "A tarefa {task} não nomeia skill, e a skill {skill} serve para ela. Nomeie-a na tarefa."
@@ -1193,8 +1151,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            154,
-            0xec13_355f_d028_4724,
+            149,
+            0xe9bf_d136_d979_1dce,
         );
     }
 
@@ -1276,16 +1234,11 @@ mod tests {
             ("page.copy.failed", &[][..]),
             ("page.purge_pending", &["{codes}", "{spec}"][..]),
             ("plan.wave_loop", &["{waves}"][..]),
-            ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
-            ("plan.wave_should_split", &["{wave}", "{parts}"][..]),
-            ("plan.spec_should_split", &["{parts}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
             ("plan.owner_missing", &["{type}"][..]),
             ("plan.contract_without_criterion", &["{code}"][..]),
             ("plan.task_without_file", &["{task}", "{files}"][..]),
-            ("plan.task_wrong_wave", &["{task}", "{wave}", "{best}"][..]),
-            ("plan.task_matches_no_wave", &["{task}", "{wave}"][..]),
             ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
             ("plan.skill_to_be_born", &["{task}"][..]),
             ("plan.no_suggestion", &[][..]),

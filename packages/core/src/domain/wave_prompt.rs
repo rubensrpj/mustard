@@ -30,8 +30,7 @@ use serde_json::Value;
 use crate::domain::lessons::{applies_to, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
-use crate::domain::search;
-use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
+use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
@@ -1050,57 +1049,6 @@ pub fn fix_lines(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
         out.extend(agreed_for(log, wave).into_iter().filter(|item| item.id > anchor));
     }
     out
-}
-
-/// `true` quando um texto casa com a onda `n`: pela busca por palavras sobre
-/// todas as ondas do plano, a nota dessa onda não fica abaixo da média das
-/// notas das outras. Ela confere se uma tarefa está na onda certa; quem recebe
-/// cada item combinado é o dono dele, não a busca.
-///
-/// Ter uma raiz em comum com a onda não basta: quase toda tarefa tem uma raiz
-/// em comum com quase toda onda, e aí qualquer onda serviria. A nota da onda
-/// da tarefa é posta contra as das outras, e a que fica abaixo da média não
-/// casa.
-///
-/// É uma pergunta sobre uma onda só, e a resposta é sim ou não. Não é uma
-/// disputa em que uma das ondas vence e todas as outras perdem: essa outra
-/// pergunta é a de [`closest_wave`], e serve só para dizer para onde um texto
-/// iria. A onda que o plano não tem responde que sim, porque a recusa dela é
-/// outra e não sai daqui.
-#[must_use]
-pub fn matches_wave(log: &SpecLog, n: u64, text: &str) -> bool {
-    let docs = wave_docs(log);
-    if !docs.iter().any(|(number, _)| *number == n) {
-        return true;
-    }
-    let hits = wave_scores(&docs, text);
-    let mine = hits.iter().find(|hit| hit.id == n).map_or(0, |hit| hit.score);
-    let others: u64 = hits.iter().filter(|hit| hit.id != n).map(|hit| hit.score).sum();
-    let count = u64::try_from(docs.len() - 1).unwrap_or(u64::MAX);
-    mine > 0 && mine.saturating_mul(count) >= others
-}
-
-/// A onda cujo texto casa mais forte com um texto, entre as do plano.
-/// `None` quando ele não casa com onda nenhuma, e aí não há para onde apontar.
-#[must_use]
-pub fn closest_wave(log: &SpecLog, text: &str) -> Option<u64> {
-    wave_scores(&wave_docs(log), text).first().map(|hit| hit.id)
-}
-
-/// A nota de cada onda que casa com um texto, da mais forte para a mais fraca,
-/// pela mesma busca do recorte dos itens. A onda que não casa fica de fora.
-fn wave_scores(docs: &[(u64, String)], text: &str) -> Vec<search::Hit> {
-    search::SearchIndex::build(docs.iter().map(|(n, roots)| (*n, roots.as_str())))
-        .top(&search::query_terms(text), docs.len())
-}
-
-/// O texto de cada onda do plano, reduzido para a busca.
-fn wave_docs(log: &SpecLog) -> Vec<(u64, String)> {
-    log.block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|event| event.event_type == "wave")
-        .filter_map(|event| Some((event.wave()?, search_field(event.str_field("text"), &[]))))
-        .collect()
 }
 
 struct Writer<'a> {
@@ -2456,35 +2404,5 @@ mod tests {
                 assert!(!translate(key, lang).contains(said), "{lang:?} {key} repeats {said}");
             }
         }
-    }
-
-    /// Um texto casa com a onda dele quando a nota dela não fica abaixo da
-    /// média das notas das outras. Uma raiz em comum não basta: o texto que
-    /// divide uma palavra com a onda dele e casa mais com as outras não casa.
-    /// O que não casa com onda nenhuma não tem para onde ir, e a onda que o
-    /// plano não tem responde que sim.
-    #[test]
-    fn a_text_fits_its_wave_only_when_it_scores_at_least_the_average_of_the_others() {
-        let log = log(&[
-            ("wave", json!({"n": 1, "text": "Leitura do arquivo de eventos", "criteria": [], "done_when": "lê"})),
-            ("wave", json!({"n": 2, "text": "Página do relatório", "criteria": [], "done_when": "sai"})),
-            ("wave", json!({"n": 3, "text": "Publicação da página do relatório", "criteria": [], "done_when": "sai"})),
-        ]);
-        let shared = "Gravar a página do relatório ao lado do arquivo";
-        let docs = wave_docs(&log);
-        let scores = wave_scores(&docs, shared);
-        let score = |n: u64| scores.iter().find(|hit| hit.id == n).map_or(0, |hit| hit.score);
-        assert!(score(1) > 0, "o texto tem uma raiz em comum com a onda 1: {scores:?}");
-        assert!(2 * score(1) < score(2) + score(3), "e casa menos com ela do que com as outras: {scores:?}");
-        assert!(!matches_wave(&log, 1, shared), "a raiz em comum não basta");
-        assert!(matches_wave(&log, 2, shared));
-        assert!(matches_wave(&log, 1, "Ler o arquivo de eventos"));
-
-        assert!(!matches_wave(&log, 1, "Somar dois números"));
-        assert_eq!(closest_wave(&log, "Somar dois números"), None);
-        assert!(matches_wave(&log, 9, "Somar dois números"), "a onda que o plano não tem responde que sim");
-
-        let alone = self::log(&[("wave", json!({"n": 1, "text": "Leitura do arquivo", "criteria": [], "done_when": "lê"}))]);
-        assert!(matches_wave(&alone, 1, shared), "com uma onda só, a raiz em comum basta");
     }
 }
