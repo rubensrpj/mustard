@@ -50,10 +50,27 @@
 ; body that belongs to the declaration, and the declaration ends where it ends:
 ; a call inside the body is then used by the function that encloses it.
 (program (function_signature name: (identifier) @name) @definition.function . (function_body) @body)
-(class_body
-  (method_signature (function_signature name: (identifier) @name) @definition.method)
-  .
-  (function_body) @body)
+;
+; A member keeps its body beside the `method_signature` that wraps it, and this
+; holds in a class, a mixin, an extension and an enum alike, so the pattern is
+; anchored on the wrapper and not on the body that holds it. Each form of member
+; has its own line: the method, the constructor (plain and named), the factory,
+; the getter and the setter. The setter is captured only here: its name is a
+; declaration, and its header is no longer read as a call.
+((method_signature (function_signature name: (identifier) @name) @definition.method) . (function_body) @body)
+((method_signature (constructor_signature (identifier) @name . (formal_parameter_list)) @definition.method) . (function_body) @body)
+((method_signature (factory_constructor_signature (identifier) @name . (formal_parameter_list)) @definition.method) . (function_body) @body)
+((method_signature (getter_signature name: (identifier) @name) @definition.method) . (function_body) @body)
+((method_signature (setter_signature name: (identifier) @name) @definition.method) . (function_body) @body)
+
+; Library — a `part` file shares one library with its owner and imports
+; nothing, so each side is an import of the other: `part 'x.dart';` in the
+; owner, `part of 'owner.dart';` (by file) or `part of loja.caixa;` (by the
+; library name, answered by the owner's `library loja.caixa;` namespace).
+(part_directive (uri) @import)
+(part_of_directive (uri) @import)
+(part_of_directive (dotted_identifier_list) @import)
+(library_name (dotted_identifier_list) @namespace)
 
 ; Decorations — an annotation (`@override`, `@immutable`) is not code of the
 ; declaration it adorns: the engine passes over it to find the doc comment

@@ -19,6 +19,9 @@
 //! parte do pacote no Go, o import de arquivo sem `./` no Dart, o namespace de
 //! outra linguagem que não responde a um import, e o nome escrito dentro de um
 //! `using` ou de um `namespace`, que não é uso.
+//!
+//! E um projeto em Dart mostra que cada declaração com corpo termina no fim do
+//! corpo, em classe, extensão e enum, e que o arquivo `part of` enxerga o dono.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -507,6 +510,109 @@ fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
     }
     if !deps("py/caixa.py").is_empty() {
         faltas.push(format!("o import conta do Python não acha o pacote Go: {:?}", deps("py/caixa.py")));
+    }
+
+    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+}
+
+/// A biblioteca Dart do projeto: `lib/caixa.dart` tem a função `dobro`, uma
+/// classe com construtor com corpo, construtor nomeado, factory, getter e
+/// setter, uma extensão com um método e um enum com um método, todos com
+/// corpo em várias linhas que chamam `dobro`; `lib/caixa_parte.dart` é parte
+/// dela pelo arquivo. `lib/conta.dart` dá nome à biblioteca, e
+/// `lib/conta_parte.dart` é parte dela pelo nome.
+const CAIXA_DART: &str = "part 'caixa_parte.dart';\n\nint dobro(int n) {\n  return n * 2;\n}\n\n\
+class Caixa {\n  int _v = 0;\n\n  Caixa(int n) {\n    _v = dobro(n);\n  }\n\n  \
+Caixa.vazia() {\n    _v = dobro(0);\n  }\n\n  factory Caixa.de(int n) {\n    return Caixa(dobro(n));\n  }\n\n  \
+int get valor {\n    return dobro(_v);\n  }\n\n  set valor(int v) {\n    _v = dobro(v);\n  }\n}\n\n\
+extension Metade on int {\n  int metade() {\n    return dobro(this) ~/ 4;\n  }\n}\n\n\
+enum Cor {\n  azul;\n\n  int peso() {\n    return dobro(1);\n  }\n}\n";
+const CAIXA_PARTE_DART: &str = "part of 'caixa.dart';\n\nint extra() {\n  return dobro(3);\n}\n";
+const CONTA_DART: &str = "library loja.conta;\n\npart 'conta_parte.dart';\n\nint triplo(int n) {\n  return n * 3;\n}\n";
+const CONTA_PARTE_DART: &str = "part of loja.conta;\n\nint usa() {\n  return triplo(1);\n}\n";
+
+/// A linha da chave que fecha o corpo que abre na linha do cabeçalho: a
+/// primeira, depois dele, que tem só `}` com o mesmo recuo.
+fn fim_do_corpo(corpo: &str, cabecalho: &str) -> usize {
+    let inicio = linha_de(corpo, cabecalho);
+    let linhas: Vec<&str> = corpo.lines().collect();
+    let recuo = &linhas[inicio - 1][..linhas[inicio - 1].len() - linhas[inicio - 1].trim_start().len()];
+    let fecha = format!("{recuo}}}");
+    inicio + linhas[inicio..].iter().position(|l| *l == fecha).expect("o corpo fecha") + 1
+}
+
+#[test]
+fn o_dart_termina_cada_declaracao_no_fim_do_corpo_e_a_parte_enxerga_o_dono() {
+    let dir = std::env::temp_dir().join(format!("scan-dart-fim-do-corpo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write(&dir, "lib/caixa.dart", CAIXA_DART);
+    write(&dir, "lib/caixa_parte.dart", CAIXA_PARTE_DART);
+    write(&dir, "lib/conta.dart", CONTA_DART);
+    write(&dir, "lib/conta_parte.dart", CONTA_PARTE_DART);
+    let map = scan(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let modules = map["modules"].as_array().expect("modules");
+    let modulo = |arquivo: &str| -> &Value {
+        modules.iter().find(|m| m["path"] == arquivo).unwrap_or_else(|| panic!("{arquivo} no mapa"))
+    };
+    let lista = |v: &Value| -> Vec<String> {
+        v.as_array().map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
+    };
+    let caixa = modulo("lib/caixa.dart");
+    let declaracoes = caixa["declarations"].as_array().expect("declarations");
+    let mut faltas: Vec<String> = Vec::new();
+
+    // Cada declaração com corpo, de quem é o uso de `dobro` dentro dela: o
+    // nome da própria declaração, o cabeçalho e o texto da chamada.
+    let membros = [
+        ("dobro", "int dobro(int n) {", None),
+        ("Caixa", "  Caixa(int n) {", Some("_v = dobro(n);")),
+        ("vazia", "Caixa.vazia() {", Some("_v = dobro(0);")),
+        ("de", "factory Caixa.de(int n) {", Some("return Caixa(dobro(n));")),
+        ("valor", "int get valor {", Some("return dobro(_v);")),
+        ("valor", "set valor(int v) {", Some("_v = dobro(v);")),
+        ("metade", "int metade() {", Some("return dobro(this) ~/ 4;")),
+        ("peso", "int peso() {", Some("return dobro(1);")),
+    ];
+    let mut esperado: Vec<String> = Vec::new();
+    for (nome, cabecalho, chamada) in membros {
+        let linha = linha_de(CAIXA_DART, cabecalho);
+        let fim = fim_do_corpo(CAIXA_DART, cabecalho);
+        match declaracoes.iter().find(|d| d["name"] == nome && d["line"] == linha) {
+            Some(d) if d["end_line"] == fim => {}
+            Some(d) => faltas.push(format!("{nome}, da linha {linha}, termina na linha {fim}: {d}")),
+            None => faltas.push(format!("{nome} é declarado na linha {linha}")),
+        }
+        if let Some(chamada) = chamada {
+            esperado.push(format!("lib/caixa.dart:{}:{nome}", linha_de(CAIXA_DART, chamada)));
+        }
+    }
+    // O arquivo `part of 'caixa.dart';` divide a biblioteca com o dono, e a
+    // chamada de lá liga ao `dobro` daqui.
+    esperado.push(format!("lib/caixa_parte.dart:{}:extra", linha_de(CAIXA_PARTE_DART, "dobro(3)")));
+    let dobro = declaracoes.iter().find(|d| d["name"] == "dobro").expect("dobro declarado");
+    let mut usos = lista(&dobro["used_by"]);
+    usos.sort();
+    esperado.sort();
+    if usos != esperado {
+        faltas.push(format!("cada uso de dobro vem da própria declaração, nunca da classe nem do enum: {usos:?}"));
+    }
+
+    // O cabeçalho do setter declara `valor`, e não o chama.
+    let setter = linha_de(CAIXA_DART, "set valor(int v)");
+    let chamadas = lista(&caixa["calls"]);
+    if chamadas.iter().any(|c| c == &format!("valor:{setter}")) {
+        faltas.push(format!("não há chamada valor na linha {setter}, do setter: {chamadas:?}"));
+    }
+
+    // A parte pelo nome da biblioteca, `part of loja.conta;`, enxerga o dono
+    // que se declara `library loja.conta;`.
+    let conta = modulo("lib/conta.dart");
+    let triplo = conta["declarations"].as_array().into_iter().flatten().find(|d| d["name"] == "triplo");
+    let usos_triplo = triplo.map(|d| lista(&d["used_by"])).unwrap_or_default();
+    let uso = format!("lib/conta_parte.dart:{}:usa", linha_de(CONTA_PARTE_DART, "triplo(1)"));
+    if !usos_triplo.contains(&uso) {
+        faltas.push(format!("triplo tem o uso {uso}: {usos_triplo:?}"));
     }
 
     assert!(faltas.is_empty(), "{}", faltas.join("\n"));
