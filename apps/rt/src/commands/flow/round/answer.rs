@@ -764,7 +764,7 @@ pub(super) fn run_round_with_mine(
 /// nenhum, e foi por isso que existiu um portão só para reparar que ele tinha
 /// envelhecido.
 fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
-    let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, spec, lang);
+    let prepared = crate::commands::spec_events::pages::copy::prepare(root, spec, lang);
     crate::commands::spec_events::pages::end_milestone(out, prepared.as_ref(), spec, "round", then, lang);
     shorten_publish_order(root, spec, out, then, lang);
     if let Some(number) = rewrite_open_pr(root, spec) {
@@ -777,9 +777,9 @@ fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale
 /// quando há mais de uma ordem —, sai dali: o texto vai para
 /// `.claude/spec/<spec>/copy/next.md`, sob a pasta da spec, e `out["next"]`
 /// fica só com uma linha curta que manda ler o arquivo, seguida do `then`, que
-/// já era curto. O que o agente de cópia executa não muda: só onde o pedido
-/// mora. Sem instrução de página — `next` já é só o `then` —, nada muda;
-/// falha de disco também deixa `next` como estava.
+/// já era curto. O que o orquestrador copia não muda, ele mesmo e sem agente:
+/// só onde a ordem mora. Sem instrução de página — `next` já é só o `then` —,
+/// nada muda; falha de disco também deixa `next` como estava.
 fn shorten_publish_order(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
     let Some(next) = out.get("next").and_then(Value::as_str).map(str::to_string) else { return };
     if next == then {
@@ -972,8 +972,7 @@ mod tests {
     /// A resposta da rodada diz qual dos dois arquivos de agente usar em
     /// cada lote despachado, pelo tamanho dele: `wave-solo` para uma tarefa
     /// só, `wave` para várias — no envio novo e no reenvio, que ecoa o
-    /// mesmo nome do molde original, sem remontar o pedido
-    /// (`MSTD-TASK-0011`, `MSTD-CRIT-0008`).
+    /// mesmo nome do molde original, sem remontar o pedido.
     #[test]
     fn a_resposta_da_rodada_diz_qual_agente_usar() {
         let solo_dir = tempdir().unwrap();
@@ -1081,13 +1080,13 @@ mod tests {
         store::write_at(&path, "send", draft.as_object().cloned().unwrap(), &[], at).unwrap();
     }
 
-    /// O passo que o agente grava (`MSTD-TASK-0041`); a onda pausada e a
+    /// O passo que o agente grava pelo `run write step`; a onda pausada e a
     /// órfã, de um Claude Code que fechou, reenviam o pedido de antes,
     /// palavra por palavra, com os passos e o aviso, e o envio novo aponta o
     /// anterior; a onda de um Claude Code ainda aberto — mesmo depois de um
     /// `/clear`, que não muda o processo do sistema — não é reenviada; e a
     /// onda viva sem sinal por 40 minutos sai como aviso, enquanto a de 39
-    /// minutos não sai (`MSTD-TASK-0042`, `MSTD-CRIT-0031`).
+    /// minutos não sai.
     /// Só roda no Linux: fora dele nenhum processo é dado como morto, então
     /// onda órfã não existe para ser provada.
     #[test]
@@ -1196,7 +1195,7 @@ mod tests {
     /// as do primeiro envio: a onda 2, em andamento no primeiro envio da onda
     /// 1, entrega no mesmo relatório que pausa a 1, e a vaga dela libera a
     /// onda 4; o pedido reenviado à onda 1 mostra a 3 e a 4 em andamento, e
-    /// não mais a 2 (`MSTD-TASK-0017`, `MSTD-WAVE-0007`).
+    /// não mais a 2.
     #[test]
     fn a_resend_shows_the_waves_in_flight_now_not_the_ones_from_the_first_send() {
         let dir = tempdir().unwrap();
@@ -1557,7 +1556,7 @@ mod tests {
     /// mudou pelo caminho certo, sem a letra de estado do `git status
     /// --porcelain` na frente — inclusive na primeira linha, cujo espaço
     /// inicial o trim da saída inteira apaga —, e o arquivo renomeado sai
-    /// com o caminho novo (`MSTD-TASK-0090`).
+    /// com o caminho novo.
     #[test]
     fn the_running_wave_lists_each_changed_file_by_its_path() {
         let dir = tempdir().unwrap();

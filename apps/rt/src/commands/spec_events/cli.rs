@@ -78,6 +78,14 @@ pub enum SpecEventsCmd {
         /// refused.
         #[arg(long, default_value = "{}")]
         json: String,
+        /// After the write, prepare the copy of the spec page for its
+        /// database, with the batches computed now, and answer the order to
+        /// copy them. Pass it only on the last write a user's request
+        /// generates (the request itself when it generates no other), so the
+        /// page gets one copy with everything the request changed. Without
+        /// it, no write prepares a copy: the milestones copy on their own.
+        #[arg(long)]
+        copy: bool,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -128,8 +136,8 @@ pub fn dispatch(cmd: SpecEventsCmd) {
         SpecEventsCmd::Read { block, spec, term, root } => {
             spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term });
         }
-        SpecEventsCmd::Write { event_type, spec, json, root } => {
-            spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json });
+        SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
+            spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
         }
         SpecEventsCmd::Index { root } => {
             spec_events::index::run(&spec_events::index::IndexOpts { root });
@@ -183,7 +191,7 @@ mod tests {
         let fields = json!({"text": "Gravar tudo.", "origin": 1}).to_string();
         let root_arg = root.to_string_lossy().into_owned();
         let args = ["x", "write", "decision", "--spec", "teste", "--json", &fields, "--root", &root_arg];
-        let Harness { cmd: SpecEventsCmd::Write { event_type, spec, json, root } } =
+        let Harness { cmd: SpecEventsCmd::Write { event_type, spec, json, root, .. } } =
             Harness::try_parse_from(args).expect("the write parses")
         else {
             panic!("not the write command");

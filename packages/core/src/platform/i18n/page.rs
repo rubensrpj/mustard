@@ -17,8 +17,9 @@ pub(super) const PREFIXES: &[&str] = &["page", "project"];
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
         // A cópia para o banco de dados das páginas publicadas, dita pelos
-        // marcos (o plano, a rodada e o fechamento) e pela gravação de um
-        // pedido que muda o plano (`commands/spec_events/pages/copy.rs`).
+        // marcos (o plano, a rodada e o fechamento) e pela gravação com
+        // `--copy` depois de um pedido que muda o plano
+        // (`commands/spec_events/pages/copy.rs`).
         ("page.copy.publish", Locale::PtBr) => {
             "A {page} ainda não foi publicada: publique o template `{template}` com a ferramenta \
              `Artifact`, passando em `capabilities` o valor `{capabilities}`, e grave o endereço com \
@@ -63,18 +64,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              publish the template as a new page, with a new link, without touching the old one or \
              copying anything into it, and the status line starts showing the new link."
         }
-        // A primeira cópia leva a spec inteira e fica com um agente separado.
-        ("page.copy.agent", Locale::PtBr) => {
-            "A primeira cópia para o banco da {page} leva a spec inteira e fica com um agente \
-             separado, para esta conversa continuar leve: despache um agente com o texto entre « e », \
-             com o endereço da página escrito nele, e espere a volta dele antes de seguir. «{order}»"
-        }
-        ("page.copy.agent", Locale::EnUs) => {
-            "The first copy into the {page}'s database carries the whole spec and goes to a separate \
-             agent, so this conversation stays light: dispatch an agent with the text between « and », \
-             with the page's address written in it, and wait for it to come back before going on. \
-             «{order}»"
-        }
         // A migração de uma spec antiga: as notas de trabalho das tarefas das
         // ondas que ainda não saíram.
         ("page.migration.unrated", Locale::PtBr) => {
@@ -97,15 +86,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}: \
              it goes back to the user to approve its split before it goes out."
         }
+        // Quem copia é o orquestrador, na própria conversa, também na
+        // primeira cópia, que leva a spec inteira.
         ("page.copy.batches", Locale::PtBr) => {
-            "Copie para o banco de dados da {page}, no endereço {url}, os lotes {files}, nessa ordem: \
-             cada arquivo é a lista `writes` de uma chamada da ferramenta `ArtifactData` com `action` \
-             `batch`, e cada documento vai pelo `file_path` dele, sem você ler os itens."
+            "Copie você mesmo, nesta conversa e sem agente, para o banco de dados da {page}, no \
+             endereço {url}, os lotes {files}, nessa ordem: cada arquivo é a lista `writes` de uma \
+             chamada da ferramenta `ArtifactData` com `action` `batch`, e cada documento vai pelo \
+             `file_path` dele, sem você ler os itens."
         }
         ("page.copy.batches", Locale::EnUs) => {
-            "Copy into the {page}'s database, at {url}, the batches {files}, in this order: each file is \
-             the `writes` list of one `ArtifactData` call with `action` `batch`, and each document goes \
-             by its `file_path`, without reading the items."
+            "Copy it yourself, in this conversation and without an agent, into the {page}'s database, \
+             at {url}, the batches {files}, in this order: each file is the `writes` list of one \
+             `ArtifactData` call with `action` `batch`, and each document goes by its `file_path`, \
+             without reading the items."
         }
         // Só entra depois de `page.copy.batches`, quando algum documento do
         // lote já existe no banco de uma cópia anterior: o banco recusa a
@@ -976,8 +969,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            385,
-            0x4040_78bf_6f9f_a732,
+            384,
+            0x0b49_27ca_7612_5369,
         );
     }
 

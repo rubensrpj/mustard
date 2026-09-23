@@ -5,14 +5,15 @@
 //! que leem o banco de dados guardado junto delas no claude.ai. O binário não
 //! escreve mais o `spec.md`, o `spec.html` nem o `project.html` em passo
 //! nenhum do fluxo: nos marcos (a aprovação, o fim de uma rodada e o
-//! fechamento) e logo depois de um pedido que muda o plano, ele prepara a
-//! cópia para o banco ([`copy`]), e o marco manda copiá-la, pela mesma porta,
-//! [`end_milestone`]. A primeira vez de cada página, o marco manda antes
-//! publicar o template dela e gravar o endereço, e a primeira cópia da spec,
-//! que a leva inteira, fica com um agente separado. A página publicada com um
-//! molde de outro carimbo é publicada de novo no mesmo endereço, antes dos
-//! lotes, e o banco dela continua lá. A spec antiga, cuja
-//! página uma versão antiga publicou inteira, ganha o template num link novo.
+//! fechamento) e na gravação com `--copy`, a última de um pedido do usuário
+//! que muda o plano, ele prepara a cópia para o banco ([`copy`]); o marco
+//! manda copiá-la pela mesma porta, [`end_milestone`], e quem copia é o
+//! orquestrador, sem agente. A primeira vez de cada página, o marco manda
+//! antes publicar o template dela e gravar o endereço, e a primeira cópia da
+//! spec leva a spec inteira. A página publicada com um molde de outro carimbo
+//! é publicada de novo no mesmo endereço, antes dos lotes, e o banco dela
+//! continua lá. A spec antiga, cuja página uma versão antiga publicou
+//! inteira, ganha o template num link novo.
 //!
 //! O item que guarda um trecho com cara de segredo não vai para o banco, e
 //! nem segura o marco: o marco diz o código dele para ser expurgado. A cópia

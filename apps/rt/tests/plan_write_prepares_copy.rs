@@ -3,12 +3,11 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! Toda gravação que muda o plano — uma onda, uma tarefa, um critério ou um
-//! item do combinado — de uma spec já aprovada prepara a cópia da página do
-//! mesmo jeito que um pedido do usuário faz hoje, mesmo sem pedido nenhum no
-//! mesmo passo: prova de ponta a ponta, pelo binário de verdade, num
-//! repositório temporário. Antes desta obra só o pedido preparava, e ele
-//! chegava antes das ondas novas, então a cópia saía sem elas.
+//! Depois de um pedido do usuário que muda o plano de uma spec já aprovada,
+//! a página recebe uma cópia só, já com as tarefas que o pedido gerou: as
+//! gravações do meio do caminho não preparam cópia, e só a última, com
+//! `--copy`, prepara. Prova de ponta a ponta, pelo binário de verdade, num
+//! repositório temporário.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -100,6 +99,11 @@ impl Project {
 
     fn write(&self, event_type: &str, fields: &Value) -> Value {
         self.run(&["write", event_type, "--spec", SPEC, "--json", &fields.to_string()])
+    }
+
+    /// A gravação com `--copy`, a última de um pedido.
+    fn write_copying(&self, event_type: &str, fields: &Value) -> Value {
+        self.run(&["write", event_type, "--spec", SPEC, "--json", &fields.to_string(), "--copy"])
     }
 
     fn hook(&self, event: &str, payload: &Value) {
@@ -195,13 +199,28 @@ fn approve(project: &Project) {
     );
 }
 
+/// O carimbo do molde da página `page` que o programa monta, como a
+/// publicação o grava.
+fn stamp_of(page: &str) -> String {
+    use mustard_core::platform::i18n::Locale;
+    use mustard_core::platform::page_templates::{project_page_template, spec_page_template, template_stamp};
+    let template =
+        if page == "spec" { spec_page_template(Locale::PtBr) } else { project_page_template(Locale::PtBr) };
+    template_stamp(&template).expect("the stamp").to_string()
+}
+
 /// O que a conversa faz com a ordem de um marco: publica cada página que
-/// ainda não tem endereço e grava o endereço, e grava a cópia feita de cada
-/// página com o `record` que a resposta trouxe.
+/// ainda não tem endereço e grava o endereço, com o carimbo do molde, e
+/// grava a cópia feita de cada página com o `record` que a resposta trouxe.
 fn follow(project: &Project, report: &Value) {
     for page in report["publish"].as_array().cloned().unwrap_or_default() {
-        let url = if page == json!("spec") { SPEC_URL } else { "https://claude.ai/code/artifact/projeto" };
-        project.write("publish", &json!({"page": page, "milestone": "round", "ok": true, "template": true, "url": url}));
+        let name = page.as_str().unwrap_or_default();
+        let url = if name == "spec" { SPEC_URL } else { "https://claude.ai/code/artifact/projeto" };
+        project.write(
+            "publish",
+            &json!({"page": page, "milestone": "round", "ok": true, "template": true, "stamp": stamp_of(name),
+                "url": url}),
+        );
     }
     for page in ["spec", "project"] {
         if !report["copy"][page].is_null() {
@@ -244,15 +263,14 @@ fn copied_items(project: &Project) -> Vec<u64> {
     out
 }
 
-/// A tarefa, o critério ou o item do combinado gravado numa spec já
-/// aprovada, sem pedido do usuário no mesmo passo, traz na própria resposta a
-/// cópia preparada para a página, com esse item dentro, e manda copiá-la —
-/// antes desta obra só o pedido do usuário preparava a cópia, e ele vinha
-/// antes do plano novo: a cópia saía sem ele, e a página ficava sem o item
-/// novo até a rodada seguinte. A onda não entra no caso: ela nasce só da
-/// rodada, pelo backlog.
+/// Uma spec aprovada e já publicada recebe um pedido do usuário que muda o
+/// plano. O pedido, o critério e a regra que ele gerou são gravados sem
+/// `--copy`, e nenhuma dessas respostas traz cópia nem manda copiar: a pasta
+/// da cópia fica como a rodada a deixou. A última gravação, a tarefa, vai com
+/// `--copy`, e só ela prepara a cópia, uma vez, com os lotes calculados na
+/// hora: eles levam o pedido e tudo o que ele gerou, a tarefa inclusive.
 #[test]
-fn gravacao_no_plano_depois_da_aprovacao_prepara_a_copia_da_pagina() {
+fn a_ultima_gravacao_do_pedido_prepara_uma_copia_com_as_tarefas() {
     let project = Project::new();
     let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
@@ -260,47 +278,56 @@ fn gravacao_no_plano_depois_da_aprovacao_prepara_a_copia_da_pagina() {
     let (said, _criterion) = plan(&project);
     approve(&project);
 
-    // A primeira rodada depois da aprovação prepara o primeiro marco: a
-    // página da spec ainda não tem endereço, e a resposta manda publicá-la e
-    // copiar os lotes; a conversa segue a ordem, como faria de verdade.
+    // A primeira rodada depois da aprovação é o marco que publica a página e
+    // a copia; a conversa segue a ordem, como faria de verdade.
     let first_round = project.run(&["round", "--spec", SPEC]);
     assert!(first_round["publish"].as_array().is_some_and(|p| p.iter().any(|p| p == "spec")), "{first_round}");
     follow(&project, &first_round);
     let before = copied_items(&project);
 
-    // Um critério, uma tarefa e um item do combinado novos, gravados direto —
-    // sem pedido do usuário no mesmo passo —, numa spec já aprovada e já
-    // publicada: cada resposta já traz a cópia preparada com o item dentro, e
-    // manda copiá-la.
-    let said2 = user_says(&project, "Incluir também a subtração.");
-    let criterion2 = project.write(
+    // O pedido do usuário e o que ele gerou, sem `--copy`: nada de cópia.
+    let asked = user_says(&project, "Incluir também a subtração.");
+    let request = project.write(
+        "request",
+        &json!({"text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves", "origin": asked}),
+    );
+    let request_next = request["next"].as_str().unwrap_or_default();
+    assert!(request_next.contains("--copy"), "the request says which write carries the copy: {request}");
+    let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a subtração aparece", "proof": "git --version", "form": "ubiquitous",
-            "origin": said2}),
+        &json!({"when": "o programa roda", "then": "a subtração aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": asked}),
     );
-    let task2 = project.write(
-        "task",
-        &json!({"title": "Entregar a tarefa", "text": "Subtrair dois números no programa.", "files": [{"path": "src/main.rs"}],
-            "depends_on": [], "covers": [criterion2["id"]], "origin": said2}),
-    );
-    let rule2 = project.write(
+    let rule = project.write(
         "rule",
         &json!({"text": "A subtração usa o mesmo formato da soma.", "keys": ["subtração"],
             "example": "3 - 1 imprime 2, como 1 + 1 imprime 2.", "applies_to": {"files": ["**"]},
-            "origin": said2}),
+            "origin": asked}),
     );
-    for written in [&criterion2, &task2, &rule2] {
-        assert!(written["copy"].is_object(), "a gravação do plano não trouxe a cópia preparada: {written}");
+    for written in [&request, &criterion, &rule] {
+        assert!(written.get("copy").is_none(), "a write without --copy prepared a copy: {written}");
         let next = written["next"].as_str().unwrap_or_default();
-        assert!(next.contains("write copy") && next.contains(SPEC_URL), "a resposta não manda copiar a página: {written}");
-        follow(&project, written);
-        let after = copied_items(&project);
-        let id = written["id"].as_u64().expect("the item id");
-        assert!(!before.contains(&id), "o item novo não podia estar na cópia de antes: {before:?}");
-        assert!(after.contains(&id), "a cópia depois do item novo não o leva: {written} {after:?}");
+        assert!(!next.contains("write copy"), "a write without --copy ordered a copy: {written}");
     }
-    // A cópia leva tudo desde a última cópia gravada, junto dos itens novos:
-    // a mensagem que originou o plano da primeira tarefa segue na faixa.
+    assert_eq!(copied_items(&project), before, "the batches the round left stay as they were");
+
+    // A última gravação do pedido, com `--copy`: uma cópia só, com tudo.
+    let task = project.write_copying(
+        "task",
+        &json!({"title": "Entregar a subtração", "text": "Subtrair dois números no programa.",
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion["id"]], "origin": asked}),
+    );
+    assert!(task["copy"].is_object(), "the last write did not prepare the copy: {task}");
+    let next = task["next"].as_str().unwrap_or_default();
+    assert!(next.contains("write copy") && next.contains(SPEC_URL), "the last write orders the copy: {task}");
+    assert!(!next.contains("write publish"), "the page already has its address: {task}");
     let after = copied_items(&project);
-    assert!(after.contains(&said), "a cópia não leva mais o que já estava desde a última cópia gravada: {after:?}");
+    for written in [&request, &criterion, &rule, &task] {
+        let id = written["id"].as_u64().expect("the item id");
+        assert!(!before.contains(&id), "the new item could not be in the copy before: {before:?}");
+        assert!(after.contains(&id), "the copy misses {id}: {after:?}");
+    }
+    // A faixa tocada vai inteira: o que já estava nela segue junto.
+    assert!(after.contains(&said), "the copy lost what was already in the range: {after:?}");
+    follow(&project, &task);
 }

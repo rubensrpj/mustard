@@ -17,10 +17,15 @@
 //! página publicada lê o banco de dados dela, e a cópia para o banco sai nos
 //! marcos (`super::pages::copy`).
 //!
-//! Um pedido (`request`) muda o plano, e a cópia sai logo depois dele: numa
-//! spec cuja página já foi publicada, a saída traz em `copy` os lotes
-//! preparados e, em `next`, a ordem de copiá-los e de gravar a cópia feita
-//! (`copy`), que diz o número do último item que ela levou.
+//! Um pedido (`request`) muda o plano, e a página recebe uma cópia só depois
+//! dele, já com o que ele gerou: a última gravação do pedido — a tarefa, ou o
+//! próprio pedido quando ele não gera outra — leva `--copy`, e só ela prepara
+//! a cópia, com os lotes calculados na hora. A saída traz em `copy` os lotes
+//! e, em `next`, a ordem de copiá-los e de gravar a cópia feita (`copy`), que
+//! diz o número do último item que ela levou. A página que ainda não tem
+//! endereço não é publicada aqui: fica para o marco seguinte. Sem `--copy`,
+//! nenhuma gravação prepara cópia, mesmo a que muda o plano de uma spec
+//! aprovada.
 //!
 //! Com o tipo `lesson`, a gravação vai para o banco de lições
 //! (`.claude/spec/lessons.ndjson`), e não para a spec: a classe vem em
@@ -161,7 +166,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::{LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
-    type_spec, Block, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+    type_spec, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
     TASK_TITLE_MAX,
 };
 use mustard_core::domain::spec_index;
@@ -235,9 +240,17 @@ pub struct WriteOpts {
     pub json: String,
 }
 
-/// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Nunca
-/// entra em pânico.
+/// Para os testes: [`write_at_with`] sem `--copy`, a gravação como o
+/// `run write` a faz sem a opção.
+#[cfg(test)]
 pub(crate) fn write_at(opts: &WriteOpts) -> Value {
+    write_at_with(opts, false)
+}
+
+/// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
+/// `copy`, a gravação feita prepara a cópia da página para o banco dela.
+/// Nunca entra em pânico.
+pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     let project = super::project(&opts.root);
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
@@ -327,45 +340,34 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             for (fact, finding) in &written.citation_warnings {
                 warnings.extend(finding.warning(*fact, lang));
             }
-            // O pedido muda o plano: a cópia para o banco da página sai logo
-            // depois dele. Toda gravação que muda o plano de uma spec já
-            // aprovada — onda, tarefa, critério ou item do combinado — leva
-            // a mesma cópia, sem esperar um pedido: sem isso a cópia do
-            // pedido saía antes das ondas novas, e a página ficava sem elas
-            // até a rodada seguinte. A que não pôde ser preparada só avisa, e
-            // a cópia seguinte leva os mesmos itens.
+            // Só a gravação com `--copy` prepara a cópia: a última de um
+            // pedido do usuário que muda o plano, que a leva uma vez, já com
+            // tudo o que o pedido gerou. A ordem sai sem marco: a página que
+            // ainda não tem endereço fica para o marco seguinte, e sem nada a
+            // copiar a saída não traz cópia. A que não pôde ser preparada só
+            // avisa, e a cópia seguinte leva os mesmos itens.
             let mut next = next.map(|key| translate(&key, lang).to_string());
-            let changes_plan =
-                matches!(type_spec(event_type).map(|t| t.block), Some(Block::Waves | Block::Criteria | Block::Agreed));
-            let already_approved = store::spec_file(&project.root, spec)
-                .ok()
-                .and_then(|path| store::read(&path).ok().flatten())
-                .is_some_and(|log| State::from_log(&log).approved);
-            if next.is_some() || (changes_plan && already_approved) {
-                match super::pages::copy::prepare(&project.root, spec, super::pages::copy::Moment::Request, lang) {
-                    Ok(Some(prepared)) => {
-                        report["copy"] = prepared.to_value();
+            if copy {
+                let sentences = match super::pages::copy::prepare(&project.root, spec, lang) {
+                    Ok(prepared) => {
                         let sentences = prepared.order(spec.trim(), None, lang);
-                        match next.as_mut() {
-                            Some(said) => {
-                                for sentence in sentences {
-                                    said.push(' ');
-                                    said.push_str(&sentence);
-                                }
-                            }
-                            None => next = Some(sentences.join(" ")),
+                        if !sentences.is_empty() {
+                            report["copy"] = prepared.to_value();
                         }
+                        sentences
                     }
-                    Ok(None) => {}
                     Err(refusal) => {
                         warnings.push(refusal.message(lang));
-                        match next.as_mut() {
-                            Some(said) => {
-                                said.push(' ');
-                                said.push_str(translate("page.copy.failed", lang));
-                            }
-                            None => next = Some(translate("page.copy.failed", lang).to_string()),
+                        vec![translate("page.copy.failed", lang).to_string()]
+                    }
+                };
+                if !sentences.is_empty() {
+                    let said = next.get_or_insert_with(String::new);
+                    for sentence in sentences {
+                        if !said.is_empty() {
+                            said.push(' ');
                         }
+                        said.push_str(&sentence);
                     }
                 }
             }
@@ -1150,9 +1152,10 @@ fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String,
     }
 }
 
-/// Run `write` and print the JSON report; exit 1 on a refusal.
-pub fn run(opts: &WriteOpts) {
-    let report = write_at(opts);
+/// Run `write` and print the JSON report; with `copy`, the write also
+/// prepares the copy of the spec page. Exit 1 on a refusal.
+pub fn run(opts: &WriteOpts, copy: bool) {
+    let report = write_at_with(opts, copy);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
         std::process::exit(1);
@@ -2231,6 +2234,77 @@ mod tests {
         assert_eq!(specs, ["teste"], "no spec was opened");
     }
 
+    /// Numa spec aprovada, com a página já publicada, a gravação que muda o
+    /// plano — um critério, uma tarefa do backlog, uma regra e o próprio
+    /// pedido do usuário — não prepara cópia da página: a saída não traz
+    /// `copy` nem manda copiar, o pedido responde só o passo do efeito, e a
+    /// pasta de cópia nem nasce. Só a gravação com `--copy` prepara a cópia,
+    /// uma vez, com os lotes calculados na hora: eles levam tudo o que veio
+    /// desde a publicação, o pedido e a tarefa dele juntos.
+    #[test]
+    fn a_gravacao_que_muda_o_plano_nao_prepara_copia() {
+        use mustard_core::platform::i18n::Locale;
+        use mustard_core::platform::page_templates::{spec_page_template, template_stamp};
+        const URL: &str = "https://claude.ai/code/artifact/teste";
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        born(root);
+        let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
+        let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        witness_approves(root);
+        let template = spec_page_template(Locale::PtBr);
+        let stamp = template_stamp(&template).expect("the stamp");
+        let publish = json!({"page": "spec", "milestone": "approval", "ok": true, "template": true, "stamp": stamp,
+            "url": URL});
+        assert_eq!(write(root, "publish", &publish.to_string())["ok"], json!(true));
+        let copy_folder = root.join(".claude").join("spec").join("teste").join("copy");
+
+        let asked = write(root, "message", r#"{"author":"user","text":"inclua a subtração"}"#)["id"].as_u64().unwrap();
+        let drafts = [
+            ("request", json!({"text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves",
+                "origin": asked})),
+            ("criterion", json!({"when": "o programa roda", "then": "a subtração aparece", "proof": "cargo test",
+                "form": "ubiquitous", "origin": asked})),
+            ("rule", json!({"text": "A subtração usa o formato da soma.", "keys": ["subtração"],
+                "example": "3 - 1 imprime 2.", "applies_to": {"files": ["**"]}, "origin": asked})),
+            ("task", json!({"title": "Subtrair", "text": "Subtrair dois números.", "files": [], "depends_on": [],
+                "covers": [criterion], "origin": asked})),
+        ];
+        let mut written = Vec::new();
+        for (event_type, draft) in &drafts {
+            let out = write(root, event_type, &draft.to_string());
+            assert_eq!(out["ok"], json!(true), "{event_type}: {out}");
+            assert!(out.get("copy").is_none(), "{event_type} prepared a copy: {out}");
+            assert!(!out.to_string().contains("write copy"), "{event_type} ordered a copy: {out}");
+            assert!(!copy_folder.exists(), "{event_type} wrote the copy folder");
+            written.push(out["id"].as_u64().unwrap());
+        }
+        let request = write(root, "request", &drafts[0].1.to_string());
+        assert_eq!(request["next"], json!(translate("request.new_waves", Locale::PtBr)), "{request}");
+
+        // A última gravação do pedido, com `--copy`: a cópia sai uma vez só,
+        // com tudo o que o pedido gerou.
+        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "files": [], "depends_on": [],
+            "covers": [criterion], "origin": asked});
+        let last = write_at_with(
+            &WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(),
+                json: task.to_string() },
+            true,
+        );
+        assert_eq!(last["ok"], json!(true), "{last}");
+        assert_eq!(last["copy"]["spec"]["published"], json!(true), "{last}");
+        let next = last["next"].as_str().unwrap_or_default();
+        assert!(next.contains("write copy") && next.contains(URL), "the last write orders the copy: {last}");
+        assert!(!next.contains("write publish"), "the page already has its address: {next}");
+        let copied = crate::commands::spec_events::pages::copy::sent_items(root, &last);
+        written.push(last["id"].as_u64().unwrap());
+        for id in &written {
+            assert!(copied.contains(id), "the copy misses item {id}: {copied:?}");
+        }
+    }
+
     /// A onda nasce do backlog: pela porta do modelo, a onda nova e a versão
     /// nova de uma onda são recusadas, antes e depois da aprovação, e nada é
     /// gravado. Tirar uma onda continua valendo.
@@ -2263,8 +2337,7 @@ mod tests {
     /// A onda semeada pelos testes sai como a rodada a grava: com o autor do
     /// programa, pela porta do binário. A tarefa que traz o número da onda
     /// vai pela mesma porta. Nada passa pela gravação do modelo: ela recusa o
-    /// autor do programa, e numa spec aprovada juntaria ao relatório a cópia
-    /// para o banco da página.
+    /// autor do programa, a onda e a tarefa que já traz o número da onda.
     #[test]
     fn a_onda_semeada_pelos_testes_sai_com_autor_binario() {
         let dir = tempdir().unwrap();

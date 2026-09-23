@@ -335,7 +335,7 @@ fn run_close(
     let review_copy_kept = remove_review_copy(root, &spec, lang);
     // O fechamento é um marco: a cópia para o banco da página sai aqui, com a
     // fase fechada na linha da spec da página do projeto.
-    let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, &spec, lang);
+    let prepared = crate::commands::spec_events::pages::copy::prepare(root, &spec, lang);
 
     // O pull request é o passo seguinte, e a linha dele sai pronta, com a base
     // e a branch tiradas do estado — pela mesma tabela que a retomada usa.

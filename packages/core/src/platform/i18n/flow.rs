@@ -1114,25 +1114,37 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The fix wave {wave} repaired what the server failed on pull request {pr}, and its \
              commit was pushed to the branch {branch}."
         }
+        // Só a última gravação que o pedido gera leva `--copy`: a página
+        // recebe uma cópia só, já com tudo o que o pedido mudou.
         ("request.new_waves", Locale::PtBr) => {
-            "Pedido gravado. Grave as tarefas novas, sem `wave`: elas entram no backlog, e o programa \
-             as junta em ondas na hora de despachar; a spec e a branch continuam as mesmas, e não há \
-             nova aprovação."
+            "Pedido gravado. Grave o que ele gerou, as tarefas novas, sem `wave`: elas entram no \
+             backlog, e o programa as junta em ondas na hora de despachar. Passe `--copy` só na última \
+             dessas gravações: ela prepara uma cópia da página, já com tudo o que o pedido gerou; o \
+             pedido que não gera outra gravação leva `--copy` na própria gravação. A spec e a branch \
+             continuam as mesmas, e não há nova aprovação."
         }
         ("request.new_waves", Locale::EnUs) => {
-            "Request recorded. Record the new tasks, without `wave`: they go into the backlog, and \
-             the program groups them into waves when it dispatches; the spec and the branch stay the \
-             same, and there is no new approval."
+            "Request recorded. Record what it generated, the new tasks, without `wave`: they go into \
+             the backlog, and the program groups them into waves when it dispatches. Pass `--copy` \
+             only on the last of those writes: it prepares one copy of the page, already with \
+             everything the request generated; a request that generates no other write takes \
+             `--copy` on its own write. The spec and the branch stay the same, and there is no new \
+             approval."
         }
         ("request.adjust_waves", Locale::PtBr) => {
-            "Pedido gravado. Grave as versões novas das tarefas que mudam, com `replaces`, repetindo \
-             o `wave` da versão antiga quando ela já está numa onda; a spec e a branch continuam as \
-             mesmas, e não há nova aprovação."
+            "Pedido gravado. Grave o que ele gerou, as versões novas das tarefas que mudam, com \
+             `replaces`, repetindo o `wave` da versão antiga quando ela já está numa onda. Passe \
+             `--copy` só na última dessas gravações: ela prepara uma cópia da página, já com tudo o \
+             que o pedido gerou; o pedido que não gera outra gravação leva `--copy` na própria \
+             gravação. A spec e a branch continuam as mesmas, e não há nova aprovação."
         }
         ("request.adjust_waves", Locale::EnUs) => {
-            "Request recorded. Record the new versions of the tasks that change, with `replaces`, \
-             repeating the `wave` of the old version when it is already in a wave; the spec and the \
-             branch stay the same, and there is no new approval."
+            "Request recorded. Record what it generated, the new versions of the tasks that change, \
+             with `replaces`, repeating the `wave` of the old version when it is already in a wave. \
+             Pass `--copy` only on the last of those writes: it prepares one copy of the page, \
+             already with everything the request generated; a request that generates no other write \
+             takes `--copy` on its own write. The spec and the branch stay the same, and there is no \
+             new approval."
         }
         _ => return None,
     })
@@ -1152,7 +1164,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             149,
-            0x2036_9578_6082_5200,
+            0x813b_cb07_4b7c_3686,
         );
     }
 
@@ -1226,7 +1238,6 @@ mod tests {
             ("page.copy.batches", &["{page}", "{url}", "{files}"][..]),
             ("page.copy.record", &["{spec}", "{record}"][..]),
             ("page.copy.old_page", &["{page}"][..]),
-            ("page.copy.agent", &["{page}", "{order}"][..]),
             ("page.migration.unrated", &["{tasks}", "{scale}", "{cap}"][..]),
             ("page.migration.over_cap", &["{wave}", "{points}", "{cap}"][..]),
             ("page.copy.new_address", &[][..]),
@@ -1365,8 +1376,8 @@ mod tests {
 
     /// O aviso da entrada que ficou como estava chama de lição o que é lição,
     /// não de item: o número ignorado é de uma lição do banco, e a frase, nos
-    /// dois idiomas, diz "lição" (`lesson` em inglês), nunca "item"
-    /// (`MSTD-TASK-0018`, `MSTD-WAVE-0007`).
+    /// dois idiomas, diz "lição" (`lesson` em inglês), nunca "item" seguido
+    /// do número.
     #[test]
     fn the_ignored_choice_hint_says_lesson_when_the_number_is_a_lesson() {
         for (lang, lesson_word, item_word) in [(Locale::PtBr, "lição", "item"), (Locale::EnUs, "lesson", "item")] {
