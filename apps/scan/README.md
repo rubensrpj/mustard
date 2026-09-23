@@ -55,22 +55,6 @@ da pasta-mãe; e (b) **classes de nome único que recorrem** em muitos módulos
 centraliza um tipo (`Domain/Entities`) tem pai único e cai naturalmente na
 mineração por sufixo — o grain se adapta ao layout sem ser avisado de qual é.
 
-**Colaboradores e desambiguação.** Cada papel ganha uma linha "Collaborates
-with" — os namespaces que ele mais puxa (minerados dos imports, filtrando os de
-muitos papéis, tipo System) — dando o fio pra efeitos colaterais (ex.: Service →
-`Notification.Services`, `UnitOfWork`). E quando um mesmo sufixo cobre coisas
-diferentes (um `Channel` de notificação que implementa `INotificationChannel` vs
-um `Channel` de domínio que estende `EntityBase`), o glossário avisa e o exemplo
-da role skill prefere o slice onde o papel é core.
-
-**Contratos compartilhados.** A partir dos `supertypes` (preenchidos via
-tree-sitter), o grain minera, por frequência, os tipos-base que muitas entidades
-estendem/implementam (`EntityBase`, `RepositoryBase`, `IServiceBase`,
-`AbstractValidator`…) e os lista no playbook como a fundação que todo slice usa;
-o glossário passa a mostrar "usually implements X" por papel. Tudo por
-recorrência — nomes de domínio (que são entidades mineradas) são excluídos, então
-não há catálogo.
-
 **Extração via tree-sitter, genérica e plugável.** A Layer 2 é **um único motor
 tree-sitter** (`extract.rs`), agnóstico por construção: ele não conhece nenhuma
 linguagem nem nome de nó de gramática. Cada linguagem é **dado** — uma linha em
