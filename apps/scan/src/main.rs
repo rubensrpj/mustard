@@ -265,6 +265,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                     language: sf.language,
                     loc: sf.loc,
                     imports: extracted.imports,
+                    global_imports: extracted.global_imports,
                     namespaces: extracted.namespaces,
                     declarations: extracted.declarations,
                     file_class,
@@ -308,7 +309,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     // file and on which line. Read from the call sites and the citations every
     // module carries, so a pass that read only what changed links the same
     // declarations a full pass does.
-    graph::link_declarations(&mut modules);
+    graph::link_declarations(&mut modules, &ing.go_module, &packages, &ing.manifests);
     let mined = mine::mine(&modules);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 

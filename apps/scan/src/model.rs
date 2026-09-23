@@ -144,6 +144,12 @@ pub struct Module {
     pub language: String,
     pub loc: usize,
     pub imports: Vec<String>,
+    /// The imports this file puts in sight of every file of its language
+    /// under the same project (the folder of the nearest manifest above it),
+    /// not only of itself. They are in `imports` too: the import edge stays on
+    /// this file alone. Written only when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub global_imports: Vec<String>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     /// Machine-written class, when one applies: "generated" | "vendored" |
@@ -164,8 +170,9 @@ pub struct Module {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fan_in: usize,
     /// The project files this one imports, resolved through the graph — the
-    /// reverse of "who imports this file". Only specific imports count: an
-    /// import spread over a bucket of more than eight files is left out.
+    /// reverse of "who imports this file". Every resolved import counts, a
+    /// namespace import spread over many files included: it is still an
+    /// import of each of them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deps: Vec<String>,
     /// The test files that cover this one: a test that imports it, or a test
@@ -187,7 +194,8 @@ pub struct Module {
     pub calls: Vec<CallSite>,
     /// Every name cited without being called: a name that starts with a
     /// capital letter (a type, a constant, an enum member), outside comments,
-    /// quoted text, decorations and its own declaration header, with the line
+    /// quoted text, decorations, imports, namespace names and its own
+    /// declaration header, with the line
     /// it is cited on. Raw for the same reason as [`Module::calls`], and
     /// written the same way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

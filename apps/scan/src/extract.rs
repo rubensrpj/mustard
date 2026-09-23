@@ -4,16 +4,9 @@
 //! entirely by DATA: a row in `languages.toml` (name, extensions, grammar) and a
 //! set of `.scm` query files under `queries/<dir>/`. This module never names a
 //! language, an extension, or a grammar node — it only understands a small,
-//! generic capture vocabulary that every query speaks:
-//!
-//!   `@import`            -> [`Extracted::imports`]   (text is cleaned to a path)
-//!   `@namespace`         -> [`Extracted::namespaces`]
-//!   `@definition.<kind>` -> a [`Decl`] whose `kind` is the suffix, verbatim
-//!   `@name`              -> the name of the enclosing `@definition.*`
-//!   `@supertype`         -> a base type/interface/trait, attached to the decl
-//!                           that shares the same `@name`. Because the link is by
-//!                           name, a base captured in a node DETACHED from the
-//!                           type's own declaration still lands on that type.
+//! generic capture vocabulary that every query speaks. The whole list, with
+//! what each capture means, lives in `queries/README.md`, the one place it is
+//! written.
 //!
 //! Three things come off the tree itself, with no capture and no grammar node
 //! name: the documentation comment above a declaration (the `extra` nodes the
@@ -41,6 +34,9 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 #[derive(Default)]
 pub(crate) struct Extracted {
     pub imports: Vec<String>,
+    /// The imports the language puts in sight of more files than the one that
+    /// writes them (`@import.global`).
+    pub global_imports: Vec<String>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     pub calls: Vec<CallSite>,
@@ -84,6 +80,18 @@ pub fn root_aliases(lang: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+/// How a language's declared namespace is seen by its other files — pure
+/// registry data (`namespace_scope` in languages.toml): `"folder"`, `"nested"`,
+/// or empty when the language declares none.
+pub fn namespace_scope(lang: &str) -> &'static str {
+    LANG_NAMESPACE_SCOPE.iter().find(|(name, _)| *name == lang).map_or("", |(_, scope)| *scope)
+}
+
+/// The file extensions of a language, as the registry writes them.
+pub fn extensions(lang: &str) -> &'static [&'static str] {
+    LANG_EXTENSIONS.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, exts)| *exts)
+}
+
 /// Build one [`Analyzer`] per language declared in the registry. A language
 /// whose grammar/queries fail to compile is skipped with a warning rather than
 /// aborting the whole run.
@@ -101,6 +109,9 @@ pub fn registry() -> HashMap<String, Analyzer> {
 /// the hot path is an index lookup, not a string compare.
 enum CapKind {
     Import,
+    /// An import that is in sight of every file of the language under the
+    /// same project, not only of the file that writes it.
+    ImportGlobal,
     Namespace,
     Name,
     Supertype,
@@ -116,6 +127,7 @@ enum CapKind {
 fn classify(cap: &str) -> CapKind {
     match cap {
         "import" => CapKind::Import,
+        "import.global" => CapKind::ImportGlobal,
         "namespace" => CapKind::Namespace,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
@@ -181,6 +193,9 @@ impl Analyzer {
         // after the declaration it adorns.
         let mut decls: BTreeMap<usize, Header> = BTreeMap::new();
         let mut decorations: Spans = BTreeSet::new();
+        // What an import or a namespace capture covers: the names written
+        // there are the path of the import, not a use of what they name.
+        let mut import_spans: Spans = BTreeSet::new();
         let mut supers_by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
 
         let mut matches = cursor.matches(&self.query, root, bytes);
@@ -194,15 +209,21 @@ impl Analyzer {
             for cap in m.captures {
                 let node = cap.node;
                 match &self.cap_kinds[cap.index as usize] {
-                    CapKind::Import => {
+                    CapKind::Import | CapKind::ImportGlobal => {
+                        import_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             let c = clean_import(t);
                             if !c.is_empty() {
-                                out.imports.push(c);
+                                if matches!(self.cap_kinds[cap.index as usize], CapKind::ImportGlobal) {
+                                    out.global_imports.push(c);
+                                } else {
+                                    out.imports.push(c);
+                                }
                             }
                         }
                     }
                     CapKind::Namespace => {
+                        import_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             let t = t.trim();
                             if !t.is_empty() {
@@ -283,11 +304,14 @@ impl Analyzer {
         // The call sites and the citations of the file, minus the
         // declaration headers themselves (`foo` in `fn foo(` is where it is
         // defined, not a use of it) and minus what is written inside a
-        // decoration.
-        (out.calls, out.cites) = use_sites(root, bytes, &decorations, &names_at);
+        // decoration, an import or a namespace name.
+        let quiet: Spans = decorations.union(&import_spans).copied().collect();
+        (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at);
 
         out.imports.sort();
         out.imports.dedup();
+        out.global_imports.sort();
+        out.global_imports.dedup();
         out.namespaces.sort();
         out.namespaces.dedup();
         out
@@ -436,12 +460,14 @@ fn one_line(text: &str, max: usize) -> String {
 /// survives a pass that reads only the files that changed. What is written
 /// right before the name, in `q::name` or `q.name`, is kept as its qualifier.
 ///
-/// Nothing inside a decoration is a use (an attribute calls nothing), and a
-/// declaration's own name, at `names_at`, is its header.
+/// Nothing inside `quiet` is a use: not a decoration (an attribute calls
+/// nothing), not an import (`Modules` in `using App.Modules;` is the path of
+/// the import) and not a namespace name. A declaration's own name, at
+/// `names_at`, is its header.
 fn use_sites(
     root: Node,
     bytes: &[u8],
-    decorations: &Spans,
+    quiet: &Spans,
     names_at: &BTreeSet<usize>,
 ) -> (Vec<CallSite>, Vec<CallSite>) {
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
@@ -449,7 +475,7 @@ fn use_sites(
     let mut cursor = root.walk();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        if is_decoration(&node, decorations) || node.is_extra() {
+        if is_decoration(&node, quiet) || node.is_extra() {
             continue;
         }
         if node.child_count() > 0 {
@@ -572,8 +598,9 @@ fn split_patterns(src: &str) -> Vec<String> {
     out
 }
 
-/// Drop `;`-to-end-of-line comments. Our queries contain no string literals, so
-/// a plain scan is safe.
+/// Drop `;`-to-end-of-line comments. The only string literals our queries hold
+/// are the patterns of a `#match?`, which never carry a `;`, so a plain scan is
+/// safe.
 fn strip_comments(src: &str) -> String {
     src.lines()
         .map(|l| match l.find(';') {

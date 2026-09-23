@@ -75,8 +75,8 @@ não há catálogo.
 tree-sitter** (`extract.rs`), agnóstico por construção: ele não conhece nenhuma
 linguagem nem nome de nó de gramática. Cada linguagem é **dado** — uma linha em
 `languages.toml` (nome, extensões, gramática) + arquivos de query `.scm` sob
-`queries/<lang>/`. As queries usam um vocabulário de captura genérico
-(`@import`, `@namespace`, `@definition.<kind>`, `@name`, `@supertype`); o motor
+`queries/<lang>/`. As queries usam um vocabulário de captura genérico, listado
+inteiro em [`queries/README.md`](queries/README.md#capturas); o motor
 só entende essas capturas e devolve o mesmo `Decl`/`Extracted` que o minerador
 (Layer 4) já consome. Assim captura aninhamento real, genéricos, listas de base
 multilinha e **`supertypes`** — `class X : Base, IFoo` (C#), `impl Trait for T`
@@ -183,14 +183,8 @@ Nenhuma mudança na **lógica** do grain é necessária — `src/` não contém 
 linguagem, extensão nem nó de gramática. O fluxo:
 
 1. **Query** — crie `queries/<lang>/tags.scm` (e, opcional, `supertypes.scm`)
-   usando o vocabulário de captura genérico:
-   - `@import` — caminho de import/using;
-   - `@namespace` — nome de namespace/package (linguagens que têm);
-   - `@definition.<kind>` + `@name` — uma declaração; `<kind>` (ex.: `class`,
-     `struct`, `function`, `trait`) vira `Decl.kind` literalmente;
-   - `@supertype` — base/contrato; o motor o liga, **por nome**, à declaração de
-     mesmo `@name` (por isso o `impl Trait for T` do Rust, em nó separado, ainda
-     pousa em `T`).
+   usando o vocabulário de captura genérico, listado inteiro, com o que cada
+   captura faz, em [`queries/README.md`](queries/README.md#capturas).
 
    Exemplo (C#): `(class_declaration name: (identifier) @name (base_list (_) @supertype)) @definition.class`.
 

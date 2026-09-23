@@ -22,12 +22,21 @@
 #                 these earn the graph's root-alias resolution probe; languages
 #                 that declare none never take that branch, so a fully external
 #                 import can never be mistaken for an internal module.
+#   namespace_scope OPTIONAL — how a declared namespace is seen by the other files
+#                 of the same language, with no import between them:
+#                   "folder" the namespace holds only together with its folder
+#                            (two folders declaring the same name are two);
+#                   "nested" a file also sees every namespace above its own
+#                            (a file in A.B sees A);
+#                 without the field, a namespace is seen by the files that
+#                 declare that same namespace, and nothing else.
 
 [[language]]
 name = "csharp"
 extensions = ["cs"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
+namespace_scope = "nested"
 
 [[language]]
 name = "typescript"
@@ -59,6 +68,7 @@ name = "go"
 extensions = ["go"]
 dir = "go"
 grammar = "grammar_go::LANGUAGE"
+namespace_scope = "folder"
 
 [[language]]
 name = "php"

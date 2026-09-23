@@ -56,6 +56,13 @@ fn main() {
     let mut alias_table = String::new();
     alias_table.push_str("pub(crate) static LANG_ROOT_ALIASES: &[(&str, &[&str])] = &[\n");
 
+    // (name, namespace_scope) table — the OPTIONAL rule for how a declared
+    // namespace is seen by the other files of the language ("folder" or
+    // "nested"). A language without the field gets an empty string: a
+    // namespace is seen only by the files that declare the same one.
+    let mut scope_table = String::new();
+    scope_table.push_str("pub(crate) static LANG_NAMESPACE_SCOPE: &[(&str, &str)] = &[\n");
+
     for lang in languages {
         let tbl = lang.as_table().expect("each [[language]] must be a table");
         let name = str_field(tbl, "name");
@@ -78,6 +85,14 @@ fn main() {
                     .collect()
             })
             .unwrap_or_default();
+        let namespace_scope = tbl
+            .get("namespace_scope")
+            .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
+            .unwrap_or_default();
+        assert!(
+            matches!(namespace_scope.as_str(), "" | "folder" | "nested"),
+            "language.namespace_scope of `{name}` must be \"folder\" or \"nested\", not {namespace_scope:?}"
+        );
 
         // Concatenate every .scm under queries/<dir>/, in stable filename order.
         let query = read_queries(&queries_root, &dir);
@@ -100,6 +115,7 @@ fn main() {
         .expect("the generated body is a String, which never fails to write");
         writeln!(ext_table, "    ({name:?}, &[{exts}]),").expect("the generated table is a String, which never fails to write");
         writeln!(alias_table, "    ({name:?}, &[{aliases}]),").expect("the generated table is a String, which never fails to write");
+        writeln!(scope_table, "    ({name:?}, {namespace_scope:?}),").expect("the generated table is a String, which never fails to write");
     }
 
     body.push_str("    ]\n}\n");
@@ -107,6 +123,8 @@ fn main() {
     body.push_str(&ext_table);
     alias_table.push_str("];\n");
     body.push_str(&alias_table);
+    scope_table.push_str("];\n");
+    body.push_str(&scope_table);
 
     let out_path = Path::new(&out_dir).join("langs_generated.rs");
     fs::write(&out_path, body).expect("write langs_generated.rs");

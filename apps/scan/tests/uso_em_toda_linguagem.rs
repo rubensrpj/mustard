@@ -12,6 +12,13 @@
 //! `Item` é citado como tipo de parâmetro no arquivo que chama, e no Rust uma
 //! constante é citada numa comparação e uma função é chamada pelo caminho do
 //! arquivo, sem `use`.
+//!
+//! Por fim, um projeto à parte mostra o que a linguagem põe à vista sem import
+//! no arquivo, e o que ela não põe: o `global using` do C#, o namespace de cima
+//! no C#, o pacote do próprio projeto com escopo no TypeScript, a pasta como
+//! parte do pacote no Go, o import de arquivo sem `./` no Dart, o namespace de
+//! outra linguagem que não responde a um import, e o nome escrito dentro de um
+//! `using` ou de um `namespace`, que não é uso.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -324,12 +331,12 @@ fn a_constante_e_o_tipo_citados_ganham_quem_os_usa() {
     }
 
     // A constante comparada dentro de `abrir` tem o uso, com `abrir` como quem
-    // usa. A linha do `use` que a importa também conta: é onde o arquivo quebra
-    // se ela mudar de nome.
+    // usa. A linha do `use` que a importa não conta: o nome ali é o caminho do
+    // import, não um uso.
     let limite = usos("rs/src/preco.rs", "LIMITE");
     let esperado = format!("rs/src/pedido.rs:{}:abrir", linha_de(PEDIDO, "n > LIMITE"));
-    if !limite.contains(&esperado) || limite.iter().any(|u| !u.starts_with("rs/src/pedido.rs:")) {
-        faltas.push(format!("a constante LIMITE tem o uso {esperado}, e só de pedido.rs: {limite:?}"));
+    if limite != [esperado.clone()] {
+        faltas.push(format!("a constante LIMITE tem só o uso {esperado}: {limite:?}"));
     }
 
     // A função chamada pelo caminho do arquivo, sem `use`, tem o uso na linha
@@ -341,5 +348,166 @@ fn a_constante_e_o_tipo_citados_ganham_quem_os_usa() {
     }
 
     let _ = std::fs::remove_dir_all(&dir);
+    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+}
+
+/// O projeto do que cada linguagem põe à vista. No C#, dois projetos: `Loja`,
+/// com um `global using` num arquivo só, e `Outro`, fora dele; `Pedido.cs`, em
+/// `Loja.Pedidos`, não tem `using` nenhum. No TypeScript, um pacote `@loja/core`
+/// cujo código mora em `src/`, importado por outro pacote pelo nome. No Go,
+/// duas pastas com o mesmo `package util`. No Dart, um import de arquivo sem
+/// `./`, ao lado de um pacote Go com o mesmo nome do arquivo; e um arquivo
+/// Python que importa esse mesmo nome, que no Python não é de ninguém.
+fn projeto_a_vista() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Loja/Loja.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n"),
+        ("Loja/GlobalUsings.cs", "global using Loja.Dominio;\n"),
+        (
+            "Loja/Dominio/Calculadora.cs",
+            "namespace Loja.Dominio;\n\npublic class Calculadora\n{\n    public int Total(int n) => n;\n}\n",
+        ),
+        ("Loja/Regra.cs", "namespace Loja;\n\npublic class Regra\n{\n    public int Arredondar(int n) => n;\n}\n"),
+        ("Loja/Pedidos.cs", "namespace Loja;\n\npublic class Pedidos\n{\n}\n"),
+        (
+            "Loja/Pedidos/Pedido.cs",
+            "namespace Loja.Pedidos;\n\npublic class Pedido\n{\n    public void Fechar()\n    {\n        \
+             var c = new Calculadora();\n        c.Total(1);\n        var r = new Regra();\n        \
+             r.Arredondar(2);\n    }\n}\n",
+        ),
+        ("Outro/Outro.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n"),
+        (
+            "Outro/Conta.cs",
+            "namespace Outro;\n\npublic class Conta\n{\n    public void Pagar()\n    {\n        \
+             var c = new Calculadora();\n        c.Total(3);\n    }\n}\n",
+        ),
+        (
+            "packages/core/package.json",
+            "{\n  \"name\": \"@loja/core\",\n  \"exports\": {\n    \"./server/*\": \"./src/server/*.ts\"\n  }\n}\n",
+        ),
+        ("packages/core/src/server/preco.ts", "export function total(n: number): number {\n  return n;\n}\n"),
+        (
+            "apps/web/src/pedido.ts",
+            "import { total } from '@loja/core/server/preco';\n\nexport function fechar(): number {\n  return total();\n}\n",
+        ),
+        ("a/util/x.go", "package util\n\nfunc Dobro(n int) int {\n\treturn n * 2\n}\n"),
+        ("b/util/y.go", "package util\n\nfunc Dobro(n int) int {\n\treturn n + n\n}\n"),
+        ("a/util/usa.go", "package util\n\nfunc Usa() int {\n\treturn Dobro(1)\n}\n"),
+        ("dart/lib/pedido.dart", "import 'conta.dart';\n\nint fechar() {\n  return total(1);\n}\n"),
+        ("dart/lib/conta.dart", "int total(int n) => n;\n"),
+        ("conta/conta.go", "package conta\n\nfunc total(n int) int {\n\treturn n\n}\n"),
+        ("py/caixa.py", "import conta\n\n\ndef pagar():\n    return total(1)\n"),
+    ]
+}
+
+#[test]
+fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
+    let dir = std::env::temp_dir().join(format!("scan-o-que-a-linguagem-poe-a-vista-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let arquivos = projeto_a_vista();
+    for (rel, corpo) in &arquivos {
+        write(&dir, rel, corpo);
+    }
+    let map = scan(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let modules = map["modules"].as_array().expect("modules");
+    let modulo = |arquivo: &str| -> &Value {
+        modules.iter().find(|m| m["path"] == arquivo).unwrap_or_else(|| panic!("{arquivo} no mapa"))
+    };
+    let lista = |v: &Value| -> Vec<String> {
+        v.as_array().map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
+    };
+    let usos = |arquivo: &str, nome: &str| -> Vec<String> {
+        let m = modulo(arquivo);
+        let d = m["declarations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|d| d["name"] == nome)
+            .unwrap_or_else(|| panic!("{nome} declarado em {arquivo}: {m}"));
+        lista(&d["used_by"])
+    };
+    let deps = |arquivo: &str| lista(&modulo(arquivo)["deps"]);
+    let corpo = |arquivo: &str| arquivos.iter().find(|(rel, _)| *rel == arquivo).unwrap().1;
+    // Junta as faltas antes de reprovar, para que cada parte que voltar a ser
+    // como antes apareça de uma vez.
+    let mut faltas: Vec<String> = Vec::new();
+
+    // O `global using` de Loja/GlobalUsings.cs vale para todo arquivo C# do
+    // projeto Loja: Pedido.cs usa Total sem `using`, e Conta.cs, do projeto
+    // Outro, não o enxerga.
+    let pedido = "Loja/Pedidos/Pedido.cs";
+    let total = usos("Loja/Dominio/Calculadora.cs", "Total");
+    let esperado = format!("{pedido}:{}:Fechar", linha_de(corpo(pedido), "c.Total(1)"));
+    if !total.contains(&esperado) || total.iter().any(|u| u.starts_with("Outro/Conta.cs:")) {
+        faltas.push(format!("Total tem o uso {esperado} e nenhum de Outro/Conta.cs: {total:?}"));
+    }
+    // O import global fica guardado só no arquivo que o escreve, e a aresta do
+    // grafo de import continua só nele.
+    let globais = lista(&modulo("Loja/GlobalUsings.cs")["global_imports"]);
+    if globais != ["Loja.Dominio"] {
+        faltas.push(format!("GlobalUsings.cs guarda o import global Loja.Dominio: {globais:?}"));
+    }
+    if let Some(m) = modules.iter().find(|m| m["path"] != "Loja/GlobalUsings.cs" && m.get("global_imports").is_some()) {
+        faltas.push(format!("só GlobalUsings.cs grava import global: {}", m["path"]));
+    }
+    if !deps("Loja/GlobalUsings.cs").contains(&"Loja/Dominio/Calculadora.cs".to_string())
+        || deps(pedido).contains(&"Loja/Dominio/Calculadora.cs".to_string())
+    {
+        faltas.push(format!(
+            "a aresta de import vai de GlobalUsings.cs a Calculadora.cs, e não de Pedido.cs: {:?} / {:?}",
+            deps("Loja/GlobalUsings.cs"),
+            deps(pedido)
+        ));
+    }
+
+    // O namespace de cima: Pedido.cs, em Loja.Pedidos, enxerga Loja.
+    let arredondar = usos("Loja/Regra.cs", "Arredondar");
+    let esperado = format!("{pedido}:{}:Fechar", linha_de(corpo(pedido), "r.Arredondar(2)"));
+    if !arredondar.contains(&esperado) {
+        faltas.push(format!("Arredondar tem o uso {esperado}: {arredondar:?}"));
+    }
+    // O nome escrito dentro do `namespace Loja.Pedidos;` não é uso da classe
+    // Pedidos, que agora está à vista.
+    let linha_do_namespace = format!("{pedido}:{}", linha_de(corpo(pedido), "namespace Loja.Pedidos;"));
+    let pedidos = usos("Loja/Pedidos.cs", "Pedidos");
+    if pedidos.iter().any(|u| u == &linha_do_namespace || u.starts_with(&format!("{linha_do_namespace}:"))) {
+        faltas.push(format!("a classe Pedidos não tem uso na linha do namespace: {pedidos:?}"));
+    }
+
+    // O pacote do projeto com escopo: `@loja/core/server/preco` acha o arquivo
+    // em `src/server/`, onde o package.json põe o código.
+    let web = "apps/web/src/pedido.ts";
+    let total_ts = usos("packages/core/src/server/preco.ts", "total");
+    if !total_ts.iter().any(|u| u.starts_with(&format!("{web}:"))) {
+        faltas.push(format!("o total do TypeScript tem o uso em {web}: {total_ts:?}"));
+    }
+    if !deps(web).contains(&"packages/core/src/server/preco.ts".to_string()) {
+        faltas.push(format!("{web} tem packages/core/src/server/preco.ts nos deps: {:?}", deps(web)));
+    }
+
+    // O pacote do Go é a pasta: o Dobro de b/util não ganha o uso de a/util.
+    let dobro_a = usos("a/util/x.go", "Dobro");
+    let dobro_b = usos("b/util/y.go", "Dobro");
+    if dobro_a.is_empty() || dobro_a.iter().any(|u| !u.starts_with("a/util/usa.go:")) || !dobro_b.is_empty() {
+        faltas.push(format!("só o Dobro de a/util/x.go tem o uso de a/util/usa.go: {dobro_a:?} / {dobro_b:?}"));
+    }
+
+    // O import de arquivo sem `./` no Dart é o arquivo ao lado, e não o pacote
+    // Go `conta`; nem o `import conta` do Python responde com esse pacote.
+    let total_dart = usos("dart/lib/conta.dart", "total");
+    if !total_dart.iter().any(|u| u.starts_with("dart/lib/pedido.dart:")) {
+        faltas.push(format!("o total de dart/lib/conta.dart tem o uso de dart/lib/pedido.dart: {total_dart:?}"));
+    }
+    let total_go = usos("conta/conta.go", "total");
+    if !total_go.is_empty() {
+        faltas.push(format!("o total de conta/conta.go não tem uso: {total_go:?}"));
+    }
+    if deps("dart/lib/pedido.dart") != ["dart/lib/conta.dart"] {
+        faltas.push(format!("o único dos deps de dart/lib/pedido.dart é dart/lib/conta.dart: {:?}", deps("dart/lib/pedido.dart")));
+    }
+    if !deps("py/caixa.py").is_empty() {
+        faltas.push(format!("o import conta do Python não acha o pacote Go: {:?}", deps("py/caixa.py")));
+    }
+
     assert!(faltas.is_empty(), "{}", faltas.join("\n"));
 }
