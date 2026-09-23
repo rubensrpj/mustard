@@ -22,6 +22,35 @@ use super::report::WaveReport;
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::spec_events::write::record;
 
+/// A entrega pede commit? Só quando mudou arquivo: a onda que volta sem
+/// arquivo mudado fecha como conferência, sem commit. É a leitura única dessa
+/// decisão — a rodada a usa ao escolher o que comitar ([`commit_message`]) e
+/// o fechamento, por [`waves_checked_only`], ao cobrar o commit de cada onda
+/// —, para as duas nunca discordarem de quando uma onda termina sem commit.
+pub(crate) fn needs_commit(files: &[String]) -> bool {
+    !files.is_empty()
+}
+
+/// As ondas cuja entrega mais recente não mudou arquivo: fecharam como
+/// conferência, pela mesma leitura da rodada ([`needs_commit`]), e não têm
+/// commit a cobrar. A onda cuja entrega mais recente mudou arquivo fica de
+/// fora, e a onda sem entrega nenhuma também.
+pub(crate) fn waves_checked_only(log: &SpecLog) -> BTreeSet<u64> {
+    log.last_by_wave("delivered")
+        .into_iter()
+        .filter(|(_, id)| {
+            let files: Vec<String> = log
+                .get(*id)
+                .and_then(|delivery| delivery.fields.get("files"))
+                .and_then(Value::as_array)
+                .map(|files| files.iter().map(|f| f.as_str().map_or_else(|| f.to_string(), str::to_string)).collect())
+                .unwrap_or_default();
+            !needs_commit(&files)
+        })
+        .map(|(wave, _)| wave)
+        .collect()
+}
+
 /// A mensagem do commit da rodada, montada do resumo que cada entrega traz e
 /// já conferida: o título no molde do repositório (`tipo(escopo): frase`),
 /// com o resumo da primeira onda, e o corpo com uma linha por onda. O tipo é
@@ -30,7 +59,7 @@ use crate::commands::spec_events::write::record;
 pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Option<(String, String)>, RoundRefusal> {
     let committed: Vec<(&WaveReport, &str)> = waves
         .iter()
-        .filter(|w| !w.files.is_empty())
+        .filter(|w| needs_commit(&w.files))
         .filter_map(|w| w.commit.as_deref().map(|summary| (w, summary)))
         .collect();
     let Some((_, first)) = committed.first() else {

@@ -98,7 +98,7 @@ mod stops;
 /// cabeçalho da pergunta que decide a mudança.
 pub(crate) use stops::change_code_of;
 
-pub(crate) use commit::{reinstall_binary, refresh_map_if_stale};
+pub(crate) use commit::{reinstall_binary, refresh_map_if_stale, waves_checked_only};
 
 use std::path::PathBuf;
 

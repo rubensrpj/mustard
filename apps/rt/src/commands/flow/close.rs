@@ -695,7 +695,9 @@ fn record_tracking_table(root: &Path, spec: &str, verdict: &SpecEvent) -> Result
     record(root, spec, "tracking", draft, PhaseWriter::Binary).map(|_| ())
 }
 
-/// A obra terminou? Recusa enquanto houver onda sem commit, onda com o
+/// A obra terminou? Recusa enquanto houver onda sem commit — tirando a que
+/// voltou só conferindo, sem arquivo mudado
+/// ([`crate::commands::flow::round::waves_checked_only`]) —, onda com o
 /// conserto pendente ([`crate::commands::flow::round::waves_pending_fix`]:
 /// a última revisão dela reprovou e nenhuma entrega chegou depois), tarefa
 /// ainda no backlog ([`crate::commands::flow::round::backlog_left`]), ou
@@ -726,8 +728,11 @@ fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
         .filter(|e| e.event_type == "commit")
         .flat_map(|e| e.ints("waves"))
         .collect();
+    // A onda que voltou só conferindo, sem arquivo mudado, fecha sem commit:
+    // a leitura é a mesma que a rodada usa ao escolher o que comitar.
+    let checked_only = crate::commands::flow::round::waves_checked_only(log);
     for wave in log.planned_waves() {
-        if !committed.contains(&wave) {
+        if !committed.contains(&wave) && !checked_only.contains(&wave) {
             return Err(CloseRefusal::WaveWithoutCommit { wave });
         }
     }
@@ -966,6 +971,13 @@ mod tests {
     /// revisão de onda nenhuma: a entrega já basta, e falta só o fechamento
     /// pedir o agente de teste dedicado.
     fn ready_with_waves(root: &Path, spec: &str, proofs: &[&str], waves: u64) {
+        ready_with_checked(root, spec, proofs, waves, &[]);
+    }
+
+    /// [`ready_with_waves`] em que as ondas de `checked` voltam só
+    /// conferindo: sem arquivo mudado, cada uma sozinha numa rodada depois
+    /// das outras, e por isso sem commit.
+    fn ready_with_checked(root: &Path, spec: &str, proofs: &[&str], waves: u64, checked: &[u64]) {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         for n in 1..=waves {
@@ -1014,13 +1026,21 @@ mod tests {
         let dispatch = round(None);
         assert_eq!(dispatch["ok"], json!(true), "{dispatch}");
         let mut delivered = String::new();
-        for n in 1..=waves {
+        for n in (1..=waves).filter(|n| !checked.contains(n)) {
             std::fs::write(root.join(wave_file(n)), "fn um() {}\nfn dois() {}\n").unwrap();
             let line = json!({"wave": n, "text": "Saiu.", "files": [wave_file(n)], "commit": "a soma sai"});
             delivered.push_str(&format!("<DELIVERED>{line}</DELIVERED>\n"));
         }
-        let back = round(Some(delivered));
-        assert_eq!(back["ok"], json!(true), "{back}");
+        if !delivered.is_empty() {
+            let back = round(Some(delivered));
+            assert_eq!(back["ok"], json!(true), "{back}");
+        }
+        for n in checked {
+            let line = json!({"wave": n, "text": "Nada a mudar: a tarefa já estava entregue. Rodei git --version e passou."});
+            let back = round(Some(format!("<DELIVERED>{line}</DELIVERED>\n")));
+            assert_eq!(back["ok"], json!(true), "{back}");
+            assert!(back.get("commit").is_none(), "a onda que só conferiu não comita: {back}");
+        }
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
     }
 
@@ -2292,6 +2312,39 @@ exit "${2:-0}"
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
         let armed = crate::commands::event::pending::armed_charges(root);
         assert!(armed.iter().any(|charge| charge.spec == "x"), "a cobrança ficou armada: {armed:?}");
+    }
+
+    /// A onda que volta só conferindo, sem arquivo mudado, passa pela rodada
+    /// sem commit e o fechamento não a cobra: os dois leem o fim da onda pela
+    /// mesma leitura. A onda cuja entrega mais recente mudou arquivo e não tem
+    /// commit continua recusada.
+    #[test]
+    fn the_wave_that_only_checked_closes_without_a_commit() {
+        let commits_of = |root: &Path, wave: u64| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            log.visible().iter().filter(|e| e.event_type == "commit" && e.ints("waves").contains(&wave)).count()
+        };
+
+        // A onda 2 volta sem arquivo pela rodada: nenhum commit a leva, e a
+        // obra fecha.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_checked(root, "x", &["git --version"], 2, &[2]);
+        assert_eq!((commits_of(root, 1), commits_of(root, 2)), (1, 0), "só a onda com arquivo comitou");
+        let closed = close(root, "x");
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+
+        // A mesma onda com uma entrega mais recente que mudou arquivo, sem
+        // commit, volta a ser cobrada.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_checked(root, "x", &["git --version"], 2, &[2]);
+        write(root, "x", "delivered", json!({"wave": 2, "text": "Mexi depois.", "files": [wave_file(2)]}));
+        assert_eq!(commits_of(root, 2), 0);
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("wave-without-commit"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains('2'), "{refused}");
     }
 
     /// O fechamento recusa enquanto houver onda sem commit, onda cuja última
