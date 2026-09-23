@@ -6,8 +6,8 @@
 //! `apps/cli/templates/skills/` and the scan-generated ones under
 //! `{subproject}/.claude/skills/` — exposes a YAML frontmatter block. Before
 //! this contract the shape was implicit
-//! (`name`, `description`, `source`). The new contract adds four fields
-//! consumed by `skill-resolve` to score relevance deterministically:
+//! (`name`, `description`, `source`). The new contract adds four fields that
+//! say where the skill applies, plus its provenance:
 //!
 //! - `tags` — verbs the skill applies to (`add`, `fix`, `refactor`, ...).
 //! - `appliesTo` — cluster labels the skill targets (empty = any).
@@ -17,7 +17,7 @@
 //!
 //! One further key is typed here for a different reason: `paths` — glob
 //! patterns that scope when the skill auto-loads. The four above are Mustard's
-//! own, scored by `skill-resolve`; `paths` is read by Claude Code itself, and
+//! own, and Claude Code ignores them; `paths` is read by Claude Code itself, and
 //! is the only one of the five the platform acts on. It is typed (not left to
 //! `extra`) so the scan-generated molds can carry it deliberately instead of it
 //! surviving only by round-trip accident.
@@ -33,8 +33,7 @@
 //!   `serde_yaml` would bloat the workspace; we do not need full YAML.
 //! - [`validate`] takes a `strict: bool`. The default (`false`) checks only
 //!   the legacy invariants (`name` kebab-case, `description` non-empty); the
-//!   strict pass (used by `--strict-frontmatter`) also requires
-//!   `tags` / `applies_to` / `scope` / `metadata.generated_by`.
+//!   strict pass also requires `tags` / `scope` / `metadata.generated_by`.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -218,8 +217,8 @@ pub struct ClusterMeta {
 /// `metadata:` block of a SKILL frontmatter.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillMetadata {
-    /// `scan` | `foundation`. `None` ⇒ legacy SKILL (validator surfaces it
-    /// under `--strict`).
+    /// `scan` | `foundation`. `None` ⇒ legacy SKILL (the strict pass of
+    /// [`validate`] refuses it).
     #[serde(default, rename = "generated_by")]
     pub generated_by: Option<SkillSource>,
     /// Optional cluster metadata for scan-generated skills.
@@ -249,8 +248,8 @@ pub struct SkillFrontmatter {
     #[serde(default)]
     pub entities: Vec<String>,
     /// Glob patterns that scope when the platform auto-loads this skill. Unlike
-    /// [`Self::tags`] / [`Self::applies_to`] / [`Self::scope`] — which Mustard
-    /// defined for its own `skill-resolve` ranking — this key is read by Claude
+    /// [`Self::tags`] / [`Self::applies_to`] / [`Self::scope`] — Mustard's own
+    /// fields, which Claude Code ignores — this key is read by Claude
     /// Code itself, which loads the skill automatically only while working on
     /// files matching the patterns. Empty = unscoped (loads for the whole
     /// subproject), which is the pre-`paths` behaviour.
@@ -334,9 +333,10 @@ pub fn parse(raw: &str) -> Result<SkillFrontmatter, SkillFrontmatterError> {
 /// `name` kebab-case + present, `description` length within `50..=1024`.
 ///
 /// In `strict=true` mode, [`SkillFrontmatter::tags`],
-/// [`SkillFrontmatter::applies_to`], [`SkillFrontmatter::scope`] and
-/// [`SkillMetadata::generated_by`] must all be non-empty / non-`None`. This
-/// is what `mustard-rt run skills validate --strict-frontmatter` enforces.
+/// [`SkillFrontmatter::scope`] and [`SkillMetadata::generated_by`] must all be
+/// non-empty / non-`None`. Only this module's tests run the strict pass: the
+/// skill check the binary does run (`run map skill`) looks at the paths a
+/// skill cites and at its length, not at these fields.
 ///
 /// # Errors
 ///
@@ -366,11 +366,10 @@ pub fn validate(
         if fm.tags.is_empty() {
             errors.push(SkillFrontmatterError::MissingField("tags".into()));
         }
-        // `applies_to` may be empty (= any cluster), but the *key* must be
-        // declared. The lenient parser sets it to `[]` whether the key is
-        // present or absent, so we cannot distinguish from the parsed value
-        // alone — instead, strict mode requires the source raw to contain
-        // the key. That check lives in `validate_strict_keys`.
+        // `applies_to` may be empty (= any cluster). The lenient parser sets
+        // it to `[]` whether the key is present or absent, so the parsed value
+        // cannot tell a missing key from an empty list, and this pass does not
+        // check it.
         if fm.scope.is_empty() {
             errors.push(SkillFrontmatterError::MissingField("scope".into()));
         }
