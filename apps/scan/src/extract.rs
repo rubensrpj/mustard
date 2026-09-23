@@ -101,6 +101,11 @@ enum CapKind {
     Namespace,
     Name,
     Supertype,
+    /// An attribute or decorator adorning a declaration: never code of it.
+    Decoration,
+    /// The body of a declaration that the grammar keeps beside it rather than
+    /// inside it: the declaration ends where its body ends.
+    Body,
     Def(String),
     Ignore,
 }
@@ -111,6 +116,8 @@ fn classify(cap: &str) -> CapKind {
         "namespace" => CapKind::Namespace,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
+        "decoration" => CapKind::Decoration,
+        "body" => CapKind::Body,
         other => match other.strip_prefix("definition.") {
             Some(kind) => CapKind::Def(kind.to_string()),
             None => CapKind::Ignore,
@@ -166,14 +173,20 @@ impl Analyzer {
         // Declarations keyed by node start byte (so they emerge in document
         // order); supertypes keyed by the cleaned declaration name so a base
         // captured in a detached node attaches to the right decl.
+        // The comment and the header are read only after every match, once the
+        // decorations of the whole file are known: a decoration may be matched
+        // after the declaration it adorns.
         let mut decls: BTreeMap<usize, Header> = BTreeMap::new();
+        let mut decorations: Spans = BTreeSet::new();
         let mut supers_by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
 
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
-            let mut def: Option<(usize, &str, usize, usize, String, String)> = None;
+            let mut def: Option<(Node, &str)> = None;
             let mut name_text: Option<String> = None;
+            let mut name_byte = usize::MAX;
             let mut here_supers: Vec<String> = Vec::new();
+            let mut body_end: Option<usize> = None;
 
             for cap in m.captures {
                 let node = cap.node;
@@ -197,7 +210,14 @@ impl Analyzer {
                     CapKind::Name => {
                         if let Ok(t) = node.utf8_text(bytes) {
                             name_text = Some(t.to_string());
+                            name_byte = node.start_byte();
                         }
+                    }
+                    CapKind::Decoration => {
+                        decorations.insert((node.start_byte(), node.end_byte()));
+                    }
+                    CapKind::Body => {
+                        body_end = Some(node.end_position().row + 1);
                     }
                     CapKind::Supertype => {
                         if let Ok(t) = node.utf8_text(bytes)
@@ -206,28 +226,21 @@ impl Analyzer {
                             }
                     }
                     CapKind::Def(kind) => {
-                        def = Some((
-                            node.start_byte(),
-                            kind.as_str(),
-                            node.start_position().row + 1,
-                            node.end_position().row + 1,
-                            doc_above(node, bytes),
-                            signature_of(node, bytes),
-                        ));
+                        def = Some((node, kind.as_str()));
                     }
                     CapKind::Ignore => {}
                 }
             }
 
-            if let (Some((sb, kind, line, end_line, doc, signature)), Some(name)) = (def, &name_text) {
-                decls.entry(sb).or_insert_with(|| Header {
+            if let (Some((node, kind)), Some(name)) = (def, &name_text) {
+                let header = decls.entry(node.start_byte()).or_insert_with(|| Header {
                     kind: kind.to_string(),
                     name: name.clone(),
-                    line,
-                    end_line,
-                    doc,
-                    signature,
+                    node,
+                    name_byte,
+                    body_end: None,
                 });
+                header.body_end = header.body_end.max(body_end);
             }
             if let Some(name) = &name_text
                 && !here_supers.is_empty() {
@@ -239,6 +252,9 @@ impl Analyzer {
                 }
         }
 
+        // Where each declaration's own name is written: that name followed by
+        // `(` is the header, not a call.
+        let names_at: BTreeSet<usize> = decls.values().map(|h| h.name_byte).collect();
         out.declarations = decls
             .into_values()
             .map(|h| {
@@ -250,25 +266,21 @@ impl Analyzer {
                 Decl {
                     kind: h.kind,
                     name: h.name,
-                    line: h.line,
-                    end_line: h.end_line,
+                    line: h.node.start_position().row + 1,
+                    end_line: (h.node.end_position().row + 1).max(h.body_end.unwrap_or(0)),
                     supertypes,
-                    doc: h.doc,
-                    signature: h.signature,
+                    doc: doc_above(h.node, bytes, &decorations),
+                    signature: signature_of(h.node, bytes, &decorations),
                     calls: Vec::new(),
                     used_by: Vec::new(),
                 }
             })
             .collect();
 
-        // The call sites of the file, minus the declaration headers themselves:
-        // `foo` on the line `fn foo(` is where it is defined, not a use of it.
-        let defined: BTreeSet<(usize, &str)> =
-            out.declarations.iter().map(|d| (d.line, d.name.as_str())).collect();
-        out.calls = call_sites(root, bytes)
-            .into_iter()
-            .filter(|c| !defined.contains(&(c.line, c.name.as_str())))
-            .collect();
+        // The call sites of the file, minus the declaration headers themselves
+        // (`foo` in `fn foo(` is where it is defined, not a use of it) and
+        // minus what is written inside a decoration.
+        out.calls = call_sites(root, bytes, &decorations, &names_at);
 
         out.imports.sort();
         out.imports.dedup();
@@ -280,13 +292,21 @@ impl Analyzer {
 
 /// A declaration as the query gave it, before the supertypes captured
 /// elsewhere in the file are attached to it.
-struct Header {
+struct Header<'t> {
     kind: String,
     name: String,
-    line: usize,
-    end_line: usize,
-    doc: String,
-    signature: String,
+    node: Node<'t>,
+    /// Where the name capture starts, which tells the header from a call.
+    name_byte: usize,
+    /// The last line of the body kept beside the declaration, when there is one.
+    body_end: Option<usize>,
+}
+
+/// The byte spans (start, end) of the decorations of a file.
+type Spans = BTreeSet<(usize, usize)>;
+
+fn is_decoration(node: &Node, decorations: &Spans) -> bool {
+    decorations.contains(&(node.start_byte(), node.end_byte()))
 }
 
 /// How much of a documentation comment is kept. The map is read by machine,
@@ -303,18 +323,37 @@ const SIGNATURE_MAX_CHARS: usize = 200;
 /// grammar), cleaned of their markers and joined into one line. A blank line
 /// between the comment and the declaration ends the block — what is detached
 /// from the declaration is not its documentation. Empty when there is none.
-fn doc_above(node: Node, bytes: &[u8]) -> String {
+///
+/// Two things stand between a comment and its declaration without breaking the
+/// block. A decoration is passed over, and so is an unnamed token (a keyword)
+/// until the first comment is joined. And when the siblings end with nothing
+/// joined, the declaration is wrapped in another node, so the search goes on
+/// above the wrapper.
+fn doc_above(node: Node, bytes: &[u8], decorations: &Spans) -> String {
     let mut parts: Vec<String> = Vec::new();
-    let mut cur = node;
-    let mut top = cur.start_position().row;
-    while let Some(prev) = cur.prev_sibling() {
-        if !prev.is_extra() || prev.end_position().row + 1 < top {
+    let mut anchor = node;
+    let mut top = node.start_position().row;
+    'climb: loop {
+        let mut cur = anchor;
+        while let Some(prev) = cur.prev_sibling() {
+            if prev.end_position().row + 1 < top {
+                break 'climb;
+            }
+            if prev.is_extra() {
+                let Ok(text) = prev.utf8_text(bytes) else { break 'climb };
+                parts.push(clean_comment(text));
+            } else if !(is_decoration(&prev, decorations) || (!prev.is_named() && parts.is_empty())) {
+                break 'climb;
+            }
+            top = prev.start_position().row;
+            cur = prev;
+        }
+        if !parts.is_empty() {
             break;
         }
-        let Ok(text) = prev.utf8_text(bytes) else { break };
-        parts.push(clean_comment(text));
-        top = prev.start_position().row;
-        cur = prev;
+        let Some(parent) = anchor.parent() else { break };
+        top = top.min(parent.start_position().row);
+        anchor = parent;
     }
     parts.reverse();
     one_line(&parts.join(" "), DOC_MAX_CHARS)
@@ -338,9 +377,19 @@ fn clean_comment(raw: &str) -> String {
 /// The declaration's own header: its text up to where the body opens — the
 /// first `{` or `;` with no bracket open, or the first line break with nothing
 /// left open. The body itself never comes: it was measured as the worst thing
-/// to keep in the map.
-fn signature_of(node: Node, bytes: &[u8]) -> String {
-    let Ok(text) = node.utf8_text(bytes) else { return String::new() };
+/// to keep in the map. It starts after the decorations and comments that open
+/// the node: an attribute is not the header of what it adorns.
+fn signature_of(node: Node, bytes: &[u8], decorations: &Spans) -> String {
+    let mut start = node.start_byte();
+    let mut walker = node.walk();
+    for child in node.children(&mut walker) {
+        if !(is_decoration(&child, decorations) || child.is_extra()) {
+            start = child.start_byte();
+            break;
+        }
+        start = child.end_byte();
+    }
+    let Ok(text) = std::str::from_utf8(&bytes[start..node.end_byte()]) else { return String::new() };
     let mut depth: i32 = 0;
     let mut end = text.len();
     for (i, ch) in text.char_indices() {
@@ -373,11 +422,17 @@ fn one_line(text: &str, max: usize) -> String {
 /// node). The name is NOT resolved here: `graph` does that with the whole
 /// project in hand, which is why what is stored survives a pass that reads
 /// only the files that changed.
-fn call_sites(root: Node, bytes: &[u8]) -> Vec<CallSite> {
+///
+/// Nothing inside a decoration is a call (an attribute calls nothing), and a
+/// declaration's own name, at `names_at`, is its header.
+fn call_sites(root: Node, bytes: &[u8], decorations: &Spans, names_at: &BTreeSet<usize>) -> Vec<CallSite> {
     let mut found: BTreeSet<(usize, String)> = BTreeSet::new();
     let mut cursor = root.walk();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
+        if is_decoration(&node, decorations) {
+            continue;
+        }
         if node.child_count() > 0 {
             for child in node.children(&mut cursor) {
                 stack.push(child);
@@ -386,6 +441,7 @@ fn call_sites(root: Node, bytes: &[u8]) -> Vec<CallSite> {
         }
         if node.is_named()
             && !node.is_extra()
+            && !names_at.contains(&node.start_byte())
             && followed_by_open_paren(node, bytes)
             && let Ok(text) = node.utf8_text(bytes)
             && is_identifier(text)

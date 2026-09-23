@@ -13,3 +13,7 @@
 ; tags.scm (MIT) — see queries/README.md.
 (method_declaration name: (field_identifier) @name) @definition.method
 (field_declaration name: (field_identifier) @name) @definition.field
+
+; An interface method is a member like a receiver method; left uncaptured, its
+; header was read as a call.
+(method_elem name: (field_identifier) @name) @definition.method

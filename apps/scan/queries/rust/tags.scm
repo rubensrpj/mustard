@@ -31,3 +31,9 @@
 ; them as units.
 (field_declaration name: (field_identifier) @name) @definition.field
 (enum_variant name: (identifier) @name) @definition.enum_member
+
+; Decorations — an attribute is not code of the declaration it adorns: the
+; engine passes over it to find the doc comment above, starts the header after
+; it, and reads no call out of it (`#[derive(Debug)]` calls nothing).
+(attribute_item) @decoration
+(inner_attribute_item) @decoration

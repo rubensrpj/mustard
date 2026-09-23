@@ -3,6 +3,7 @@
 ;   @namespace         the declared `namespace App\Http;` name
 ;   @name              the identifier of the enclosing @definition.*
 ;   @definition.<kind> a declaration; <kind> becomes Decl.kind verbatim
+;   @decoration        an attribute or annotation, never code of the declaration
 ; The engine knows ONLY these capture names — never a node name or a language.
 
 (namespace_use_clause [(qualified_name) (name)] @import)
@@ -23,3 +24,8 @@
 (method_declaration name: (name) @name) @definition.method
 (property_declaration (property_element name: (variable_name (name) @name))) @definition.property
 (enum_case name: (name) @name) @definition.enum_member
+
+; Decorations — an attribute list (`#[Route('/lista')]`) is not code of the
+; declaration it adorns: the engine starts the header after it and reads no
+; call out of it.
+(attribute_list) @decoration

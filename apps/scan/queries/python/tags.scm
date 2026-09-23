@@ -26,3 +26,19 @@
   body: (block
     (expression_statement
       (assignment left: (identifier) @name) @definition.field)))
+
+; Decorated functions — a decorator wraps the def in a `decorated_definition`,
+; so the two patterns above never see it. The same line is drawn by the
+; wrapper's parent: the module for a function, a class body for a method.
+(module
+  (decorated_definition
+    definition: (function_definition name: (identifier) @name) @definition.function))
+(class_definition
+  body: (block
+    (decorated_definition
+      definition: (function_definition name: (identifier) @name) @definition.method)))
+
+; Decorations — a decorator (`@app.get("/")`, `@dataclass`) is not code of the
+; declaration it adorns: the engine passes over it to find the comment above
+; and reads no call out of it.
+(decorator) @decoration

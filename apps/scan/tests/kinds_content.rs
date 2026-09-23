@@ -135,6 +135,8 @@ fn dart_files_a_library_function_as_unit_and_a_body_member_as_member() {
         &[
             ("Role", "enum"),
             ("Account", "class"),
+            // The constructor is a member of its class, like a method.
+            ("Account", "method"),
             ("describe", "method"),
             ("Auditable", "mixin"),
             ("touch", "method"),
@@ -154,6 +156,8 @@ fn go_files_a_top_level_func_as_unit_and_a_receiver_method_as_member() {
             ("Name", "field"),
             ("Display", "method"),
             ("Storer", "interface"),
+            // The interface method is a member, like a receiver method.
+            ("Load", "method"),
             ("ID", "type"),
             ("Load", "function"),
         ],

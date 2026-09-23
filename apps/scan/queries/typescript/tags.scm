@@ -28,3 +28,8 @@
 (property_signature name: (_) @name) @definition.property
 (enum_body name: (property_identifier) @name @definition.enum_member)
 (enum_assignment name: (_) @name) @definition.enum_member
+
+; Decorations — a decorator (`@Component()`, `@Get()`) is not code of the
+; declaration it adorns: the engine passes over it to find the doc comment
+; above, starts the header after it, and reads no call out of it.
+(decorator) @decoration

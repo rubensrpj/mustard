@@ -18,6 +18,14 @@ fn main() {
 
     println!("cargo:rerun-if-changed=languages.toml");
     println!("cargo:rerun-if-changed=queries");
+    println!("cargo:rerun-if-changed=src");
+
+    // The map format: a digest of everything that decides what the scan
+    // yields from a file — the engine (src), the queries, and the data tables
+    // at the crate root. A map written by a scan built from other sources is
+    // read again in full, so no change to the scan can leave a stale map
+    // behind, and nobody has to remember to bump a number by hand.
+    println!("cargo:rustc-env=SCAN_MAP_DIGEST={}", source_digest(Path::new(&manifest)));
 
     let registry_src = fs::read_to_string(&registry_path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", registry_path.display()));
@@ -131,4 +139,62 @@ fn read_queries(root: &Path, dir: &str) -> String {
         combined.push('\n');
     }
     combined
+}
+
+/// A digest of the scan's own sources: every file under `src/` and `queries/`,
+/// and every data `.toml` at the crate root (the package manifest apart, whose
+/// version already enters the format). Paths are relative and sorted, so the
+/// digest depends on the content only, never on where the crate is checked
+/// out. FNV-1a over 64 bits: stable across builds and toolchains, with no
+/// dependency to add.
+fn source_digest(crate_root: &Path) -> String {
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    collect_files(&crate_root.join("src"), &mut files);
+    collect_files(&crate_root.join("queries"), &mut files);
+    for entry in fs::read_dir(crate_root).expect("read the crate root").flatten() {
+        let path = entry.path();
+        let is_data_toml = path.extension().and_then(|e| e.to_str()) == Some("toml")
+            && path.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml");
+        if is_data_toml && path.is_file() {
+            println!("cargo:rerun-if-changed={}", path.display());
+            files.push(path);
+        }
+    }
+    let mut named: Vec<(String, std::path::PathBuf)> = files
+        .into_iter()
+        .map(|p| {
+            let rel = p.strip_prefix(crate_root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            (rel, p)
+        })
+        .collect();
+    named.sort();
+
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for (rel, path) in named {
+        let body = fs::read(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        feed(rel.as_bytes());
+        feed(&[0]);
+        feed(&(body.len() as u64).to_le_bytes());
+        feed(&body);
+    }
+    format!("{hash:016x}")
+}
+
+/// Every file under `dir`, at any depth.
+fn collect_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
 }
