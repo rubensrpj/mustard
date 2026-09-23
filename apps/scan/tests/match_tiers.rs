@@ -85,7 +85,7 @@ fn shared_root_form_bridges_via_the_trigram_rescue() {
     // natureza ~ nature: a shared-root form the STRICT ladder leaves unmatched
     // (stemmers disagree on the truncation pair). Because the strict pass is
     // weak/none, the `trigram` RESCUE turns on and bridges the pair by form
-    // similarity — no glossary needed. The hit reports tier "trigram" and rides
+    // similarity alone. The hit reports tier "trigram" and rides
     // as `bridged` (real evidence, form-not-literal), so the consumer keeps
     // planning. (The rescue's precision cost is confined here: it only fires
     // because the strict ladder already failed.)
@@ -111,7 +111,7 @@ fn cancelado_bridges_via_the_trigram_rescue() {
     let (_, q) = run_query(&model, "cancelado", "q.json");
     let matched: Vec<&str> =
         q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
-    assert!(matched.contains(&"cancel"), "trigram rescue bridges without a glossary: {q}");
+    assert!(matched.contains(&"cancel"), "trigram rescue bridges the truncation pair: {q}");
     assert_eq!(sole_report_term(&q)["tier"], "trigram", "the fuzzy rescue rung is reported: {q}");
     assert_eq!(q["report"]["bridged"], true, "the trigram rescue is flagged bridged: {q}");
 }

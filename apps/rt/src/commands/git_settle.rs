@@ -1,13 +1,15 @@
-//! `mustard-rt run git-settle` — the EXIT RITUAL of a delivered work unit,
-//! answering "the PR merged; now what?" with the user's exact contract:
+//! The EXIT RITUAL of a delivered work unit — the tidying up `pr-merge` runs
+//! right after its merge, and the session start runs when somebody else merged
+//! the unit's pull request — answering "the PR merged; now what?" with the
+//! user's exact contract:
 //!
 //! 1. **Runs from the WORK BRANCH** — invoked bare while the checkout is NOT
 //!    somebody's unit it REFUSES (`on-integration-base`): settle is how a unit
 //!    leaves the stage, not a base-side sweeper. The test is the unit, never a
 //!    declared list of bases — a project whose install wrote no `git.flow`
 //!    would otherwise see its own base as a work branch. From anywhere else it
-//!    only runs with an explicit `--unit <branch>` (the finish step of the
-//!    dance below).
+//!    only runs with the unit named explicitly (the finish step of the dance
+//!    below).
 //! 2. **100% merged or nothing**, measured per REF: EVERY ref that still carries
 //!    the unit — the local head and each `<remote>/<branch>` — must be contained
 //!    in `origin/<base>` now, or covered by the frozen head of a merged pull
@@ -46,17 +48,13 @@
 //!    killing the server branch. When the process runs INSIDE the unit's worktree
 //!    it cannot remove its own floor: it verifies + updates and answers
 //!    `action:"exit-and-rerun"` — leave the worktree (`ExitWorktree`), then
-//!    finish with `git-settle --unit <branch>` from the main checkout. An
+//!    finish by running the ritual again, with the unit named, from the main
+//!    checkout. An
 //!    IN-PLACE unit (cut by the work-branch gate on the MAIN checkout — no
 //!    worktree) has no floor to leave and no `ExitWorktree` to run: settle itself
 //!    performs the exit — check out the base (the ff advance above is the
 //!    "pull"), then delete the branch. A checkout git refuses degrades to
 //!    `"partial"`.
-//!
-//! `--report` is the READING face of the same ritual: it classifies every work
-//! branch of every repo (`shared::branch_state`) and prints, touching nothing.
-//! The separation is structural — the reading path builds its answer out of
-//! plain state values that carry no way to act on the repository.
 //!
 //! Output: one JSON report (sorted arrays, no timestamps), including `repos` —
 //! one entry per repository the unit lives in (the repo settle acted on, plus
@@ -224,10 +222,6 @@ pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
 /// repo the unit touches cuts `{its own base}_{slug}` — `submodule-rules.md`
 /// derives a submodule's branch exactly this way — so the slug travels while the
 /// prefix does not.
-///
-/// Shared with the per-branch notebook (`commands::event::notebook`), which keys
-/// a unit's records by exactly this slug — one spelling of "which unit is this",
-/// or the notebook of a submodule's branch would land in another file.
 pub(crate) fn unit_slug(branch: &str) -> Option<&str> {
     let name = branch.strip_prefix("worktree-").unwrap_or(branch);
     name.split_once('_').map(|(_, slug)| slug).filter(|s| !s.is_empty())
@@ -779,9 +773,6 @@ fn pass_is_ok(action: &str, base_advanced: bool) -> bool {
     !matches!(action, "settled" | "partial") || base_advanced
 }
 
-/// The settle pass — the testable core of [`run`]. `unit` = the work branch to
-/// settle; `None` reads it from the invocation directory's HEAD (and REFUSES
-/// when that is an integration base). Never panics.
 /// The ONE branch that already contains `unit`, when exactly one does and it is
 /// not itself somebody's work unit.
 ///
@@ -821,6 +812,9 @@ fn sole_branch_containing(
     (found.len() == 1).then(|| found.into_iter().next().unwrap_or_default())
 }
 
+/// The settle pass. `unit` = the work branch to settle; `None` reads it from
+/// the invocation directory's HEAD (and REFUSES when that is an integration
+/// base). Never panics.
 pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     settle(start, unit, true)
 }
@@ -938,10 +932,9 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
     // **Before refusing for a missing RECORD, ask git.** A unit that is already
     // contained in exactly one branch was demonstrably merged there, and that is
     // a measurement — strictly better evidence than the note somebody was
-    // supposed to write at cut time. Refusing here sent the operator to
-    // `work-unit-open --base …` to re-open a unit whose work is already IN the
-    // base, which is ceremony asking them to re-state a fact the repository can
-    // prove. Field incident 2026-08-21: two units merged through the PR door and
+    // supposed to write at cut time. Refusing here sent the operator to re-open,
+    // naming its base, a unit whose work is already IN the base, which is
+    // ceremony asking them to re-state a fact the repository can prove. Field incident 2026-08-21: two units merged through the PR door and
     // the exit ritual declined to prune either, because both were cut before the
     // change that records the base existed.
     //
@@ -1102,11 +1095,10 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             ("partial", false, false, false)
         } else {
             // The work-branch gate cuts every unit IN PLACE — no worktree of
-            // its own — so a `Some(e)` here can only be a leftover copy from
-            // the removed `work-unit-open` command (`apps/rt/src/commands/mod.rs`),
-            // never something this pass created. We no longer remove it —
-            // that removal served a command that no longer exists — so the
-            // floor is clear only when there is no such copy to begin with.
+            // its own — so a `Some(e)` here can only be a copy of the unit
+            // left on disk by an older install, never something this pass
+            // created. This pass does not remove it, so the floor is clear
+            // only when there is no such copy to begin with.
             // `worktreeRemoved` stays in the report, permanently `false`, so
             // a caller reading the old field shape keeps reading valid JSON.
             let worktree_removed = false;
@@ -1735,13 +1727,11 @@ mod tests {
         );
     }
 
-    /// A COPY of the unit — exactly the shape the removed `work-unit-open`
-    /// command used to leave behind (no live command makes one anymore, so
-    /// this pass builds one by hand) — permanently blocks the local floor.
+    /// A COPY of the unit left on disk (nothing alive makes one, so this test
+    /// builds one by hand) permanently blocks the local floor.
     ///
-    /// Settle used to free such a floor itself, with `git worktree remove`;
-    /// that removal served a command that no longer exists and is gone. A
-    /// leftover copy now blocks the prune FOREVER, not just until unlocked —
+    /// Settle does not free such a floor itself: a leftover copy blocks the
+    /// prune FOREVER, not just until unlocked —
     /// a rerun with the copy still there answers the exact same `partial`,
     /// no matter how many times it runs. Only removing the copy BY HAND, never
     /// settle, frees the branch — and the very same command then prunes the
@@ -1751,8 +1741,8 @@ mod tests {
         let (_dir, main) = fixture();
         delete_remote_branch_on(&main);
         git(&main, &["push", "origin", "dev_done"]);
-        // A copy exactly like the one `work-unit-open` used to leave behind —
-        // nothing alive makes one; this stands in for a relic on disk.
+        // A copy of the unit in the worktrees folder — nothing alive makes
+        // one; this stands in for a relic on disk.
         git(&main, &["worktree", "add", ".claude/worktrees/dev_done", "dev_done"]);
         let wt = main.join(".claude").join("worktrees").join("dev_done");
 

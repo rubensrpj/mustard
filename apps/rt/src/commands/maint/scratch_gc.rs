@@ -1,4 +1,4 @@
-//! `mustard-rt run scratch-gc` — recolhe as cópias descartáveis que os agentes
+//! `mustard-rt run clean` — recolhe as cópias descartáveis que os agentes
 //! deixam no diretório temporário.
 //!
 //! ## Por quê
@@ -106,7 +106,7 @@ const REMOVAL_WORKTREE_PREFIX: &str = "mustard-removal-";
 // Opções + relatório
 // ---------------------------------------------------------------------------
 
-/// Options for `mustard-rt run scratch-gc`.
+/// Options for `mustard-rt run clean`.
 pub struct ScratchGcOpts {
     /// `true` apaga as candidatas listadas; `false` (padrão) só lista.
     pub apply: bool,
@@ -798,7 +798,7 @@ pub(crate) fn human_bytes(n: u64) -> String {
 // CLI entry point
 // ---------------------------------------------------------------------------
 
-/// Dispatch `mustard-rt run scratch-gc [--apply] [--path <dir>]`.
+/// Dispatch `mustard-rt run clean [--apply] [--path <dir>]`.
 pub fn run(opts: ScratchGcOpts) {
     let _started = std::time::Instant::now();
     let roots = ScratchRoots::from_env();
