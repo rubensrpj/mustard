@@ -83,11 +83,22 @@ header.top h1{font-size:32px;font-weight:650;letter-spacing:-.02em;line-height:1
    quebra o texto longo em vez de passar da largura na tela estreita. */
 .remaining{margin:24px 0 4px;padding:18px 22px 14px;border:1.5px solid var(--mustard);border-radius:12px;background:var(--mustard-soft);max-width:100%;min-width:0;overflow-wrap:anywhere}
 .remaining>h2{margin:0 0 6px;font-size:21px;font-weight:700;letter-spacing:-.015em;line-height:1.25;color:var(--ink)}
-.rm-count{margin:0 0 12px;font-size:14px;color:var(--mustard-text)}
-.rm-count b{font:700 26px/1.2 var(--sans);color:var(--ink);margin-right:4px}
-.rm-lines{margin:0;padding-left:20px;font-size:14.5px}
-.rm-lines li{margin-bottom:5px}
-.rm-lines a{font-weight:600}
+.rm-box{margin:0 0 10px;padding:10px 14px;border:1px solid var(--mustard);border-radius:10px;background:var(--surface)}
+.rm-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;margin:0;font-size:15px;font-weight:650;line-height:1.35}
+.rm-head a{font-weight:650}
+.rm-n{margin-left:auto;font:400 12.5px var(--sans);color:var(--muted)}
+.rm-tasks{margin:8px 0 2px;padding-left:22px;font-size:14px}
+.rm-tasks li{margin-bottom:3px}
+.rm-rows{list-style:none;margin:8px 0 2px;padding:0;font-size:14px}
+.rm-rows li{display:flex;flex-wrap:wrap;justify-content:space-between;gap:2px 16px;padding:5px 0;border-top:1px solid var(--rule-soft)}
+.rm-rows li:first-child{border-top:0}
+.rm-rows a{font-weight:600;min-width:0}
+.rm-waits{margin-left:auto;color:var(--muted);text-align:right}
+.rm-next{margin:12px 0 8px;font-size:14.5px}
+.rm-done{font-size:14.5px}
+.rm-done>summary{cursor:pointer;color:var(--mustard-text);font-weight:600}
+.rm-done-list{margin:6px 0 2px;padding-left:20px}
+.rm-done-list li{margin-bottom:3px}
 .empty{margin:40px 0;padding:18px 20px;border:1px dashed var(--rule);border-radius:10px;color:var(--muted)}
 section.block{padding-top:44px}
 section.block>h2{display:flex;align-items:baseline;gap:12px;font-size:22px;font-weight:650;letter-spacing:-.015em;line-height:1.25;margin:0 0 4px;padding:0 0 12px;border-bottom:1px solid var(--rule)}
@@ -157,7 +168,7 @@ tr:last-child td{border-bottom:0}
   .who{display:none}
   dl.kv{grid-template-columns:minmax(0,1fr)}
   .remaining{padding:14px 16px 10px}
-  .rm-count b{font-size:22px}
+  .rm-box{padding:8px 10px}
 }
 @media (prefers-reduced-motion: reduce){*{transition:none!important}}
 </style>
@@ -794,32 +805,36 @@ tr:last-child td{border-bottom:0}
         g.summary = names.get(n) || '';
         groups.push(g);
       });
-      // A cesta: tarefas que ainda não entraram em lote nenhum. Vem antes dos
-      // lotes já formados, porque é dali que eles saem.
-      // O resumo do grupo diz o título de cada tarefa dela.
-      var inBasket = basketTasks(), basket = groupOf('waves-basket', t('page.group.basket'), inBasket);
-      if (basket) {
-        basket.summary = inBasket.map(taskTitle).join(' · ');
-        groups.unshift(basket);
-      }
+      // As tarefas que ainda não viraram onda não entram aqui: a seção mostra
+      // só as ondas, cada uma com as tarefas dela.
       var skills = groupOf('waves-skills', t('page.group.skill'),
         events.filter(function (e) { return e.type !== 'task' && waveOf(e) === null; }));
       if (skills) groups.push(skills);
       return section('waves', t('page.block.waves'), groups);
     }
-    // A cesta: a tarefa vigente sem onda nenhuma.
-    function basketTasks() { return ofType('task').filter(function (e) { return waveOf(e) === null; }); }
-    function counted(n, one, many) { return { n: n, label: t(n === 1 ? one : many) }; }
-    // O quadro do que falta, no topo da página: a contagem das ondas por
-    // entregar, das tarefas na cesta e das ondas entregues; depois, numa
-    // linha cada, a onda por entregar com a situação dela (em andamento,
-    // espera sair ou volta para conserto) e o título das tarefas dela, a
-    // tarefa da cesta com o que ela espera (as dependências que ainda não
-    // entregaram) ou que está pronta, e o total de entregues. Onda por
-    // entregar é toda onda conhecida que não foi entregue nem aprovada: a
-    // que roda, a que a cesta já formou e ainda não saiu, e a reprovada.
-    // Sem nenhuma delas e com a cesta vazia, falta a revisão final e o
-    // fechamento; depois do fechamento, nada falta.
+    // O backlog: a tarefa vigente que ainda não virou onda.
+    function backlogTasks() { return ofType('task').filter(function (e) { return waveOf(e) === null; }); }
+    // A seção do backlog guarda a tarefa inteira, com o endereço dela, para
+    // onde a linha do quadro do que falta aponta. Só existe com o backlog
+    // cheio, e vem antes das ondas, porque é dali que elas saem.
+    function backlogSection() {
+      var tasks = backlogTasks();
+      return tasks.length ? section('backlog', t('page.block.backlog'), tasks.map(function (e) { return item(e, true); })) : null;
+    }
+    // O quadro do que falta, no topo da página, como a tela de backlog do
+    // Jira: de cima para baixo, uma caixa por onda por entregar, na ordem do
+    // número, com a situação num selo (em andamento, espera sair ou volta
+    // para conserto), quantas tarefas ela leva e a lista numerada dos
+    // títulos delas; depois a caixa do backlog, com uma linha por tarefa e,
+    // à direita, o que ela espera (a onda em que a dependência está, pelo
+    // número, ou o título da tarefa do backlog de que ela depende) ou que
+    // está pronta; depois a linha da revisão final e do fechamento; e, por
+    // último, fechada, a linha do total de ondas entregues, que abre a lista
+    // delas. Cada coisa aparece uma vez só. Onda por entregar é toda onda
+    // conhecida que não foi entregue nem aprovada: a que roda, a que o
+    // backlog já formou e ainda não saiu, e a reprovada. Sem nenhuma delas e
+    // com o backlog vazio, faltam só a revisão final e o fechamento; depois
+    // do fechamento, nada falta.
     function remaining() {
       var DONE = ['approved', 'delivered'];
       // As ondas conhecidas: as que têm estado calculado e as que só a
@@ -832,43 +847,53 @@ tr:last-child td{border-bottom:0}
         if (n !== null) known.add(n);
       });
       var numbers = Array.from(known).sort(function (a, b) { return a - b; });
-      var SAYS = { running: 'page.remaining.wave.running', todo: 'page.remaining.wave.waits', rejected: 'page.remaining.wave.fix' };
+      var SAYS = { running: ['page.remaining.wave.running', 'run'], todo: ['page.remaining.wave.waits', 'todo'],
+        rejected: ['page.remaining.wave.fix', 'no'] };
       var open = numbers.filter(function (n) { return has(SAYS, waveState(n)); });
       var done = numbers.filter(function (n) { return DONE.indexOf(waveState(n)) >= 0; });
-      var tasks = ofType('task'), basket = basketTasks();
+      var tasks = ofType('task'), backlog = backlogTasks();
       function delivered(task) { var n = waveOf(task); return n !== null && DONE.indexOf(waveState(n)) >= 0; }
       function dependency(ref) {
         var dep = isInt(ref) ? currentOf(ref) : str(ref) !== null ? byCode.get(ref.trim()) || null : null;
         return dep && dep.type === 'task' ? dep : null;
       }
+      function tasksOf(n) { return say(n === 1 ? 'page.remaining.tasks.one' : 'page.remaining.tasks.many', { n: n }); }
       var states = ofType('state'), phase = states.length ? str(states[states.length - 1].phase) : null;
       var closedAt = PHASES.indexOf('closed');
       var closed = phase !== null && closedAt >= 0 && PHASES.indexOf(phase.trim()) >= closedAt;
-      var lines = [];
-      if (closed) lines.push({ href: null, lead: '', sep: '', text: t('page.remaining.nothing') });
+      var boxes = [], queue = null, next;
+      if (closed) next = t('page.remaining.nothing');
       else {
-        open.forEach(function (n) {
+        boxes = open.map(function (n) {
           var titles = tasks.filter(function (e) { return waveOf(e) === n; }).map(taskTitle);
-          lines.push({ href: '#waves-' + n, lead: say('page.wave.heading', { n: n }), sep: ' ',
-            text: t(SAYS[waveState(n)]) + (titles.length ? ': ' + titles.join('; ') : '') });
+          var says = SAYS[waveState(n)];
+          return { href: '#waves-' + n, label: say('page.wave.heading', { n: n }), status: { label: t(says[0]), tone: says[1] },
+            count: tasksOf(titles.length), titles: titles };
         });
-        basket.forEach(function (e) {
-          var waits = [];
-          arr(e.depends_on).forEach(function (ref) {
-            var dep = dependency(ref);
-            if (dep && !delivered(dep) && waits.indexOf(dep) < 0) waits.push(dep);
-          });
-          lines.push({ href: '#' + code(e.id), lead: taskTitle(e), sep: ' — ',
-            text: waits.length ? say('page.remaining.waits', { tasks: waits.map(taskTitle).join('; ') }) : t('page.remaining.ready') });
-        });
-        if (!open.length && !basket.length) lines.push({ href: null, lead: '', sep: '', text: t('page.remaining.review_and_close') });
+        if (backlog.length) {
+          queue = { heading: t('page.remaining.backlog'), count: tasksOf(backlog.length), rows: backlog.map(function (e) {
+            // A dependência que está numa onda por entregar aparece pelo
+            // número da onda, que já tem a caixa dela no alto; a que ainda
+            // está no backlog aparece pelo título. A que já entregou não
+            // segura nada.
+            var inWaves = [], inBacklog = [];
+            arr(e.depends_on).forEach(function (ref) {
+              var dep = dependency(ref);
+              if (!dep || delivered(dep)) return;
+              var n = waveOf(dep);
+              if (n !== null) { if (inWaves.indexOf(n) < 0) inWaves.push(n); }
+              else if (inBacklog.indexOf(dep) < 0) inBacklog.push(dep);
+            });
+            var waits = inWaves.sort(function (a, b) { return a - b; }).map(function (n) { return say('page.remaining.waits_wave', { n: n }); });
+            if (inBacklog.length) waits.push(say('page.remaining.waits', { tasks: inBacklog.map(taskTitle).join('; ') }));
+            return { href: '#' + code(e.id), title: taskTitle(e), waits: waits.length ? waits.join('; ') : t('page.remaining.ready') };
+          }) };
+        }
+        next = t(boxes.length || queue ? 'page.remaining.then_review' : 'page.remaining.review_and_close');
       }
-      lines.push({ href: null, lead: '', sep: '',
-        text: say(done.length === 1 ? 'page.remaining.delivered.one' : 'page.remaining.delivered.many', { n: done.length }) });
-      return { heading: t('page.remaining.heading'), lines: lines, counts: [
-        counted(open.length, 'page.remaining.open.one', 'page.remaining.open.many'),
-        counted(basket.length, 'page.remaining.basket.one', 'page.remaining.basket.many'),
-        counted(done.length, 'page.remaining.done.one', 'page.remaining.done.many')] };
+      return { heading: t('page.remaining.heading'), waves: boxes, backlog: queue, next: next,
+        done: { summary: say(done.length === 1 ? 'page.remaining.delivered.one' : 'page.remaining.delivered.many', { n: done.length }),
+          waves: done.map(function (n) { return { href: '#waves-' + n, label: say('page.wave.heading', { n: n }) }; }) } };
     }
     function review() {
       // O veredito final do agente de teste dedicado (`final: true`) nunca
@@ -1011,7 +1036,10 @@ tr:last-child td{border-bottom:0}
       var found = states.slice().reverse().filter(function (e) { return str(e[k[0]]) !== null; })[0];
       if (found) meta.push([t(k[1]), found[k[0]]]);
     });
-    var sections = [progress(), byType('specification'), byType('agreed'), criteria(), wavesSection(), review()];
+    var sections = [progress(), byType('specification'), byType('agreed'), criteria()];
+    var queued = backlogSection();
+    if (queued) sections.push(queued);
+    sections.push(wavesSection(), review());
     var found = findings();
     if (found) sections.push(found);
     sections.push(notes(), conversation());
@@ -1163,12 +1191,21 @@ tr:last-child td{border-bottom:0}
     if (model.meta.length) out.push(model.meta.map(function (m) { return m[0] + ': **' + m[1] + '**'; }).join(' · '), '');
     var r = model.remaining;
     if (r) {
-      out.push('## ' + r.heading, '', r.counts.map(function (c) { return '**' + c.n + '** ' + c.label; }).join(' · '), '');
-      r.lines.forEach(function (l) {
-        var lead = l.lead && l.href ? '[' + l.lead + '](' + l.href + ')' : l.lead;
-        out.push('- ' + (lead ? lead + l.sep : '') + l.text);
+      out.push('## ' + r.heading, '');
+      r.waves.forEach(function (w) {
+        out.push('### [' + w.label + '](' + w.href + ') · ' + w.status.label + ' · ' + w.count, '');
+        w.titles.forEach(function (title, i) { out.push((i + 1) + '. ' + title); });
+        out.push('');
       });
-      out.push('');
+      if (r.backlog) {
+        out.push('### ' + r.backlog.heading + ' · ' + r.backlog.count, '');
+        r.backlog.rows.forEach(function (row) { out.push('- [' + row.title + '](' + row.href + ') — ' + row.waits); });
+        out.push('');
+      }
+      out.push(r.next, '');
+      out.push(r.done.summary + (r.done.waves.length ? ' ' + r.done.waves.map(function (w) {
+        return '[' + w.label + '](' + w.href + ')';
+      }).join(', ') : ''), '');
     }
     model.sections.forEach(function (s) {
       out.push('## ' + s.heading, '');
@@ -1220,21 +1257,35 @@ tr:last-child td{border-bottom:0}
   app.setAttribute('data-state', 'loading');
 
   var MODEL = null, ITEMS = [], EXTRAS = [], GROUPS = [], SECTIONS = [], OVERVIEWS = [], RENDERS = 0;
-  // O quadro do que falta não é um grupo: não abre nem fecha. Some só
-  // durante a busca, como o painel das ondas.
+  var DONE_OPEN = false;
+  // O quadro do que falta não é um grupo: ele mesmo não abre nem fecha; só a
+  // linha das entregues se fecha. Some só durante a busca, como o painel
+  // das ondas.
   function renderRemaining(r) {
-    var counts = [];
-    r.counts.forEach(function (c, i) {
-      if (i) counts.push(' · ');
-      counts.push(h('span', null, [h('b', { text: String(c.n) }), ' ' + c.label]));
+    var kids = [h('h2', { text: r.heading })];
+    r.waves.forEach(function (w) {
+      kids.push(h('div', { class: 'rm-box rm-wave' }, [
+        h('h3', { class: 'rm-head' }, [h('a', { href: w.href, text: w.label }),
+          h('span', { class: 'tag ' + w.status.tone, text: w.status.label }), h('span', { class: 'rm-n', text: w.count })]),
+        w.titles.length ? h('ol', { class: 'rm-tasks' }, w.titles.map(function (title) { return h('li', { text: title }); })) : null]));
     });
-    var el = h('section', { class: 'remaining', id: 'remaining', 'aria-label': r.heading }, [
-      h('h2', { text: r.heading }),
-      h('p', { class: 'rm-count' }, counts),
-      h('ul', { class: 'rm-lines' }, r.lines.map(function (l) {
-        var lead = l.lead ? (l.href ? h('a', { href: l.href, text: l.lead }) : l.lead) : null;
-        return h('li', null, [lead, lead ? l.sep : null, l.text]);
-      }))]);
+    if (r.backlog) {
+      kids.push(h('div', { class: 'rm-box rm-backlog' }, [
+        h('h3', { class: 'rm-head' }, [h('span', { text: r.backlog.heading }), h('span', { class: 'rm-n', text: r.backlog.count })]),
+        h('ul', { class: 'rm-rows' }, r.backlog.rows.map(function (row) {
+          return h('li', null, [h('a', { href: row.href, text: row.title }), h('span', { class: 'rm-waits', text: row.waits })]);
+        }))]));
+    }
+    kids.push(h('p', { class: 'rm-next', text: r.next }));
+    // A linha das entregues abre como a pessoa a deixou, mesmo quando uma
+    // cópia nova do banco refaz a página.
+    var done = h('details', { class: 'rm-done', open: DONE_OPEN }, [h('summary', { text: r.done.summary }),
+      r.done.waves.length ? h('ul', { class: 'rm-done-list' }, r.done.waves.map(function (w) {
+        return h('li', null, [h('a', { href: w.href, text: w.label })]);
+      })) : null]);
+    done.addEventListener('toggle', function () { DONE_OPEN = done.open; });
+    kids.push(done);
+    var el = h('section', { class: 'remaining', id: 'remaining', 'aria-label': r.heading }, kids);
     OVERVIEWS.push(el);
     return el;
   }

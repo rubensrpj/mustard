@@ -266,6 +266,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.block.specification", Locale::EnUs) => "Specification",
         ("page.block.criteria", Locale::PtBr) => "Critérios",
         ("page.block.criteria", Locale::EnUs) => "Criteria",
+        ("page.block.backlog", _) => "Backlog",
         ("page.block.waves", Locale::PtBr) => "Ondas",
         ("page.block.waves", Locale::EnUs) => "Waves",
         ("page.block.review", Locale::PtBr) => "Revisão e QA",
@@ -440,27 +441,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.group.criterion_run", Locale::PtBr) => "Execuções",
         ("page.group.criterion_run", Locale::EnUs) => "Runs",
         ("page.group.skill", _) => "Skills",
-        ("page.group.basket", Locale::PtBr) => "Cesta",
-        ("page.group.basket", Locale::EnUs) => "Basket",
 
-        // O quadro do que falta, no topo da página da spec: a contagem, a
-        // linha de cada onda por entregar (em andamento, esperando sair ou
-        // de volta para conserto) e de cada tarefa da cesta, e o total de
-        // entregues.
+        // O quadro do que falta, no topo da página da spec: a caixa de cada
+        // onda por entregar (em andamento, esperando sair ou de volta para
+        // conserto), a caixa do backlog com o que cada tarefa espera, a linha
+        // da revisão final e do fechamento, e o total de entregues.
         ("page.remaining.heading", Locale::PtBr) => "O que falta",
         ("page.remaining.heading", Locale::EnUs) => "What is left",
-        ("page.remaining.open.one", Locale::PtBr) => "onda por entregar",
-        ("page.remaining.open.one", Locale::EnUs) => "wave still to deliver",
-        ("page.remaining.open.many", Locale::PtBr) => "ondas por entregar",
-        ("page.remaining.open.many", Locale::EnUs) => "waves still to deliver",
-        ("page.remaining.basket.one", Locale::PtBr) => "tarefa na cesta",
-        ("page.remaining.basket.one", Locale::EnUs) => "task in the basket",
-        ("page.remaining.basket.many", Locale::PtBr) => "tarefas na cesta",
-        ("page.remaining.basket.many", Locale::EnUs) => "tasks in the basket",
-        ("page.remaining.done.one", Locale::PtBr) => "onda entregue",
-        ("page.remaining.done.one", Locale::EnUs) => "wave delivered",
-        ("page.remaining.done.many", Locale::PtBr) => "ondas entregues",
-        ("page.remaining.done.many", Locale::EnUs) => "waves delivered",
+        ("page.remaining.backlog", _) => "Backlog",
+        ("page.remaining.tasks.one", Locale::PtBr) => "{n} tarefa",
+        ("page.remaining.tasks.one", Locale::EnUs) => "{n} task",
+        ("page.remaining.tasks.many", Locale::PtBr) => "{n} tarefas",
+        ("page.remaining.tasks.many", Locale::EnUs) => "{n} tasks",
         ("page.remaining.wave.running", Locale::PtBr) => "em andamento",
         ("page.remaining.wave.running", Locale::EnUs) => "in progress",
         ("page.remaining.wave.waits", Locale::PtBr) => "espera sair",
@@ -469,10 +461,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.remaining.wave.fix", Locale::EnUs) => "back for a fix",
         ("page.remaining.waits", Locale::PtBr) => "espera: {tasks}",
         ("page.remaining.waits", Locale::EnUs) => "waits for: {tasks}",
+        ("page.remaining.waits_wave", Locale::PtBr) => "espera a onda {n}",
+        ("page.remaining.waits_wave", Locale::EnUs) => "waits for wave {n}",
         ("page.remaining.ready", Locale::PtBr) => "pronta para sair",
         ("page.remaining.ready", Locale::EnUs) => "ready to go",
         ("page.remaining.review_and_close", Locale::PtBr) => "Faltam a revisão final e o fechamento.",
         ("page.remaining.review_and_close", Locale::EnUs) => "The final review and the closing are left.",
+        ("page.remaining.then_review", Locale::PtBr) => "Depois vêm a revisão final e o fechamento.",
+        ("page.remaining.then_review", Locale::EnUs) => "Then come the final review and the closing.",
         ("page.remaining.nothing", Locale::PtBr) => "Nada falta.",
         ("page.remaining.nothing", Locale::EnUs) => "Nothing is left.",
         ("page.remaining.delivered.one", Locale::PtBr) => "{n} onda já entregue.",
@@ -925,8 +921,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            355,
-            0x0422_6193_b31e_f34a,
+            354,
+            0xe2e2_c221_8867_9ff9,
         );
     }
 

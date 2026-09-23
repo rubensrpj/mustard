@@ -1286,193 +1286,350 @@ mod tests {
         );
     }
 
+    /// Um evento de tarefa para os testes do quadro do que falta: com onda
+    /// ou no backlog, com ou sem título curto.
+    fn board_task(id: u64, code: &str, wave: Option<u64>, title: Option<&str>, text: &str, depends_on: Value) -> Value {
+        let mut e = json!({"v":1,"id":id,"code":code,"at":"2026-09-22T10:00:00-03:00","type":"task","author":"assistant",
+            "text":text,"files":[],"depends_on":depends_on,"origin":1});
+        if let Some(n) = wave {
+            e["wave"] = json!(n);
+        }
+        if let Some(title) = title {
+            e["title"] = json!(title);
+        }
+        e
+    }
+
+    /// Um evento de onda, como a rodada o grava.
+    fn board_wave(id: u64, n: u64) -> Value {
+        json!({"v":1,"id":id,"at":"2026-09-22T09:00:00-03:00","type":"wave","author":"binary","n":n,
+            "text":format!("O lote {n}."),"criteria":[],"done_when":"A suíte passa.","origin":1})
+    }
+
+    /// Um evento de estado da spec, na fase `phase`.
+    fn board_state(id: u64, phase: &str) -> Value {
+        json!({"v":1,"id":id,"at":"2026-09-22T08:00:00-03:00","type":"state","author":"binary","phase":phase})
+    }
+
+    /// Abre a página da spec com `lines` e o estado calculado das ondas, e
+    /// diz o que ela mostra (e o `.md` baixado, com `download`).
+    fn open_board(lines: &[Value], waves: Value, lang: Locale, download: bool) -> Value {
+        let db = json!({"ranges": range_docs(lines),
+            "computed": [{"id": "current", "data": {"spec": "demo", "waves": waves, "prompts": {}, "rtk": []}}]});
+        let mut steps = vec![json!({"do": "wait"}), json!({"do": "scrape", "as": "page"})];
+        if download {
+            steps.push(json!({"do": "download", "as": "md"}));
+        }
+        run("spec", &spec_page_template(lang), Some(db), json!(steps))
+    }
+
+    /// Os pedaços do quadro do que falta que não são a caixa de uma onda nem
+    /// a do backlog: a linha da revisão final e a linha fechada das
+    /// entregues, cada uma pelo texto dela.
+    fn board_tail(board: &Value) -> Vec<Value> {
+        board["parts"]
+            .as_array()
+            .expect("parts")
+            .iter()
+            .filter(|p| p["kind"] != json!("wave") && p["kind"] != json!("backlog"))
+            .map(|p| if p["kind"] == json!("done") { p["summary"].clone() } else { p["text"].clone() })
+            .collect()
+    }
+
     /// A página da spec abre com o quadro do que falta, antes de todas as
-    /// seções e fora de qualquer grupo que se feche: a contagem, a onda em
-    /// andamento com o título das tarefas dela e o link para ela, cada
-    /// tarefa da cesta com o que espera (só a dependência que ainda não
-    /// entregou) ou pronta para sair, e o total de entregues. A tarefa sem
-    /// título aparece pela primeira frase, inteira até 90 caracteres e
-    /// cortada a partir de 91. Com a cesta vazia e nada rodando, faltam a
-    /// revisão final e o fechamento; na spec fechada, nada falta.
+    /// seções e fora de qualquer grupo que se feche. A tarefa sem título
+    /// aparece pela primeira frase, inteira até 90 caracteres e cortada a
+    /// partir de 91. A tarefa do backlog que espera outra tarefa do backlog
+    /// diz o título dela; a dependência que já entregou não segura nada. A
+    /// tarefa inteira do backlog fica na seção dele, fora de Ondas, e é para
+    /// lá que a linha do quadro aponta. Com o backlog vazio e nada rodando,
+    /// faltam a revisão final e o fechamento; na spec fechada, nada falta.
     #[test]
     fn o_quadro_do_que_falta_abre_a_pagina() {
         let s90 = format!("Noventa {}.", "n".repeat(81));
         let s91 = format!("Noventa e um {}.", "u".repeat(77));
         assert_eq!((s90.chars().count(), s91.chars().count()), (90, 91));
         let cut91 = format!("Noventa e um {}…", "u".repeat(76));
-        let task = |id: u64, code: &str, wave: Option<u64>, title: Option<&str>, text: &str, depends_on: Value| {
-            let mut e = json!({"v":1,"id":id,"code":code,"at":"2026-09-22T10:00:00-03:00","type":"task","author":"assistant",
-                "text":text,"files":[],"depends_on":depends_on,"origin":1});
-            if let Some(n) = wave {
-                e["wave"] = json!(n);
-            }
-            if let Some(title) = title {
-                e["title"] = json!(title);
-            }
-            e
-        };
-        let wave = |id: u64, n: u64| {
-            json!({"v":1,"id":id,"at":"2026-09-22T09:00:00-03:00","type":"wave","author":"binary","n":n,
-                "text":format!("O lote {n}."),"criteria":[],"done_when":"A suíte passa.","origin":1})
-        };
-        let state = |id: u64, phase: &str| {
-            json!({"v":1,"id":id,"at":"2026-09-22T08:00:00-03:00","type":"state","author":"binary","phase":phase})
-        };
         let history = vec![
-            wave(2, 1),
-            task(3, "MSTD-TASK-0001", Some(1), Some("Base entregue"), "A base. Mais texto.", json!([])),
-            wave(4, 2),
-            task(5, "MSTD-TASK-0002", Some(2), Some("Segunda base"), "A segunda base.", json!([])),
-            wave(6, 3),
-            task(7, "MSTD-TASK-0003", Some(3), Some("O quadro abre a página"), "Texto longo da tarefa. Mais.", json!([])),
-            task(8, "MSTD-TASK-0004", Some(3), None, &format!("{s90} Depois."), json!([])),
-            task(9, "MSTD-TASK-0005", Some(3), None, &format!("{s91} Depois."), json!([])),
+            board_wave(2, 1),
+            board_task(3, "MSTD-TASK-0001", Some(1), Some("Base entregue"), "A base. Mais texto.", json!([])),
+            board_wave(4, 2),
+            board_task(5, "MSTD-TASK-0002", Some(2), Some("Segunda base"), "A segunda base.", json!([])),
+            board_wave(6, 3),
+            board_task(7, "MSTD-TASK-0003", Some(3), Some("O quadro abre a página"), "Texto longo da tarefa. Mais.", json!([])),
+            board_task(8, "MSTD-TASK-0004", Some(3), None, &format!("{s90} Depois."), json!([])),
+            board_task(9, "MSTD-TASK-0005", Some(3), None, &format!("{s91} Depois."), json!([])),
         ];
-        let basket = vec![
-            task(10, "MSTD-TASK-0010", None, Some("Título curto da cesta"), "A tarefa com título. Segunda frase.",
+        let backlog = vec![
+            board_task(10, "MSTD-TASK-0010", None, Some("Título curto do backlog"), "A tarefa com título. Segunda frase.",
                 json!(["MSTD-TASK-0011", 3])),
-            task(11, "MSTD-TASK-0011", None, None, "A tarefa sem título espera nada. Segunda frase.", json!([3])),
+            board_task(11, "MSTD-TASK-0011", None, None, "A tarefa sem título espera nada. Segunda frase.", json!([3])),
         ];
-        let open = |lines: Vec<Value>, waves: Value, download: bool| {
-            let db = json!({"ranges": range_docs(&lines),
-                "computed": [{"id": "current", "data": {"spec": "demo", "waves": waves, "prompts": {}, "rtk": []}}]});
-            let mut steps = vec![json!({"do": "wait"}), json!({"do": "scrape", "as": "page"})];
-            if download {
-                steps.push(json!({"do": "download", "as": "md"}));
-            }
-            run("spec", &spec_page_template(Locale::PtBr), Some(db), json!(steps))
-        };
 
-        // Uma onda em andamento, duas tarefas na cesta (uma esperando a
+        // Uma onda em andamento, duas tarefas no backlog (uma esperando a
         // outra) e duas ondas entregues.
-        let running: Vec<Value> = [vec![state(1, "running")], history.clone(), basket].concat();
-        let got = open(running, json!({"1": "approved", "2": "approved", "3": "running"}), true);
+        let running: Vec<Value> = [vec![board_state(1, "running")], history.clone(), backlog].concat();
+        let got = open_board(&running, json!({"1": "approved", "2": "approved", "3": "running"}), Locale::PtBr, true);
         let page = &got["page"];
         let blocks = page["blocks"].as_array().expect("blocks");
         assert_eq!((&blocks[0], &blocks[1]), (&json!("remaining"), &json!("progress")), "the board comes first: {blocks:?}");
         let board = &page["remaining"];
         assert_eq!(board["tag"], json!("SECTION"), "the board never folds: {board}");
         assert_eq!(board["heading"], json!("O que falta"));
-        assert_eq!(board["count"], json!("1 onda por entregar · 2 tarefas na cesta · 2 ondas entregues"));
+        let parts = board["parts"].as_array().expect("parts");
         assert_eq!(
-            board["lines"],
-            json!([
-                format!("Onda 3 em andamento: O quadro abre a página; {s90}; {cut91}"),
-                "Título curto da cesta — espera: A tarefa sem título espera nada.",
-                "A tarefa sem título espera nada. — pronta para sair",
-                "2 ondas já entregues.",
-            ]),
+            parts[0],
+            json!({"kind": "wave", "href": "#waves-3", "label": "Onda 3", "status": "em andamento", "count": "3 tarefas",
+                "list": "OL", "tasks": ["O quadro abre a página", s90, cut91]}),
             "{board}"
         );
         assert_eq!(
-            board["links"],
-            json!([["#waves-3", "Onda 3"], ["#MSTD-TASK-0010", "Título curto da cesta"],
-                ["#MSTD-TASK-0011", "A tarefa sem título espera nada."]])
+            parts[1],
+            json!({"kind": "backlog", "heading": "Backlog", "count": "2 tarefas", "rows": [
+                ["#MSTD-TASK-0010", "Título curto do backlog", "espera: A tarefa sem título espera nada."],
+                ["#MSTD-TASK-0011", "A tarefa sem título espera nada.", "pronta para sair"]]}),
+            "{board}"
         );
-        // O grupo Cesta da seção Ondas diz o título de cada tarefa no resumo,
-        // e a tarefa com título o mostra no lugar da primeira frase.
-        let waves = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("waves")).expect("waves");
-        let group = waves["groups"].as_array().expect("groups").iter().find(|g| g["id"] == json!("waves-basket")).expect("basket");
-        assert_eq!(group["summary"], json!("Título curto da cesta · A tarefa sem título espera nada."), "{group}");
-        let titled = group["items"].as_array().expect("items").iter().find(|i| i["code"] == json!("MSTD-TASK-0010")).expect("task");
-        assert_eq!(titled["title"], json!("Título curto da cesta"), "{titled}");
+        assert_eq!(
+            board_tail(board),
+            vec![json!("Depois vêm a revisão final e o fechamento."), json!("2 ondas já entregues.")],
+            "{board}"
+        );
+        // A tarefa inteira do backlog, com o endereço para onde a linha do
+        // quadro aponta, fica na seção do backlog, que vem antes de Ondas.
+        let sections = page["sections"].as_array().expect("sections");
+        let ids: Vec<&str> = sections.iter().map(|s| s["id"].as_str().unwrap_or_default()).collect();
+        let at = |id: &str| ids.iter().position(|x| *x == id).unwrap_or_else(|| panic!("no {id} section: {ids:?}"));
+        assert_eq!(at("backlog") + 1, at("waves"), "{ids:?}");
+        let queue = &sections[at("backlog")];
+        assert_eq!(queue["heading"], json!("Backlog"));
+        let codes: Vec<(&Value, &Value, &Value)> =
+            queue["items"].as_array().expect("items").iter().map(|i| (&i["code"], &i["anchored"], &i["title"])).collect();
+        assert_eq!(
+            codes,
+            [
+                (&json!("MSTD-TASK-0010"), &json!(true), &json!("Título curto do backlog")),
+                (&json!("MSTD-TASK-0011"), &json!(true), &json!("A tarefa sem título espera nada. Segunda frase."))
+            ]
+        );
         // O .md baixado abre com o mesmo quadro, antes da primeira seção.
         let md = got["md"]["data"].as_str().unwrap_or_default();
         let board_at = md.find("## O que falta").unwrap_or_else(|| panic!("no board in the .md:\n{md}"));
         assert!(board_at < md.find("## Andamento").unwrap_or(0), "{md}");
-        assert!(md.contains("- [Onda 3](#waves-3) em andamento: O quadro abre a página;"), "{md}");
+        for line in [
+            "### [Onda 3](#waves-3) · em andamento · 3 tarefas",
+            "1. O quadro abre a página",
+            "### Backlog · 2 tarefas",
+            "- [Título curto do backlog](#MSTD-TASK-0010) — espera: A tarefa sem título espera nada.",
+            "- [A tarefa sem título espera nada.](#MSTD-TASK-0011) — pronta para sair",
+            "Depois vêm a revisão final e o fechamento.",
+            "2 ondas já entregues. [Onda 1](#waves-1), [Onda 2](#waves-2)",
+        ] {
+            assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
 
-        // A cesta vazia e nenhuma onda rodando, numa spec que não fechou.
-        let quiet: Vec<Value> = [vec![state(1, "running")], history.clone()].concat();
+        // O backlog vazio e nenhuma onda rodando, numa spec que não fechou:
+        // só a linha da revisão final e a das entregues, sem caixa nenhuma.
+        let quiet: Vec<Value> = [vec![board_state(1, "running")], history.clone()].concat();
         let all_done = json!({"1": "approved", "2": "approved", "3": "approved"});
-        let got = open(quiet, all_done.clone(), false);
+        let board = open_board(&quiet, all_done.clone(), Locale::PtBr, false)["page"]["remaining"].clone();
+        assert_eq!(board["parts"].as_array().expect("parts").len(), 2, "{board}");
         assert_eq!(
-            got["page"]["remaining"]["lines"],
-            json!(["Faltam a revisão final e o fechamento.", "3 ondas já entregues."]),
-            "{}",
-            got["page"]["remaining"]
+            board_tail(&board),
+            vec![json!("Faltam a revisão final e o fechamento."), json!("3 ondas já entregues.")],
+            "{board}"
         );
 
         // A spec fechada.
-        let closed: Vec<Value> = [vec![state(1, "running")], history, vec![state(12, "closed")]].concat();
-        let got = open(closed, all_done, false);
-        let board = &got["page"]["remaining"];
-        assert_eq!(board["count"], json!("0 ondas por entregar · 0 tarefas na cesta · 3 ondas entregues"), "{board}");
-        assert_eq!(board["lines"], json!(["Nada falta.", "3 ondas já entregues."]), "{board}");
+        let closed: Vec<Value> = [vec![board_state(1, "running")], history, vec![board_state(12, "closed")]].concat();
+        let board = open_board(&closed, all_done, Locale::PtBr, false)["page"]["remaining"].clone();
+        assert_eq!(board_tail(&board), vec![json!("Nada falta."), json!("3 ondas já entregues.")], "{board}");
     }
 
     /// O quadro do que falta mostra toda onda que não foi entregue nem
-    /// aprovada, e não só a que roda: a onda que a cesta já formou e espera
+    /// aprovada, e não só a que roda: a onda que o backlog já formou e espera
     /// sair (sem estado calculado nenhum) e a reprovada que volta para
-    /// conserto entram cada uma na sua linha, com o link, o título das
-    /// tarefas e a situação, e a contagem do alto soma as três. Enquanto
-    /// uma delas existir, o quadro nunca diz que faltam só a revisão final e
-    /// o fechamento, nem com a cesta vazia e nenhuma onda rodando.
+    /// conserto ganham cada uma a sua caixa, com o link, a situação no selo,
+    /// quantas tarefas levam e o título delas. Enquanto uma delas existir, o
+    /// quadro nunca diz que faltam só a revisão final e o fechamento, nem com
+    /// o backlog vazio e nenhuma onda rodando.
     #[test]
     fn o_quadro_mostra_a_onda_que_espera_e_a_reprovada() {
         let task = |id: u64, code: &str, wave: u64, title: &str| {
-            json!({"v":1,"id":id,"code":code,"at":"2026-09-22T10:00:00-03:00","type":"task","author":"assistant",
-                "title":title,"text":"O texto da tarefa.","files":[],"depends_on":[],"origin":1,"wave":wave})
+            board_task(id, code, Some(wave), Some(title), "O texto da tarefa.", json!([]))
         };
-        let wave = |id: u64, n: u64| {
-            json!({"v":1,"id":id,"at":"2026-09-22T09:00:00-03:00","type":"wave","author":"binary","n":n,
-                "text":format!("O lote {n}."),"criteria":[],"done_when":"A suíte passa.","origin":1})
+        let state = board_state(1, "running");
+        let delivered = vec![board_wave(2, 1), task(3, "MSTD-TASK-0001", 1, "A base entregue")];
+        let running = vec![board_wave(4, 2), task(5, "MSTD-TASK-0002", 2, "O lote que roda")];
+        let waiting = vec![
+            board_wave(6, 3),
+            task(7, "MSTD-TASK-0003", 3, "O scan lê tudo"),
+            task(8, "MSTD-TASK-0004", 3, "O mapa mostra o uso"),
+        ];
+        let rejected = vec![board_wave(9, 4), task(10, "MSTD-TASK-0005", 4, "O conserto do quadro")];
+        let boxes = |board: &Value| -> Vec<Value> {
+            board["parts"]
+                .as_array()
+                .expect("parts")
+                .iter()
+                .filter(|p| p["kind"] == json!("wave"))
+                .map(|p| json!([p["label"], p["status"], p["count"], p["tasks"]]))
+                .collect()
         };
-        let state = json!({"v":1,"id":1,"at":"2026-09-22T08:00:00-03:00","type":"state","author":"binary","phase":"running"});
-        let delivered = vec![wave(2, 1), task(3, "MSTD-TASK-0001", 1, "A base entregue")];
-        let running = vec![wave(4, 2), task(5, "MSTD-TASK-0002", 2, "O lote que roda")];
-        let waiting = vec![wave(6, 3), task(7, "MSTD-TASK-0003", 3, "O scan lê tudo"), task(8, "MSTD-TASK-0004", 3, "O mapa mostra o uso")];
-        let rejected = vec![wave(9, 4), task(10, "MSTD-TASK-0005", 4, "O conserto do quadro")];
-        let open = |lines: Vec<Value>, waves: Value, lang: Locale| {
-            let db = json!({"ranges": range_docs(&lines),
-                "computed": [{"id": "current", "data": {"spec": "demo", "waves": waves, "prompts": {}, "rtk": []}}]});
-            let got = run("spec", &spec_page_template(lang), Some(db), json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]));
-            got["page"]["remaining"].clone()
-        };
+        let open = |lines: Vec<Value>, waves: Value, lang: Locale| open_board(&lines, waves, lang, false)["page"]["remaining"].clone();
 
         // Uma onda em andamento, uma que espera sair e uma reprovada; a onda
         // que espera não tem estado calculado, como a rodada o grava.
         let all: Vec<Value> = [vec![state.clone()], delivered.clone(), running, waiting.clone(), rejected.clone()].concat();
         let states = json!({"1": "approved", "2": "running", "4": "rejected"});
         let board = open(all.clone(), states.clone(), Locale::PtBr);
-        assert_eq!(board["count"], json!("3 ondas por entregar · 0 tarefas na cesta · 1 onda entregue"), "{board}");
         assert_eq!(
-            board["lines"],
-            json!([
-                "Onda 2 em andamento: O lote que roda",
-                "Onda 3 espera sair: O scan lê tudo; O mapa mostra o uso",
-                "Onda 4 volta para conserto: O conserto do quadro",
-                "1 onda já entregue.",
-            ]),
+            boxes(&board),
+            vec![
+                json!(["Onda 2", "em andamento", "1 tarefa", ["O lote que roda"]]),
+                json!(["Onda 3", "espera sair", "2 tarefas", ["O scan lê tudo", "O mapa mostra o uso"]]),
+                json!(["Onda 4", "volta para conserto", "1 tarefa", ["O conserto do quadro"]]),
+            ],
             "{board}"
         );
-        assert_eq!(board["links"], json!([["#waves-2", "Onda 2"], ["#waves-3", "Onda 3"], ["#waves-4", "Onda 4"]]), "{board}");
+        assert_eq!(
+            board_tail(&board),
+            vec![json!("Depois vêm a revisão final e o fechamento."), json!("1 onda já entregue.")],
+            "{board}"
+        );
+        assert_eq!(
+            board["links"],
+            json!([["#waves-2", "Onda 2"], ["#waves-3", "Onda 3"], ["#waves-4", "Onda 4"], ["#waves-1", "Onda 1"]]),
+            "{board}"
+        );
         let board = open(all, states, Locale::EnUs);
         assert_eq!(
-            board["lines"],
-            json!([
-                "Wave 2 in progress: O lote que roda",
-                "Wave 3 waiting to go out: O scan lê tudo; O mapa mostra o uso",
-                "Wave 4 back for a fix: O conserto do quadro",
-                "1 wave already delivered.",
-            ]),
+            boxes(&board),
+            vec![
+                json!(["Wave 2", "in progress", "1 task", ["O lote que roda"]]),
+                json!(["Wave 3", "waiting to go out", "2 tasks", ["O scan lê tudo", "O mapa mostra o uso"]]),
+                json!(["Wave 4", "back for a fix", "1 task", ["O conserto do quadro"]]),
+            ],
+            "{board}"
+        );
+        assert_eq!(
+            board_tail(&board),
+            vec![json!("Then come the final review and the closing."), json!("1 wave already delivered.")],
             "{board}"
         );
 
-        // Só a onda que espera sair, com a cesta vazia e nada rodando: o caso
-        // em que o quadro diria, falso, que faltam a revisão e o fechamento.
+        // Só a onda que espera sair, com o backlog vazio e nada rodando: o
+        // caso em que o quadro diria, falso, que faltam a revisão e o
+        // fechamento.
         let board = open([vec![state.clone()], delivered.clone(), waiting].concat(), json!({"1": "approved"}), Locale::PtBr);
-        assert_eq!(board["count"], json!("1 onda por entregar · 0 tarefas na cesta · 1 onda entregue"), "{board}");
+        assert_eq!(boxes(&board), vec![json!(["Onda 3", "espera sair", "2 tarefas", ["O scan lê tudo", "O mapa mostra o uso"]])]);
         assert_eq!(
-            board["lines"],
-            json!(["Onda 3 espera sair: O scan lê tudo; O mapa mostra o uso", "1 onda já entregue."]),
+            board_tail(&board),
+            vec![json!("Depois vêm a revisão final e o fechamento."), json!("1 onda já entregue.")],
             "{board}"
         );
 
         // Só a onda reprovada, do mesmo jeito.
         let board = open([vec![state], delivered, rejected].concat(), json!({"1": "approved", "4": "rejected"}), Locale::PtBr);
-        assert_eq!(board["count"], json!("1 onda por entregar · 0 tarefas na cesta · 1 onda entregue"), "{board}");
-        assert_eq!(board["lines"], json!(["Onda 4 volta para conserto: O conserto do quadro", "1 onda já entregue."]), "{board}");
+        assert_eq!(boxes(&board), vec![json!(["Onda 4", "volta para conserto", "1 tarefa", ["O conserto do quadro"]])]);
+        assert_eq!(
+            board_tail(&board),
+            vec![json!("Depois vêm a revisão final e o fechamento."), json!("1 onda já entregue.")],
+            "{board}"
+        );
+    }
+
+    /// A página mostra o backlog e as ondas como a tela de backlog do Jira,
+    /// nos dois idiomas: com uma onda em andamento que leva duas tarefas,
+    /// uma onda que espera sair, uma onda entregue com três tarefas e duas
+    /// tarefas no backlog (uma que depende de uma tarefa da onda em
+    /// andamento e uma pronta), o quadro do que falta mostra, nesta ordem,
+    /// a caixa de cada onda por entregar, a caixa do backlog, a linha da
+    /// revisão final e do fechamento e a linha fechada das entregues, que
+    /// abre a lista delas. Cada coisa aparece uma vez só: não há contagem
+    /// no alto, o total de entregues está só na última linha, e a tarefa do
+    /// backlog que espera a onda diz o número dela, não o título da tarefa.
+    /// A seção Ondas não tem o backlog, e a palavra antiga da lista não
+    /// aparece em lugar nenhum da página.
+    #[test]
+    fn a_pagina_mostra_o_backlog_e_as_ondas_como_no_jira() {
+        let lines = vec![
+            board_state(1, "running"),
+            board_wave(2, 1),
+            board_task(3, "MSTD-TASK-0001", Some(1), Some("A base do projeto"), "A base.", json!([])),
+            board_task(4, "MSTD-TASK-0002", Some(1), Some("O banco de dados"), "O banco.", json!([])),
+            board_task(5, "MSTD-TASK-0003", Some(1), Some("A tela de entrada"), "A tela.", json!([])),
+            board_wave(6, 2),
+            board_task(7, "MSTD-TASK-0004", Some(2), Some("O login com senha"), "O login.", json!([])),
+            board_task(8, "MSTD-TASK-0005", Some(2), Some("O cadastro de usuário"), "O cadastro.", json!([])),
+            board_wave(9, 3),
+            board_task(10, "MSTD-TASK-0006", Some(3), Some("O relatório mensal"), "O relatório.", json!([])),
+            board_task(11, "MSTD-TASK-0007", None, Some("A troca de senha"), "A troca.", json!(["MSTD-TASK-0004", 3])),
+            board_task(12, "MSTD-TASK-0008", None, Some("O rodapé da tela"), "O rodapé.", json!([5])),
+        ];
+        let states = json!({"1": "approved", "2": "running"});
+        for (lang, expected) in [
+            (
+                Locale::PtBr,
+                json!([
+                    {"kind": "wave", "href": "#waves-2", "label": "Onda 2", "status": "em andamento", "count": "2 tarefas",
+                        "list": "OL", "tasks": ["O login com senha", "O cadastro de usuário"]},
+                    {"kind": "wave", "href": "#waves-3", "label": "Onda 3", "status": "espera sair", "count": "1 tarefa",
+                        "list": "OL", "tasks": ["O relatório mensal"]},
+                    {"kind": "backlog", "heading": "Backlog", "count": "2 tarefas", "rows": [
+                        ["#MSTD-TASK-0007", "A troca de senha", "espera a onda 2"],
+                        ["#MSTD-TASK-0008", "O rodapé da tela", "pronta para sair"]]},
+                    {"kind": "next", "text": "Depois vêm a revisão final e o fechamento."},
+                    {"kind": "done", "tag": "DETAILS", "open": false, "summary": "1 onda já entregue.",
+                        "links": [["#waves-1", "Onda 1"]]},
+                ]),
+            ),
+            (
+                Locale::EnUs,
+                json!([
+                    {"kind": "wave", "href": "#waves-2", "label": "Wave 2", "status": "in progress", "count": "2 tasks",
+                        "list": "OL", "tasks": ["O login com senha", "O cadastro de usuário"]},
+                    {"kind": "wave", "href": "#waves-3", "label": "Wave 3", "status": "waiting to go out", "count": "1 task",
+                        "list": "OL", "tasks": ["O relatório mensal"]},
+                    {"kind": "backlog", "heading": "Backlog", "count": "2 tasks", "rows": [
+                        ["#MSTD-TASK-0007", "A troca de senha", "waits for wave 2"],
+                        ["#MSTD-TASK-0008", "O rodapé da tela", "ready to go"]]},
+                    {"kind": "next", "text": "Then come the final review and the closing."},
+                    {"kind": "done", "tag": "DETAILS", "open": false, "summary": "1 wave already delivered.",
+                        "links": [["#waves-1", "Wave 1"]]},
+                ]),
+            ),
+        ] {
+            let got = open_board(&lines, states.clone(), lang, false);
+            let page = &got["page"];
+            let board = &page["remaining"];
+            assert_eq!(board["parts"], expected, "{lang}: {board}");
+            // O total de entregues aparece uma vez só no quadro, e o título da
+            // tarefa da onda em andamento só na caixa dela.
+            let seen = serde_json::to_string(&board["parts"]).unwrap_or_default();
+            let delivered = if lang == Locale::PtBr { "já entregue" } else { "already delivered" };
+            assert_eq!(seen.matches(delivered).count(), 1, "{lang}: {seen}");
+            assert_eq!(seen.matches("O login com senha").count(), 1, "{lang}: {seen}");
+            // A seção Ondas mostra só as ondas, cada uma com as tarefas dela.
+            let waves = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("waves")).expect("waves");
+            let groups: Vec<&str> =
+                waves["groups"].as_array().expect("groups").iter().map(|g| g["id"].as_str().unwrap_or_default()).collect();
+            assert_eq!(groups, ["waves-1", "waves-2", "waves-3"], "{lang}");
+            let in_waves: Vec<&Value> =
+                waves["groups"].as_array().expect("groups").iter().flat_map(|g| g["items"].as_array().expect("items")).collect();
+            assert!(
+                in_waves.iter().all(|i| !["MSTD-TASK-0007", "MSTD-TASK-0008"].contains(&i["code"].as_str().unwrap_or_default())),
+                "{lang}: the backlog is not in Waves"
+            );
+            // A palavra antiga não aparece na página que a pessoa vê nem no
+            // molde publicado, nos textos, nas chaves ou nos comentários.
+            let shown = page["text"].as_str().unwrap_or_default().to_lowercase();
+            let template = spec_page_template(lang).to_lowercase();
+            for word in ["cesta", "basket"] {
+                assert!(!shown.contains(word), "{lang}: {word} on the page");
+                assert!(!template.contains(word), "{lang}: {word} in the template");
+            }
+        }
     }
 
     /// Todo texto que os templates citam existe nos dois idiomas, e o

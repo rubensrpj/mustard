@@ -238,6 +238,37 @@ function scrapeItem(el) {
     html: prose ? prose.innerHTML : '', fields: fieldsOf(el), hidden: el.hidden,
   };
 }
+// O quadro do que falta, na ordem em que aparece: cada filho dele diz o
+// que é (a caixa de uma onda, a caixa do backlog, a linha da revisão final,
+// a linha fechada das entregues) e o que mostra. `lines` e `links` são o
+// texto de cada linha de lista e cada link, na ordem, do quadro inteiro.
+function scrapeRemaining(rm) {
+  const head = (box) => byClass(box, 'rm-head');
+  const parts = rm.childNodes.filter((c) => c.tagName !== 'H2').map((c) => {
+    if (has(c, 'rm-wave')) {
+      const a = one(head(c), (e) => e.tagName === 'A');
+      return { kind: 'wave', href: a.getAttribute('href'), label: a.textContent, status: tagOf(head(c), 'tag'),
+        count: text(byClass(c, 'rm-n')), list: (byClass(c, 'rm-tasks') || {}).tagName || null,
+        tasks: walk(c, (e) => e.tagName === 'LI').map((li) => li.textContent) };
+    }
+    if (has(c, 'rm-backlog')) {
+      return { kind: 'backlog', heading: text(head(c).firstChild), count: text(byClass(c, 'rm-n')),
+        rows: walk(c, (e) => e.tagName === 'LI').map((li) => {
+          const a = one(li, (e) => e.tagName === 'A');
+          return [a ? a.getAttribute('href') : null, a ? a.textContent : null, text(byClass(li, 'rm-waits'))];
+        }) };
+    }
+    if (has(c, 'rm-next')) return { kind: 'next', text: c.textContent };
+    if (has(c, 'rm-done')) {
+      return { kind: 'done', tag: c.tagName, open: c.open, summary: text(one(c, (e) => e.tagName === 'SUMMARY')),
+        links: walk(c, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.textContent]) };
+    }
+    return { kind: 'other', class: c.className, text: c.textContent };
+  });
+  return { tag: rm.tagName, hidden: rm.hidden, heading: text(one(rm, (e) => e.tagName === 'H2')), parts,
+    lines: walk(rm, (e) => e.tagName === 'LI').map((li) => li.textContent),
+    links: walk(rm, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.textContent]) };
+}
 function scrapeSpec() {
   const sections = walk(appEl, (e) => e.tagName === 'SECTION' && has(e, 'block')).map((s) => {
     const h2 = one(s, (e) => e.tagName === 'H2');
@@ -248,6 +279,8 @@ function scrapeSpec() {
         spend: text(byClass(overview, 'ov-spend')),
         cards: walk(overview, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.textContent, a.className]) } : null,
       paragraphs: s.childNodes.filter((c) => c.tagName === 'P').map((p) => p.textContent),
+      // Os itens soltos na seção, fora de qualquer grupo, como os do backlog.
+      items: s.childNodes.filter((c) => c.tagName === 'DETAILS' && has(c, 'item')).map(scrapeItem),
       groups: walk(s, (e) => e.tagName === 'DETAILS' && has(e, 'group')).map((g) => ({
         id: g.getAttribute('id'), title: text(byClass(g, 'gt')), summary: text(byClass(g, 'gs')),
         count: text(byClass(g, 'count')), open: g.open, hidden: g.hidden,
@@ -263,9 +296,10 @@ function scrapeSpec() {
   const rm = byClass(appEl, 'remaining');
   const box = document.getElementById('sections');
   return {
-    remaining: rm ? { tag: rm.tagName, hidden: rm.hidden, heading: text(one(rm, (e) => e.tagName === 'H2')),
-      count: text(byClass(rm, 'rm-count')), lines: walk(rm, (e) => e.tagName === 'LI').map((li) => li.textContent),
-      links: walk(rm, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.textContent]) } : null,
+    remaining: rm ? scrapeRemaining(rm) : null,
+    // Todo o texto que a página mostra, para conferir a palavra que não pode
+    // aparecer.
+    text: appEl.textContent,
     blocks: box ? box.childNodes.map((c) => c.getAttribute('id')) : [],
     state: appEl.getAttribute('data-state'), status: text(document.getElementById('status')),
     statusHidden: document.getElementById('status').hidden, title: text(one(appEl, (e) => e.tagName === 'H1')),
