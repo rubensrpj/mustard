@@ -2,6 +2,9 @@
 // `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::uninlined_format_args)]
+// O script conferido aqui é de shell e a cópia de mentira precisa da
+// permissão de execução do Unix: no Windows o arquivo nem compila.
+#![cfg(unix)]
 
 //! O fecho de `scripts/dev-install.sh`: quem responde pelo nome no caminho de
 //! busca.
