@@ -259,7 +259,14 @@ function scrapeSpec() {
     };
   });
   const select = document.getElementById('type');
+  // O quadro do que falta e a ordem dos blocos da página, pelo id de cada um.
+  const rm = byClass(appEl, 'remaining');
+  const box = document.getElementById('sections');
   return {
+    remaining: rm ? { tag: rm.tagName, hidden: rm.hidden, heading: text(one(rm, (e) => e.tagName === 'H2')),
+      count: text(byClass(rm, 'rm-count')), lines: walk(rm, (e) => e.tagName === 'LI').map((li) => li.textContent),
+      links: walk(rm, (e) => e.tagName === 'A').map((a) => [a.getAttribute('href'), a.textContent]) } : null,
+    blocks: box ? box.childNodes.map((c) => c.getAttribute('id')) : [],
     state: appEl.getAttribute('data-state'), status: text(document.getElementById('status')),
     statusHidden: document.getElementById('status').hidden, title: text(one(appEl, (e) => e.tagName === 'H1')),
     meta: walk(byClass(appEl, 'meta') || appEl, (e) => e.tagName === 'LI').map((li) => li.textContent),

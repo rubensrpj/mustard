@@ -443,6 +443,38 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.group.basket", Locale::PtBr) => "Cesta",
         ("page.group.basket", Locale::EnUs) => "Basket",
 
+        // O quadro do que falta, no topo da página da spec: a contagem, a
+        // linha de cada onda em andamento e de cada tarefa da cesta, e o
+        // total de entregues.
+        ("page.remaining.heading", Locale::PtBr) => "O que falta",
+        ("page.remaining.heading", Locale::EnUs) => "What is left",
+        ("page.remaining.running.one", Locale::PtBr) => "onda em andamento",
+        ("page.remaining.running.one", Locale::EnUs) => "wave in progress",
+        ("page.remaining.running.many", Locale::PtBr) => "ondas em andamento",
+        ("page.remaining.running.many", Locale::EnUs) => "waves in progress",
+        ("page.remaining.basket.one", Locale::PtBr) => "tarefa na cesta",
+        ("page.remaining.basket.one", Locale::EnUs) => "task in the basket",
+        ("page.remaining.basket.many", Locale::PtBr) => "tarefas na cesta",
+        ("page.remaining.basket.many", Locale::EnUs) => "tasks in the basket",
+        ("page.remaining.done.one", Locale::PtBr) => "onda entregue",
+        ("page.remaining.done.one", Locale::EnUs) => "wave delivered",
+        ("page.remaining.done.many", Locale::PtBr) => "ondas entregues",
+        ("page.remaining.done.many", Locale::EnUs) => "waves delivered",
+        ("page.remaining.wave", Locale::PtBr) => "em andamento: {tasks}",
+        ("page.remaining.wave", Locale::EnUs) => "in progress: {tasks}",
+        ("page.remaining.waits", Locale::PtBr) => "espera: {tasks}",
+        ("page.remaining.waits", Locale::EnUs) => "waits for: {tasks}",
+        ("page.remaining.ready", Locale::PtBr) => "pronta para sair",
+        ("page.remaining.ready", Locale::EnUs) => "ready to go",
+        ("page.remaining.review_and_close", Locale::PtBr) => "Faltam a revisão final e o fechamento.",
+        ("page.remaining.review_and_close", Locale::EnUs) => "The final review and the closing are left.",
+        ("page.remaining.nothing", Locale::PtBr) => "Nada falta.",
+        ("page.remaining.nothing", Locale::EnUs) => "Nothing is left.",
+        ("page.remaining.delivered.one", Locale::PtBr) => "{n} onda já entregue.",
+        ("page.remaining.delivered.one", Locale::EnUs) => "{n} wave already delivered.",
+        ("page.remaining.delivered.many", Locale::PtBr) => "{n} ondas já entregues.",
+        ("page.remaining.delivered.many", Locale::EnUs) => "{n} waves already delivered.",
+
         ("page.field.excerpt", Locale::PtBr) => "trecho",
         ("page.field.excerpt", Locale::EnUs) => "excerpt",
         ("page.field.reply_to", Locale::PtBr) => "Responde a",
@@ -888,8 +920,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            339,
-            0x5832_c868_6337_c029,
+            353,
+            0x1c96_d5b2_3b79_d694,
         );
     }
 

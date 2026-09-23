@@ -78,6 +78,16 @@ header.top h1{font-size:32px;font-weight:650;letter-spacing:-.02em;line-height:1
 .meta{display:flex;flex-wrap:wrap;gap:6px 20px;list-style:none;margin:0;padding:0;font-size:13px;color:var(--muted)}
 .meta li{margin:0}
 .meta b{font:500 12.5px var(--mono);color:var(--ink)}
+/* O quadro do que falta: o primeiro bloco depois do cabeçalho, antes das
+   seções, sempre aberto e em destaque na cor mostarda, nos dois temas. Ele
+   quebra o texto longo em vez de passar da largura na tela estreita. */
+.remaining{margin:24px 0 4px;padding:18px 22px 14px;border:1.5px solid var(--mustard);border-radius:12px;background:var(--mustard-soft);max-width:100%;min-width:0;overflow-wrap:anywhere}
+.remaining>h2{margin:0 0 6px;font-size:21px;font-weight:700;letter-spacing:-.015em;line-height:1.25;color:var(--ink)}
+.rm-count{margin:0 0 12px;font-size:14px;color:var(--mustard-text)}
+.rm-count b{font:700 26px/1.2 var(--sans);color:var(--ink);margin-right:4px}
+.rm-lines{margin:0;padding-left:20px;font-size:14.5px}
+.rm-lines li{margin-bottom:5px}
+.rm-lines a{font-weight:600}
 .empty{margin:40px 0;padding:18px 20px;border:1px dashed var(--rule);border-radius:10px;color:var(--muted)}
 section.block{padding-top:44px}
 section.block>h2{display:flex;align-items:baseline;gap:12px;font-size:22px;font-weight:650;letter-spacing:-.015em;line-height:1.25;margin:0 0 4px;padding:0 0 12px;border-bottom:1px solid var(--rule)}
@@ -146,6 +156,8 @@ tr:last-child td{border-bottom:0}
   details.item>summary .c{grid-column:1/-1}
   .who{display:none}
   dl.kv{grid-template-columns:minmax(0,1fr)}
+  .remaining{padding:14px 16px 10px}
+  .rm-count b{font-size:22px}
 }
 @media (prefers-reduced-motion: reduce){*{transition:none!important}}
 </style>
@@ -225,6 +237,17 @@ tr:last-child td{border-bottom:0}
   function firstParagraph(text) {
     var line = oneLine(text.trim().split('\n\n')[0] || '').replace(/^#+/, '').replace(/^\s+/, '');
     return line.indexOf('- ') === 0 || line.indexOf('* ') === 0 ? line.slice(2) : line;
+  }
+  // O título de uma tarefa: o campo title, quando ela o tem; sem ele, a
+  // primeira frase do texto, cortada em TITLE_CUT caracteres.
+  var TITLE_CUT = 90;
+  function taskTitle(e) {
+    var own = oneLine(str(e.title) || '');
+    if (own) return own;
+    var text = firstParagraph(str(e.text) || '');
+    var m = /^.*?[.!?](?=\s|$)/.exec(text);
+    var chars = Array.from(m ? m[0] : text);
+    return chars.length > TITLE_CUT ? chars.slice(0, TITLE_CUT - 1).join('').replace(/\s+$/, '') + '…' : chars.join('');
   }
   function when(e) { var at = str(e.at) || ''; return at ? at.slice(0, 16).replace('T', ' ') : null; }
   function countLines(text) { return text === '' ? 0 : text.replace(/\r?\n$/, '').split(/\r?\n/).length; }
@@ -448,7 +471,8 @@ tr:last-child td{border-bottom:0}
       return plain(v);
     }
     function inHeading(type, field) {
-      return (type === 'wave' && field === 'n') || (['task', 'send', 'delivered'].indexOf(type) >= 0 && field === 'wave');
+      return (type === 'wave' && field === 'n') || (['task', 'send', 'delivered'].indexOf(type) >= 0 && field === 'wave') ||
+        (type === 'task' && field === 'title');
     }
     function fieldsOf(e) {
       var ty = TYPES[e.type], out = [];
@@ -487,12 +511,15 @@ tr:last-child td{border-bottom:0}
       // Os campos que formam o título de um item sem texto corrido: sem eles,
       // o mesmo dado não aparece de novo na tabela do item aberto.
       var core = all.filter(function (f) { return f[0] !== origin && f[0] !== label; });
-      var title = text ? firstParagraph(text) : core.map(function (f) { return f[0] + ': ' + f[1]; }).join(' · ');
+      // A tarefa com título curto mostra o título no lugar da primeira frase,
+      // e o corpo aberto traz o texto inteiro.
+      var titled = e.type === 'task' && oneLine(str(e.title) || '') !== '';
+      var title = titled ? taskTitle(e) : text ? firstParagraph(text) : core.map(function (f) { return f[0] + ': ' + f[1]; }).join(' · ');
       var fields = text ? all : all.filter(function (f) { return f[0] === origin || f[0] === label; });
       // O corpo aberto mostra só o que vem depois do primeiro parágrafo: ele
       // já virou o título, e não precisa aparecer de novo.
       var paras = text ? text.split('\n\n') : [];
-      var body = paras.length > 1 ? paras.slice(1).join('\n\n') : '';
+      var body = titled ? text : paras.length > 1 ? paras.slice(1).join('\n\n') : '';
       return { kind: 'item', id: e.id, type: e.type, code: code(e.id), anchored: anchored, title: title, status: statusOf(e),
         who: null, mark: afterApproval(e), date: when(e), text: text, body: body, fields: fields };
     }
@@ -769,13 +796,67 @@ tr:last-child td{border-bottom:0}
       });
       // A cesta: tarefas que ainda não entraram em lote nenhum. Vem antes dos
       // lotes já formados, porque é dali que eles saem.
-      var basket = groupOf('waves-basket', t('page.group.basket'),
-        events.filter(function (e) { return e.type === 'task' && waveOf(e) === null; }));
-      if (basket) groups.unshift(basket);
+      // O resumo do grupo diz o título de cada tarefa dela.
+      var inBasket = basketTasks(), basket = groupOf('waves-basket', t('page.group.basket'), inBasket);
+      if (basket) {
+        basket.summary = inBasket.map(taskTitle).join(' · ');
+        groups.unshift(basket);
+      }
       var skills = groupOf('waves-skills', t('page.group.skill'),
         events.filter(function (e) { return e.type !== 'task' && waveOf(e) === null; }));
       if (skills) groups.push(skills);
       return section('waves', t('page.block.waves'), groups);
+    }
+    // A cesta: a tarefa vigente sem onda nenhuma.
+    function basketTasks() { return ofType('task').filter(function (e) { return waveOf(e) === null; }); }
+    function counted(n, one, many) { return { n: n, label: t(n === 1 ? one : many) }; }
+    // O quadro do que falta, no topo da página: a contagem das ondas em
+    // andamento, das tarefas na cesta e das ondas entregues; depois, numa
+    // linha cada, a onda em andamento com o título das tarefas dela, a
+    // tarefa da cesta com o que ela espera (as dependências que ainda não
+    // entregaram) ou que está pronta, e o total de entregues. Com a cesta
+    // vazia e nenhuma onda rodando, falta a revisão final e o fechamento;
+    // depois do fechamento, nada falta.
+    function remaining() {
+      var DONE = ['approved', 'delivered'];
+      var numbers = Object.keys(waves).filter(function (k) { return /^\d+$/.test(k); }).map(Number)
+        .sort(function (a, b) { return a - b; });
+      var running = numbers.filter(function (n) { return waveState(n) === 'running'; });
+      var done = numbers.filter(function (n) { return DONE.indexOf(waveState(n)) >= 0; });
+      var tasks = ofType('task'), basket = basketTasks();
+      function delivered(task) { var n = waveOf(task); return n !== null && DONE.indexOf(waveState(n)) >= 0; }
+      function dependency(ref) {
+        var dep = isInt(ref) ? currentOf(ref) : str(ref) !== null ? byCode.get(ref.trim()) || null : null;
+        return dep && dep.type === 'task' ? dep : null;
+      }
+      var states = ofType('state'), phase = states.length ? str(states[states.length - 1].phase) : null;
+      var closedAt = PHASES.indexOf('closed');
+      var closed = phase !== null && closedAt >= 0 && PHASES.indexOf(phase.trim()) >= closedAt;
+      var lines = [];
+      if (closed) lines.push({ href: null, lead: '', sep: '', text: t('page.remaining.nothing') });
+      else {
+        running.forEach(function (n) {
+          var titles = tasks.filter(function (e) { return waveOf(e) === n; }).map(taskTitle);
+          lines.push({ href: '#waves-' + n, lead: say('page.wave.heading', { n: n }), sep: ' ',
+            text: titles.length ? say('page.remaining.wave', { tasks: titles.join('; ') }) : t('page.value.wave_running') });
+        });
+        basket.forEach(function (e) {
+          var waits = [];
+          arr(e.depends_on).forEach(function (ref) {
+            var dep = dependency(ref);
+            if (dep && !delivered(dep) && waits.indexOf(dep) < 0) waits.push(dep);
+          });
+          lines.push({ href: '#' + code(e.id), lead: taskTitle(e), sep: ' — ',
+            text: waits.length ? say('page.remaining.waits', { tasks: waits.map(taskTitle).join('; ') }) : t('page.remaining.ready') });
+        });
+        if (!running.length && !basket.length) lines.push({ href: null, lead: '', sep: '', text: t('page.remaining.review_and_close') });
+      }
+      lines.push({ href: null, lead: '', sep: '',
+        text: say(done.length === 1 ? 'page.remaining.delivered.one' : 'page.remaining.delivered.many', { n: done.length }) });
+      return { heading: t('page.remaining.heading'), lines: lines, counts: [
+        counted(running.length, 'page.remaining.running.one', 'page.remaining.running.many'),
+        counted(basket.length, 'page.remaining.basket.one', 'page.remaining.basket.many'),
+        counted(done.length, 'page.remaining.done.one', 'page.remaining.done.many')] };
     }
     function review() {
       // O veredito final do agente de teste dedicado (`final: true`) nunca
@@ -925,7 +1006,7 @@ tr:last-child td{border-bottom:0}
     var gone = removed();
     if (gone) sections.push(gone);
     return { spec: str(computed && computed.spec) || '', title: str(computed && computed.spec) || t('page.kind.spec'),
-      kind: t('page.kind.spec'), meta: meta, sections: sections, known: new Set(byCode.keys()),
+      kind: t('page.kind.spec'), meta: meta, remaining: remaining(), sections: sections, known: new Set(byCode.keys()),
       top: all.length ? all[all.length - 1].id : null };
   }
 
@@ -1068,6 +1149,15 @@ tr:last-child td{border-bottom:0}
   function toMarkdown(model) {
     var out = ['# ' + model.title, ''];
     if (model.meta.length) out.push(model.meta.map(function (m) { return m[0] + ': **' + m[1] + '**'; }).join(' · '), '');
+    var r = model.remaining;
+    if (r) {
+      out.push('## ' + r.heading, '', r.counts.map(function (c) { return '**' + c.n + '** ' + c.label; }).join(' · '), '');
+      r.lines.forEach(function (l) {
+        var lead = l.lead && l.href ? '[' + l.lead + '](' + l.href + ')' : l.lead;
+        out.push('- ' + (lead ? lead + l.sep : '') + l.text);
+      });
+      out.push('');
+    }
     model.sections.forEach(function (s) {
       out.push('## ' + s.heading, '');
       s.body.forEach(function (n) { mdNode(n, out, 3); });
@@ -1118,6 +1208,24 @@ tr:last-child td{border-bottom:0}
   app.setAttribute('data-state', 'loading');
 
   var MODEL = null, ITEMS = [], EXTRAS = [], GROUPS = [], SECTIONS = [], OVERVIEWS = [], RENDERS = 0;
+  // O quadro do que falta não é um grupo: não abre nem fecha. Some só
+  // durante a busca, como o painel das ondas.
+  function renderRemaining(r) {
+    var counts = [];
+    r.counts.forEach(function (c, i) {
+      if (i) counts.push(' · ');
+      counts.push(h('span', null, [h('b', { text: String(c.n) }), ' ' + c.label]));
+    });
+    var el = h('section', { class: 'remaining', id: 'remaining', 'aria-label': r.heading }, [
+      h('h2', { text: r.heading }),
+      h('p', { class: 'rm-count' }, counts),
+      h('ul', { class: 'rm-lines' }, r.lines.map(function (l) {
+        var lead = l.lead ? (l.href ? h('a', { href: l.href, text: l.lead }) : l.lead) : null;
+        return h('li', null, [lead, lead ? l.sep : null, l.text]);
+      }))]);
+    OVERVIEWS.push(el);
+    return el;
+  }
   function renderItem(it, ctx) {
     var tail = h('span', { class: 'tail' }, [
       it.who ? h('span', { class: 'who', text: it.who }) : null,
@@ -1191,6 +1299,7 @@ tr:last-child td{border-bottom:0}
     model.meta.forEach(function (m) { metaEl.appendChild(h('li', null, [m[0] + ' ', h('b', { text: m[1] })])); });
     box.textContent = '';
     nav.textContent = '';
+    if (model.remaining) box.appendChild(renderRemaining(model.remaining));
     model.sections.forEach(function (s) {
       var ctx = { items: [], groups: [] };
       var count = h('span', { class: 'count' });
