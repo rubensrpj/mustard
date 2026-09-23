@@ -34,6 +34,11 @@
 //! capacidade de arquivos distintos, sem nunca dividir um arquivo entre dois
 //! lotes. É o mesmo grafo e o mesmo peel de [`assign_levels`], só que sobre
 //! tarefas: nasce aqui para não virar um segundo motor ao lado.
+//!
+//! Dois arquivos "se cruzam" ([`files_cross`]) quando são o mesmo caminho,
+//! ou quando um deles é padrão (tem `*`, `?` ou `[`) e casa o outro. O `**`
+//! cruza com tudo: a tarefa que o declara sai sozinha no lote dela, e a
+//! rodada nunca a solta junto de outra onda.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -196,25 +201,90 @@ pub(crate) fn ready_tasks<N: Ord + Clone>(tasks: &[BasketTask<N>]) -> Vec<N> {
     ready.into_iter().map(|t| t.id.clone()).collect()
 }
 
-/// As partes independentes de `order`: tarefas que dividem um arquivo,
-/// direto ou por uma corrente de outras, caem na mesma parte — é o que
-/// garante que dois lotes em paralelo nunca dividam arquivo (nenhum
-/// empacotamento adiante separa o que já chegou junto aqui). Tarefa sem
-/// arquivo declarado forma parte própria, sozinha: sem arquivo não há com
-/// que dividir.
+/// `true` quando `path` é um padrão de arquivo: tem `*`, `?` ou `[`.
+fn is_pattern(path: &str) -> bool {
+    path.contains(['*', '?', '['])
+}
+
+/// `true` quando `path` é o curinga da árvore inteira — só estrelas, como o
+/// `**` que a conversão da spec antiga grava na tarefa sem arquivo conhecido.
+/// É a mesma leitura do "vale para todo arquivo" do `applies_to`.
+pub(crate) fn is_whole_tree(path: &str) -> bool {
+    !path.is_empty() && path.chars().all(|c| c == '*')
+}
+
+/// `true` quando algum arquivo de `files` é o curinga da árvore inteira.
+pub(crate) fn touches_whole_tree<'a>(files: impl IntoIterator<Item = &'a String>) -> bool {
+    files.into_iter().any(|f| is_whole_tree(f))
+}
+
+/// O trecho fixo de um padrão: tudo antes do primeiro `*`, `?` ou `[`.
+fn fixed_prefix(pattern: &str) -> &str {
+    pattern.find(['*', '?', '[']).map_or(pattern, |at| &pattern[..at])
+}
+
+/// `true` quando o padrão `pattern` casa o caminho `path`. O padrão só com
+/// `*` usa a mesma leitura do `applies_to` ([`mustard_core::glob_matches`]);
+/// essa leitura não conhece `?` nem `[`, então o padrão que os tem casa, por
+/// cautela, todo caminho que começa pelo trecho fixo dele — dividir arquivo
+/// entre dois lotes em paralelo custa mais que esperar uma vez a mais.
+fn pattern_matches(pattern: &str, path: &str) -> bool {
+    if pattern.contains(['?', '[']) {
+        return path.starts_with(fixed_prefix(pattern));
+    }
+    mustard_core::glob_matches(pattern, path)
+}
+
+/// `true` quando os arquivos `a` e `b` se cruzam: o mesmo caminho, ou um
+/// padrão que casa o outro caminho. Dois padrões se cruzam quando o trecho
+/// fixo de um começa pelo do outro — `src/**` e `src/x/*.rs` podem casar o
+/// mesmo arquivo, `src/**` e `docs/*` nunca. O `**` cruza com todo arquivo.
+pub(crate) fn files_cross(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (is_pattern(a), is_pattern(b)) {
+        (false, false) => false,
+        (true, false) => pattern_matches(a, b),
+        (false, true) => pattern_matches(b, a),
+        (true, true) => {
+            let (pa, pb) = (fixed_prefix(a), fixed_prefix(b));
+            pa.starts_with(pb) || pb.starts_with(pa)
+        }
+    }
+}
+
+/// `true` quando algum arquivo de `left` cruza com algum de `right`
+/// ([`files_cross`]).
+pub(crate) fn sets_cross<'a, 'b>(
+    left: impl IntoIterator<Item = &'a String>,
+    right: impl IntoIterator<Item = &'b String> + Clone,
+) -> bool {
+    left.into_iter().any(|a| right.clone().into_iter().any(|b| files_cross(a, b)))
+}
+
+/// As partes independentes de `order`: tarefas cujos arquivos se cruzam
+/// ([`files_cross`]), direto ou por uma corrente de outras, caem na mesma
+/// parte — é o que garante que dois lotes em paralelo nunca dividam arquivo
+/// (nenhum empacotamento adiante separa o que já chegou junto aqui). Tarefa
+/// sem arquivo declarado forma parte própria, sozinha: sem arquivo não há
+/// com que dividir. A tarefa com o curinga da árvore inteira também forma
+/// parte própria, sozinha, e nenhuma outra entra nela: ela cruza com todas,
+/// e quem a impede de rodar ao lado de outra onda é a rodada, que nunca a
+/// solta junto de ninguém.
 fn clustered_by_file<N: Ord + Clone>(tasks: &[BasketTask<N>], order: &[N]) -> Vec<Batch<N>> {
     let by_id: BTreeMap<&N, &BasketTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
     let mut groups: Vec<Batch<N>> = Vec::new();
     for id in order {
         let Some(task) = by_id.get(id).copied() else { continue };
-        if task.files.is_empty() {
-            groups.push(Batch { tasks: vec![id.clone()], files: BTreeSet::new() });
+        if task.files.is_empty() || touches_whole_tree(&task.files) {
+            groups.push(Batch { tasks: vec![id.clone()], files: task.files.clone() });
             continue;
         }
         let mut merged = Batch { tasks: vec![id.clone()], files: task.files.clone() };
         let mut rest: Vec<Batch<N>> = Vec::new();
         for group in groups.drain(..) {
-            if group.files.intersection(&task.files).next().is_some() {
+            if !touches_whole_tree(&group.files) && sets_cross(&group.files, &task.files) {
                 merged.tasks.extend(group.tasks);
                 merged.files.extend(group.files);
             } else {
@@ -233,20 +303,26 @@ fn clustered_by_file<N: Ord + Clone>(tasks: &[BasketTask<N>], order: &[N]) -> Ve
 /// onde ainda couber, medindo pelo número de arquivos distintos do lote. A
 /// parte que sozinha já passa de `capacity` sai sozinha, acima dela: a
 /// capacidade nunca impede o despacho.
+///
+/// A tarefa com o curinga da árvore inteira vem antes de tudo, cada uma no
+/// seu lote, sem nenhuma outra dentro: o lote dela ganha o número de onda
+/// mais baixo da leva, e a rodada, que solta pela ordem do número, a solta
+/// primeiro e segura as outras até ela entregar.
 pub(crate) fn pack_batches<N: Ord + Clone>(
     tasks: &[BasketTask<N>],
     order: &[N],
     capacity: usize,
 ) -> Vec<Batch<N>> {
-    let mut groups = clustered_by_file(tasks, order);
+    let (mut batches, mut groups): (Vec<Batch<N>>, Vec<Batch<N>>) =
+        clustered_by_file(tasks, order).into_iter().partition(|g| touches_whole_tree(&g.files));
+    let alone = batches.len();
     // Maior primeiro; `sort_by` é estável, então empate preserva a ordem de
     // prontidão (desempate por destrava, depois por número) que `order` já
     // carrega.
     groups.sort_by_key(|g| std::cmp::Reverse(g.files.len()));
 
-    let mut batches: Vec<Batch<N>> = Vec::new();
     for group in groups {
-        match batches.iter_mut().find(|b| b.files.len() + group.files.len() <= capacity) {
+        match batches.iter_mut().skip(alone).find(|b| b.files.len() + group.files.len() <= capacity) {
             Some(batch) => {
                 batch.tasks.extend(group.tasks);
                 batch.files.extend(group.files);
@@ -445,6 +521,33 @@ mod tests {
         let tasks: [BasketTask<u32>; 0] = [];
         assert!(ready_tasks(&tasks).is_empty());
         assert!(pack_batches(&tasks, &[], BASKET_CAPACITY).is_empty());
+    }
+
+    /// O casamento de padrão, na divisa: o padrão cruza com o caminho que
+    /// ele casa e não com o vizinho que só parece; dois padrões cruzam quando
+    /// podem casar o mesmo arquivo; o `**` cruza com tudo.
+    #[test]
+    fn a_tarefa_com_curinga_sai_sozinha_pelo_casamento_de_padrao() {
+        assert!(files_cross("src/**", "src/a.rs"));
+        assert!(!files_cross("src/**", "srcx/a.rs"), "o trecho fixo é src/, não src");
+        assert!(files_cross("src/**", "src/x/*.rs"));
+        assert!(!files_cross("src/**", "docs/*"));
+        assert!(files_cross("**", "docs/a.md") && files_cross("docs/*", "**"));
+        assert!(!files_cross("a.rs", "b.rs"));
+        assert!(files_cross("src/a?.rs", "src/ab.rs"));
+        assert!(!files_cross("src/a?.rs", "lib/ab.rs"));
+    }
+
+    /// No empacotamento, a tarefa do curinga abre o primeiro lote, sozinha,
+    /// e as outras seguem empacotadas entre si.
+    #[test]
+    fn a_tarefa_com_curinga_sai_sozinha_no_empacotamento() {
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["**"], false), task(3, &[], &["b.rs"], false)];
+        let order = ready_tasks(&tasks);
+        let batches = pack_batches(&tasks, &order, BASKET_CAPACITY);
+        assert_eq!(batches.len(), 2, "{batches:?}");
+        assert_eq!(batches[0].tasks, vec![2], "o curinga primeiro, sozinho");
+        assert_eq!(batches[1].tasks, vec![1, 3]);
     }
 
     // A cesta inteira, com dependência e arquivo compartilhado, despachada

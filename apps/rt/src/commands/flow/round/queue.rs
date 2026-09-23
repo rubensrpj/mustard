@@ -24,6 +24,7 @@ use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::spec_events::write::record;
 use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
+use crate::shared::dag::{sets_cross, touches_whole_tree};
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
 /// é quanto a máquina aguenta compilando ao mesmo tempo agora que é o arquivo
@@ -37,10 +38,13 @@ pub(super) fn max_parallel(root: &Path) -> usize {
 
 /// As ondas que saem nesta rodada: as que ainda não saíram nem entregaram,
 /// cujas dependências já foram entregues, no máximo `limit` junto com as que
-/// estão em andamento (`running`). Duas ondas que declaram o mesmo arquivo
-/// nunca saem juntas, nem uma delas sai por cima de uma onda em andamento que
-/// já declarou aquele arquivo: a que perde a vez volta para a fila e espera
-/// quem está com o arquivo entregar. A onda órfã — em andamento sem o
+/// estão em andamento (`running`). Duas ondas cujos arquivos se cruzam — o
+/// mesmo caminho, ou um padrão que casa o outro
+/// ([`crate::shared::dag::files_cross`]) — nunca saem juntas, nem uma delas
+/// sai por cima de uma onda em andamento que já declarou aquele arquivo: a
+/// que perde a vez volta para a fila e espera quem está com o arquivo
+/// entregar. A onda com o curinga da árvore inteira (`**`) nunca sai ao lado
+/// de outra: nem com outra em andamento, nem com ela em andamento. A onda órfã — em andamento sem o
 /// processo que a mandou — não conta como vaga ocupada para as outras
 /// entrarem, porque ela não está compilando nada; a cópia dela é limpa à
 /// parte, em [`open_copies`]. A onda parada pelo limite de consertos
@@ -103,23 +107,31 @@ pub(super) fn next_waves(
     let effective_running = running.keys().filter(|n| !orphans.contains_key(n)).count();
     let slots = limit.saturating_sub(effective_running);
     // O arquivo que cada onda em andamento já declarou trava a vaga dela: uma
-    // onda pronta que declara o mesmo arquivo espera, mesmo com vaga livre —
-    // e a que sai primeiro nesta rodada tranca o arquivo para a próxima da
-    // mesma leva.
-    let mut taken: BTreeSet<&String> = running.keys().flat_map(|n| graph.files.get(n).into_iter().flatten()).collect();
+    // onda pronta cujo arquivo cruza com ele — o mesmo caminho, ou um padrão
+    // que o casa — espera, mesmo com vaga livre, e a que sai primeiro nesta
+    // rodada tranca o arquivo para a próxima da mesma leva.
+    let mut taken: Vec<&String> = running.keys().flat_map(|n| graph.files.get(n).into_iter().flatten()).collect();
+    // A onda com o curinga da árvore inteira cruza com todas, até com a que
+    // não declara arquivo: com ela em andamento nada mais sai, e ela só sai
+    // sem nenhuma outra em andamento nem saindo junto.
+    let mut busy = !running.is_empty();
+    let mut whole_tree_out = running.keys().any(|n| graph.files.get(n).is_some_and(touches_whole_tree));
     let mut go = Vec::new();
     for n in ready_in_order(&depends, &graph, &already_out, &delivered, &done)? {
-        if go.len() >= slots {
+        if go.len() >= slots || whole_tree_out {
             break;
         }
         if stuck.contains_key(&n) || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d)) {
             continue;
         }
         let files: Vec<&String> = graph.files.get(&n).into_iter().flatten().collect();
-        if files.iter().any(|f| taken.contains(f)) {
+        let whole_tree = touches_whole_tree(files.iter().copied());
+        if (whole_tree && busy) || sets_cross(files.iter().copied(), taken.iter().copied()) {
             continue;
         }
         taken.extend(files);
+        busy = true;
+        whole_tree_out = whole_tree;
         go.push(n);
     }
     Ok(go)

@@ -16,6 +16,7 @@
 #![cfg(unix)]
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -389,4 +390,126 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
 
     let wave1 = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).expect("wave 1");
     assert_eq!(wave1.str_field("text"), Some("Onda 1."), "a onda já entregue fica como história, sem versão nova");
+}
+
+/// As ondas de uma resposta da rodada numa das listas dela (`dispatch`,
+/// `analysis`), pelo número.
+fn waves_in(out: &Value, key: &str) -> Vec<u64> {
+    out[key].as_array().into_iter().flatten().filter_map(|entry| entry["wave"].as_u64()).collect()
+}
+
+/// Uma rodada que solta o que estiver pronto, como quem conduz a obra faz: a
+/// primeira chamada pede a escolha antes do envio das ondas prontas, e a
+/// segunda a devolve, sem tirar nem pôr nada, para cada uma. Devolve as ondas
+/// que pediram a escolha e as que saíram.
+fn dispatch_ready(project: &Project) -> (Vec<u64>, Vec<u64>) {
+    let first = project.run(&["round", "--spec", SPEC]);
+    let asked = waves_in(&first, "analysis");
+    let mut out = waves_in(&first, "dispatch");
+    if !asked.is_empty() {
+        let mut report = String::new();
+        for wave in &asked {
+            let _ = write!(report, "<ANALYSIS>{}</ANALYSIS>", json!({"wave": wave, "removed": [], "added": []}));
+        }
+        let second = project.run(&["round", "--spec", SPEC, "--report", &report]);
+        out.extend(waves_in(&second, "dispatch"));
+    }
+    (asked, out)
+}
+
+/// Uma spec aprovada com uma tarefa na cesta para cada lista de arquivos de
+/// `files`, sem dependência entre elas. Devolve o projeto, o critério, a fala
+/// do usuário e as tarefas, na ordem de `files`.
+fn basket_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
+    let tasks = files.iter().map(|f| basket_task(&project, crit_id, said, f, &[])).collect();
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+    (project, crit_id, said, tasks)
+}
+
+/// Uma tarefa semeada na cesta depois da aprovação, sem onda, como a
+/// conversão da spec antiga ou o conserto a deixam. Devolve o `id` gravado.
+fn seed_basket_task(project: &Project, criterion: u64, said: u64, files: &[&str]) -> u64 {
+    let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
+    project.seed(
+        "task",
+        &json!({"author": "assistant", "text": "Tarefa da cesta.", "files": files, "depends_on": [],
+            "covers": [criterion], "origin": said}),
+    )
+}
+
+/// A onda que levou a tarefa `task`, pela versão vigente dela.
+fn wave_of(project: &Project, task: u64) -> Option<u64> {
+    project.log().current(task).and_then(|t| t.wave())
+}
+
+/// A tarefa com o curinga da árvore inteira, ao lado de duas prontas com
+/// arquivos próprios: sai um lote só com ela, e as outras esperam. Com a
+/// onda dela em andamento, nada mais sai.
+#[test]
+fn a_tarefa_com_curinga_sai_sozinha() {
+    let (project, _, _, tasks) = basket_project(&[&["**"], &["a.rs"], &["b.rs"]]);
+
+    let (asked, out) = dispatch_ready(&project);
+    let star = wave_of(&project, tasks[0]).expect("a tarefa do curinga vira onda");
+    assert_eq!(asked, vec![star], "só a onda do curinga fica pronta para sair");
+    assert_eq!(out, vec![star], "só a onda do curinga sai");
+    let log = project.log();
+    let star_wave =
+        log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(star)).expect("a onda do curinga");
+    assert_eq!(star_wave.ints("order"), vec![tasks[0]], "o lote do curinga leva só ele");
+    for other in &tasks[1..] {
+        assert_ne!(wave_of(&project, *other), Some(star), "nenhuma outra tarefa entra no lote do curinga");
+    }
+
+    // A onda do curinga está em andamento: a das outras duas espera.
+    let (asked, out) = dispatch_ready(&project);
+    assert!(asked.is_empty() && out.is_empty(), "com o curinga em andamento nada mais sai: {asked:?} {out:?}");
+}
+
+/// O outro lado: com uma onda em andamento, a tarefa do curinga que chega à
+/// cesta vira lote, mas não sai ao lado dela.
+#[test]
+fn a_tarefa_com_curinga_sai_sozinha_e_espera_a_onda_em_andamento() {
+    let (project, crit, said, tasks) = basket_project(&[&["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    let first = wave_of(&project, tasks[0]).expect("a primeira tarefa vira onda");
+    assert_eq!(out, vec![first], "a onda de a.rs sai");
+
+    let star = seed_basket_task(&project, crit, said, &["**"]);
+    let (asked, out) = dispatch_ready(&project);
+    assert!(wave_of(&project, star).is_some(), "a tarefa do curinga vira lote");
+    assert!(asked.is_empty() && out.is_empty(), "o curinga não sai ao lado de a.rs em andamento: {asked:?} {out:?}");
+}
+
+/// Um padrão cruza com todo arquivo que ele casa: `src/**` e `src/a.rs`
+/// caem no mesmo lote mesmo passando da capacidade de cinco arquivos, e com
+/// `src/**` em andamento a tarefa de `src/b.rs` espera, enquanto a de
+/// `docs/` sai.
+#[test]
+fn a_tarefa_com_curinga_sai_sozinha_e_o_padrao_junta_com_o_arquivo_que_casa() {
+    let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
+    let (project, crit, said, tasks) = basket_project(&[&own, &["src/**"]]);
+    let (_, out) = dispatch_ready(&project);
+    let joined = wave_of(&project, tasks[0]).expect("a tarefa de src/a.rs vira onda");
+    assert_eq!(wave_of(&project, tasks[1]), Some(joined), "src/** junta com src/a.rs, acima da capacidade");
+    assert_eq!(out, vec![joined]);
+
+    let inside = seed_basket_task(&project, crit, said, &["src/b.rs"]);
+    let docs = ["docs/1.md", "docs/2.md", "docs/3.md", "docs/4.md", "docs/5.md"];
+    let outside = seed_basket_task(&project, crit, said, &docs);
+    let (_, out) = dispatch_ready(&project);
+    let inside_wave = wave_of(&project, inside).expect("src/b.rs vira lote");
+    let outside_wave = wave_of(&project, outside).expect("docs vira lote");
+    assert_ne!(inside_wave, outside_wave, "os dois não cabem juntos na capacidade de cinco");
+    assert_eq!(out, vec![outside_wave], "src/b.rs espera src/** em andamento; docs, que ele não casa, sai");
 }
