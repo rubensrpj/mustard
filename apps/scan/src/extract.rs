@@ -18,8 +18,10 @@
 //! Three things come off the tree itself, with no capture and no grammar node
 //! name: the documentation comment above a declaration (the `extra` nodes the
 //! grammar attaches right above it), its signature (its own text up to the
-//! body), and the call sites of the file (a named leaf that reads as an
-//! identifier and is followed by an opening parenthesis). A grammar that marks
+//! body), the call sites of the file (a named leaf that reads as an
+//! identifier and is followed by an opening parenthesis), and the names it
+//! cites without calling (the same leaf, starting with a capital letter and
+//! not followed by a parenthesis). A grammar that marks
 //! none of it simply yields nothing, as with every other generic rule here.
 //!
 //! The per-language seam the old design called for is preserved: there is one
@@ -42,6 +44,7 @@ pub(crate) struct Extracted {
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     pub calls: Vec<CallSite>,
+    pub cites: Vec<CallSite>,
 }
 
 /// One language as produced by `build.rs` from `languages.toml` + its `.scm`
@@ -277,10 +280,11 @@ impl Analyzer {
             })
             .collect();
 
-        // The call sites of the file, minus the declaration headers themselves
-        // (`foo` in `fn foo(` is where it is defined, not a use of it) and
-        // minus what is written inside a decoration.
-        out.calls = call_sites(root, bytes, &decorations, &names_at);
+        // The call sites and the citations of the file, minus the
+        // declaration headers themselves (`foo` in `fn foo(` is where it is
+        // defined, not a use of it) and minus what is written inside a
+        // decoration.
+        (out.calls, out.cites) = use_sites(root, bytes, &decorations, &names_at);
 
         out.imports.sort();
         out.imports.dedup();
@@ -415,22 +419,37 @@ fn one_line(text: &str, max: usize) -> String {
     joined[..cut].trim_end().to_string()
 }
 
-/// Every call the file makes: a named leaf that reads as an identifier and is
-/// followed by an opening parenthesis — the one shape a call has in every
-/// language we parse. Read off the tree, so what is inside a comment or a
-/// string is never a call, and a keyword never is either (it is not a named
-/// node). The name is NOT resolved here: `graph` does that with the whole
-/// project in hand, which is why what is stored survives a pass that reads
-/// only the files that changed.
+/// Every call the file makes and every name it cites without calling.
 ///
-/// Nothing inside a decoration is a call (an attribute calls nothing), and a
+/// A call is a named leaf that reads as an identifier and is followed by an
+/// opening parenthesis — the one shape a call has in every language we parse.
+/// A citation is the same leaf starting with a capital letter and not followed
+/// by a parenthesis: a type, a constant or an enum member named in a parameter,
+/// a comparison or a path. Only the capitalised names are kept: every good
+/// link a citation gives comes from them, and keeping every lowercase name
+/// would weigh on the map five times as much for nothing.
+///
+/// Read off the tree, so what is inside a comment is never a use, and a
+/// keyword never is either (it is not a named node). A citation right against
+/// a quote is quoted text, not a name. The name is NOT resolved here: `graph`
+/// does that with the whole project in hand, which is why what is stored
+/// survives a pass that reads only the files that changed. What is written
+/// right before the name, in `q::name` or `q.name`, is kept as its qualifier.
+///
+/// Nothing inside a decoration is a use (an attribute calls nothing), and a
 /// declaration's own name, at `names_at`, is its header.
-fn call_sites(root: Node, bytes: &[u8], decorations: &Spans, names_at: &BTreeSet<usize>) -> Vec<CallSite> {
-    let mut found: BTreeSet<(usize, String)> = BTreeSet::new();
+fn use_sites(
+    root: Node,
+    bytes: &[u8],
+    decorations: &Spans,
+    names_at: &BTreeSet<usize>,
+) -> (Vec<CallSite>, Vec<CallSite>) {
+    let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
+    let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cursor = root.walk();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        if is_decoration(&node, decorations) {
+        if is_decoration(&node, decorations) || node.is_extra() {
             continue;
         }
         if node.child_count() > 0 {
@@ -439,17 +458,54 @@ fn call_sites(root: Node, bytes: &[u8], decorations: &Spans, names_at: &BTreeSet
             }
             continue;
         }
-        if node.is_named()
-            && !node.is_extra()
-            && !names_at.contains(&node.start_byte())
-            && followed_by_open_paren(node, bytes)
-            && let Ok(text) = node.utf8_text(bytes)
-            && is_identifier(text)
-        {
-            found.insert((node.start_position().row + 1, text.to_string()));
+        if !node.is_named() || names_at.contains(&node.start_byte()) {
+            continue;
+        }
+        let Ok(text) = node.utf8_text(bytes) else { continue };
+        if !is_identifier(text) {
+            continue;
+        }
+        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes));
+        if followed_by_open_paren(node, bytes) {
+            calls.insert(site);
+        } else if text.chars().next().is_some_and(char::is_uppercase) && !against_a_quote(node, bytes) {
+            cites.insert(site);
         }
     }
-    found.into_iter().map(|(line, name)| CallSite { name, line }).collect()
+    let sites = |found: BTreeSet<(usize, String, String)>| {
+        found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect()
+    };
+    (sites(calls), sites(cites))
+}
+
+/// The name written right before the node and joined to it by `::` or `.`:
+/// `preco` in `crate::preco::total`, `model` in `model.User`. Empty when the
+/// node stands alone, or when what comes before the separator is not a name
+/// (`f().total`).
+fn qualifier_before(node: Node, bytes: &[u8]) -> String {
+    let before = bytes[..node.start_byte()].trim_ascii_end();
+    let Some(before) = before.strip_suffix(b"::").or_else(|| before.strip_suffix(b".")) else {
+        return String::new();
+    };
+    if before.ends_with(b".") {
+        return String::new();
+    }
+    let before = before.trim_ascii_end();
+    let start = before
+        .iter()
+        .rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80))
+        .map_or(0, |i| i + 1);
+    match std::str::from_utf8(&before[start..]) {
+        Ok(q) if is_identifier(q) => q.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The node touches a quote on either side: it is the text of a string, not a
+/// name. Generic: every language quotes its text with one of these.
+fn against_a_quote(node: Node, bytes: &[u8]) -> bool {
+    let quote = |b: Option<&u8>| b.is_some_and(|b| matches!(b, b'"' | b'\'' | b'`'));
+    quote(node.start_byte().checked_sub(1).and_then(|i| bytes.get(i))) || quote(bytes.get(node.end_byte()))
 }
 
 /// The next character after the node, whitespace apart, opens a parameter list.

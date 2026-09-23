@@ -185,36 +185,53 @@ pub struct Module {
     /// feeds the declaration links of a pass that only read what changed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<CallSite>,
+    /// Every name cited without being called: a name that starts with a
+    /// capital letter (a type, a constant, an enum member), outside comments,
+    /// quoted text, decorations and its own declaration header, with the line
+    /// it is cited on. Raw for the same reason as [`Module::calls`], and
+    /// written the same way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cites: Vec<CallSite>,
 }
 
-/// One call read out of a file: the name called and the line of the call. The
-/// caller is the file it was read from, and the declaration that encloses the
-/// line — resolved by [`crate::graph::link_declarations`], not stored twice.
+/// One call or citation read out of a file: the name, the line, and the
+/// qualifier written right before it (`q` in `q::name` and `q.name`, empty
+/// when there is none). The caller is the file it was read from, and the
+/// declaration that encloses the line — resolved by
+/// [`crate::graph::link_declarations`], not stored twice.
 ///
-/// Written as one string, `name:line`: there are tens of thousands of these,
-/// and the model is written indented, so an object of two fields would cost
-/// five lines each. The map is read by machine, and `name:line` is the form
-/// every reader already knows.
+/// Written as one string, `name:line`, or `q.name:line` when there is a
+/// qualifier: there are tens of thousands of these, and the model is written
+/// indented, so an object of three fields would cost six lines each. The map
+/// is read by machine, and `name:line` is the form every reader already knows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CallSite {
     pub name: String,
     pub line: usize,
+    /// The name written right before `::` or `.` ahead of this one. A name is
+    /// never written with a dot, so the text splits back without ambiguity.
+    pub qualifier: String,
 }
 
 impl Serialize for CallSite {
     fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
-        out.collect_str(&format_args!("{}:{}", self.name, self.line))
+        if self.qualifier.is_empty() {
+            out.collect_str(&format_args!("{}:{}", self.name, self.line))
+        } else {
+            out.collect_str(&format_args!("{}.{}:{}", self.qualifier, self.name, self.line))
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for CallSite {
     fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
         let text = String::deserialize(input)?;
-        let (name, line) = text
+        let (head, line) = text
             .rsplit_once(':')
             .ok_or_else(|| D::Error::custom(format!("a call site reads `name:line`, not `{text}`")))?;
         let line = line.parse().map_err(D::Error::custom)?;
-        Ok(Self { name: name.to_string(), line })
+        let (qualifier, name) = head.rsplit_once('.').unwrap_or(("", head));
+        Ok(Self { name: name.to_string(), line, qualifier: qualifier.to_string() })
     }
 }
 

@@ -265,20 +265,29 @@ const MAX_SAME_NAME: usize = 8;
 /// interface or a trait is never the target of a call either.
 const CALLABLE_KINDS: &[&str] = &["function", "method", "class", "struct", "record", "enum_member", "const"];
 
+/// The declaration kinds a citation can point to: what is named without being
+/// called — a constant compared against, a type written in a parameter, an
+/// enum member picked out.
+const CITED_KINDS: &[&str] =
+    &["const", "constant", "struct", "enum", "enum_member", "type", "trait", "class", "interface"];
+
 /// The named edges BETWEEN DECLARATIONS: for each declaration, which ones it
 /// calls and every place that uses it, with the file and the line. Until here
 /// the graph only counted file-to-file edges, which cannot answer "who calls
 /// this function".
 ///
-/// The call sites come from what each module carries (`Module::calls`), never
-/// from reading the file again — so a pass that read only the files that
+/// The call sites and the citations come from what each module carries
+/// (`Module::calls`, `Module::cites`), never from reading the file again — so a pass that read only the files that
 /// changed links exactly what a full pass links.
 ///
 /// A name is resolved only to the declarations that can be called and that the
 /// calling file sees: the ones in the file itself, in a file it imports, or in
 /// a file that declares the same namespace in the same language (the languages
 /// that group files by namespace see each other that way, without importing a
-/// file). A name no file in sight declares is an outside call — `.join(` of the
+/// file). A qualified name (`q::name`, `q.name`) also reaches the declarations
+/// of a file of the same language whose name or folder is `q` — `crate::preco::total(`
+/// and `model.User{}` need no import. A name no file in sight declares is an
+/// outside call — `.join(` of the
 /// standard library, a field read as `x.kind()` — and is simply dropped, never
 /// tied to every declaration of that name across the project. The links of
 /// every declaration are rewritten from scratch on each pass, so nothing
@@ -306,41 +315,63 @@ type UsesByDecl = Vec<Vec<Vec<UseSite>>>;
 /// it receives. Split out of [`link_declarations`] so the whole project is
 /// read before any declaration is written to.
 fn resolve_declaration_links(modules: &[Module]) -> (CallsByDecl, UsesByDecl) {
-    let mut by_name: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
-    for (mi, m) in modules.iter().enumerate() {
-        for (di, d) in m.declarations.iter().enumerate() {
-            if !d.name.is_empty() && CALLABLE_KINDS.contains(&d.kind.as_str()) {
-                by_name.entry(d.name.as_str()).or_default().push((mi, di));
+    let index = |kinds: &[&str]| {
+        let mut by_name: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        for (mi, m) in modules.iter().enumerate() {
+            for (di, d) in m.declarations.iter().enumerate() {
+                if !d.name.is_empty() && kinds.contains(&d.kind.as_str()) {
+                    by_name.entry(d.name.as_str()).or_default().push((mi, di));
+                }
             }
         }
-    }
+        by_name
+    };
+    let callable = index(CALLABLE_KINDS);
+    let cited = index(CITED_KINDS);
 
     // The namespaces each file declares, in the one segment form the import
     // resolution uses, so `Demo.Models` and `Demo::Models` are the same one.
     let namespaces: Vec<HashSet<String>> =
         modules.iter().map(|m| m.namespaces.iter().map(|ns| canon_segments(ns)).collect()).collect();
+    // The names a qualifier can give a file: its own name and its folder's.
+    let own_names: Vec<[String; 2]> = modules
+        .iter()
+        .map(|m| {
+            let dir = parent_dir(&m.path);
+            let folder = dir.rsplit('/').next().unwrap_or_default().to_string();
+            [file_stem(&m.path), folder]
+        })
+        .collect();
 
     let mut calls: CallsByDecl = modules.iter().map(|m| vec![BTreeSet::new(); m.declarations.len()]).collect();
     let mut uses: UsesByDecl = modules.iter().map(|m| vec![Vec::new(); m.declarations.len()]).collect();
 
     for (src, m) in modules.iter().enumerate() {
-        if m.calls.is_empty() {
+        if m.calls.is_empty() && m.cites.is_empty() {
             continue;
         }
         let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
-        let sees = |mi: usize| {
+        let sees = |mi: usize, qualifier: &str| {
             mi == src
                 || imported.contains(modules[mi].path.as_str())
                 || (modules[mi].language == m.language
-                    && namespaces[mi].iter().any(|ns| namespaces[src].contains(ns)))
+                    && (namespaces[mi].iter().any(|ns| namespaces[src].contains(ns))
+                        || (!qualifier.is_empty() && own_names[mi].iter().any(|n| n == qualifier))))
         };
-        for site in &m.calls {
+        let sites = m.calls.iter().map(|s| (s, &callable, true)).chain(m.cites.iter().map(|s| (s, &cited, false)));
+        for (site, by_name, is_call) in sites {
             let Some(all) = by_name.get(site.name.as_str()) else { continue };
-            let chosen: Vec<(usize, usize)> = all.iter().copied().filter(|(mi, _)| sees(*mi)).collect();
+            let from = enclosing(&m.declarations, site.line);
+            let chosen: Vec<(usize, usize)> = all
+                .iter()
+                .copied()
+                .filter(|&(mi, _)| sees(mi, &site.qualifier))
+                // A type named inside its own body is not a use of it.
+                .filter(|&(mi, di)| is_call || !(mi == src && from == Some(di)))
+                .collect();
             if chosen.is_empty() || chosen.len() > MAX_SAME_NAME {
                 continue;
             }
-            let from = enclosing(&m.declarations, site.line);
             let from_name = from.map_or(String::new(), |di| m.declarations[di].name.clone());
             for (dst_mi, dst_di) in chosen {
                 uses[dst_mi][dst_di].push(UseSite {
@@ -348,7 +379,7 @@ fn resolve_declaration_links(modules: &[Module]) -> (CallsByDecl, UsesByDecl) {
                     line: site.line,
                     from: from_name.clone(),
                 });
-                if let Some(di) = from {
+                if is_call && let Some(di) = from {
                     calls[src][di].insert(site.name.clone());
                 }
             }

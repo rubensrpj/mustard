@@ -7,9 +7,14 @@
 //! biblioteca, não o do terceiro arquivo. Os nomes se repetem de propósito em
 //! todas as linguagens, para que uma ligação pelo nome no projeto inteiro
 //! apareça como uso cruzando linguagens.
+//!
+//! O mesmo projeto mostra também o uso sem chamada: em cada linguagem, o tipo
+//! `Item` é citado como tipo de parâmetro no arquivo que chama, e no Rust uma
+//! constante é citada numa comparação e uma função é chamada pelo caminho do
+//! arquivo, sem `use`.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
@@ -266,4 +271,75 @@ fn o_uso_so_liga_a_quem_se_chama_e_a_quem_o_arquivo_enxerga() {
     }
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// O que o Rust ganha a mais para o uso sem chamada: uma constante e uma
+/// função em `preco.rs`; `pedido.rs` importa a constante e a compara dentro de
+/// `abrir`; `caixa.rs`, sem nenhum `use`, chama a função pelo caminho do
+/// arquivo dentro de `pagar`.
+const PRECO: &str = "pub const LIMITE: u32 = 10;\n\npub fn total(a: u32, b: u32) -> u32 {\n    a + b\n}\n";
+const PEDIDO: &str = "use crate::preco::LIMITE;\n\npub fn abrir(n: u32) -> bool {\n    n > LIMITE\n}\n";
+const CAIXA: &str = "pub fn pagar() -> u32 {\n    crate::preco::total(1, 2)\n}\n";
+
+#[test]
+fn a_constante_e_o_tipo_citados_ganham_quem_os_usa() {
+    let dir = std::env::temp_dir().join(format!("scan-citacao-em-toda-linguagem-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let todas = linguagens();
+    for l in &todas {
+        for (rel, corpo) in l.arquivos {
+            write(&dir, rel, corpo);
+        }
+    }
+    write(&dir, "rs/src/preco.rs", PRECO);
+    write(&dir, "rs/src/pedido.rs", PEDIDO);
+    write(&dir, "rs/src/caixa.rs", CAIXA);
+    let map = scan(&dir);
+    let modules = map["modules"].as_array().expect("modules");
+    let usos = |arquivo: &str, nome: &str| -> Vec<String> {
+        let m = modules.iter().find(|m| m["path"] == arquivo).unwrap_or_else(|| panic!("{arquivo} no mapa"));
+        let d = m["declarations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|d| d["name"] == nome)
+            .unwrap_or_else(|| panic!("{nome} declarado em {arquivo}: {m}"));
+        d.get("used_by")
+            .and_then(Value::as_array)
+            .map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
+    };
+    // Junta as faltas antes de reprovar, para que um defeito só na leitura da
+    // citação ou só no caminho pelo arquivo apareça inteiro de uma vez.
+    let mut faltas: Vec<String> = Vec::new();
+
+    // Em cada linguagem, o tipo citado no parâmetro de `principal` tem o uso
+    // com o arquivo e a linha da citação, e `principal` como quem usa.
+    for l in &todas {
+        let corpo = l.arquivos.iter().find(|(rel, _)| *rel == l.quem_chama).unwrap().1;
+        let esperado = format!("{}:{}:principal", l.quem_chama, linha_de(corpo, "principal("));
+        let u = usos(l.arquivos[1].0, "Item");
+        if !u.contains(&esperado) {
+            faltas.push(format!("o tipo Item de {} tem o uso {esperado}: {u:?}", l.arquivos[1].0));
+        }
+    }
+
+    // A constante comparada dentro de `abrir` tem o uso, com `abrir` como quem
+    // usa. A linha do `use` que a importa também conta: é onde o arquivo quebra
+    // se ela mudar de nome.
+    let limite = usos("rs/src/preco.rs", "LIMITE");
+    let esperado = format!("rs/src/pedido.rs:{}:abrir", linha_de(PEDIDO, "n > LIMITE"));
+    if !limite.contains(&esperado) || limite.iter().any(|u| !u.starts_with("rs/src/pedido.rs:")) {
+        faltas.push(format!("a constante LIMITE tem o uso {esperado}, e só de pedido.rs: {limite:?}"));
+    }
+
+    // A função chamada pelo caminho do arquivo, sem `use`, tem o uso na linha
+    // da chamada, com `pagar` como quem usa.
+    let total = usos("rs/src/preco.rs", "total");
+    let esperado = format!("rs/src/caixa.rs:{}:pagar", linha_de(CAIXA, "crate::preco::total("));
+    if total != [esperado.clone()] {
+        faltas.push(format!("a função total tem só o uso {esperado}: {total:?}"));
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
 }

@@ -340,7 +340,8 @@ fn o_atributo_e_o_decorador_nao_escondem_o_comentario_nem_viram_chamada() {
     let falsas = ["derive", "HttpGet", "Get", "Component", "Route", "override", "get", "inicio", "Carregar", "Pedidos", "Pedido"];
     for m in map["modules"].as_array().unwrap() {
         for call in m["calls"].as_array().into_iter().flatten() {
-            let name = call.as_str().unwrap().rsplit_once(':').unwrap().0;
+            // `q.nome:linha` quando a chamada tem qualificador: vale o nome.
+            let name = call.as_str().unwrap().rsplit_once(':').unwrap().0.rsplit('.').next().unwrap();
             assert!(!falsas.contains(&name), "{} chama {name}, que não é chamada", m["path"]);
         }
     }
