@@ -398,21 +398,62 @@ fn waves_in(out: &Value, key: &str) -> Vec<u64> {
     out[key].as_array().into_iter().flatten().filter_map(|entry| entry["wave"].as_u64()).collect()
 }
 
+/// O número e a hora de início (campo 22 de `/proc/<pid>/stat`) do processo
+/// deste teste, que fica vivo enquanto ele roda. Fora do Linux não há
+/// `/proc`: a hora vai zerada, e lá o binário não confere o par.
+fn test_process() -> (u32, u64) {
+    let pid = std::process::id();
+    let started = std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|raw| raw.rsplit_once(')').and_then(|(_, after)| after.split_whitespace().nth(19)?.parse().ok()))
+        .unwrap_or(0);
+    (pid, started)
+}
+
+/// Cada rodada é um processo novo do binário. Sem o Claude Code acima dela,
+/// como no servidor, o envio grava o par do próprio processo da rodada, que
+/// termina assim que ela responde, e a rodada seguinte leria a onda como
+/// órfã e a reenviaria. Aqui o envio mais recente de cada onda de `waves`
+/// ganha uma versão nova, como a volta da onda grava, com o par do processo
+/// do teste: a onda segue em andamento não importa quem lançou a suíte.
+fn keep_sent(project: &Project, waves: &[u64]) {
+    let (pid, started) = test_process();
+    let log = project.log();
+    let last = log.last_by_wave("send");
+    for wave in waves {
+        let sent = log.get(*last.get(wave).expect("a onda que saiu tem envio")).expect("o envio");
+        let mut draft: serde_json::Map<String, Value> = sent
+            .fields
+            .iter()
+            .filter(|(key, _)| !["v", "id", "code", "at", "type", "search"].contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        draft.insert("replaces".into(), json!(sent.id));
+        draft.insert("claude_pid".into(), json!(pid));
+        draft.insert("claude_started".into(), json!(started));
+        project.seed("send", &Value::Object(draft));
+    }
+}
+
 /// Uma rodada que solta o que estiver pronto, como quem conduz a obra faz: a
 /// primeira chamada pede a escolha antes do envio das ondas prontas, e a
 /// segunda a devolve, sem tirar nem pôr nada, para cada uma. Devolve as ondas
-/// que pediram a escolha e as que saíram.
+/// que pediram a escolha e as que saíram; as que saíram ficam em andamento
+/// pelo processo do teste ([`keep_sent`]).
 fn dispatch_ready(project: &Project) -> (Vec<u64>, Vec<u64>) {
     let first = project.run(&["round", "--spec", SPEC]);
     let asked = waves_in(&first, "analysis");
     let mut out = waves_in(&first, "dispatch");
+    keep_sent(project, &out);
     if !asked.is_empty() {
         let mut report = String::new();
         for wave in &asked {
             let _ = write!(report, "<ANALYSIS>{}</ANALYSIS>", json!({"wave": wave, "removed": [], "added": []}));
         }
         let second = project.run(&["round", "--spec", SPEC, "--report", &report]);
-        out.extend(waves_in(&second, "dispatch"));
+        let sent = waves_in(&second, "dispatch");
+        keep_sent(project, &sent);
+        out.extend(sent);
     }
     (asked, out)
 }
