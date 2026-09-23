@@ -7,7 +7,8 @@
 
 use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -143,6 +144,12 @@ pub struct Module {
     pub language: String,
     pub loc: usize,
     pub imports: Vec<String>,
+    /// The imports this file puts in sight of every file of its language
+    /// under the same project (the folder of the nearest manifest above it),
+    /// not only of itself. They are in `imports` too: the import edge stays on
+    /// this file alone. Written only when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub global_imports: Vec<String>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     /// Machine-written class, when one applies: "generated" | "vendored" |
@@ -163,8 +170,9 @@ pub struct Module {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fan_in: usize,
     /// The project files this one imports, resolved through the graph — the
-    /// reverse of "who imports this file". Only specific imports count: an
-    /// import spread over a bucket of more than eight files is left out.
+    /// reverse of "who imports this file". Every resolved import counts, a
+    /// namespace import spread over many files included: it is still an
+    /// import of each of them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deps: Vec<String>,
     /// The test files that cover this one: a test that imports it, or a test
@@ -178,6 +186,63 @@ pub struct Module {
     /// that does not read the file again still infers the same stacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<String>,
+    /// Every call site read out of this file: the name called and the line it
+    /// is called on, in document order. Raw on purpose — a name is not
+    /// resolved to a declaration here, so a file that did not change still
+    /// feeds the declaration links of a pass that only read what changed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<CallSite>,
+    /// Every name cited without being called that links to a constant or a
+    /// type some file in sight of this one declares, with the line it is
+    /// cited on: outside comments, quoted text, decorations, imports, the
+    /// names an import brings in, namespace names and its own declaration
+    /// header. The letter the name starts with decides nothing; a name that
+    /// links to nothing of the project is not kept. Not resolved to a
+    /// declaration, for the same reason as [`Module::calls`], and written the
+    /// same way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cites: Vec<CallSite>,
+}
+
+/// One call or citation read out of a file: the name, the line, and the
+/// qualifier written right before it (`q` in `q::name` and `q.name`, empty
+/// when there is none). The caller is the file it was read from, and the
+/// declaration that encloses the line — resolved by
+/// [`crate::graph::link_declarations`], not stored twice.
+///
+/// Written as one string, `name:line`, or `q.name:line` when there is a
+/// qualifier: there are tens of thousands of these, and the model is written
+/// indented, so an object of three fields would cost six lines each. The map
+/// is read by machine, and `name:line` is the form every reader already knows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CallSite {
+    pub name: String,
+    pub line: usize,
+    /// The name written right before `::` or `.` ahead of this one. A name is
+    /// never written with a dot, so the text splits back without ambiguity.
+    pub qualifier: String,
+}
+
+impl Serialize for CallSite {
+    fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        if self.qualifier.is_empty() {
+            out.collect_str(&format_args!("{}:{}", self.name, self.line))
+        } else {
+            out.collect_str(&format_args!("{}.{}:{}", self.qualifier, self.name, self.line))
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CallSite {
+    fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(input)?;
+        let (head, line) = text
+            .rsplit_once(':')
+            .ok_or_else(|| D::Error::custom(format!("a call site reads `name:line`, not `{text}`")))?;
+        let line = line.parse().map_err(D::Error::custom)?;
+        let (qualifier, name) = head.rsplit_once('.').unwrap_or(("", head));
+        Ok(Self { name: name.to_string(), line, qualifier: qualifier.to_string() })
+    }
 }
 
 /// serde helper for additive numeric fields (mirrors `String::is_empty` above).
@@ -225,7 +290,35 @@ pub struct Decl {
     /// generic to mine: a base name shared by many entities is a shared contract.
     #[serde(default)]
     pub supertypes: Vec<String>,
+    /// The documentation comment written right above the declaration, cleaned
+    /// of its comment markers and joined into one line. Empty when there is
+    /// none there — and in this project it is the only part written in the
+    /// developer's own language, so it is what makes a question in words meet
+    /// the code. Additive: older models default to empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+    /// The declaration's own signature: what comes before its body, whitespace
+    /// collapsed (name, parameters, return/base types). Never the body — the
+    /// whole body was measured as the worst thing to keep. Empty when the
+    /// declaration has no header to speak of.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signature: String,
+    /// The declarations of this project that this one calls, by name, sorted
+    /// and deduped. Filled by [`crate::graph::link_declarations`] from the
+    /// call sites of the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<String>,
+    /// Every use of this declaration: which file, which line, and which
+    /// declaration the call starts from. Filled by
+    /// [`crate::graph::link_declarations`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub used_by: Vec<UseSite>,
 }
+
+/// One use of a declaration, `file:line:from`. The type lives in the core,
+/// next to the map questions that read it, so the side that writes the map and
+/// the side that answers from it understand the same text.
+pub use mustard_core::domain::project_map::UseSite;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct GraphStats {

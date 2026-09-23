@@ -61,6 +61,10 @@ pub enum Refusal {
     /// O `run write` com o autor `binary`, que fica só para as gravações de
     /// dentro do binário.
     BinaryAuthor,
+    /// O `run write` com uma onda, ou com uma tarefa que traz um número de
+    /// onda que a versão revista dela não tinha: a onda nasce do backlog, e só
+    /// o programa monta o lote.
+    WaveByBacklog,
     /// O `run write` com uma mensagem do usuário, ou uma gravação dele que
     /// tiraria ou reveria uma: a fala do usuário chega pelos ganchos.
     UserMessageByHook { spec: String },
@@ -74,6 +78,10 @@ pub enum Refusal {
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
     /// aponta em `origin` uma mensagem do usuário.
     GoalOriginNotUser { spec: String, origin: String },
+    /// O objetivo gravado cuja primeira frase — a que vira o título do pull
+    /// request — passa do teto do título. Recusado na gravação, e não lá na
+    /// abertura do pull request, com a obra inteira já feita em cima dele.
+    GoalTitleTooLong { chars: usize, max: usize },
     /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
     /// ou reveria o tipo de trabalho: quem o grava é o `grill`.
     WorkTypeByGrill,
@@ -116,10 +124,31 @@ pub enum Refusal {
     /// ela faz, os arquivos que toca e de quais tarefas depende. Nada é
     /// gravado, e a mensagem nomeia exatamente qual (ou quais) faltou.
     TaskDeclarationMissing { missing: Vec<TaskDeclaration> },
+    /// Uma tarefa cujo `depends_on` aponta uma tarefa que não existe nesta
+    /// spec. Nada é gravado, e a mensagem nomeia as duas.
+    TaskDependsOnUnknown { task: String, depends_on: String },
+    /// Um `depends_on` que fecha um círculo entre tarefas desta spec. Nada é
+    /// gravado, e a mensagem nomeia o círculo inteiro, na ordem, voltando ao
+    /// começo.
+    TaskDependencyCycle { cycle: Vec<String> },
+    /// O veredito final (`"final":true`) sem a lista `agreed`, ou com algum
+    /// item combinado vigente de fora dela. Nada é gravado, e a mensagem
+    /// nomeia pelo código cada item que faltou.
+    AgreedItemsMissing { missing: Vec<String> },
+    /// Um critério gravado sem declarar a forma: nenhuma das cinco do padrão
+    /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
+    /// pelo nome, nos dois idiomas.
+    CriterionFormMissing,
+    /// A prova de um critério que chegou pelo relatório de uma onda sem ser
+    /// uma linha de comando: o campo guarda o comando que demonstra o
+    /// critério, e o que não começa por um executável conhecido vira, mais
+    /// adiante, um comando que o shell não acha. `criterion` é o critério, e
+    /// `found` o texto que veio no lugar do comando.
+    ProofNotACommand { criterion: String, found: String },
     Io { detail: String },
 }
 
-/// Uma das três declarações que toda tarefa precisa trazer na gravação.
+/// Uma das declarações que toda tarefa precisa trazer na gravação.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskDeclaration {
     /// O que a tarefa faz, em uma frase (`text`).
@@ -130,7 +159,14 @@ pub enum TaskDeclaration {
     /// As tarefas de que esta depende (`depends_on`), mesmo que a lista
     /// fique vazia.
     DependsOn,
+    /// O título curto (`title`), de até [`TASK_TITLE_MAX`] caracteres, que
+    /// diz o que a tarefa entrega. Falta tanto quando não vem quanto quando
+    /// passa do tamanho.
+    Title,
 }
+
+/// O tamanho máximo do título de uma tarefa, em caracteres.
+pub const TASK_TITLE_MAX: usize = 70;
 
 impl TaskDeclaration {
     fn label(self, lang: Locale) -> &'static str {
@@ -138,6 +174,7 @@ impl TaskDeclaration {
             Self::What => translate("spec_events.task_declaration_what", lang),
             Self::Files => translate("spec_events.task_declaration_files", lang),
             Self::DependsOn => translate("spec_events.task_declaration_depends_on", lang),
+            Self::Title => translate("spec_events.task_declaration_title", lang),
         }
     }
 }
@@ -174,11 +211,13 @@ impl Refusal {
             Self::StateByFlowOnly { .. } => "state-by-flow-only",
             Self::BinaryOnlyType { .. } => "binary-only-type",
             Self::BinaryAuthor => "binary-author",
+            Self::WaveByBacklog => "wave-by-backlog",
             Self::UserMessageByHook { .. } => "user-message-by-hook",
             Self::OldFormatSpec { .. } => "old-format-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::GoalOriginNotUser { .. } => "goal-origin-not-user",
+            Self::GoalTitleTooLong { .. } => "goal-title-too-long",
             Self::WorkTypeByGrill => "work-type-by-grill",
             Self::SurveyOpen { .. } => "survey-open",
             Self::SurveyNotStarted { .. } => "survey-not-started",
@@ -193,6 +232,11 @@ impl Refusal {
             Self::DeliveredTooLong { .. } => "delivered-too-long",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
+            Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
+            Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
+            Self::AgreedItemsMissing { .. } => "agreed-items-missing",
+            Self::CriterionFormMissing => "criterion-form-missing",
+            Self::ProofNotACommand { .. } => "proof-not-a-command",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -321,6 +365,7 @@ impl Refusal {
                 &[("{type}", event_type.clone()), ("{spec}", spec.clone())],
             ),
             Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
+            Self::WaveByBacklog => fill("spec_events.wave_by_backlog", &[]),
             Self::UserMessageByHook { spec } => {
                 fill("spec_events.user_message_by_hook", &[("{spec}", spec.clone())])
             }
@@ -334,6 +379,13 @@ impl Refusal {
                 "spec_events.goal_origin_not_user",
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
+            // A mesma recusa da abertura do pull request, palavra por palavra:
+            // o teto é o mesmo, então a frase que o explica é a mesma. Duas
+            // redações do mesmo limite ensinariam duas coisas diferentes.
+            Self::GoalTitleTooLong { chars, max } => {
+                super::message::MessageRefusal::TooLong { part: "title", chars: *chars, max: *max }
+                    .message(lang)
+            }
             Self::WorkTypeByGrill => fill("grill.work_type_by_grill", &[]),
             Self::SurveyOpen { spec, count, points } => fill(
                 "spec_events.survey_open",
@@ -377,6 +429,23 @@ impl Refusal {
                     "{missing}",
                     missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
                 )],
+            ),
+            Self::TaskDependsOnUnknown { task, depends_on } => fill(
+                "spec_events.task_depends_on_unknown",
+                &[("{task}", task.clone()), ("{depends_on}", depends_on.clone())],
+            ),
+            Self::TaskDependencyCycle { cycle } => fill(
+                "spec_events.task_dependency_cycle",
+                &[("{cycle}", cycle.join(" → "))],
+            ),
+            Self::AgreedItemsMissing { missing } => fill(
+                "spec_events.agreed_items_missing",
+                &[("{missing}", missing.join(", "))],
+            ),
+            Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
+            Self::ProofNotACommand { criterion, found } => fill(
+                "spec_events.proof_not_a_command",
+                &[("{criterion}", criterion.clone()), ("{found}", found.clone())],
             ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }

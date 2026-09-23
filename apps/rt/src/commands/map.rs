@@ -5,13 +5,17 @@
 //!   servem de exemplo, com o motivo de cada um e as receitas do git;
 //! - `importers --file <arquivo>`: quem importa o arquivo;
 //! - `tests --file <arquivo>`: que testes o cobrem;
+//! - `slice --file <arquivo> --name <declaração>`: o trecho da declaração, do
+//!   começo ao fim, com o caminho e as linhas de onde ele saiu;
+//! - `users --name <declaração>` (com `--file`, só a desse arquivo): quem usa
+//!   a declaração, como `arquivo:linha:quem chama`;
 //! - `search --query "<palavras>"`: a busca por conceito;
 //! - `summary`: o resumo do início da sessão, até 3 kB;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
 //!   tamanho dela.
 //!
-//! A regra mora em `mustard_core::domain::project_map`; aqui só se lê o mapa
-//! e a skill, e se imprime o JSON.
+//! A regra mora em `mustard_core::domain::project_map`; aqui só se leem o
+//! mapa, a skill e o arquivo de onde sai o trecho, e se imprime o JSON.
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +34,8 @@ pub enum Question {
     Search,
     Summary,
     Skill,
+    Slice,
+    Users,
 }
 
 impl Question {
@@ -41,6 +47,8 @@ impl Question {
             Self::Search => "search",
             Self::Summary => "summary",
             Self::Skill => "skill",
+            Self::Slice => "slice",
+            Self::Users => "users",
         }
     }
 }
@@ -53,6 +61,7 @@ pub struct MapOpts {
     pub task: Option<String>,
     pub query: Option<String>,
     pub path: Option<PathBuf>,
+    pub name: Option<String>,
 }
 
 fn refused(refusal: &MapRefusal, lang: Locale) -> Value {
@@ -113,9 +122,76 @@ fn answer(opts: &MapOpts, root: &Path, lang: Locale) -> Result<Value, MapRefusal
             let text = project_map::summary(&map, lang);
             Ok(json!({ "ok": true, "question": "summary", "bytes": text.len(), "summary": text }))
         }
+        Question::Slice => slice(opts, &map, root),
+        Question::Users => users(opts, &map, lang),
         Question::Examples => examples(opts, &map, lang),
         Question::Skill => skill(opts, root),
     }
+}
+
+/// O trecho da declaração de `--name` no arquivo de `--file`: as linhas dela,
+/// do começo ao fim, mais o caminho e as linhas de onde saíram. O mapa diz
+/// onde a declaração mora; o arquivo é lido aqui, uma vez, para que quem
+/// pergunta não precise abri-lo.
+fn slice(opts: &MapOpts, map: &ProjectMap, root: &Path) -> Result<Value, MapRefusal> {
+    let question = opts.question;
+    let file = required(opts.file.as_deref(), question, "--file")?;
+    let name = required(opts.name.as_deref(), question, "--name")?;
+    let place = project_map::declaration(map, &file, &name)?;
+    let text = std::fs::read_to_string(root.join(&place.file))
+        .map_err(|e| MapRefusal::FileUnreadable { file: place.file.clone(), detail: e.to_string() })?;
+    Ok(json!({
+        "ok": true,
+        "question": "slice",
+        "file": place.file,
+        "name": place.name,
+        "kind": place.kind,
+        "line": place.line,
+        "end_line": place.end_line,
+        "doc": place.doc,
+        "signature": place.signature,
+        "slice": project_map::lines_of(&text, place.line, place.end_line),
+    }))
+}
+
+/// Quem usa a declaração de `--name`: cada declaração com esse nome no mapa
+/// (só a do arquivo de `--file`, quando ele vem), com os usos que o scan
+/// gravou, como `arquivo:linha:quem chama`. A que ninguém usa leva a nota que
+/// diz isso, para que a lista vazia não pareça um mapa sem a informação.
+fn users(opts: &MapOpts, map: &ProjectMap, lang: Locale) -> Result<Value, MapRefusal> {
+    let name = required(opts.name.as_deref(), opts.question, "--name")?;
+    let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
+    let found = project_map::users(map, file, &name)?;
+    let declarations: Vec<Value> = found
+        .iter()
+        .map(|d| {
+            let mut entry = json!({
+                "file": d.file,
+                "name": d.name,
+                "kind": d.kind,
+                "line": d.line,
+                "end_line": d.end_line,
+                "used_by": d.used_by,
+            });
+            if d.used_by.is_empty() {
+                entry["note"] = json!(mustard_core::translate("map.users.none", lang)
+                    .replace("{name}", &d.name)
+                    .replace("{file}", &d.file));
+            }
+            entry
+        })
+        .collect();
+    let mut report = json!({
+        "ok": true,
+        "question": "users",
+        "name": name.trim(),
+        "head": mustard_core::translate("map.users.head", lang).replace("{name}", name.trim()),
+        "declarations": declarations,
+    });
+    if let Some(file) = file {
+        report["file"] = json!(project_map::clean_path(file));
+    }
+    Ok(report)
 }
 
 /// Os exemplos para o alvo de `--file`; sem ele, para a pasta do arquivo que
@@ -268,7 +344,7 @@ mod tests {
     }
 
     fn ask(root: &Path, question: Question) -> MapOpts {
-        MapOpts { root: root.to_path_buf(), question, file: None, task: None, query: None, path: None }
+        MapOpts { root: root.to_path_buf(), question, file: None, task: None, query: None, path: None, name: None }
     }
 
     #[test]
@@ -329,6 +405,67 @@ mod tests {
         let mut opts = ask(dir.path(), Question::Tests);
         opts.file = Some("nao/existe.rs".to_string());
         assert_eq!(map_at(&opts)["reason"], json!("unknown-file"));
+    }
+
+    /// O trecho de uma declaração vem do mapa mais o arquivo: quem pergunta
+    /// não abre o arquivo, e recebe as linhas da declaração, do começo ao fim,
+    /// com o caminho e as linhas de onde saíram.
+    #[test]
+    fn o_mapa_devolve_o_trecho_de_uma_declaracao() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        let file = "packages/core/src/pay.rs";
+        std::fs::create_dir_all(dir.path().join("packages/core/src")).unwrap();
+        std::fs::write(
+            dir.path().join(file),
+            "// topo do arquivo\n\
+             /// Soma o preço do pedido com o frete.\n\
+             pub fn total(preco: u32, frete: u32) -> u32 {\n    \
+                 preco + frete\n\
+             }\n\
+             // depois\n",
+        )
+        .unwrap();
+        std::fs::write(
+            store::model_path(dir.path()),
+            format!(
+                r#"{{"modules": [{{"path": "{file}", "loc": 6, "declarations": [
+                     {{"kind": "function", "name": "total", "line": 3, "end_line": 5,
+                      "doc": "Soma o preço do pedido com o frete.",
+                      "signature": "pub fn total(preco: u32, frete: u32) -> u32"}}]}}]}}"#
+            ),
+        )
+        .unwrap();
+
+        let mut opts = ask(dir.path(), Question::Slice);
+        opts.file = Some(file.to_string());
+        opts.name = Some("total".to_string());
+        let report = map_at(&opts);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(
+            report["slice"],
+            json!("pub fn total(preco: u32, frete: u32) -> u32 {\n    preco + frete\n}"),
+            "da primeira à última linha da declaração, e nada em volta: {report}"
+        );
+        assert_eq!(report["file"], json!(file), "{report}");
+        assert_eq!(report["line"], json!(3), "{report}");
+        assert_eq!(report["end_line"], json!(5), "{report}");
+        assert_eq!(report["name"], json!("total"), "{report}");
+        assert_eq!(report["doc"], json!("Soma o preço do pedido com o frete."), "{report}");
+        assert_eq!(report["signature"], json!("pub fn total(preco: u32, frete: u32) -> u32"), "{report}");
+
+        // Sem o nome da declaração, e com um nome que o arquivo não declara,
+        // a recusa diz qual é o caso.
+        let mut sem_nome = ask(dir.path(), Question::Slice);
+        sem_nome.file = Some(file.to_string());
+        let report = map_at(&sem_nome);
+        assert_eq!(report["reason"], json!("missing-argument"), "{report}");
+        assert!(report["hint"].as_str().unwrap().contains("--name"), "{report}");
+
+        opts.name = Some("sumiu".to_string());
+        let report = map_at(&opts);
+        assert_eq!(report["reason"], json!("unknown-declaration"), "{report}");
+        assert!(report["hint"].as_str().unwrap().contains("sumiu"), "{report}");
     }
 
     #[test]

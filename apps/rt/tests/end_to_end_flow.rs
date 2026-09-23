@@ -276,6 +276,20 @@ impl Project {
     }
 }
 
+/// A lista `agreed` do veredito final, com todo o combinado vigente atendido:
+/// estes testes provam o fluxo do fechamento e do pull request, não o do
+/// combinado — sem a lista inteira, a revisão final seria recusada por
+/// faltar item.
+fn agreed_all_met(project: &Project) -> Value {
+    let log = project.log();
+    let codes = log.codes();
+    let items: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log)
+        .iter()
+        .map(|item| json!({"item": codes.get(&item.id).cloned().unwrap_or_default(), "met": true}))
+        .collect();
+    json!(items)
+}
+
 /// A fala do usuário, pelo gancho da entrada; devolve o número dela.
 fn user_says(project: &Project, text: &str) -> u64 {
     project.hook(
@@ -324,29 +338,25 @@ fn survey(project: &Project) {
     }
 }
 
-/// O plano de uma onda: o critério com a prova, a onda e a tarefa.
+/// O plano de uma tarefa só: o critério com a prova e a tarefa que o cobre,
+/// sem onda. A onda nasce da rodada, pelo backlog, com autor binário.
 fn plan(project: &Project) {
     plan_files(project, &["src/main.rs"]);
 }
 
 /// [`plan`] com a tarefa mudando os arquivos `files`.
 fn plan_files(project: &Project, files: &[&str]) {
-    let said = user_says(project, "O plano é uma onda só, que muda a saudação.");
+    let said = user_says(project, "O plano é uma tarefa só, que muda a saudação.");
     let criterion = project.write(
         "criterion",
         &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "origin": said}),
-    );
-    project.write(
-        "wave",
-        &json!({"n": 1, "text": "Onda 1: a saudação nova.", "criteria": [criterion["id"]],
-            "done_when": "A saudação nova aparece.", "origin": said}),
+            "form": "ubiquitous", "origin": said}),
     );
     let files: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
     project.write(
         "task",
-        &json!({"wave": 1, "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
-            "points": 1, "origin": said}),
+        &json!({"title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
+            "covers": [criterion["id"]], "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
@@ -403,9 +413,9 @@ fn calls(project: &Project) -> BTreeMap<String, usize> {
 /// cada rodada 1 e pull request 1; a escolha antes do envio da primeira onda
 /// é uma rodada a mais, a que traz a escolha do orquestrador, e o fechamento
 /// é duas chamadas — o pedido do agente de teste dedicado e a aprovação dele
-/// —, mesmo com uma onda só. A tarefa vale 1 ponto: a obra fica com o
-/// orquestrador, sem cópia separada, e ele edita direto no checkout
-/// principal.
+/// —, mesmo com uma onda só. A onda tem uma tarefa só e ainda assim ganha
+/// cópia separada, como qualquer outra: o orquestrador edita na cópia, e a
+/// rodada leva a mudança de volta ao checkout principal.
 #[test]
 fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let project = Project::new();
@@ -416,24 +426,25 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     plan(&project);
     approve(&project);
 
-    // Primeira rodada: a análise antes do envio, e a onda de 1 ponto fica com
-    // o orquestrador, sem cópia separada.
+    // Primeira rodada: a análise antes do envio, e a onda ganha cópia
+    // separada, mesmo com uma tarefa só.
     let first = first_round(&project);
     let dispatched = first["dispatch"].as_array().cloned().unwrap_or_default();
     assert_eq!(dispatched.len(), 1, "{first}");
     let next = first["next"].as_str().unwrap_or_default();
-    assert!(next.contains(translate("round.next.solo", Locale::PtBr)), "{next}");
+    assert!(next.contains(translate("round.next", Locale::PtBr)), "{next}");
     let log = project.log();
     let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
-    assert!(sent.str_field("copy").is_none(), "a obra de 1 ponto não ganha cópia separada");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
 
-    // O orquestrador muda o arquivo no checkout principal e devolve a linha
-    // do fim. A rodada não pede revisão nenhuma dela.
-    std::fs::write(project.root.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    // O orquestrador muda o arquivo na cópia da onda e devolve a linha do
+    // fim. A rodada não pede revisão nenhuma dela.
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá"});
     let second = project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
     assert!(second.get("reviews").is_none(), "{second}");
+    assert!(!copy.exists(), "the copy is removed once the round takes the change back: {second}");
     assert_eq!(std::fs::read_to_string(project.root.join("src/main.rs")).unwrap(), "fn main() {\n    println!(\"olá\");\n}\n");
 
     // O fechamento roda o lint e o critério e pede o agente de teste
@@ -443,7 +454,8 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
 
     // Aprovado, o fechamento grava o veredito e fecha.
-    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou."});
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
+        "agreed": agreed_all_met(&project)});
     let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
     assert!(closed.get("review").is_none(), "{closed}");
@@ -474,6 +486,175 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .collect();
     names.sort();
     assert_eq!(names, ["copy", "spec.ndjson"], "the spec folder ends with the events and the copy, and no page");
+}
+
+/// O fluxo inteiro, da abertura ao pull request, não grava onda pela linha de
+/// comando: o plano leva só o critério e a tarefa, e a onda que sai nasce da
+/// rodada, pelo backlog. No fim, toda linha de onda do arquivo da spec — lida
+/// crua, com as versões antigas e as removidas — tem autor binário, e há ao
+/// menos uma, para a conferência não passar num arquivo sem onda.
+#[test]
+fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    plan(&project);
+    approve(&project);
+
+    let first = first_round(&project);
+    assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
+        "commit": "a saudação vira olá"});
+    project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
+    project.run(&["close", "--spec", SPEC]);
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
+        "agreed": agreed_all_met(&project)});
+    let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
+    let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
+    let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
+    project.run(&argv);
+    assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"));
+
+    let path = store::spec_file(&project.root, SPEC).expect("spec file");
+    let content = std::fs::read_to_string(&path).expect("the spec file");
+    let waves: Vec<Value> = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["type"] == json!("wave"))
+        .collect();
+    assert!(!waves.is_empty(), "the round wrote the wave of the lot: {content}");
+    for wave in &waves {
+        assert_eq!(wave["author"], json!("binary"), "a wave that is not the binary's: {wave}");
+    }
+}
+
+/// Um critério gravado sem declarar a forma dele é recusado, e a recusa lista
+/// as cinco formas do padrão pelo nome, em vez de um nome de campo cru.
+#[test]
+fn o_criterio_sem_forma_declarada_e_recusado() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    let said = user_says(&project, "O plano é uma onda só, que muda a saudação.");
+
+    let refused = project.answer(&[
+        "write",
+        "criterion",
+        "--spec",
+        SPEC,
+        "--json",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "origin": said})
+            .to_string(),
+    ]);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(refused["reason"], json!("criterion-form-missing"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    for forma in [
+        "vale sempre",
+        "disparada por um acontecimento",
+        "estado durar",
+        "recurso existir",
+        "acontecimento indesejado",
+    ] {
+        assert!(hint.contains(forma), "a recusa lista a forma {forma:?} pelo nome: {hint}");
+    }
+
+    // Com a forma declarada, a mesma gravação passa.
+    let accepted = project.write(
+        "criterion",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+}
+
+/// A exigência da forma vale só para o critério que nasce agora, nunca para a
+/// emenda de um critério antigo: um critério gravado direto no arquivo, sem
+/// forma, como as specs de antes da exigência têm, recebe a emenda dele
+/// também sem forma, e a gravação passa.
+#[test]
+fn a_emenda_de_criterio_antigo_nao_exige_forma() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    let said = user_says(&project, "O plano é uma onda só, que muda a saudação.");
+
+    // Um critério sem forma, escrito direto no arquivo, como as specs
+    // antigas — de antes da exigência — têm.
+    let path = store::spec_file(&project.root, SPEC).expect("spec file");
+    let old_id = store::read(&path).expect("readable").expect("the spec file").max_id() + 1;
+    let old_criterion = json!({"v": 1, "id": old_id, "code": "MSTD-CRIT-0001", "at": "2026-01-01T10:00:00-03:00",
+        "type": "criterion", "author": "binary",
+        "when": "o programa roda", "then": "a saudação antiga aparece", "proof": "git --version"});
+    let mut content = std::fs::read_to_string(&path).expect("read the spec file");
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&old_criterion.to_string());
+    content.push('\n');
+    std::fs::write(&path, content).expect("write the old criterion");
+
+    // A emenda dele, sem forma, passa: a exigência não vale para o critério
+    // antigo.
+    let amended = project.write(
+        "criterion",
+        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "origin": said, "replaces": old_id}),
+    );
+    assert_eq!(amended["ok"], json!(true), "{amended}");
+
+    // Um critério novo (sem `replaces`) continua exigindo a forma: a
+    // exigência segue protegida para quem nasce agora.
+    let new_criterion =
+        json!({"when": "outra coisa", "then": "outro efeito", "proof": "git --version", "origin": said});
+    let refused_new =
+        project.answer(&["write", "criterion", "--spec", SPEC, "--json", &new_criterion.to_string()]);
+    assert_eq!(refused_new["ok"], json!(false), "{refused_new}");
+    assert_eq!(refused_new["reason"], json!("criterion-form-missing"), "{refused_new}");
+}
+
+/// Os três termos internos usam o nome de mercado, nos dois idiomas: o que
+/// era "combinado" vira "requisitos acordados", o que era "prova" vira
+/// "verificação", e o que era "revisão final" vira "aceitação" — sem sobra do
+/// nome antigo no texto impresso, inclusive no pedido de verdade que o
+/// binário monta para o agente da onda.
+#[test]
+fn os_tres_termos_usam_o_nome_de_mercado() {
+    let esperado = [
+        (Locale::PtBr, "page.block.agreed", "Requisitos acordados"),
+        (Locale::EnUs, "page.block.agreed", "Agreed requirements"),
+        (Locale::PtBr, "page.field.proof", "Verificação"),
+        (Locale::EnUs, "page.field.proof", "Verification"),
+        (Locale::PtBr, "page.field.final", "Aceitação"),
+        (Locale::EnUs, "page.field.final", "Acceptance"),
+        (Locale::PtBr, "prompt.part.agreed", "Requisitos acordados"),
+        (Locale::EnUs, "prompt.part.agreed", "Agreed requirements"),
+    ];
+    for (locale, key, texto) in esperado {
+        assert_eq!(translate(key, locale), texto, "{key} ({locale:?}) usa o nome de mercado");
+    }
+
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    plan(&project);
+    approve(&project);
+    first_round(&project);
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let text = sent.str_field("text").unwrap_or_default();
+    assert!(!text.contains("Combinado"), "o pedido enviado não guarda o nome antigo: {text}");
+    if text.contains("## ") {
+        assert!(
+            !text.contains("## Prova") && !text.contains("## Revisão final"),
+            "nenhum cabeçalho do pedido guarda um nome antigo: {text}"
+        );
+    }
 }
 
 /// A spec do projeto com submódulo, da abertura ao pull request: a onda muda
@@ -521,7 +702,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
 
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-    let verdict = json!({"final": true, "result": "approved", "text": "Mudaram."});
+    let verdict = json!({"final": true, "result": "approved", "text": "Mudaram.", "agreed": agreed_all_met(project)});
     let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();

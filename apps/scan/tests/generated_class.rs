@@ -26,10 +26,9 @@ fn fixture() -> PathBuf {
 /// Scan the fixture into a temp `grain.model.json` and return (temp dir,
 /// model path, parsed model). The `label` keeps each test's temp dir distinct
 /// — tests run in parallel in one binary, so a pid-only path would collide.
-fn scan_fixture(label: &str) -> (PathBuf, PathBuf, serde_json::Value) {
-    let dir = std::env::temp_dir().join(format!("scan-generated-mix-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn scan_fixture(label: &str) -> (tempfile::TempDir, PathBuf, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-generated-mix-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["scan", fixture().to_str().unwrap(), "--out", model.to_str().unwrap()])
@@ -38,18 +37,17 @@ fn scan_fixture(label: &str) -> (PathBuf, PathBuf, serde_json::Value) {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    (dir, model, v)
+    (temp, model, v)
 }
 
 /// Write a synthetic `grain.model.json` (every model field is additive /
 /// defaulted) into a temp dir owned by the test.
-fn write_model(label: &str, body: serde_json::Value) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("scan-generated-class-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_model(label: &str, body: serde_json::Value) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-generated-class-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     std::fs::write(&model, serde_json::to_string_pretty(&body).unwrap()).unwrap();
-    (dir, model)
+    (temp, model)
 }
 
 /// One synthetic module carrying declaration names and an optional file class.
@@ -88,7 +86,7 @@ fn samples(term: &serde_json::Value) -> Vec<&str> {
 
 #[test]
 fn fixture_modules_carry_class_and_provenance() {
-    let (dir, _model_path, v) = scan_fixture("model");
+    let (_dir, _model_path, v) = scan_fixture("model");
 
     // Banner-marked file: classed generated, marker = the catalog literal.
     let banner = find_module(&v, "src/api_client.ts");
@@ -121,12 +119,11 @@ fn fixture_modules_carry_class_and_provenance() {
         "timestamp-prefixed migration classed by path: {migration}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn digest_keeps_generated_terms_without_samples_and_honors_override() {
-    let (dir, model_path, _v) = scan_fixture("digest");
+    let (_dir, model_path, _v) = scan_fixture("digest");
     let digest = run_digest(&model_path, "", "digest.json");
 
     // The generated module's vocabulary STAYS in the index (a query must still
@@ -144,12 +141,11 @@ fn digest_keeps_generated_terms_without_samples_and_honors_override() {
     let billing = find_term(&digest, "billing");
     assert_eq!(samples(billing), vec!["src/override_banner.ts"], "override honored by the digest");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn query_landing_only_on_generated_answers_generated_only() {
-    let (dir, model_path, _v) = scan_fixture("query");
+    let (_dir, model_path, _v) = scan_fixture("query");
 
     // "payment" lives ONLY in the generated client: matched (not a miss), but
     // with no anchorable surface — the reason says WHY instead of handing the
@@ -166,12 +162,11 @@ fn query_landing_only_on_generated_answers_generated_only() {
     assert!(files.contains(&"src/handwritten.ts"), "hand-written anchor present: {files:?}");
     assert!(q.get("reason").is_none(), "no reason on an anchorable answer: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn lockfile_and_minified_leave_the_index_entirely() {
-    let (dir, model) = write_model(
+    let (_dir, model) = write_model(
         "out-of-index",
         serde_json::json!({
             "root": "x",
@@ -189,7 +184,6 @@ fn lockfile_and_minified_leave_the_index_entirely() {
     assert!(!terms.contains(&"zebra"), "lockfile vocabulary out of the index: {terms:?}");
     assert!(!terms.contains(&"yak"), "minified vocabulary out of the index: {terms:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -198,7 +192,7 @@ fn multiplier_demotes_machine_counts_but_keeps_presence() {
     // multiplier 0.25 the demoted side contributes max(1, floor(8*0.25)) = 2,
     // so the total is 3 — present, never dominant (raw would be 9).
     let gen_decls = ["OmegaAlpha", "OmegaBravo", "OmegaCharlie", "OmegaDelta", "OmegaEcho", "OmegaFox", "OmegaGolf", "OmegaHotel"];
-    let (dir, model) = write_model(
+    let (_dir, model) = write_model(
         "multiplier",
         serde_json::json!({
             "root": "x",
@@ -214,14 +208,13 @@ fn multiplier_demotes_machine_counts_but_keeps_presence() {
     assert_eq!(omega["count"], 3, "1 hand-written + scaled machine share: {omega}");
     assert_eq!(samples(omega), vec!["src/real.ts"], "only the hand-written file samples: {omega}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn hubs_and_touchpoints_exclude_machine_written_modules() {
     // The generated registry has the highest degree, but a machine-written
     // file is never the file to read or edit — vendored counts the same.
-    let (dir, model) = write_model(
+    let (_dir, model) = write_model(
         "hubs",
         serde_json::json!({
             "root": "x",
@@ -255,5 +248,4 @@ fn hubs_and_touchpoints_exclude_machine_written_modules() {
         digest["graph"]["touchpoints"].as_array().unwrap().iter().map(|t| t["module"].as_str().unwrap()).collect();
     assert_eq!(touch, vec!["src/real_hub.ts"], "machine-written touchpoints dropped: {touch:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

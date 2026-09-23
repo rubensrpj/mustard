@@ -20,6 +20,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // interpolated by the caller via `format!("{} {n}", translate(...))`.
         ("wave.label", Locale::PtBr) => "Onda",
         ("wave.label", Locale::EnUs) => "W",
+        // O motivo gravado na remoção da onda desenhada à mão que nunca saiu,
+        // quando a spec antiga passa para o backlog; a página o mostra na lista
+        // do que saiu.
+        ("wave.hand_drawn_removed", Locale::PtBr) => {
+            "Desenhada à mão antes do backlog e nunca saiu; as tarefas dela voltaram para o backlog."
+        }
+        ("wave.hand_drawn_removed", Locale::EnUs) => {
+            "Drawn by hand before the backlog and never sent; its tasks went back to the backlog."
+        }
 
         // Acceptance-criterion label (used as a prefix before the AC id).
         ("ac.label", Locale::PtBr) => "CA",
@@ -249,8 +258,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("spec_text.rs"),
             super::PREFIXES,
-            60,
-            0xf2f4_1f3e_4973_51f1,
+            61,
+            0xdf26_c3bc_0154_7c23,
         );
     }
 

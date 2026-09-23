@@ -154,7 +154,8 @@ pub(crate) fn seed_runs(root: &Path, spec: &str, results: &[Option<&str>]) -> Ve
             root,
             spec,
             "criterion",
-            serde_json::json!({ "when": "a obra roda", "then": "o critério confere", "proof": "cargo test" }),
+            serde_json::json!({ "when": "a obra roda", "then": "o critério confere", "proof": "cargo test",
+                "form": "ubiquitous" }),
         );
         if let Some(result) = result {
             seed_run(root, spec, criterion, result);

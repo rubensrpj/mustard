@@ -40,6 +40,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // chama, já arredondado.
         ("statusline.rtk", Locale::PtBr) => "rtk poupou {pct}%",
         ("statusline.rtk", Locale::EnUs) => "rtk saved {pct}%",
+        // O ponto de corte da compactação automática e quanto falta até
+        // ele, na segunda linha da barra: `{point}` e `{distance}` vêm de
+        // quem chama, já em milhares e arredondados.
+        ("statusline.compact", Locale::PtBr) => "compacta em {point}k - faltam {distance}k",
+        ("statusline.compact", Locale::EnUs) => "compacts at {point}k - {distance}k left",
         ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
         ("statusline.harness.inert", Locale::EnUs) => "harness inert",
         // Dormant is NOT inert: inert means someone switched the plugin off,
@@ -190,8 +195,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            20,
-            0x2735_0598_a915_2a8a,
+            21,
+            0x3135_b272_fd04_2958,
         );
     }
 

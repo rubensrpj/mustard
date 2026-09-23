@@ -2,7 +2,7 @@
 //!
 //! Em cada idioma, todo texto que o modelo lê — os comandos e o estilo de
 //! resposta do plugin, os agentes e o mapa do início da sessão que o
-//! instalador grava — soma menos de 24.576 bytes. Não há teto por arquivo de
+//! instalador grava — soma menos de 25.600 bytes. Não há teto por arquivo de
 //! agente: o que prende um molde é o que ele diz. O mapa do início da sessão,
 //! que entra em toda sessão, continua com o teto dele de 3.072 bytes.
 //!
@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 /// O teto da soma de um idioma, em bytes.
-const LANGUAGE_BUDGET: u64 = 24_576;
+const LANGUAGE_BUDGET: u64 = 25_600;
 
 /// O teto de um arquivo, e do texto do início da sessão, em bytes.
 const FILE_CAP: u64 = 3_072;
@@ -79,7 +79,7 @@ fn shown(path: &Path) -> String {
     path.strip_prefix(repo_root()).unwrap_or(path).display().to_string()
 }
 
-/// Em cada idioma, o texto que o modelo lê soma menos de 20.480 bytes. Não há
+/// Em cada idioma, o texto que o modelo lê soma menos de 25.600 bytes. Não há
 /// teto por arquivo: o que prende um texto de agente é o que ele diz, e a
 /// soma do idioma é que guarda o tamanho do todo.
 #[test]

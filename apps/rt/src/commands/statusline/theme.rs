@@ -294,7 +294,8 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
 // ---------------------------------------------------------------------------
 
 // Each themes block packs styles in the same order as `SegmentKind`:
-// Module, Git, Context, Duration, Savings, Mustard, Model, Unit, Inert.
+// Module, Git, Context, Duration, Savings, Mustard, Model, Unit, Inert,
+// Compact.
 
 /// `default` — pipes, ANSI 8 colors, no bg. Looks like a classic terminal
 /// prompt; safe on any terminal.
@@ -323,6 +324,9 @@ pub const DEFAULT: Theme = Theme {
         Style::fg(Color::Ansi(6)),
         // Inert — red: the plugin is off, so no hook runs at all
         Style::fg(Color::Ansi(1)),
+        // Compact — gray, same tone as Duration; override_fg reddens it
+        // when the cut point falls under 100k tokens.
+        Style::fg(Color::Ansi(8)),
     ],
 };
 
@@ -364,6 +368,9 @@ pub(crate) const CATPPUCCIN: Theme = Theme {
         Style::pl(Color::Rgb(0x89, 0xdc, 0xeb), Color::Rgb(0x11, 0x11, 0x1b)),
         // Inert — crust on red: the harness is not running
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf3, 0x8b, 0xa8)),
+        // Compact — text on crust, same tone as Duration; override_fg
+        // reddens it when the cut point falls under 100k tokens.
+        Style::pl(Color::Rgb(0xcd, 0xd6, 0xf4), Color::Rgb(0x11, 0x11, 0x1b)),
     ],
 };
 
@@ -395,6 +402,9 @@ pub(crate) const TOKYO_NIGHT: Theme = Theme {
         Style::pl(Color::Rgb(0x7d, 0xcf, 0xff), Color::Rgb(0x24, 0x28, 0x3b)),
         // Inert — bg on red: the harness is not running
         Style::pl(Color::Rgb(0x1a, 0x1b, 0x26), Color::Rgb(0xf7, 0x76, 0x8e)),
+        // Compact — fg on bg, same tone as Duration; override_fg reddens
+        // it when the cut point falls under 100k tokens.
+        Style::pl(Color::Rgb(0xc0, 0xca, 0xf5), Color::Rgb(0x1a, 0x1b, 0x26)),
     ],
 };
 
@@ -425,6 +435,10 @@ pub(crate) const PASTEL_POWERLINE: Theme = Theme {
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0x89, 0xdc, 0xeb)),
         // Inert — crust on pastel red: the harness is not running
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf3, 0x8b, 0xa8)),
+        // Compact — crust on pastel green, same tone as Duration;
+        // override_fg reddens it when the cut point falls under 100k
+        // tokens.
+        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xa6, 0xe3, 0xa1)),
     ],
 };
 
@@ -456,6 +470,9 @@ pub(crate) const GRUVBOX_RAINBOW: Theme = Theme {
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x68, 0x9d, 0x6a)),
         // Inert — bg on red: the harness is not running
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xcc, 0x24, 0x1d)),
+        // Compact — fg on bg0_h, same tone as Duration; override_fg
+        // reddens it when the cut point falls under 100k tokens.
+        Style::pl(Color::Rgb(0xeb, 0xdb, 0xb2), Color::Rgb(0x1d, 0x20, 0x21)),
     ],
 };
 

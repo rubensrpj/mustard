@@ -59,6 +59,13 @@
 #
 # Nada aqui escreve em .git/config — o script não chama git nenhum.
 #
+# AO TERMINAR de trocar as cópias, o script resolve mustard, mustard-rt e scan
+# pelo CAMINHO DE BUSCA (`command -v`) e avisa quando quem responde não é
+# nenhuma das duas cópias trocadas. Trocar os arquivos das cópias não troca
+# quem o PATH escolhe: em 21/09/2026 o script disse trocado com sucesso e quem
+# rodou passou a testar uma cópia velha em ~/.cargo/bin, que vem antes no
+# caminho, três commits atrás.
+#
 # Uso:
 #   scripts/dev-install.sh                        # compila e troca no lugar
 #   scripts/dev-install.sh --update-project <dir> # e roda o `mustard init`
@@ -434,6 +441,36 @@ fi
 
 echo "==> Originais preservados em: $BACKUP_DIR"
 echo "    Para desfazer: sh \"$SCRIPT_PATH\" --restore \"$BACKUP_DIR\""
+
+# --- quem responde pelo nome no caminho de busca -----------------------------
+# Trocar as duas cópias não troca quem responde no terminal: o PATH pode ter uma
+# terceira cópia antes delas, e o script não tem como saber disso sem resolver o
+# nome. Por isso, ao terminar, cada um dos três nomes é resolvido por
+# `command -v` e comparado com as duas cópias que este script troca; quando quem
+# responde é outra coisa, sai um aviso, porque o que a pessoa vai testar no
+# terminal não é o que acabou de ser compilado.
+caminho_real() {
+  readlink -f "$1" 2>/dev/null || printf '%s\n' "$1"
+}
+echo "==> Quem responde no caminho de busca (PATH):"
+for b in mustard mustard-rt scan; do
+  # `command -v` sai com status 1 quando nada responde — sob `set -e` isso
+  # derrubaria o script antes de o aviso sair.
+  QUEM=$(command -v "$b" 2>/dev/null || true)
+  if [ -z "$QUEM" ]; then
+    echo "    aviso: nada responde por $b no caminho de busca." >&2
+    continue
+  fi
+  QUEM_REAL=$(caminho_real "$QUEM")
+  if [ "$QUEM_REAL" = "$(caminho_real "$PLUGIN_COPY/bin/$b")" ] \
+    || [ "$QUEM_REAL" = "$(caminho_real "$SYSTEM_DIR/bin/$b")" ]; then
+    echo "    $b responde de $QUEM — uma das cópias trocadas."
+  else
+    echo "    aviso: $b responde de $QUEM, que NÃO é nenhuma das cópias trocadas" >&2
+    echo "           ($PLUGIN_COPY/bin/$b e $SYSTEM_DIR/bin/$b)." >&2
+    echo "           Quem digitar $b roda essa outra cópia, não a recém-compilada." >&2
+  fi
+done
 
 # --- opcional: roda a atualização do Mustard num projeto ---------------------
 if [ -n "$UPDATE_PROJECT" ]; then

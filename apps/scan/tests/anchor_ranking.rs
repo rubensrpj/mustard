@@ -26,14 +26,13 @@ use std::process::Command;
 
 /// Write a synthetic `grain.model.json` into a temp dir owned by the test.
 /// Mirrors `term_index.rs`; the `label` keeps parallel tests' dirs distinct.
-fn write_model(label: &str, modules: serde_json::Value) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("scan-anchor-ranking-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_model(label: &str, modules: serde_json::Value) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-anchor-ranking-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let v = serde_json::json!({ "root": dir.to_string_lossy(), "modules": modules });
     std::fs::write(&model, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    (dir, model)
+    (temp, model)
 }
 
 /// One synthetic module carrying the given declaration names.
@@ -72,14 +71,13 @@ fn anchor_ranking_orders_matched_terms_by_rarity_then_term() {
         module("m/a.rs", &["AlphaOne", "AlphaTwo", "AlphaThree"]),
         module("m/b.rs", &["OmegaSolo"]),
     ]);
-    let (dir, model) = write_model("rarity", modules);
+    let (_dir, model) = write_model("rarity", modules);
     let (_, q) = run_query(&model, "alpha,omega", "query.json");
 
     let matched: Vec<&str> =
         q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
     assert_eq!(matched, vec!["omega", "alpha"], "rarest first: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -93,7 +91,7 @@ fn anchor_files_are_the_deduped_union_of_per_term_samples() {
         module("m/shared.rs", &["AlphaSecond", "OmegaThing"]),
         module("m/zzz.rs", &["OmegaOther"]),
     ]);
-    let (dir, model) = write_model("union", modules);
+    let (_dir, model) = write_model("union", modules);
     let (_, q) = run_query(&model, "alpha,omega", "query.json");
 
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
@@ -112,7 +110,6 @@ fn anchor_files_are_the_deduped_union_of_per_term_samples() {
     assert!(shared["score_x1024"].as_u64().unwrap() > 0, "co-occurring file carries an aggregate BM25F score: {q}");
     assert_eq!(files[0], "m/shared.rs", "the dual-concept file leads the BM25F ranking: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -127,7 +124,7 @@ fn rare_domain_leads_the_union_ahead_of_a_frequent_neighbour() {
             &[&format!("GardenMarketList{i:02}"), &format!("GardenMarketCard{i:02}"), &format!("GardenMarketTotal{i:02}")],
         ));
     }
-    let (dir, model) = write_model("union-rare", serde_json::json!(modules));
+    let (_dir, model) = write_model("union-rare", serde_json::json!(modules));
     let (_, q) = run_query(&model, "quince,garden,market", "query.json");
 
     let matched: Vec<&str> =
@@ -144,7 +141,6 @@ fn rare_domain_leads_the_union_ahead_of_a_frequent_neighbour() {
     let dterms: Vec<&str> = detail[0]["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
     assert_eq!(dterms, vec!["quince"], "the leader is declared by the rare term alone: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -161,7 +157,7 @@ fn rare_terms_samples_precede_frequent_terms_in_the_union() {
     for i in 0..18 {
         modules.push(module(&format!("m/yard/f{i:02}.rs"), &[&format!("StoneUse{i:02}"), &format!("BrickUse{i:02}")]));
     }
-    let (dir, model) = write_model("union-order", serde_json::json!(modules));
+    let (_dir, model) = write_model("union-order", serde_json::json!(modules));
     let (_, q) = run_query(&model, "ruby,stone,brick", "query.json");
 
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
@@ -172,7 +168,6 @@ fn rare_terms_samples_precede_frequent_terms_in_the_union() {
         "rare term's samples lead the union ahead of frequent-term files: {files:?}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -188,7 +183,7 @@ fn rare_stem_domain_outranks_a_ubiquitous_exact_collision() {
     for i in 0..12 {
         modules.push(module(&format!("m/auth/principal{i:02}.rs"), &[&format!("PrincipalClaim{i:02}")]));
     }
-    let (dir, model) = write_model("rare-stem-vs-exact", serde_json::json!(modules));
+    let (_dir, model) = write_model("rare-stem-vs-exact", serde_json::json!(modules));
     // "study" reaches the rare index term "studies" at STEM (en plural); the
     // ubiquitous "principal" matches its index term at EXACT.
     let (_, q) = run_query(&model, "study,principal", "query.json");
@@ -200,7 +195,6 @@ fn rare_stem_domain_outranks_a_ubiquitous_exact_collision() {
     let lead = q["files_detail"].as_array().unwrap()[0]["score_x1024"].as_u64().unwrap();
     assert!(lead > 0, "anchors carry a real IDF score: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -221,7 +215,7 @@ fn path_field_boost_orders_the_file_whose_path_names_the_query_first() {
     for i in 0..8 {
         mods.push(module(&format!("filler/mod{i:02}.rs"), &[&format!("Filler{i:02}Thing")]));
     }
-    let (dir, model) = write_model("path-field-boost", serde_json::json!(mods));
+    let (_dir, model) = write_model("path-field-boost", serde_json::json!(mods));
     let (_, q) = run_query(&model, "quince", "query.json");
 
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
@@ -238,7 +232,6 @@ fn path_field_boost_orders_the_file_whose_path_names_the_query_first() {
         "the path-matched file scores higher: {q}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -260,9 +253,8 @@ fn anchor_ranking_guarantees_each_project_stratum_an_early_slot() {
     for i in 0..6 {
         mods.push(module(&format!("lib/util{i:02}.rs"), &[&format!("Helper{i:02}Thing")]));
     }
-    let dir = std::env::temp_dir().join(format!("scan-anchor-ranking-stratum-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-anchor-ranking-stratum-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let v = serde_json::json!({
         "root": dir.to_string_lossy(),
@@ -282,7 +274,6 @@ fn anchor_ranking_guarantees_each_project_stratum_an_early_slot() {
     // out-score it by pure relevance, yet it must not be crowded past slot #2.
     assert!(files.iter().take(3).filter(|f| f.starts_with("api/")).count() >= 1, "api still well represented: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -296,9 +287,8 @@ fn path_only_hub_never_anchors_only_declaration_matches_do() {
         module("m/core/billing_registry.rs", &["BillingRegistry"]),
         module("m/billing/invoice.rs", &["BillingInvoice"]),
     ];
-    let dir = std::env::temp_dir().join(format!("scan-anchor-ranking-hubgate-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-anchor-ranking-hubgate-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let v = serde_json::json!({
         "root": dir.to_string_lossy(),
@@ -322,7 +312,6 @@ fn path_only_hub_never_anchors_only_declaration_matches_do() {
         "both declaration-matched modules are in the union: {q}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -337,14 +326,13 @@ fn high_fan_in_file_that_declares_the_term_now_anchors() {
         module_fi("m/glue/common.rs", &["LedgerCore", "LedgerStore", "LedgerSync"], 4),
         module("m/feat/ledger.rs", &["LedgerReport"]),
     ];
-    let (dir, model) = write_model("nostopfile", serde_json::json!(modules));
+    let (_dir, model) = write_model("nostopfile", serde_json::json!(modules));
     let (_, q) = run_query(&model, "ledger", "query.json");
 
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert!(files.contains(&"m/glue/common.rs"), "a file declaring the term anchors (no stop-file): {q}");
     assert!(files.contains(&"m/feat/ledger.rs"), "the other declaration-matched file too: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -356,12 +344,11 @@ fn anchor_ranking_is_deterministic_across_runs() {
         module("m/shared.rs", &["AlphaSecond", "OmegaThing"]),
         module("m/zzz.rs", &["OmegaOther", "AlphaThird"]),
     ]);
-    let (dir, model) = write_model("determinism", modules);
+    let (_dir, model) = write_model("determinism", modules);
     let (raw1, _) = run_query(&model, "alpha,omega,thing", "query1.json");
     let (raw2, _) = run_query(&model, "alpha,omega,thing", "query2.json");
     assert_eq!(raw1, raw2, "identical bytes across runs");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -371,9 +358,8 @@ fn digest_query_stacks_copies_model_detected_stacks() {
     // model's detections verbatim — on a hit AND on a miss (the stacks are
     // repo facts, not match results).
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("php_laravel");
-    let dir = std::env::temp_dir().join(format!("scan-anchor-ranking-stacks-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-anchor-ranking-stacks-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["scan", fixture.to_str().unwrap(), "--out", model.to_str().unwrap()])
@@ -405,7 +391,6 @@ fn digest_query_stacks_copies_model_detected_stacks() {
     assert_eq!(miss["miss"], true, "nonsense term misses: {miss}");
     assert_eq!(miss["detected_stacks"], m["detected_stacks"], "stacks carried even on a miss");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Field regression (sialia, 2026-06-12 — spec `ranking-digest-deixa-alvo-central`),
@@ -427,7 +412,7 @@ fn wide_query_target_survives_in_the_grouped_per_term_evidence() {
         mods.push(module(&format!("other/dom{i:02}/file{i:02}.ts"), &[&format!("Term{i:02}Thing")]));
     }
     let modules = serde_json::Value::Array(mods);
-    let (dir, model) = write_model("widequery", modules);
+    let (_dir, model) = write_model("widequery", modules);
     let terms: Vec<String> = ["financial".to_string(), "titles".to_string()]
         .into_iter()
         .chain((0..11).map(|i| format!("term{i:02}")))
@@ -447,7 +432,6 @@ fn wide_query_target_survives_in_the_grouped_per_term_evidence() {
         "the grouped per-term evidence carries the target under its term: {q}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Field case (sialia, client tabs): a `strong`-by-coverage query whose rare
@@ -467,7 +451,7 @@ fn test_tree_declarations_are_never_anchors_nor_evidence() {
         module("m/feat/ledger.test.ts", &["LedgerReportSpec"]),           // filename convention
         module("m/feat/__tests__/ledger_more.rs", &["LedgerReportCase"]), // test directory
     ]);
-    let (dir, model) = write_model("test-exclusion", modules);
+    let (_dir, model) = write_model("test-exclusion", modules);
     let (_, q) = run_query(&model, "ledger", "query.json");
 
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
@@ -487,7 +471,6 @@ fn test_tree_declarations_are_never_anchors_nor_evidence() {
         "evidence EXCLUDES the test declarations too — a test is never surfaced: {q}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The orchestration layer now passes the cross-lingual translation INSIDE the
@@ -505,7 +488,7 @@ fn duplicate_query_terms_yield_distinct_report_terms() {
         module("m/client/service.rs", &["ClientService", "ClientRepository"]),
         module("m/cliente/servico.rs", &["ClienteServico", "ClienteRepositorio"]),
     ]);
-    let (dir, model) = write_model("distinct-terms", modules);
+    let (_dir, model) = write_model("distinct-terms", modules);
     let (_, q) = run_query(&model, "client,client,cliente", "query.json");
 
     // `report.terms` carries no repeated term: the duplicate "client" collapsed.
@@ -526,5 +509,4 @@ fn duplicate_query_terms_yield_distinct_report_terms() {
     assert!(files.contains(&"m/client/service.rs"), "english concept's file in the union: {q}");
     assert!(files.contains(&"m/cliente/servico.rs"), "portuguese concept's file in the union: {q}");
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

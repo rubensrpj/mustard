@@ -1,7 +1,10 @@
 //! The criteria runner. The `qa-run` command is gone; what stays alive here is
-//! [`run_proof`], which the close and the round call to run each criterion's
-//! proof, [`run_command`], which the close calls for the project lint, and the
-//! section reader the page uses.
+//! [`run_proof`], which runs one criterion's proof, [`run_criteria_proofs`],
+//! the loop that the close and the round both call to run a list of
+//! criteria in order and stop at the first that does not pass,
+//! [`run_command`], which runs a flow command that is not a proof,
+//! [`run_server_command`], which the close calls for the lint and the whole
+//! suite the server runs, and the section reader the page uses.
 //!
 //! As duas portas rodam o mesmo comando do mesmo jeito e se separam numa
 //! leitura só: quantos testes a saída diz ter rodado. Ela vale na prova de um
@@ -11,6 +14,9 @@
 use std::path::Path;
 
 mod runner;
+
+#[cfg(test)]
+pub(crate) use runner::{ceiling_secs, with_timeout_variable, Ceiling};
 
 /// One AC execution outcome.
 pub(crate) struct AcResult {
@@ -57,15 +63,64 @@ pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_ac_command(command, None, cwd), true)
 }
 
-/// Roda um comando do fluxo que não é prova de critério — hoje, o lint do
-/// projeto no fechamento — pelo mesmo executor do QA, com o mesmo shell e o
-/// mesmo teto de tempo.
+/// Roda um comando do fluxo que não é prova de critério — hoje, a
+/// compilação que a rodada confere — pelo mesmo executor do QA, com o mesmo
+/// shell e o mesmo teto de tempo.
 ///
 /// A leitura de quantos testes o comando rodou não vale aqui: um lint verde
 /// cuja saída cite "no tests" não é uma prova que deixou de provar, e quem
 /// lesse assim recusaria um verde legítimo.
 pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_ac_command(command, None, cwd), false)
+}
+
+/// Roda um dos dois comandos que o servidor roda — o `lintCommand` e o
+/// `testCommand` do `mustard.json` —, como o fechamento os repete. Mesmo
+/// executor e mesma leitura de [`run_command`], com um teto só deles, de uma
+/// hora: a suíte inteira de um projeto não cabe no teto de uma prova de
+/// critério, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` vale só para a prova.
+pub(crate) fn run_server_command(command: &str, cwd: &Path) -> ProofRun {
+    graded(runner::run_server_command(command, cwd), false)
+}
+
+/// A prova de um critério que não passou: o código dele, o comando inteiro
+/// que tentou rodar e a saída de erro — o que a recusa do fechamento e da
+/// rodada nomeiam.
+pub(crate) struct FailedProof {
+    pub code: String,
+    pub command: String,
+    pub output: String,
+    /// A saída disse zero teste rodado, com o número que ela leu — só quando
+    /// foi esse o motivo da falha.
+    pub ran_no_test: Option<u64>,
+}
+
+/// Roda a prova de cada critério de `criteria` (id, código, comando), na
+/// ordem em que a lista chega, uma de cada vez, e devolve a execução de cada
+/// um junto do primeiro que não passou. É o mesmo laço que o fechamento roda
+/// para os critérios da spec inteira, em `close.rs`, e que a rodada roda,
+/// antes de comitar, só para os que as ondas do relatório cobrem: quem chama
+/// decide o que grava com cada execução e como nomeia a recusa — aqui só se
+/// roda e se lê o resultado.
+pub(crate) fn run_criteria_proofs(
+    root: &Path,
+    criteria: &[(u64, String, String)],
+) -> (Vec<(u64, String, ProofRun)>, Option<FailedProof>) {
+    let mut runs = Vec::new();
+    let mut failed = None;
+    for (id, code, proof) in criteria {
+        let out = run_proof(proof, root);
+        if out.result != "pass" && failed.is_none() {
+            failed = Some(FailedProof {
+                code: code.clone(),
+                command: proof.clone(),
+                output: out.output.clone(),
+                ran_no_test: out.ran_no_test,
+            });
+        }
+        runs.push((*id, code.clone(), out));
+    }
+    (runs, failed)
 }
 
 /// Uma execução classificada como o fechamento a grava. As duas portas
@@ -149,4 +204,36 @@ mod tests {
         assert!(!section.contains("Files"));
     }
 
+    /// A peça que roda a prova de um critério — [`run_proof`], a mesma que o
+    /// fechamento e a rodada chamam — não se contenta com o código de saída:
+    /// um comando real, de um executor real, cujo filtro não casa teste
+    /// nenhum, sai verde e ainda assim não passa, porque a leitura da saída
+    /// diz zero teste rodado. É a peça, e não a conversa entre close.rs e
+    /// runner.rs, que promete essa leitura.
+    #[test]
+    fn a_verificacao_que_nao_roda_teste_nenhum_e_recusada() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"prova\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma() { assert_eq!(1 + 1, 2); }\n}\n",
+        )
+        .unwrap();
+
+        // Sanidade: o mesmo comando, com o nome certo, roda e passa — a
+        // recusa abaixo é da leitura de zero testes, não de outro motivo.
+        let matching = run_proof("cargo test --lib -- tests::soma --exact", root);
+        assert_eq!(matching.result, "pass", "a prova com o nome certo passa");
+        assert_eq!(matching.ran_no_test, None);
+
+        let out = run_proof("cargo test --lib -- nome_que_nao_existe_em_lugar_nenhum", root);
+        assert_eq!(out.result, "fail", "verde sem rodar teste não é prova aprovada");
+        assert_eq!(out.ran_no_test, Some(0), "a recusa carrega o número que a saída disse");
+    }
 }

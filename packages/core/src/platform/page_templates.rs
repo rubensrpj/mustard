@@ -150,25 +150,39 @@ fn fill(template: &str, catalog: &Value) -> String {
     stamp(&body)
 }
 
-/// O que vem antes da versão na marca do começo do modelo, na primeira linha
-/// dele.
+/// O que vem antes do carimbo na marca do começo do modelo, na primeira
+/// linha dele.
 const VERSION_MARK_PREFIX: &str = "<!-- mustard:";
 
-/// O que vem depois da versão na marca do começo do modelo.
+/// O que vem depois do carimbo na marca do começo do modelo.
 const VERSION_MARK_SUFFIX: &str = "-->";
 
-/// `body` com o selo da versão do Mustard rodando na frente, numa linha só: é
-/// por ele que o passo que publica compara o modelo instalado no projeto com
-/// a versão do binário, sem reconstruir o catálogo inteiro.
+/// `body` com o carimbo do modelo na frente, numa linha só: a versão do
+/// Mustard rodando e a impressão do conteúdo montado, o template com o
+/// catálogo já no lugar. É pelo carimbo inteiro que o passo que publica
+/// compara o modelo instalado no projeto e o da última publicação com o que
+/// o binário monta agora, sem reconstruir o catálogo inteiro: dois programas
+/// com a mesma versão e moldes diferentes, um instalado e outro compilado no
+/// meio de uma obra, dão carimbos diferentes.
 fn stamp(body: &str) -> String {
-    format!("{VERSION_MARK_PREFIX} {} {VERSION_MARK_SUFFIX}\n{body}", harness_version())
+    format!("{VERSION_MARK_PREFIX} {} {:016x} {VERSION_MARK_SUFFIX}\n{body}", harness_version(), fingerprint(body))
 }
 
-/// A versão do Mustard que gerou o modelo `text`, lida do selo da primeira
-/// linha. `None` quando o selo não está lá — um modelo de antes dele, ou
-/// qualquer outro texto.
+/// A impressão do conteúdo `body`: o FNV-1a de 64 bits sobre os bytes dele,
+/// estável entre versões do Rust e entre máquinas, ao contrário do hasher da
+/// biblioteca padrão. Qualquer mudança no template ou no catálogo muda a
+/// impressão.
+fn fingerprint(body: &str) -> u64 {
+    body.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// O carimbo do modelo `text`, lido da primeira linha: a versão do Mustard
+/// que o gerou e a impressão do conteúdo, juntas, como a publicação o grava.
+/// `None` quando a marca não está lá — um modelo de antes dela, ou qualquer
+/// outro texto. O modelo de antes da impressão tem só a versão no carimbo, e
+/// por isso nunca é igual ao de agora.
 #[must_use]
-pub fn template_version(text: &str) -> Option<&str> {
+pub fn template_stamp(text: &str) -> Option<&str> {
     let line = text.lines().next()?;
     let rest = line.strip_prefix(VERSION_MARK_PREFIX)?.trim();
     rest.strip_suffix(VERSION_MARK_SUFFIX).map(str::trim)
@@ -276,22 +290,43 @@ mod tests {
     use crate::domain::spec_index::ProjectRow;
     use crate::view::document::{RtkDay, WaveState, WaveStates};
 
-    /// O modelo gerado leva o selo da versão do binário rodando, na primeira
-    /// linha: é essa marca que o passo que publica confere contra a versão de
-    /// agora para saber se o modelo instalado no projeto está velho.
+    /// O modelo gerado leva na primeira linha o carimbo: a versão do binário
+    /// rodando e a impressão do conteúdo montado. É essa marca que o passo
+    /// que publica confere para saber se o modelo instalado no projeto, ou o
+    /// da página publicada, está velho.
     #[test]
-    fn the_generated_template_is_stamped_with_the_running_version() {
+    fn the_generated_template_is_stamped_with_the_version_and_the_content() {
         for html in [spec_page_template(Locale::PtBr), project_page_template(Locale::PtBr)] {
-            assert_eq!(template_version(&html), Some(harness_version().as_str()), "{html}");
+            let stamp = template_stamp(&html).expect("the stamp");
+            let (version, print) = stamp.split_once(' ').expect("the version and the fingerprint");
+            assert_eq!(version, harness_version(), "{stamp}");
+            let body = html.split_once('\n').map(|(_, body)| body).expect("the body after the stamp");
+            assert_eq!(print, format!("{:016x}", fingerprint(body)), "{stamp}");
         }
     }
 
-    /// Um modelo sem o selo — de antes dele, ou qualquer outro texto — não
-    /// tem versão nenhuma: a leitura não inventa uma.
+    /// Com a mesma versão, um molde de conteúdo diferente dá outro carimbo:
+    /// o idioma do catálogo muda o conteúdo, e muda o carimbo; o mesmo molde
+    /// montado duas vezes dá o mesmo carimbo.
     #[test]
-    fn a_template_without_the_stamp_has_no_version() {
-        assert_eq!(template_version("<!doctype html><html></html>"), None);
-        assert_eq!(template_version(""), None);
+    fn the_same_version_with_another_content_has_another_stamp() {
+        let pt = spec_page_template(Locale::PtBr);
+        let en = spec_page_template(Locale::EnUs);
+        assert_ne!(template_stamp(&pt), template_stamp(&en), "the content differs");
+        assert_eq!(template_stamp(&pt), template_stamp(&spec_page_template(Locale::PtBr)), "the same content");
+        assert_ne!(stamp("a"), stamp("b"), "one byte is enough");
+    }
+
+    /// Um modelo sem a marca — de antes dela, ou qualquer outro texto — não
+    /// tem carimbo nenhum: a leitura não inventa um. O de antes da impressão
+    /// tem só a versão, e por isso não é o carimbo de agora.
+    #[test]
+    fn a_template_without_the_stamp_has_no_stamp() {
+        assert_eq!(template_stamp("<!doctype html><html></html>"), None);
+        assert_eq!(template_stamp(""), None);
+        let only_version = format!("<!-- mustard: {} -->\n<html></html>", harness_version());
+        assert_eq!(template_stamp(&only_version), Some(harness_version().as_str()));
+        assert_ne!(template_stamp(&only_version), template_stamp(&spec_page_template(Locale::PtBr)));
     }
 
     /// O apoio que roda um template no Node, com o DOM e as capacidades do
@@ -316,7 +351,7 @@ mod tests {
     const INTERNAL: &[&str] = &["injection", "hook", "call"];
 
     /// O pedido da onda 3, como o agente o recebe: só os códigos.
-    const WAVE_3_PROMPT: &str = "# demo — onda 3\n\n## Especificação\n\n- `specification`: MSTD-CTX-0001, MSTD-CONC-0001\n\n## Combinado\n\n- `agreed`: MSTD-RULE-0001, MSTD-DEC-0001\n\n## Critérios\n\n- `criteria`: MSTD-CRIT-0001\n";
+    const WAVE_3_PROMPT: &str = "# demo — onda 3\n\n## Especificação\n\n- `specification`: MSTD-CTX-0001, MSTD-CONC-0001\n\n## Requisitos acordados\n\n- `agreed`: MSTD-RULE-0001, MSTD-DEC-0001\n\n## Critérios\n\n- `criteria`: MSTD-CRIT-0001\n";
 
     /// A spec de exemplo mais o que a página nova precisa mostrar: uma regra
     /// revista com duas linhas de lista, uma onda enviada no formato de hoje
@@ -324,7 +359,7 @@ mod tests {
     fn spec_lines() -> Vec<Value> {
         let extra = [
             json!({"v":1,"id":40,"at":"2026-09-12T12:00:00-03:00","type":"wave","author":"assistant","n":3,"text":"Os templates leem o banco.","criteria":[19],"done_when":"A suíte passa.","origin":2}),
-            json!({"v":1,"id":41,"at":"2026-09-12T12:01:00-03:00","type":"task","author":"assistant","wave":3,"text":"Template da página da spec.","files":[{"path":"packages/core/templates/pages/spec.html","new":true}],"points":8,"origin":2}),
+            json!({"v":1,"id":41,"at":"2026-09-12T12:01:00-03:00","type":"task","author":"assistant","wave":3,"text":"Template da página da spec.","files":[{"path":"packages/core/templates/pages/spec.html","new":true}],"origin":2}),
             json!({"v":1,"id":42,"at":"2026-09-12T12:02:00-03:00","type":"rule","author":"assistant","text":"A trava de comandos confere o programa, as opções e o caminho.\n\n- vale para o Bash;\n- vale para o PowerShell.","example":"`rm -rf pasta` é barrado.","keys":["trava"],"origin":2,"replaces":9}),
             json!({"v":1,"id":43,"at":"2026-09-12T12:03:00-03:00","type":"send","author":"binary","wave":3,"role":"wave","text":WAVE_3_PROMPT,"lines":13,"chars":220,"items":[17,18,42,16,19],"mustard":"0.2.1",
                 "analysis":{"judged":[17,42],
@@ -354,7 +389,7 @@ mod tests {
     fn wave_prompts() -> BTreeMap<u64, String> {
         BTreeMap::from([
             (1, "# demo — onda 1\n\n## A onda e as tarefas dela\n\n- `waves`: MSTD-WAVE-0001\n".to_string()),
-            (4, "# demo — onda 4\n\n## Combinado\n\n- `agreed`: MSTD-RULE-0001\n".to_string()),
+            (4, "# demo — onda 4\n\n## Requisitos acordados\n\n- `agreed`: MSTD-RULE-0001\n".to_string()),
         ])
     }
 
@@ -433,100 +468,172 @@ mod tests {
         got
     }
 
-    /// A mesma forma que o arquivo fixo guarda, lida da página do template. A
-    /// seção dos removidos fica de fora: a página que o motor antigo montava
-    /// não a tinha.
+    /// A aba `anchor` do painel, como a página a mostra.
+    fn panel<'a>(seen: &'a Value, anchor: &str) -> &'a Value {
+        seen["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .find(|s| s["id"] == json!(anchor))
+            .unwrap_or_else(|| panic!("no {anchor} tab: {}", seen["sections"]))
+    }
+
+    /// Os cartões da aba `anchor`, na ordem.
+    fn cards<'a>(seen: &'a Value, anchor: &str) -> &'a Vec<Value> {
+        panel(seen, anchor)["items"].as_array().expect("items")
+    }
+
+    /// Um cartão na forma que o arquivo fixo guarda.
+    fn card_seen(i: &Value) -> Value {
+        let fields: Vec<Value> = i["fields"].as_array().expect("fields").iter().map(|f| json!([f[0], f[1]])).collect();
+        json!({"code": i["code"], "anchored": i["anchored"], "title": i["title"], "who": i["who"],
+            "mark": i["mark"], "status": i["status"], "date": i["date"], "fields": fields})
+    }
+
+    /// Os cartões de cada aba, menos a dos removidos, que a página do motor
+    /// antigo não tinha; em cada aba, pela ordem do código e da data.
     fn page_seen(seen: &Value) -> Value {
-        let sections: Vec<Value> = seen["sections"]
+        let tabs: Vec<Value> = seen["sections"]
             .as_array()
             .expect("sections")
             .iter()
             .filter(|s| s["id"] != json!("removed"))
             .map(|s| {
-                let groups: Vec<Value> = s["groups"]
-                    .as_array()
-                    .expect("groups")
-                    .iter()
-                    .map(|g| {
-                        let items: Vec<Value> = g["items"]
-                            .as_array()
-                            .expect("items")
-                            .iter()
-                            .map(|i| {
-                                let fields: Vec<Value> =
-                                    i["fields"].as_array().expect("fields").iter().map(|f| json!([f[0], f[1]])).collect();
-                                json!({"code": i["code"], "anchored": i["anchored"], "title": i["title"], "who": i["who"],
-                                    "mark": i["mark"], "status": i["status"], "date": i["date"], "fields": fields})
-                            })
-                            .collect();
-                        json!({"id": g["id"], "title": g["title"], "summary": g["summary"], "items": items})
-                    })
-                    .collect();
-                json!({"id": s["id"], "heading": s["heading"], "groups": groups})
+                let mut items: Vec<Value> = s["items"].as_array().expect("items").iter().map(card_seen).collect();
+                items.sort_by_key(|i| (i["code"].to_string(), i["date"].to_string()));
+                json!({"id": s["id"], "items": items})
             })
             .collect();
-        json!(sections)
+        json!(tabs)
     }
 
-    fn visible_codes(seen: &Value) -> Vec<String> {
-        let mut out = Vec::new();
-        for section in seen["sections"].as_array().expect("sections") {
-            for group in section["groups"].as_array().expect("groups") {
-                for item in group["items"].as_array().expect("items") {
-                    if item["hidden"] == json!(false) {
-                        out.push(item["code"].as_str().unwrap_or_default().to_string());
-                    }
-                }
+    /// O arquivo fixo do motor antigo lido pelas abas do painel: cada item
+    /// vai para a aba do bloco dele; o primeiro contexto sai para o
+    /// Objetivo; o que é de uma onda conhecida (a onda, as tarefas, o
+    /// envio, a entrega e o commit) sai das abas para o detalhe dela; o
+    /// achado do plano fica nas Anotações e a skill no Andamento; e o
+    /// critério mostra a prova num selo, no lugar da linha da última
+    /// execução, com as execuções dentro do cartão dele.
+    fn fixed_tabs() -> Value {
+        let fixed: Value = serde_json::from_str(SPEC_PAGE_FIXTURE).expect("the spec page fixture is valid JSON");
+        let tab_of = |section: &str, group: &str| -> Option<&'static str> {
+            match (section, group) {
+                ("waves", "waves-skills") => Some("progress"),
+                ("waves", _) | ("criteria", "criteria-runs") => None,
+                ("findings", _) => Some("notes"),
+                ("progress", _) => Some("progress"),
+                ("specification", _) => Some("specification"),
+                ("agreed", _) => Some("agreed"),
+                ("criteria", _) => Some("criteria"),
+                ("review", _) => Some("review"),
+                ("notes", _) => Some("notes"),
+                ("conversation", _) => Some("conversation"),
+                _ => panic!("a fixed section with no tab: {section}"),
             }
-        }
-        out
-    }
-
-    /// O `.md` baixado confere, item por item e campo por campo, contra
-    /// `page` — a mesma tela que o passo `scrape` já leu —, em vez de a
-    /// amostra de poucas linhas escolhidas à mão que a revisão de 18/09
-    /// achou fraca. Nenhum dos dois lados normaliza a marcação: o código de
-    /// cada item é procurado ainda em negrito (`**código**`, como o `.md`
-    /// sempre escreve), e o rótulo de cada campo é procurado como
-    /// `- rótulo:`, sem tirar `**` nem crase do valor — a comparação que
-    /// apagava essas marcas do lado do binário dava linhas falsas numa spec
-    /// real (achado da revisão de 18/09, onda 7).
-    fn assert_md_matches_the_whole_page(md: &str, page: &Value) {
-        for section in page["sections"].as_array().expect("sections") {
-            let heading = section["heading"].as_str().unwrap_or_default();
-            assert!(md.contains(&format!("## {heading}")), "{heading:?} section heading missing from the .md:\n{md}");
+        };
+        let order = ["specification", "agreed", "criteria", "notes", "review", "progress", "conversation"];
+        let mut by_tab: BTreeMap<&str, Vec<Value>> = order.iter().map(|t| (*t, Vec::new())).collect();
+        for section in fixed.as_array().expect("sections") {
             for group in section["groups"].as_array().expect("groups") {
+                let Some(tab) = tab_of(section["id"].as_str().unwrap_or_default(), group["id"].as_str().unwrap_or_default())
+                else {
+                    continue;
+                };
                 for item in group["items"].as_array().expect("items") {
                     let code = item["code"].as_str().unwrap_or_default();
-                    let bold_code = format!("**{code}**");
-                    assert!(md.contains(&bold_code), "{code} (still bold) missing from the .md:\n{md}");
-                    for field in item["fields"].as_array().expect("fields") {
-                        let label = field[0].as_str().unwrap_or_default();
-                        let line = format!("- {label}: ");
-                        assert!(md.contains(&line), "field {label:?} of {code} missing from the .md:\n{md}");
+                    if ["MSTD-CTX-0001", "MSTD-COMMIT-0001"].contains(&code) {
+                        continue;
                     }
+                    let mut item = item.clone();
+                    if code == "MSTD-CRIT-0001" {
+                        item["status"] = json!("verde");
+                        item["fields"] = json!(item["fields"]
+                            .as_array()
+                            .expect("fields")
+                            .iter()
+                            .filter(|f| f[0] != json!("Última execução"))
+                            .cloned()
+                            .collect::<Vec<_>>());
+                    }
+                    by_tab.get_mut(tab).expect("a tab").push(item);
                 }
             }
         }
+        json!(order
+            .iter()
+            .map(|tab| {
+                let mut items = by_tab.remove(tab).unwrap_or_default();
+                items.sort_by_key(|i| (i["code"].to_string(), i["date"].to_string()));
+                json!({"id": tab, "items": items})
+            })
+            .collect::<Vec<_>>())
     }
 
-    fn prompt_of<'a>(seen: &'a Value, group: &str) -> &'a Value {
+    /// O código de cada cartão à mostra, de todas as abas.
+    fn visible_codes(seen: &Value) -> Vec<String> {
         seen["sections"]
             .as_array()
             .expect("sections")
             .iter()
-            .flat_map(|s| s["groups"].as_array().expect("groups").iter())
-            .find(|g| g["id"] == json!(group))
-            .and_then(|g| g["prompts"].as_array().and_then(|p| p.first()))
-            .unwrap_or_else(|| panic!("no prompt in {group}"))
+            .flat_map(|s| s["items"].as_array().expect("items").iter())
+            .filter(|i| i["hidden"] == json!(false))
+            .map(|i| i["code"].as_str().unwrap_or_default().to_string())
+            .collect()
     }
 
-    /// Os dois templates leem o banco de dados da página. O da spec mostra as
-    /// mesmas seções, grupos e itens da página que o binário montava, com o
-    /// estado de cada onda e o pedido completo de cada uma (o texto de cada
-    /// item no lugar do código); a busca e o filtro por tipo escondem o que
-    /// não serve; o botão baixa o `.md` com o mesmo conteúdo. O do projeto
-    /// mostra as specs agrupadas por fase, com o link da página de cada uma.
+    /// A conta ao lado do nome de cada aba.
+    fn tab_counts(seen: &Value) -> Vec<(String, String)> {
+        seen["tabs"]
+            .as_array()
+            .expect("tabs")
+            .iter()
+            .map(|t| (t["anchor"].as_str().unwrap_or_default().to_string(), t["count"].as_str().unwrap_or_default().to_string()))
+            .collect()
+    }
+
+    /// O `.md` baixado confere, cartão por cartão e campo por campo, contra
+    /// `page` — a mesma tela que o passo `scrape` já leu —: cada aba vira um
+    /// título, cada cartão (e as execuções e a resposta dentro dele) aparece
+    /// pelo código ainda em negrito, e cada rótulo de campo como `- rótulo:`,
+    /// sem tirar `**` nem crase do valor.
+    fn assert_md_matches_the_whole_page(md: &str, page: &Value) {
+        let labels: BTreeMap<String, String> = page["tabs"]
+            .as_array()
+            .expect("tabs")
+            .iter()
+            .map(|t| (t["anchor"].as_str().unwrap_or_default().to_string(), t["label"].as_str().unwrap_or_default().to_string()))
+            .collect();
+        fn each(item: &Value, md: &str) {
+            let code = item["code"].as_str().unwrap_or_default();
+            assert!(md.contains(&format!("**{code}**")), "{code} (still bold) missing from the .md:\n{md}");
+            for field in item["fields"].as_array().expect("fields") {
+                let label = field[0].as_str().unwrap_or_default();
+                assert!(md.contains(&format!("- {label}: ")), "field {label:?} of {code} missing from the .md:\n{md}");
+            }
+            item["runs"].as_array().into_iter().flatten().for_each(|r| each(r, md));
+            if !item["answer"].is_null() {
+                each(&item["answer"], md);
+            }
+        }
+        for section in page["sections"].as_array().expect("sections") {
+            let heading = &labels[section["id"].as_str().unwrap_or_default()];
+            assert!(md.contains(&format!("\n## {heading}\n")), "{heading:?} tab heading missing from the .md:\n{md}");
+            section["items"].as_array().expect("items").iter().for_each(|i| each(i, md));
+        }
+    }
+
+    /// O pedido que o detalhe da onda aberta mostra.
+    fn prompt_of(seen: &Value) -> &Value {
+        seen["detail"]["prompts"].as_array().and_then(|p| p.first()).unwrap_or_else(|| panic!("no prompt: {}", seen["detail"]))
+    }
+
+    /// Os dois templates leem o banco de dados da página. O da spec mostra os
+    /// mesmos itens da página que o binário montava, agora nas abas do
+    /// painel, com o estado de cada onda no gráfico e o pedido completo de
+    /// cada uma no detalhe (o texto de cada item no lugar do código); a
+    /// busca esconde o que não serve e as abas contam só o que casa; o botão
+    /// baixa o `.md` com o mesmo conteúdo. O do projeto mostra as specs
+    /// agrupadas por fase, com o link da página de cada uma.
     #[test]
     fn the_page_templates_read_the_database() {
         let lines = spec_lines();
@@ -534,57 +641,53 @@ mod tests {
             {"do": "wait"}, {"do": "scrape", "as": "page"},
             {"do": "download", "as": "md"},
             {"do": "search", "value": "powershell"}, {"do": "scrape", "as": "search"},
-            {"do": "search", "value": ""}, {"do": "filter", "value": "decision"}, {"do": "scrape", "as": "filter"},
-            {"do": "search", "value": "windows"}, {"do": "scrape", "as": "none"},
-            {"do": "filter", "value": "deferred"}, {"do": "scrape", "as": "both"},
+            {"do": "search", "value": "WINDOWS"}, {"do": "scrape", "as": "windows"},
+            {"do": "search", "value": "MSTD-DEC-0001"}, {"do": "scrape", "as": "code"},
+            {"do": "search", "value": ""}, {"do": "hash", "value": "waves-4"}, {"do": "scrape", "as": "wave4"},
         ]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
         let page = &got["page"];
 
         assert_eq!(page["state"], json!("ready"), "the page read the database");
         assert_eq!(page["statusHidden"], json!(true));
-        assert_eq!(page["title"], json!("demo"));
-        assert_eq!(page["meta"], json!(["spec demo", "fase aprovada", "branch feature/demo", "sai de dev"]));
-        let fixed: Value = serde_json::from_str(SPEC_PAGE_FIXTURE).expect("the spec page fixture is valid JSON");
-        assert_eq!(page_seen(page), fixed, "the same sections, groups and items as the fixed page");
+        assert_eq!((&page["title"], &page["phase"], &page["branch"]), (&json!("demo"), &json!("aprovada"), &json!("feature/demo → dev")));
+        assert_eq!(page_seen(page), fixed_tabs(), "the same items as the fixed page, each in its tab");
+        let runs: Vec<Value> = cards(page, "criteria")[0]["runs"].as_array().expect("runs").iter().map(card_seen).collect();
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!((&runs[0]["code"], &runs[0]["status"]), (&json!("MSTD-CRUN-0001"), &json!("passou")), "the run inside its criterion");
+        assert_eq!(page["goal"]["text"], json!("O Rust roda rápido: 3 a 14 ms por gancho. O custo está nas rodadas do modelo."));
         // A versão mais nova de cada item, sem o item retirado, com a marca do
         // que entrou depois da aprovação; a versão antiga fica na conversa. O
-        // item retirado só aparece na seção dos removidos.
-        let codes: Vec<String> = page["sections"]
+        // item retirado só aparece na aba dos removidos.
+        let removed: Vec<&Value> = cards(page, "removed").iter().map(|i| &i["code"]).collect();
+        assert!(removed.contains(&&json!("MSTD-NOTE-0001")), "{removed:?}");
+        let elsewhere: Vec<String> = page["sections"]
             .as_array()
             .expect("sections")
             .iter()
             .filter(|s| s["id"] != json!("removed"))
-            .flat_map(|s| s["groups"].as_array().expect("groups").iter())
-            .flat_map(|g| g["items"].as_array().expect("items").iter())
+            .flat_map(|s| s["items"].as_array().expect("items").iter())
             .map(|i| i["code"].as_str().unwrap_or_default().to_string())
             .collect();
-        assert!(!codes.contains(&"MSTD-NOTE-0001".to_string()), "the removed note is gone");
-        let rules = page["sections"][2]["groups"].as_array().expect("agreed groups").iter().find(|g| g["id"] == json!("agreed-rule")).expect("rules");
-        assert_eq!(rules["items"].as_array().map(Vec::len), Some(1));
-        assert_eq!(rules["items"][0]["title"], json!("A trava de comandos confere o programa, as opções e o caminho."));
-        assert_eq!(rules["items"][0]["mark"], json!("depois da aprovação"));
-        let talk = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("conversation")).expect("talk");
-        let old = talk["groups"]
-            .as_array()
-            .expect("days")
-            .iter()
-            .flat_map(|g| g["items"].as_array().expect("items").iter())
-            .find(|i| i["code"] == json!("MSTD-RULE-0001"))
-            .expect("the old version of the rule");
+        assert!(!elsewhere.contains(&"MSTD-NOTE-0001".to_string()), "the removed note is gone");
+        let rule = cards(page, "agreed").iter().find(|i| i["code"] == json!("MSTD-RULE-0001")).expect("the rule");
+        assert_eq!(rule["title"], json!("A trava de comandos confere o programa, as opções e o caminho."));
+        assert_eq!(rule["mark"], json!("depois da aprovação"));
+        let old = cards(page, "conversation").iter().find(|i| i["code"] == json!("MSTD-RULE-0001")).expect("the old version of the rule");
         assert_eq!((&old["status"], &old["anchored"]), (&json!("versão antiga"), &json!(false)));
-        let headings: Vec<&str> =
-            page["sections"].as_array().expect("sections").iter().map(|s| s["id"].as_str().unwrap_or_default()).collect();
+        let tabs: Vec<&str> = page["tabs"].as_array().expect("tabs").iter().map(|t| t["anchor"].as_str().unwrap_or_default()).collect();
+        assert_eq!(tabs, ["specification", "agreed", "criteria", "notes", "review", "progress", "conversation", "removed"]);
+        let bars: Vec<Value> = page["chart"]["bars"].as_array().expect("bars").iter().map(|b| json!([b["wave"], b["class"]])).collect();
         assert_eq!(
-            headings,
-            ["progress", "specification", "agreed", "criteria", "waves", "review", "findings", "notes", "conversation", "removed"]
+            bars,
+            [json!([1, "b wait"]), json!([2, "b done"]), json!([3, "b running on"]), json!([4, "b wait"])],
+            "the wave states come from the database, and the running wave opens"
         );
-        let overview = &page["sections"][0]["overview"];
-        assert_eq!(overview["legend"], json!("2 a fazer · 1 aprovada · 1 em andamento"), "the wave states come from the database");
 
-        // O pedido completo: cada código vira o texto da versão mais nova do
-        // item, com as linhas de lista dele.
-        let sent = prompt_of(page, "waves-3");
+        // O pedido completo, no detalhe da onda que roda: cada código vira o
+        // texto da versão mais nova do item, com as linhas de lista dele.
+        assert_eq!(page["detail"]["wave"], json!(3));
+        let sent = prompt_of(page);
         let full = sent["text"].as_str().expect("the full prompt");
         for expected in [
             "MSTD-CTX-0001 — O Rust roda rápido: 3 a 14 ms por gancho.",
@@ -598,58 +701,36 @@ mod tests {
         }
         assert!(!full.contains("`specification`: MSTD-CTX-0001"), "no line keeps only the codes:\n{full}");
         assert!(sent["html"].as_str().unwrap_or_default().contains("<li>vale para o PowerShell.</li>"), "{}", sent["html"]);
-        assert!(prompt_of(page, "waves-4")["text"].as_str().unwrap_or_default().contains("MSTD-RULE-0001 — A trava de comandos"));
+        assert_eq!(got["wave4"]["detail"]["wave"], json!(4), "the address opens wave 4");
+        assert!(prompt_of(&got["wave4"])["text"].as_str().unwrap_or_default().contains("MSTD-RULE-0001 — A trava de comandos"));
 
-        // A escolha do orquestrador gravada no envio: o item e a lição que
-        // saíram do pedido, e o item que entrou, cada um com o motivo.
-        let send_item = page["sections"][4]["groups"][2]["items"][2].clone();
-        assert_eq!(send_item["code"], json!("MSTD-SEND-0002"));
-        let analysis_field = send_item["fields"]
-            .as_array()
-            .expect("fields")
-            .iter()
-            .find(|f| f[0] == json!("Análise antes do envio"))
-            .unwrap_or_else(|| panic!("no analysis field: {send_item}"));
+        // A escolha do orquestrador gravada no envio, entre as medidas dele:
+        // o item e a lição que saíram do pedido, e o item que entrou, cada um
+        // com o motivo.
+        let measures = page["detail"]["measures"].as_array().expect("measures");
+        let analysis = measures.iter().find(|f| f[0] == json!("Análise antes do envio")).unwrap_or_else(|| panic!("{measures:?}"));
         assert_eq!(
-            analysis_field[1],
+            analysis[1],
             json!(
                 "Tirou do pedido: MSTD-RULE-0001 (A regra fala da trava, não da tabela desta onda.); \
                  lição 12 (A lição é de outra onda.) · Pôs no pedido: MSTD-CTX-0001 (O contexto explica \
                  por que a tabela nasce vazia.)"
             ),
-            "{send_item}"
+            "{measures:?}"
         );
 
-        // O veredito final do agente de teste dedicado ganha grupo próprio no
-        // bloco de revisão, mesmo apontando a mesma onda 2 do outro veredito:
-        // o grupo da onda 2 continua só com o veredito dela.
-        let review = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("review")).expect("review");
-        let review_groups: Vec<&str> =
-            review["groups"].as_array().expect("groups").iter().map(|g| g["id"].as_str().unwrap_or_default()).collect();
-        assert_eq!(review_groups, ["review-2", "review-final"], "{review}");
-        let wave_2_group = &review["groups"][0];
-        assert_eq!(wave_2_group["items"].as_array().map(Vec::len), Some(1), "the final verdict stays out: {wave_2_group}");
-        let final_group = &review["groups"][1];
-        assert_eq!(final_group["title"], json!("Veredito final"));
-        assert_eq!(final_group["summary"], json!("1 aprovada"));
-        let final_item = &final_group["items"][0];
-        let final_fields: Vec<Value> =
-            final_item["fields"].as_array().expect("fields").iter().map(|f| json!([f[0], f[1]])).collect();
+        // O veredito final do agente de teste dedicado ganha a marca própria
+        // na aba da revisão, mesmo apontando a mesma onda 2 do outro veredito.
+        let review = cards(page, "review");
+        assert_eq!(review.len(), 2, "{review:?}");
+        assert_eq!((&review[0]["code"], &review[0]["extra"]), (&json!("MSTD-VERD-0001"), &json!([])));
+        let final_item = &review[1];
         assert_eq!(
-            (
-                final_item["code"].clone(),
-                final_item["title"].clone(),
-                final_item["status"].clone(),
-                final_fields,
-            ),
-            (
-                json!("MSTD-VERD-0002"),
-                json!("As ondas se encaixam sem prova perdida."),
-                json!("aprovada"),
-                vec![json!(["Onda", "2"]), json!(["Resultado", "aprovada"]), json!(["Revisão final", "sim"])],
-            ),
+            (final_item["code"].clone(), final_item["title"].clone(), final_item["status"].clone(), final_item["extra"].clone()),
+            (json!("MSTD-VERD-0002"), json!("As ondas se encaixam sem prova perdida."), json!("aprovada"), json!(["Veredito final"])),
             "{final_item}"
         );
+        assert_eq!(card_seen(final_item)["fields"], json!([["Onda", "2"], ["Resultado", "aprovada"], ["Aceitação", "sim"]]));
 
         // O .md baixado tem o mesmo conteúdo, com o pedido completo.
         let md = got["md"]["data"].as_str().expect("the downloaded .md");
@@ -665,25 +746,18 @@ mod tests {
             assert!(md.contains(expected), "{expected:?} is not in the .md:\n{md}");
         }
         assert!(!md.contains("`specification`: MSTD-CTX-0001"), "the .md shows the full prompt too");
-
-        // O .md inteiro, contra o modelo que a própria tela leu: cada
-        // cabeçalho de seção, cada código de item (ainda em negrito, prova
-        // de que a marcação não se apaga) e cada rótulo de campo — numa spec
-        // real, não numa amostra escolhida à mão.
         assert_md_matches_the_whole_page(md, page);
 
-        // A busca e o filtro por tipo.
+        // A busca, sem diferença de maiúscula, e pelo código; cada aba conta
+        // só o que casa, e a aba sem nada diz isso.
         assert_eq!(visible_codes(&got["search"]), ["MSTD-RULE-0001"]);
-        assert_eq!(got["search"]["hits"], json!("1 item"));
-        let filter: Vec<Value> = page["filter"].as_array().expect("the type filter").clone();
-        assert_eq!(filter[0], json!(["", "Todos os tipos"]));
-        assert!(filter.contains(&json!(["decision", "decisão"])), "{filter:?}");
+        let count = |seen: &Value, tab: &str| tab_counts(seen).into_iter().find(|(a, _)| a == tab).map(|(_, c)| c).unwrap_or_default();
+        assert_eq!((count(&got["search"], "agreed"), count(&got["search"], "notes")), ("1".to_string(), "0".to_string()));
+        assert_eq!(panel(&got["search"], "notes")["empty"], json!("Nada nesta aba com essa busca."));
+        assert_eq!(visible_codes(&got["windows"]), ["MSTD-REQ-0001", "MSTD-DEFER-0001"]);
+        assert_eq!(count(&got["windows"], "notes"), "2");
         // A decisão vigente e, na conversa, a versão antiga dela.
-        assert_eq!(visible_codes(&got["filter"]), ["MSTD-DEC-0001", "MSTD-DEC-0001"]);
-        assert_eq!(visible_codes(&got["none"]), Vec::<String>::new(), "no decision talks about Windows");
-        assert_eq!(got["none"]["notFound"], json!(true));
-        assert_eq!(visible_codes(&got["both"]), ["MSTD-DEFER-0001"], "search and filter hold together");
-        assert_eq!(got["both"]["notFound"], json!(false));
+        assert_eq!(visible_codes(&got["code"]), ["MSTD-DEC-0001", "MSTD-DEC-0001"]);
         assert_eq!(page["download"], json!("Baixar .md"));
         assert_eq!(page["search"], json!("Buscar texto ou código"));
 
@@ -718,13 +792,11 @@ mod tests {
         assert_eq!(link[2], json!(r#"<a href="https://claude.ai/code/artifact/busca" target="_blank" rel="noopener">busca</a>"#));
     }
 
-    /// A regra combinada de uma onda na página: nada se repete na mesma
-    /// tela — nem o título no corpo aberto, nem os campos que já formam o
-    /// título de um item sem texto corrido, nem o estado da onda em mais de
-    /// um lugar, nem a contagem por situação ao lado da contagem geral —, a
-    /// hierarquia de títulos pára em três níveis, e a página mostra o pedido
-    /// inteiro que a onda recebeu (o molde e o texto, nessa ordem) com o
-    /// consumo dela.
+    /// A onda no detalhe dela: nada se repete na mesma tela, a hierarquia de
+    /// títulos pára em três níveis, e o detalhe mostra o pedido inteiro que
+    /// a onda recebeu (o molde e o texto, nessa ordem, uma vez cada), com as
+    /// medidas do envio e o consumo dela. A linha do gasto que o binário
+    /// compôs vai para o `.md`, sem ser montada de novo do lado do cliente.
     #[test]
     fn a_wave_shows_its_whole_request_once_and_in_order() {
         let lines = vec![
@@ -737,79 +809,46 @@ mod tests {
             json!({"v":1,"id":3,"at":"2026-09-19T09:02:00-03:00","type":"verdict","author":"review",
                 "wave":9,"result":"approved","final":false,"text":"A onda fecha certo.","origin":1}),
         ];
-        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
-        // O gasto total já vem pronto do binário (`copy::spend_line`); a
-        // página só o mostra, junto do painel de acompanhamento, sem montar
-        // a frase de novo do lado do cliente.
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"}]);
         let mut db = spec_database(&lines);
-        db["computed"][0]["data"]["spend"] = json!("Gasto total: 3400 tokens de onda + 0 tokens de quem despachou = 3400 tokens.");
+        let line = "Gasto total: 3400 tokens de onda + 0 tokens de quem despachou = 3400 tokens.";
+        db["computed"][0]["data"]["spend"] = json!(line);
+        db["computed"][0]["data"]["tokens"] = json!({"waves": 3400, "caller": 0, "total": 3400, "turns": 12});
+        db["computed"][0]["data"]["waves"] = json!({"9": "approved"});
+        db["computed"][0]["data"]["prompts"] = json!({});
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
         let page = &got["page"];
 
-        // O painel de acompanhamento, no topo da página, mostra o gasto
-        // total, exatamente como o binário o compôs.
-        let progress = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("progress")).expect("progress section");
-        assert_eq!(
-            progress["overview"]["spend"],
-            json!("Gasto total: 3400 tokens de onda + 0 tokens de quem despachou = 3400 tokens."),
-            "{progress}"
-        );
-
-        // A hierarquia de títulos pára em três níveis: página (h1), seção
-        // (h2) e item (h3) — nenhum h4 (ou mais fundo) aparece na página.
         let headings: Vec<&str> = page["headings"].as_array().expect("headings").iter().map(|h| h.as_str().unwrap_or_default()).collect();
         assert!(!headings.is_empty(), "the page has headings");
         assert!(headings.iter().all(|h| ["H1", "H2", "H3"].contains(h)), "only three heading levels: {headings:?}");
 
-        let waves = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("waves")).expect("waves section");
-        let wave_group = waves["groups"].as_array().expect("groups").iter().find(|g| g["id"] == json!("waves-9")).expect("waves-9 group");
-        let items = wave_group["items"].as_array().expect("items");
-
-        // O item da onda não repete o nome dela (já no cabeçalho do grupo)
-        // nem o estado (já na marca do cabeçalho): título vazio e sem
-        // status próprio.
-        let wave_item = items.iter().find(|i| i["type"] == json!("wave")).expect("the wave item");
-        assert_eq!((&wave_item["title"], &wave_item["status"]), (&json!(""), &json!(null)), "{wave_item}");
-
-        // O item do envio mostra, na tabela dele, o consumo que a onda
-        // gastou: modelo pedido, modelo usado, passos e tokens.
-        let send_item = items.iter().find(|i| i["type"] == json!("send")).expect("the send item");
-        let field_labels: Vec<Value> = send_item["fields"].as_array().expect("fields").iter().map(|f| f[0].clone()).collect();
-        for key in ["page.field.model", "page.field.model_used", "page.field.steps", "page.field.tokens"] {
+        let detail = &page["detail"];
+        assert_eq!(detail["wave"], json!(9), "the only wave opens: {detail}");
+        let labels: Vec<Value> = detail["measures"].as_array().expect("measures").iter().map(|f| f[0].clone()).collect();
+        for key in ["page.field.model", "page.field.model_used", "page.field.steps", "page.field.tokens", "page.metrics.col.delivery"] {
             let label = json!(translate(key, Locale::PtBr));
-            assert!(field_labels.contains(&label), "{key} ({label}) is not shown among {field_labels:?}");
+            assert!(labels.contains(&label), "{key} ({label}) is not shown among {labels:?}");
         }
-        // O corpo aberto do envio não repete o primeiro parágrafo do texto,
-        // que já é o título do item.
-        assert!(send_item["text"].as_str().unwrap_or_default().is_empty(), "{send_item}");
+        let prompts = detail["prompts"].as_array().expect("prompts");
+        let summaries: Vec<&str> = prompts.iter().map(|p| p["summary"].as_str().unwrap_or_default()).collect();
+        assert_eq!(prompts.len(), 2, "the template and the text, once each: {summaries:?}");
+        assert!(summaries[0].contains("Molde recebido") && summaries[1].contains("Pedido enviado"), "{summaries:?}");
+        assert_eq!(prompts[0]["owner"], prompts[1]["owner"], "both belong to the same send");
+        assert!(prompts.iter().all(|p| p["open"] == json!(false)), "the request starts folded");
+        assert!(detail["meta"].as_str().unwrap_or_default().contains("3 mil tokens"), "{detail}");
 
-        // O pedido inteiro que a onda recebeu: o molde primeiro, o texto
-        // depois, na mesma ordem em que o agente os recebe, os dois presos
-        // ao mesmo item de envio.
-        let prompts = wave_group["prompts"].as_array().expect("prompts");
-        let owner = send_item["code"].clone();
-        let template_at = prompts.iter().position(|p| p["owner"] == owner && p["summary"].as_str().unwrap_or_default().contains("Molde recebido"))
-            .unwrap_or_else(|| panic!("no template block: {prompts:?}"));
-        let text_at = prompts.iter().position(|p| p["owner"] == owner && p["summary"].as_str().unwrap_or_default().contains("Pedido enviado"))
-            .unwrap_or_else(|| panic!("no text block: {prompts:?}"));
-        assert!(template_at < text_at, "the template comes before the text: {prompts:?}");
-
-        // Na revisão da mesma onda, a contagem por situação e a contagem
-        // geral não aparecem lado a lado: uma delas basta.
-        let review = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("review")).expect("review section");
-        let review_group = review["groups"].as_array().expect("groups").iter().find(|g| g["id"] == json!("review-9")).expect("review-9 group");
-        assert!(!review_group["summary"].as_str().unwrap_or_default().is_empty(), "{review_group}");
-        assert_eq!(review_group["count"], json!(""), "the tally already sums the total: {review_group}");
-
-        // A seção da revisão usa um rótulo próprio para a onda, diferente
-        // do cabeçalho da seção das ondas.
-        assert_ne!(wave_group["title"], review_group["title"], "waves and review do not share the same wave label");
+        // A revisão da onda fica na aba dela, uma vez.
+        let review = cards(page, "review");
+        assert_eq!(review.len(), 1, "{review:?}");
+        assert_eq!(review[0]["title"], json!("A onda fecha certo."));
+        // O gasto que o binário compôs vai para o .md como veio.
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        assert!(md.contains(line), "{md}");
     }
 
-    /// O ponto do levantamento respondido ganha a marca de fechado. `byType`
-    /// já mostrava a linha "Fechado por" quando `surveyPoints` achava o par,
-    /// mas a marca ao lado do ponto continuava de aberta, porque `statusOf`
-    /// lê só o status do próprio ponto, sem olhar se ele foi fechado.
+    /// O ponto do levantamento respondido ganha a marca de fechado, e a
+    /// resposta vai dentro do cartão dele, junto do ponto.
     #[test]
     fn an_answered_question_shows_as_closed() {
         let lines = vec![
@@ -821,22 +860,16 @@ mod tests {
         ];
         let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
-        let page = &got["page"];
-        let agreed = page["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("agreed")).expect("agreed section");
-        let points = agreed["groups"].as_array().expect("groups").iter().find(|g| g["id"] == json!("agreed-point")).expect("the points group");
-        let items = points["items"].as_array().expect("items");
-        assert_eq!(items.len(), 2, "the open point and the one that closes it: {items:?}");
-        // O ponto não tem texto corrido: a lacuna vira o título dele, não uma
-        // linha repetida na tabela de campos.
-        let open_point = items
-            .iter()
-            .find(|i| i["title"].as_str().unwrap_or_default().contains("Tamanho do pedido de cada onda"))
-            .expect("the open point");
+        let items = cards(&got["page"], "agreed");
+        assert_eq!(items.len(), 1, "the open point, with the one that closes it inside: {items:?}");
+        let open_point = &items[0];
+        assert!(open_point["title"].as_str().unwrap_or_default().contains("Tamanho do pedido de cada onda"), "{open_point}");
         assert_eq!(
             open_point["status"],
             json!(translate("page.value.closed", Locale::PtBr)),
             "an answered point shows the closed mark, not the open one: {open_point}"
         );
+        assert_eq!(open_point["answer"]["code"], json!("MSTD-POINT-0002"), "{open_point}");
     }
 
     /// O botão de baixar o `.md` só aparece com o salvar arquivo do
@@ -864,12 +897,12 @@ mod tests {
         assert_eq!(with["md"]["filename"], json!("demo.md"), "{with}");
     }
 
-    /// No fim da página da spec, a seção Removidos mostra cada item que saiu:
-    /// o removido com o código, o texto, quem o removeu, quando e por quê; o
-    /// expurgado por segredo só com a marca no lugar do texto. Vale para a
-    /// tela e para o `.md` baixado. O item removido com as duas versões
-    /// aparece uma vez, pela mais nova, e o item expurgado pelo formato de hoje
-    /// continua à mostra na seção dele, com o resto do texto.
+    /// Na última aba, Removidos, cada item que saiu: o removido com o
+    /// código, o texto, quem o removeu, quando e por quê; o expurgado por
+    /// segredo só com a marca no lugar do texto. Vale para a tela e para o
+    /// `.md` baixado. O item removido com as duas versões aparece uma vez,
+    /// pela mais nova, e o item expurgado pelo formato de hoje continua à
+    /// mostra na aba dele, com o resto do texto.
     #[test]
     fn the_removed_section_lists_what_left() {
         let mut lines = spec_lines();
@@ -885,14 +918,12 @@ mod tests {
         let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| panic!("no code for {id}"));
         let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"}]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
-        let sections = got["page"]["sections"].as_array().expect("sections");
+        let page = &got["page"];
 
-        // A seção é a última da página.
-        let last = sections.last().expect("a last section");
-        assert_eq!((&last["id"], &last["heading"]), (&json!("removed"), &json!("Removidos")));
-        let entries: Vec<Value> = last["groups"][0]["items"]
-            .as_array()
-            .expect("the removed items")
+        // A aba é a última da página.
+        let last = page["tabs"].as_array().and_then(|t| t.last()).expect("a last tab");
+        assert_eq!((&last["anchor"], &last["label"]), (&json!("removed"), &json!("Removidos")));
+        let entries: Vec<Value> = cards(page, "removed")
             .iter()
             .map(|i| {
                 let fields: Vec<Value> =
@@ -926,12 +957,10 @@ mod tests {
         );
         assert_eq!(code(9), code(42), "the two versions of the rule are one item");
         // O expurgo de hoje não tira o item da leitura: ele segue nas
-        // anotações com o resto do texto, e a seção dos removidos não o repete.
-        let notes = sections.iter().find(|s| s["id"] == json!("notes")).expect("notes");
-        let kept = notes["groups"][0]["items"].as_array().expect("notes").iter().find(|i| i["code"] == json!(code(50)));
-        // Um parágrafo só: ele vira o título do item, sem repetir no corpo aberto.
+        // anotações com o resto do texto, e a aba dos removidos não o repete.
+        let kept = cards(page, "notes").iter().find(|i| i["code"] == json!(code(50)));
         assert_eq!(kept.map(|i| i["title"].clone()), Some(json!("A chave … fica no cofre do time.")));
-        assert!(!last.to_string().contains("cofre"), "the purged text stays out of the removed section: {last}");
+        assert!(!panel(page, "removed").to_string().contains("cofre"), "the purged text stays out of the removed tab");
 
         // O .md baixado tem a mesma seção, no fim.
         let md = got["md"]["data"].as_str().expect("the downloaded .md");
@@ -956,9 +985,9 @@ mod tests {
     }
 
     /// Por decisão da onda 13, o item que continua à mostra numa versão nova
-    /// não entra na seção Removidos quando só a versão antiga dele foi
-    /// removida: a regra revista some da conversa, mas a regra em si segue de
-    /// pé pela versão nova, com o mesmo código.
+    /// não entra em Removidos quando só a versão antiga dele foi removida: a
+    /// regra revista some da conversa, mas a regra em si segue de pé pela
+    /// versão nova, com o mesmo código.
     #[test]
     fn the_removed_section_handles_an_item_still_shown() {
         let lines = vec![
@@ -972,15 +1001,12 @@ mod tests {
         ];
         let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
-        let sections = got["page"]["sections"].as_array().expect("sections");
-        assert!(
-            sections.iter().all(|s| s["id"] != json!("removed")),
-            "the rule stays shown through the newer version, so the removed section covers nothing: {sections:?}"
-        );
+        assert_eq!(cards(&got["page"], "removed").len(), 0, "the rule stays shown through the newer version");
+        assert_eq!(cards(&got["page"], "agreed").len(), 1);
     }
 
     /// O expurgo do formato antigo, cujo item nunca chegou ao banco da página
-    /// (a linha dele no `spec.ndjson` já nasceu esvaziada), aparece na seção
+    /// (a linha dele no `spec.ndjson` já nasceu esvaziada), aparece em
     /// Removidos com o número no lugar do código: sem o item no banco, não há
     /// como montar o código dele.
     #[test]
@@ -989,9 +1015,7 @@ mod tests {
             "targets":[1],"reason":"secret","origin":1})];
         let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
-        let sections = got["page"]["sections"].as_array().expect("sections");
-        let removed = sections.iter().find(|s| s["id"] == json!("removed")).expect("the removed section");
-        let entries = removed["groups"][0]["items"].as_array().expect("items");
+        let entries = cards(&got["page"], "removed");
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(
             entries[0]["code"],
@@ -1061,7 +1085,8 @@ mod tests {
     }
 
     /// Uma cópia nova chega com a página aberta: o item novo aparece, o item
-    /// que saiu do banco some e o estado novo da onda vale, sem recarregar.
+    /// que saiu do banco some e o estado novo da onda vale no gráfico, sem
+    /// recarregar; a onda aberta continua aberta.
     /// A faixa tocada vai inteira, com o item novo dentro e o que saiu fora
     /// — não um `set` e um `delete` avulsos.
     #[test]
@@ -1079,12 +1104,13 @@ mod tests {
         ]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
         let notes = |seen: &Value| -> Vec<String> {
-            let section = seen["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("notes")).expect("notes");
-            section["groups"][0]["items"].as_array().expect("items").iter().map(|i| i["title"].as_str().unwrap_or_default().to_string()).collect()
+            cards(seen, "notes").iter().map(|i| i["title"].as_str().unwrap_or_default().to_string()).collect()
         };
         assert!(notes(&got["before"]).iter().any(|t| t.starts_with("O pull request 276")));
+        let mut after = notes(&got["after"]);
+        after.retain(|t| !t.starts_with("A tarefa MSTD-TASK-0001"));
         assert_eq!(
-            notes(&got["after"]),
+            after,
             [
                 "Incluir o Windows no teste de duas gravações ao mesmo tempo.",
                 "Medir o antivírus do Windows na verificação automática.",
@@ -1092,8 +1118,8 @@ mod tests {
             ],
             "the new note came in and the deleted one left"
         );
-        let legend = &got["after"]["sections"][0]["overview"]["legend"];
-        assert_eq!(legend, &json!("2 a fazer · 1 aprovada · 1 entregue"));
+        let bar3 = |seen: &Value| seen["chart"]["bars"].as_array().expect("bars").iter().find(|b| b["wave"] == json!(3)).expect("bar 3")["class"].clone();
+        assert_eq!((bar3(&got["before"]), bar3(&got["after"])), (json!("b running on"), json!("b done on")));
     }
 
     /// Uma cópia que só troca a faixa do meio sem o item que saiu, como a
@@ -1122,8 +1148,7 @@ mod tests {
         ]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
         let notes = |seen: &Value| -> Vec<String> {
-            let section = seen["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("notes")).expect("notes");
-            section["groups"][0]["items"].as_array().expect("items").iter().map(|i| i["title"].as_str().unwrap_or_default().to_string()).collect()
+            cards(seen, "notes").iter().map(|i| i["title"].as_str().unwrap_or_default().to_string()).collect()
         };
         assert!(notes(&got["before"]).iter().any(|t| t.starts_with("O pull request 276")), "the note is there before the copy");
         assert!(
@@ -1163,8 +1188,8 @@ mod tests {
         // `copy` espera `data-renders` crescer e, sem isso, o harness
         // registra o erro que `run` confere.
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
-        let legend_of = |seen: &Value| seen["sections"][0]["overview"]["legend"].clone();
-        assert_ne!(legend_of(&got["before"]), legend_of(&got["after"]), "the reload read the new wave state: {got}");
+        let bars_of = |seen: &Value| seen["chart"]["bars"].clone();
+        assert_ne!(bars_of(&got["before"]), bars_of(&got["after"]), "the reload read the new wave state: {got}");
     }
 
     /// Uma spec longa é lida inteira, em páginas de até 500 documentos da
@@ -1172,7 +1197,8 @@ mod tests {
     /// aqui, cada item na própria faixa (só para este teste — a faixa de
     /// verdade tem [`RANGE_WIDTH`] itens, e só passa de 500 documentos com
     /// mais de 50 mil itens), 1.200 itens somados aos da spec de exemplo
-    /// pedem três idas ao banco.
+    /// pedem três idas ao banco. A aba longa mostra 40 cartões e o botão de
+    /// mostrar mais, que traz os 40 seguintes.
     #[test]
     fn a_long_spec_is_read_in_pages() {
         let mut lines = spec_lines();
@@ -1198,10 +1224,15 @@ mod tests {
             "ranges": ranges,
             "computed": [{"id": "current", "data": {"spec": "demo", "waves": waves, "prompts": {}, "rtk": []}}],
         });
-        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "reads", "as": "reads"}]);
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "reads", "as": "reads"},
+            {"do": "more", "value": "notes"}, {"do": "scrape", "as": "more"}]);
         let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
-        let notes = got["page"]["sections"].as_array().expect("sections").iter().find(|s| s["id"] == json!("notes")).expect("notes");
-        assert_eq!(notes["groups"][0]["items"].as_array().map(Vec::len), Some(1_203), "every note of the long spec");
+        let notes = cards(&got["page"], "notes");
+        assert_eq!(notes.len(), 1_204, "every note of the long spec, with the plan finding");
+        let shown = |seen: &Value| cards(seen, "notes").iter().filter(|i| i["hidden"] == json!(false)).count();
+        assert_eq!(tab_counts(&got["page"])[3], ("notes".to_string(), "1204".to_string()));
+        assert_eq!((shown(&got["page"]), panel(&got["page"], "notes")["more"].clone()), (40, json!("Mostrar mais 40 de 1164")));
+        assert_eq!((shown(&got["more"]), panel(&got["more"], "notes")["more"].clone()), (80, json!("Mostrar mais 40 de 1124")));
         let pages: Vec<(Value, Value)> = got["reads"]
             .as_array()
             .expect("reads")
@@ -1249,6 +1280,516 @@ mod tests {
             "the item left behind in the stale chunk does not come back: {}",
             visible_codes(&with_stale["page"]).join(", "),
         );
+    }
+
+    /// Um evento de tarefa para os testes da lista Agora: com onda ou no
+    /// backlog, com ou sem título curto.
+    fn board_task(id: u64, code: &str, wave: Option<u64>, title: Option<&str>, text: &str, depends_on: Value) -> Value {
+        let mut e = json!({"v":1,"id":id,"code":code,"at":"2026-09-22T10:00:00-03:00","type":"task","author":"assistant",
+            "text":text,"files":[],"depends_on":depends_on,"origin":1});
+        if let Some(n) = wave {
+            e["wave"] = json!(n);
+        }
+        if let Some(title) = title {
+            e["title"] = json!(title);
+        }
+        e
+    }
+
+    /// Um evento de onda, como a rodada o grava.
+    fn board_wave(id: u64, n: u64) -> Value {
+        json!({"v":1,"id":id,"at":"2026-09-22T09:00:00-03:00","type":"wave","author":"binary","n":n,
+            "text":format!("O lote {n}."),"criteria":[],"done_when":"A suíte passa.","origin":1})
+    }
+
+    /// Um evento de estado da spec, na fase `phase`.
+    fn board_state(id: u64, phase: &str) -> Value {
+        json!({"v":1,"id":id,"at":"2026-09-22T08:00:00-03:00","type":"state","author":"binary","phase":phase})
+    }
+
+    /// Abre a página da spec com `lines` e o estado calculado das ondas, e
+    /// diz o que ela mostra (e o `.md` baixado, com `download`).
+    fn open_board(lines: &[Value], waves: Value, lang: Locale, download: bool) -> Value {
+        let db = json!({"ranges": range_docs(lines),
+            "computed": [{"id": "current", "data": {"spec": "demo", "waves": waves, "prompts": {}, "rtk": []}}]});
+        let mut steps = vec![json!({"do": "wait"}), json!({"do": "scrape", "as": "page"})];
+        if download {
+            steps.push(json!({"do": "download", "as": "md"}));
+        }
+        run("spec", &spec_page_template(lang), Some(db), json!(steps))
+    }
+
+    /// As linhas da lista Agora, na ordem: `[tipo, selo, título, lado direito]`
+    /// para cada onda e tarefa, o nome de cada grupo e a linha do fim.
+    fn now_rows(page: &Value) -> Vec<Value> {
+        page["now"]["parts"]
+            .as_array()
+            .expect("parts")
+            .iter()
+            .map(|p| match p["kind"].as_str().unwrap_or_default() {
+                "group" | "after" => json!([p["kind"], p["text"]]),
+                _ => json!([p["kind"], p["pill"], p["title"], p["meta"]]),
+            })
+            .collect()
+    }
+
+    /// A lista Agora: a onda com várias tarefas diz quantas são e, aberta,
+    /// os títulos numerados; a tarefa sem título aparece pela primeira
+    /// frase, inteira até 90 caracteres e cortada a partir de 91. A tarefa
+    /// do backlog que espera outra do backlog diz quantas espera; a
+    /// dependência que já entregou não segura nada. A linha da tarefa do
+    /// backlog tem o endereço dela, e abre no texto dela. Com o backlog
+    /// vazio e nada rodando, a lista não tem grupo e faltam a revisão final
+    /// e o fechamento; na spec fechada, nada falta.
+    #[test]
+    fn a_lista_agora_mostra_o_que_roda_e_o_backlog() {
+        let s90 = format!("Noventa {}.", "n".repeat(81));
+        let s91 = format!("Noventa e um {}.", "u".repeat(77));
+        assert_eq!((s90.chars().count(), s91.chars().count()), (90, 91));
+        let cut91 = format!("Noventa e um {}…", "u".repeat(76));
+        let history = vec![
+            board_wave(2, 1),
+            board_task(3, "MSTD-TASK-0001", Some(1), Some("Base entregue"), "A base. Mais texto.", json!([])),
+            board_wave(4, 2),
+            board_task(5, "MSTD-TASK-0002", Some(2), Some("Segunda base"), "A segunda base.", json!([])),
+            board_wave(6, 3),
+            board_task(7, "MSTD-TASK-0003", Some(3), Some("A lista abre a página"), "Texto longo da tarefa. Mais.", json!([])),
+            board_task(8, "MSTD-TASK-0004", Some(3), None, &format!("{s90} Depois."), json!([])),
+            board_task(9, "MSTD-TASK-0005", Some(3), None, &format!("{s91} Depois."), json!([])),
+        ];
+        let backlog = vec![
+            board_task(10, "MSTD-TASK-0010", None, Some("Título curto do backlog"), "A tarefa com título. Segunda frase.",
+                json!(["MSTD-TASK-0011", 3])),
+            board_task(11, "MSTD-TASK-0011", None, None, "A tarefa sem título espera nada. Segunda frase.", json!([3])),
+        ];
+
+        let running: Vec<Value> = [vec![board_state(1, "running")], history.clone(), backlog].concat();
+        let got = open_board(&running, json!({"1": "approved", "2": "approved", "3": "running"}), Locale::PtBr, true);
+        let page = &got["page"];
+        assert_eq!(
+            now_rows(page),
+            vec![
+                json!(["group", "Rodando"]),
+                json!(["wave", "ONDA 3", "3 tarefas", "0 arquivos · em andamento"]),
+                json!(["group", "Backlog · tarefas que ainda não viraram onda"]),
+                json!(["backlog", "ESPERA", "Título curto do backlog", "0 arquivos · espera 1 tarefa do backlog"]),
+                json!(["backlog", "PRONTA", "A tarefa sem título espera nada.", "0 arquivos"]),
+                json!(["after", "Depois vêm a revisão final e o fechamento."]),
+            ],
+            "{}",
+            page["now"]
+        );
+        let parts = page["now"]["parts"].as_array().expect("parts");
+        assert_eq!(parts[1]["tasks"], json!(["A lista abre a página", s90, cut91]));
+        assert_eq!((&parts[3]["id"], &parts[4]["id"]), (&json!("MSTD-TASK-0010"), &json!("MSTD-TASK-0011")));
+        assert!(parts[4]["body"].as_str().unwrap_or_default().contains("Segunda frase."), "{}", parts[4]);
+        // O .md baixado traz a mesma lista, antes das abas.
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        let now_at = md.find("\n## Agora\n").unwrap_or_else(|| panic!("no Agora in the .md:\n{md}"));
+        assert!(now_at < md.find("\n## Especificação\n").unwrap_or(0), "{md}");
+        for line in [
+            "- **Onda 3** · em andamento · 0 arquivos — 3 tarefas",
+            "  1. A lista abre a página",
+            "### Backlog · tarefas que ainda não viraram onda",
+            "- **MSTD-TASK-0010** · espera 1 tarefa do backlog · 2026-09-22 10:00 — A tarefa com título. Segunda frase.",
+            "Depois vêm a revisão final e o fechamento.",
+        ] {
+            assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
+
+        // O backlog vazio e nenhuma onda rodando, numa spec que não fechou.
+        let quiet: Vec<Value> = [vec![board_state(1, "running")], history.clone()].concat();
+        let all_done = json!({"1": "approved", "2": "approved", "3": "approved"});
+        let page = open_board(&quiet, all_done.clone(), Locale::PtBr, false)["page"].clone();
+        assert_eq!(now_rows(&page), vec![json!(["after", "Faltam a revisão final e o fechamento."])]);
+
+        // A spec fechada.
+        let closed: Vec<Value> = [vec![board_state(1, "running")], history, vec![board_state(12, "closed")]].concat();
+        let page = open_board(&closed, all_done, Locale::PtBr, false)["page"].clone();
+        assert_eq!(now_rows(&page), vec![json!(["after", "Nada falta."])]);
+    }
+
+    /// Rodando mostra toda onda que não foi entregue nem aprovada, e não só a
+    /// que roda: a onda que o backlog já formou e espera sair (sem estado
+    /// calculado nenhum) e a reprovada que volta para conserto ganham cada
+    /// uma a sua linha, com o selo, a situação e as tarefas. Enquanto uma
+    /// delas existir, a lista nunca diz que faltam só a revisão final e o
+    /// fechamento, nem com o backlog vazio e nenhuma onda rodando.
+    #[test]
+    fn a_lista_agora_mostra_a_onda_que_espera_e_a_reprovada() {
+        let task = |id: u64, code: &str, wave: u64, title: &str| {
+            board_task(id, code, Some(wave), Some(title), "O texto da tarefa.", json!([]))
+        };
+        let state = board_state(1, "running");
+        let delivered = vec![board_wave(2, 1), task(3, "MSTD-TASK-0001", 1, "A base entregue")];
+        let running = vec![board_wave(4, 2), task(5, "MSTD-TASK-0002", 2, "O lote que roda")];
+        let waiting = vec![
+            board_wave(6, 3),
+            task(7, "MSTD-TASK-0003", 3, "O scan lê tudo"),
+            task(8, "MSTD-TASK-0004", 3, "O mapa mostra o uso"),
+        ];
+        let rejected = vec![board_wave(9, 4), task(10, "MSTD-TASK-0005", 4, "O conserto do quadro")];
+        let open = |lines: Vec<Value>, waves: Value, lang: Locale| open_board(&lines, waves, lang, false)["page"].clone();
+        let pills = |page: &Value| -> Vec<Value> {
+            page["now"]["parts"]
+                .as_array()
+                .expect("parts")
+                .iter()
+                .filter(|p| p["kind"] == json!("wave"))
+                .map(|p| json!([p["pill"], p["pillClass"], p["title"], p["meta"], p["tasks"]]))
+                .collect()
+        };
+        let tail = |page: &Value| now_rows(page).last().cloned().unwrap_or_default();
+
+        let all: Vec<Value> = [vec![state.clone()], delivered.clone(), running, waiting.clone(), rejected.clone()].concat();
+        let states = json!({"1": "approved", "2": "running", "4": "rejected"});
+        let page = open(all.clone(), states.clone(), Locale::PtBr);
+        assert_eq!(
+            pills(&page),
+            vec![
+                json!(["ONDA 2", "pill running", "O lote que roda", "0 arquivos · em andamento", []]),
+                json!(["ONDA 3", "pill wait", "2 tarefas", "0 arquivos · espera sair", ["O scan lê tudo", "O mapa mostra o uso"]]),
+                json!(["ONDA 4", "pill fail", "O conserto do quadro", "0 arquivos · volta para conserto", []]),
+            ],
+            "{}",
+            page["now"]
+        );
+        assert_eq!(tail(&page), json!(["after", "Depois vêm a revisão final e o fechamento."]));
+        let page = open(all, states, Locale::EnUs);
+        assert_eq!(
+            pills(&page),
+            vec![
+                json!(["WAVE 2", "pill running", "O lote que roda", "0 files · in progress", []]),
+                json!(["WAVE 3", "pill wait", "2 tasks", "0 files · waiting to go out", ["O scan lê tudo", "O mapa mostra o uso"]]),
+                json!(["WAVE 4", "pill fail", "O conserto do quadro", "0 files · back for a fix", []]),
+            ],
+            "{}",
+            page["now"]
+        );
+        assert_eq!(tail(&page), json!(["after", "Then come the final review and the closing."]));
+
+        // Só a onda que espera sair, com o backlog vazio e nada rodando.
+        let page = open([vec![state.clone()], delivered.clone(), waiting].concat(), json!({"1": "approved"}), Locale::PtBr);
+        assert_eq!(pills(&page).len(), 1, "{}", page["now"]);
+        assert_eq!(tail(&page), json!(["after", "Depois vêm a revisão final e o fechamento."]));
+
+        // Só a onda reprovada, do mesmo jeito.
+        let page = open([vec![state], delivered, rejected].concat(), json!({"1": "approved", "4": "rejected"}), Locale::PtBr);
+        assert_eq!(pills(&page)[0][0], json!("ONDA 4"));
+        assert_eq!(tail(&page), json!(["after", "Depois vêm a revisão final e o fechamento."]));
+    }
+
+    /// A spec do painel: o objetivo no primeiro contexto, uma onda entregue
+    /// com três tarefas, o pedido e o commit dela, duas ondas em andamento,
+    /// duas tarefas no backlog (uma que espera uma tarefa da onda 2 e uma
+    /// pronta), três critérios (dois verdes e um sem prova), os envios com
+    /// tokens e turnos, e ao menos um item de cada bloco. A palavra
+    /// "girassol" só está numa regra e numa anotação.
+    fn dashboard_lines() -> Vec<Value> {
+        let at = |m: u64| format!("2026-09-22T{:02}:{:02}:00-03:00", 8 + m / 60, m % 60);
+        let task = |id: u64, wave: Option<u64>, title: &str, depends_on: Value| {
+            json!({"v":1,"id":id,"at":at(id),"type":"task","author":"assistant","title":title,
+                "text":format!("O texto inteiro da tarefa {id}."),
+                "files":[{"path":format!("src/t{id}.rs"),"new":true}],"covers":[20],"depends_on":depends_on,"origin":2,
+                "wave":wave})
+        };
+        let mut lines = vec![
+            json!({"v":1,"id":1,"at":at(1),"type":"state","author":"binary","phase":"running","branch":"feature/painel","base":"dev"}),
+            json!({"v":1,"id":2,"at":at(2),"type":"context","author":"assistant","text":"O painel diz cada coisa uma vez.\n\nO segundo parágrafo do objetivo.","origin":3}),
+            json!({"v":1,"id":3,"at":at(3),"type":"message","author":"user","text":"Quero um painel."}),
+            json!({"v":1,"id":4,"at":at(4),"type":"context","author":"assistant","text":"O segundo contexto fica na aba.","origin":3}),
+            json!({"v":1,"id":5,"at":at(5),"type":"rule","author":"assistant","text":"O girassol abre a regra.","keys":["flor"],"example":"`x`.","origin":3}),
+            json!({"v":1,"id":6,"at":at(6),"type":"note","author":"assistant","text":"O girassol da anotação.","keys":["flor"],"origin":3}),
+            json!({"v":1,"id":7,"at":at(7),"type":"decision","author":"assistant","text":"A página vira painel.","why":"Nada repete.","origin":3}),
+            json!({"v":1,"id":10,"at":at(10),"type":"wave","author":"binary","n":1,"text":"O lote do chão.","criteria":[20],"done_when":"A suíte passa.","origin":3}),
+            json!({"v":1,"id":14,"at":at(14),"type":"send","author":"binary","wave":1,"role":"wave",
+                "template":"# molde da onda 1","text":"# pedido da onda 1\n\nFaça o chão.","lines":3,"chars":30,"items":[10],
+                "mustard":"0.2.2","steps":21,"tokens":120_000,"caller_tokens":40_000}),
+            json!({"v":1,"id":15,"at":at(15),"type":"delivered","author":"wave","wave":1,"text":"O chão entregue.","files":["src/t11.rs","src/t12.rs","src/t13.rs"]}),
+            json!({"v":1,"id":16,"at":at(16),"type":"commit","author":"binary","sha":"abc1234","title":"feat: o chão do painel","waves":[1],"files":["src/t11.rs"],"repo":"."}),
+            json!({"v":1,"id":17,"at":at(17),"type":"verdict","author":"review","wave":1,"result":"approved","text":"O chão fecha.","final":false}),
+            json!({"v":1,"id":30,"at":at(30),"type":"wave","author":"binary","n":2,"text":"O lote do meio.","criteria":[20],"done_when":"A suíte passa.","origin":3}),
+            json!({"v":1,"id":32,"at":at(32),"type":"send","author":"binary","wave":2,"role":"wave","text":"# pedido da onda 2","lines":1,"chars":20,"items":[30],"mustard":"0.2.2","steps":8,"tokens":80_000}),
+            json!({"v":1,"id":33,"at":at(33),"type":"wave","author":"binary","n":3,"text":"O lote de cima.","criteria":[21],"done_when":"A suíte passa.","origin":3}),
+            json!({"v":1,"id":36,"at":at(36),"type":"send","author":"binary","wave":3,"role":"wave","text":"# pedido da onda 3","lines":1,"chars":20,"items":[33],"mustard":"0.2.2","steps":6,"tokens":50_000}),
+            json!({"v":1,"id":20,"at":at(20),"type":"criterion","author":"assistant","when":"A página abre.","then":"O painel aparece.","proof":"cargo test painel","origin":3}),
+            json!({"v":1,"id":21,"at":at(21),"type":"criterion","author":"assistant","when":"A busca roda.","then":"As abas contam.","proof":"cargo test busca","origin":3}),
+            json!({"v":1,"id":22,"at":at(22),"type":"criterion","author":"assistant","when":"O .md baixa.","then":"Nada falta.","proof":"cargo test md","origin":3}),
+            json!({"v":1,"id":40,"at":at(40),"type":"criterion_run","author":"binary","criterion":20,"result":"pass","exit":0,"ms":900}),
+            json!({"v":1,"id":41,"at":at(41),"type":"criterion_run","author":"binary","criterion":21,"result":"fail","exit":1,"ms":900}),
+            json!({"v":1,"id":42,"at":at(42),"type":"criterion_run","author":"binary","criterion":21,"result":"pass","exit":0,"ms":900}),
+            json!({"v":1,"id":45,"at":at(45),"type":"note","author":"assistant","text":"Anotação que saiu.","keys":["k"],"origin":3}),
+            json!({"v":1,"id":46,"at":at(46),"type":"remove","author":"user","targets":[45],"reason":"Saiu.","origin":3}),
+        ];
+        lines.extend([
+            task(11, Some(1), "O chão da tela", json!([])),
+            task(12, Some(1), "A régua dos números", json!([])),
+            task(13, Some(1), "O rodapé fixo", json!([])),
+            task(31, Some(2), "A lista do meio", json!([])),
+            task(34, Some(3), "O gráfico de barras", json!([])),
+            task(35, Some(3), "As abas de baixo", json!([])),
+            task(39, Some(3), "A legenda das cores", json!([])),
+            task(37, None, "A troca de tema", json!([31])),
+            task(38, None, "A busca por código", json!([11])),
+        ]);
+        lines.sort_by_key(|l| l["id"].as_u64().unwrap_or(0));
+        lines
+    }
+
+    /// O banco do painel: o estado das ondas e os números do gasto que o
+    /// binário calcula.
+    fn dashboard_database(lines: &[Value]) -> Value {
+        json!({"ranges": range_docs(lines), "computed": [{"id": "current", "data": {
+            "spec": "painel", "waves": {"1": "approved", "2": "running", "3": "running"}, "prompts": {},
+            "rtk": [{"date": "2026-09-22", "commands": 12, "input": 1_000, "saved": 600}],
+            "spend": "Gasto total: 250000 tokens de onda + 40000 tokens de quem despachou = 290000 tokens.",
+            "tokens": {"waves": 250_000, "caller": 40_000, "total": 290_000, "turns": 5}}}]})
+    }
+
+    /// A página da spec é um painel, nos dois idiomas, com cada coisa num
+    /// lugar só: o cabeçalho numa linha; o objetivo inteiro; os quatro
+    /// quadros com os números; a lista Agora com as ondas que rodam e o
+    /// backlog, cada tarefa com o que espera; o gráfico com uma barra por
+    /// onda e o detalhe da aberta; a busca acima das abas; as oito abas, uma
+    /// aberta, cada item num cartão com o código, o tipo e a data no alto e
+    /// o título embaixo. A busca muda a conta de cada aba; o endereço
+    /// `#waves-N` abre a onda N; as partes antigas não existem; o título de
+    /// uma tarefa aparece uma vez só; e o `.md` baixado tem todo item.
+    #[test]
+    fn a_pagina_da_spec_e_um_painel_sem_nada_repetido() {
+        let lines = dashboard_lines();
+        let content = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        let codes = parse_log(&content).codes();
+        let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| panic!("no code for {id}"));
+        let task_titles = [
+            "O chão da tela", "A régua dos números", "O rodapé fixo", "A lista do meio", "O gráfico de barras",
+            "As abas de baixo", "A legenda das cores", "A troca de tema", "A busca por código",
+        ];
+        struct Words {
+            lang: Locale,
+            phase: &'static str,
+            tiles: [(&'static str, &'static str, &'static [&'static str]); 4],
+            now: [Value; 7],
+            tabs: [&'static str; 8],
+            detail: &'static str,
+            commit: &'static str,
+            old: [&'static str; 2],
+        }
+        let pt = Words {
+            lang: Locale::PtBr,
+            phase: "em execução",
+            tiles: [
+                ("Ondas", "1 entregue", &["2 rodando agora"]),
+                ("Backlog", "2 tarefas", &["1 pronta para sair"]),
+                ("Critérios", "2 de 3", &["com a última prova verde"]),
+                ("Gasto", "290 mil tokens", &["250 mil de onda + 40 mil de quem despachou", "5 turnos por tarefa", "o rtk poupou 600 (60%)"]),
+            ],
+            now: [
+                json!(["group", "Rodando"]),
+                json!(["wave", "ONDA 2", "A lista do meio", "1 arquivo · em andamento"]),
+                json!(["wave", "ONDA 3", "3 tarefas", "3 arquivos · em andamento"]),
+                json!(["group", "Backlog · tarefas que ainda não viraram onda"]),
+                json!(["backlog", "ESPERA", "A troca de tema", "1 arquivo · espera a onda 2"]),
+                json!(["backlog", "PRONTA", "A busca por código", "1 arquivo"]),
+                json!(["after", "Depois vêm a revisão final e o fechamento."]),
+            ],
+            tabs: ["Especificação", "Acordado", "Critérios", "Anotações", "Revisão", "Andamento", "Conversa", "Removidos"],
+            detail: "aprovada em 2026-09-22 08:15 · 3 arquivos · 120 mil tokens",
+            commit: "Commit: feat: o chão do painel",
+            old: ["O que falta", "Filtrar por tipo"],
+        };
+        let en = Words {
+            lang: Locale::EnUs,
+            phase: "running",
+            tiles: [
+                ("Waves", "1 delivered", &["2 running now"]),
+                ("Backlog", "2 tasks", &["1 ready to go"]),
+                ("Criteria", "2 of 3", &["with the last proof green"]),
+                ("Spend", "290 k tokens", &["250 k of waves + 40 k of the dispatcher", "5 turns per task", "rtk saved 600 (60%)"]),
+            ],
+            now: [
+                json!(["group", "Running"]),
+                json!(["wave", "WAVE 2", "A lista do meio", "1 file · in progress"]),
+                json!(["wave", "WAVE 3", "3 tasks", "3 files · in progress"]),
+                json!(["group", "Backlog · tasks not yet in a wave"]),
+                json!(["backlog", "WAITS", "A troca de tema", "1 file · waits for wave 2"]),
+                json!(["backlog", "READY", "A busca por código", "1 file"]),
+                json!(["after", "Then come the final review and the closing."]),
+            ],
+            tabs: ["Specification", "Agreed", "Criteria", "Notes", "Review", "Progress", "Conversation", "Removed"],
+            detail: "approved on 2026-09-22 08:15 · 3 files · 120 k tokens",
+            commit: "Commit: feat: o chão do painel",
+            old: ["What is left", "Filter by type"],
+        };
+        for words in [pt, en] {
+            let lang = words.lang;
+            let steps = json!([
+                {"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"},
+                {"do": "search", "value": "Girassol"}, {"do": "scrape", "as": "search"},
+                {"do": "search", "value": ""}, {"do": "hash", "value": "waves-1"}, {"do": "scrape", "as": "wave1"},
+                {"do": "bar", "value": 3, "key": "Enter"}, {"do": "scrape", "as": "wave3"},
+            ]);
+            let got = run("spec", &spec_page_template(lang), Some(dashboard_database(&lines)), steps);
+            let page = &got["page"];
+
+            // A ordem do painel e o cabeçalho numa linha.
+            assert_eq!(page["blocks"], json!(["goal", "tiles", "now", "chart", "find", "tabs", "panels"]), "{lang}");
+            assert_eq!(page["head"], json!(["H1", "SPAN.phase", "SPAN.branch", "DIV.tools"]), "{lang}");
+            assert_eq!(
+                (&page["title"], &page["phase"], &page["branch"], &page["downloadHidden"]),
+                (&json!("painel"), &json!(words.phase), &json!("feature/painel → dev"), &json!(false)),
+                "{lang}"
+            );
+            // O objetivo, inteiro, fora da aba Especificação.
+            assert_eq!(page["goal"]["text"], json!("O painel diz cada coisa uma vez.O segundo parágrafo do objetivo."), "{lang}");
+            let spec_codes: Vec<&Value> = cards(page, "specification").iter().map(|i| &i["code"]).collect();
+            assert_eq!(spec_codes, [&json!(code(4))], "{lang}: the goal leaves the tab");
+            // Os quatro quadros.
+            let tiles: Vec<Value> = page["tiles"].as_array().expect("tiles").iter().map(|t| json!([t["key"], t["value"], t["lines"]])).collect();
+            let expected: Vec<Value> = words.tiles.iter().map(|(k, v, l)| json!([k, v, l])).collect();
+            assert_eq!(tiles, expected, "{lang}");
+            let meters: Vec<(&Value, &Value)> = page["tiles"].as_array().expect("tiles").iter().map(|t| (&t["meter"], &t["meterWidth"])).collect();
+            assert_eq!(
+                meters,
+                [(&json!(false), &Value::Null), (&json!(false), &Value::Null), (&json!(true), &json!("width:66.7%")), (&json!(false), &Value::Null)],
+                "{lang}: only the criteria tile has a bar"
+            );
+            // O quadro Backlog leva ao grupo Backlog da lista.
+            assert_eq!((&page["tiles"][1]["tag"], &page["tiles"][1]["href"]), (&json!("A"), &json!("#backlog")), "{lang}");
+            assert_eq!(page["now"]["parts"][3]["id"], json!("backlog"), "{lang}");
+            // A lista Agora.
+            assert_eq!(now_rows(page), words.now.to_vec(), "{lang}");
+            assert_eq!(page["now"]["parts"][2]["tasks"], json!(["O gráfico de barras", "As abas de baixo", "A legenda das cores"]), "{lang}");
+            // O gráfico: uma barra por onda, a entregue em verde e as que rodam
+            // tracejadas, e a primeira que roda aberta.
+            let bars: Vec<Value> = page["chart"]["bars"].as_array().expect("bars").iter().map(|b| json!([b["wave"], b["class"], b["focusable"]])).collect();
+            assert_eq!(bars, [json!([1, "b done", true]), json!([2, "b running on", true]), json!([3, "b running", true])], "{lang}");
+            let template = spec_page_template(lang);
+            assert!(template.contains("rect.b.done") && template.contains("rect.b.running"), "{lang}");
+            let running_rule = template.split("rect.b.running").nth(1).and_then(|r| r.split('}').next()).unwrap_or_default();
+            assert!(running_rule.contains("stroke-dasharray"), "{lang}: the running bar is dashed: {running_rule}");
+            assert_eq!(page["detail"]["wave"], json!(2), "{lang}");
+            // A busca, numa linha acima das abas.
+            assert_eq!(page["findBeforeTabs"], json!(true), "{lang}");
+            // As oito abas, uma aberta; cada cartão com o código, o tipo e a
+            // data no alto e o título embaixo.
+            let tabs: Vec<&Value> = page["tabs"].as_array().expect("tabs").iter().map(|t| &t["label"]).collect();
+            assert_eq!(tabs, words.tabs.iter().map(|t| json!(t)).collect::<Vec<_>>().iter().collect::<Vec<_>>(), "{lang}");
+            let selected: Vec<bool> = page["tabs"].as_array().expect("tabs").iter().map(|t| t["selected"] == json!(true)).collect();
+            assert_eq!(selected.iter().filter(|s| **s).count(), 1, "{lang}");
+            let hidden: Vec<bool> = page["sections"].as_array().expect("sections").iter().map(|s| s["hidden"] == json!(true)).collect();
+            assert_eq!(hidden, [false, true, true, true, true, true, true, true], "{lang}");
+            for section in page["sections"].as_array().expect("sections") {
+                for item in section["items"].as_array().expect("items") {
+                    let top: Vec<&str> = item["top"].as_array().expect("top").iter().map(|c| c.as_str().unwrap_or_default()).collect();
+                    assert_eq!((top.first(), top.get(1).map(|t| t.starts_with("tag"))), (Some(&"c"), Some(true)), "{lang}: {item}");
+                    assert_eq!(top.last(), Some(&"when"), "{lang}: {item}");
+                    assert_eq!(item["below"], json!(["top", "t"]), "{lang}: {item}");
+                    assert_eq!(item["codeShown"], item["code"], "{lang}");
+                    assert!(!item["title"].as_str().unwrap_or_default().is_empty() && !item["date"].is_null(), "{lang}: {item}");
+                }
+            }
+            let criteria: Vec<(&Value, &Value)> = cards(page, "criteria").iter().map(|c| (&c["code"], &c["statusClass"])).collect();
+            assert_eq!(
+                criteria,
+                [(&json!(code(20)), &json!("pill state done")), (&json!(code(21)), &json!("pill state done")), (&json!(code(22)), &json!("pill state wait"))],
+                "{lang}"
+            );
+            // Com a busca, cada aba conta só o que casa.
+            let counts: Vec<String> = tab_counts(&got["search"]).into_iter().map(|(_, c)| c).collect();
+            assert_eq!(counts, ["0", "1", "0", "1", "0", "0", "0", "0"], "{lang}");
+            let before: Vec<String> = tab_counts(page).into_iter().map(|(_, c)| c).collect();
+            assert_ne!(before, counts, "{lang}: the search changes the counts");
+            // O endereço #waves-1 abre o detalhe da onda entregue, com as
+            // tarefas numeradas, o pedido uma vez, as medidas e o commit.
+            let wave1 = &got["wave1"];
+            let detail = &wave1["detail"];
+            assert_eq!((&detail["wave"], &detail["number"], &detail["meta"]), (&json!(1), &json!("1"), &json!(words.detail)), "{lang}");
+            assert_eq!(detail["tasks"], json!(["O chão da tela", "A régua dos números", "O rodapé fixo"]), "{lang}");
+            let prompts = detail["prompts"].as_array().expect("prompts");
+            assert_eq!(prompts.len(), 2, "{lang}: the template and the text, once each: {prompts:?}");
+            assert!(prompts[0]["text"].as_str().unwrap_or_default().contains("molde da onda 1"), "{lang}");
+            assert!(prompts[1]["text"].as_str().unwrap_or_default().contains("Faça o chão."), "{lang}");
+            assert!(detail["measures"].as_array().expect("measures").len() >= 4, "{lang}: {detail}");
+            assert_eq!(detail["commit"], json!(words.commit), "{lang}");
+            assert_eq!(wave1["chart"]["bars"][0]["class"], json!("b done on"), "{lang}");
+            assert_eq!(got["wave3"]["detail"]["wave"], json!(3), "{lang}: Enter on a bar opens it");
+            // As partes antigas não existem.
+            let classes = format!(" {} ", page["classes"].as_str().unwrap_or_default());
+            for gone in ["remaining", "rm-box", "wgrid", "overview", "nav", "side", "menu-btn", "group", "block", "meta", "eyebrow"] {
+                assert!(!classes.contains(&format!(" {gone} ")), "{lang}: {gone} is still on the page");
+            }
+            let ids: Vec<&str> = page["ids"].as_array().expect("ids").iter().map(|i| i.as_str().unwrap_or_default()).collect();
+            for gone in ["remaining", "waves", "sections", "type", "notFound"] {
+                assert!(!ids.contains(&gone), "{lang}: #{gone} is still on the page");
+            }
+            assert!(!page["tags"].as_str().unwrap_or_default().split(' ').any(|t| t == "SELECT"), "{lang}: no type filter");
+            let text = page["text"].as_str().unwrap_or_default();
+            assert!(!text.contains('☰'), "{lang}: no side menu");
+            for old in words.old {
+                assert!(!text.contains(old), "{lang}: {old:?} is still on the page");
+            }
+            // Cada onda e cada tarefa num lugar só: nenhum item de onda vira
+            // cartão de aba, e o título de cada tarefa aparece uma vez na tela.
+            for section in wave1["sections"].as_array().expect("sections") {
+                for item in section["items"].as_array().expect("items") {
+                    let kind = item["type"].as_str().unwrap_or_default();
+                    assert!(!["wave", "task", "send", "delivered", "commit"].contains(&kind), "{lang}: {kind} in a tab: {item}");
+                }
+            }
+            let shown = wave1["shown"].as_str().unwrap_or_default();
+            for title in task_titles {
+                assert_eq!(shown.matches(title).count(), 1, "{lang}: {title:?} once on screen:\n{shown}");
+            }
+            for wave_text in ["O lote do chão.", "O lote do meio.", "O lote de cima."] {
+                assert!(!shown.contains(wave_text), "{lang}: {wave_text:?} outside the chart and its detail");
+            }
+            // Cada número dos quadros é dito uma vez só na tela.
+            for (_, value, lines) in words.tiles {
+                for said in std::iter::once(&value).chain(lines.iter()) {
+                    assert_eq!(shown.matches(said).count(), 1, "{lang}: {said:?} said once:\n{shown}");
+                }
+            }
+            // O .md baixado tem todo item da spec, e as abas na ordem.
+            let md = got["md"]["data"].as_str().expect("the downloaded .md");
+            for id in lines.iter().filter_map(|l| l["id"].as_u64()) {
+                let c = code(id);
+                assert!(md.contains(&format!("**{c}**")), "{lang}: {c} missing from the .md:\n{md}");
+            }
+            let at: Vec<usize> = words.tabs.iter().map(|t| md.find(&format!("\n## {t}\n")).unwrap_or_else(|| panic!("{lang}: no {t} in the .md"))).collect();
+            assert!(at.windows(2).all(|w| w[0] < w[1]), "{lang}: the tabs in order in the .md: {at:?}");
+            assert_md_matches_the_whole_page(md, page);
+            // A palavra antiga não aparece na página que a pessoa vê nem no
+            // molde publicado. Ela vai em pedaços: o teste do vocabulário cai
+            // quando ela aparece inteira em qualquer arquivo do Mustard.
+            let seen = text.to_lowercase();
+            let template = template.to_lowercase();
+            for word in [concat!("ces", "ta"), concat!("bas", "ket")] {
+                assert!(!seen.contains(word), "{lang}: {word} on the page");
+                assert!(!template.contains(word), "{lang}: {word} in the template");
+            }
+        }
+    }
+
+    /// As cores do painel moram em variáveis, com o tema escuro pelo sistema
+    /// e pela escolha da página, e o painel ocupa a largura toda, sem teto
+    /// de largura do texto, e cabe na tela do celular.
+    #[test]
+    fn o_painel_segue_o_tema_e_cabe_no_celular() {
+        let html = spec_page_template(Locale::PtBr);
+        for piece in [
+            ":root{",
+            "@media (prefers-color-scheme: dark){:root:not([data-theme=\"light\"]){",
+            ":root[data-theme=\"dark\"]{",
+            "color-scheme:dark",
+            "@media (max-width:560px)",
+        ] {
+            assert!(html.contains(piece), "{piece:?} is not in the template");
+        }
+        let body = html.split("\nbody{").nth(1).and_then(|b| b.split('}').next()).unwrap_or_default();
+        assert!(body.contains("background"), "the body has its own background: {body}");
+        let page = html.split("\n.page{").nth(1).and_then(|b| b.split('}').next()).unwrap_or_default();
+        assert!(!page.is_empty() && !page.contains("max-width"), "the page takes the whole width: {page}");
     }
 
     /// Todo texto que os templates citam existe nos dois idiomas, e o

@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+const DEFAULT_LABEL = '';
+
 interface Identifiable
 {
     public function id(): int;

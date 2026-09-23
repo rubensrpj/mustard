@@ -108,7 +108,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // conversation.
         ("pending.gate.block", Locale::PtBr) => {
             "[Mustard] A spec {spec} fechou neste turno, e a mensagem final não cita {count} das \
-             pendências abertas que nasceram nela: {items}. O trabalho combinado sobrevive à spec \
+             pendências abertas que nasceram nela: {items}. Os requisitos acordados sobrevivem à spec \
              que fechou: reescreva a mensagem de fechamento citando cada uma pelo título, sem o \
              número. Uma pendência que não vale mais só sai da lista com um motivo: \
              `mustard-rt run pending --close <id> --reason \"…\"` quando foi entregue, ou \
@@ -116,7 +116,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("pending.gate.block", Locale::EnUs) => {
             "[Mustard] The spec {spec} closed in this turn, and the final message does not name \
-             {count} of the open pending items born in it: {items}. Agreed work outlives the spec \
+             {count} of the open pending items born in it: {items}. The agreed requirements outlive the spec \
              that closed: rewrite the closing message naming each one by title, without the \
              number. An item that no longer stands leaves the list only with a reason: \
              `mustard-rt run pending --close <id> --reason \"…\"` when it was delivered, or \
@@ -126,12 +126,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // o título repetido, sem ligar para maiúscula nem acento.
         ("pending.duplicate", Locale::PtBr) => {
             "Já existe uma pendência aberta com esse título: {id} \"{title}\". Nada foi gravado. \
-             Para mudar o combinado, feche a antiga com `mustard-rt run pending --close {id} \
+             Para mudar os requisitos acordados, feche a antiga com `mustard-rt run pending --close {id} \
              --reason \"…\"` ou use outro título."
         }
         ("pending.duplicate", Locale::EnUs) => {
             "An open pending item already has this title: {id} \"{title}\". Nothing was written. \
-             To change what was agreed, close the old one with `mustard-rt run pending --close \
+             To change the agreed requirements, close the old one with `mustard-rt run pending --close \
              {id} --reason \"…\"` or pick another title."
         }
         _ => return None,
@@ -152,7 +152,7 @@ mod tests {
             include_str!("pending.rs"),
             super::PREFIXES,
             14,
-            0xcb66_b5e0_929d_1da5,
+            0xd0a5_d238_e308_6818,
         );
     }
 

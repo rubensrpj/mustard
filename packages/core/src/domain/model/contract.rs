@@ -609,6 +609,15 @@ mod tests {
         let input: HookInput = serde_json::from_str(raw).expect("lenient parse");
         assert_eq!(input.raw["worktree_path"], serde_json::json!("/tmp/wt"));
         assert_eq!(input.raw["name"], serde_json::json!("onda-2"));
+
+        // The ratchet the two `raw` reads above do NOT give: they would still
+        // pass with the pair of lifecycle events back in the contract, since a
+        // `Trigger` variant costs `HookInput` no field. `WorktreeCreate` and
+        // `WorktreeRemove` are the two events nothing registers and nothing
+        // dispatches, so the contract must not name them at all — reintroducing
+        // either as a `Trigger` fails here.
+        assert_eq!(Trigger::from_event_name("WorktreeCreate"), None);
+        assert_eq!(Trigger::from_event_name("WorktreeRemove"), None);
     }
 
     #[test]

@@ -79,6 +79,11 @@ grammar_go = { package = "tree-sitter-go", version = "0.25" }
 grammar_php = { package = "tree-sitter-php", version = "0.24" }
 grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.6" }
 
+[dev-dependencies]
+# Each test builds its project in a TempDir, which deletes the folder when it
+# goes out of scope — also when the test panics (the workspace keeps unwinding).
+tempfile = { workspace = true }
+
 [build-dependencies]
 # Used only at build time to read the external language registry and embed the
 # .scm query files. No language knowledge lives in the Rust source.

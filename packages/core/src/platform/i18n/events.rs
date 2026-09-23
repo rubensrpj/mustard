@@ -50,6 +50,56 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.task_declaration_files", Locale::EnUs) => "the files it touches",
         ("spec_events.task_declaration_depends_on", Locale::PtBr) => "de quais tarefas depende",
         ("spec_events.task_declaration_depends_on", Locale::EnUs) => "which tasks it depends on",
+        ("spec_events.task_declaration_title", Locale::PtBr) => {
+            "um título curto, de até 70 caracteres, que diga o que ela entrega, e não o que a coisa \
+             é (exemplo: \"Fechamento confere cada critério contra o código\")"
+        }
+        ("spec_events.task_declaration_title", Locale::EnUs) => {
+            "a short title, of up to 70 characters, saying what it delivers, not what the thing is \
+             (example: \"Closing checks each criterion against the code\")"
+        }
+        ("spec_events.task_depends_on_unknown", Locale::PtBr) => {
+            "A tarefa {task} depende de {depends_on}, que não existe nesta spec. Nada foi gravado."
+        }
+        ("spec_events.task_depends_on_unknown", Locale::EnUs) => {
+            "Task {task} depends on {depends_on}, which does not exist in this spec. Nothing was \
+             written."
+        }
+        ("spec_events.task_dependency_cycle", Locale::PtBr) => {
+            "As tarefas dependem umas das outras em círculo: {cycle}. Nada foi gravado."
+        }
+        ("spec_events.task_dependency_cycle", Locale::EnUs) => {
+            "The tasks depend on each other in a circle: {cycle}. Nothing was written."
+        }
+        ("spec_events.agreed_items_missing", Locale::PtBr) => {
+            "O veredito final precisa responder por todos os requisitos acordados vigentes: faltou {missing}. \
+             Nada foi gravado."
+        }
+        ("spec_events.agreed_items_missing", Locale::EnUs) => {
+            "The final verdict must answer for all the vigent agreed requirements: {missing} is missing. \
+             Nothing was written."
+        }
+        ("spec_events.criterion_form_missing", Locale::PtBr) => {
+            "O critério precisa declarar a forma dele, uma das cinco do padrão: a que vale sempre, a \
+             disparada por um acontecimento, a que só vale enquanto um estado durar, a que só vale se \
+             um recurso existir, ou a que trata um acontecimento indesejado. Nada foi gravado."
+        }
+        ("spec_events.criterion_form_missing", Locale::EnUs) => {
+            "The criterion must declare its form, one of the pattern's five: the kind that always \
+             holds, the kind triggered by an event, the kind that only holds while a state lasts, the \
+             kind that only holds if a resource exists, or the kind that handles an unwanted event. \
+             Nothing was written."
+        }
+        ("spec_events.proof_not_a_command", Locale::PtBr) => {
+            "A prova do critério {criterion} precisa ser uma linha de comando, a que demonstra o \
+             critério, e veio {found}. Junte as provas do mesmo critério num comando só e repita a \
+             rodada. Nada foi gravado."
+        }
+        ("spec_events.proof_not_a_command", Locale::EnUs) => {
+            "Criterion {criterion}'s proof must be a command line, the one that demonstrates the \
+             criterion, and {found} arrived instead. Merge the proofs of the same criterion into a \
+             single command and run the round again. Nothing was written."
+        }
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -125,8 +175,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Pending item {pending} is already closed or dropped. A deferred request points to an \
              open item: create another one with `mustard-rt run pending --add`. Nothing was written."
         }
-        ("spec_events.waves_grew", Locale::PtBr) => "A spec tinha {approved} ondas aprovadas, agora tem {now}.",
-        ("spec_events.waves_grew", Locale::EnUs) => "The spec had {approved} approved waves, now it has {now}.",
         ("spec_events.goal_origin_not_user", Locale::PtBr) => {
             "O primeiro `context` da spec {spec} é o objetivo, e ele aponta em `origin` a mensagem \
              do usuário que o define. Grave o objetivo em `text` e, em `origin`, o número dessa \
@@ -351,6 +399,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The author `binary` is kept for the writes made inside the binary, and nothing was \
              written: `run write` records the author who writes, `assistant` (the default) or `user`."
         }
+        ("spec_events.wave_by_backlog", Locale::PtBr) => {
+            "A onda não é gravada pelo `run write`, e nada foi gravado: a onda nasce do backlog, e é \
+             o programa que monta o lote na hora de despachar. Grave só a tarefa, sem `wave`, com o \
+             que ela faz (`text`), os arquivos (`files`) e as tarefas de que depende \
+             (`depends_on`). Na versão nova de uma tarefa que já está numa onda, repita o `wave` da \
+             versão que ela substitui."
+        }
+        ("spec_events.wave_by_backlog", Locale::EnUs) => {
+            "A wave is not written by `run write`, and nothing was written: the wave is born from \
+             the backlog, and the program puts the batch together when it dispatches. Write only \
+             the task, without `wave`, with what it does (`text`), the files (`files`) and the \
+             tasks it depends on (`depends_on`). In the new version of a task that is already in a \
+             wave, repeat the `wave` of the version it replaces."
+        }
         ("spec_events.old_format_spec", Locale::PtBr) => {
             "A spec {spec} está no formato antigo (o `spec.md` dela traz a seção \"Critérios de \
              Aceitação\", ou a pasta tem `meta.json` e nenhum `spec.ndjson`), e o binário não grava \
@@ -544,8 +606,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            78,
-            0x0d1e_d00a_cd1b_9a07,
+            84,
+            0x4596_c2f0_5703_cfaa,
         );
     }
 
@@ -561,6 +623,12 @@ mod tests {
             ("spec_events.task_declaration_what", &[][..]),
             ("spec_events.task_declaration_files", &[][..]),
             ("spec_events.task_declaration_depends_on", &[][..]),
+            ("spec_events.task_declaration_title", &[][..]),
+            ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
+            ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
+            ("spec_events.agreed_items_missing", &["{missing}"][..]),
+            ("spec_events.criterion_form_missing", &[][..]),
+            ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),
@@ -569,7 +637,6 @@ mod tests {
             ("spec_events.name_elsewhere", &["{fact}", "{name}", "{path}", "{found}"][..]),
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
             ("spec_events.names_unchecked", &[][..]),
-            ("spec_events.waves_grew", &["{approved}", "{now}"][..]),
             ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
             ("spec_events.survey_not_started", &["{spec}"][..]),
@@ -601,6 +668,7 @@ mod tests {
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
             ("spec_events.binary_author", &[][..]),
+            ("spec_events.wave_by_backlog", &[][..]),
             ("spec_events.user_message_by_hook", &["{spec}"][..]),
             ("spec_events.old_format_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),

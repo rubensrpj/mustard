@@ -22,6 +22,35 @@ use super::report::WaveReport;
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::spec_events::write::record;
 
+/// A entrega pede commit? Só quando mudou arquivo: a onda que volta sem
+/// arquivo mudado fecha como conferência, sem commit. É a leitura única dessa
+/// decisão — a rodada a usa ao escolher o que comitar ([`commit_message`]) e
+/// o fechamento, por [`waves_checked_only`], ao cobrar o commit de cada onda
+/// —, para as duas nunca discordarem de quando uma onda termina sem commit.
+pub(crate) fn needs_commit(files: &[String]) -> bool {
+    !files.is_empty()
+}
+
+/// As ondas cuja entrega mais recente não mudou arquivo: fecharam como
+/// conferência, pela mesma leitura da rodada ([`needs_commit`]), e não têm
+/// commit a cobrar. A onda cuja entrega mais recente mudou arquivo fica de
+/// fora, e a onda sem entrega nenhuma também.
+pub(crate) fn waves_checked_only(log: &SpecLog) -> BTreeSet<u64> {
+    log.last_by_wave("delivered")
+        .into_iter()
+        .filter(|(_, id)| {
+            let files: Vec<String> = log
+                .get(*id)
+                .and_then(|delivery| delivery.fields.get("files"))
+                .and_then(Value::as_array)
+                .map(|files| files.iter().map(|f| f.as_str().map_or_else(|| f.to_string(), str::to_string)).collect())
+                .unwrap_or_default();
+            !needs_commit(&files)
+        })
+        .map(|(wave, _)| wave)
+        .collect()
+}
+
 /// A mensagem do commit da rodada, montada do resumo que cada entrega traz e
 /// já conferida: o título no molde do repositório (`tipo(escopo): frase`),
 /// com o resumo da primeira onda, e o corpo com uma linha por onda. O tipo é
@@ -30,7 +59,7 @@ use crate::commands::spec_events::write::record;
 pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Option<(String, String)>, RoundRefusal> {
     let committed: Vec<(&WaveReport, &str)> = waves
         .iter()
-        .filter(|w| !w.files.is_empty())
+        .filter(|w| needs_commit(&w.files))
         .filter_map(|w| w.commit.as_deref().map(|summary| (w, summary)))
         .collect();
     let Some((_, first)) = committed.first() else {
@@ -213,6 +242,19 @@ pub(super) fn git_lock(root: &Path) -> Result<LockedFile, RoundRefusal> {
 /// O commit atual do checkout `root`; vazio quando o git não responde.
 pub(super) fn head(root: &Path) -> String {
     git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string()
+}
+
+/// O commit em que a cópia `copy_repo` nasceu: o antepassado comum dela com
+/// o repositório `root_repo` agora, e não o HEAD dela. Usar o HEAD faria a
+/// junção não enxergar nada para trazer de uma cópia que ganhou commit
+/// próprio — o disco dela já bate com esse HEAD, então a comparação sairia
+/// sempre igual, e o arquivo comitado dentro da cópia nunca chegaria ao
+/// repositório principal. A cópia é um checkout ligado (`git worktree`) do
+/// mesmo repositório, então o antepassado comum sempre existe.
+fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
+    let root_head = git(root_repo, &["rev-parse", "HEAD"])?;
+    let base = git(copy_repo, &["merge-base", "HEAD", root_head.trim()])?;
+    Ok(base.trim().to_string())
 }
 
 /// Depois do commit da rodada, o mapa relê só os arquivos que mudaram, pela
@@ -544,8 +586,8 @@ pub(super) fn join_copies(
             let (copy_repo, inner) = repo_of(&copy, &subs, file);
             let (root_repo, _) = repo_of(root, &subs, file);
             if !bases.contains_key(&copy_repo) {
-                let base = git(&copy_repo, &["rev-parse", "HEAD"]).map_err(|detail| RoundRefusal::Git { detail })?;
-                bases.insert(copy_repo.clone(), base.trim().to_string());
+                let base = fork_point(&copy_repo, &root_repo).map_err(|detail| RoundRefusal::Git { detail })?;
+                bases.insert(copy_repo.clone(), base);
             }
             let base = bases.get(&copy_repo).cloned().unwrap_or_default();
             let theirs = std::fs::read(copy.join(file)).ok();
@@ -710,11 +752,39 @@ pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
     Err(RoundRefusal::BuildFailed { command: build, output: out.output })
 }
 
+/// A prova de cada critério que as ondas de `waves` cobrem roda, uma de cada
+/// vez e na ordem do código, antes do commit da rodada — o mesmo laço que o
+/// fechamento roda para os critérios da spec inteira
+/// ([`crate::commands::review::qa_run::run_criteria_proofs`]), aqui só com
+/// os critérios que estas ondas apontam. A que não executa ou não passa
+/// recusa com o código do critério, o comando inteiro e a saída de erro, e a
+/// rodada não comita nada.
+pub(super) fn ensure_criteria_proofs(root: &Path, log: &SpecLog, waves: &[u64]) -> Result<(), RoundRefusal> {
+    let codes = log.codes();
+    let criteria: Vec<(u64, String, String)> = log
+        .criteria_for_waves(waves)
+        .into_iter()
+        .filter_map(|e| {
+            let proof = e.str_field("proof")?.trim().to_string();
+            Some((e.id, codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()), proof))
+        })
+        .collect();
+    let (_, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
+    match failed {
+        Some(failed) => {
+            Err(RoundRefusal::CriterionProofFailed { code: failed.code, command: failed.command, output: failed.output })
+        }
+        None => Ok(()),
+    }
+}
+
 /// Apaga a cópia de cada onda do relatório, depois do commit, com a cópia de
 /// cada submódulo dentro dela. A lista de arquivos de cada onda já foi
 /// trocada, antes do commit, pelo que a cópia mudou de fato — por isso a
 /// cópia só fica quando o próprio git não deixa removê-la, e o aviso mostra
-/// qual é.
+/// qual é. Não reinstala mais o binário: a rodada só comita e limpa a
+/// cópia, e a reinstalação passou a acontecer uma vez só, no fechamento,
+/// depois da aprovação final (`close.rs`).
 pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<Value> {
     let subs = submodules_of(root);
     let mut warnings = Vec::new();
@@ -740,7 +810,6 @@ pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lan
             warnings.push(json!({ "reason": "copy-kept", "wave": wave.wave, "hint": hint }));
         }
     }
-    warnings.extend(reinstall_binary(root, waves, lang));
     warnings
 }
 
@@ -750,20 +819,24 @@ pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lan
 /// errado nunca deixa o binário instalado pela metade.
 const REINSTALL_COMMAND: &str = "cargo install --path apps/rt --force";
 
-/// Recompila e reinstala o binário do próprio Mustard ao fim da rodada, pela
-/// decisão registrada na spec: a obra do Mustard é conduzida pelo próprio
-/// Mustard, e por isso cada rodada passa a usar a versão que ela mesma
-/// acabou de construir. A compilação de antes do commit ([`ensure_builds`])
-/// já provou que o repositório principal compila com o que a rodada comitou;
-/// falta a suíte inteira, que só ela prova de verdade. Sem onda comitada
-/// nesta rodada, sem comando de teste declarado no `mustard.json`, ou fora
-/// da raiz que constrói o próprio `mustard-rt` (sem `apps/rt/Cargo.toml`),
-/// nada roda: a rodada de outro projeto nunca tenta instalar o binário de
-/// ninguém, e uma rodada vazia não reinstala à toa. Com a suíte vermelha, ou
-/// com a instalação em si falhando depois da suíte verde, o binário
-/// instalado continua o de antes e o aviso mostra o comando e a saída.
-pub(super) fn reinstall_binary(root: &Path, waves: &[WaveReport], lang: Locale) -> Option<Value> {
-    reinstall_with(root, waves, lang, &|command, cwd| crate::commands::review::qa_run::run_command(command, cwd))
+/// Recompila e reinstala o binário do próprio Mustard, pela decisão
+/// registrada na spec: a obra do Mustard é conduzida pelo próprio Mustard, e
+/// por isso a troca do binário instalado passa a acontecer uma vez só, no
+/// fechamento, depois da aprovação final — nunca a cada rodada. A
+/// compilação de antes do commit ([`ensure_builds`]) já provou que o
+/// repositório principal compila com o que a rodada comitou; falta a suíte
+/// inteira, que só ela prova de verdade. Sem nenhuma onda entregue na spec
+/// inteira (`has_delivered`), sem comando de teste declarado no
+/// `mustard.json`, ou fora da raiz que constrói o próprio `mustard-rt` (sem
+/// `apps/rt/Cargo.toml`), nada roda: o fechamento de outro projeto nunca
+/// tenta instalar o binário de ninguém, e uma spec sem nada entregue não
+/// reinstala à toa. Com a suíte vermelha, ou com a instalação em si
+/// falhando depois da suíte verde, o binário instalado continua o de antes
+/// e o aviso mostra o comando e a saída.
+pub(crate) fn reinstall_binary(root: &Path, has_delivered: bool, lang: Locale) -> Option<Value> {
+    reinstall_with(root, has_delivered, lang, &|command, cwd| {
+        crate::commands::review::qa_run::run_command(command, cwd)
+    })
 }
 
 /// [`reinstall_binary`] com o executor recebido, que é como um teste prova a
@@ -772,11 +845,11 @@ pub(super) fn reinstall_binary(root: &Path, waves: &[WaveReport], lang: Locale) 
 /// de verdade nem tocar no binário instalado desta máquina.
 fn reinstall_with(
     root: &Path,
-    waves: &[WaveReport],
+    has_delivered: bool,
     lang: Locale,
     exec: &dyn Fn(&str, &Path) -> crate::commands::review::qa_run::ProofRun,
 ) -> Option<Value> {
-    if waves.is_empty() || !root.join("apps/rt/Cargo.toml").is_file() {
+    if !has_delivered || !root.join("apps/rt/Cargo.toml").is_file() {
         return None;
     }
     let test = mustard_core::ProjectConfig::load(root).commands().test?;
@@ -1134,7 +1207,16 @@ mod tests {
             .replace("{changed}", "2")
             .replace("{declared}", "1")
             .replace("{missing}", "src/esquecido.rs");
-        assert_eq!(out["warnings"], json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
+        // O aviso da onda que entregou sem linha de consumo é de outro
+        // assunto e sai junto: aqui se olha o resto.
+        let warned: Vec<Value> = out["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w["reason"] != json!("usage-missing"))
+            .collect();
+        assert_eq!(json!(warned), json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
     }
 
     /// Cada relatório de `wrong` é recusado pelo git, com o motivo que o git
@@ -1334,6 +1416,37 @@ mod tests {
         refused_by_git_records_nothing(root, &unchanged, || {}, &["src/a.rs"]);
     }
 
+    /// Quando a cópia de uma onda chega com commit próprio, à frente do
+    /// commit em que nasceu, e nada mudado fora dele — o `git status` dela
+    /// sai limpo —, a rodada junta ao repositório principal o que esse
+    /// commit mudou, em vez de recusar como no teste acima: usar o HEAD da
+    /// cópia como base da comparação (o defeito de 22/09/2026) faria a
+    /// junção comparar a cópia contra ela mesma, sem achar diferença
+    /// nenhuma, e o commit do repositório principal saísse sem nada a
+    /// comitar.
+    #[test]
+    fn a_rodada_junta_a_copia_que_veio_comitada() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let copy = copy_of(&log, 1).expect("a onda 1 ganhou cópia");
+        std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        git_at(&copy, &["add", "-A"]);
+        git_at(&copy, &["commit", "-q", "-m", "o agente comitou dentro da cópia"]);
+
+        let report =
+            line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"}));
+        let out = round(root, "x", Some(&report));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let content = std::fs::read_to_string(root.join("src/a.rs")).unwrap();
+        assert!(content.contains("A soma saiu."), "o que a cópia comitou chegou ao repositório principal: {content}");
+        assert_eq!(delivered_count(root), 1, "{out}");
+    }
+
     /// Num projeto sem formatador configurado nada é formatado e nada é
     /// avisado; num projeto com Prettier configurado e sem Prettier no disco,
     /// o aviso sai com o nome do formatador, em vez de a formatação ser
@@ -1452,12 +1565,12 @@ mod tests {
         }
     }
 
-    /// Sem onda comitada nesta rodada, ou fora da raiz que constrói o
+    /// Sem nenhuma onda entregue na spec, ou fora da raiz que constrói o
     /// próprio `mustard-rt` (sem `apps/rt/Cargo.toml`), a reinstalação nunca
     /// chama o executor: nenhum projeto alheio tenta instalar o binário de
-    /// ninguém, e uma rodada vazia não reinstala à toa.
+    /// ninguém, e uma spec sem nada entregue não reinstala à toa.
     #[test]
-    fn reinstall_never_calls_the_executor_without_a_committed_wave_or_outside_mustards_own_repo() {
+    fn reinstall_never_calls_the_executor_without_a_delivered_wave_or_outside_mustards_own_repo() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let calls = std::cell::Cell::new(0);
@@ -1466,14 +1579,14 @@ mod tests {
             proof("pass", "")
         };
 
-        // Com apps/rt/Cargo.toml, mas sem nenhuma onda comitada nesta rodada.
+        // Com apps/rt/Cargo.toml, mas sem nenhuma onda entregue na spec.
         mustard_like_root(root, "exit 0");
-        assert!(reinstall_with(root, &[], Locale::PtBr, &counting).is_none());
-        assert_eq!(calls.get(), 0, "rodada vazia: o executor nunca é chamado");
+        assert!(reinstall_with(root, false, Locale::PtBr, &counting).is_none());
+        assert_eq!(calls.get(), 0, "sem entrega: o executor nunca é chamado");
 
-        // Com onda, mas fora da raiz que constrói o mustard-rt.
+        // Com entrega, mas fora da raiz que constrói o mustard-rt.
         std::fs::remove_file(root.join("apps/rt/Cargo.toml")).unwrap();
-        assert!(reinstall_with(root, &[minimal_wave(1)], Locale::PtBr, &counting).is_none());
+        assert!(reinstall_with(root, true, Locale::PtBr, &counting).is_none());
         assert_eq!(calls.get(), 0, "fora do próprio Mustard: o executor nunca é chamado");
     }
 
@@ -1493,7 +1606,7 @@ mod tests {
             }
             proof("fail", "3 testes falharam")
         };
-        let warning = reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).expect("aviso de suíte vermelha");
+        let warning = reinstall_with(root, true, Locale::PtBr, &exec).expect("aviso de suíte vermelha");
         assert_eq!(warning["reason"], json!("binary-not-reinstalled"), "{warning}");
         let hint = warning["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("a suíte de teste"), "{warning}");
@@ -1514,7 +1627,7 @@ mod tests {
             commands.borrow_mut().push(command.to_string());
             proof("pass", "")
         };
-        assert!(reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).is_none(), "suíte e instalação verdes: sem aviso");
+        assert!(reinstall_with(root, true, Locale::PtBr, &exec).is_none(), "suíte e instalação verdes: sem aviso");
         assert_eq!(commands.into_inner(), vec!["a suíte de teste".to_string(), REINSTALL_COMMAND.to_string()]);
     }
 
@@ -1531,7 +1644,7 @@ mod tests {
             if command == REINSTALL_COMMAND { proof("fail", "disco cheio") } else { proof("pass", "") }
         };
         let warning =
-            reinstall_with(root, &[minimal_wave(9)], Locale::PtBr, &exec).expect("aviso de instalação vermelha");
+            reinstall_with(root, true, Locale::PtBr, &exec).expect("aviso de instalação vermelha");
         assert_eq!(warning["reason"], json!("binary-not-reinstalled"), "{warning}");
         let hint = warning["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(REINSTALL_COMMAND), "{warning}");
@@ -1539,32 +1652,21 @@ mod tests {
         assert!(!hint.contains("a suíte de teste"), "o aviso é da instalação, não da suíte: {warning}");
     }
 
-    /// A trilha que a rodada usa de verdade: `close_copies`, chamada depois
-    /// do commit, já traz o aviso de reinstalação — sem precisar montar a
-    /// rodada inteira. Prova a ligação, não só a função auxiliar.
+    /// A rodada não troca mais o binário instalado: `close_copies`, chamada
+    /// depois de cada commit, nunca avisa de reinstalação — mesmo com uma
+    /// onda entregue e a suíte do projeto vermelha, o caso que antes fazia
+    /// a rodada tentar reinstalar e avisar. A troca passou para o
+    /// fechamento, depois da aprovação final ([`super::super::close`]).
     #[test]
-    fn close_copies_warns_when_the_suite_fails_to_reinstall_the_binary() {
+    fn a_rodada_nao_troca_o_binario_instalado() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         mustard_like_root(root, "exit 1");
         let log = SpecLog::default();
         let warnings = close_copies(root, &log, &[minimal_wave(9)], Locale::PtBr);
-        let warning = warnings
-            .iter()
-            .find(|w| w["reason"] == json!("binary-not-reinstalled"))
-            .unwrap_or_else(|| panic!("nenhum aviso de reinstalação: {warnings:?}"));
-        assert!(warning["hint"].as_str().unwrap_or_default().contains("exit 1"), "{warning}");
-    }
-
-    /// Sem onda comitada nesta rodada, `close_copies` nunca tenta reinstalar
-    /// nada — nem o aviso de suíte vermelha aparece.
-    #[test]
-    fn close_copies_never_warns_about_reinstalling_without_a_wave_this_round() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        mustard_like_root(root, "exit 1");
-        let log = SpecLog::default();
-        let warnings = close_copies(root, &log, &[], Locale::PtBr);
-        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            warnings.iter().all(|w| w["reason"] != json!("binary-not-reinstalled")),
+            "a rodada não tenta mais reinstalar: {warnings:?}"
+        );
     }
 }

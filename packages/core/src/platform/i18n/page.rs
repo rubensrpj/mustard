@@ -22,13 +22,32 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.copy.publish", Locale::PtBr) => {
             "A {page} ainda não foi publicada: publique o template `{template}` com a ferramenta \
              `Artifact`, passando em `capabilities` o valor `{capabilities}`, e grave o endereço com \
-             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"…\"}'`, \
              com `\"ok\":false` e `\"reason\"` quando falhar."
         }
         ("page.copy.publish", Locale::EnUs) => {
             "The {page} is not published yet: publish the template `{template}` with the `Artifact` \
              tool, passing `{capabilities}` as `capabilities`, and record the address with \
-             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"url\":\"…\"}'`, \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"…\"}'`, \
+             with `\"ok\":false` and a `\"reason\"` when it fails."
+        }
+        // A página já publicada com um molde de outro carimbo, ou sem carimbo,
+        // é publicada de novo no mesmo endereço, antes do lote de cópia: o
+        // banco dela continua lá, e a cópia segue de onde parou.
+        ("page.copy.republish", Locale::PtBr) => {
+            "A {page} foi publicada com um molde diferente do que esta versão do Mustard monta: \
+             publique de novo o template `{template}` com a ferramenta `Artifact` no mesmo endereço, \
+             {url}, passando em `capabilities` o valor `{capabilities}`, antes de copiar os lotes, e \
+             grave a publicação com \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
+             com `\"ok\":false` e `\"reason\"` quando falhar."
+        }
+        ("page.copy.republish", Locale::EnUs) => {
+            "The {page} was published with a template other than the one this Mustard version builds: \
+             publish the template `{template}` again with the `Artifact` tool at the same address, \
+             {url}, passing `{capabilities}` as `capabilities`, before copying the batches, and record \
+             the publication with \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
         // A página da spec, ou a do projeto, que uma versão antiga publicou
@@ -187,10 +206,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("page.watch_failed", Locale::PtBr) => "Não deu para conferir se há dados novos. Recarregue a página.",
         ("page.watch_failed", Locale::EnUs) => "Could not check for new data. Reload the page.",
-        ("page.filter.label", Locale::PtBr) => "Filtrar por tipo",
-        ("page.filter.label", Locale::EnUs) => "Filter by type",
-        ("page.filter.all", Locale::PtBr) => "Todos os tipos",
-        ("page.filter.all", Locale::EnUs) => "All types",
         ("page.download", Locale::PtBr) => "Baixar .md",
         ("page.download", Locale::EnUs) => "Download .md",
         ("page.wave.full", Locale::PtBr) => "com o texto de cada item no lugar do código",
@@ -218,15 +233,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A página e o `.md` de uma spec (`view::document`): os títulos das
         // seções e dos grupos, os nomes dos tipos, os rótulos dos campos e
         // dos valores.
-        ("page.group.metrics", Locale::PtBr) => "Medição",
-        ("page.group.metrics", Locale::EnUs) => "Measurement",
-        ("page.group.state", Locale::PtBr) => "Fases e publicações",
-        ("page.group.state", Locale::EnUs) => "Phases and publications",
-        ("page.group.commits", _) => "Commits",
         ("page.group.criterion", Locale::PtBr) => "Critérios de aceite",
         ("page.group.criterion", Locale::EnUs) => "Acceptance criteria",
-        ("page.group.day", Locale::PtBr) => "Dia {day}",
-        ("page.group.day", Locale::EnUs) => "Day {day}",
         ("page.findings.tasks", Locale::PtBr) => "Sobre tarefas",
         ("page.findings.tasks", Locale::EnUs) => "About tasks",
         ("page.findings.waves", Locale::PtBr) => "Sobre ondas",
@@ -241,18 +249,33 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.findings.skills", Locale::EnUs) => "About skills",
         ("page.findings.others", Locale::PtBr) => "Outros",
         ("page.findings.others", Locale::EnUs) => "Others",
-        ("page.block.agreed", Locale::PtBr) => "Combinado",
-        ("page.block.agreed", Locale::EnUs) => "Agreed",
+        ("page.block.agreed", Locale::PtBr) => "Requisitos acordados",
+        ("page.block.agreed", Locale::EnUs) => "Agreed requirements",
         ("page.block.specification", Locale::PtBr) => "Especificação",
         ("page.block.specification", Locale::EnUs) => "Specification",
         ("page.block.criteria", Locale::PtBr) => "Critérios",
         ("page.block.criteria", Locale::EnUs) => "Criteria",
+        ("page.block.backlog", _) => "Backlog",
         ("page.block.waves", Locale::PtBr) => "Ondas",
         ("page.block.waves", Locale::EnUs) => "Waves",
         ("page.block.review", Locale::PtBr) => "Revisão e QA",
         ("page.block.review", Locale::EnUs) => "Review and QA",
         ("page.review.final", Locale::PtBr) => "Veredito final",
         ("page.review.final", Locale::EnUs) => "Final verdict",
+        ("page.group.tracking", Locale::PtBr) => "Matriz de rastreabilidade",
+        ("page.group.tracking", Locale::EnUs) => "Traceability matrix",
+        ("page.tracking.col.item", Locale::PtBr) => "Item",
+        ("page.tracking.col.item", Locale::EnUs) => "Item",
+        ("page.tracking.col.verification", Locale::PtBr) => "Verificação",
+        ("page.tracking.col.verification", Locale::EnUs) => "Verification",
+        ("page.tracking.col.file", Locale::PtBr) => "Arquivo",
+        ("page.tracking.col.file", Locale::EnUs) => "File",
+        ("page.tracking.col.met", Locale::PtBr) => "Situação",
+        ("page.tracking.col.met", Locale::EnUs) => "Status",
+        ("page.value.met", Locale::PtBr) => "atendido",
+        ("page.value.met", Locale::EnUs) => "met",
+        ("page.value.unmet", Locale::PtBr) => "não atendido",
+        ("page.value.unmet", Locale::EnUs) => "not met",
         ("page.block.progress", Locale::PtBr) => "Andamento",
         ("page.block.progress", Locale::EnUs) => "Progress",
         ("page.block.notes", Locale::PtBr) => "Anotações",
@@ -263,15 +286,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.block.conversation", Locale::EnUs) => "Conversation",
 
         ("page.kind.spec", _) => "spec",
-        ("page.meta.spec", _) => "spec",
 
         ("page.meta.phase", Locale::PtBr) => "fase",
         ("page.meta.phase", Locale::EnUs) => "phase",
         ("page.meta.branch", _) => "branch",
-        ("page.meta.base", Locale::PtBr) => "sai de",
-        ("page.meta.base", Locale::EnUs) => "cut from",
-        ("page.empty", Locale::PtBr) => "Nada registrado ainda.",
-        ("page.empty", Locale::EnUs) => "Nothing recorded yet.",
         ("page.replaced", Locale::PtBr) => "versão substituída",
         ("page.replaced", Locale::EnUs) => "replaced version",
         ("page.after_approval", Locale::PtBr) => "depois da aprovação",
@@ -282,8 +300,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.wave.prompt.summary", Locale::EnUs) => "{lines} lines, exactly as the agent gets them",
         ("page.wave.heading", Locale::PtBr) => "Onda {n}",
         ("page.wave.heading", Locale::EnUs) => "Wave {n}",
-        ("page.review.wave", Locale::PtBr) => "Revisão da onda {n}",
-        ("page.review.wave", Locale::EnUs) => "Wave {n} review",
         ("page.conversation.cut", Locale::PtBr) => {
             "Os {count} registros mais antigos da conversa ficaram só no `spec.md`: com eles, a página \
              passaria de 16 MB, o tamanho que o claude.ai aceita."
@@ -366,6 +382,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.type.delivered", Locale::EnUs) => "delivered",
         ("page.type.verdict", Locale::PtBr) => "veredito",
         ("page.type.verdict", Locale::EnUs) => "verdict",
+        ("page.type.tracking", Locale::PtBr) => "rastreabilidade",
+        ("page.type.tracking", Locale::EnUs) => "traceability",
         ("page.type.commit", _) => "commit",
         ("page.type.pr_summary", Locale::PtBr) => "resumo do pull request",
         ("page.type.pr_summary", Locale::EnUs) => "pull request summary",
@@ -406,6 +424,159 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.group.criterion_run", Locale::EnUs) => "Runs",
         ("page.group.skill", _) => "Skills",
 
+        // O painel da página da spec: o objetivo, os quatro números, a lista
+        // do que roda agora e do backlog, o gráfico das ondas com o detalhe
+        // da aberta e as abas.
+        ("page.goal", Locale::PtBr) => "Objetivo",
+        ("page.goal", Locale::EnUs) => "Goal",
+        ("page.tiles.label", Locale::PtBr) => "Números",
+        ("page.tiles.label", Locale::EnUs) => "Numbers",
+        ("page.tile.waves", Locale::PtBr) => "Ondas",
+        ("page.tile.waves", Locale::EnUs) => "Waves",
+        ("page.tile.waves.done.one", Locale::PtBr) => "entregue",
+        ("page.tile.waves.done.one", Locale::EnUs) => "delivered",
+        ("page.tile.waves.done.many", Locale::PtBr) => "entregues",
+        ("page.tile.waves.done.many", Locale::EnUs) => "delivered",
+        ("page.tile.waves.running", Locale::PtBr) => "{n} rodando agora",
+        ("page.tile.waves.running", Locale::EnUs) => "{n} running now",
+        ("page.tile.waves.none", Locale::PtBr) => "nenhuma rodando agora",
+        ("page.tile.waves.none", Locale::EnUs) => "none running now",
+        ("page.tile.backlog", _) => "Backlog",
+        ("page.tile.backlog.one", Locale::PtBr) => "tarefa",
+        ("page.tile.backlog.one", Locale::EnUs) => "task",
+        ("page.tile.backlog.many", Locale::PtBr) => "tarefas",
+        ("page.tile.backlog.many", Locale::EnUs) => "tasks",
+        ("page.tile.backlog.ready.one", Locale::PtBr) => "{n} pronta para sair",
+        ("page.tile.backlog.ready.one", Locale::EnUs) => "{n} ready to go",
+        ("page.tile.backlog.ready.many", Locale::PtBr) => "{n} prontas para sair",
+        ("page.tile.backlog.ready.many", Locale::EnUs) => "{n} ready to go",
+        ("page.tile.backlog.none", Locale::PtBr) => "nenhuma pronta para sair",
+        ("page.tile.backlog.none", Locale::EnUs) => "none ready to go",
+        ("page.tile.criteria", Locale::PtBr) => "Critérios",
+        ("page.tile.criteria", Locale::EnUs) => "Criteria",
+        ("page.tile.criteria.of", Locale::PtBr) => "de {total}",
+        ("page.tile.criteria.of", Locale::EnUs) => "of {total}",
+        ("page.tile.criteria.hint", Locale::PtBr) => "com a última prova verde",
+        ("page.tile.criteria.hint", Locale::EnUs) => "with the last proof green",
+        ("page.tile.spend", Locale::PtBr) => "Gasto",
+        ("page.tile.spend", Locale::EnUs) => "Spend",
+        ("page.tile.spend.unit", _) => "tokens",
+        ("page.tile.spend.parts", Locale::PtBr) => "{waves} de onda + {caller} de quem despachou",
+        ("page.tile.spend.parts", Locale::EnUs) => "{waves} of waves + {caller} of the dispatcher",
+        ("page.tile.spend.turns", Locale::PtBr) => "{turns} turnos por tarefa",
+        ("page.tile.spend.turns", Locale::EnUs) => "{turns} turns per task",
+        ("page.tile.spend.rtk", Locale::PtBr) => "o rtk poupou {saved} ({pct}%)",
+        ("page.tile.spend.rtk", Locale::EnUs) => "rtk saved {saved} ({pct}%)",
+        ("page.tile.spend.none", Locale::PtBr) => "nenhum envio medido ainda",
+        ("page.tile.spend.none", Locale::EnUs) => "no send measured yet",
+        ("page.num.million", Locale::PtBr) => "{n} mi",
+        ("page.num.million", Locale::EnUs) => "{n} M",
+        ("page.num.thousand", Locale::PtBr) => "{n} mil",
+        ("page.num.thousand", Locale::EnUs) => "{n} k",
+        ("page.now.heading", Locale::PtBr) => "Agora",
+        ("page.now.heading", Locale::EnUs) => "Now",
+        ("page.now.hint", Locale::PtBr) => "clique numa linha para ver a tarefa inteira",
+        ("page.now.hint", Locale::EnUs) => "click a row to see the whole task",
+        ("page.now.running", Locale::PtBr) => "Rodando",
+        ("page.now.running", Locale::EnUs) => "Running",
+        ("page.now.backlog", Locale::PtBr) => "Backlog · tarefas que ainda não viraram onda",
+        ("page.now.backlog", Locale::EnUs) => "Backlog · tasks not yet in a wave",
+        ("page.now.pill.wave", Locale::PtBr) => "ONDA {n}",
+        ("page.now.pill.wave", Locale::EnUs) => "WAVE {n}",
+        ("page.now.pill.waits", Locale::PtBr) => "ESPERA",
+        ("page.now.pill.waits", Locale::EnUs) => "WAITS",
+        ("page.now.pill.ready", Locale::PtBr) => "PRONTA",
+        ("page.now.pill.ready", Locale::EnUs) => "READY",
+        ("page.now.files.one", Locale::PtBr) => "{n} arquivo",
+        ("page.now.files.one", Locale::EnUs) => "{n} file",
+        ("page.now.files.many", Locale::PtBr) => "{n} arquivos",
+        ("page.now.files.many", Locale::EnUs) => "{n} files",
+        ("page.now.tasks.many", Locale::PtBr) => "{n} tarefas",
+        ("page.now.tasks.many", Locale::EnUs) => "{n} tasks",
+        ("page.now.waits_wave", Locale::PtBr) => "espera a onda {n}",
+        ("page.now.waits_wave", Locale::EnUs) => "waits for wave {n}",
+        ("page.now.waits_waves", Locale::PtBr) => "espera as ondas {list}",
+        ("page.now.waits_waves", Locale::EnUs) => "waits for waves {list}",
+        ("page.now.and", Locale::PtBr) => " e ",
+        ("page.now.and", Locale::EnUs) => " and ",
+        ("page.now.waits_backlog.one", Locale::PtBr) => "espera {n} tarefa do backlog",
+        ("page.now.waits_backlog.one", Locale::EnUs) => "waits for {n} backlog task",
+        ("page.now.waits_backlog.many", Locale::PtBr) => "espera {n} tarefas do backlog",
+        ("page.now.waits_backlog.many", Locale::EnUs) => "waits for {n} backlog tasks",
+        ("page.now.ready", Locale::PtBr) => "pronta para sair",
+        ("page.now.ready", Locale::EnUs) => "ready to go",
+        ("page.now.review_and_close", Locale::PtBr) => "Faltam a revisão final e o fechamento.",
+        ("page.now.review_and_close", Locale::EnUs) => "The final review and the closing are left.",
+        ("page.now.then_review", Locale::PtBr) => "Depois vêm a revisão final e o fechamento.",
+        ("page.now.then_review", Locale::EnUs) => "Then come the final review and the closing.",
+        ("page.now.nothing", Locale::PtBr) => "Nada falta.",
+        ("page.now.nothing", Locale::EnUs) => "Nothing is left.",
+        ("page.wave.state.running", Locale::PtBr) => "em andamento",
+        ("page.wave.state.running", Locale::EnUs) => "in progress",
+        ("page.wave.state.todo", Locale::PtBr) => "espera sair",
+        ("page.wave.state.todo", Locale::EnUs) => "waiting to go out",
+        ("page.wave.state.rejected", Locale::PtBr) => "volta para conserto",
+        ("page.wave.state.rejected", Locale::EnUs) => "back for a fix",
+        ("page.wave.state.delivered", Locale::PtBr) => "entregue",
+        ("page.wave.state.delivered", Locale::EnUs) => "delivered",
+        ("page.wave.state.approved", Locale::PtBr) => "aprovada",
+        ("page.wave.state.approved", Locale::EnUs) => "approved",
+        ("page.chart.hint", Locale::PtBr) => "altura = tokens do envio · clique numa barra para ver a onda",
+        ("page.chart.hint", Locale::EnUs) => "height = send tokens · click a bar to see the wave",
+        ("page.chart.label", Locale::PtBr) => "Tokens do envio de cada onda",
+        ("page.chart.label", Locale::EnUs) => "Send tokens of each wave",
+        ("page.chart.empty", Locale::PtBr) => "Nenhuma onda ainda.",
+        ("page.chart.empty", Locale::EnUs) => "No wave yet.",
+        ("page.chart.bar", Locale::PtBr) => "Onda {n} · {tokens} tokens",
+        ("page.chart.bar", Locale::EnUs) => "Wave {n} · {tokens} tokens",
+        ("page.chart.bar.none", Locale::PtBr) => "Onda {n} · {state}",
+        ("page.chart.bar.none", Locale::EnUs) => "Wave {n} · {state}",
+        ("page.chart.legend.done", Locale::PtBr) => "entregue",
+        ("page.chart.legend.done", Locale::EnUs) => "delivered",
+        ("page.chart.legend.running", Locale::PtBr) => "rodando",
+        ("page.chart.legend.running", Locale::EnUs) => "running",
+        ("page.chart.legend.wait", Locale::PtBr) => "espera sair",
+        ("page.chart.legend.wait", Locale::EnUs) => "waiting",
+        ("page.chart.legend.fail", Locale::PtBr) => "reprovada",
+        ("page.chart.legend.fail", Locale::EnUs) => "rejected",
+        ("page.chart.legend.on", Locale::PtBr) => "a que está aberta abaixo",
+        ("page.chart.legend.on", Locale::EnUs) => "the one open below",
+        ("page.detail.at", Locale::PtBr) => "{state} em {at}",
+        ("page.detail.at", Locale::EnUs) => "{state} on {at}",
+        ("page.detail.commit", _) => "Commit: {title}",
+        ("page.detail.no_commit", Locale::PtBr) => "Sem commit ainda.",
+        ("page.detail.no_commit", Locale::EnUs) => "No commit yet.",
+        ("page.detail.steps", Locale::PtBr) => "Passos",
+        ("page.detail.steps", Locale::EnUs) => "Steps",
+        ("page.detail.delivered", Locale::PtBr) => "O que a onda entregou",
+        ("page.detail.delivered", Locale::EnUs) => "What the wave delivered",
+        ("page.tabs.label", Locale::PtBr) => "Itens da spec",
+        ("page.tabs.label", Locale::EnUs) => "Spec items",
+        ("page.tab.agreed", Locale::PtBr) => "Acordado",
+        ("page.tab.agreed", Locale::EnUs) => "Agreed",
+        ("page.tab.review", Locale::PtBr) => "Revisão",
+        ("page.tab.review", Locale::EnUs) => "Review",
+        ("page.tab.empty", Locale::PtBr) => "Nada nesta aba ainda.",
+        ("page.tab.empty", Locale::EnUs) => "Nothing in this tab yet.",
+        ("page.tab.no_match", Locale::PtBr) => "Nada nesta aba com essa busca.",
+        ("page.tab.no_match", Locale::EnUs) => "Nothing in this tab matches the search.",
+        ("page.more", Locale::PtBr) => "Mostrar mais {n} de {rest}",
+        ("page.more", Locale::EnUs) => "Show {n} more of {rest}",
+        ("page.proof.pass", Locale::PtBr) => "verde",
+        ("page.proof.pass", Locale::EnUs) => "green",
+        ("page.proof.fail", Locale::PtBr) => "falhou",
+        ("page.proof.fail", Locale::EnUs) => "failed",
+        ("page.proof.none", Locale::PtBr) => "sem prova",
+        ("page.proof.none", Locale::EnUs) => "no proof",
+        ("page.point.answer", Locale::PtBr) => "Resposta",
+        ("page.point.answer", Locale::EnUs) => "Answer",
+        ("page.finding", Locale::PtBr) => "achado do plano",
+        ("page.finding", Locale::EnUs) => "plan finding",
+        ("page.md.status", Locale::PtBr) => "Situação",
+        ("page.md.status", Locale::EnUs) => "Status",
+        ("page.md.marks", Locale::PtBr) => "Marcas",
+        ("page.md.marks", Locale::EnUs) => "Marks",
+
         ("page.field.excerpt", Locale::PtBr) => "trecho",
         ("page.field.excerpt", Locale::EnUs) => "excerpt",
         ("page.field.reply_to", Locale::PtBr) => "Responde a",
@@ -445,6 +616,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.url", Locale::EnUs) => "Address",
         ("page.field.template", Locale::PtBr) => "Template do Mustard",
         ("page.field.template", Locale::EnUs) => "Mustard template",
+        ("page.field.stamp", Locale::PtBr) => "Carimbo do molde",
+        ("page.field.stamp", Locale::EnUs) => "Template stamp",
         ("page.field.last", Locale::PtBr) => "Último item copiado",
         ("page.field.last", Locale::EnUs) => "Last item copied",
         ("page.field.kinds", Locale::PtBr) => "Tipos",
@@ -483,8 +656,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.when", Locale::EnUs) => "When",
         ("page.field.then", Locale::PtBr) => "Então",
         ("page.field.then", Locale::EnUs) => "Then",
-        ("page.field.proof", Locale::PtBr) => "Prova",
-        ("page.field.proof", Locale::EnUs) => "Proof",
+        ("page.field.proof", Locale::PtBr) => "Verificação",
+        ("page.field.proof", Locale::EnUs) => "Verification",
         ("page.field.contracts", Locale::PtBr) => "Contratos",
         ("page.field.contracts", Locale::EnUs) => "Contracts",
         ("page.field.criterion", Locale::PtBr) => "Critério",
@@ -536,8 +709,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.tokens", Locale::EnUs) => "Tokens",
         ("page.field.lessons", Locale::PtBr) => "Lições",
         ("page.field.lessons", Locale::EnUs) => "Lessons",
-        ("page.field.final", Locale::PtBr) => "Revisão final",
-        ("page.field.final", Locale::EnUs) => "Final review",
+        ("page.field.final", Locale::PtBr) => "Aceitação",
+        ("page.field.final", Locale::EnUs) => "Acceptance",
         ("page.field.skills", _) => "Skills",
         ("page.field.copy", Locale::PtBr) => "Cópia separada",
         ("page.field.copy", Locale::EnUs) => "Separate copy",
@@ -567,18 +740,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.origin", Locale::EnUs) => "Origin",
         ("page.field.label", Locale::PtBr) => "Rótulo no rascunho",
         ("page.field.label", Locale::EnUs) => "Draft label",
-        ("page.field.last_run", Locale::PtBr) => "Última execução",
-        ("page.field.last_run", Locale::EnUs) => "Last run",
         ("page.field.closed_by", Locale::PtBr) => "Fechado por",
         ("page.field.closed_by", Locale::EnUs) => "Closed by",
         ("page.field.wave_state", Locale::PtBr) => "Estado da onda",
         ("page.field.wave_state", Locale::EnUs) => "Wave state",
-        ("page.field.wave_commit", Locale::PtBr) => "Commit",
-        ("page.field.wave_commit", Locale::EnUs) => "Commit",
-        ("page.field.wave_receives", Locale::PtBr) => "Recebe",
-        ("page.field.wave_receives", Locale::EnUs) => "Receives",
-        ("page.field.wave_points", Locale::PtBr) => "Soma das notas",
-        ("page.field.wave_points", Locale::EnUs) => "Points total",
 
         ("page.value.warn", Locale::PtBr) => "aviso",
         ("page.value.warn", Locale::EnUs) => "warning",
@@ -660,28 +825,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.value.repeated", Locale::EnUs) => "repeated",
         ("page.value.not_repeated", Locale::PtBr) => "não repetiu",
         ("page.value.not_repeated", Locale::EnUs) => "did not repeat",
-        // O estado de cada onda, pela leitura da rodada; `.many` é a forma
-        // da conta da visão das ondas ("3 entregues").
-        ("page.value.wave_todo", Locale::PtBr) => "a fazer",
-        ("page.value.wave_todo", Locale::EnUs) => "to do",
-        ("page.value.wave_todo.many", Locale::PtBr) => "a fazer",
-        ("page.value.wave_todo.many", Locale::EnUs) => "to do",
-        ("page.value.wave_running", Locale::PtBr) => "em andamento",
-        ("page.value.wave_running", Locale::EnUs) => "in progress",
-        ("page.value.wave_running.many", Locale::PtBr) => "em andamento",
-        ("page.value.wave_running.many", Locale::EnUs) => "in progress",
-        ("page.value.wave_delivered", Locale::PtBr) => "entregue",
-        ("page.value.wave_delivered", Locale::EnUs) => "delivered",
-        ("page.value.wave_delivered.many", Locale::PtBr) => "entregues",
-        ("page.value.wave_delivered.many", Locale::EnUs) => "delivered",
-        ("page.value.wave_approved", Locale::PtBr) => "aprovada",
-        ("page.value.wave_approved", Locale::EnUs) => "approved",
-        ("page.value.wave_approved.many", Locale::PtBr) => "aprovadas",
-        ("page.value.wave_approved.many", Locale::EnUs) => "approved",
-        ("page.value.wave_rejected", Locale::PtBr) => "reprovada",
-        ("page.value.wave_rejected", Locale::EnUs) => "rejected",
-        ("page.value.wave_rejected.many", Locale::PtBr) => "reprovadas",
-        ("page.value.wave_rejected.many", Locale::EnUs) => "rejected",
 
         ("page.phase.survey", Locale::PtBr) => "levantamento",
         ("page.phase.survey", Locale::EnUs) => "survey",
@@ -719,22 +862,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.metrics.col.measure", Locale::EnUs) => "Measure",
         ("page.metrics.col.value", Locale::PtBr) => "Valor",
         ("page.metrics.col.value", Locale::EnUs) => "Value",
-        ("page.metrics.col.wave", Locale::PtBr) => "Onda",
-        ("page.metrics.col.wave", Locale::EnUs) => "Wave",
-        ("page.metrics.col.lines", Locale::PtBr) => "Linhas do pedido",
-        ("page.metrics.col.lines", Locale::EnUs) => "Request lines",
-        ("page.metrics.col.chars", Locale::PtBr) => "Caracteres do pedido",
-        ("page.metrics.col.chars", Locale::EnUs) => "Request characters",
-        ("page.metrics.col.items", Locale::PtBr) => "Itens lidos",
-        ("page.metrics.col.items", Locale::EnUs) => "Items read",
         ("page.metrics.col.delivery", Locale::PtBr) => "Tempo até a entrega",
         ("page.metrics.col.delivery", Locale::EnUs) => "Time to delivery",
         ("page.metrics.col.rejected", Locale::PtBr) => "Reprovações",
         ("page.metrics.col.rejected", Locale::EnUs) => "Rejections",
         ("page.metrics.col.last", Locale::PtBr) => "Última revisão",
         ("page.metrics.col.last", Locale::EnUs) => "Last review",
-        ("page.metrics.by_wave", Locale::PtBr) => "Medida por onda",
-        ("page.metrics.by_wave", Locale::EnUs) => "Measure per wave",
         ("page.metrics.calls", Locale::PtBr) => "Passos do fluxo contra trabalho",
         ("page.metrics.calls", Locale::EnUs) => "Flow steps against work",
         ("page.metrics.calls.value", Locale::PtBr) => {
@@ -749,14 +882,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.metrics.reminders", Locale::EnUs) => "Reminders that showed up",
         ("page.metrics.reminders.value", Locale::PtBr) => "{count} mensagens antigas lembradas nos pontos",
         ("page.metrics.reminders.value", Locale::EnUs) => "{count} old messages recalled in the points",
-        ("page.metrics.rtk", Locale::PtBr) => "Economia do rtk",
-        ("page.metrics.rtk", Locale::EnUs) => "rtk savings",
-        ("page.metrics.rtk.value", Locale::PtBr) => {
-            "{commands} comandos, {saved} tokens a menos na saída ({pct}%), de {from} a {to}"
-        }
-        ("page.metrics.rtk.value", Locale::EnUs) => {
-            "{commands} commands, {saved} fewer output tokens ({pct}%), from {from} to {to}"
-        }
         ("page.metrics.hooks", Locale::PtBr) => "Bloqueios por gancho",
         ("page.metrics.hooks", Locale::EnUs) => "Blocks per hook",
         ("page.metrics.hooks.value", Locale::PtBr) => "{blocks} bloqueios, {warns} avisos",
@@ -851,9 +976,26 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            329,
-            0xcefe_88ac_b70b_9059,
+            385,
+            0x4040_78bf_6f9f_a732,
         );
+    }
+
+    /// As duas ordens de publicar levam o carimbo do molde na gravação da
+    /// publicação, nos dois idiomas; a de publicar de novo leva também o
+    /// endereço de agora, na publicação e na gravação.
+    #[test]
+    fn the_publish_orders_record_the_template_stamp() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let publish = super::text("page.copy.publish", lang).expect("page.copy.publish");
+            assert!(publish.contains(r#""stamp":"{stamp}""#), "{publish}");
+            let again = super::text("page.copy.republish", lang).expect("page.copy.republish");
+            for slot in ["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"] {
+                assert!(again.contains(slot), "{slot}: {again}");
+            }
+            assert!(again.contains(r#""stamp":"{stamp}","url":"{url}""#), "{again}");
+            assert!(again.matches("{url}").count() >= 2, "{again}");
+        }
     }
 
     /// `page.copy.new_address` sempre entra em `{url}` de `page.copy.batches`,

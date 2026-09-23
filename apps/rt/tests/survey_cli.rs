@@ -1,3 +1,8 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! O levantamento de ponta a ponta pelo binário, num projeto com `git.flow` e
 //! um arquivo de código: o `open`, o objetivo, o `grill`, uma resposta e o
 //! fechamento de cada ponto, com o passo que cada `write` devolve, a revisão
@@ -218,7 +223,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
             "--spec",
             SPEC,
             "--json",
-            &json!({"wave": 1, "text": "Somar dois números.", "files": [], "origin": said}).to_string(),
+            &json!({"title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "origin": said}).to_string(),
         ],
     );
     let refused = report(&out);
@@ -241,7 +246,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
             "--spec",
             SPEC,
             "--json",
-            &json!({"wave": 1, "text": "Somar dois números.", "origin": said}).to_string(),
+            &json!({"title": "Entregar a tarefa", "text": "Somar dois números.", "origin": said}).to_string(),
         ],
     );
     let refused = report(&out);
@@ -259,8 +264,134 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
     let written = write(
         root,
         "task",
-        &json!({"wave": 1, "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
+        &json!({"title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
     );
     assert!(written.get("id").is_some(), "{written}");
     assert_eq!(std::fs::read_to_string(&path).expect("the spec file").lines().count(), lines_before + 1);
+}
+
+/// A tarefa gravada só com texto, arquivos e dependências, sem número de
+/// onda e sem nota, é aceita.
+#[test]
+fn uma_tarefa_sem_numero_de_onda_e_gravada() {
+    let dir = repo();
+    let root = dir.path();
+    rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = user_says(root, GOAL);
+
+    let written = write(
+        root,
+        "task",
+        &json!({"title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
+    );
+    assert_eq!(written["ok"], json!(true), "{written}");
+    assert!(written.get("id").is_some(), "{written}");
+}
+
+/// Duas tarefas que passam a depender uma da outra, em círculo, são
+/// recusadas nomeando o círculo inteiro, na ordem, com os códigos das
+/// tarefas; nada é gravado.
+#[test]
+fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
+    let dir = repo();
+    let root = dir.path();
+    rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = user_says(root, GOAL);
+
+    let a = write(root, "task", &json!({"title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
+    let a_id = id(&a);
+    let a_code = a["code"].as_str().unwrap().to_string();
+
+    let b = write(
+        root,
+        "task",
+        &json!({"title": "Entregar a tarefa", "text": "Tarefa B.", "files": [], "depends_on": [a_code.clone()], "origin": said}),
+    );
+    let b_code = b["code"].as_str().unwrap().to_string();
+
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    let lines_before = std::fs::read_to_string(&path).expect("the spec file").lines().count();
+
+    // A revisão de A passa a depender de B, que já depende de A: círculo.
+    let out = rt(
+        root,
+        &[
+            "write",
+            "task",
+            "--spec",
+            SPEC,
+            "--json",
+            &json!({
+                "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [b_code.clone()],
+                "replaces": a_id, "origin": said,
+            })
+            .to_string(),
+        ],
+    );
+    let refused = report(&out);
+    assert_eq!(refused["reason"], json!("task-dependency-cycle"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains(&a_code) && hint.contains(&b_code), "{hint}");
+    let a_at = hint.find(&a_code).unwrap();
+    let b_at = hint.find(&b_code).unwrap();
+    assert!(a_at < b_at, "o círculo nomeia A antes de B: {hint}");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the spec file").lines().count(),
+        lines_before,
+        "nothing was written"
+    );
+
+    // Sem o círculo, a revisão de A passa.
+    let revised = write(
+        root,
+        "task",
+        &json!({"title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [], "replaces": a_id, "origin": said}),
+    );
+    assert_eq!(revised["code"], json!(a_code), "{revised}");
+}
+
+/// Uma tarefa que declara depender de uma tarefa que não existe nesta spec é
+/// recusada, nomeando as duas: a que declarou a dependência e a que não
+/// existe; nada é gravado. A revisão de uma tarefa existente, pelo
+/// `replaces`, dá à declarante um código conhecido do teste — o mesmo jeito
+/// que o teste do círculo, logo acima, já usa para nomear os dois lados.
+#[test]
+fn a_dependencia_de_tarefa_inexistente_e_recusada() {
+    let dir = repo();
+    let root = dir.path();
+    rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = user_says(root, GOAL);
+
+    let a = write(root, "task", &json!({"title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
+    let a_id = a["id"].as_u64().unwrap();
+    let a_code = a["code"].as_str().unwrap().to_string();
+
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    let lines_before = std::fs::read_to_string(&path).expect("the spec file").lines().count();
+
+    let out = rt(
+        root,
+        &[
+            "write",
+            "task",
+            "--spec",
+            SPEC,
+            "--json",
+            &json!({
+                "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": ["MSTD-TASK-0099"],
+                "replaces": a_id, "origin": said,
+            })
+            .to_string(),
+        ],
+    );
+    let refused = report(&out);
+    assert_eq!(refused["reason"], json!("task-depends-on-unknown"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains(&a_code), "the message names the task that declared the dependency: {hint}");
+    assert!(hint.contains("MSTD-TASK-0099"), "the message names the dependency that does not exist: {hint}");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the spec file").lines().count(),
+        lines_before,
+        "nothing was written"
+    );
 }

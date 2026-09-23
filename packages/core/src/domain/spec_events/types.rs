@@ -1,5 +1,5 @@
 //! Os tipos de evento da spec: os blocos em que cada tipo cai, a forma de
-//! cada campo e os 35 tipos, com os campos próprios de cada um.
+//! cada campo e os 36 tipos, com os campos próprios de cada um.
 
 use serde_json::Value;
 
@@ -278,16 +278,20 @@ pub const WORK_KINDS: &[&str] = &["feature", "fix", "refactor"];
 const POINT_FROM: &[&str] = &["gap", "lesson", "prior_spec", "code_conflict", "outside_review"];
 const POINT_STATUS: &[&str] = &["open", "closed", "not_applicable"];
 const RUN_RESULTS: &[&str] = &["pass", "fail"];
+/// As cinco formas do padrão de critério de aceitação: a que vale sempre, a
+/// disparada por um acontecimento, a que só vale enquanto um estado durar, a
+/// que só vale se um recurso existir, e a que trata um acontecimento
+/// indesejado. Obrigatória na gravação nova (`check::check_conditions`);
+/// critério já gravado sem o campo continua válido na leitura.
+const CRITERION_FORMS: &[&str] =
+    &["ubiquitous", "event_driven", "state_driven", "optional_feature", "unwanted_behavior"];
 const SKILL_ACTIONS: &[&str] = &["create", "change", "drop"];
 const ROLES: &[&str] = &["wave", "review", "skill"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];
-/// As notas de trabalho de uma tarefa, na escala do Scrum. O exemplo de cada
-/// uma mora no catálogo, no texto que a recusa da tarefa sem nota mostra.
-const POINTS: &[u64] = &[1, 2, 3, 5, 8, 13];
 
-/// Os 35 tipos. Os campos marcados com `opt` podem faltar; os outros são
+/// Os 36 tipos. Os campos marcados com `opt` podem faltar; os outros são
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa. A mensagem que responde a um gesto de aprovação leva a
@@ -345,7 +349,11 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     // A publicação de uma página. A do template do Mustard, que lê o banco de
     // dados guardado junto da página, traz `template: true`; a que não traz é
-    // a página inteira de uma versão antiga, que fica parada como está.
+    // a página inteira de uma versão antiga, que fica parada como está. O
+    // `stamp` é o carimbo do molde publicado, a versão do Mustard e a
+    // impressão do conteúdo: o molde que o programa rodando monta com outro
+    // carimbo, ou a publicação sem ele, manda publicar de novo no mesmo
+    // endereço.
     ty(
         "publish",
         "PUB",
@@ -358,6 +366,7 @@ pub const TYPES: &[TypeSpec] = &[
             opt("url", Kind::Text),
             opt("reason", Kind::Text),
             opt("template", Kind::Bool),
+            opt("stamp", Kind::Text),
         ],
     ),
     // A cópia dos itens para o banco de dados de uma página publicada, gravada
@@ -413,6 +422,12 @@ pub const TYPES: &[TypeSpec] = &[
             req("when", Kind::Text),
             req("then", Kind::Text),
             req("proof", Kind::Text),
+            // Obrigatório na gravação nova, exigido em
+            // `check::check_conditions` com a recusa que lista as cinco
+            // formas pelo nome; `opt` aqui só para não entrar na recusa
+            // genérica de campo ausente, sem a lista. Critério gravado antes
+            // desta exigência continua sem o campo, e a leitura não recusa.
+            opt("form", Kind::OneOf(CRITERION_FORMS)),
             opt("contracts", Kind::Ints),
         ],
     ),
@@ -453,8 +468,14 @@ pub const TYPES: &[TypeSpec] = &[
         Block::Waves,
         true,
         &[
-            req("wave", Kind::Int),
+            // O número da onda é opcional: a tarefa pode nascer sem ele e
+            // ganhá-lo depois, no plano.
+            opt("wave", Kind::Int),
             TEXT,
+            // O nome curto da tarefa, que diz o que ela entrega. Opcional no
+            // tipo porque a tarefa antiga não tem; o gravador o exige da
+            // tarefa gravada pelo modelo (`spec_events::write::record_in`).
+            opt("title", Kind::Text),
             // A tarefa sem arquivo que já se sabe qual é declara a lista
             // vazia; a ausência do campo é outra coisa, e o gravador a
             // recusa (`spec_events::write::record_in`), junto da falta de
@@ -467,9 +488,6 @@ pub const TYPES: &[TypeSpec] = &[
             // vazia quando não depende de nenhuma. Alimenta a ordem das
             // ondas (topológica) e, como `files`, é obrigatória na gravação.
             opt("depends_on", Kind::Refs),
-            // A nota de trabalho, na escala do Scrum. A tarefa sem nota numa
-            // onda que ainda não saiu segura o plano (`flow::plan`).
-            opt("points", Kind::OneOfNumbers(POINTS)),
         ],
     ),
     ty(
@@ -491,7 +509,10 @@ pub const TYPES: &[TypeSpec] = &[
         Block::Waves,
         false,
         &[
-            req("wave", Kind::Int),
+            // A onda é opcional: o envio do pedido da revisão final, que não
+            // é dono de onda nenhuma, grava sem ela — a mesma porta que a
+            // rodada usa para o pedido de cada onda.
+            opt("wave", Kind::Int),
             req("role", Kind::OneOf(ROLES)),
             // O molde do agente, como o instalador o gravou no projeto, e o
             // pedido exato, como foi injetado no agente — nesta ordem, a
@@ -501,7 +522,10 @@ pub const TYPES: &[TypeSpec] = &[
             TEXT,
             req("lines", Kind::Int),
             req("chars", Kind::Int),
-            req("items", Kind::Ints),
+            // Os itens do pedido: a onda leva os dela, cada um pelo número.
+            // O pedido da revisão final não recorta itens — cobre o
+            // combinado inteiro — e sai sem este campo.
+            opt("items", Kind::Ints),
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
@@ -546,8 +570,8 @@ pub const TYPES: &[TypeSpec] = &[
         "DELIV",
         Block::Waves,
         false,
-        // Sem replanejamento, a entrega exige a lista de arquivos; com ele, a
-        // onda pode ter voltado sem mexer em nenhum (veja `check_conditions`).
+        // A lista de arquivos é opcional: a onda que só foi conferir volta sem
+        // mexer em nenhum, e o texto dela diz o que conferiu.
         &[req("wave", Kind::Int), TEXT, opt("files", Kind::Texts), opt("replan", Kind::Text)],
     ),
     // O agente de onda grava um passo ao terminar cada tarefa e ao provar o
@@ -577,12 +601,20 @@ pub const TYPES: &[TypeSpec] = &[
             // cobrança do campo fica com a situação (veja `check_conditions`).
             opt("criteria", Kind::Objects),
             opt("lessons", Kind::Objects),
-            // A revisão final do conjunto, que o fechamento pede à spec de
-            // duas ondas ou mais: aprovada, fica na última onda do plano;
-            // reprovada, na onda que o conserto refaz.
+            // A revisão final do conjunto, que o fechamento pede a toda obra:
+            // fica sem onda, na resposta por todo o combinado vigente que
+            // `agreed` traz, item a item — cobrança de fora, junto do
+            // veredito (veja `check_conditions`).
             opt("final", Kind::Bool),
+            opt("agreed", Kind::Objects),
         ],
     ),
+    // A tabela de rastreabilidade que a aceitação do veredito final grava:
+    // uma linha por item do combinado, com o item apontado, a verificação e
+    // o arquivo que o próprio veredito já trazia por item, e a situação. O
+    // binário grava sozinho, a partir do que a revisão final respondeu — não
+    // é uma resposta livre de quem revisa.
+    ty("tracking", "TRACK", Block::Review, false, &[req("items", Kind::Objects)]),
     // Andamento.
     ty(
         "commit",
@@ -642,10 +674,10 @@ mod tests {
     use crate::domain::spec_events::Refusal;
 
     #[test]
-    fn there_are_thirty_five_types_each_with_one_block() {
-        assert_eq!(TYPES.len(), 35);
+    fn there_are_thirty_six_types_each_with_one_block() {
+        assert_eq!(TYPES.len(), 36);
         let names: BTreeSet<&str> = TYPES.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 35, "a type name repeats");
+        assert_eq!(names.len(), 36, "a type name repeats");
         for block in Block::ALL {
             if block == Block::Metrics {
                 assert!(TYPES.iter().all(|t| t.block != block), "nobody writes to the panel");

@@ -21,10 +21,9 @@ fn fixture(name: &str) -> PathBuf {
 /// Scan a fixture into `grain.model.json` inside a per-test temp dir and
 /// return (temp dir, model path, parsed model). The caller keeps the dir
 /// alive so `digest` can run over the model file afterwards.
-fn scan_fixture(label: &str, name: &str) -> (PathBuf, PathBuf, serde_json::Value) {
-    let dir = std::env::temp_dir().join(format!("scan-stratified-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn scan_fixture(label: &str, name: &str) -> (tempfile::TempDir, PathBuf, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-stratified-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
@@ -33,21 +32,20 @@ fn scan_fixture(label: &str, name: &str) -> (PathBuf, PathBuf, serde_json::Value
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    (dir, model, v)
+    (temp, model, v)
 }
 
 /// Write a synthetic `grain.model.json` (modules + optional projects — every
 /// other model field is `#[serde(default)]`) into a temp dir owned by the
 /// test, mirroring term_index.rs.
-fn write_model(label: &str, body: serde_json::Value) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("scan-stratified-{}-{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_model(label: &str, body: serde_json::Value) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-stratified-{}-", label)).tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     let mut v = body;
     v["root"] = serde_json::json!(dir.to_string_lossy());
     std::fs::write(&model, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    (dir, model)
+    (temp, model)
 }
 
 /// One synthetic module carrying the given declaration names.
@@ -90,7 +88,7 @@ fn monorepo_strata_each_keep_a_sample_slot() {
     // web stratum carries three focused modules (BM25 winners); the api
     // stratum carries one longer module that loses every global slot on
     // relevance alone. Stratification must still hand it one slot.
-    let (dir, model, v) = scan_fixture("monorepo", "monorepo_mix");
+    let (_dir, model, v) = scan_fixture("monorepo", "monorepo_mix");
 
     let project_dirs: Vec<&str> =
         v["projects"].as_array().unwrap().iter().map(|p| p["dir"].as_str().unwrap()).collect();
@@ -110,7 +108,6 @@ fn monorepo_strata_each_keep_a_sample_slot() {
         "stratum winners by relevance (web best, then api's guaranteed slot), then the MMR fill"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -118,7 +115,7 @@ fn single_matched_stratum_degenerates_to_global_ranking() {
     // Same module shapes as the monorepo fixture, but only ONE project is
     // declared — the api module belongs to no stratum, so the guarantee is
     // inert and pure relevance + MMR keeps the three web modules.
-    let (dir, model) = write_model(
+    let (_dir, model) = write_model(
         "onestratum",
         serde_json::json!({
             "projects": [ { "name": "web", "dir": "web", "kind": "npm", "code_files": 3 } ],
@@ -141,7 +138,6 @@ fn single_matched_stratum_degenerates_to_global_ranking() {
         "one matched stratum: no guaranteed slot for the unclaimed module"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -150,7 +146,7 @@ fn mmr_prefers_the_diverse_module_over_the_near_duplicate() {
     // ranking would emit them in path order — both `billing` files first.
     // MMR must spend slot 1 on the diverse `ship` module (other directory,
     // other path subtokens) and only then return to the second `billing` one.
-    let (dir, model) = write_model(
+    let (_dir, model) = write_model(
         "mmr",
         serde_json::json!({
             "modules": [
@@ -167,5 +163,4 @@ fn mmr_prefers_the_diverse_module_over_the_near_duplicate() {
         "diversity beats the near-duplicate once relevance ties"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

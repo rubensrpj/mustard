@@ -1,6 +1,13 @@
 ; TypeScript / TSX — imports and declarations. Same grammar family, one query set.
 (import_statement source: (string (string_fragment) @import))
 
+; The names an import brings into the file (`limite` in
+; `import { limite } from`): what it brought, not a use of it.
+(import_specifier name: (_) @imported)
+(import_specifier alias: (_) @imported)
+(import_clause (identifier) @imported)
+(namespace_import (identifier) @imported)
+
 (class_declaration name: (_) @name) @definition.class
 (abstract_class_declaration name: (_) @name) @definition.class
 (interface_declaration name: (_) @name) @definition.interface
@@ -11,9 +18,25 @@
 ; Exported top-level consts (e.g. `export const userTable = pgTable(...)`).
 ; This is the syntax hook a convention like Drizzle/GraphQL plugs into — the
 ; engine never knows the framework; it just sees a recurring `export const`.
+; The declaration is the whole `export` statement, so the header reads
+; `export const userTable`. The second pattern marks the value, where the
+; header stops (`export const PRECOS = { ... }` reads `export const PRECOS`),
+; except for an arrow function, whose parameters are its header.
 (export_statement
   declaration: (lexical_declaration
-    (variable_declarator name: (identifier) @name) @definition.const))
+    (variable_declarator name: (identifier) @name))) @definition.const
+((export_statement
+  declaration: (lexical_declaration
+    (variable_declarator name: (identifier) @name value: (_) @value))) @definition.const
+  (#not-match? @value "=>"))
+; A `const` at the top of the file that is not exported is a constant too.
+(program
+  (lexical_declaration kind: "const"
+    (variable_declarator name: (identifier) @name)) @definition.const)
+((program
+  (lexical_declaration kind: "const"
+    (variable_declarator name: (identifier) @name value: (_) @value)) @definition.const)
+  (#not-match? @value "=>"))
 
 ; Members — methods (class + interface), class fields, interface properties,
 ; enum members. Member kinds feed the digest's domain-term index only: the
@@ -28,3 +51,8 @@
 (property_signature name: (_) @name) @definition.property
 (enum_body name: (property_identifier) @name @definition.enum_member)
 (enum_assignment name: (_) @name) @definition.enum_member
+
+; Decorations — a decorator (`@Component()`, `@Get()`) is not code of the
+; declaration it adorns: the engine passes over it to find the doc comment
+; above, starts the header after it, and reads no call out of it.
+(decorator) @decoration

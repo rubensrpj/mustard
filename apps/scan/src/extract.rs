@@ -4,16 +4,21 @@
 //! entirely by DATA: a row in `languages.toml` (name, extensions, grammar) and a
 //! set of `.scm` query files under `queries/<dir>/`. This module never names a
 //! language, an extension, or a grammar node — it only understands a small,
-//! generic capture vocabulary that every query speaks:
+//! generic capture vocabulary that every query speaks. The whole list, with
+//! what each capture means, lives in `queries/README.md`, the one place it is
+//! written.
 //!
-//!   `@import`            -> [`Extracted::imports`]   (text is cleaned to a path)
-//!   `@namespace`         -> [`Extracted::namespaces`]
-//!   `@definition.<kind>` -> a [`Decl`] whose `kind` is the suffix, verbatim
-//!   `@name`              -> the name of the enclosing `@definition.*`
-//!   `@supertype`         -> a base type/interface/trait, attached to the decl
-//!                           that shares the same `@name`. Because the link is by
-//!                           name, a base captured in a node DETACHED from the
-//!                           type's own declaration still lands on that type.
+//! Several things come off the tree itself, with no grammar node name: the
+//! documentation comment above a declaration (the `extra` nodes the grammar
+//! attaches right above it), the line where the declaration starts (the first
+//! decoration that comment's path passes over, when there is one), its
+//! signature (its own text up to the body or up to the value), the call sites
+//! of the file (a named leaf that reads as an identifier and is followed by an
+//! opening parenthesis), and the names it cites without calling (the same
+//! leaf, not followed by a parenthesis, whatever letter it starts with: which
+//! of them name something of the project is decided by `graph`, with the whole
+//! project in hand). A grammar that marks none of it simply yields nothing, as
+//! with every other generic rule here.
 //!
 //! The per-language seam the old design called for is preserved: there is one
 //! [`Analyzer`] instance per language, but all are the same generic type, each
@@ -23,17 +28,22 @@
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.
 
-use crate::model::Decl;
+use crate::model::{CallSite, Decl};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 #[derive(Default)]
 pub(crate) struct Extracted {
     pub imports: Vec<String>,
+    /// The imports the language puts in sight of more files than the one that
+    /// writes them (`@import.global`).
+    pub global_imports: Vec<String>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
+    pub calls: Vec<CallSite>,
+    pub cites: Vec<CallSite>,
 }
 
 /// One language as produced by `build.rs` from `languages.toml` + its `.scm`
@@ -43,6 +53,10 @@ pub struct RawLang {
     pub name: &'static str,
     pub query: &'static str,
     pub language: Language,
+    /// The markup tags a documentation comment of the language is written
+    /// with (`doc_tags` in languages.toml): the engine drops them and keeps
+    /// the text. Empty when the language writes its comments in plain prose.
+    pub doc_tags: &'static [&'static str],
 }
 
 // Brings `raw_langs()` and `LANG_EXTENSIONS` into scope — generated from the
@@ -73,6 +87,18 @@ pub fn root_aliases(lang: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+/// How a language's declared namespace is seen by its other files — pure
+/// registry data (`namespace_scope` in languages.toml): `"folder"`, `"nested"`,
+/// or empty when the language declares none.
+pub fn namespace_scope(lang: &str) -> &'static str {
+    LANG_NAMESPACE_SCOPE.iter().find(|(name, _)| *name == lang).map_or("", |(_, scope)| *scope)
+}
+
+/// The file extensions of a language, as the registry writes them.
+pub fn extensions(lang: &str) -> &'static [&'static str] {
+    LANG_EXTENSIONS.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, exts)| *exts)
+}
+
 /// Build one [`Analyzer`] per language declared in the registry. A language
 /// whose grammar/queries fail to compile is skipped with a warning rather than
 /// aborting the whole run.
@@ -90,9 +116,26 @@ pub fn registry() -> HashMap<String, Analyzer> {
 /// the hot path is an index lookup, not a string compare.
 enum CapKind {
     Import,
+    /// An import that is in sight of every file of the language under the
+    /// same project, not only of the file that writes it.
+    ImportGlobal,
+    /// A name an import brings into the file (`limite` in
+    /// `import { limite } from`): it says what the file brought, and like the
+    /// import itself it is never a use.
+    Imported,
     Namespace,
     Name,
     Supertype,
+    /// An attribute or decorator adorning a declaration: never code of it.
+    Decoration,
+    /// The body of a declaration that the grammar keeps beside it rather than
+    /// inside it: the declaration ends where its body ends.
+    Body,
+    /// The value a declaration is given: the header ends where it starts.
+    Value,
+    /// The documentation the language writes inside the declaration rather
+    /// than above it; the comment above, when there is one, is worth more.
+    Doc,
     Def(String),
     Ignore,
 }
@@ -100,9 +143,15 @@ enum CapKind {
 fn classify(cap: &str) -> CapKind {
     match cap {
         "import" => CapKind::Import,
+        "import.global" => CapKind::ImportGlobal,
+        "imported" => CapKind::Imported,
         "namespace" => CapKind::Namespace,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
+        "decoration" => CapKind::Decoration,
+        "body" => CapKind::Body,
+        "value" => CapKind::Value,
+        "doc" => CapKind::Doc,
         other => match other.strip_prefix("definition.") {
             Some(kind) => CapKind::Def(kind.to_string()),
             None => CapKind::Ignore,
@@ -116,6 +165,7 @@ pub(crate) struct Analyzer {
     query: Query,
     /// `cap_kinds[i]` is the role of capture index `i` in `query`.
     cap_kinds: Vec<CapKind>,
+    doc_tags: &'static [&'static str],
 }
 
 impl Analyzer {
@@ -138,7 +188,7 @@ impl Analyzer {
             }
         };
         let cap_kinds = query.capture_names().iter().map(|n| classify(n)).collect();
-        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds })
+        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags })
     }
 
     pub fn extract(&self, src: &str) -> Extracted {
@@ -156,29 +206,53 @@ impl Analyzer {
         let mut cursor = QueryCursor::new();
 
         // Declarations keyed by node start byte (so they emerge in document
-        // order); supertypes keyed by the cleaned declaration name so a base
-        // captured in a detached node attaches to the right decl.
-        let mut decls: BTreeMap<usize, (String, String, usize, usize)> = BTreeMap::new();
+        // order) and then by where the name is written and the name itself:
+        // one statement may declare several names (`export const a = 1, b =
+        // 2;`), and each of them is a declaration of its own. Supertypes keyed
+        // by the cleaned declaration name so a base captured in a detached
+        // node attaches to the right decl.
+        // The comment and the header are read only after every match, once the
+        // decorations of the whole file are known: a decoration may be matched
+        // after the declaration it adorns.
+        let mut decls: BTreeMap<(usize, usize, String), Header> = BTreeMap::new();
+        let mut decorations: Spans = BTreeSet::new();
+        // What an import or a namespace capture covers: the names written
+        // there are the path of the import, not a use of what they name.
+        let mut import_spans: Spans = BTreeSet::new();
         let mut supers_by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
 
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
-            let mut def: Option<(usize, &str, usize, usize)> = None;
+            let mut def: Option<(Node, &str)> = None;
             let mut name_text: Option<String> = None;
+            let mut name_byte = usize::MAX;
             let mut here_supers: Vec<String> = Vec::new();
+            let mut body_end: Option<usize> = None;
+            let mut value_start: Option<usize> = None;
+            let mut name_kind: &'static str = "";
+            let mut doc_inside: Option<(usize, String)> = None;
 
             for cap in m.captures {
                 let node = cap.node;
                 match &self.cap_kinds[cap.index as usize] {
-                    CapKind::Import => {
+                    CapKind::Import | CapKind::ImportGlobal => {
+                        import_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             let c = clean_import(t);
                             if !c.is_empty() {
-                                out.imports.push(c);
+                                if matches!(self.cap_kinds[cap.index as usize], CapKind::ImportGlobal) {
+                                    out.global_imports.push(c);
+                                } else {
+                                    out.imports.push(c);
+                                }
                             }
                         }
                     }
+                    CapKind::Imported => {
+                        import_spans.insert((node.start_byte(), node.end_byte()));
+                    }
                     CapKind::Namespace => {
+                        import_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             let t = t.trim();
                             if !t.is_empty() {
@@ -189,6 +263,22 @@ impl Analyzer {
                     CapKind::Name => {
                         if let Ok(t) = node.utf8_text(bytes) {
                             name_text = Some(t.to_string());
+                            name_byte = node.start_byte();
+                            name_kind = node.kind();
+                        }
+                    }
+                    CapKind::Decoration => {
+                        decorations.insert((node.start_byte(), node.end_byte()));
+                    }
+                    CapKind::Body => {
+                        body_end = Some(node.end_position().row + 1);
+                    }
+                    CapKind::Value => {
+                        value_start = Some(node.start_byte());
+                    }
+                    CapKind::Doc => {
+                        if let Ok(t) = node.utf8_text(bytes) {
+                            doc_inside = Some((node.start_byte(), t.to_string()));
                         }
                     }
                     CapKind::Supertype => {
@@ -198,19 +288,39 @@ impl Analyzer {
                             }
                     }
                     CapKind::Def(kind) => {
-                        def = Some((
-                            node.start_byte(),
-                            kind.as_str(),
-                            node.start_position().row + 1,
-                            node.end_position().row + 1,
-                        ));
+                        def = Some((node, kind.as_str()));
                     }
                     CapKind::Ignore => {}
                 }
             }
 
-            if let (Some((sb, kind, line, end_line)), Some(name)) = (def, &name_text) {
-                decls.entry(sb).or_insert_with(|| (kind.to_string(), name.clone(), line, end_line));
+            if let (Some((node, kind)), Some(name)) = (def, &name_text) {
+                let header = decls.entry((node.start_byte(), name_byte, name.clone())).or_insert_with(|| Header {
+                    kind: kind.to_string(),
+                    pattern: m.pattern_index,
+                    name: name.clone(),
+                    node,
+                    name_byte,
+                    name_kind,
+                    body_end: None,
+                    value_start: None,
+                    doc_inside: None,
+                });
+                // Two patterns may give the same declaration two kinds (a
+                // `const` field is a field too): the one written first in the
+                // query gives the kind, whatever order the matches come in.
+                if m.pattern_index < header.pattern {
+                    header.kind = kind.to_string();
+                    header.pattern = m.pattern_index;
+                }
+                header.body_end = header.body_end.max(body_end);
+                // Two patterns may give the same declaration: the earliest
+                // value and the earliest inner documentation win.
+                header.value_start = earliest(header.value_start, value_start);
+                header.doc_inside = match (header.doc_inside.take(), doc_inside) {
+                    (Some(a), Some(b)) => Some(if b.0 < a.0 { b } else { a }),
+                    (a, b) => a.or(b),
+                };
             }
             if let Some(name) = &name_text
                 && !here_supers.is_empty() {
@@ -222,24 +332,469 @@ impl Analyzer {
                 }
         }
 
+        // Where each declaration's own name is written: that name followed by
+        // `(` is the header, not a call.
+        let names_at: BTreeSet<usize> = decls.values().map(|h| h.name_byte).collect();
+        // The node types the declarations of this file write their names
+        // with: a node of one of them standing for a single word is a name.
+        let name_kinds: BTreeSet<&str> = decls.values().map(|h| h.name_kind).collect();
+        // Where each name of a statement that declares several is written,
+        // by the byte the statement starts at: each of them keeps the part of
+        // the header before the first name, and then only its own.
+        let mut names_by_start: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (start, name_byte, _) in decls.keys() {
+            names_by_start.entry(*start).or_default().push(*name_byte);
+        }
         out.declarations = decls
             .into_values()
-            .map(|(kind, name, line, end_line)| {
-                let key = simple_type_name(&name).unwrap_or_else(|| name.clone());
+            .map(|h| {
+                let shared = &names_by_start[&h.node.start_byte()];
+                let split = (shared.len() > 1).then(|| Split {
+                    first_name: shared[0],
+                    name: h.name_byte,
+                    next_name: shared.iter().copied().find(|&b| b > h.name_byte),
+                });
+                let key = simple_type_name(&h.name).unwrap_or_else(|| h.name.clone());
                 let supertypes = supers_by_name
                     .get(&key)
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
-                Decl { kind, name, line, end_line, supertypes }
+                let above = doc_above(h.node, bytes, &decorations, self.doc_tags);
+                let doc = match h.doc_inside {
+                    Some((_, inside)) if above.text.is_empty() => one_line(&inside, DOC_MAX_CHARS),
+                    _ => above.text,
+                };
+                Decl {
+                    kind: h.kind,
+                    name: h.name,
+                    line: above.first_row + 1,
+                    end_line: (h.node.end_position().row + 1).max(h.body_end.unwrap_or(0)),
+                    supertypes,
+                    doc,
+                    signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
+                    calls: Vec::new(),
+                    used_by: Vec::new(),
+                }
             })
             .collect();
 
+        // The call sites and the citations of the file, minus the
+        // declaration headers themselves (`foo` in `fn foo(` is where it is
+        // defined, not a use of it) and minus what is written inside a
+        // decoration, an import or a namespace name.
+        let quiet: Spans = decorations.union(&import_spans).copied().collect();
+        (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at, &name_kinds);
+
         out.imports.sort();
         out.imports.dedup();
+        out.global_imports.sort();
+        out.global_imports.dedup();
         out.namespaces.sort();
         out.namespaces.dedup();
         out
     }
+}
+
+/// A declaration as the query gave it, before the supertypes captured
+/// elsewhere in the file are attached to it.
+struct Header<'t> {
+    kind: String,
+    /// The pattern that gave the kind: the first one of the query wins.
+    pattern: usize,
+    name: String,
+    node: Node<'t>,
+    /// Where the name capture starts, which tells the header from a call.
+    name_byte: usize,
+    /// The node type the name is written with.
+    name_kind: &'static str,
+    /// The last line of the body kept beside the declaration, when there is one.
+    body_end: Option<usize>,
+    /// Where the value the declaration is given starts, when a query marks it.
+    value_start: Option<usize>,
+    /// The documentation written inside the declaration (where it starts, and
+    /// its text), when a query marks it.
+    doc_inside: Option<(usize, String)>,
+}
+
+/// Where the names of a statement that declares several are written: the
+/// first of them, this declaration's own, and the next one after it, when
+/// there is one.
+#[derive(Clone, Copy)]
+struct Split {
+    first_name: usize,
+    name: usize,
+    next_name: Option<usize>,
+}
+
+/// The earlier of two optional positions; a missing one never wins.
+fn earliest(a: Option<usize>, b: Option<usize>) -> Option<usize> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The byte spans (start, end) of the decorations of a file.
+type Spans = BTreeSet<(usize, usize)>;
+
+fn is_decoration(node: &Node, decorations: &Spans) -> bool {
+    decorations.contains(&(node.start_byte(), node.end_byte()))
+}
+
+/// How much of a documentation comment is kept. The map is read by machine,
+/// never whole by a person, but a comment is prose: the first lines say what
+/// the declaration is, and the rest is detail nobody searches by.
+const DOC_MAX_CHARS: usize = 400;
+
+/// How much of a signature is kept. The header ends at the body or at the
+/// value, so what is this long is a parameter list, and a parameter list is
+/// what tells one declaration from another: the ceiling keeps it whole in
+/// all but the rarest case.
+const SIGNATURE_MAX_CHARS: usize = 600;
+
+/// The documentation comment written right above `node`: the `extra` nodes the
+/// grammar attaches immediately above it (that is what a comment is in every
+/// grammar), cleaned of their markers and joined into one line. A blank line
+/// between the comment and the declaration ends the block — what is detached
+/// from the declaration is not its documentation. Empty when there is none.
+///
+/// Two things stand between a comment and its declaration without breaking the
+/// block. A decoration is passed over, and so is an unnamed token (a keyword)
+/// until the first comment is joined. And when the siblings end with nothing
+/// joined, the declaration is wrapped in another node, so the search goes on
+/// above the wrapper.
+///
+/// The same path says where the declaration starts: at the first decoration
+/// it passes over, in every language. A grammar that keeps the decoration
+/// inside the node already starts the node there, and the line is the node's.
+fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Above {
+    let mut parts: Vec<String> = Vec::new();
+    let mut anchor = node;
+    let mut top = node.start_position().row;
+    let mut first_row = top;
+    'climb: loop {
+        let mut cur = anchor;
+        while let Some(prev) = cur.prev_sibling() {
+            if prev.end_position().row + 1 < top {
+                break 'climb;
+            }
+            if prev.is_extra() {
+                let Ok(text) = prev.utf8_text(bytes) else { break 'climb };
+                parts.push(clean_comment(text, tags));
+            } else if is_decoration(&prev, decorations) {
+                first_row = first_row.min(prev.start_position().row);
+            } else if prev.is_named() || !parts.is_empty() {
+                break 'climb;
+            }
+            top = prev.start_position().row;
+            cur = prev;
+        }
+        if !parts.is_empty() {
+            break;
+        }
+        let Some(parent) = anchor.parent() else { break };
+        top = top.min(parent.start_position().row);
+        anchor = parent;
+    }
+    parts.reverse();
+    Above { text: one_line(&parts.join(" "), DOC_MAX_CHARS), first_row }
+}
+
+/// What is read above a declaration: its documentation comment, and the row
+/// (from zero) where the declaration starts.
+struct Above {
+    text: String,
+    first_row: usize,
+}
+
+/// Drop the punctuation a comment is written with, line by line, and leave the
+/// prose. Generic: the marker characters are the ones every comment syntax
+/// draws its lines with, not a language's. The markup `tags` of the language
+/// go too, their text staying (see [`strip_doc_tags`]).
+fn clean_comment(raw: &str, tags: &[&str]) -> String {
+    raw.lines()
+        .map(|line| strip_doc_tags(line, tags))
+        .map(|line| {
+            let line = line.trim();
+            let line = line.strip_suffix("*/").unwrap_or(line);
+            line.trim_start_matches(['/', '*', '#', '-', ';', '!', '<', '=']).trim().to_string()
+        })
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Drop from `line` every markup tag named in `tags` — opening, closing or
+/// self-closing — and keep the text between them. A self-closing tag that
+/// carries a value leaves the value in its place: `<see cref="Base"/>` reads
+/// `Base`. A `<...>` whose name is not in the list stays as written, since
+/// elsewhere it is a type (`Option<usize>`). With no tags, the line is as it
+/// came.
+fn strip_doc_tags(line: &str, tags: &[&str]) -> String {
+    if tags.is_empty() || !line.contains('<') {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open..];
+        match doc_tag_at(after, tags) {
+            Some((len, value)) => {
+                out.push_str(&value);
+                rest = &after[len..];
+            }
+            None => {
+                out.push('<');
+                rest = &after[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The tag `text` opens with, when its name is one of `tags`: how many bytes
+/// it takes, and what stays in its place (the first quoted value of a
+/// self-closing tag, nothing otherwise).
+fn doc_tag_at(text: &str, tags: &[&str]) -> Option<(usize, String)> {
+    let inner = text.strip_prefix('<')?;
+    let inner = inner.strip_prefix('/').unwrap_or(inner);
+    let name_len = inner.find(|c: char| !c.is_alphanumeric()).unwrap_or(inner.len());
+    let name = &inner[..name_len];
+    if !tags.contains(&name) {
+        return None;
+    }
+    let after_name = &inner[name_len..];
+    if !after_name.starts_with(['>', '/', ' ', '\t']) {
+        return None;
+    }
+    let close = after_name.find('>')?;
+    let taken = text.len() - after_name.len() + close + 1;
+    let attributes = &after_name[..close];
+    let value = match attributes.strip_suffix('/') {
+        Some(attributes) => quoted_value(attributes).unwrap_or_default(),
+        None => String::new(),
+    };
+    Some((taken, value))
+}
+
+/// The first value written between quotes in `text`.
+fn quoted_value(text: &str) -> Option<String> {
+    let start = text.find(['"', '\''])?;
+    let quote = text[start..].chars().next()?;
+    let body = &text[start + 1..];
+    let end = body.find(quote)?;
+    Some(body[..end].to_string())
+}
+
+/// The declaration's own header: its text up to where the body opens — the
+/// first `{` or `;` with no bracket open, a `{` right after `=>` even inside
+/// brackets (`useCallback((a) => {`), or the first line break with nothing
+/// left open. The body itself never comes: it was measured as the worst thing
+/// to keep in the map. Neither does the value, when a query marks where it
+/// starts (`value_start`): the header stops there, and the `=` left at its end
+/// goes. It starts after the decorations and comments that open the node: an
+/// attribute is not the header of what it adorns.
+///
+/// When the statement declares several names (`split`), each one's header is
+/// what comes before the first name, followed by its own name up to its own
+/// value or up to the next name: `export const a = 1, b = 2;` gives
+/// `export const a` and `export const b`.
+fn signature_of(
+    node: Node,
+    bytes: &[u8],
+    decorations: &Spans,
+    value_start: Option<usize>,
+    split: Option<Split>,
+) -> String {
+    let mut start = node.start_byte();
+    let mut walker = node.walk();
+    for child in node.children(&mut walker) {
+        if !(is_decoration(&child, decorations) || child.is_extra()) {
+            start = child.start_byte();
+            break;
+        }
+        start = child.end_byte();
+    }
+    let value = value_start.filter(|v| (start..=node.end_byte()).contains(v));
+    let until = value.unwrap_or(node.end_byte());
+    let own: Vec<u8> = match split.filter(|s| (start..until).contains(&s.first_name) && s.name < until) {
+        Some(s) => {
+            let own_end = s.next_name.map_or(until, |n| n.min(until));
+            // What comes from the last comma before the next name on is not
+            // part of this header (`, $` before `$q` in `public $p, $q;`).
+            let mut own = &bytes[s.name..own_end];
+            if s.next_name.is_some_and(|n| n <= until)
+                && let Some(comma) = own.iter().rposition(|b| *b == b',')
+            {
+                own = &own[..comma];
+            }
+            let mut joined = bytes[start..s.first_name].to_vec();
+            joined.extend_from_slice(own);
+            joined
+        }
+        None => bytes[start..until].to_vec(),
+    };
+    let Ok(text) = std::str::from_utf8(&own) else { return String::new() };
+    let mut depth: i32 = 0;
+    let mut end = text.len();
+    for (i, ch) in text.char_indices() {
+        let opens_arrow_body = ch == '{' && text[..i].trim_end().ends_with("=>");
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            '{' | ';' | '\n' if depth <= 0 || opens_arrow_body => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let mut head = &text[..end];
+    if value.is_some() && end == text.len() {
+        let trimmed = head.trim_end();
+        head = trimmed.strip_suffix('=').unwrap_or(trimmed);
+    }
+    one_line(head, SIGNATURE_MAX_CHARS)
+}
+
+/// One line of text, whitespace collapsed, cut at `max` characters — on a word
+/// boundary when there is one, so what is kept still reads.
+fn one_line(text: &str, max: usize) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some((cut, _)) = joined.char_indices().nth(max) else { return joined };
+    let cut = joined[..cut].rfind(' ').unwrap_or(cut);
+    joined[..cut].trim_end().to_string()
+}
+
+/// Every call the file makes and every name it cites without calling.
+///
+/// A call is a named leaf that reads as an identifier and is followed by an
+/// opening parenthesis — the one shape a call has in every language we parse.
+/// A citation is the same leaf not followed by a parenthesis: a type, a
+/// constant or an enum member named in a parameter, a comparison or a path.
+/// The letter a name starts with decides nothing, since how names are written
+/// is a convention of each language: every such name is a candidate here, and
+/// `graph` keeps only the ones that name a declaration the citing file sees.
+///
+/// Read off the tree, so what is inside a comment is never a use, and a
+/// keyword never is either (it is not a named node). A citation right against
+/// a quote is quoted text, not a name. The name is NOT resolved here: `graph`
+/// does that with the whole project in hand, which is why what is stored
+/// survives a pass that reads only the files that changed. What is written
+/// right before the name, in `q::name` or `q.name`, is kept as its qualifier.
+///
+/// Nothing inside `quiet` is a use: not a decoration (an attribute calls
+/// nothing), not an import (`Modules` in `using App.Modules;` is the path of
+/// the import), not a name an import brings in (`limite` in
+/// `import { limite } from`, whose use comes later in the file) and not a
+/// namespace name. A declaration's own name, at
+/// `names_at`, is its header.
+///
+/// A grammar may wrap a word in a name node (a keyword that is a name only in
+/// some places). That node counts as a leaf when its one child spans exactly
+/// what it spans, and only when it is of a type in `name_kinds`, the types the
+/// declarations of the file write their names with: `x.from(1)` is a call,
+/// and a modifier or a type keyword before a parenthesis is not.
+fn use_sites(
+    root: Node,
+    bytes: &[u8],
+    quiet: &Spans,
+    names_at: &BTreeSet<usize>,
+    name_kinds: &BTreeSet<&str>,
+) -> (Vec<CallSite>, Vec<CallSite>) {
+    let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
+    let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if is_decoration(&node, quiet) || node.is_extra() {
+            continue;
+        }
+        if node.child_count() > 0 && !is_wrapped_word(node, name_kinds) {
+            for child in node.children(&mut cursor) {
+                stack.push(child);
+            }
+            continue;
+        }
+        if !node.is_named() || names_at.contains(&node.start_byte()) {
+            continue;
+        }
+        let Ok(text) = node.utf8_text(bytes) else { continue };
+        if !is_identifier(text) {
+            continue;
+        }
+        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes));
+        if followed_by_open_paren(node, bytes) {
+            calls.insert(site);
+        } else if !against_a_quote(node, bytes) {
+            cites.insert(site);
+        }
+    }
+    let sites = |found: BTreeSet<(usize, String, String)>| {
+        found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect()
+    };
+    (sites(calls), sites(cites))
+}
+
+/// A name node standing for one word: of a type in `name_kinds`, with a single
+/// child that spans exactly what the node spans.
+fn is_wrapped_word(node: Node, name_kinds: &BTreeSet<&str>) -> bool {
+    node.child_count() == 1
+        && node.is_named()
+        && name_kinds.contains(node.kind())
+        && node
+            .child(0)
+            .is_some_and(|c| c.child_count() == 0 && c.start_byte() == node.start_byte() && c.end_byte() == node.end_byte())
+}
+
+/// The name written right before the node and joined to it by `::` or `.`:
+/// `preco` in `crate::preco::total`, `model` in `model.User`. Empty when the
+/// node stands alone, or when what comes before the separator is not a name
+/// (`f().total`).
+fn qualifier_before(node: Node, bytes: &[u8]) -> String {
+    let before = bytes[..node.start_byte()].trim_ascii_end();
+    let Some(before) = before.strip_suffix(b"::").or_else(|| before.strip_suffix(b".")) else {
+        return String::new();
+    };
+    if before.ends_with(b".") {
+        return String::new();
+    }
+    let before = before.trim_ascii_end();
+    let start = before
+        .iter()
+        .rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80))
+        .map_or(0, |i| i + 1);
+    match std::str::from_utf8(&before[start..]) {
+        Ok(q) if is_identifier(q) => q.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The node touches a quote on either side: it is the text of a string, not a
+/// name. Generic: every language quotes its text with one of these.
+fn against_a_quote(node: Node, bytes: &[u8]) -> bool {
+    let quote = |b: Option<&u8>| b.is_some_and(|b| matches!(b, b'"' | b'\'' | b'`'));
+    quote(node.start_byte().checked_sub(1).and_then(|i| bytes.get(i))) || quote(bytes.get(node.end_byte()))
+}
+
+/// The next character after the node, whitespace apart, opens a parameter list.
+fn followed_by_open_paren(node: Node, bytes: &[u8]) -> bool {
+    bytes
+        .get(node.end_byte()..)
+        .and_then(|rest| rest.iter().find(|b| !b.is_ascii_whitespace()))
+        .is_some_and(|b| *b == b'(')
+}
+
+/// The text reads as a name: letters, digits and underscores, starting with a
+/// letter or an underscore. Two characters at least, the same floor
+/// [`simple_type_name`] uses.
+fn is_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && text.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && text.chars().count() >= 2
 }
 
 /// Split a `.scm` source into top-level patterns and keep the ones that compile
@@ -288,8 +843,9 @@ fn split_patterns(src: &str) -> Vec<String> {
     out
 }
 
-/// Drop `;`-to-end-of-line comments. Our queries contain no string literals, so
-/// a plain scan is safe.
+/// Drop `;`-to-end-of-line comments. The only string literals our queries hold
+/// are the patterns of a `#match?`, which never carry a `;`, so a plain scan is
+/// safe.
 fn strip_comments(src: &str) -> String {
     src.lines()
         .map(|l| match l.find(';') {

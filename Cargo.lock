@@ -998,6 +998,7 @@ dependencies = [
  "serde",
  "serde_json",
  "streaming-iterator",
+ "tempfile",
  "toml",
  "tree-sitter",
  "tree-sitter-c-sharp",

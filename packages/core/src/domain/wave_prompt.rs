@@ -30,43 +30,51 @@ use serde_json::Value;
 use crate::domain::lessons::{applies_to, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
-use crate::domain::search;
-use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
+use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
-/// O teto de turnos de uma onda com uma tarefa só: uma ida e volta do
-/// modelo, que pode conter várias chamadas de ferramenta.
-pub const SOLO_TASK_TURNS_CAP: u32 = 10;
-
-/// O teto de turnos de uma onda com mais de uma tarefa.
-pub const MULTI_TASK_TURNS_CAP: u32 = 15;
-
-/// O teto de turnos da onda com `tasks` tarefas, para o cabeçalho do agente:
-/// [`SOLO_TASK_TURNS_CAP`] com uma tarefa só, [`MULTI_TASK_TURNS_CAP`] com
-/// mais de uma. O corte é da própria plataforma, pelo campo `maxTurns` do
-/// molde do agente — o binário só escolhe o número e o escreve lá; o que
-/// sobrou quando ela corta volta para a fila como tarefa nova.
+/// O nome do agente de onda a chamar, pelo número de tarefas do lote:
+/// `"wave-solo"` para uma tarefa só, `"wave"` para várias. É o nome do
+/// arquivo, sem a extensão, sob `.claude/agents/mustard/`. Nenhum dos dois
+/// limita as idas e voltas do agente: a medição das ondas já entregues deu de
+/// 36 a 403 idas, com média de 153, e nada que a montagem do lote conhece
+/// prevê esse gasto — quem cuida da janela cheia é a compactação, que o agente
+/// faz sozinho, e quem cuida da onda parada é o sinal de vida da rodada.
 #[must_use]
-pub fn requested_turns(tasks: usize) -> u32 {
+pub fn agent_role(tasks: usize) -> &'static str {
     if tasks <= 1 {
-        SOLO_TASK_TURNS_CAP
+        "wave-solo"
     } else {
-        MULTI_TASK_TURNS_CAP
+        "wave"
     }
 }
 
-/// O modelo pedido para o papel `role` (`wave`, `review` ou `skill`) no
-/// envio: a onda que implementa sai em Sonnet 5; a revisão e o agente de
-/// teste dedicado, em Opus 5. Quem manda isso é o binário, no próprio pedido
-/// — sem escolha explícita, a onda herda o modelo da sessão e a decisão
-/// morre em silêncio.
+/// O nome do agente que o molde `template` identifica, pelo campo `name` do
+/// frontmatter dele: `mustard-wave-solo` vira `"wave-solo"`, `mustard-wave`
+/// vira `"wave"`. Sem o campo, ou um nome fora do prefixo `mustard-`, volta
+/// `"wave"` — o papel que a plataforma já aceitava antes dos dois moldes. É
+/// como o reenvio, que não remonta o pedido, sabe qual dos dois o envio
+/// original usou.
 #[must_use]
-pub fn requested_model(role: &str) -> &'static str {
-    match role {
-        "wave" => "Sonnet 5",
-        _ => "Opus 5",
-    }
+pub fn agent_from_template(template: &str) -> String {
+    template
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("name:"))
+        .map(str::trim)
+        .and_then(|name| name.strip_prefix("mustard-"))
+        .unwrap_or("wave")
+        .to_string()
+}
+
+/// O modelo pedido no envio, seja qual for o papel (`wave`, `wave-solo`,
+/// `review` ou `skill`): todo agente do Mustard sai em Opus, pelo apelido que
+/// a plataforma resolve sempre para a versão mais nova. Quem manda isso é o
+/// binário, no próprio pedido — sem escolha explícita, o agente herda o
+/// modelo da sessão e a decisão morre em silêncio.
+#[must_use]
+pub fn requested_model(_role: &str) -> &'static str {
+    "Opus"
 }
 
 /// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
@@ -177,8 +185,44 @@ pub struct Prompt {
     pub lines: usize,
 }
 
+/// O teto de tokens do pedido de uma onda: acima dele, quem despacha recusa
+/// e diz o tamanho medido e o teto, para dividir o lote em dois. O teto é
+/// de despachar, não de montar — [`build`] e [`write`] continuam escrevendo
+/// o pedido inteiro, do tamanho que for, porque é esse texto que a página
+/// mostra antes da aprovação; ninguém corta linha para caber.
+pub const WAVE_REQUEST_TOKEN_CAP: u64 = 25_000;
+
+/// Uma estimativa do tamanho de `text` em tokens: perto de um token a cada
+/// quatro caracteres, a mesma conta grosseira usada para orçar prompt de
+/// modelo sem o tokenizador dele à mão. Erra para cima com texto técnico
+/// cheio de pontuação — o bastante para um teto de segurança, não para
+/// cobrar por token de verdade.
+#[must_use]
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.chars().count() as u64).div_ceil(4)
+}
+
+/// O pedido da onda `wave`, medido em `tokens` tokens (de
+/// [`estimate_tokens`]), passa do teto de [`WAVE_REQUEST_TOKEN_CAP`]? `None`
+/// quando cabe; a mensagem, pronta para a recusa, diz o tamanho medido e o
+/// teto.
+#[must_use]
+pub fn token_cap_message(wave: u64, tokens: u64, lang: Locale) -> Option<String> {
+    if tokens <= WAVE_REQUEST_TOKEN_CAP {
+        return None;
+    }
+    Some(
+        translate("wave_prompt.token_cap", lang)
+            .replace("{wave}", &wave.to_string())
+            .replace("{tokens}", &tokens.to_string())
+            .replace("{cap}", &WAVE_REQUEST_TOKEN_CAP.to_string()),
+    )
+}
+
 /// Monta o pedido da onda a partir do material já lido. Sem teto de linhas:
-/// o pedido sai inteiro, do tamanho que a onda pedir.
+/// o pedido sai inteiro, do tamanho que a onda pedir. O teto de tokens
+/// ([`token_cap_message`]) é conferido à parte, por quem decide despachar,
+/// depois de medir este texto.
 #[must_use]
 pub fn build(material: &Material, lang: Locale) -> Prompt {
     let text = write(material, lang);
@@ -248,14 +292,20 @@ pub enum Owner {
     /// Das ondas do plano que o têm: as das tarefas que o cobrem e as que ele
     /// diz no campo `waves`.
     Waves(BTreeSet<u64>),
+    /// Dos arquivos que ele diz em `applies_to`: vai no pedido da onda em que
+    /// algum arquivo das tarefas casa um desses padrões. É o dono do backlog,
+    /// em que o número da onda só existe quando o lote sai.
+    Files(Vec<String>),
 }
 
 /// O dono de cada item combinado, pelo número do item. O item sem dono não
 /// entra: nenhuma tarefa de uma onda do plano o cobre, ele não diz uma onda
-/// do plano em `waves` e não vale no projeto todo.
+/// do plano em `waves`, não diz arquivos em `applies_to` e não vale no
+/// projeto todo.
 ///
 /// O item do projeto é o que diz, em `applies_to`, que vale no projeto todo:
-/// a mesma leitura que acha a lição do projeto todo. A busca por palavras não
+/// a mesma leitura que acha a lição do projeto todo. O que diz arquivos, sem
+/// o curinga, e não tem onda dona, é dos arquivos. A busca por palavras não
 /// decide dono nenhum.
 #[must_use]
 pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
@@ -291,23 +341,43 @@ pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
         waves.extend(item.ints("waves").into_iter().filter(|n| planned.contains(n)));
         if !waves.is_empty() {
             out.insert(item.id, Owner::Waves(waves));
+            continue;
+        }
+        let files = applies_to_files(item);
+        if !files.is_empty() {
+            out.insert(item.id, Owner::Files(files));
         }
     }
     out
 }
 
+/// Os padrões de arquivo que um item diz em `applies_to`, sem os vazios.
+fn applies_to_files(item: &SpecEvent) -> Vec<String> {
+    item.fields
+        .get("applies_to")
+        .and_then(|at| at.get("files"))
+        .and_then(Value::as_array)
+        .map(|files| {
+            files.iter().filter_map(Value::as_str).map(str::trim).filter(|f| !f.is_empty()).map(str::to_string).collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Os itens combinados que vão no pedido da onda `wave`, como a montagem os
-/// escolhe antes da análise: os de que ela é dona e os do projeto. O item sem
-/// dono não entra aqui; só a análise antes do envio ([`dispatch_items`]) pode
-/// pô-lo num pedido.
+/// escolhe antes da análise: os de que ela é dona, os dos arquivos que as
+/// tarefas dela tocam e os do projeto. O item dos arquivos casa pela mesma
+/// leitura de `applies_to` que acha a lição. O item sem dono não entra aqui;
+/// só a análise antes do envio ([`dispatch_items`]) pode pô-lo num pedido.
 #[must_use]
 pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let owners = owners(log);
+    let touched = Scope { files: wave_files(log, wave), ..Scope::default() };
     agreed_items(log)
         .into_iter()
         .filter(|item| match owners.get(&item.id) {
             Some(Owner::Project) => true,
             Some(Owner::Waves(waves)) => waves.contains(&wave),
+            Some(Owner::Files(_)) => applies_to(item, &touched),
             None => false,
         })
         .collect()
@@ -319,6 +389,14 @@ pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
 pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
     let owners = owners(log);
     agreed_items(log).into_iter().filter(|item| !owners.contains_key(&item.id)).collect()
+}
+
+/// Todo o combinado vigente da spec, dono ou não de onda: a lista que a
+/// revisão final precisa responder, item por item, mesmo numa rodada de
+/// conserto.
+#[must_use]
+pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
+    agreed_items(log)
 }
 
 // ---------------------------------------------------------------------------
@@ -378,7 +456,7 @@ pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
         match owners.get(&item.id) {
             Some(Owner::Project) => out.project.push(item),
             None => out.unowned.push(item),
-            Some(Owner::Waves(_)) => {}
+            Some(Owner::Waves(_) | Owner::Files(_)) => {}
         }
     }
     out
@@ -551,13 +629,105 @@ pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -
     out
 }
 
+/// Os campos que o registro de um lote deriva das tarefas que o compõem
+/// agora: os critérios que elas cobrem (`covers`, sem repetir), o texto
+/// delas juntado por espaço e o pronto-quando — a prova de cada critério
+/// coberto, ligada por " && ", ou, sem prova nenhuma (o caso do item
+/// combinado sem dono, que não tem prova), o próprio texto das tarefas. A
+/// formação do lote e a atualização dele depois de uma tarefa sair pelo
+/// backlog usam esta mesma conta, sobre as tarefas que a leitura de agora
+/// mostra, para as duas nunca discordarem.
+pub struct BacklogFields {
+    pub criteria: Vec<u64>,
+    pub text: String,
+    pub done_when: String,
+}
+
+/// Calcula [`BacklogFields`] a partir das tarefas `tasks` de um lote, lendo em
+/// `log` a prova de cada critério que elas cobrem.
+#[must_use]
+pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
+    let mut criteria: BTreeSet<u64> = BTreeSet::new();
+    let mut text_parts: Vec<String> = Vec::new();
+    for task in tasks {
+        criteria.extend(task.ints("covers"));
+        if let Some(text) = task.str_field("text") {
+            text_parts.push(text.to_string());
+        }
+    }
+    let criteria: Vec<u64> = criteria.into_iter().collect();
+    let proof =
+        criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof")).collect::<Vec<_>>().join(" && ");
+    let done_when = if proof.is_empty() { text_parts.join(" ") } else { proof };
+    BacklogFields { criteria, text: text_parts.join(" "), done_when }
+}
+
+/// Os executores que o binário reconhece abrindo a prova de um critério,
+/// escritos como uma palavra só. A lista é de ferramenta, não de projeto:
+/// qualquer pilha que rode teste aparece aqui, e o programa que só existe num
+/// projeto entra pela outra porta, a do nome com caminho, ponto ou hífen.
+pub const PROOF_COMMANDS: &[&str] = &[
+    "bash", "bun", "bundle", "cabal", "cargo", "cmake", "composer", "ctest", "dart", "deno", "docker", "dotnet",
+    "echo", "elixir", "env", "flutter", "git", "go", "gradle", "gradlew", "grep", "jest", "just", "make", "mix",
+    "mocha", "mvn", "ninja", "node", "npm", "npx", "php", "phpunit", "pnpm", "poetry", "printf", "pytest", "python",
+    "python3", "rake", "rg", "rspec", "rtk", "ruby", "rustc", "sbt", "sh", "stack", "swift", "task", "tox", "tsc",
+    "uv", "vitest", "yarn", "zig", "zsh",
+];
+
+/// `true` quando `token` é uma atribuição de variável de ambiente à frente do
+/// comando, como `PATH="..."` ou `CARGO_TARGET_DIR=/tmp/x`: ela abre a linha
+/// sem ser o programa que roda.
+fn env_assignment(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else { return false };
+    !name.is_empty()
+        && !name.contains('/')
+        && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `true` quando `proof` abre por um programa, e não por prosa ou pelo nome
+/// solto de um teste: descontadas as atribuições de ambiente da frente, o
+/// primeiro pedaço ou está em [`PROOF_COMMANDS`] ou nomeia um programa pelo
+/// caminho, pelo ponto ou pelo hífen — que nome de teste e palavra de frase
+/// não trazem.
+#[must_use]
+pub fn proof_is_command(proof: &str) -> bool {
+    let Some(program) = proof.split_whitespace().find(|token| !env_assignment(token)) else { return false };
+    PROOF_COMMANDS.contains(&program)
+        || program.contains('/')
+        || program.contains('.')
+        || program.contains('-')
+}
+
+/// Confere que a prova que a entrega de uma onda traz para o critério
+/// `criterion` é uma linha de comando. O campo guarda o comando que demonstra
+/// o critério, e é ele que a rodada e o fechamento rodam; duas provas do
+/// mesmo critério viram um comando só, ligado por `&&`, e o nome solto de um
+/// teste ali dentro vira um comando que o shell não acha, com saída 127 e uma
+/// mensagem que não diz de onde veio. A conferência é na gravação, para o
+/// defeito aparecer na rodada que o criou.
+///
+/// # Errors
+///
+/// [`Refusal::ProofNotACommand`], com o critério e o texto que veio no lugar
+/// do comando.
+pub fn proof_rule(criterion: &str, proof: &str) -> Result<(), Refusal> {
+    if proof_is_command(proof) {
+        return Ok(());
+    }
+    Err(Refusal::ProofNotACommand { criterion: criterion.to_string(), found: proof.to_string() })
+}
+
 /// A gravação de um item combinado novo depois da aprovação: ele nasce com
 /// dono. Olha o arquivo antes e depois da gravação; o item que já existia, a
 /// spec ainda não aprovada e a gravação de outro tipo passam.
 ///
-/// A onda que o item diz em `waves` vale mesmo antes de estar no plano: a
-/// decisão costuma vir antes da onda que a faz, e a tarefa entra numa onda no
-/// replanejamento. Até lá, só a análise antes do envio pode pô-lo num pedido.
+/// Com o backlog, o número da onda só existe quando o lote sai: o dono se dá
+/// pelos arquivos, em `applies_to`, com os arquivos das tarefas que cobrem ou
+/// vão cobrir o item. Vale mesmo antes de a tarefa existir: a decisão costuma
+/// vir antes da tarefa que a faz. O item dos arquivos vai no pedido da onda
+/// cujas tarefas tocam um deles ([`agreed_for`]), sem passar pela análise
+/// antes do envio. A onda dita em `waves`, do plano antigo, continua valendo.
 ///
 /// # Errors
 ///
@@ -568,7 +738,7 @@ pub fn owner_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     }
     let had: BTreeSet<u64> = before.events.iter().map(|e| e.id).collect();
     let owners = owners(after);
-    let declared = |item: &SpecEvent| item.ints("waves").iter().any(|n| *n > 0);
+    let declared = |item: &SpecEvent| item.ints("waves").iter().any(|n| *n > 0) || !applies_to_files(item).is_empty();
     let orphan = |item: &&SpecEvent| !had.contains(&item.id) && !owners.contains_key(&item.id) && !declared(item);
     match agreed_items(after).into_iter().find(orphan) {
         Some(item) => Err(Refusal::OwnerMissing { event_type: item.event_type.clone() }),
@@ -703,6 +873,7 @@ pub fn owner_list(log: &SpecLog, given: &[GivenOwner]) -> Result<Vec<OwnerLine>,
             && match &entry.owner {
                 Owner::Project => true,
                 Owner::Waves(waves) => !waves.is_empty() && waves.is_subset(&planned),
+                Owner::Files(files) => files.iter().any(|f| !f.trim().is_empty()),
             };
         let line = lines.iter_mut().find(|line| codes.get(&line.item) == Some(&entry.code));
         match line {
@@ -878,57 +1049,6 @@ pub fn fix_lines(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
         out.extend(agreed_for(log, wave).into_iter().filter(|item| item.id > anchor));
     }
     out
-}
-
-/// `true` quando um texto casa com a onda `n`: pela busca por palavras sobre
-/// todas as ondas do plano, a nota dessa onda não fica abaixo da média das
-/// notas das outras. Ela confere se uma tarefa está na onda certa; quem recebe
-/// cada item combinado é o dono dele, não a busca.
-///
-/// Ter uma raiz em comum com a onda não basta: quase toda tarefa tem uma raiz
-/// em comum com quase toda onda, e aí qualquer onda serviria. A nota da onda
-/// da tarefa é posta contra as das outras, e a que fica abaixo da média não
-/// casa.
-///
-/// É uma pergunta sobre uma onda só, e a resposta é sim ou não. Não é uma
-/// disputa em que uma das ondas vence e todas as outras perdem: essa outra
-/// pergunta é a de [`closest_wave`], e serve só para dizer para onde um texto
-/// iria. A onda que o plano não tem responde que sim, porque a recusa dela é
-/// outra e não sai daqui.
-#[must_use]
-pub fn matches_wave(log: &SpecLog, n: u64, text: &str) -> bool {
-    let docs = wave_docs(log);
-    if !docs.iter().any(|(number, _)| *number == n) {
-        return true;
-    }
-    let hits = wave_scores(&docs, text);
-    let mine = hits.iter().find(|hit| hit.id == n).map_or(0, |hit| hit.score);
-    let others: u64 = hits.iter().filter(|hit| hit.id != n).map(|hit| hit.score).sum();
-    let count = u64::try_from(docs.len() - 1).unwrap_or(u64::MAX);
-    mine > 0 && mine.saturating_mul(count) >= others
-}
-
-/// A onda cujo texto casa mais forte com um texto, entre as do plano.
-/// `None` quando ele não casa com onda nenhuma, e aí não há para onde apontar.
-#[must_use]
-pub fn closest_wave(log: &SpecLog, text: &str) -> Option<u64> {
-    wave_scores(&wave_docs(log), text).first().map(|hit| hit.id)
-}
-
-/// A nota de cada onda que casa com um texto, da mais forte para a mais fraca,
-/// pela mesma busca do recorte dos itens. A onda que não casa fica de fora.
-fn wave_scores(docs: &[(u64, String)], text: &str) -> Vec<search::Hit> {
-    search::SearchIndex::build(docs.iter().map(|(n, roots)| (*n, roots.as_str())))
-        .top(&search::query_terms(text), docs.len())
-}
-
-/// O texto de cada onda do plano, reduzido para a busca.
-fn wave_docs(log: &SpecLog) -> Vec<(u64, String)> {
-    log.block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|event| event.event_type == "wave")
-        .filter_map(|event| Some((event.wave()?, search_field(event.str_field("text"), &[]))))
-        .collect()
 }
 
 struct Writer<'a> {
@@ -1178,9 +1298,12 @@ impl Writer<'_> {
     /// As regras da execução do agente da onda que carregam valor deste
     /// projeto e desta rodada — a cópia separada, a pasta de compilação num
     /// projeto Rust, os comandos do projeto e as outras ondas em andamento,
-    /// com os arquivos delas. O resto (ler por trecho, não comitar, a suíte
-    /// uma vez no fim…) já mora no molde do agente, e não repete aqui. De
-    /// onde ler a spec, o exemplo de leitura já diz.
+    /// com os arquivos delas — e, ligadas à cópia, as três frases que dizem
+    /// com todas as letras que o agente não comita, que o campo `commit` do
+    /// relatório é o título, nunca o código do commit, e que a última
+    /// mensagem tem só a linha `<DELIVERED>` e a de gasto. O resto (ler por
+    /// trecho, a suíte uma vez no fim…) já mora no molde do agente, e não
+    /// repete aqui. De onde ler a spec, o exemplo de leitura já diz.
     fn execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let running = &execution.running;
@@ -1189,6 +1312,9 @@ impl Writer<'_> {
             let line = self.t("prompt.execution.copy").replace("{copy}", &copy.path).replace("{root}", &execution.root);
             let _ = writeln!(out, "- {line}");
             self.build_dir(out, copy);
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.commit_field"));
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.report_lines"));
         }
         self.commands(out);
         if !running.is_empty() {
@@ -1206,10 +1332,11 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// As regras da execução do revisor: criar a cópia que o pedido indica no
-    /// commit da onda, compilar na pasta de compilação dela num projeto Rust,
-    /// os comandos do projeto com menos processos, não comitar e apagar a
-    /// cópia no fim. De onde ler a spec, o exemplo de leitura já diz.
+    /// As regras da execução do revisor: a cópia que o fechamento já criou no
+    /// commit da obra, compilar na pasta de compilação dela num projeto Rust,
+    /// os comandos do projeto com menos processos, e desfazer cada corte
+    /// antes de devolver — quem apaga a cópia é o fechamento. De onde ler a
+    /// spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let (copy, root) = (&execution.review, &execution.root);
@@ -1461,8 +1588,7 @@ mod tests {
 
     /// Cada tarefa ganhou linha própria — o arquivo dela e o que precisa ler
     /// antes —, então o número de tarefas soma linhas ao pedido, sem teto: o
-    /// pedido não corta onda grande, quem corta é o teto de turnos do
-    /// próprio agente.
+    /// pedido não corta onda grande, e nada mais corta.
     #[test]
     fn each_task_adds_one_line_and_the_request_has_no_task_count_cap() {
         const MANY: usize = 6;
@@ -1511,6 +1637,33 @@ mod tests {
         assert!(prompt.lines > 600, "{}", prompt.text);
         let last_id = bank.visible().last().expect("banco com lição").id;
         assert!(prompt.text.contains(&format!("- `lessons`: {last_id}")), "{}", prompt.text);
+    }
+
+    /// O pedido da onda 3, medido em 27.412 tokens, passa do teto de 25.000:
+    /// a recusa diz os dois números. No teto exato (25.000) ele ainda cabe;
+    /// um token a mais (25.001) já passa. O teto não mexe na montagem: é
+    /// [`build`]/[`write`] que continuam saindo inteiros, sem linha cortada
+    /// — quem decide despachar é que confere esta mensagem à parte.
+    #[test]
+    fn o_pedido_acima_de_vinte_e_cinco_mil_tokens_e_recusado() {
+        let over = token_cap_message(3, 27_412, Locale::PtBr).expect("acima do teto: recusa");
+        assert!(over.contains("27412"), "{over}");
+        assert!(over.contains("25000"), "{over}");
+        assert!(over.contains('3'), "a onda 3: {over}");
+
+        assert!(token_cap_message(3, 25_000, Locale::PtBr).is_none(), "no teto exato, ainda cabe");
+        assert!(token_cap_message(3, 25_001, Locale::PtBr).is_some(), "um token a mais já passa do teto");
+    }
+
+    /// A estimativa é perto de um token a cada quatro caracteres, sempre
+    /// arredondada para cima: um texto que não é múltiplo de quatro não passa
+    /// por baixo do teto real.
+    #[test]
+    fn a_estimativa_de_tokens_conta_perto_de_um_a_cada_quatro_caracteres() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcde"), 2, "cinco caracteres arredondam para cima");
+        assert_eq!(estimate_tokens(&"a".repeat(100_000)), 25_000, "cem mil caracteres batem exatos no teto");
     }
 
     /// Cada skill nomeada entra no pedido como uma linha — nome, quando usar e
@@ -1693,9 +1846,10 @@ mod tests {
         log(&events)
     }
 
-    /// Depois da aprovação, o item combinado novo nasce com dono: a onda que
-    /// ele diz, o projeto todo ou a tarefa que já cobria a versão antiga. Sem
-    /// dono, é recusado; antes da aprovação, passa.
+    /// Depois da aprovação, o item combinado novo nasce com dono: os arquivos
+    /// das tarefas que o cobrem, o projeto todo, a onda que ele diz ou a
+    /// tarefa que já cobria a versão antiga. Sem dono, é recusado, com o texto
+    /// que manda dar o dono pelos arquivos; antes da aprovação, passa.
     #[test]
     fn a_new_agreed_item_after_the_approval_is_born_with_an_owner() {
         let before = approved_then(None);
@@ -1708,8 +1862,11 @@ mod tests {
         assert_eq!(refused.reason(), "owner-missing");
         for lang in [Locale::PtBr, Locale::EnUs] {
             let message = refused.message(lang);
-            assert!(message.contains("decision") && message.contains("waves") && message.contains("**"), "{message}");
+            assert!(message.contains("decision") && message.contains("applies_to") && message.contains("**"), "{message}");
+            assert!(!message.contains("waves"), "{message}");
         }
+        assert_eq!(owner_rule(&before, &decision(json!({"applies_to": {"files": ["src/a.rs"]}}))), Ok(()));
+        assert!(owner_rule(&before, &decision(json!({"applies_to": {"files": []}}))).is_err(), "sem arquivo não é dono");
         assert_eq!(owner_rule(&before, &decision(json!({"waves": [1]}))), Ok(()));
         assert_eq!(owner_rule(&before, &decision(json!({"applies_to": {"files": ["**"]}}))), Ok(()));
         assert_eq!(owner_rule(&before, &decision(json!({"replaces": 1}))), Ok(()), "a tarefa cobre a versão antiga");
@@ -1767,7 +1924,8 @@ mod tests {
     /// A proposta dá a cada item sem dono as ondas da primeira regra que
     /// acha onda do plano — as tarefas que nasceram dele ou citam o código,
     /// a onda que o texto cita, os arquivos em comum —, e deixa sem dono o
-    /// que nenhuma resolve. O item do projeto e o que já tem dono ficam fora.
+    /// que nenhuma resolve. O item do projeto, o que já tem dono e o que diz
+    /// arquivos em `applies_to`, que é dono deles, ficam fora.
     #[test]
     fn the_proposal_gives_each_unowned_item_the_waves_of_the_first_rule_that_finds_one() {
         let log = unowned_plan();
@@ -1783,7 +1941,6 @@ mod tests {
                 (10, None, OwnerFrom::Nothing),
                 (11, waves(&[2]), OwnerFrom::Cited),
                 (12, waves(&[2]), OwnerFrom::Files(vec!["rt/src/pagina.rs".into()])),
-                (13, waves(&[1]), OwnerFrom::Files(vec!["src/**".into()])),
                 (14, waves(&[1]), OwnerFrom::Cited),
             ]
         );
@@ -2165,6 +2322,9 @@ mod tests {
         for line in [
             format!("- {}", t("prompt.execution.copy").replace("{copy}", "/repo/copia-1").replace("{root}", "/repo")),
             format!("- {}", t("prompt.execution.build_dir").replace("{dir}", "/repo/target/copias/a")),
+            format!("- {}", t("prompt.execution.no_commit")),
+            format!("- {}", t("prompt.execution.commit_field")),
+            format!("- {}", t("prompt.execution.report_lines")),
             "- Compile com `make`.".to_string(),
             "- Teste com `make test`.".to_string(),
             format!("- {}", t("prompt.execution.running")),
@@ -2184,22 +2344,34 @@ mod tests {
         assert_eq!(last.matches("--root").count(), 1, "{last}");
         let rules = section(&last, t("prompt.part.execution"));
         for line in [
-            "`git worktree add --detach /repo/revisao-1 abc1234`",
+            "já a criou no commit `abc1234`",
             "`CARGO_TARGET_DIR=/repo/target/copias/b`",
             t("prompt.review.jobs"),
-            "`git worktree remove --force /repo/revisao-1`",
+            "recusa começar sobre `/repo/revisao-1` com mudança",
             "- Compile com `make`.",
         ] {
             assert!(rules.contains(line), "{line}: {rules}");
         }
         assert!(!rules.contains("Onda 2") && !rules.contains("copia-1"), "a revisão roda na cópia dela: {rules}");
+        assert!(
+            !rules.contains(t("prompt.execution.no_commit"))
+                && !rules.contains(t("prompt.execution.commit_field"))
+                && !rules.contains(t("prompt.execution.report_lines")),
+            "o revisor não entrega, e o pedido dele não fala do campo commit nem das duas linhas: {rules}"
+        );
 
         m.execution = Execution { root: "/repo".into(), ..Execution::default() };
         let wave = write(&m, Locale::PtBr);
         let rules = section(&wave, t("prompt.part.execution"));
         assert!(!rules.contains("Compile com") && !rules.contains(t("prompt.execution.running")), "{rules}");
+        assert!(
+            !rules.contains(t("prompt.execution.no_commit"))
+                && !rules.contains(t("prompt.execution.commit_field"))
+                && !rules.contains(t("prompt.execution.report_lines")),
+            "sem cópia, não há o que comitar nem relatar: {rules}"
+        );
         assert!(!rules.contains("CARGO_TARGET_DIR") && !wave.contains("--root"), "{wave}");
-        assert!(write_final_review(&m, Locale::PtBr).contains("--detach  HEAD`"));
+        assert!(write_final_review(&m, Locale::PtBr).contains("no commit `HEAD`"));
         assert!(write_final_review(&m, Locale::PtBr).contains(&example), "o revisor trabalha sempre numa cópia");
         let en = write(&Material { execution: with_copy(), ..material(&log, 1) }, Locale::EnUs);
         let rules = section(&en, translate("prompt.part.execution", Locale::EnUs));
@@ -2217,13 +2389,13 @@ mod tests {
         for (lang, wave, review) in [
             (
                 Locale::PtBr,
-                ["nasce vermelho", "o comando ou o evento do gancho", "não só na função auxiliar", "prova do vermelho (o que foi cortado"],
-                ["rode a prova gravada", "prova do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
+                ["nasce vermelho", "o comando ou o evento do gancho", "não só na função auxiliar", "verificação do vermelho (o que foi cortado"],
+                ["rode a verificação gravada", "verificação do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
             ),
             (
                 Locale::EnUs,
-                ["is born red", "the command or the hook event", "not only in the helper function", "red proof (what was cut"],
-                ["run its recorded proof", "red proof the delivery reports", "where the wave did not cut", "without repeating its own"],
+                ["is born red", "the command or the hook event", "not only in the helper function", "red verification (what was cut"],
+                ["run its recorded verification", "red verification the delivery reports", "where the wave did not cut", "without repeating its own"],
             ),
         ] {
             let agents = crate::platform::seeds::agent_texts(lang);
@@ -2232,35 +2404,5 @@ mod tests {
                 assert!(!translate(key, lang).contains(said), "{lang:?} {key} repeats {said}");
             }
         }
-    }
-
-    /// Um texto casa com a onda dele quando a nota dela não fica abaixo da
-    /// média das notas das outras. Uma raiz em comum não basta: o texto que
-    /// divide uma palavra com a onda dele e casa mais com as outras não casa.
-    /// O que não casa com onda nenhuma não tem para onde ir, e a onda que o
-    /// plano não tem responde que sim.
-    #[test]
-    fn a_text_fits_its_wave_only_when_it_scores_at_least_the_average_of_the_others() {
-        let log = log(&[
-            ("wave", json!({"n": 1, "text": "Leitura do arquivo de eventos", "criteria": [], "done_when": "lê"})),
-            ("wave", json!({"n": 2, "text": "Página do relatório", "criteria": [], "done_when": "sai"})),
-            ("wave", json!({"n": 3, "text": "Publicação da página do relatório", "criteria": [], "done_when": "sai"})),
-        ]);
-        let shared = "Gravar a página do relatório ao lado do arquivo";
-        let docs = wave_docs(&log);
-        let scores = wave_scores(&docs, shared);
-        let score = |n: u64| scores.iter().find(|hit| hit.id == n).map_or(0, |hit| hit.score);
-        assert!(score(1) > 0, "o texto tem uma raiz em comum com a onda 1: {scores:?}");
-        assert!(2 * score(1) < score(2) + score(3), "e casa menos com ela do que com as outras: {scores:?}");
-        assert!(!matches_wave(&log, 1, shared), "a raiz em comum não basta");
-        assert!(matches_wave(&log, 2, shared));
-        assert!(matches_wave(&log, 1, "Ler o arquivo de eventos"));
-
-        assert!(!matches_wave(&log, 1, "Somar dois números"));
-        assert_eq!(closest_wave(&log, "Somar dois números"), None);
-        assert!(matches_wave(&log, 9, "Somar dois números"), "a onda que o plano não tem responde que sim");
-
-        let alone = self::log(&[("wave", json!({"n": 1, "text": "Leitura do arquivo", "criteria": [], "done_when": "lê"}))]);
-        assert!(matches_wave(&alone, 1, shared), "com uma onda só, a raiz em comum basta");
     }
 }

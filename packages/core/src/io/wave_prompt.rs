@@ -36,6 +36,10 @@ pub struct WavePrompt {
     /// o primeiro dos dois textos que o agente recebe. Vazio quando o
     /// projeto ainda não tem o arquivo do molde.
     pub template: String,
+    /// O nome do agente escolhido para este lote, pelo número de tarefas
+    /// ([`wave_prompt::agent_role`]): `"wave-solo"` numa tarefa só, `"wave"`
+    /// em várias. É o arquivo lido para `template`, sem a extensão.
+    pub agent: String,
     /// O modelo pedido para a onda: fixo, pelo papel `wave`
     /// ([`wave_prompt::requested_model`]).
     pub model: String,
@@ -93,9 +97,9 @@ pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
 /// As lições do banco que casam com a onda `wave`: as que valem para os
 /// arquivos das tarefas dela ou para as skills que elas nomeiam e, de cada
 /// classe, só as mais ligadas ao texto das tarefas. Uma pasta com centenas
-/// delas passaria do teto de linhas, e a lição sem palavra em comum com a
-/// tarefa só ocupa o agente. São as que a rodada mostra ao orquestrador antes
-/// do envio, e as que o pedido leva, menos as que a escolha dele tirou.
+/// delas passaria do teto de tokens do pedido, e a lição sem palavra em comum
+/// com a tarefa só ocupa o agente. São as que a rodada mostra ao orquestrador
+/// antes do envio, e as que o pedido leva, menos as que a escolha dele tirou.
 #[must_use]
 pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a SpecEvent> {
     let files = wave_files(log, wave);
@@ -122,10 +126,29 @@ pub fn copy_path(root: &Path, spec: &str, wave: u64, review: bool) -> PathBuf {
 }
 
 /// A pasta da cópia separada do revisor final da spec `spec`, ao lado das
-/// cópias das ondas.
+/// cópias das ondas. Quem a cria, no commit de [`final_review_commit`], e a
+/// apaga no fim é o fechamento (`mustard-rt run close`), pela mesma porta das
+/// cópias de onda; o pedido do revisor só diz onde ela está.
 #[must_use]
 pub fn final_copy_path(root: &Path, spec: &str) -> PathBuf {
     crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(format!("mustard-{spec}-final-review"))
+}
+
+/// O commit em que o revisor final confere a obra: o mais novo que a spec
+/// gravou no repositório principal do checkout `root`. O commit de um
+/// submódulo, que a rodada grava com o nome da pasta dele em `repo`, não
+/// existe no principal, e a cópia não nasceria nele. `None` quando a obra
+/// ainda não comitou nada ali — aí o pedido diz `HEAD`, e o fechamento cria a
+/// cópia no commit atual do checkout.
+#[must_use]
+pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
+    let main = root.file_name().map(|name| name.to_string_lossy().to_string());
+    log.block(BlockQuery::Block(Block::Progress))
+        .into_iter()
+        .rev()
+        .filter(|e| e.event_type == "commit")
+        .filter(|e| e.str_field("repo").is_none_or(|repo| Some(repo) == main.as_deref()))
+        .find_map(|e| e.str_field("sha").map(str::to_string))
 }
 
 /// O pedido do agente de teste dedicado da spec `spec`, que o fechamento pede
@@ -160,14 +183,9 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         .collect();
     let criteria: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").collect();
-    let mut agreed: Vec<&SpecEvent> = Vec::new();
-    for wave in scope {
-        for item in wave_prompt::agreed_for(log, *wave) {
-            if !agreed.iter().any(|seen| seen.id == item.id) {
-                agreed.push(item);
-            }
-        }
-    }
+    // Todo o combinado vigente, dono ou não de onda: a revisão final responde
+    // por ele inteiro, mesmo numa rodada de conserto de uma onda só.
+    let mut agreed: Vec<&SpecEvent> = wave_prompt::all_agreed(log);
     agreed.sort_by_key(|e| e.id);
     let changes: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit").collect();
@@ -177,11 +195,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         let verdicts = log.verdicts_by_wave();
         fixing.iter().filter_map(|n| verdicts.get(n).and_then(|v| v.last().copied())).collect()
     };
-    let commit = log
-        .block(BlockQuery::Block(Block::Progress))
-        .into_iter()
-        .rev()
-        .find_map(|e| (e.event_type == "commit").then(|| e.str_field("sha").map(str::to_string)).flatten());
+    let commit = final_review_commit(root, log);
     let last_sent = log.last_by_wave("send").into_iter().max_by_key(|(_, id)| *id).map(|(n, _)| n);
     let commands = crate::ProjectConfig::load(root).commands();
     let execution = Execution {
@@ -233,41 +247,13 @@ pub fn shown(path: &Path) -> String {
 }
 
 /// O texto do molde do agente instalado no projeto `root`, para o papel
-/// `role` (`wave`, `review` ou `skill`) — o arquivo que o instalador grava em
-/// `.claude/agents/mustard/<role>.md`. Vazio quando o projeto ainda não o
-/// tem.
+/// `role` (`wave`, `wave-solo`, `review` ou `skill`) — o arquivo que o
+/// instalador grava em `.claude/agents/mustard/<role>.md`. Vazio quando o
+/// projeto ainda não o tem.
 #[must_use]
 pub fn agent_template(root: &Path, role: &str) -> String {
     std::fs::read_to_string(root.join(".claude").join("agents").join("mustard").join(format!("{role}.md")))
         .unwrap_or_default()
-}
-
-/// O molde `template` com o teto de turnos escrito no frontmatter dela, pelo
-/// campo `maxTurns`: dez para onda de tarefa única, quinze para onda de
-/// várias ([`wave_prompt::requested_turns`]) — quem aplica o corte é a
-/// própria plataforma, pelo cabeçalho do agente, não o binário. Um molde sem
-/// frontmatter (sem as duas linhas `---`), ou vazio, volta como veio: sem o
-/// molde instalado não há cabeçalho para escrever.
-#[must_use]
-fn with_turns_cap(template: &str, tasks: usize) -> String {
-    let Some(start) = template.lines().position(|line| line.trim() == "---") else {
-        return template.to_string();
-    };
-    let Some(end_rel) = template.lines().skip(start + 1).position(|line| line.trim() == "---") else {
-        return template.to_string();
-    };
-    let end = start + 1 + end_rel;
-    let cap = wave_prompt::requested_turns(tasks);
-    let mut lines: Vec<String> = template.lines().map(str::to_string).collect();
-    match lines[start + 1..end].iter().position(|line| line.trim_start().starts_with("maxTurns:")) {
-        Some(found) => lines[start + 1 + found] = format!("maxTurns: {cap}"),
-        None => lines.insert(end, format!("maxTurns: {cap}")),
-    }
-    let mut out = lines.join("\n");
-    if template.ends_with('\n') {
-        out.push('\n');
-    }
-    out
 }
 
 /// O que é igual para o pedido de todas as ondas de uma montagem.
@@ -424,9 +410,13 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
-    let template = with_turns_cap(&agent_template(root, "wave"), of_type("task").len());
-    let model = wave_prompt::requested_model("wave").to_string();
-    WavePrompt { wave, template, model, text, lines, bad_skills, stale_skills }
+    // O nome do agente, pelo número de tarefas do lote, escolhe o arquivo:
+    // nenhum dos dois limita as idas e voltas do agente, então não há mais o
+    // que escrever em memória — só ler o molde certo.
+    let agent = wave_prompt::agent_role(of_type("task").len()).to_string();
+    let template = agent_template(root, &agent);
+    let model = wave_prompt::requested_model(&agent).to_string();
+    WavePrompt { wave, template, agent, model, text, lines, bad_skills, stale_skills }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -652,8 +642,8 @@ mod tests {
         ])
     }
 
-    /// Uma onda `n` com `tasks` tarefas, para testar o teto de turnos do
-    /// cabeçalho conforme o número delas.
+    /// Uma onda `n` com `tasks` tarefas, para testar o molde de agente que
+    /// o número delas escolhe.
     fn plan_log_with_tasks(tasks: usize) -> SpecLog {
         let mut events: Vec<(&str, Value)> =
             vec![("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))];
@@ -663,15 +653,16 @@ mod tests {
         log_of(&events)
     }
 
-    /// O molde do agente da onda, instalado em `root`, com o frontmatter que
-    /// os moldes de verdade trazem.
+    /// Os moldes de agente de verdade, os que o Mustard instala no projeto,
+    /// gravados em `root` como o instalador os grava. É o molde do produto,
+    /// e não uma cópia de mentira escrita aqui, que o teste lê: assim um
+    /// teto de idas e voltas que voltasse ao cabeçalho derrubaria o teste.
     fn write_agent_template(root: &Path) {
-        std::fs::create_dir_all(root.join(".claude").join("agents").join("mustard")).unwrap();
-        std::fs::write(
-            root.join(".claude").join("agents").join("mustard").join("wave.md"),
-            "---\nname: mustard-wave\nmodel: sonnet\n---\n\nCorpo do agente.\n",
-        )
-        .unwrap();
+        let dir = root.join(".claude").join("agents").join("mustard");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, body) in crate::platform::seeds::agent_texts(Locale::PtBr) {
+            std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
+        }
     }
 
     fn write_skill(root: &Path, subproject: &str, name: &str, text: &str) {
@@ -687,25 +678,27 @@ mod tests {
         std::fs::write(crate::io::project_map::model_path(root), model.to_string()).unwrap();
     }
 
-    /// O teto de turnos vai escrito no cabeçalho do molde do agente: dez
-    /// para a onda de uma tarefa só, quinze para a de várias — quem aplica o
-    /// corte é a própria plataforma, pelo `maxTurns` do frontmatter, não o
-    /// binário.
+    /// O molde que o pedido da onda leva não traz teto de idas e voltas,
+    /// nem o de tarefa única (`wave-solo.md`) nem o de várias (`wave.md`).
+    /// A medição de treze agentes de onda deste projeto deu de 36 a 315
+    /// idas e voltas, e a onda mais curta gastou 36: qualquer teto cortava
+    /// a onda no meio e a fazia recomeçar do zero, gastando mais do que se
+    /// não houvesse teto. O binário só escolhe qual dos dois moldes ler.
     #[test]
-    fn the_agent_header_carries_ten_turns_for_one_task_and_fifteen_for_several() {
+    fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write_agent_template(root);
 
         let solo = prompts(root, "teste", &plan_log_with_tasks(1), Locale::PtBr, &Flight::default());
         assert_eq!(solo.len(), 1);
-        assert!(solo[0].template.contains("maxTurns: 10"), "{}", solo[0].template);
-        assert!(!solo[0].template.contains("maxTurns: 15"), "{}", solo[0].template);
+        assert_eq!(solo[0].agent, "wave-solo", "{}", solo[0].agent);
+        assert!(!solo[0].template.contains("maxTurns"), "{}", solo[0].template);
 
         let several = prompts(root, "teste", &plan_log_with_tasks(2), Locale::PtBr, &Flight::default());
         assert_eq!(several.len(), 1);
-        assert!(several[0].template.contains("maxTurns: 15"), "{}", several[0].template);
-        assert!(!several[0].template.contains("maxTurns: 10"), "{}", several[0].template);
+        assert_eq!(several[0].agent, "wave", "{}", several[0].agent);
+        assert!(!several[0].template.contains("maxTurns"), "{}", several[0].template);
     }
 
     /// A skill que a tarefa nomeia entra no pedido pelo caminho do arquivo e
@@ -1404,6 +1397,8 @@ mod tests {
                 match owners.get(&item.id) {
                     Some(Owner::Project) => {}
                     Some(Owner::Waves(waves)) if waves.contains(&prompt.wave) => {}
+                    Some(Owner::Files(_))
+                        if wave_prompt::agreed_for(&log, prompt.wave).iter().any(|e| e.id == item.id) => {}
                     other => panic!("o pedido da onda {} cita {code}, que é de {other:?}", prompt.wave),
                 }
             }

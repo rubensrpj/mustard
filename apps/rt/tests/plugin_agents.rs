@@ -5,14 +5,16 @@
 
 //! Os textos de agente do Mustard, pelo binário de verdade.
 //!
-//! O projeto recebe exatamente três agentes — `mustard-wave`,
-//! `mustard-review` e `mustard-skill` —, no idioma do `language.text`; os
-//! dois idiomas existem como molde do produto; nenhum texto manda criar
-//! cópia do projeto por conta própria, e os de onda e de revisão mandam
-//! trabalhar na cópia e na pasta de compilação que o pedido indica; e cada
-//! comando do fluxo responde o próximo passo, que o modelo não escolhe
-//! sozinho. O que prende o texto de um agente é o que ele diz, não quantos
-//! bytes ele tem.
+//! O projeto recebe exatamente quatro agentes — `mustard-wave`,
+//! `mustard-wave-solo`, `mustard-review` e `mustard-skill` —, no idioma do
+//! `language.text`; os dois idiomas existem como molde do produto; nenhum
+//! texto manda criar cópia do projeto por conta própria, e os de onda e de
+//! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
+//! indica; e cada comando do fluxo responde o próximo passo, que o modelo não
+//! escolhe sozinho. O que prende o texto de um agente é o que ele diz, não
+//! quantos bytes ele tem. Nenhum dos dois agentes de onda traz teto de idas e
+//! voltas no cabeçalho: os tetos de dez e quinze cortavam toda onda real no
+//! meio, e a onda cortada recomeçava do zero.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -119,14 +121,14 @@ fn template(lang: &str, name: &str) -> String {
         .unwrap_or_else(|e| panic!("the {lang} `{name}` template is missing: {e}"))
 }
 
-/// O projeto recebe exatamente os três agentes, no idioma do `language.text`;
-/// os dois idiomas existem como molde; e o
+/// O projeto recebe exatamente os quatro agentes, no idioma do
+/// `language.text`; os dois idiomas existem como molde; e o
 /// plugin não entrega agente nenhum, porque entregaria os dois idiomas. Os
 /// textos que o instalador escreve trazem as duas guardas desta obra: provar
 /// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
 /// do caso em que o "antes" falha quando o critério diz "só depois de".
 #[test]
-fn the_project_receives_exactly_three_agents_in_its_text_language() {
+fn the_project_receives_exactly_four_agents_in_its_text_language() {
     for (lang, other) in [("pt-BR", "en-US"), ("en-US", "pt-BR")] {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
@@ -134,10 +136,10 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
         let agents = files_under(&root.join(".claude/agents"));
         assert_eq!(
             agents,
-            ["mustard/review.md", "mustard/skill.md", "mustard/wave.md"],
+            ["mustard/review.md", "mustard/skill.md", "mustard/wave-solo.md", "mustard/wave.md"],
             "the {lang} project got another set of agent texts",
         );
-        for name in ["wave", "review", "skill"] {
+        for name in ["wave", "review", "skill", "wave-solo"] {
             let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
             assert_eq!(installed, template(lang, name), "the {lang} project got another text for `{name}`");
             assert_ne!(installed, template(other, name), "the {lang} and {other} `{name}` texts are the same");
@@ -158,7 +160,7 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
                     "\"só depois de\" ganha também o teste do caso em que o \"antes\" falha",
                 ]),
                 ("review", [
-                    "apagou ou moveu algo no git? Confira a prova de que nada se perdeu",
+                    "apagou ou moveu algo no git? Confira que nada se perdeu",
                     "\"só depois de\" tem teste do caso em que o \"antes\" falha",
                 ]),
             ]
@@ -169,7 +171,7 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
                     "\"only after\" also gets a test of the case where the \"before\" fails",
                 ]),
                 ("review", [
-                    "delete or move anything in git? Check the proof that nothing was lost",
+                    "delete or move anything in git? Check that nothing was lost",
                     "\"only after\" has a test of the case where the \"before\" fails",
                 ]),
             ]
@@ -182,6 +184,40 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
         }
     }
     assert!(!repo_root().join("plugin/agents").exists(), "the plugin ships agent texts of its own");
+}
+
+/// O cabeçalho de um molde de agente: o que está entre as duas linhas de três
+/// traços no começo do arquivo, que é onde a plataforma lê os campos dele.
+fn frontmatter(body: &str) -> &str {
+    body.strip_prefix("---\n").and_then(|rest| rest.split_once("\n---")).map(|(head, _)| head).unwrap_or(body)
+}
+
+/// O instalador escreve os dois moldes de agente de onda — o de lote de uma
+/// tarefa (`wave-solo.md`) e o de lote de várias (`wave.md`) —, e nenhum dos
+/// dois traz teto de idas e voltas no cabeçalho. A medição das vinte e cinco
+/// ondas entregues desta obra deu gasto de 36 a 403 idas, com média de 153:
+/// nenhuma onda real cabia nos tetos de dez e quinze que havia aqui, e a onda
+/// cortada recomeçava do zero. Quem cuida da janela cheia é a compactação e
+/// quem cuida da onda parada é o sinal de vida da rodada. Nenhum dos dois pede
+/// mais um relatório pelo tamanho: a última mensagem tem só as duas linhas do
+/// formato (onda 13).
+#[test]
+fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
+    for (lang, tokens) in [("pt-BR", "mil e dois mil tokens"), ("en-US", "one and two thousand tokens")] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+
+        for name in ["wave", "wave-solo"] {
+            let path = root.join(format!(".claude/agents/mustard/{name}.md"));
+            assert!(path.is_file(), "the {lang} installation did not write the {name} agent");
+            let body = std::fs::read_to_string(&path).unwrap();
+            let head = frontmatter(&body);
+            let cap = head.lines().find(|line| line.to_lowercase().contains("turn"));
+            assert!(cap.is_none(), "the {lang} {name} agent header still carries a turn cap: {cap:?}");
+            assert!(!head.contains("10") && !head.contains("15"), "the {lang} {name} agent header still pins ten or fifteen: {head}");
+            assert!(!body.contains(tokens), "the {lang} {name} agent still asks for a report by size");
+        }
+    }
 }
 
 /// O nome de cada agente do Mustard leva o prefixo do Mustard, e um projeto
@@ -214,7 +250,11 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
         })
         .collect();
     names.sort();
-    assert_eq!(names, ["mustard-review", "mustard-skill", "mustard-wave", "review"], "two agents share a name");
+    assert_eq!(
+        names,
+        ["mustard-review", "mustard-skill", "mustard-wave", "mustard-wave-solo", "review"],
+        "two agents share a name",
+    );
 
     for lang in [Locale::PtBr, Locale::EnUs] {
         let next = translate("round.next", lang);
@@ -260,26 +300,44 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
     }
 }
 
-/// O molde da onda declara o modelo sonnet com esforço alto, o do revisor
-/// declara opus com esforço alto, e o da skill declara sonnet: cada agente
-/// sabe o próprio modelo, sem herdar o da sessão em silêncio. Nenhum teste
-/// desta obra recusa um molde pelo tamanho em bytes — o que prende o texto é
-/// o que ele diz.
+/// Os quatro moldes — onda de lote, onda de tarefa única, revisão e skill —
+/// declaram o modelo opus com o esforço xhigh, nos dois idiomas: cada agente
+/// sabe o próprio modelo e o próprio esforço, sem herdar o da sessão em
+/// silêncio. Teto de idas e voltas não anda junto: nenhum dos dois moldes de
+/// onda traz um, e quem prende isso é o teste do teto. Nenhum teste desta
+/// obra recusa um molde pelo tamanho em bytes — o que prende o texto é o que
+/// ele diz.
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
     for lang in ["pt-BR", "en-US"] {
+        for name in ["wave", "wave-solo", "review", "skill"] {
+            let text = template(lang, name);
+            assert!(text.contains("\nmodel: opus\n"), "the {lang} `{name}` agent does not declare the opus model:\n{text}");
+            assert!(text.contains("\neffort: xhigh\n"), "the {lang} `{name}` agent does not declare the xhigh effort:\n{text}");
+            assert!(!text.contains("model: inherit"), "the {lang} `{name}` agent still inherits the session's model");
+            assert!(!text.contains("model: sonnet"), "the {lang} `{name}` agent still asks for sonnet:\n{text}");
+        }
+
         let wave = template(lang, "wave");
-        assert!(wave.contains("\nmodel: sonnet\n"), "the {lang} wave agent does not declare the sonnet model:\n{wave}");
-        assert!(wave.contains("\neffort: high\n"), "the {lang} wave agent does not declare a high effort:\n{wave}");
         assert!(wave.len() as u64 > 3_072, "the {lang} wave agent is not over the old byte cap, so it proves nothing");
+    }
+}
 
-        let review = template(lang, "review");
-        assert!(review.contains("\nmodel: opus\n"), "the {lang} review agent does not declare the opus model:\n{review}");
-        assert!(review.contains("\neffort: high\n"), "the {lang} review agent does not declare a high effort:\n{review}");
-
+/// A skill que o agente de skill escreve nasce com o esforço no cabeçalho: o
+/// molde dele, nos dois idiomas, manda pôr `effort: xhigh` ao lado de `name`
+/// e `description`.
+#[test]
+fn the_skill_agent_asks_for_the_effort_in_the_skill_it_writes() {
+    for lang in ["pt-BR", "en-US"] {
         let skill = template(lang, "skill");
-        assert!(skill.contains("\nmodel: sonnet\n"), "the {lang} skill agent does not declare the sonnet model:\n{skill}");
-        assert!(!skill.contains("model: inherit"), "the {lang} skill agent still inherits the session's model");
+        let header = skill
+            .lines()
+            .find(|line| line.contains("`name: <") && line.contains("`description:"))
+            .unwrap_or_else(|| panic!("o molde {lang} não descreve o cabeçalho da skill gravada:\n{skill}"));
+        assert!(
+            header.contains("`effort: xhigh`"),
+            "the {lang} skill agent does not ask for the effort in the skill it writes: {header}"
+        );
     }
 }
 
@@ -390,12 +448,12 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     let file = root.join(".claude/spec/copia/spec.ndjson");
     let put = |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
     let said = put("message", json!({"author": "user", "text": "o objetivo"}));
-    let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+    let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "form": "ubiquitous", "origin": said}));
     // Cada onda declara o arquivo dela: a trava por arquivo tira da rodada
     // as ondas que dividem um mesmo arquivo, e este teste prova as duas
     // saindo juntas, sem cruzar arquivo nenhuma com a outra.
     for n in [1, 2] {
-        put("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "passa", "origin": said}));
+        put("wave", json!({"author": "binary", "n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "passa", "origin": said}));
         put("task", json!({"wave": n, "text": "Mexer no arquivo dela.", "files": [{"path": format!("src/onda{n}.rs")}], "origin": said}));
     }
     put("state", json!({"phase": "running", "branch": "feature/copia"}));
@@ -425,6 +483,101 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
         dirs.push(build.to_string());
     }
     assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
+}
+
+/// O pedido de onda, montado pelo binário de verdade, diz com todas as
+/// letras que o agente não comita — o trabalho fica mudado na cópia, sem
+/// `git add` nem `git commit`, e quem junta e comita é a rodada — e que, no
+/// relatório de entrega, o campo `commit` é o título da mensagem, nunca o
+/// código do commit. As duas frases saem nos dois idiomas.
+#[test]
+fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_title() {
+    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home) =
+            installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "titulo", "--base", "dev"], None);
+        assert_eq!(opened["ok"], json!(true), "{opened}");
+        let file = root.join(".claude/spec/titulo/spec.ndjson");
+        let put =
+            |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
+        let said = put("message", json!({"author": "user", "text": "o objetivo"}));
+        let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "form": "ubiquitous", "origin": said}));
+        put("wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
+        put("state", json!({"phase": "running", "branch": "feature/titulo"}));
+
+        let round = rt(&root, &home, &["run", "round", "--spec", "titulo"], None);
+        assert_eq!(round["ok"], json!(true), "{round}");
+        let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
+        assert_eq!(dispatched.len(), 1, "{round}");
+        let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default();
+        for key in ["prompt.execution.no_commit", "prompt.execution.commit_field"] {
+            let sentence = translate(key, text);
+            assert!(prompt.contains(sentence), "{lang} wave request misses `{key}`: {prompt}");
+        }
+    }
+}
+
+/// O pedido de onda, montado pelo binário de verdade, manda o agente
+/// devolver só a linha `<DELIVERED>` e a de gasto, sem prosa em volta, com
+/// todo o detalhe do trabalho dentro do campo de texto da entrega: a parte
+/// fixa do pedido diz isso, e a regra da execução repete a frase logo depois
+/// das duas frases sobre não comitar que a onda 12 acrescentou. Nos dois
+/// idiomas. A instrução volta também ao orquestrador, na saída da própria
+/// rodada: quando a última mensagem de um agente não trouxer as duas linhas,
+/// ou vier fora do padrão, o `next` da rodada manda exigi-las de novo, nos
+/// dois idiomas — antes desta prova, essa segunda metade só ficava protegida
+/// pela impressão digital do catálogo de textos. Prova o critério de o
+/// pedido mandar devolver só as duas linhas.
+#[test]
+fn o_pedido_manda_devolver_so_as_duas_linhas() {
+    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home) =
+            installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "duaslinhas", "--base", "dev"], None);
+        assert_eq!(opened["ok"], json!(true), "{opened}");
+        let file = root.join(".claude/spec/duaslinhas/spec.ndjson");
+        let put =
+            |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
+        let said = put("message", json!({"author": "user", "text": "o objetivo"}));
+        let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "form": "ubiquitous", "origin": said}));
+        put("wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
+        put("state", json!({"phase": "running", "branch": "feature/duaslinhas"}));
+
+        let round = rt(&root, &home, &["run", "round", "--spec", "duaslinhas"], None);
+        assert_eq!(round["ok"], json!(true), "{round}");
+        let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
+        assert_eq!(dispatched.len(), 1, "{round}");
+        let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default();
+
+        assert!(prompt.contains(translate("prompt.fixed", text)), "{lang} wave request misses the fixed part: {prompt}");
+
+        let commit_field = translate("prompt.execution.commit_field", text);
+        let report_lines = translate("prompt.execution.report_lines", text);
+        assert!(prompt.contains(report_lines), "{lang} wave request misses the two-lines reminder: {prompt}");
+        let commit_at = prompt.find(commit_field).unwrap_or_else(|| panic!("{lang} wave request misses `commit_field`: {prompt}"));
+        let report_at = prompt.find(report_lines).unwrap();
+        assert!(
+            report_at > commit_at,
+            "{lang} the two-lines reminder does not sit right after the no-commit phrases in the execution rules block: {prompt}"
+        );
+
+        // A segunda metade do critério: a instrução que a rodada devolve ao
+        // orquestrador depois de despachar, mandando exigir as duas linhas
+        // de novo quando elas não vierem, ou vierem fora do padrão.
+        let next = round["next"].as_str().unwrap_or_default();
+        let demand_again = match text {
+            Locale::PtBr => "mande o agente responder de novo no formato",
+            Locale::EnUs => "make the agent answer again in the format",
+        };
+        assert!(
+            next.contains(demand_again),
+            "{lang} round output misses the instruction to the orchestrator to demand the two lines again: {next}"
+        );
+    }
 }
 
 /// A parte fixa de cada pedido que o binário monta: o da onda e o da revisão

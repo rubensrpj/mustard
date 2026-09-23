@@ -9,9 +9,8 @@ fn facts_cli_emits_projects_and_entities() {
     // A minimal (partial) model.json — `scan facts` tolerates it because the
     // model structs default missing fields. Avoids depending on grammar
     // extraction so the test is fully deterministic.
-    let dir = std::env::temp_dir().join(format!("scan-facts-it-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-facts-it-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");
     std::fs::write(
         &model,
@@ -33,5 +32,4 @@ fn facts_cli_emits_projects_and_entities() {
     assert_eq!(entities, vec!["Invoice", "User"], "entities: {entities:?}");
     assert!(v["projects"].as_array().unwrap().iter().any(|p| p["name"] == "demo"));
 
-    let _ = std::fs::remove_dir_all(&dir);
 }
