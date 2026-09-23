@@ -634,7 +634,15 @@ fn computed(place: &Place, log: &SpecLog, rtk: &[RtkDay], lang: Locale) -> Value
         .map(|day| json!({ "date": day.date, "commands": day.commands, "input": day.input, "saved": day.saved }))
         .collect();
     let spend = spend_line(log, lang);
-    redacted(json!({ "spec": place.spec, "last": log.max_id(), "waves": waves, "prompts": prompts, "rtk": rtk, "spend": spend }))
+    // Os mesmos números da linha do gasto, cada um no seu campo: o quadro
+    // Gasto da página os mostra em partes, sem ler a frase de volta.
+    let tokens = spend_of(log).map(|s| {
+        json!({ "waves": s.waves, "caller": s.caller, "total": s.total, "turns": s.turns_per_task })
+    });
+    redacted(json!({
+        "spec": place.spec, "last": log.max_id(), "waves": waves, "prompts": prompts, "rtk": rtk, "spend": spend,
+        "tokens": tokens,
+    }))
 }
 
 /// Uma linha só com o gasto da obra inteira: os tokens de toda onda somados
@@ -643,6 +651,29 @@ fn computed(place: &Place, log: &SpecLog, rtk: &[RtkDay], lang: Locale) -> Value
 /// tarefas das ondas que enviaram). `None` sem nenhum token registrado
 /// ainda.
 fn spend_line(log: &SpecLog, lang: Locale) -> Option<String> {
+    let spend = spend_of(log)?;
+    Some(
+        translate("round.spend.line", lang)
+            .replace("{waves}", &spend.waves.to_string())
+            .replace("{caller}", &spend.caller.to_string())
+            .replace("{total}", &spend.total.to_string())
+            .replace("{turns}", &spend.turns_per_task.to_string()),
+    )
+}
+
+/// O gasto da obra inteira, em números: os tokens das ondas, os de quem
+/// despachou, o total e os turnos por tarefa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Spend {
+    waves: u64,
+    caller: u64,
+    total: u64,
+    turns_per_task: u64,
+}
+
+/// A conta de [`spend_line`], antes de virar frase. `None` sem nenhum token
+/// registrado ainda.
+fn spend_of(log: &SpecLog) -> Option<Spend> {
     let visible = log.visible();
     let wave_sends: Vec<&SpecEvent> = visible
         .iter()
@@ -663,13 +694,7 @@ fn spend_line(log: &SpecLog, lang: Locale) -> Option<String> {
         return None;
     }
     let turns_per_task = wave_turns.checked_div(task_count).unwrap_or(0);
-    Some(
-        translate("round.spend.line", lang)
-            .replace("{waves}", &wave_tokens.to_string())
-            .replace("{caller}", &caller_tokens.to_string())
-            .replace("{total}", &total_tokens.to_string())
-            .replace("{turns}", &turns_per_task.to_string()),
-    )
+    Some(Spend { waves: wave_tokens, caller: caller_tokens, total: total_tokens, turns_per_task })
 }
 
 /// O nome do estado de uma onda no documento das coisas calculadas.
@@ -2044,5 +2069,33 @@ mod tests {
         assert!(spend.contains("1000000"), "{spend}");
         assert!(spend.contains("200000"), "{spend}");
         assert!(spend.contains("1200000"), "{spend}");
+    }
+
+    /// O documento das coisas calculadas leva também os números do gasto,
+    /// cada um no seu campo, pelo mesmo caminho que a página lê: os tokens
+    /// das ondas, os de quem despachou, o total e os turnos por tarefa — os
+    /// mesmos da frase. Sem nenhum token, o campo vem vazio.
+    #[test]
+    fn a_real_round_carries_the_spend_numbers_to_the_computed_document() {
+        let dir = approved_project();
+        let root = dir.path();
+        let computed_of = |root: &std::path::Path| {
+            let report = round(root);
+            let bodies = sent(root, &report, "spec");
+            bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item")["body"].clone()
+        };
+        assert_eq!(computed_of(root)["tokens"], Value::Null, "no token yet");
+
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": 1, "role": "wave", "text": "t",
+            "lines": 1, "chars": 1, "items": [1], "mustard": "0.2.1", "tokens": 900_000, "steps": 40,
+            "caller_tokens": 300_000}));
+        crate::shared::spec_state::seed_event(root, "x", "delivered", json!({"wave": 1, "text": "d", "files": ["src/a.rs"]}));
+        let body = computed_of(root);
+        let tokens = &body["tokens"];
+        assert_eq!((&tokens["waves"], &tokens["caller"], &tokens["total"]), (&json!(900_000), &json!(300_000), &json!(1_200_000)), "{body}");
+        let turns = tokens["turns"].as_u64().expect("the turns per task");
+        assert!(turns > 0, "{body}");
+        let line = body["spend"].as_str().unwrap_or_default();
+        assert!(line.contains(&turns.to_string()), "the same turns as the spend line: {line} / {tokens}");
     }
 }
