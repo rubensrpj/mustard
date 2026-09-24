@@ -86,12 +86,15 @@ impl BlockQuery {
         Block::parse(name).map(Self::Block)
     }
 
-    /// Os nomes aceitos, na ordem da página, para a mensagem de recusa.
+    /// Os nomes aceitos, na ordem da página, para a mensagem de recusa. Com
+    /// eles, `dispatch-<n>`: o que o pedido da onda lista, que a leitura
+    /// monta fora dos blocos.
     #[must_use]
     pub fn accepted_names() -> String {
         let mut names: Vec<&str> = Block::ALL.iter().map(|b| b.name()).collect();
         if let Some(i) = names.iter().position(|n| *n == "waves") {
             names.insert(i + 1, "wave-<n>");
+            names.insert(i + 2, "dispatch-<n>");
         }
         names.join(", ")
     }
@@ -736,7 +739,7 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-2"), Some(BlockQuery::Wave(2)));
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
-        assert!(BlockQuery::accepted_names().contains("waves, wave-<n>, review"));
+        assert!(BlockQuery::accepted_names().contains("waves, wave-<n>, dispatch-<n>, review"));
     }
 
     #[test]

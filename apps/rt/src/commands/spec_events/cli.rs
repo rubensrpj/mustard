@@ -24,9 +24,12 @@ pub enum SpecEventsCmd {
     /// `agreed`, `specification`, `criteria`, `waves`, `wave-<n>`, `review`,
     /// `progress`, `notes` or `conversation`. Removed and replaced items are
     /// left out; a line that does not parse is skipped with a warning.
+    /// `dispatch-<n>` reads, in one go, every item the request of wave `n`
+    /// lists, each with its code, and its lessons, by the same selection
+    /// that builds the request.
     #[command(display_order = 8)]
     Read {
-        /// The block to read, e.g. `state` or `wave-2`.
+        /// The block to read, e.g. `state`, `wave-2` or `dispatch-2`.
         block: String,
         /// The spec whose file is read. Without it, the current spec: the
         /// `MUSTARD_ACTIVE_SPEC` override, then the spec of the checkout's

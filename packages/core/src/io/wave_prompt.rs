@@ -309,6 +309,51 @@ pub fn shown(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+/// O que o pedido de uma onda lista: os itens da spec e as lições do banco.
+#[derive(Debug, Default)]
+pub struct RequestItems<'a> {
+    /// Os itens da spec, em ordem de número.
+    pub items: Vec<&'a SpecEvent>,
+    /// As lições do banco, em ordem de número.
+    pub lessons: Vec<&'a SpecEvent>,
+}
+
+/// O que o pedido da onda `wave` lista, pela mesma conta que o monta: os
+/// itens que a montagem escolhe ([`wave_prompt::dispatch_items`]) e as lições
+/// que casam com a onda ([`wave_lessons`]), menos as que a escolha tirou. A
+/// escolha é a dada (`fresh`) ou, sem ela, a gravada no envio da onda — a
+/// mesma do pedido que a rodada mandou.
+///
+/// O envio, a entrega e os passos da própria onda ficam de fora: são o
+/// registro de um pedido, não parte dele. A entrega que a reprovação julgou
+/// fica, porque o conserto a cita ([`wave_prompt::fix_lines`]); a entrega das
+/// ondas de que esta depende também.
+#[must_use]
+pub fn request_items<'a>(
+    log: &'a SpecLog,
+    bank: Option<&'a SpecLog>,
+    wave: u64,
+    fresh: Option<&Choice>,
+) -> RequestItems<'a> {
+    let choice = wave_prompt::choice_for(log, wave, fresh);
+    let fix: BTreeSet<u64> = wave_prompt::fix_lines(log, wave).iter().map(|e| e.id).collect();
+    let items = wave_prompt::dispatch_items(log, wave, choice.as_ref())
+        .into_iter()
+        .filter(|e| match e.event_type.as_str() {
+            "send" | "step" => false,
+            "delivered" => e.wave() != Some(wave) || fix.contains(&e.id),
+            _ => true,
+        })
+        .collect();
+    let lessons = bank
+        .map(|bank| wave_lessons(bank, log, wave))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|lesson| !choice.as_ref().is_some_and(|choice| choice.removes_lesson(lesson.id)))
+        .collect();
+    RequestItems { items, lessons }
+}
+
 /// O que é igual para o pedido de todas as ondas de uma montagem.
 struct Context<'a> {
     root: &'a Path,
@@ -327,31 +372,23 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // O que a montagem escolhe, com a escolha do orquestrador antes do envio:
     // a que a rodada traz agora ou a gravada no envio da onda.
     let fresh = context.flight.choices.get(&wave);
-    let read = wave_prompt::dispatch_items(log, wave, fresh);
+    // Os itens e as lições saem da mesma conta que a leitura do pedido usa,
+    // e por isso as duas nunca discordam.
+    let RequestItems { items: read, lessons } = request_items(log, bank, wave, fresh);
     let of_type = |name: &str| -> Vec<&SpecEvent> {
         read.iter().copied().filter(|e| e.event_type == name).collect()
     };
     let block: Vec<&SpecEvent> = read
         .iter()
         .copied()
-        // O envio e o entregou são o REGISTRO de um pedido, não parte dele:
-        // repeti-los dentro do pedido novo seria contar a mesma coisa duas
-        // vezes. O entregou das ondas de que esta depende entra à parte.
-        .filter(|e| e.block() == Some(Block::Waves) && !matches!(e.event_type.as_str(), "send" | "delivered"))
+        // O entregou das ondas de que esta depende entra à parte, e o que a
+        // reprovação julgou, no conserto.
+        .filter(|e| e.block() == Some(Block::Waves) && e.event_type != "delivered")
         .collect();
     let delivered: Vec<&SpecEvent> = read
         .iter()
         .copied()
         .filter(|e| e.event_type == "delivered" && e.wave() != Some(wave))
-        .collect();
-    // O revisor confere o que a onda entregou depois da última revisão dela:
-    // no conserto, as entregas do conserto, mesmo as que vieram pela linha de
-    // outra onda.
-    let judged = log.verdicts_by_wave().get(&wave).and_then(|v| v.last()).map_or(0, |v| v.id);
-    let own_delivered: Vec<&SpecEvent> = read
-        .iter()
-        .copied()
-        .filter(|e| e.event_type == "delivered" && e.wave() == Some(wave) && e.id > judged)
         .collect();
     let agreed: Vec<&SpecEvent> = read
         .iter()
@@ -414,14 +451,6 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // arquivo que o mapa não conhece, ou sem teste externo conhecido, fica
     // de fora — a linha continua como hoje, sem inventar nada.
     let file_tests = task_file_tests(map, &of_type("task"));
-    // As lições que casam com a onda, menos as que a escolha do orquestrador
-    // tirou. O pedido da revisão leva as mesmas.
-    let lessons: Vec<&SpecEvent> = bank
-        .map(|bank| wave_lessons(bank, log, wave))
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|lesson| !choice.as_ref().is_some_and(|choice| choice.removes_lesson(lesson.id)))
-        .collect();
 
     let mut skills = Vec::new();
     let mut bad_skills = Vec::new();
@@ -452,7 +481,9 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         delivered,
         // A linha do conserto que a análise tirou do pedido sai também daqui.
         fix: wave_prompt::fix_lines(log, wave).into_iter().filter(|line| read.iter().any(|e| e.id == line.id)).collect(),
-        own_delivered,
+        // O que a própria onda entregou é o que o revisor confere, e o
+        // pedido da onda não o lista.
+        own_delivered: Vec::new(),
         execution: execution(context, wave),
         lessons,
         skills,
