@@ -984,6 +984,124 @@ mod tests {
         assert_eq!(removed.matches(&format!("**{}**", code(42))).count(), 1, "the removed rule shows once:\n{removed}");
     }
 
+    /// Remover pela versão nova tira só ela: a versão que ela substituiu
+    /// volta, com o mesmo código, à leitura do arquivo e à página. Sobre a
+    /// spec de exemplo, três gravações pela porta do binário — uma regra, uma
+    /// decisão que a cita pelo código e a versão nova de um critério que já
+    /// existia — e uma remoção só, com os códigos da regra e da decisão e o
+    /// número da versão nova do critério, deixam a leitura e a página iguais
+    /// às de antes das três gravações, com a versão antiga do critério; só a
+    /// aba dos removidos ganha a regra e a decisão, e a conversa, o registro
+    /// da remoção.
+    #[test]
+    fn remover_a_versao_nova_devolve_a_anterior_na_leitura_e_na_pagina() {
+        use crate::domain::spec_events::SpecLog;
+        use crate::io::spec_events::write_at;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        // Cada linha leva o código dela, como o binário grava: sem ele, o
+        // código gravado na versão nova tomaria o lugar do item antigo.
+        let mut base = spec_lines();
+        let base_codes = parse_log(&base.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).codes();
+        for line in &mut base {
+            if let Some(code) = line["id"].as_u64().and_then(|id| base_codes.get(&id)) {
+                line["code"] = json!(code);
+            }
+        }
+        std::fs::write(&path, base.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let file = || std::fs::read_to_string(&path).unwrap();
+        let lines_of = |content: &str| -> Vec<Value> {
+            content.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect()
+        };
+        // A leitura do binário: cada evento à mostra, com o código dele.
+        let reading = |log: &SpecLog| -> Vec<(u64, Option<String>)> {
+            let codes = log.codes();
+            log.visible().iter().map(|e| (e.id, codes.get(&e.id).cloned())).collect()
+        };
+        let page_of = |content: &str| -> Value {
+            let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+            run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines_of(content))), steps)["page"].clone()
+        };
+        let removed_codes = |page: &Value| -> Vec<Value> { cards(page, "removed").iter().map(|i| i["code"].clone()).collect() };
+        let put = |event_type: &str, at: &str, draft: Value| {
+            let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
+            write_at(&path, event_type, draft, &[], at).unwrap_or_else(|r| panic!("{event_type} foi recusado: {r:?}"))
+        };
+
+        let before = parse_log(&file());
+        let criterion_code = before.codes()[&19].clone();
+        let page_before = page_of(&file());
+
+        let rule = put(
+            "rule",
+            "2026-09-12T15:00:00-03:00",
+            json!({"text": "A página mostra a versão vigente de cada item.", "example": "O critério revisto aparece uma vez.",
+                "keys": ["página", "versão"], "origin": 2}),
+        );
+        let rule_code = rule.code.clone().expect("a regra tem código");
+        let decision = put(
+            "decision",
+            "2026-09-12T15:01:00-03:00",
+            json!({"text": format!("A página segue a {rule_code}."), "why": "Quem lê vê o que vale.",
+                "keys": ["página"], "origin": 2}),
+        );
+        let decision_code = decision.code.clone().expect("a decisão tem código");
+        let criterion = put(
+            "criterion",
+            "2026-09-12T15:02:00-03:00",
+            json!({"when": "O pedido montado de uma onda passa de 400 linhas.",
+                "then": "O binário recusa o despacho e diz quantas linhas passaram.",
+                "proof": "cargo test -p mustard-rt --test wave_request_limit", "form": "event_driven",
+                "replaces": 19, "origin": 2}),
+        );
+        assert_eq!(criterion.code.as_deref(), Some(criterion_code.as_str()), "a versão nova do critério tem o mesmo código");
+
+        // As três gravações mudam a leitura e a página: a prova de baixo não
+        // passa por falta do que desfazer.
+        let written = parse_log(&file());
+        assert_eq!(written.current(19).map(|e| e.id), Some(criterion.id));
+        let page_written = page_of(&file());
+        assert_ne!(page_seen(&page_written), page_seen(&page_before), "as três gravações aparecem na página");
+
+        let removal = put(
+            "remove",
+            "2026-09-12T15:03:00-03:00",
+            json!({"targets": [rule_code, decision_code, criterion.id], "reason": "Voltar ao que a spec tinha.", "origin": 2}),
+        );
+        assert_eq!(removal.removed, [rule.id, decision.id, criterion.id], "pelo código, o item inteiro; pelo número, a versão");
+        let removal_code = removal.code.clone().expect("a remoção tem código");
+
+        // A leitura do arquivo volta à de antes, menos o próprio registro da
+        // remoção; o critério volta pela versão antiga, com o mesmo código.
+        let after = parse_log(&file());
+        let mut read_after = reading(&after);
+        read_after.retain(|(id, _)| *id != removal.id);
+        assert_eq!(read_after, reading(&before), "a leitura volta à de antes das três gravações");
+        assert_eq!(after.current(19).map(|e| e.id), Some(19), "a versão antiga do critério volta a valer");
+        assert_eq!(after.current(criterion.id).map(|e| e.id), None, "a versão removida sai da leitura");
+        assert_eq!(after.codes()[&19], criterion_code);
+
+        // A página, no Node, lê do mesmo jeito: as abas voltam às de antes,
+        // menos o registro da remoção na conversa, e os removidos listam só a
+        // regra e a decisão.
+        let page_after = page_of(&file());
+        let mut seen_after = page_seen(&page_after);
+        for tab in seen_after.as_array_mut().expect("tabs") {
+            tab["items"].as_array_mut().expect("items").retain(|i| i["code"] != json!(removal_code));
+        }
+        assert_eq!(seen_after, page_seen(&page_before), "a página volta à de antes das três gravações");
+        let criterion_card = cards(&page_after, "criteria").iter().find(|i| i["code"] == json!(criterion_code)).cloned();
+        assert_eq!(
+            criterion_card.map(|i| i["title"].clone()),
+            cards(&page_before, "criteria").iter().find(|i| i["code"] == json!(criterion_code)).map(|i| i["title"].clone()),
+            "o critério aparece pela versão antiga"
+        );
+        let mut expected_removed = removed_codes(&page_before);
+        expected_removed.extend([json!(rule_code), json!(decision_code)]);
+        assert_eq!(removed_codes(&page_after), expected_removed, "os removidos ganham só a regra e a decisão");
+    }
+
     /// Por decisão da onda 13, o item que continua à mostra numa versão nova
     /// não entra em Removidos quando só a versão antiga dele foi removida: a
     /// regra revista some da conversa, mas a regra em si segue de pé pela

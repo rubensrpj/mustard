@@ -306,14 +306,47 @@ details.item.old .t{color:var(--muted)}
     }
     return targets;
   }
-  function hiddenOf(all) {
-    var hidden = new Map();
+  // Os números que alguma remoção tira da leitura.
+  function removalsOf(all) {
+    var removed = new Set();
     all.forEach(function (e) {
-      if (isInt(e.purged)) hidden.set(e.id, 'purged');
-      if (e.type === 'remove') {
-        removeTargets(e, all).forEach(function (id) { if (!hidden.has(id)) hidden.set(id, 'removed'); });
+      if (e.type === 'remove') removeTargets(e, all).forEach(function (id) { removed.add(id); });
+    });
+    return removed;
+  }
+  // As substituições que valem, como pares [versão antiga, versão nova], do
+  // mesmo jeito que o binário lê. A versão removida de um item não substitui
+  // nada; a removida do meio da cadeia sai dela, e a versão seguinte passa a
+  // substituir as que ela substituía. Seguem substituídas pela versão
+  // removida a volta do agente já assumida e o que não tem tipo conhecido.
+  function replacementsOf(all, byId, removed) {
+    function givesBack(id) { return removed.has(id) && byId.has(id) && has(TYPES, byId.get(id).type); }
+    var pairs = [];
+    all.forEach(function (e) {
+      var pending = replacedBy(e), seen = new Set();
+      if (givesBack(e.id)) {
+        pending = pending.filter(function (old) { return byId.has(old) && byId.get(old).returned === true; });
       }
-      replacedBy(e).forEach(function (old) { if (!hidden.has(old)) hidden.set(old, 'replaced'); });
+      while (pending.length) {
+        var old = pending.pop();
+        if (seen.has(old)) continue;
+        seen.add(old);
+        pairs.push([old, e.id]);
+        if (givesBack(old)) pending = pending.concat(replacedBy(byId.get(old)));
+      }
+    });
+    return pairs;
+  }
+  // O que some da leitura, como o binário lê: o expurgo vence; depois dele,
+  // a remoção, lida antes das substituições. A versão removida não esconde a
+  // que ela substituiu, que volta com o mesmo código: remover pelo número
+  // tira só aquela versão, e pelo código, todas.
+  function hiddenOf(all, byId) {
+    var hidden = new Map(), removed = removalsOf(all);
+    all.forEach(function (e) { if (isInt(e.purged)) hidden.set(e.id, 'purged'); });
+    removed.forEach(function (id) { if (!hidden.has(id)) hidden.set(id, 'removed'); });
+    replacementsOf(all, byId, removed).forEach(function (pair) {
+      if (!hidden.has(pair[0])) hidden.set(pair[0], 'replaced');
     });
     return hidden;
   }
@@ -376,7 +409,7 @@ details.item.old .t{color:var(--muted)}
       .sort(function (a, b) { return a.id - b.id; })
       .forEach(function (e) { if (!byId.has(e.id)) byId.set(e.id, e); });
     var all = Array.from(byId.values());
-    var hidden = hiddenOf(all);
+    var hidden = hiddenOf(all, byId);
     var visible = all.filter(function (e) { return !hidden.has(e.id); });
     var codes = codesOf(all, byId);
     var byCode = new Map();
@@ -396,10 +429,12 @@ details.item.old .t{color:var(--muted)}
       }
       return at;
     }
+    // A versão vigente: segue as substituições só pelas versões que não
+    // foram removidas; removida a mais nova, vale a anterior.
+    var nextVersion = new Map();
+    replacementsOf(all, byId, removalsOf(all)).forEach(function (pair) { nextVersion.set(pair[0], pair[1]); });
     function currentOf(id) {
-      var next = new Map();
-      all.forEach(function (e) { replacedBy(e).forEach(function (old) { next.set(old, e.id); }); });
-      for (var i = 0; i <= all.length && next.has(id); i++) id = next.get(id);
+      for (var i = 0; i <= all.length && nextVersion.has(id); i++) id = nextVersion.get(id);
       return byId.has(id) && !hidden.has(id) ? byId.get(id) : null;
     }
     var approval = (function () {

@@ -49,7 +49,9 @@ pub enum SpecEventsCmd {
     /// a source or citing a file that does not exist. `remove`,
     /// `purge` and a new version (`replaces`) are events like any other; they
     /// point at an item by its event number or by the code the page shows,
-    /// like `MSTD-RULE-0002`. With the `lesson` type it writes one lesson to
+    /// like `MSTD-RULE-0002`. A `remove` by the code takes out the whole
+    /// item, every version of it; by the number, only that version, and the
+    /// version it replaced comes back. With the `lesson` type it writes one lesson to
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
     /// `{"class":"defect","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
     /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`. A

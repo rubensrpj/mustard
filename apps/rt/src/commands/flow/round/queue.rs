@@ -2390,11 +2390,12 @@ mod tests {
 
         // A tarefa 1 sai do backlog por remoção, depois de o lote já ter sido
         // formado: o trabalho dela já foi feito fora da onda. A gravação do
-        // lote deu a ela uma versão nova, com o número da onda — é essa
-        // versão vigente que a remoção precisa apontar, não a original.
+        // lote deu a ela uma versão nova, com o número da onda; a remoção a
+        // aponta pelo código, que tira todas as versões — pelo número da
+        // versão vigente, a original voltaria ao backlog.
         let log = store::read(&path).unwrap().unwrap();
-        let current_t1 = log.current(t1).expect("a tarefa 1 tem versão vigente").id;
-        write(root, "x", "remove", json!({"targets": [current_t1], "reason": "o trabalho ja foi feito fora da onda"}));
+        let t1_code = log.codes().get(&t1).cloned().expect("a tarefa 1 tem código");
+        write(root, "x", "remove", json!({"targets": [t1_code], "reason": "o trabalho ja foi feito fora da onda"}));
 
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
