@@ -45,9 +45,18 @@
 //! do by itself comes back in `codeToolWarnings`, each sentence naming the
 //! command a person runs to finish it; nothing it meets stops the upsert.
 //!
+//! The local settings also allow the folder where the project's separate
+//! copies live, outside the project. Two answers of the person travel as
+//! options and land in `mustard.json`: `--prepare`, the command that brings the
+//! dependencies into each copy, and `--local-files`, the files git ignores that
+//! each copy receives. While `localFiles` is absent — not asked yet — the
+//! report carries `localFilesFound`, the files git ignores outside an ignored
+//! folder, for the person to confirm once. No rule of any language decides
+//! either answer: both are the project's.
+//!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
-//! `UpsertReport` flattened, with `pluginRefresh` and `codeToolWarnings`
-//! appended — deterministic
+//! `UpsertReport` flattened, with `pluginRefresh`, `codeToolWarnings` and,
+//! while unasked, `localFilesFound` appended — deterministic
 //! (fixed field order, no timestamps, project-root-relative names only), per
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
 //! reported as a JSON `{"error": …}` object and the process still exits 0.
@@ -91,7 +100,7 @@ use std::time::Duration;
 
 use mustard_core::platform::code_tools::{self, MachineRunner, ToolRunner};
 use mustard_core::platform::project_seed::{upsert_project_with, PendingList};
-use mustard_core::InstallMode;
+use mustard_core::{InstallMode, ProjectConfig};
 use serde::Serialize;
 
 use crate::commands::event::pending::add_for_the_project;
@@ -191,6 +200,23 @@ struct Report {
     /// the project involves has its program and its plugin, or that it
     /// involves none.
     code_tool_warnings: Vec<String>,
+    /// Os arquivos que o git ignora fora de uma pasta ignorada, para a pessoa
+    /// confirmar uma vez ([`ignored_files`]). Presente só enquanto o
+    /// `mustard.json` não tem `localFiles`; vazia quando não há nenhum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_files_found: Option<Vec<String>>,
+}
+
+/// As respostas da pessoa que a instalação grava no `mustard.json`, pelas
+/// opções do comando. Ausente, a resposta não veio nesta chamada, e o que já
+/// está gravado fica.
+#[derive(Debug, Default)]
+pub struct UpsertOpts {
+    /// `--local-files`: a lista confirmada, separada por vírgula; vazia
+    /// quando o projeto confirmou que não precisa de nenhum arquivo.
+    pub local_files: Option<String>,
+    /// `--prepare`: o comando de preparo; vazio quando o projeto não tem.
+    pub prepare: Option<String>,
 }
 
 /// Execute `mustard-rt run upsert`.
@@ -200,7 +226,7 @@ struct Report {
 /// (`CLAUDE_PLUGIN_ROOT`), the core crate's own version otherwise. The field
 /// records "which harness last set this project up"; a legacy 3.1.x CLI stamp
 /// reads as drift once and this very command realigns it.
-pub fn run() {
+pub fn run(opts: &UpsertOpts) {
     // Workspace-root walk first (an already-installed project resolves to its
     // anchor even from a subdirectory), then `CLAUDE_PROJECT_DIR`, then the
     // process cwd — the fresh-install path, where no anchor exists yet.
@@ -209,7 +235,7 @@ pub fn run() {
     // The code-tool commands find and spawn their programs against this
     // process's own PATH, the way `mustard init` hands the same step its own.
     let path_env = std::env::var("PATH").unwrap_or_default();
-    match upsert(&root, &MachineRunner::new(&path_env), refresh_plugin) {
+    match upsert(&root, opts, &MachineRunner::new(&path_env), refresh_plugin) {
         Ok(outcome) => {
             let json = serde_json::to_string_pretty(&outcome)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));
@@ -241,14 +267,16 @@ pub fn run() {
     }
 }
 
-/// The whole door, short of printing: seed the project, set up the code tools
-/// of every language it involves, refresh the plugin.
+/// The whole door, short of printing: seed the project, record the person's
+/// answers, set up the code tools of every language it involves, refresh the
+/// plugin.
 ///
 /// `runner` runs the code-tool commands and `refresh` performs the plugin
 /// refresh. [`run`] hands both to the machine; the tests hand a fake runner and
 /// a canned refresh, so what they drive is the same sequence the command runs.
 fn upsert(
     root: &Path,
+    opts: &UpsertOpts,
     runner: &impl ToolRunner,
     refresh: impl FnOnce(&Path) -> PluginRefresh,
 ) -> mustard_core::platform::error::Result<Report> {
@@ -259,7 +287,15 @@ fn upsert(
     let mode = InstallMode::Private;
 
     let version = mustard_core::harness_version();
-    let project = upsert_project_with(root, Some(&version), mode, &ProjectPending { root })?;
+    let mut project = upsert_project_with(root, Some(&version), mode, &ProjectPending { root })?;
+
+    // As respostas vão ao `mustard.json` que o passo de cima já deixou no
+    // lugar; a lista para confirmar só vem enquanto a dos arquivos locais não
+    // foi gravada, nesta chamada ou numa anterior.
+    if record_answers(root, opts)? {
+        project.record_mustard_json_change();
+    }
+    let local_files_found = ProjectConfig::load(root).local_files.is_none().then(|| ignored_files(root));
 
     // Both steps below run only on the path where the project was really
     // seeded: a run that wrote nothing has no installation to finish. The
@@ -273,7 +309,69 @@ fn upsert(
             .collect();
 
     // The refresh is the LAST step.
-    Ok(Report { project, plugin_refresh: refresh(root), code_tool_warnings })
+    Ok(Report { project, plugin_refresh: refresh(root), code_tool_warnings, local_files_found })
+}
+
+/// Grava no `mustard.json` as respostas que vieram em `opts`: o comando de
+/// preparo, sem os espaços das pontas, e a lista dos arquivos locais, sem as
+/// entradas em branco. Uma resposta vazia também é gravada: ela diz que o
+/// projeto não tem preparo, ou não precisa de arquivo local. `true` quando o
+/// arquivo mudou.
+fn record_answers(root: &Path, opts: &UpsertOpts) -> mustard_core::platform::error::Result<bool> {
+    if opts.local_files.is_none() && opts.prepare.is_none() {
+        return Ok(false);
+    }
+    let mut config = ProjectConfig::load(root);
+    let mut changed = false;
+    if let Some(prepare) = opts.prepare.as_deref().map(str::trim)
+        && config.prepare_command.as_deref() != Some(prepare)
+    {
+        config.prepare_command = Some(prepare.to_string());
+        changed = true;
+    }
+    if let Some(raw) = opts.local_files.as_deref() {
+        let files: Vec<String> =
+            raw.split(',').map(str::trim).filter(|file| !file.is_empty()).map(str::to_string).collect();
+        if config.local_files.as_ref() != Some(&files) {
+            config.local_files = Some(files);
+            changed = true;
+        }
+    }
+    if changed {
+        config.write(root)?;
+    }
+    Ok(changed)
+}
+
+/// Os arquivos que o git ignora na pasta `root` e que não estão dentro de uma
+/// pasta ignorada, como o `.env`, em caminhos relativos a ela.
+///
+/// Com `--directory`, o git escreve a pasta ignorada inteira numa linha só,
+/// terminada em barra — as dependências instaladas, a saída da compilação — e
+/// essas linhas ficam de fora: a cópia as recebe pelo comando de preparo, não
+/// por cópia de arquivo. Os arquivos do próprio assistente também ficam de
+/// fora ([`harness_own`]). `-z` porque um nome com caractere especial viria
+/// entre aspas. Sem git ou fora de um repositório, a lista vem vazia.
+fn ignored_files(root: &Path) -> Vec<String> {
+    let args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"];
+    let Some(out) = mustard_core::platform::git::run(root, &args).out() else {
+        return Vec::new();
+    };
+    out.split('\0')
+        .filter(|line| !line.is_empty() && !line.ends_with('/') && !harness_own(line))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Um arquivo que a instalação ou o Claude Code põem no projeto, e não o
+/// projeto: o que a instalação escreve (o `mustard.json`, as configurações
+/// locais), tudo o que mora numa pasta `.claude` e as instruções locais
+/// `CLAUDE.local.md`, em qualquer pasta. A instalação privada os esconde do
+/// git, e sem esta regra eles apareceriam na lista a confirmar de todo projeto.
+fn harness_own(path: &str) -> bool {
+    mustard_core::is_written_footprint(path)
+        || path.split('/').any(|part| part == ".claude")
+        || path.rsplit('/').next() == Some(mustard_core::CLAUDE_LOCAL_MD)
 }
 
 /// The project's pending list, the same `.claude/pending/ledger.json` that
@@ -783,6 +881,7 @@ mod tests {
             },
             plugin_refresh: skipped(None, "no install".to_string()),
             code_tool_warnings: Vec::new(),
+            local_files_found: None,
         };
         let first = serde_json::to_string_pretty(&outcome).expect("serialize");
         let second = serde_json::to_string_pretty(&outcome).expect("serialize again");
@@ -867,7 +966,7 @@ mod tests {
         runner.brings.push(("rustup", "rust-analyzer"));
         runner.failing.push("claude plugin install csharp-lsp@claude-plugins-official");
 
-        let outcome = upsert(root, &runner, |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_| skipped(None, "no registry in a test".to_string()))
             .expect("a plain project is seeded");
 
         assert_eq!(
@@ -936,7 +1035,7 @@ mod tests {
         std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o555)).expect("seal");
 
         let runner = FakeRunner::new(root, &["rustup", "claude"]);
-        let refused = upsert(root, &runner, |_| panic!("no refresh without a seeded project"));
+        let refused = upsert(root, &UpsertOpts::default(), &runner, |_| panic!("no refresh without a seeded project"));
 
         // Unseal before asserting, so the temp dir can always be removed.
         std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o755)).expect("unseal");
@@ -979,7 +1078,7 @@ mod tests {
         let root = dir.path();
         lay_out_rules(root);
 
-        let outcome = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
             .expect("the project is seeded");
         let done = outcome.project.cleaned.clone().expect("the cleanup ran");
         assert!(done.failed.is_empty(), "{done:?}");
@@ -1003,7 +1102,7 @@ mod tests {
         assert!(!root.join("apps/web/CLAUDE.md").exists(), "o arquivo que era só do scan saiu");
 
         // A segunda atualização não acha regra e não repete o item.
-        let again = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let again = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
             .expect("the second run");
         assert!(again.project.cleaned.is_none(), "{:?}", again.project.cleaned);
         assert_eq!(ledger_items(root).len(), 1, "a lista segue com um item");
@@ -1019,7 +1118,7 @@ mod tests {
         // A lista não se grava: no lugar do arquivo dela há uma pasta.
         std::fs::create_dir_all(root.join(".claude/pending/ledger.json")).expect("block the pending list");
 
-        let outcome = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
             .expect("the seeding itself goes through");
         let done = outcome.project.cleaned.clone().expect("the cleanup says what it could not do");
         assert!(done.failed.iter().any(|why| why.starts_with("pending:")), "{done:?}");
@@ -1028,6 +1127,105 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("apps/api/CLAUDE.md")).expect("api"), team, "o arquivo do time fica igual");
         assert_eq!(std::fs::read_to_string(root.join("apps/web/CLAUDE.md")).expect("web"), only_ours, "o arquivo do scan fica");
         assert!(!root.join(".claude/spec/lessons.ndjson").exists(), "nada vai ao banco de lições");
+    }
+
+    /// O upsert pelo mesmo caminho do comando, com as respostas `opts`, e a
+    /// resposta como o comando a imprime.
+    fn upsert_json(root: &Path, opts: &UpsertOpts) -> serde_json::Value {
+        let outcome = upsert(root, opts, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+            .expect("the project is seeded");
+        serde_json::to_value(&outcome).expect("the report serializes")
+    }
+
+    /// Um repositório git novo em `root`, sem commit.
+    fn git_repo(root: &Path) {
+        assert!(mustard_core::platform::git::run(root, &["init", "--quiet"]).ok, "git init");
+    }
+
+    /// O `mustard.json` do projeto em `root`, como está no disco.
+    fn mustard_json(root: &Path) -> serde_json::Map<String, serde_json::Value> {
+        let raw = std::fs::read_to_string(root.join("mustard.json")).expect("mustard.json");
+        serde_json::from_str(&raw).expect("mustard.json is an object")
+    }
+
+    /// Sem a opção, a resposta traz os arquivos que o git ignora soltos — sem
+    /// as pastas ignoradas inteiras, sem o que não é ignorado e sem os arquivos
+    /// da própria instalação — e o `mustard.json` fica sem `localFiles`. Com a
+    /// opção, a lista confirmada vai ao `mustard.json`, e a resposta, desta vez
+    /// e da seguinte, não traz mais a lista. Num projeto sem arquivo ignorado,
+    /// a lista vem vazia.
+    #[test]
+    fn the_upsert_lists_ignored_files_outside_ignored_folders_until_confirmed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        git_repo(root);
+        std::fs::write(root.join(".gitignore"), ".env\nnode_modules/\ndist/\n*.local\n").expect("gitignore");
+        for (rel, body) in [
+            (".env", "A=1\n"),
+            ("apps/api/.env.local", "B=2\n"),
+            ("node_modules/pkg/index.js", "x\n"),
+            ("dist/app.js", "y\n"),
+            ("src/main.ts", "z\n"),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(path, body).expect("write");
+        }
+
+        let asked = upsert_json(root, &UpsertOpts::default());
+        assert_eq!(asked["localFilesFound"], serde_json::json!([".env", "apps/api/.env.local"]), "{asked:#}");
+        assert!(!mustard_json(root).contains_key("localFiles"), "nothing is recorded before the person confirms");
+
+        let confirmed = upsert_json(
+            root,
+            &UpsertOpts { local_files: Some(" .env, apps/api/.env.local ,".to_string()), prepare: None },
+        );
+        assert!(confirmed.get("localFilesFound").is_none(), "{confirmed:#}");
+        assert_eq!(mustard_json(root)["localFiles"], serde_json::json!([".env", "apps/api/.env.local"]));
+        assert!(
+            confirmed["updated"].as_array().is_some_and(|names| names.iter().any(|n| n == "mustard.json")),
+            "the report says mustard.json changed: {confirmed:#}",
+        );
+        let next = upsert_json(root, &UpsertOpts::default());
+        assert!(next.get("localFilesFound").is_none(), "the next upsert does not ask again: {next:#}");
+        assert_eq!(mustard_json(root)["localFiles"], serde_json::json!([".env", "apps/api/.env.local"]));
+
+        let clean = tempfile::tempdir().expect("temp dir");
+        git_repo(clean.path());
+        std::fs::write(clean.path().join("main.rs"), "fn main() {}\n").expect("write");
+        let none = upsert_json(clean.path(), &UpsertOpts::default());
+        assert_eq!(none["localFilesFound"], serde_json::json!([]), "{none:#}");
+    }
+
+    /// O comando de preparo vai ao `mustard.json` logo depois dos comandos de
+    /// build e de teste, e chega a quem lê os comandos do projeto. Sem a
+    /// opção, o `mustard.json` fica sem `prepareCommand`; com o valor vazio,
+    /// fica gravado que o projeto não tem preparo, e nada roda.
+    #[test]
+    fn the_prepare_command_is_recorded_next_to_the_build_command() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"buildCommand":"npm run build","testCommand":"npm test"}"#)
+            .expect("mustard.json");
+
+        upsert_json(root, &UpsertOpts { local_files: None, prepare: Some("pnpm install --frozen-lockfile".to_string()) });
+
+        let config = mustard_json(root);
+        assert_eq!(config["prepareCommand"], serde_json::json!("pnpm install --frozen-lockfile"));
+        assert_eq!(config["buildCommand"], serde_json::json!("npm run build"), "the build command stays");
+        let keys: Vec<&str> = config.keys().map(String::as_str).collect();
+        let at = |key: &str| keys.iter().position(|k| *k == key).unwrap_or(usize::MAX);
+        assert_eq!(at("prepareCommand"), at("testCommand") + 1, "next to the project's commands: {keys:?}");
+        assert!(!config.contains_key("localFiles"), "one answer does not record the other");
+        assert_eq!(ProjectConfig::load(root).commands().prepare.as_deref(), Some("pnpm install --frozen-lockfile"));
+
+        let other = tempfile::tempdir().expect("temp dir");
+        upsert_json(other.path(), &UpsertOpts::default());
+        assert!(!mustard_json(other.path()).contains_key("prepareCommand"), "without the option, nothing is recorded");
+
+        upsert_json(other.path(), &UpsertOpts { local_files: None, prepare: Some(String::new()) });
+        assert_eq!(mustard_json(other.path())["prepareCommand"], serde_json::json!(""), "no prepare is an answer too");
+        assert_eq!(ProjectConfig::load(other.path()).commands().prepare, None, "and runs nothing");
     }
 
     /// A failed step's output becomes one bounded line — the report stays a

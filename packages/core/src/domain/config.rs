@@ -327,13 +327,19 @@ pub struct Injectable {
     pub once: bool,
 }
 
-/// The build/test/lint/type-check command set resolved from `mustard.json`.
+/// The build/test/lint/type-check command set resolved from `mustard.json`,
+/// with the command that prepares a wave's copy before it compiles.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Commands {
     pub build: Option<String>,
     pub test: Option<String>,
     pub lint: Option<String>,
     pub type_check: Option<String>,
+    /// O comando de preparo que o projeto declarou (`prepareCommand`), que
+    /// traz as dependências à cópia de cada onda antes de compilar. `None`
+    /// quando o projeto não tem, quando está em branco ou quando ainda não
+    /// foi perguntado: nada roda.
+    pub prepare: Option<String>,
 }
 
 /// The full `mustard.json` document — the project config, at the project root.
@@ -362,6 +368,17 @@ pub struct ProjectConfig {
     pub lint_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", alias = "type_check_command")]
     pub type_check_command: Option<String>,
+    /// O comando que prepara a cópia de cada onda, como `npm ci` ou `dotnet
+    /// restore`: é do projeto, e o Mustard não adivinha nenhum. Ausente, a
+    /// instalação ainda não perguntou; vazio, o projeto não tem preparo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_command: Option<String>,
+    /// Os arquivos que o git ignora e a cópia de cada onda precisa, como o
+    /// `.env`, em caminhos relativos à raiz, na lista que a pessoa confirmou.
+    /// Ausente, a instalação ainda não perguntou; vazia, o projeto confirmou
+    /// que não precisa de nenhum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_files: Option<Vec<String>>,
 
     /// Version-control binary. Absent ⇒ `git` default; `""` ⇒ explicit opt-out.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -505,10 +522,10 @@ impl ProjectConfig {
         self.build_command().unwrap_or_else(|| BUILD_COMMAND_FALLBACK.to_string())
     }
 
-    /// The four close-gate commands, each trimmed / `None` when blank. The
-    /// build placeholder that `mustard init` seeds for an unrecognised stack
-    /// ([`BUILD_COMMAND_FALLBACK`]) counts as absent here too: it is a hint to
-    /// fill, not a command to run. `build_command()` and the raw JSON keep
+    /// The four close-gate commands and the prepare command, each trimmed /
+    /// `None` when blank. The build placeholder that `mustard init` seeds for
+    /// an unrecognised stack ([`BUILD_COMMAND_FALLBACK`]) counts as absent
+    /// here too: it is a hint to fill, not a command to run. `build_command()` and the raw JSON keep
     /// showing it, so the hint stays visible where someone edits the file.
     #[must_use]
     pub fn commands(&self) -> Commands {
@@ -517,6 +534,7 @@ impl ProjectConfig {
             test: non_blank(self.test_command.as_deref()),
             lint: non_blank(self.lint_command.as_deref()),
             type_check: non_blank(self.type_check_command.as_deref()),
+            prepare: non_blank(self.prepare_command.as_deref()),
         }
     }
 

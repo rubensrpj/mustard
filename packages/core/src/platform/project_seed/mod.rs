@@ -193,6 +193,17 @@ fn is_false(b: &bool) -> bool {
 }
 
 impl UpsertReport {
+    /// `mustard.json` changed after this report was made, by a later step of
+    /// the same install, like the answers `run upsert` records: it moves from
+    /// `preserved` to `updated`. A file this run created stays created.
+    pub fn record_mustard_json_change(&mut self) {
+        if self.created.iter().chain(&self.updated).any(|name| name == MUSTARD_JSON) {
+            return;
+        }
+        self.preserved.retain(|name| name != MUSTARD_JSON);
+        self.updated.push(MUSTARD_JSON.to_string());
+    }
+
     /// Fold one file's [`SeedOutcome`] into the matching list.
     fn record(&mut self, name: &str, outcome: SeedOutcome) {
         let list = match outcome {
@@ -228,7 +239,8 @@ impl UpsertReport {
 /// 2. the settings file — seed when absent, backfill missing top-level keys
 ///    when present, with the point migrations of [`seed_settings`], rtk's hook
 ///    following `mustard.json#rtk`, Claude Code's signature kept off and the
-///    response style of `language.text` chosen;
+///    response style of `language.text` chosen — and, in either mode, the
+///    folder of the project's separate copies allowed in the local settings;
 /// 3. Mustard's own texts — the compiled-in body of each is written every
 ///    time;
 /// 4. `.claude/.gitignore` — created when absent, and when present the pattern
@@ -325,10 +337,9 @@ pub fn upsert_project_with(
     //       which take no mode: they are always rewritten.
     let config = ProjectConfig::load(root);
     let text = config.language().text_or_default();
-    report.record(
-        settings::settings_footprint(mode),
-        seed_settings(&claude_dir, false, mode, config.rtk(), text)?,
-    );
+    for (name, outcome) in seed_settings(&claude_dir, false, mode, config.rtk(), text)? {
+        report.record(name, outcome);
+    }
     for (rel, outcome) in seed_harness_texts(&claude_dir, text)? {
         report.record(&format!(".claude/{rel}"), outcome);
     }
@@ -378,6 +389,7 @@ mod tests {
             report.created,
             vec![
                 ".claude/settings.json",
+                ".claude/settings.local.json",
                 ".claude/mustard/session-map.md",
                 ".claude/mustard/pages/spec.html",
                 ".claude/mustard/pages/project.html",
@@ -444,6 +456,7 @@ mod tests {
             second.preserved,
             vec![
                 ".claude/settings.json",
+                ".claude/settings.local.json",
                 ".claude/mustard/session-map.md",
                 ".claude/mustard/pages/spec.html",
                 ".claude/mustard/pages/project.html",

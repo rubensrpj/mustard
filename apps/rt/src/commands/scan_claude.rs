@@ -213,6 +213,7 @@ mod tests {
             test: Some("cargo test".into()),
             lint: None,
             type_check: Some("cargo check".into()),
+            prepare: None,
         };
         let out = render_map("rust", 12, &commands, SupportedLocale::PtBr);
         assert!(out.contains("Tipo: rust · 12 arquivos"), "map header missing: {out}");
@@ -240,6 +241,7 @@ mod tests {
             test: Some("pnpm test".into()),
             lint: Some("pnpm run lint".into()),
             type_check: Some("tsc --noEmit".into()),
+            prepare: None,
         };
         assert_eq!(
             render_map("typescript", 30, &commands, SupportedLocale::PtBr),

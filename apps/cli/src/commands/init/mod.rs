@@ -232,14 +232,13 @@ pub fn init_with_templates(
     // the response style of the text language and Claude Code's signature off
     // — the core engine owns the content, the merge rules and the destination
     // (the untracked local layer).
-    let settings_name = if mode.is_private() {
-        ".claude/settings.local.json"
-    } else {
-        ".claude/settings.json"
-    };
-    let outcome = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
-        .with_context(|| format!("seeding {settings_name}"))?;
-    seeding::report_seed(settings_name, outcome, false);
+    // The local settings also receive the folder of the project's separate
+    // copies, in either mode — in shared mode, that is all they receive.
+    let seeded = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
+        .context("seeding the settings under .claude/")?;
+    for (name, outcome) in seeded {
+        seeding::report_seed(name, outcome, false);
+    }
     // Mustard's own texts — so the answer to "merge or overwrite?" does not
     // reach them: the seeder takes no such argument and always lays the
     // shipped text down again, in the text language.

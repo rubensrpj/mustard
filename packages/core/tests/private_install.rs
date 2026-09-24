@@ -26,7 +26,8 @@
 //! - A footprint path the host ALREADY tracks is named as residue, and
 //!   nothing is unlinked.
 //! - The regression guard: a shared install writes the same paths and
-//!   the same bytes it wrote before the mode existed.
+//!   the same bytes it wrote before the mode existed, plus the one key both
+//!   modes put in the local layer — the folder of the project's copies.
 
 #[cfg(unix)]
 // Unix-only: the refusal fixture seals a directory with mode 0o555, an API and a
@@ -197,6 +198,7 @@ fn shared_install_is_byte_identical_to_today() {
         report.created,
         vec![
             ".claude/settings.json",
+            ".claude/settings.local.json",
             ".claude/mustard/session-map.md",
             ".claude/mustard/pages/spec.html",
             ".claude/mustard/pages/project.html",
@@ -224,11 +226,15 @@ fn shared_install_is_byte_identical_to_today() {
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));
     assert!(root.join("mustard.json").is_file(), "the project config is written");
 
-    // 3. Nothing of the private mode happened: no local layer, no exclude write,
-    //    and the report carries no private key at all.
-    assert!(
-        !root.join(".claude/settings.local.json").exists(),
-        "the local layer belongs to the private mode only",
+    // 3. Nothing of the private mode happened: the local layer holds only the
+    //    folder of the project's copies, which is this machine's path and so
+    //    never goes to the team's file; no exclude write, and the report
+    //    carries no private key at all.
+    let copies = mustard_core::io::wave_prompt::copies_dir(root).to_string_lossy().into_owned();
+    assert_eq!(
+        read(&root.join(".claude/settings.local.json")).and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()),
+        Some(serde_json::json!({ "permissions": { "additionalDirectories": [copies] } })),
+        "the rest of the local layer belongs to the private mode only",
     );
     assert_eq!(read(&exclude), exclude_before, "the exclude file was not touched");
     assert!(!report.private);

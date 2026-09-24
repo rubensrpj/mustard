@@ -6,19 +6,20 @@ argument-hint: [--doctor]
 
 ## Install or update
 
-1. Run `mustard-rt run upsert`. It writes `.claude/settings.local.json`, `.claude/.gitignore`, `mustard.json`, the session map `session-map.md` under `.claude/mustard/`, the two page templates under `.claude/mustard/pages/` and the three agents under `.claude/agents/mustard/`, all hidden from the project's git. The local settings allow Mustard's own commands and `ArtifactData`, the tool that writes the pages' database, and keep every rule the person already has. An older install's map, `mapa-inicio-sessao.md`, leaves the disk, and `mustard.json` then declares the new name. Nothing is committed.
-2. Relay `created`, `updated`, `preserved` and `migrated`, file by file. The settings file, `.claude/.gitignore` and `mustard.json` are the person's: merged, never clobbered. The session map and the agents are Mustard's own text, in the language of `language.text`: every run lays the shipped text down again, so an edited copy comes back in `updated`, and one already equal comes back in `preserved`.
-3. `pluginRefresh`: `refreshed` names the new version when the field is there, and this session keeps the plugin it loaded until Claude Code restarts; `skipped` is relayed with its reason.
-4. `cleanup` and `cleaned`: what an older Mustard left in the `CLAUDE.md` files and in the team's `.claude/settings.json` already left, in this same call. Relay what left, file by file, and the Guards rules, now in the pending item `cleaned.pending`, each to become a test or be dropped; a file listed under `unmarked` was not touched, and is the person's to decide. The commit is the person's.
-5. After a first install, say that `mustard.json` takes `git.flow`, `git.protected`, `language.text`, `enabled` (off turns every Mustard hook off here) and `rtk` (off takes rtk's hook out of the local settings on the next upsert).
+1. Run `mustard-rt run upsert`. It writes, hidden from the project's git, `.claude/settings.local.json`, `.claude/.gitignore`, `mustard.json`, the session map `session-map.md` and page templates under `.claude/mustard/`, and the agents under `.claude/agents/mustard/`. The local settings allow Mustard's commands, `ArtifactData` (the pages' database) and the folder of the wave copies, and keep the person's rules. Nothing is committed.
+2. Relay `created`, `updated`, `preserved` and `migrated`, file by file. The settings, `.claude/.gitignore` and `mustard.json` are the person's: merged, never clobbered. The session map and the agents are Mustard's own text, in `language.text`: every run lays the shipped text down again, so an edited copy comes back in `updated`, and one already equal in `preserved`.
+3. `pluginRefresh`: `refreshed` names the new version, which only a Claude Code restart loads; relay `skipped` with its reason.
+4. `cleanup` and `cleaned`: what an older Mustard left in the `CLAUDE.md` files and the team's `.claude/settings.json` already left. Relay it file by file, and the Guards rules, now in the pending item `cleaned.pending`, each to become a test or be dropped; a file under `unmarked` was not touched: the person decides.
+5. `localFilesFound`, while `mustard.json` lacks `localFiles`: ignored files outside ignored folders, like `.env`, that a wave copy lacks. Show it once, with the prepare command its lockfile or manifest suggests (`npm ci`, `dotnet restore`; none if nothing installs), and record what the person confirms: `mustard-rt run upsert --local-files <a,b> --prepare "<command>"`; an empty value records none.
+6. After a first install, say that `mustard.json` takes `git.flow`, `git.protected`, `language.text`, `enabled` (off turns Mustard's hooks off here) and `rtk` (off drops rtk's hook from the local settings on the next upsert).
 
 ## Doctor
 
-`mustard-rt run doctor` only reads, and each failing check names its fix. `--check <name>` runs one check, `--residue` also looks for dead references, and `--json` answers in JSON.
+`mustard-rt run doctor` only reads; each failing check names its fix. `--check <name>` runs one, `--residue` also seeks dead references, `--json` answers in JSON.
 
 ## Upkeep
 
-- `mustard-rt run scan` updates the project map, reading only what changed; it never writes to git, and `--full` also rewrites each subproject's map.
-- `mustard-rt run clean` lists the throwaway copies agents left in the temp folder, and deletes nothing unless told to.
+- `mustard-rt run scan` updates the project map from what changed, never writing to git; `--full` also rewrites each subproject's map.
+- `mustard-rt run clean` lists the throwaway copies agents left in the temp folder; deletes only when told.
 
-Never edit `.claude/settings.local.json`, `.claude/mustard/` or `.claude/agents/mustard/` by hand: the binary writes them. An unreadable settings file is reported and left untouched.
+Never hand-edit `.claude/settings.local.json`, `.claude/mustard/` or `.claude/agents/mustard/`: the binary writes them. An unreadable settings file is reported and left untouched.

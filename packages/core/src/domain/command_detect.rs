@@ -47,6 +47,7 @@ pub fn detect_commands(root: &Path) -> Commands {
         test: None,
         lint: None,
         type_check: None,
+        prepare: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn detect_native(dir: &Path) -> Option<Commands> {
             test: Some("cargo test".into()),
             lint: Some("cargo clippy".into()),
             type_check: Some("cargo check".into()),
+            prepare: None,
         });
     }
     if dir.join("go.mod").is_file() {
@@ -101,6 +103,7 @@ fn detect_native(dir: &Path) -> Option<Commands> {
             test: Some("go test ./...".into()),
             lint: None,
             type_check: Some("go vet ./...".into()),
+            prepare: None,
         });
     }
     if dir.join("Makefile").is_file() || dir.join("makefile").is_file() {
@@ -109,6 +112,7 @@ fn detect_native(dir: &Path) -> Option<Commands> {
             test: Some("make test".into()),
             lint: None,
             type_check: None,
+            prepare: None,
         });
     }
     None
@@ -207,6 +211,7 @@ fn js_commands(pm: &str, scripts: &[String]) -> Commands {
             test: Some(format!("{pm} test")),
             lint: Some(format!("{pm} run lint")),
             type_check: Some("tsc --noEmit".into()),
+            prepare: None,
         };
     }
 
@@ -223,7 +228,8 @@ fn js_commands(pm: &str, scripts: &[String]) -> Commands {
     let type_check = find_script(scripts, &["typecheck", "type-check", "check"])
         .map(|name| format!("{pm} run {name}"));
 
-    Commands { build, test, lint, type_check }
+    // O preparo é do projeto: nenhuma pilha o deduz.
+    Commands { build, test, lint, type_check, prepare: None }
 }
 
 #[cfg(test)]
