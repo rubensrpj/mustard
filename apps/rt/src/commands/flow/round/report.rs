@@ -181,7 +181,7 @@ pub(crate) fn take_report_with_mine(
 ) -> Result<Taken, RoundRefusal> {
     let mut report = parse_report(raw.unwrap_or_default())?;
     let nothing = |report: &Report| report.waves.is_empty() && report.verdicts.is_empty() && report.usage.is_empty();
-    report.waves = returned_waves(root, spec, log)?;
+    report.waves = returned_waves(log)?;
     report.verdicts = returned_verdict(log);
     // Sem volta, sem veredito e sem consumo, não há o que juntar nem comitar,
     // e a rodada não espera a trava: a pausa reenvia essas ondas com o pedido
@@ -197,7 +197,7 @@ pub(crate) fn take_report_with_mine(
     let held_lock = git_lock(root)?;
     let path = store::spec_file(root, spec).map_err(RoundRefusal::Refused)?;
     let fresh = store::read(&path).map_err(RoundRefusal::Refused)?.unwrap_or_else(|| log.clone());
-    report.waves = returned_waves(root, spec, &fresh)?;
+    report.waves = returned_waves(&fresh)?;
     report.verdicts = returned_verdict(&fresh);
     let cut = match_usage(&fresh, &mut report)?;
     if nothing(&report) {
@@ -326,7 +326,7 @@ fn take_returns(
             .collect(),
         None => Vec::new(),
     };
-    let checked = check_reports(start, root, spec, &report, planned).map_err(RoundRefusal::Refused)?;
+    let checked = check_reports(start, spec, &report, planned).map_err(RoundRefusal::Refused)?;
 
     if let Err(refused) = write_joined(root, &joined, true) {
         let _ = write_joined(root, &joined, false);
@@ -448,7 +448,7 @@ fn dispatched_at(log: &SpecLog, wave: u64) -> Option<u64> {
 /// onda gravou depois do envio que a despachou e que ninguém assumiu ainda,
 /// com todas as voltas dela desde esse envio. A volta de antes do envio —
 /// de um envio já superado por um reenvio — não conta.
-fn returned_waves(root: &Path, spec: &str, log: &SpecLog) -> Result<Vec<WaveReport>, RoundRefusal> {
+fn returned_waves(log: &SpecLog) -> Result<Vec<WaveReport>, RoundRefusal> {
     let hidden = log.hidden();
     let mut waves = Vec::new();
     for last in log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered") {
@@ -457,7 +457,7 @@ fn returned_waves(root: &Path, spec: &str, log: &SpecLog) -> Result<Vec<WaveRepo
         if last.id <= since {
             continue;
         }
-        let mut report = wave_report_of(root, spec, &last.fields)?;
+        let mut report = wave_report_of(log, &last.fields)?;
         report.returns = log
             .events
             .iter()
@@ -494,7 +494,7 @@ fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
 /// conserto fecha, a mudança de plano e as sobras. Arquivo entregue pede o
 /// resumo do commit, a não ser na mudança de plano, e o resumo nunca tem cara
 /// de código de commit.
-fn wave_report_of(root: &Path, spec: &str, fields: &Map<String, Value>) -> Result<WaveReport, RoundRefusal> {
+fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveReport, RoundRefusal> {
     let text = |key: &str| {
         fields.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
     };
@@ -511,7 +511,7 @@ fn wave_report_of(root: &Path, spec: &str, fields: &Map<String, Value>) -> Resul
         .filter_map(Value::as_str)
         .map(|f| f.trim().replace('\\', "/"))
         .filter(|f| !f.is_empty())
-        .map(|f| own_copy_relative(root, spec, wave, &f))
+        .map(|f| own_copy_relative(log, wave, &f))
         .collect();
     let (replan, commit) = (text("replan"), text("commit"));
     if commit.is_none() && !files.is_empty() && replan.is_none() {
@@ -574,7 +574,7 @@ pub(crate) fn check_return(
     if !open_sends(&log).contains_key(&wave) {
         return Err(RoundRefusal::Refused(Refusal::NoOpenSend { wave }));
     }
-    let mut report = wave_report_of(&project.root, spec, draft)?;
+    let mut report = wave_report_of(&log, draft)?;
     // O título sai como a rodada o monta para esta onda sozinha — com mais de
     // uma onda no commit, ela encurta o escopo, e o título nunca cresce. A
     // volta que não cita arquivo também tem o título conferido: a cópia pode
@@ -930,13 +930,18 @@ struct CheckedReport {
 }
 
 /// O caminho como a rodada grava `file` da onda `wave`: quando é o caminho
-/// absoluto que começa pela cópia que a rodada criou para essa onda, o
-/// caminho relativo ao repositório dentro dela; o resto — o caminho já
-/// relativo, ou um caminho absoluto de fora dessa cópia — fica como veio, e
-/// segue pelo mesmo crivo do git mais adiante.
-fn own_copy_relative(root: &Path, spec: &str, wave: u64, file: &str) -> String {
-    let copy = wave_prompt::shown(&wave_prompt::copy_path(root, spec, wave, false));
-    file.strip_prefix(&copy).map(|rest| rest.trim_start_matches('/').to_string()).unwrap_or_else(|| file.to_string())
+/// absoluto que começa pela cópia gravada no envio da onda, o caminho
+/// relativo ao repositório dentro dela; o resto — o caminho já relativo, um
+/// caminho absoluto de fora dessa cópia, ou de uma cópia vizinha cujo nome só
+/// começa igual — fica como veio, e segue pelo mesmo crivo do git mais
+/// adiante. Vale o caminho gravado, não o que a pasta das cópias daria hoje:
+/// a onda enviada antes de a pasta mudar volta da cópia onde nasceu.
+fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String {
+    let Some(copy) = wave_prompt::recorded_copy(log, wave) else { return file.to_string() };
+    file.strip_prefix(copy.path.as_str())
+        .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+        .map(|rest| rest.trim_start_matches('/').to_string())
+        .unwrap_or_else(|| file.to_string())
 }
 
 /// Monta o que voltou e passa cada gravação que virá — cada veredito, cada
@@ -947,7 +952,6 @@ fn own_copy_relative(root: &Path, spec: &str, wave: u64, file: &str) -> String {
 /// commit. O entregou vai também em cada onda que o conserto fecha.
 fn check_reports(
     start: &Path,
-    root: &Path,
     spec: &str,
     report: &Report,
     commits: Vec<Map<String, Value>>,
@@ -988,7 +992,7 @@ fn check_reports(
             let mut draft = Map::new();
             draft.insert("wave".into(), json!(wave));
             draft.insert("text".into(), json!(report.delivered));
-            let files: Vec<String> = report.files.iter().map(|file| own_copy_relative(root, spec, wave, file)).collect();
+            let files: Vec<String> = report.files.iter().map(|file| own_copy_relative(check.log(), wave, file)).collect();
             draft.insert("files".into(), json!(files));
             if let Some(replan) = &report.replan {
                 draft.insert("replan".into(), json!(replan));

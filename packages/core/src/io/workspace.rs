@@ -44,6 +44,12 @@
 //! so only a proven linked worktree changes. It applies to the ancestor-walk
 //! path only; the `MUSTARD_WORKSPACE_ROOT` override is honoured verbatim.
 //!
+//! A linked worktree that lives OUTSIDE the project — the separate copy of a
+//! wave, in the user's cache folder — has no anchor anywhere above it. When
+//! the walk finds nothing, the main checkout of that worktree becomes the
+//! root, provided it is a genuine anchor; otherwise the walk's
+//! [`WorkspaceError::AnchorNotFound`] stands.
+//!
 //! ## Inviolable safety contract
 //!
 //! - **No cwd fallback.** If no ancestor satisfies the predicate, the function
@@ -209,7 +215,15 @@ fn resolve_uncached(
         let override_path = PathBuf::from(override_raw);
         return validate_override(override_path);
     }
-    let resolved = walk_ancestors(start_dir)?;
+    // A linked worktree OUTSIDE the project — the separate copy of a wave,
+    // which lives in the user's cache folder — has no project above it, and
+    // Mustard itself stays out of git, so the copy carries no anchor either.
+    // When the walk finds nothing, the main checkout of that worktree is the
+    // project, provided it is a genuine anchor.
+    let resolved = match walk_ancestors(start_dir) {
+        Ok(found) => found,
+        Err(missing) => return outside_worktree_main(start_dir).ok_or(missing),
+    };
     // Worktree redirect (the ONE behavioural change): a resolved anchor sitting
     // inside a LINKED git worktree is remapped to its MAIN checkout so specs,
     // events, markers, and telemetry land under the primary `.claude/`. The main
@@ -344,6 +358,17 @@ fn main_checkout_if_linked(dir: &Path) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// The main checkout of the linked worktree `start_dir` sits in, for a start
+/// the ancestor walk placed in no project; `None` when that checkout is not a
+/// genuine Mustard anchor either. Asking git costs two processes on the hot
+/// path of every harness event, so git is asked only from the nearest
+/// ancestor carrying the `.git` FILE a linked worktree has — a folder outside
+/// any git checkout, or inside a plain one, never spawns git.
+fn outside_worktree_main(start_dir: &Path) -> Option<PathBuf> {
+    let top = start_dir.ancestors().find(|dir| dir.join(".git").is_file())?;
+    main_checkout_if_linked(top)
 }
 
 /// The MAIN checkout when `dir` is inside a LINKED git worktree; `None` in the
@@ -650,6 +675,61 @@ mod tests {
         assert_eq!(
             std::fs::canonicalize(&resolved).unwrap(),
             std::fs::canonicalize(dir.path()).unwrap()
+        );
+    }
+
+    /// `git` with a fixed identity, in `dir`; the test fails on a git error.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("spawn git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A hook running inside the separate copy of a wave — a linked worktree
+    /// in a folder outside the project, like the user's cache — finds no
+    /// project walking up: Mustard stays out of git, so the copy carries none
+    /// of it. The root it resolves is the main checkout, and the spec it
+    /// writes and reads back is the project's, never one inside the copy. A
+    /// folder outside any project and outside git still resolves nothing.
+    #[test]
+    fn a_hook_inside_an_outside_copy_resolves_the_main_checkout() {
+        let _guard = serialize_test();
+        let dir = tempdir().unwrap();
+        let main = dir.path().join("projeto");
+        std::fs::create_dir_all(main.join("src")).unwrap();
+        std::fs::write(main.join("src").join("lib.rs"), "fn um() {}\n").unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-q", "-m", "seed"]);
+        make_loose_anchor(&main);
+        let copy = dir.path().join("cache").join("mustard").join("copias").join("projeto-0123abcd").join("x-1");
+        git(&main, &["worktree", "add", "-q", "--detach", &copy.to_string_lossy(), "HEAD"]);
+        assert!(!copy.join("mustard.json").exists() && !copy.join(".claude").exists(), "the copy carries no Mustard file");
+        let start = copy.join("src");
+
+        let resolved = resolve_with_override(&start, None).expect("the outside copy resolves to its main checkout");
+        assert_eq!(canonical(&resolved), canonical(&main));
+
+        let file = crate::io::spec_events::spec_file(&resolved, "x").unwrap();
+        let said = serde_json::json!({"author": "user", "text": "da cópia"});
+        crate::io::spec_events::write(&file, "message", said.as_object().cloned().unwrap(), &[]).unwrap();
+        assert!(main.join(".claude").join("spec").join("x").join("spec.ndjson").is_file(), "the spec lands in the project");
+        let again = resolve_with_override(&start, None).unwrap();
+        let log = crate::io::spec_events::read(&crate::io::spec_events::spec_file(&again, "x").unwrap())
+            .unwrap()
+            .expect("the hook reads the project's spec back");
+        assert_eq!(log.events.len(), 1, "{:?}", log.events);
+        assert!(!copy.join(".claude").exists(), "nothing is written inside the copy");
+
+        let loose = dir.path().join("solta");
+        std::fs::create_dir_all(&loose).unwrap();
+        assert!(
+            matches!(resolve_with_override(&loose, None), Err(WorkspaceError::AnchorNotFound { .. })),
+            "a folder outside any project still resolves nothing",
         );
     }
 }

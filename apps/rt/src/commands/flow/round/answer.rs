@@ -1837,7 +1837,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        let copy = mustard_core::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join("mustard-x-99");
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 99, false);
         std::fs::create_dir_all(&copy).unwrap();
         let mut orphaned = Command::new("sleep")
             .arg("30")

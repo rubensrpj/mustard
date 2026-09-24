@@ -37,13 +37,18 @@ pub(crate) struct Snapshot {
 
 /// Acha os processos presos do usuário atual e encerra cada um, com o sinal
 /// de término comum (`SIGTERM`). Só toca o que casa uma das duas razões; todo
-/// outro processo, inclusive este mesmo, fica como está.
+/// outro processo, inclusive este mesmo, fica como está. As cópias das ondas
+/// moram na pasta das cópias do projeto, fora dele
+/// ([`mustard_core::io::wave_prompt::copies_dir`]); ela é lida já resolvida
+/// quando existe, porque a pasta de trabalho que o sistema mostra de cada
+/// processo também vem resolvida.
 pub(crate) fn end_stuck_processes(root: &Path) -> Vec<Ended> {
-    let worktrees = mustard_core::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees");
+    let copies = mustard_core::io::wave_prompt::copies_dir(root);
+    let copies = std::fs::canonicalize(&copies).unwrap_or(copies);
     system_processes()
         .into_iter()
         .filter(|proc| proc.pid != std::process::id())
-        .filter_map(|proc| reason_of(&proc, root, &worktrees).map(|reason| (proc.pid, reason)))
+        .filter_map(|proc| reason_of(&proc, root, &copies).map(|reason| (proc.pid, reason)))
         .filter(|(pid, _)| terminate(*pid))
         .map(|(pid, reason)| Ended { pid, reason })
         .collect()
@@ -63,15 +68,15 @@ pub(crate) fn report_line(ended: &[Ended], lang: Locale) -> Option<String> {
 }
 
 /// Por que `proc` está preso, ou `None` quando não está: o comando que ele
-/// roda é um laço de espera com a pasta de trabalho dentro de `root` — o que
-/// cobre as cópias das ondas, e deixa de fora o mesmo laço rodando num outro
-/// projeto do usuário —, ou o diretório de trabalho dele é uma cópia de onda
-/// (`{worktrees}/mustard-<spec>-<onda>`) que já não existe no disco — o
-/// kernel, no Linux, mantém o link de `cwd` apontando para o caminho apagado,
-/// às vezes com ` (deleted)` no fim.
-fn reason_of(proc: &Snapshot, root: &Path, worktrees: &Path) -> Option<&'static str> {
+/// roda é um laço de espera com a pasta de trabalho dentro de `root` ou das
+/// cópias dele (`copies`) — o que deixa de fora o mesmo laço rodando num
+/// outro projeto do usuário —, ou o diretório de trabalho dele fica na pasta
+/// das cópias do projeto e já não existe no disco — o kernel, no Linux,
+/// mantém o link de `cwd` apontando para o caminho apagado, às vezes com
+/// ` (deleted)` no fim.
+fn reason_of(proc: &Snapshot, root: &Path, copies: &Path) -> Option<&'static str> {
     if let Some(cwd) = proc.cwd.as_ref()
-        && cwd.starts_with(root)
+        && (cwd.starts_with(root) || cwd.starts_with(copies))
         && let Some(script) = shell_script(&proc.argv)
         && is_a_waiting_loop(script)
     {
@@ -80,7 +85,7 @@ fn reason_of(proc: &Snapshot, root: &Path, worktrees: &Path) -> Option<&'static 
     let cwd = proc.cwd.as_ref()?;
     let shown = cwd.to_string_lossy();
     let clean = Path::new(shown.strip_suffix(" (deleted)").unwrap_or(&shown));
-    (clean.starts_with(worktrees) && !clean.exists()).then_some("deleted_copy")
+    (clean.starts_with(copies) && !clean.exists()).then_some("deleted_copy")
 }
 
 /// O trecho de `argv` que um shell recebeu por `-c`: `["sh", "-c", "while …
@@ -283,9 +288,7 @@ mod tests {
     fn the_stuck_processes_are_ended_and_reported() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
-        let worktrees = mustard_core::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees");
-        std::fs::create_dir_all(&worktrees).expect("worktrees dir");
-        let copy = worktrees.join("mustard-x-1");
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1, false);
         std::fs::create_dir_all(&copy).expect("copy dir");
         let outside = tempdir().expect("tempdir for the other project");
 
@@ -338,6 +341,58 @@ mod tests {
         let _ = elsewhere_looping.wait();
         let _ = ordinary.kill();
         let _ = ordinary.wait();
+        let _ = std::fs::remove_dir_all(mustard_core::io::wave_prompt::copies_dir(root));
+    }
+
+    /// A cópia da onda mora fora da pasta do projeto, na pasta das cópias
+    /// dele. O processo que roda nela depois de ela ser apagada aparece como
+    /// preso, pela cópia apagada, e é encerrado; o laço de espera numa cópia
+    /// viva dali também, mesmo com a pasta de trabalho fora do projeto. O
+    /// processo numa pasta apagada de mesmo nome sob as cópias de outro
+    /// projeto fica de fora.
+    #[test]
+    fn a_process_in_a_deleted_outside_copy_is_stuck() {
+        use mustard_core::io::wave_prompt::{copies_dir, copy_path};
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let other = tempdir().expect("tempdir for the other project");
+        let copy = copy_path(root, "x", 1, false);
+        let live = copy_path(root, "x", 2, false);
+        let foreign = copy_path(other.path(), "x", 1, false);
+        let project = std::fs::canonicalize(root).expect("the project folder");
+        assert!(!copy.starts_with(root) && !copy.starts_with(&project), "the copy lives outside the project: {copy:?}");
+        for folder in [&copy, &live, &foreign] {
+            std::fs::create_dir_all(folder).expect("copy dir");
+        }
+
+        let mut orphaned = spawn(Command::new("sleep").arg("30").current_dir(&copy));
+        let mut looping = spawn(
+            Command::new("sh")
+                .arg("-c")
+                .arg("while pgrep -f mustard-stuck-outside-copy-marker >/dev/null 2>&1; do sleep 1; done")
+                .current_dir(&live),
+        );
+        let mut foreign_orphan = spawn(Command::new("sleep").arg("31").current_dir(&foreign));
+        wait_until_spawned(orphaned.id(), "sleep");
+        wait_until_spawned(looping.id(), "mustard-stuck-outside-copy-marker");
+        wait_until_spawned(foreign_orphan.id(), "sleep");
+        std::fs::remove_dir_all(&copy).expect("remove the wave's copy");
+        std::fs::remove_dir_all(&foreign).expect("remove the other project's copy");
+
+        let ended = end_stuck_processes(root);
+        assert!(gone(&mut orphaned), "the command in the deleted outside copy must be ended");
+        assert!(gone(&mut looping), "the waiting loop in a live outside copy must be ended");
+        assert!(foreign_orphan.try_wait().ok().flatten().is_none(), "another project's copy is left alone");
+        let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
+        assert!(reasons.contains(&(orphaned.id(), "deleted_copy")), "{reasons:?}");
+        assert!(reasons.contains(&(looping.id(), "waiting_loop")), "{reasons:?}");
+        assert!(!reasons.iter().any(|(pid, _)| *pid == foreign_orphan.id()), "{reasons:?}");
+
+        let _ = foreign_orphan.kill();
+        let _ = foreign_orphan.wait();
+        let _ = std::fs::remove_dir_all(copies_dir(root));
+        let _ = std::fs::remove_dir_all(copies_dir(other.path()));
     }
 
     /// Sem processo nenhum encerrado, a linha da resposta não existe: o

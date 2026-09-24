@@ -115,14 +115,45 @@ pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a 
     serving_wave(related_to_tasks(found, &tasks_text(log, wave)), &files, &skills)
 }
 
-/// A pasta da cópia separada da onda `wave` da spec `spec`, dentro das cópias
-/// do checkout `root`: a do agente da onda, ou a do revisor dela
-/// (`review`). A rodada cria a primeira; o pedido da revisão manda criar a
-/// segunda.
+/// A pasta das cópias separadas do projeto do checkout principal `root`,
+/// fora da pasta dele: é o único lugar onde nascem a cópia de cada onda, a
+/// do revisor dela e a do revisor final. Dentro do projeto, as ferramentas
+/// dele — o lint do gancho de commit, o editor — enxergariam a cópia como
+/// parte do projeto.
+///
+/// A base é a pasta de cache do usuário, `.cache/mustard/copias` sob `HOME`
+/// (no Windows, `USERPROFILE`), ou a pasta que `MUSTARD_COPIES_DIR` indicar;
+/// sem nenhuma das duas, a pasta temporária do sistema. Dentro dela, uma
+/// pasta por projeto: o nome da pasta do checkout e um código curto do
+/// caminho dele, que separa dois projetos de mesmo nome e não muda de uma
+/// chamada para outra — o caminho é lido já resolvido, então o atalho e a
+/// barra invertida não mudam o código.
+#[must_use]
+pub fn copies_dir(root: &Path) -> PathBuf {
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let base = std::env::var_os("MUSTARD_COPIES_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os(home)
+                .filter(|dir| !dir.is_empty())
+                .map(|dir| PathBuf::from(dir).join(".cache").join("mustard").join("copias"))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("mustard").join("copias"));
+    let main = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let name = main.file_name().map_or_else(|| String::from("projeto"), |name| name.to_string_lossy().into_owned());
+    let code = crate::platform::page_templates::fingerprint(&shown(&main)) >> 32;
+    base.join(format!("{name}-{code:08x}"))
+}
+
+/// A pasta da cópia separada da onda `wave` da spec `spec`, na pasta das
+/// cópias do projeto ([`copies_dir`]): a do agente da onda, ou a do revisor
+/// dela (`review`). A rodada cria a primeira; o pedido da revisão manda criar
+/// a segunda.
 #[must_use]
 pub fn copy_path(root: &Path, spec: &str, wave: u64, review: bool) -> PathBuf {
-    let name = if review { format!("mustard-{spec}-{wave}-review") } else { format!("mustard-{spec}-{wave}") };
-    crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(name)
+    let name = if review { format!("{spec}-{wave}-review") } else { format!("{spec}-{wave}") };
+    copies_dir(root).join(name)
 }
 
 /// A pasta da cópia separada do revisor final da spec `spec`, ao lado das
@@ -131,7 +162,7 @@ pub fn copy_path(root: &Path, spec: &str, wave: u64, review: bool) -> PathBuf {
 /// cópias de onda; o pedido do revisor só diz onde ela está.
 #[must_use]
 pub fn final_copy_path(root: &Path, spec: &str) -> PathBuf {
-    crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(format!("mustard-{spec}-final-review"))
+    copies_dir(root).join(format!("{spec}-final-review"))
 }
 
 /// O commit em que o revisor final confere a obra: o mais novo que a spec

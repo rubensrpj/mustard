@@ -171,8 +171,9 @@ fn stamp(body: &str) -> String {
 /// A impressão do conteúdo `body`: o FNV-1a de 64 bits sobre os bytes dele,
 /// estável entre versões do Rust e entre máquinas, ao contrário do hasher da
 /// biblioteca padrão. Qualquer mudança no template ou no catálogo muda a
-/// impressão.
-fn fingerprint(body: &str) -> u64 {
+/// impressão. O código curto da pasta das cópias de um projeto sai da mesma
+/// conta, sobre o caminho dele.
+pub(crate) fn fingerprint(body: &str) -> u64 {
     body.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
 

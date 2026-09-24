@@ -518,7 +518,8 @@ pub(super) fn open_copies(
 /// já é uma cópia ligada ao repositório, de um envio anterior da mesma onda, e
 /// está limpa vai para o commit `head`, porque um commit fora da rodada pode
 /// ter avançado o checkout principal desde a criação dela. A que tem mudança,
-/// como a de uma retomada em andamento, fica como está.
+/// como a de uma retomada em andamento, fica como está. A pasta mãe, a das
+/// cópias do projeto, fora dele, nasce antes da cópia.
 pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), String> {
     if path.join(".git").is_file() {
         let clean = git::run(path, &["status", "--porcelain", "--untracked-files=all"])
@@ -528,6 +529,9 @@ pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), St
             git::run(path, &["checkout", "--detach", head]).result().map(|_| ())?;
         }
         return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        mustard_core::io::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let target = path.to_string_lossy();
     git::run(root, &["worktree", "add", "--detach", &target, head]).result().map(|_| ())
@@ -1178,6 +1182,66 @@ mod tests {
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         let out = round(root, "x", None);
         assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
+    }
+
+    /// A rodada abre a cópia da onda fora da pasta do projeto, na pasta das
+    /// cópias dele — o nome do projeto e um código curto que não muda —, e o
+    /// envio grava esse caminho, que o pedido cita. A cópia do revisor da
+    /// onda e a do revisor final moram ao lado; nada nasce em
+    /// `.claude/worktrees`. A entrega que cita o arquivo pelo caminho absoluto
+    /// da cópia gravada no envio volta relativa ao repositório, mesmo quando
+    /// essa cópia não é a que a pasta das cópias daria hoje, como a da onda
+    /// que saiu antes de a pasta mudar.
+    #[test]
+    fn a_wave_copy_is_born_outside_the_project_folder() {
+        use mustard_core::io::wave_prompt::{copies_dir, final_copy_path};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+
+        let project = std::fs::canonicalize(root).unwrap();
+        let copies = copies_dir(root);
+        assert!(!copies.starts_with(root) && !copies.starts_with(&project), "{copies:?}");
+        let folder = copies.file_name().unwrap().to_string_lossy().into_owned();
+        let (name, code) = folder.rsplit_once('-').unwrap();
+        assert_eq!(name, project.file_name().unwrap().to_string_lossy(), "{folder}");
+        assert!(code.len() == 8 && code.chars().all(|c| c.is_ascii_hexdigit()), "{folder}");
+        assert_eq!(copies_dir(&project), copies, "the same project always gives the same folder");
+
+        let (copy, _) = sent_copy(root, 1);
+        assert_eq!(copy, shown(&copies.join("x-1")), "{out}");
+        assert!(Path::new(&copy).join(".git").is_file(), "the copy is a linked checkout");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
+        assert_eq!(copy_path(root, "x", 1, true), copies.join("x-1-review"));
+        assert_eq!(final_copy_path(root, "x"), copies.join("x-final-review"));
+        assert!(!root.join(".claude").join("worktrees").exists(), "nothing is born inside the project");
+
+        // Um envio mais novo da onda grava a cópia noutro lugar.
+        let elsewhere = tempdir().unwrap();
+        let moved = shown(&elsewhere.path().join("x-1"));
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.wave() == Some(1) && e.event_type == "send").unwrap();
+        let draft = json!({
+            "wave": 1, "role": "wave", "text": sent.str_field("text").unwrap_or_default(),
+            "lines": sent.int("lines").unwrap_or(1), "chars": sent.int("chars").unwrap_or(1),
+            "items": sent.fields.get("items").cloned().unwrap_or_else(|| json!([])),
+            "mustard": "0", "author": "binary", "copy": moved,
+        });
+        store::write(&path, "send", draft.as_object().cloned().unwrap(), &[]).unwrap();
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// mudou\n").unwrap();
+        let body = json!({"wave": 1, "text": "Saiu.", "files": [format!("{moved}/src/a.rs")], "commit": "a onda 1 saiu"});
+        let wrote = returned(root, body);
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let log = store::read(&path).unwrap().unwrap();
+        let back = log.events.iter().rfind(|e| e.event_type == "delivered").unwrap();
+        assert_eq!(back.fields.get("files"), Some(&json!(["src/a.rs"])), "{wrote}");
+        let _ = std::fs::remove_dir_all(&copies);
     }
 
     /// Duas ondas sem dependência entre si, mas com o mesmo arquivo

@@ -687,7 +687,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
         let send = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(wave)).unwrap();
         let copy = send.str_field("copy").unwrap_or_else(|| panic!("wave {wave} recorded no copy: {round}"));
         let build = send.str_field("build_dir").unwrap_or_else(|| panic!("wave {wave} recorded no build folder"));
-        assert!(copy.ends_with(&format!("/.claude/worktrees/mustard-copia-{wave}")), "{copy}");
+        let expected = mustard_core::io::wave_prompt::copy_path(&root, "copia", wave, false);
+        assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "the copy lives in the project's copies folder");
+        assert!(!Path::new(copy).starts_with(&root), "the copy lives outside the project: {copy}");
         assert!(Path::new(copy).join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
         assert!(build.contains("/target/copias/"), "{build}");
         assert!(prompt.contains(&format!("`{copy}`")), "the request names the copy: {prompt}");
