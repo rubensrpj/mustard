@@ -232,6 +232,19 @@ enum Action {
     Expire { keep: Vec<String> },
 }
 
+/// O que a resposta leva além do resultado da própria ação. Só a listagem
+/// traz as listas inteiras: numa lista longa, repeti-las a cada gravação
+/// enche a conversa de quem grava com o que ele não pediu.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reply {
+    /// A listagem: o caminho, as listas aberta e fechada e a contagem.
+    Listing,
+    /// Uma gravação: o caminho e a contagem, sem as listas.
+    Written,
+    /// A faxina e a prévia da remoção: só a lista que cada uma mostra.
+    OwnList,
+}
+
 /// O que uma remoção tira: números, palavras ou uma data.
 enum Selector {
     Ids(Vec<String>),
@@ -706,6 +719,11 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
     let today = today(opts.now.as_deref());
 
     let mut extra = Map::new();
+    let reply = match &action {
+        Action::List => Reply::Listing,
+        Action::Stale | Action::Remove { confirm: None, .. } => Reply::OwnList,
+        _ => Reply::Written,
+    };
     match action {
         Action::List => {}
         Action::Add { title, detail } => {
@@ -871,23 +889,27 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
         }
     }
 
-    let (open, closed): (Vec<&PendingItem>, Vec<&PendingItem>) =
-        ledger.items.iter().partition(|i| i.status == Status::Open);
     let mut report = Map::new();
     report.insert("ok".into(), json!(true));
-    // Relativo ao checkout, barras normais: o relatório não carrega caminho de
-    // máquina e lê igual em toda plataforma.
-    report.insert(
-        "path".into(),
-        json!(path
-            .strip_prefix(&project)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/")),
-    );
-    report.insert("open".into(), Value::Array(open.into_iter().map(item_json).collect()));
-    report.insert("closed".into(), Value::Array(closed.into_iter().map(item_json).collect()));
-    report.insert("count_line".into(), json!(count_line_of(&ledger, &today, lang)));
+    if reply != Reply::OwnList {
+        // Relativo ao checkout, barras normais: o relatório não carrega
+        // caminho de máquina e lê igual em toda plataforma.
+        report.insert(
+            "path".into(),
+            json!(path
+                .strip_prefix(&project)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/")),
+        );
+        if reply == Reply::Listing {
+            let (open, closed): (Vec<&PendingItem>, Vec<&PendingItem>) =
+                ledger.items.iter().partition(|i| i.status == Status::Open);
+            report.insert("open".into(), Value::Array(open.into_iter().map(item_json).collect()));
+            report.insert("closed".into(), Value::Array(closed.into_iter().map(item_json).collect()));
+        }
+        report.insert("count_line".into(), json!(count_line_of(&ledger, &today, lang)));
+    }
     report.extend(extra);
     Value::Object(report)
 }
@@ -1482,8 +1504,9 @@ mod tests {
         });
         assert_eq!(closed["ok"], json!(true), "{closed}");
         assert_eq!(closed["status"], json!("closed"));
-        assert_eq!(closed["open"], json!([]));
-        assert_eq!(closed["closed"][0]["reason"], json!("PR 271 mergeado"));
+        let listed = pending_at(&opts(root));
+        assert_eq!(listed["open"], json!([]), "{listed}");
+        assert_eq!(listed["closed"][0]["reason"], json!("PR 271 mergeado"), "{listed}");
 
         // Um item já resolvido não é resolvido de novo.
         let again = pending_at(&PendingOpts {
@@ -1600,8 +1623,9 @@ mod tests {
             ..opts(root)
         });
         assert_eq!(added["ok"], json!(true), "{added}");
-        assert_eq!(added["open"][1]["created"], json!("2026-09-13"), "{added}");
-        assert_eq!(added["open"][0]["created"], json!("2026-09-13"), "the undated item got today: {added}");
+        let listed = pending_at(&opts(root));
+        assert_eq!(listed["open"][1]["created"], json!("2026-09-13"), "{listed}");
+        assert_eq!(listed["open"][0]["created"], json!("2026-09-13"), "the undated item got today: {listed}");
     }
 
     /// A listagem traz a linha de contagem das abertas, no idioma do projeto,
@@ -1664,7 +1688,9 @@ mod tests {
         assert_eq!(swept["question"], json!(mustard_core::translate("pending.stale.question", Locale::default())));
         let again = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
         assert_eq!(again["stale"], json!([]), "they come back once: {again}");
-        assert!(!again["count_line"].as_str().unwrap_or_default().contains("--stale"), "{again}");
+        let listed = pending_at(&PendingOpts { now: Some(TODAY.into()), ..opts(root) });
+        let line = listed["count_line"].as_str().unwrap_or_default();
+        assert!(line.contains(" 5 ") && !line.contains("--stale"), "the shown ones are no longer counted: {line}");
 
         let before = ledger_bytes(root);
         let stray = pending_at(&PendingOpts { expire: true, keep: Some("P-4".into()), ..opts(root) });
@@ -1673,9 +1699,10 @@ mod tests {
 
         let expired = pending_at(&PendingOpts { expire: true, keep: Some("p-2".into()), ..opts(root) });
         assert_eq!(expired["expired"], json!(["P-1", "P-3"]), "{expired}");
-        assert_eq!(ids(&expired["open"]), vec!["P-2", "P-4", "P-5"], "the marked one stays: {expired}");
+        let listed = pending_at(&opts(root));
+        assert_eq!(ids(&listed["open"]), vec!["P-2", "P-4", "P-5"], "the marked one stays: {listed}");
         let reason = mustard_core::translate("pending.expired_reason", Locale::default());
-        for item in expired["closed"].as_array().expect("closed list") {
+        for item in listed["closed"].as_array().expect("closed list") {
             assert_eq!(item["status"], json!("dropped"), "{item}");
             assert_eq!(item["reason"], json!(reason), "{item}");
         }
@@ -1750,7 +1777,8 @@ mod tests {
         assert_eq!(closed["ok"], json!(true), "{closed}");
         let back = pending_at(&PendingOpts { reopen: Some("P-1".into()), ..opts(root) });
         assert_eq!(back["reopened"], json!(true), "{back}");
-        assert_eq!(back["open"][0].get("swept"), None, "the sweep day is cleared: {back}");
+        let listed = pending_at(&opts(root));
+        assert_eq!(listed["open"][0].get("swept"), None, "the sweep day is cleared: {listed}");
         let again = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
         assert_eq!(ids(&again["stale"]), vec!["P-1"], "the reopened item comes back to the sweep: {again}");
     }
@@ -1800,7 +1828,7 @@ mod tests {
         assert_eq!(ids(&shown["remove"]), vec!["P-4"], "{shown}");
         let gone = remove(by_day(), token(&shown));
         assert_eq!(gone["removed"], json!(["P-4"]), "{gone}");
-        assert_eq!(gone["open"], json!([]), "only what was confirmed left, and all of it did");
+        assert_eq!(pending_at(&opts(root))["open"], json!([]), "only what was confirmed left, and all of it did");
     }
 
     /// Uma remoção sem motivo, ou sem dizer o que remover, é recusada com o
@@ -1859,15 +1887,18 @@ mod tests {
             })
         };
         let gone = drop(drop(None)["token"].as_str().map(str::to_string));
-        let dropped = &gone["closed"][0];
-        assert_eq!(dropped["id"], json!("P-1"), "{gone}");
+        assert_eq!(gone["removed"], json!(["P-1"]), "{gone}");
+        let listed = pending_at(&opts(root));
+        let dropped = &listed["closed"][0];
+        assert_eq!(dropped["id"], json!("P-1"), "{listed}");
         assert_eq!(dropped["status"], json!("dropped"));
         assert_eq!(dropped["reason"], json!("mudou o plano"), "the reason stays on the item");
 
         let back = pending_at(&PendingOpts { reopen: Some("p-1".into()), ..opts(root) });
         assert_eq!(back["reopened"], json!(true), "{back}");
-        assert_eq!(ids(&back["open"]), vec!["P-1", "P-2"]);
-        assert_eq!(back["open"][0].get("reason"), None, "an open item carries no reason");
+        let listed = pending_at(&opts(root));
+        assert_eq!(ids(&listed["open"]), vec!["P-1", "P-2"], "{listed}");
+        assert_eq!(listed["open"][0].get("reason"), None, "an open item carries no reason");
 
         let not = pending_at(&PendingOpts { reopen: Some("P-2".into()), ..opts(root) });
         assert_eq!(not["reason"], json!("not-dropped"), "{not}");

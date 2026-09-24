@@ -1976,9 +1976,10 @@ mod tests {
         let expired = sweep(false, Some("P-2"));
         assert_eq!(expired["expired"], json!(["P-1", "P-3"]), "{expired}");
         let reason = mustard_core::translate("pending.expired_reason", lang);
-        let gone: Vec<&Value> = expired["closed"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
-        assert_eq!(gone.len(), 2, "{expired}");
-        assert!(gone.iter().all(|item| item["reason"] == json!(reason)), "{expired}");
+        let listed = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+        let gone: Vec<&Value> = listed["closed"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+        assert_eq!(gone.len(), 2, "{listed}");
+        assert!(gone.iter().all(|item| item["reason"] == json!(reason)), "{listed}");
     }
 
     /// The base model of a project declaring the ordinary two-tier flow.
