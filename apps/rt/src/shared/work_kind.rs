@@ -536,10 +536,10 @@ impl BaseFlow {
     /// The kind vocabulary is open, so `{kind}/{slug}` is a shape and not a
     /// list: `release/2026-Q3` splits into a first segment that parses as a kind
     /// and a second that parses as a slug, exactly like `feature/aba` does.
-    /// Reading names alone therefore made a project's own release line answer
-    /// "somebody's unit" — and the two doors that ask this question acted on it:
-    /// `git delete` offered to REMOVE the release line, and `pr list` refused to
-    /// run from it.
+    /// Reading names alone therefore makes a project's own release line answer
+    /// "somebody's unit" — and the two doors that ask this question act on it:
+    /// the discard of an abandoned unit would offer to REMOVE the release line,
+    /// and the pull-request list would refuse to run from it.
     ///
     /// This is the one reading of the declared set that is not a permission.
     /// It refuses the operator nothing — a base is still cut from freely, and a
@@ -692,9 +692,10 @@ impl BaseFlow {
     /// holds no unit for. Branch names carry no mark separating a base from a
     /// unit, so a project whose integration line is spelled `hml_prod` —
     /// undeclared, like every branch of a project the current installer touched
-    /// — matches `hml` on the catalogue and read as "the unit `prod`":
-    /// `git delete` offered to remove the integration line, and `pr list`
-    /// refused to run from it. The two facts together are what tell them apart.
+    /// — matches `hml` on the catalogue and reads as "the unit `prod`": the
+    /// discard would offer to remove the integration line, and the pull-request
+    /// list would refuse to run from it. The two facts together are what tell
+    /// them apart.
     /// A branch that is already ON the remote is one of the project's own; a
     /// unit of THIS harness has a directory under `.claude/spec/` naming it, and
     /// a name the remote has never seen cannot be a branch of the project at all
@@ -760,9 +761,9 @@ impl BaseFlow {
     /// therefore read as somebody's disposable unit. The DECLARED set cannot
     /// answer it either: `mustard init` no longer writes `git.flow`, so the
     /// declared set is EMPTY for the projects the installer produces — a guard
-    /// built on it guards nothing, and `git delete` was measured removing a
-    /// real release line from the remote in a project shaped exactly that
-    /// way.
+    /// built on it guards nothing, and the discard of an abandoned unit would
+    /// remove a real release line from the remote in a project shaped exactly
+    /// that way.
     ///
     /// A branch this harness CUT has a directory; a branch the project has
     /// always had does not. That is evidence the project itself recorded, and it
@@ -1039,10 +1040,10 @@ mod tests {
     ///
     /// `hml_prod` in a project that declares no flow — every project the current
     /// installer touches — matches `hml` on the catalogue, so reading the name
-    /// alone answered "the unit `prod`": `git delete` would have offered to
-    /// remove the integration line and `pr list` would have refused to run from
-    /// it, which is exactly the damage `is_declared_base` was added to prevent,
-    /// arriving through the other door. Both kinds of real unit still resolve —
+    /// alone answers "the unit `prod`": the discard would offer to remove the
+    /// integration line and the pull-request list would refuse to run from it,
+    /// which is exactly the damage `is_declared_base` prevents, arriving
+    /// through the other door. Both kinds of real unit still resolve —
     /// the one this harness already cut and drafted, and the one that does not
     /// exist on the remote yet because it is about to be cut.
     #[test]

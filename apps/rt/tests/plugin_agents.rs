@@ -576,9 +576,9 @@ fn o_revisor_propoe_o_conserto_com_teste_no_lugar_da_licao() {
 /// reler depois de editar, rodar só os testes do que mudou, a suíte inteira
 /// uma vez no fim pelo `rtk`, nada em segundo plano, não comitar nem usar
 /// `git add`, rodar cada comando de dentro da cópia e a pasta de compilação
-/// fixa — moram só no molde do agente, escritas à mão: o catálogo não guarda
-/// mais essas frases (onda 11), e o molde da onda e do revisor levam as
-/// mesmas palavras, nos dois idiomas.
+/// fixa — moram só no molde do agente, escritas à mão e fora do catálogo de
+/// textos, e o molde da onda e do revisor levam as mesmas palavras, nos dois
+/// idiomas.
 #[test]
 fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     let pt_br = [

@@ -90,11 +90,10 @@ fn run_git(root: &Path, args: &[&str]) -> Result<(), String> {
 ///    Cutting from HEAD there would have recorded the operator's answer
 ///    ([`crate::shared::work_kind::BaseFlow::record_cut_base`]) over a branch
 ///    the unit never came from — every later read, the pull-request target and
-///    `git settle`'s containment check included, asserting a base that was
-///    never the cut point. The sibling door reads the same ref to answer the
-///    same question ([`crate::commands::work_unit_open`]); it reaches for it
-///    FIRST because a worktree is cut fresh with nothing local to preserve,
-///    while this door cuts in place and carries the operator's tree along.
+///    the containment check that prunes the unit after its merge included,
+///    asserting a base that was never the cut point. The local head still
+///    comes first because this cut happens in place and carries the
+///    operator's tree along.
 /// 3. the current HEAD, when NEITHER ref carries the base — an unmeasurable
 ///    repository, not a choice. A cut has to come from somewhere.
 pub(crate) fn checkout_work_branch(
@@ -695,31 +694,24 @@ pub(crate) enum CheckoutWork {
 
 /// What `root`'s working tree holds, measured the way the CUT decision needs it.
 ///
-/// NOT [`crate::commands::work_unit_open::dirty_paths`], and the two differences
-/// between them are the whole reason this probe exists:
+/// Two rules make it more than a plain "is the tree dirty" read:
 ///
-/// 1. **`.claude/` counts.** Everything the harness generates for a unit —
-///    `spec.md`, the waves, `ac-proof.json`, the change log, the review verdicts
-///    — lives IN the work branch and is integrated into the base at merge time:
-///    `spec-draft` cuts the branch FIRST and writes the spec afterwards, and a
-///    spec write on a bare integration base is denied
-///    (the write gate). So between approval and the
-///    merge, a unit's uncommitted work IS its `.claude/spec/…`, and a probe that
-///    drops those paths reads the NORMAL state of an in-flight unit as an empty
-///    tree. `dirty_paths`' carve-out was written when `.claude/` was treated as
-///    redirected shared state; that reasoning does not hold for this consumer,
-///    where `.claude/spec/…` is branch content that rides a checkout exactly
+/// 1. **`.claude/` counts.** What the harness writes for a unit — the spec and
+///    everything its waves and reviews record — lives IN the work branch and
+///    is integrated into the base at merge time: `open` cuts the branch FIRST
+///    and writes the spec afterwards, and a spec write on a bare integration
+///    base is denied (the write gate). So between approval and the merge, a
+///    unit's uncommitted work IS its `.claude/spec/…`, and a probe that drops
+///    those paths reads the NORMAL state of an in-flight unit as an empty
+///    tree: `.claude/spec/…` is branch content that rides a checkout exactly
 ///    like source code does. The VOLATILE harness state is separated from it by
 ///    [`classify_dirty_path`], a list this probe OWNS — not by the project's
 ///    `.gitignore`, which cannot be relied on to say anything (see there). O
 ///    censo sai por essa mesma porta, para uma categoria só dele.
-/// 2. **A failed measurement is not "clean".** `dirty_paths` reads an
-///    unanswerable probe as an empty list, which is right for ITS callers: they
-///    REFUSE a cut, so an unmeasured probe merely lets the ordinary path
-///    through. Here the failure mode runs the other way — an unmeasured probe
-///    would carry another unit's uncommitted work onto a second branch,
-///    silently. So an unanswerable probe is [`CheckoutWork::Unproven`], and the
-///    caller refuses on it.
+/// 2. **A failed measurement is not "clean".** An unmeasured probe would carry
+///    another unit's uncommitted work onto a second branch, silently. So an
+///    unanswerable probe is [`CheckoutWork::Unproven`], and the caller refuses
+///    on it.
 pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
     // ONE settlement, ONE measurement. The counter is the regression test for
     // that: it is per-THREAD, and cargo's harness gives each test its own

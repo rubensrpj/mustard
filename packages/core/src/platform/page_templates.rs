@@ -1260,10 +1260,10 @@ mod tests {
         assert_eq!(seen_after, page_seen(&page), "a página volta à de antes da versão nova da regra");
     }
 
-    /// Por decisão da onda 13, o item que continua à mostra numa versão nova
-    /// não entra em Removidos quando só a versão antiga dele foi removida: a
-    /// regra revista some da conversa, mas a regra em si segue de pé pela
-    /// versão nova, com o mesmo código.
+    /// O item que continua à mostra numa versão nova não entra em Removidos
+    /// quando só a versão antiga dele foi removida: a regra revista some da
+    /// conversa, mas a regra em si segue de pé pela versão nova, com o mesmo
+    /// código.
     #[test]
     fn the_removed_section_handles_an_item_still_shown() {
         let lines = vec![
@@ -1444,11 +1444,10 @@ mod tests {
     /// Uma cópia que só muda o documento das coisas calculadas — nenhum item
     /// novo, nenhum apagado, nenhum tocado — sozinha faz a página aberta
     /// reler: a escuta de `computed/current` não depende de nada acontecer
-    /// na coleção dos itens. As outras provas de recarga sempre mudavam as
-    /// duas coisas juntas (um item novo ou apagado ao lado da mudança no
-    /// documento calculado), então cortar só a escuta do documento calculado
-    /// não derrubava nenhuma delas — a prova isolada que a revisão de 18/09
-    /// pediu (onda 7).
+    /// na coleção dos itens. As outras provas de recarga mudam as duas coisas
+    /// juntas (um item novo ou apagado ao lado da mudança no documento
+    /// calculado), então só esta cai quando a escuta do documento calculado é
+    /// cortada.
     #[test]
     fn a_change_only_in_the_computed_document_alone_reloads_the_page() {
         let lines = spec_lines();
