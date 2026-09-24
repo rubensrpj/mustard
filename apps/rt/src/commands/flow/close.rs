@@ -65,6 +65,7 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use crate::commands::flow::round::Caller;
 use crate::commands::spec_events::{self, read::checkout, write::record};
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
@@ -179,17 +180,28 @@ impl CloseRefusal {
     }
 }
 
-/// O núcleo testável de [`run_cmd`]. A sessão vem do ambiente. Nunca entra em
-/// pânico.
+/// O núcleo testável de [`run_cmd`]. A sessão e a pasta de configuração da
+/// plataforma vêm do ambiente. Nunca entra em pânico.
 pub(crate) fn close_at(opts: &CloseOpts) -> Value {
-    close_for(opts, session_from_env().as_deref())
+    let session = session_from_env();
+    let config_dir = mustard_core::claude_config_dir();
+    close_in(opts, Caller { session: session.as_deref(), config_dir: config_dir.as_deref() })
 }
 
-/// [`close_at`] com a sessão recebida, que é como um teste a escolhe.
+/// [`close_at`] com a sessão recebida, que é como um teste a escolhe, sem a
+/// pasta de configuração da plataforma: o consumo da última onda não é
+/// medido.
+#[cfg(test)]
 pub(crate) fn close_for(opts: &CloseOpts, session: Option<&str>) -> Value {
+    close_in(opts, Caller { session, config_dir: None })
+}
+
+/// [`close_at`] com a sessão e a pasta de configuração da plataforma
+/// recebidas (`caller`), de onde a última onda assumida tem o consumo medido.
+fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    match run_close(opts, &project.root, lang, session) {
+    match run_close(opts, &project.root, lang, caller) {
         Ok(report) => report,
         Err(refusal) => refusal.to_value(lang),
     }
@@ -199,8 +211,9 @@ fn run_close(
     opts: &CloseOpts,
     root: &Path,
     lang: Locale,
-    session: Option<&str>,
+    caller: Caller<'_>,
 ) -> Result<Value, CloseRefusal> {
+    let session = caller.session;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
         None => DiskSpecState::new(&checkout(&opts.root))
@@ -240,9 +253,10 @@ fn run_close(
     // é assumida aqui, com ou sem relatório, e é o commit dela que fecha a
     // última onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let recorded: Vec<Value> = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang)
-        .map_err(CloseRefusal::Report)?
-        .recorded;
+    let recorded: Vec<Value> =
+        crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang, caller)
+            .map_err(CloseRefusal::Report)?
+            .recorded;
 
     // A spec antiga passa para o backlog antes de ler as ondas: a onda
     // desenhada à mão que nunca saiu não recusa o fechamento, porque a versão

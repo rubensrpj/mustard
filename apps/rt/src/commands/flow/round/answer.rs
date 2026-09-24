@@ -23,6 +23,7 @@ use super::queue::{
 };
 use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
+use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::{read::checkout, write::record};
 use crate::commands::wave::wave_overlap_check::wave_graph;
@@ -438,9 +439,9 @@ pub(super) fn run_round(
     opts: &RoundOpts,
     root: &Path,
     lang: Locale,
-    session: Option<&str>,
+    caller: Caller<'_>,
 ) -> Result<Value, RoundRefusal> {
-    run_round_with_mine(opts, root, lang, session, &|root, out| {
+    run_round_with_mine(opts, root, lang, caller, &|root, out| {
         mustard_core::Scan::locate().scan(root, out)
     })
 }
@@ -451,9 +452,10 @@ pub(super) fn run_round_with_mine(
     opts: &RoundOpts,
     root: &Path,
     lang: Locale,
-    session: Option<&str>,
+    caller: Caller<'_>,
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
 ) -> Result<Value, RoundRefusal> {
+    let session = caller.session;
     let refuse = RoundRefusal::Refused;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
@@ -521,7 +523,7 @@ pub(super) fn run_round_with_mine(
     // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, mut warnings, commit, paused } =
-        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, mine)?;
+        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
     let (given, unread) = analysis_lines(raw, lang);
     warnings.extend(unread);
 

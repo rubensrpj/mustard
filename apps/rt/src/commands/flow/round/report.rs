@@ -2,8 +2,10 @@
 //! grava na spec e o veredito que o revisor grava, lidos de lá, conferidos
 //! antes de qualquer gravação, a entrega juntada da cópia de cada onda, e os
 //! dois assumidos pela mesma porta das outras gravações, com o commit no
-//! meio. O relatório que o orquestrador passa traz só as linhas dele: o
-//! consumo, a pausa e a escolha antes do envio.
+//! meio. O relatório que o orquestrador passa traz só as linhas dele: a
+//! marca de que um agente de onda terminou, a pausa e a escolha antes do
+//! envio. O consumo de cada onda e o do orquestrador a rodada mede nos
+//! arquivos de conversa que a plataforma grava.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -28,6 +30,7 @@ use super::commit::{
 use super::leftovers::{leftover_task, leftovers_of, open_leftovers, Leftover, LeftoverKind};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{change_accepted, replan_code};
+use super::usage::{measure_usage, Caller, Usage};
 use crate::commands::spec_events::write::{record, RecordCheck};
 
 /// A linha da entrega que o agente de onda devolvia colada no relatório: a
@@ -38,48 +41,14 @@ const DELIVERED_LINE: &str = "DELIVERED";
 const VERDICT_LINE: &str = "VERDICT";
 /// A linha da pausa, do agente de onda ou do orquestrador em nome dele.
 const PAUSED_LINE: &str = "PAUSED";
-/// A linha do consumo de uma onda, que só o orquestrador escreve: a
-/// plataforma entrega a ele o total de tokens e o número de idas e voltas do
-/// agente quando este termina, e é ele quem os copia para esta linha ao
-/// remandar a rodada. O molde do agente de onda nunca pede esse número, e a
-/// entrega que o agente grava não é lida para isso: um valor que apareça lá,
+/// A linha que o orquestrador escreve quando um agente de onda termina, só
+/// com o número da onda: `<USAGE>{"wave":1}</USAGE>`. Ela marca que o agente
+/// terminou, e nada mais: o consumo a rodada mede nos arquivos de conversa da
+/// plataforma ([`super::usage`]), e o campo que ainda vier na linha — o
+/// modelo, os passos ou os tokens de antes — é ignorado. A entrega que o
+/// agente grava também não é lida para isso: um valor que apareça lá,
 /// digitado pelo agente, não vira consumo.
 const USAGE_LINE: &str = "USAGE";
-
-/// O consumo de uma onda, que só quem despacha sabe dizer: o modelo que o
-/// agente usou de verdade, os passos que deu e os tokens que gastou, e o
-/// consumo de quem despacha até esta rodada — a conversa do orquestrador, não
-/// a da onda —, todos vindos da linha `USAGE`.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Usage {
-    pub model_used: Option<String>,
-    pub steps: Option<u64>,
-    pub tokens: Option<u64>,
-    pub caller_steps: Option<u64>,
-    pub caller_tokens: Option<u64>,
-}
-
-impl Usage {
-    /// Os campos informados, com os nomes que o envio grava; vazio sem
-    /// nenhum.
-    fn fields(&self) -> Map<String, Value> {
-        let mut out = Map::new();
-        if let Some(model) = &self.model_used {
-            out.insert("model_used".into(), json!(model));
-        }
-        for (key, value) in [
-            ("steps", self.steps),
-            ("tokens", self.tokens),
-            ("caller_steps", self.caller_steps),
-            ("caller_tokens", self.caller_tokens),
-        ] {
-            if let Some(value) = value {
-                out.insert(key.into(), json!(value));
-            }
-        }
-        out
-    }
-}
 
 /// A volta de uma onda, como a rodada a assume.
 pub(crate) struct WaveReport {
@@ -99,7 +68,8 @@ pub(crate) struct WaveReport {
     /// Todas as voltas da onda desde o envio que a despachou, que a entrega
     /// oficial substitui.
     pub returns: Vec<u64>,
-    /// O consumo da onda, da linha `USAGE`, nunca da volta que o agente grava.
+    /// O consumo da onda, medido nos arquivos de conversa da plataforma,
+    /// nunca da volta que o agente grava.
     pub usage: Usage,
 }
 
@@ -123,8 +93,9 @@ pub(crate) struct Report {
     /// mesmo pedido de antes, sem gravar entrega nem veredito nenhum.
     pub paused: Vec<u64>,
     /// As linhas `USAGE`, cada uma com a onda dela. Depois de casadas com as
-    /// voltas, ficam só as das ondas que uma rodada anterior já assumiu: cada
-    /// uma vira a versão nova do envio da onda.
+    /// voltas, ficam só as das ondas que uma rodada anterior já assumiu, cada
+    /// uma com o consumo que a rodada mede de novo: vira a versão nova do envio
+    /// da onda.
     pub usage: Vec<(u64, Usage)>,
 }
 
@@ -157,7 +128,9 @@ pub(crate) struct Taken {
 /// recusa junta e grava tudo uma vez só, e o commit de outra onda nunca leva
 /// nada da recusada. A entrega que a junção segura por conflito fica de fora,
 /// e a resposta traz a recusa dela; só quando não há mais nada a assumir a
-/// recusa é a resposta. A rodada e o fechamento assumem por aqui.
+/// recusa é a resposta. O consumo de cada onda assumida é medido nos
+/// arquivos de conversa da plataforma de quem chama (`caller`). A rodada e o
+/// fechamento assumem por aqui.
 pub(crate) fn take_report(
     start: &Path,
     root: &Path,
@@ -165,12 +138,14 @@ pub(crate) fn take_report(
     raw: Option<&str>,
     log: &SpecLog,
     lang: Locale,
+    caller: Caller<'_>,
 ) -> Result<Taken, RoundRefusal> {
-    take_report_with_mine(start, root, spec, raw, log, lang, &|root, out| Scan::locate().scan(root, out))
+    take_report_with_mine(start, root, spec, raw, log, lang, caller, &|root, out| Scan::locate().scan(root, out))
 }
 
 /// [`take_report`] com quem relê o mapa depois do commit (`mine`), que um
 /// teste escolhe sem instalar a ferramenta do scan de verdade.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn take_report_with_mine(
     start: &Path,
     root: &Path,
@@ -178,6 +153,7 @@ pub(crate) fn take_report_with_mine(
     raw: Option<&str>,
     log: &SpecLog,
     lang: Locale,
+    caller: Caller<'_>,
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
 ) -> Result<Taken, RoundRefusal> {
     let mut report = parse_report(raw.unwrap_or_default())?;
@@ -208,6 +184,8 @@ pub(crate) fn take_report_with_mine(
         taken.recorded = return_cut_batches(start, spec, &fresh, &cut).map_err(RoundRefusal::Refused)?;
         return Ok(taken);
     }
+    let measured = report.waves.iter_mut().map(|w| (w.wave, &mut w.usage));
+    measure_usage(&fresh, caller, measured.chain(report.usage.iter_mut().map(|(n, u)| (*n, u))));
     take_returns(start, root, spec, report, &fresh, lang, mine, held_lock, &cut)
 }
 
@@ -408,17 +386,19 @@ fn take_returns(
         refresh_map(root, mine);
     }
     warnings.extend(close_copies(root, log, &report.waves, lang));
-    // A linha de consumo é opcional na forma, e nunca em silêncio: sem ela o
-    // envio da onda não ganha versão nova, e a página mostra um gasto menor
-    // que o real. A entrega fica gravada do mesmo jeito — o consumo não é
-    // dela, e recusá-la devolveria o trabalho de uma onda inteira por uma
-    // linha que quem despacha escreve —, e a resposta avisa, nomeando a onda.
-    for wave in &report.waves {
-        if wave.usage.fields().is_empty() {
+    // O arquivo de conversa da onda pode não ser achado, e nunca em silêncio:
+    // sem ele o envio da onda fica sem o consumo dela, e a página mostra um
+    // gasto menor que o real. A entrega fica gravada do mesmo jeito — o
+    // consumo não é dela, e recusá-la devolveria o trabalho de uma onda
+    // inteira por um arquivo que a plataforma grava —, e a resposta avisa,
+    // nomeando a onda.
+    let measured = report.waves.iter().map(|w| (w.wave, &w.usage)).chain(report.usage.iter().map(|(n, u)| (*n, u)));
+    for (wave, usage) in measured {
+        if usage.tokens.is_none() {
             warnings.push(json!({
                 "reason": "usage-missing",
-                "wave": wave.wave,
-                "hint": translate("round.usage_missing", lang).replace("{wave}", &wave.wave.to_string()),
+                "wave": wave,
+                "hint": translate("round.usage_missing", lang).replace("{wave}", &wave.to_string()),
             }));
         }
     }
@@ -438,7 +418,7 @@ fn take_returns(
 /// O envio que despachou a onda `wave` por último: o mais novo dela que não é
 /// versão de outro — a versão que só acrescenta o consumo não despacha nada.
 /// As voltas da onda contam dele em diante.
-fn dispatched_at(log: &SpecLog, wave: u64) -> Option<u64> {
+pub(super) fn dispatched_at(log: &SpecLog, wave: u64) -> Option<u64> {
     log.events
         .iter()
         .filter(|e| e.event_type == "send" && e.wave() == Some(wave) && !e.fields.contains_key("replaces"))
@@ -686,9 +666,10 @@ fn spec_log(start: &Path, spec: &str) -> Result<(crate::commands::spec_events::P
     Ok((project, log))
 }
 
-/// Casa cada linha `USAGE` com a onda dela. A onda com volta nesta rodada
-/// recebe o consumo; a que uma rodada anterior já assumiu fica com a linha,
-/// que vira a versão nova do envio dela. A onda com envio aberto e sem volta
+/// Casa cada linha `USAGE` com a onda dela. A onda com volta nesta rodada já
+/// tem o consumo medido ao ser assumida; a que uma rodada anterior já assumiu
+/// fica com a linha, e o consumo dela, medido de novo, vira a versão nova do
+/// envio dela. A onda com envio aberto e sem volta
 /// não entra no commit: com o Claude Code dela aberto, a rodada recusa e pede
 /// que o agente grave a entrega; com ele fechado, a onda de lote está
 /// cortada, e o número dela sai na lista devolvida. A linha de uma onda sem
@@ -700,9 +681,10 @@ fn match_usage(log: &SpecLog, report: &mut Report) -> Result<Vec<u64>, RoundRefu
     let mut cut = Vec::new();
     let mut assumed = Vec::new();
     for (wave, usage) in std::mem::take(&mut report.usage) {
-        if let Some(target) = report.waves.iter_mut().find(|w| w.wave == wave) {
-            target.usage = usage;
-        } else if alive.contains_key(&wave) {
+        if report.waves.iter().any(|w| w.wave == wave) {
+            continue;
+        }
+        if alive.contains_key(&wave) {
             return Err(RoundRefusal::ReturnMissing { wave });
         } else if open.contains_key(&wave) {
             if backlog_wave(log, wave) {
@@ -742,12 +724,12 @@ fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<Strin
     Ok((fields.get("wave").and_then(Value::as_u64), fields))
 }
 
-/// As linhas do relatório que o orquestrador passa: o consumo (`USAGE`) e a
-/// pausa (`PAUSED`), como vieram; a escolha antes do envio (`ANALYSIS`) é
-/// lida à parte, no despacho. A entrega e o veredito não vêm aqui: moram na
-/// spec, e a linha `DELIVERED` ou `VERDICT` colada no relatório é recusada. O
-/// texto sem nenhuma dessas linhas não se entende. O resto do texto não é
-/// lido.
+/// As linhas do relatório que o orquestrador passa: a marca de que a onda
+/// terminou (`USAGE`) e a pausa (`PAUSED`), como vieram; a escolha antes do
+/// envio (`ANALYSIS`) é lida à parte, no despacho. A entrega e o veredito não
+/// vêm aqui: moram na spec, e a linha `DELIVERED` ou `VERDICT` colada no
+/// relatório é recusada. O texto sem nenhuma dessas linhas não se entende. O
+/// resto do texto não é lido.
 pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     if !tagged(raw, DELIVERED_LINE).is_empty() || !tagged(raw, VERDICT_LINE).is_empty() {
         return Err(RoundRefusal::ReturnLine);
@@ -759,26 +741,14 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         let shown: String = raw.trim().chars().take(80).collect();
         return Err(RoundRefusal::BadReport { detail: shown });
     }
-    // O consumo, que só quem despacha sabe: o modelo que a onda usou de
-    // verdade, os passos e os tokens dela, e os do orquestrador até esta
-    // rodada. Vêm só da linha `USAGE`, que o agente de onda nunca escreve.
+    // Da linha `USAGE` vale só a onda: o consumo a rodada mede nos arquivos
+    // de conversa da plataforma, e o número que ainda vier na linha é
+    // ignorado.
     let mut usage = Vec::new();
     for body in usage_bodies {
-        let (wave, fields) = line_object(body, USAGE_LINE)?;
+        let (wave, _) = line_object(body, USAGE_LINE)?;
         let wave = wave.ok_or(RoundRefusal::LineField { line: USAGE_LINE, field: "wave" })?;
-        let as_u64 = |key: &str| fields.get(key).and_then(Value::as_u64);
-        let model_used =
-            fields.get("model").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
-        usage.push((
-            wave,
-            Usage {
-                model_used,
-                steps: as_u64("steps"),
-                tokens: as_u64("tokens"),
-                caller_steps: as_u64("caller_steps"),
-                caller_tokens: as_u64("caller_tokens"),
-            },
-        ));
+        usage.push((wave, Usage::default()));
     }
     let mut paused = Vec::new();
     for body in paused_bodies {
@@ -883,15 +853,15 @@ type RecordedReport = (Vec<Value>, Vec<(String, String)>);
 /// O que [`check_reports`] conferiu e [`record_reports`] grava: cada veredito
 /// e cada entregou já montado, com a onda, o número de cada critério com
 /// prova nova, com o comando, e a versão nova de cada envio com consumo
-/// informado na entrega.
+/// medido.
 struct CheckedReport {
     /// A onda de cada veredito, quando ele aponta uma: a aprovação do agente
     /// de teste dedicado, na obra sem onda nenhuma, não aponta.
     verdicts: Vec<(Option<u64>, Map<String, Value>)>,
     deliveries: Vec<(u64, Map<String, Value>)>,
     proofs: Vec<(u64, String)>,
-    /// A versão nova do envio de cada onda cuja entrega trouxe o modelo
-    /// usado, os passos, os tokens ou o consumo de quem despacha.
+    /// A versão nova do envio de cada onda cujo consumo a rodada mediu: o
+    /// modelo usado, os passos, os tokens ou o consumo de quem despacha.
     sends: Vec<(u64, Map<String, Value>)>,
     /// Uma tarefa nova no backlog por item combinado que a revisão final
     /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
@@ -990,8 +960,8 @@ fn check_reports(
             leftover_tasks.push((wave.wave, task));
         }
     }
-    // O consumo, que só se sabe na volta: quando a linha `USAGE` traz algum
-    // dos cinco campos, o envio da onda ganha uma versão nova com eles, sem
+    // O consumo, que só se sabe na volta: quando a rodada mede algum dos
+    // cinco campos, o envio da onda ganha uma versão nova com eles, sem
     // remontar o resto do que foi enviado — também na onda que uma rodada
     // anterior já assumiu.
     let mut sends = Vec::new();
@@ -1514,7 +1484,7 @@ mod tests {
             .unwrap();
 
         // Só a linha de consumo chega, sem volta nenhuma gravada pela onda.
-        let usage = line("USAGE", json!({"wave": 2, "model": "claude-opus", "steps": 3, "tokens": 900}));
+        let usage = line("USAGE", json!({"wave": 2}));
         let cut = round(root, "x", Some(&usage));
         assert_eq!(cut["ok"], json!(true), "o corte da onda de lote não recusa a rodada: {cut}");
         assert!(
@@ -1579,7 +1549,7 @@ mod tests {
         assert!(waves_in(&out, "dispatch").contains(&2), "a onda de lote sai como qualquer outra: {out}");
 
         let lines_before = std::fs::read_to_string(&path).unwrap().lines().count();
-        let usage = line("USAGE", json!({"wave": 2, "model": "claude-opus", "steps": 3, "tokens": 900}));
+        let usage = line("USAGE", json!({"wave": 2}));
         let refused = round(root, "x", Some(&usage));
         assert_eq!(refused["reason"], json!("round-return-missing"), "{refused}");
         let asked = translate("spec_events.return_missing", Locale::PtBr).replace("{wave}", "2");
@@ -2349,52 +2319,201 @@ mod tests {
         }
     }
 
-    /// O envio da onda guarda o nome do agente e o modelo pedido, na hora do
-    /// despacho; quando a rodada assume a volta da onda com a linha `USAGE`
-    /// que só o orquestrador escreve, com o modelo usado, os passos, os tokens
-    /// e o consumo de quem despacha, o envio ganha uma versão nova com esses
-    /// cinco campos, apontando para o envio original e mantendo o agente e o
-    /// modelo que já estavam lá.
+    /// O modelo que a plataforma grava nas respostas de um agente.
+    const PLATFORM_MODEL: &str = "claude-opus-5-5";
+
+    /// O instante `at` da spec deslocado de `millis`, como a plataforma grava
+    /// o carimbo: em UTC, com os milésimos.
+    fn platform_instant(at: &str, millis: i64) -> String {
+        let at = chrono::DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&chrono::Utc);
+        (at + chrono::Duration::milliseconds(millis)).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+    }
+
+    /// Uma linha de resposta do modelo como a plataforma grava: o carimbo, o
+    /// ramo, se é de agente, o id da resposta, os quatro números — entrada,
+    /// criação de cache, leitura de cache e saída — e os usos de ferramenta.
+    fn platform_answer(at: &str, branch: &str, sidechain: bool, id: &str, usage: [u64; 4], tools: &[&str]) -> String {
+        let content: Vec<Value> = if tools.is_empty() {
+            vec![json!({"type": "text", "text": "pronto"})]
+        } else {
+            tools.iter().map(|tool| json!({"type": "tool_use", "id": tool, "name": "Bash", "input": {}})).collect()
+        };
+        json!({"type": "assistant", "isSidechain": sidechain, "gitBranch": branch, "timestamp": at,
+            "message": {"id": id, "model": PLATFORM_MODEL, "role": "assistant", "content": content,
+                "usage": {"input_tokens": usage[0], "cache_creation_input_tokens": usage[1],
+                    "cache_read_input_tokens": usage[2], "output_tokens": usage[3]}}})
+        .to_string()
+    }
+
+    /// A primeira linha do arquivo de um agente: o pedido que ele recebeu.
+    fn platform_request(at: &str, text: &str) -> String {
+        json!({"type": "user", "isSidechain": true, "gitBranch": "feature/x", "timestamp": at,
+            "message": {"role": "user", "content": text}})
+        .to_string()
+    }
+
+    /// Um arquivo de conversa na pasta de configuração `config`, no lugar em
+    /// que a plataforma o grava: `relative` é o caminho dentro da pasta do
+    /// projeto, `sessao.jsonl` para a conversa principal e
+    /// `sessao/subagents/agent-<nome>.jsonl` para um agente dela.
+    fn platform_file(config: &Path, relative: &str, lines: &[String]) {
+        let path = config.join("projects").join("-tmp-obra").join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    /// O começo da spec `x` e o envio mais novo da onda 1, como estão gravados.
+    fn begun_and_sent(root: &Path) -> (String, SpecEvent) {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let begun = log.events.first().unwrap().at().to_string();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap().clone();
+        (begun, sent)
+    }
+
+    /// A rodada de sempre, com a sessão `sessao` e a pasta de configuração da
+    /// plataforma `config`, como a entrada do comando as resolve.
+    fn round_measured(root: &Path, report: &str, config: &Path) -> Value {
+        crate::commands::flow::round::round_in(
+            &crate::commands::flow::round::RoundOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".to_string()),
+                report: Some(report.to_string()),
+            },
+            Caller { session: Some("sessao"), config_dir: Some(config) },
+        )
+    }
+
+    /// A conversa principal que a rodada mede: a linha no instante em que a
+    /// spec começou conta, e a de um milésimo antes não; a de outro ramo e a
+    /// de agente também não; a resposta gravada em duas linhas conta uma vez,
+    /// pela última. Tokens 100 + 15 e passos t1, t3 e t4.
+    fn orchestrator_lines(begun: &str, sent: &str) -> Vec<String> {
+        let branch = "feature/x";
+        vec![
+            platform_answer(&platform_instant(begun, -1), branch, false, "o0", [1_000, 0, 0, 0], &["t0"]),
+            platform_answer(&platform_instant(begun, 0), branch, false, "o1", [10, 20, 30, 40], &["t1"]),
+            platform_answer(&platform_instant(sent, 500), "main", false, "o2", [2_000, 0, 0, 0], &["t2"]),
+            platform_answer(&platform_instant(sent, 600), branch, true, "o5", [4_000, 0, 0, 0], &["t5"]),
+            platform_answer(&platform_instant(sent, 700), branch, false, "o3", [1, 2, 3, 4], &["t3"]),
+            platform_answer(&platform_instant(sent, 701), branch, false, "o3", [1, 2, 3, 9], &["t4"]),
+        ]
+    }
+
+    /// A rodada assume a volta da onda com a linha `USAGE` só com o número da
+    /// onda, e mede o consumo nos arquivos de conversa da plataforma: o envio
+    /// da onda ganha uma versão nova, apontando o original e mantendo o que
+    /// ele já tinha, com o modelo, os passos e os tokens do agente que recebeu
+    /// o pedido da onda depois do envio — e não o de um envio anterior, com o
+    /// mesmo título, nem o de outra onda — e com os passos e os tokens da
+    /// conversa principal no ramo da spec desde o começo dela. Sem o arquivo
+    /// do agente, a entrega é gravada do mesmo jeito e a resposta avisa que o
+    /// arquivo de conversa daquela onda não foi achado.
     #[test]
-    fn a_rounds_usage_line_records_a_new_version_of_the_waves_send() {
+    fn the_round_measures_wave_and_orchestrator_usage_from_the_platform_transcripts() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-
+        // O envio sai pelo menos um segundo depois do começo da spec: a conversa
+        // principal conta desde o começo, e não desde o envio.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!(sent.str_field("agent"), Some("wave"), "the send carries the agent's name");
-        assert_eq!(sent.str_field("model"), Some("Opus"), "the send carries the requested model");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        let (begun, sent) = begun_and_sent(root);
+        assert!(platform_instant(&begun, 0) < platform_instant(sent.at(), 0), "{begun} {}", sent.at());
+
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        // Outro projeto, sem a sessão.
+        std::fs::create_dir_all(config.join("projects").join("-tmp-outro")).unwrap();
+        platform_file(config, "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
+        // O agente que recebeu o pedido da onda depois do envio: r1 com um uso
+        // de ferramenta, 2 + 100 + 1000 + 40 = 1142, e r2, 3 + 0 + 1142 + 7 =
+        // 1152.
+        platform_file(
+            config,
+            "sessao/subagents/agent-onda.jsonl",
+            &[
+                platform_request(&platform_instant(sent.at(), 200), &prompt),
+                platform_answer(&platform_instant(sent.at(), 300), "feature/x", true, "r1", [2, 100, 1_000, 40], &["w1"]),
+                platform_answer(&platform_instant(sent.at(), 400), "feature/x", true, "r2", [3, 0, 1_142, 7], &[]),
+            ],
+        );
+        // O mesmo pedido, um milésimo antes do envio: é de um envio anterior.
+        platform_file(
+            config,
+            "sessao/subagents/agent-antes.jsonl",
+            &[
+                platform_request(&platform_instant(sent.at(), -1), &prompt),
+                platform_answer(&platform_instant(sent.at(), 100), "feature/x", true, "a1", [9_000, 0, 0, 0], &["a"]),
+            ],
+        );
+        // Outra onda, que começou antes do agente desta.
+        platform_file(
+            config,
+            "sessao/subagents/agent-outra.jsonl",
+            &[
+                platform_request(&platform_instant(sent.at(), 100), "# x — onda 2\n\nOutro pedido.\n"),
+                platform_answer(&platform_instant(sent.at(), 150), "feature/x", true, "b1", [8_000, 0, 0, 0], &["b"]),
+            ],
+        );
+        std::fs::write(config.join("projects/-tmp-obra/sessao/subagents/agent-onda.meta.json"), "{}").unwrap();
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
-        // A volta é só o que o agente grava, sem número nenhum de consumo:
-        // quem sabe o consumo é o orquestrador, numa linha à parte.
         let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
-        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 42, "tokens": 123_456,
-            "caller_steps": 7, "caller_tokens": 89_000}));
-        let out = round(root, "x", Some(&usage));
+        let out = round_measured(root, &line("USAGE", json!({"wave": 1})), config);
         assert_eq!(out["ok"], json!(true), "{out}");
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().all(|w| w["reason"] != json!("usage-missing")), "o arquivo foi achado: {out}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!(revised.replaced(), vec![sent.id], "the new version points to the original send");
-        assert_eq!(revised.str_field("model_used"), Some("Opus"), "{revised:?}");
-        assert_eq!(revised.int("steps"), Some(42), "{revised:?}");
-        assert_eq!(revised.int("tokens"), Some(123_456), "{revised:?}");
-        assert_eq!(revised.int("caller_steps"), Some(7), "{revised:?}");
-        assert_eq!(revised.int("caller_tokens"), Some(89_000), "{revised:?}");
-        assert_eq!(revised.str_field("agent"), Some("wave"), "keeps what was already there");
-        assert_eq!(revised.str_field("model"), Some("Opus"), "keeps what was already there");
+        assert_eq!(revised.replaced(), vec![sent.id], "a versão nova aponta o envio original");
+        assert_eq!(revised.str_field("model_used"), Some(PLATFORM_MODEL), "{revised:?}");
+        assert_eq!(revised.int("steps"), Some(1), "{revised:?}");
+        assert_eq!(revised.int("tokens"), Some(1_142 + 1_152), "{revised:?}");
+        assert_eq!(revised.int("caller_steps"), Some(3), "{revised:?}");
+        assert_eq!(revised.int("caller_tokens"), Some(100 + 15), "{revised:?}");
+        assert_eq!(revised.str_field("agent"), Some("wave"), "mantém o que já estava lá");
+        assert_eq!(revised.str_field("model"), Some("Opus"), "mantém o que já estava lá");
+
+        // Sem o arquivo do agente da onda: a entrega é gravada, a resposta
+        // avisa nomeando a onda, e o envio leva só o consumo da conversa
+        // principal.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let (begun, sent) = begun_and_sent(root);
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        platform_file(config, "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
+        assert_eq!(returned(root, delivery)["ok"], json!(true));
+        let out = round_measured(root, &line("USAGE", json!({"wave": 1})), config);
+        assert_eq!(out["ok"], json!(true), "a entrega não é recusada por falta do arquivo: {out}");
+        assert_eq!(delivered_count(root), 1, "a entrega foi gravada: {out}");
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        let missing: Vec<&Value> = warnings.iter().filter(|w| w["reason"] == json!("usage-missing")).collect();
+        assert_eq!(missing.len(), 1, "{out}");
+        assert_eq!(missing[0]["wave"], json!(1), "{out}");
+        let said = translate("round.usage_missing", Locale::PtBr).replace("{wave}", "1");
+        assert_eq!(missing[0]["hint"], json!(said), "{out}");
+        assert!(said.contains("arquivo de conversa") && said.contains("onda 1"), "{said}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert_eq!(revised.replaced(), vec![sent.id], "{revised:?}");
+        assert_eq!((revised.int("tokens"), revised.int("steps")), (None, None), "{revised:?}");
+        assert!(revised.str_field("model_used").is_none(), "{revised:?}");
+        assert_eq!((revised.int("caller_steps"), revised.int("caller_tokens")), (Some(3), Some(115)), "{revised:?}");
     }
 
-    /// Um número de consumo que o próprio agente escreve dentro da volta — sem
-    /// a linha `USAGE` do orquestrador — não vira consumo nenhum: a gravação
-    /// recusa o campo que a entrega não tem, nada é escrito, e o envio da onda
-    /// não ganha versão nova, porque só a linha que o orquestrador escreve
-    /// conta.
+    /// Um número de consumo que o próprio agente escreve dentro da volta não
+    /// vira consumo nenhum: a gravação recusa o campo que a entrega não tem,
+    /// nada é escrito, e o envio da onda não ganha versão nova, porque o
+    /// consumo só vem dos arquivos de conversa da plataforma.
     #[test]
     fn a_number_typed_by_the_agent_inside_delivered_is_not_accepted_as_usage() {
         let dir = tempdir().unwrap();
@@ -2425,16 +2544,14 @@ mod tests {
         assert!(sends[0].int("tokens").is_none(), "{sends:?}");
     }
 
-    /// A rodada lê o consumo só da linha própria: assumida a volta da onda sem
-    /// a linha `USAGE` do orquestrador, o envio da onda não ganha versão nova
-    /// nenhuma.
+    /// Da linha `USAGE` vale só a onda: o modelo, os passos e os tokens que
+    /// ainda vierem nela são ignorados. Sem o arquivo de conversa da onda, o
+    /// envio não ganha versão nova com esses números, e a resposta avisa.
     #[test]
-    fn o_consumo_vem_so_da_linha_propria() {
+    fn o_numero_digitado_na_linha_de_consumo_e_ignorado() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
-        std::fs::write(root.join(".claude/agents/mustard/wave.md"), "molde da onda").unwrap();
         round(root, "x", None);
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
@@ -2442,61 +2559,25 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
         let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
-        let out = round(root, "x", None);
+        let typed = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 42, "tokens": 123_456,
+            "caller_steps": 7, "caller_tokens": 89_000}));
+        let out = round(root, "x", Some(&typed));
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(delivered_count(root), 1, "{out}");
-
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sends: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).collect();
-        assert_eq!(sends.len(), 1, "sem a linha própria, o envio não ganha versão nova: {sends:?}");
-        assert_eq!(sends[0].id, sent.id, "o envio segue o mesmo de antes");
-        assert!(sends[0].int("tokens").is_none(), "sem a linha, consumo nenhum: {sends:?}");
-        assert!(sends[0].int("steps").is_none(), "sem a linha, consumo nenhum: {sends:?}");
-    }
-
-    /// A linha de consumo pode faltar — a entrega é gravada do mesmo jeito,
-    /// porque o consumo não é dela —, mas nunca em silêncio: a resposta da
-    /// rodada avisa, nomeando a onda, que o gasto daquela onda não entrou na
-    /// página. Com a linha, aviso nenhum.
-    #[test]
-    fn a_entrega_sem_linha_de_consumo_avisa_na_resposta() {
-        let sem = tempdir().unwrap();
-        let root = sem.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None);
-
-        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
-        assert_eq!(out["ok"], json!(true), "a entrega não é recusada por falta de consumo: {out}");
-        assert_eq!(delivered_count(root), 1, "a entrega foi gravada: {out}");
-        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
-        let silent: Vec<u64> = warnings
-            .iter()
+        let warned: Vec<u64> = out["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
             .filter(|w| w["reason"] == json!("usage-missing"))
             .filter_map(|w| w["wave"].as_u64())
             .collect();
-        assert_eq!(silent, vec![1], "o aviso nomeia a onda que ficou sem consumo: {out}");
-        let hint = warnings
-            .iter()
-            .find(|w| w["reason"] == json!("usage-missing"))
-            .and_then(|w| w["hint"].as_str())
-            .unwrap_or_default()
-            .to_string();
-        assert!(hint.contains(" 1 "), "o aviso diz de qual onda fala: {hint}");
+        assert_eq!(warned, vec![1], "{out}");
 
-        // A mesma entrega com a linha de consumo: o gasto entra na página e
-        // não há o que avisar.
-        let com = tempdir().unwrap();
-        let root = com.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None);
-
-        let delivery = delivered(root, 1, "A soma saiu.", &["src/a.rs"]);
-        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 42, "tokens": 123_456,
-            "caller_steps": 7, "caller_tokens": 89_000}));
-        let out = round(root, "x", Some(&format!("{delivery}\n{usage}")));
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
-        assert!(warnings.iter().all(|w| w["reason"] != json!("usage-missing")), "com a linha, aviso nenhum: {out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sends: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).collect();
+        assert_eq!(sends.len(), 1, "o número da linha não vira versão nova do envio: {sends:?}");
+        assert_eq!(sends[0].id, sent.id, "o envio segue o mesmo de antes");
+        assert!(sends[0].int("tokens").is_none() && sends[0].int("caller_tokens").is_none(), "{sends:?}");
     }
 
     /// Duas provas do mesmo critério viram um comando só, ligado por `&&`:
@@ -2776,8 +2857,8 @@ mod tests {
     /// Sem volta gravada e com o Claude Code da onda aberto, a linha de
     /// consumo não comita nada e pede que o agente grave a entrega. Com duas
     /// voltas gravadas, a rodada assume a última: grava a entrega oficial,
-    /// sem a marca da volta, com `replaces` para as duas, comita com o resumo
-    /// dela e grava o consumo na versão nova do envio.
+    /// sem a marca da volta, com `replaces` para as duas, e comita com o
+    /// resumo dela.
     #[test]
     fn a_rodada_assume_a_entrega_gravada_e_comita_com_o_resumo_dela() {
         let dir = tempdir().unwrap();
@@ -2785,7 +2866,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
         let seed = git_text(root, &["rev-parse", "HEAD"]);
-        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 3, "tokens": 900}));
+        let usage = line("USAGE", json!({"wave": 1}));
 
         let before = spec_lines(root);
         let asked = round(root, "x", Some(&usage));
@@ -2813,8 +2894,6 @@ mod tests {
         assert!(!official[0].returned(), "{:?}", official[0].fields);
         assert_eq!(official[0].replaced(), vec![first, last], "{:?}", official[0].fields);
         assert!(log.unassumed_returns().is_empty(), "nenhuma volta espera mais");
-        let sent = visible.iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!((sent.int("steps"), sent.int("tokens")), (Some(3), Some(900)), "{:?}", sent.fields);
     }
 
     /// A volta que a onda grava nunca vai para a cópia da página: a rodada
@@ -2866,31 +2945,44 @@ mod tests {
     }
 
     /// A linha de consumo de uma onda que uma rodada anterior já assumiu, sem
-    /// volta nova, completa o envio dela: a versão nova do envio ganha o
-    /// consumo, e nada mais é juntado, comitado nem gravado como entrega.
+    /// volta nova, completa o envio dela: a rodada mede o consumo de novo, e a
+    /// versão nova do envio o ganha, sem o número que ainda vier na linha; nada
+    /// mais é juntado, comitado nem gravado como entrega.
     #[test]
     fn a_linha_de_consumo_sozinha_completa_a_onda_ja_assumida() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None);
+        let dispatched = round(root, "x", None);
+        let prompt = dispatched["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
         let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
         assert_eq!(out["ok"], json!(true), "{out}");
         let head = git_text(root, &["rev-parse", "HEAD"]);
+        let (begun, sent) = begun_and_sent(root);
 
-        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 5, "tokens": 1_200,
-            "caller_steps": 2, "caller_tokens": 300}));
-        let completed = round(root, "x", Some(&usage));
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        platform_file(config, "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
+        platform_file(
+            config,
+            "sessao/subagents/agent-onda.jsonl",
+            &[
+                platform_request(&platform_instant(sent.at(), 200), &prompt),
+                platform_answer(&platform_instant(sent.at(), 300), "feature/x", true, "r1", [5, 0, 1_000, 195], &["w1", "w2"]),
+            ],
+        );
+        let usage = line("USAGE", json!({"wave": 1, "steps": 5, "tokens": 999}));
+        let completed = round_measured(root, &usage, config);
         assert_eq!(completed["ok"], json!(true), "{completed}");
         assert!(completed.get("commit").is_none(), "{completed}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nada foi comitado: {completed}");
         assert_eq!(delivered_count(root), 1, "nenhuma entrega nova: {completed}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!(sent.str_field("model_used"), Some("Opus"), "{:?}", sent.fields);
-        assert_eq!((sent.int("steps"), sent.int("tokens")), (Some(5), Some(1_200)), "{:?}", sent.fields);
-        assert_eq!((sent.int("caller_steps"), sent.int("caller_tokens")), (Some(2), Some(300)), "{:?}", sent.fields);
-        assert_eq!(sent.replaced().len(), 1, "a versão nova aponta o envio anterior: {:?}", sent.fields);
+        let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert_eq!(revised.str_field("model_used"), Some(PLATFORM_MODEL), "{:?}", revised.fields);
+        assert_eq!((revised.int("steps"), revised.int("tokens")), (Some(2), Some(1_200)), "{:?}", revised.fields);
+        assert_eq!((revised.int("caller_steps"), revised.int("caller_tokens")), (Some(3), Some(115)), "{:?}", revised.fields);
+        assert_eq!(revised.replaced(), vec![sent.id], "a versão nova aponta o envio anterior: {:?}", revised.fields);
     }
 
     /// A linha da entrega colada no relatório é recusada com o texto
@@ -2907,7 +2999,7 @@ mod tests {
 
         let pasted = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai"}));
-        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 3, "tokens": 900}));
+        let usage = line("USAGE", json!({"wave": 1}));
         let refused = round(root, "x", Some(&format!("{pasted}\n{usage}")));
         assert_eq!(refused["reason"], json!("round-return-line"), "{refused}");
         assert_eq!(
@@ -2934,7 +3026,7 @@ mod tests {
         let (head, before) = (git_text(root, &["rev-parse", "HEAD"]), spec_lines(root));
 
         let pasted = line("VERDICT", json!({"final": true, "result": "approved", "text": "Sem achados."}));
-        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 3, "tokens": 900}));
+        let usage = line("USAGE", json!({"wave": 1}));
         let expected = json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
                               relatório leva só as linhas USAGE, PAUSED e ANALYSIS.");
         let refused = round(root, "x", Some(&format!("{pasted}\n{usage}")));

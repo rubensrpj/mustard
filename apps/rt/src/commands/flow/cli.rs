@@ -108,11 +108,12 @@ pub enum FlowCmd {
         /// onda e o veredito não vêm aqui: o agente de onda grava a entrega
         /// com `run write delivered`, o revisor grava o veredito com `run
         /// write verdict`, e a linha `<DELIVERED>` ou `<VERDICT>` no relatório
-        /// é recusada. Quem despacha escreve, para cada onda que voltou, a
-        /// linha `<USAGE>{…}</USAGE>` com o consumo que a plataforma entregou
-        /// — nunca digitado pelo agente: `wave`, `model`, `steps`, `tokens`,
-        /// `caller_steps` e `caller_tokens` —, a `<PAUSED>` e a
-        /// `<ANALYSIS>{…}</ANALYSIS>` da escolha antes do envio.
+        /// é recusada. Quem despacha escreve, para cada onda cujo agente
+        /// terminou, a linha `<USAGE>{"wave":1}</USAGE>`, só com a onda — o
+        /// consumo a rodada mede nos arquivos de conversa que a plataforma
+        /// grava, nunca digitado pelo agente nem por quem despacha —, a
+        /// `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>` da escolha antes do
+        /// envio.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.

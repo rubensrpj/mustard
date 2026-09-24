@@ -43,12 +43,16 @@
 //! com a prova nova, formata só os arquivos da rodada, faz o commit com a
 //! mensagem montada do resumo e grava cada sobra como pendência da spec, pela
 //! mesma porta do `pending --add`. O `--report` leva só o que o orquestrador
-//! escreve: a linha `<USAGE>{…}</USAGE>` com o consumo de cada onda, a
-//! `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>`. O veredito também mora na spec:
-//! o revisor o grava com `mustard-rt run write verdict`, só com pedido de
-//! revisão aberto, e a rodada ou o fechamento o assume antes das entregas,
-//! com `replaces` para as voltas dele. A linha de consumo sozinha completa a
-//! onda que voltou; a de uma onda de lote com envio aberto, sem volta e com o
+//! escreve: a linha `<USAGE>{"wave":1}</USAGE>`, que marca que o agente da
+//! onda terminou, a `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>`. O consumo de
+//! cada onda assumida — o modelo, os passos e os tokens do agente dela — e o
+//! da conversa principal no ramo da spec a rodada mede nos arquivos de
+//! conversa que a plataforma grava, na pasta de configuração dela e na sessão
+//! de quem chama, e avisa a onda cujo arquivo não achou. O veredito também
+//! mora na spec: o revisor o grava com `mustard-rt run write verdict`, só com
+//! pedido de revisão aberto, e a rodada ou o fechamento o assume antes das
+//! entregas, com `replaces` para as voltas dele. A linha de consumo sozinha
+//! completa a onda que voltou; a de uma onda de lote com envio aberto, sem volta e com o
 //! Claude Code dela fechado marca a onda cortada, e as tarefas dela voltam
 //! para o backlog.
 //!
@@ -110,6 +114,7 @@ mod leftovers;
 mod queue;
 mod report;
 mod stops;
+mod usage;
 
 /// O código de mudança que um texto traz: a testemunha dos gestos o lê no
 /// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
@@ -132,6 +137,7 @@ pub(crate) use queue::{
     backlog_left, ensure_copy, local_file_missing, open_review, wave_states, waves_in_progress, waves_pending_fix,
 };
 pub(crate) use report::{check_return, check_verdict_return, take_report};
+pub(crate) use usage::Caller;
 
 /// As opções de `mustard-rt run round`.
 pub struct RoundOpts {
@@ -147,17 +153,27 @@ pub struct RoundOpts {
 /// aprovadas.
 pub const DONE_STEP: &str = "close";
 
-/// O núcleo testável de [`run`]. A sessão vem do ambiente. Nunca entra em
-/// pânico.
+/// O núcleo testável de [`run`]. A sessão e a pasta de configuração da
+/// plataforma vêm do ambiente. Nunca entra em pânico.
 pub(crate) fn round_at(opts: &RoundOpts) -> Value {
-    round_for(opts, session_from_env().as_deref())
+    let session = session_from_env();
+    let config_dir = mustard_core::claude_config_dir();
+    round_in(opts, Caller { session: session.as_deref(), config_dir: config_dir.as_deref() })
 }
 
-/// [`round_at`] com a sessão recebida, que é como um teste a escolhe.
+/// [`round_at`] com a sessão recebida, que é como um teste a escolhe, sem a
+/// pasta de configuração da plataforma: o consumo das ondas não é medido.
+#[cfg(test)]
 pub(crate) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
+    round_in(opts, Caller { session, config_dir: None })
+}
+
+/// [`round_at`] com a sessão e a pasta de configuração da plataforma
+/// recebidas (`caller`), que é como o teste do consumo as escolhe.
+pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    match answer::run_round(opts, &project.root, lang, session) {
+    match answer::run_round(opts, &project.root, lang, caller) {
         Ok(report) => report,
         Err(refusal) => refusal.to_value(lang),
     }
@@ -344,7 +360,7 @@ mod tests {
         let opts =
             RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) };
         let project = spec_events::project(&opts.root);
-        match answer::run_round_with_mine(&opts, &project.root, project.lang, None, mine) {
+        match answer::run_round_with_mine(&opts, &project.root, project.lang, Caller::default(), mine) {
             Ok(report) => report,
             Err(refusal) => refusal.to_value(project.lang),
         }

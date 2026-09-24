@@ -477,14 +477,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              was left out. All of it went into the commit anyway."
         }
         ("round.usage_missing", Locale::PtBr) => {
-            "A onda {wave} entregou sem a linha de consumo, e o gasto dela não entrou na página: \
-             a entrega ficou gravada assim mesmo. Rode a rodada de novo só com a linha USAGE \
-             dessa onda, com o modelo, os passos e os tokens."
+            "O arquivo de conversa do agente da onda {wave} não foi achado entre os que a \
+             plataforma grava para esta sessão, e o consumo dela não entrou na página: a entrega \
+             ficou gravada assim mesmo."
         }
         ("round.usage_missing", Locale::EnUs) => {
-            "Wave {wave} delivered without the usage line, and its cost did not reach the page: \
-             the delivery was written anyway. Run the round again with only that wave's USAGE line, \
-             with the model, the steps and the tokens."
+            "The conversation file of wave {wave}'s agent was not found among the ones the \
+             platform records for this session, and its usage did not reach the page: the delivery \
+             was written anyway."
         }
         ("round.build_failed", Locale::PtBr) => {
             "O repositório principal não compilou com `{command}`, e a rodada não comitou nada: {output}"
@@ -639,22 +639,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.report", Locale::PtBr) => {
             "Quando voltarem, cada agente já terá gravado a própria volta na spec — o de onda com \
              `mustard-rt run write delivered`, o revisor com `mustard-rt run write verdict` —, e a \
-             rodada a assume. Rode a rodada de novo com o consumo que a plataforma entregou a você \
-             quando cada agente de onda terminou, uma linha por onda, todas no mesmo `--report '…'`: \
-             `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\"caller_steps\":…,\
-             \"caller_tokens\":…}</USAGE>` — nunca um número que o agente tenha digitado. A rodada \
-             monta o commit do `commit` de cada entrega. Quando a volta de um agente não estiver na \
+             rodada a assume. Quando cada agente de onda terminar, rode a rodada de novo com uma \
+             linha por onda, todas no mesmo `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, só com o \
+             número da onda. O consumo de cada onda e o seu a rodada mede nos arquivos de conversa \
+             que a plataforma grava, nunca num número digitado. A rodada monta o commit do \
+             `commit` de cada entrega. Quando a volta de um agente não estiver na \
              spec, mande o agente gravá-la de novo pela ferramenta: nunca a monte a partir da prosa \
              dele."
         }
         ("round.report", Locale::EnUs) => {
             "When they come back, each agent has already recorded its own return in the spec — the \
              wave agent with `mustard-rt run write delivered`, the reviewer with \
-             `mustard-rt run write verdict` —, and the round takes it over. Run the round again with \
-             the usage the platform handed you when each wave agent finished, one line per wave, all \
-             in the same `--report '…'`: `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\
-             \"tokens\":…,\"caller_steps\":…,\"caller_tokens\":…}</USAGE>` — never a number the \
-             agent typed itself. The round builds the commit from each delivery's `commit`. When an \
+             `mustard-rt run write verdict` —, and the round takes it over. When each wave agent \
+             finishes, run the round again with one line per wave, all in the same \
+             `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. The round \
+             measures each wave's usage and yours from the conversation files the platform \
+             records, never from a typed number. The round builds the commit from each delivery's \
+             `commit`. When an \
              agent's return is not in the spec, have the agent record it again through the tool: \
              never assemble it from its prose."
         }
@@ -1287,7 +1288,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             161,
-            0x28b2_54f0_2535_9707,
+            0xec01_7ccc_5ec1_29e6,
         );
     }
 
