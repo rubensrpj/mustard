@@ -140,15 +140,14 @@ const RECORDED_KINDS: &[&str] = &["decision", "rule", "limit", "request", "crite
 /// gravada e espera a rodada, dizendo qual pede mudança de plano ainda sem o
 /// clique do usuário; as paradas no limite de consertos; as que faltam; o
 /// código de cada item gravado depois da última rodada; e o próximo comando.
-/// Cabe no teto do início da sessão: quando passa, a lista dos códigos
-/// encolhe e diz quantos ficaram de fora.
+/// Cabe no teto do início da sessão: quando passa, as listas encolhem na
+/// ordem de [`fit`] e cada uma diz quantos ficaram de fora.
 pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
     use crate::commands::flow::round::{change_accepted, replan_code, waves_in_progress, waves_stuck};
 
     let state = State::from_log(log);
     let phase = state.phase.unwrap_or("survey");
     let none = translate("resume.none", lang);
-    let listed = |items: Vec<String>| if items.is_empty() { none.to_string() } else { items.join(", ") };
 
     let delivered = log.delivered_waves();
     let returns: Vec<_> =
@@ -197,14 +196,17 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
     let text = translate("conversation_size.block", lang)
         .replace("{spec}", spec)
         .replace("{phase}", phase)
-        .replace("{delivered}", &listed(delivered.iter().map(u64::to_string).collect()))
-        .replace("{running}", &listed(in_flight))
-        .replace("{returned}", &listed(waiting))
-        .replace("{stuck}", &listed(stuck))
-        .replace("{missing}", &listed(missing))
         .replace("{command}", &command)
         .replace("{next}", &next);
-    fit_recorded(&text, &recorded_since_round(log), lang)
+    let lists = [
+        ("{recorded}", recorded_since_round(log)),
+        ("{delivered}", delivered.iter().map(u64::to_string).collect()),
+        ("{missing}", missing),
+        ("{stuck}", stuck),
+        ("{returned}", waiting),
+        ("{running}", in_flight),
+    ];
+    fit(&text, &lists, lang)
 }
 
 /// O código de cada decisão, regra, limite, pedido, critério e tarefa
@@ -227,20 +229,31 @@ fn recorded_since_round(log: &SpecLog) -> Vec<String> {
         .collect()
 }
 
-/// O bloco `text` com os códigos `recorded` no lugar da vaga: todos, quando
-/// cabem no teto do início da sessão; senão os primeiros que cabem, e quantos
-/// ficaram de fora.
-fn fit_recorded(text: &str, recorded: &[String], lang: Locale) -> String {
+/// O bloco `text` com cada lista de `lists` no lugar da vaga dela: inteiras,
+/// quando cabem no teto do início da sessão. Senão, as listas cedem na ordem
+/// em que vêm — os códigos gravados primeiro, as ondas em andamento por
+/// último —, cada uma mostrando só os primeiros itens e quantos ficaram de
+/// fora, até o bloco caber; a lista seguinte só encolhe quando a anterior já
+/// não mostra item nenhum.
+fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale) -> String {
     let cap = crate::hooks::session::session_start_inject::MAX_BYTES;
-    let with = |kept: usize| {
-        let mut shown: Vec<String> = recorded[..kept].to_vec();
-        if kept < recorded.len() {
-            shown.push(translate("conversation_size.more", lang).replace("{count}", &(recorded.len() - kept).to_string()));
-        }
-        let list = if shown.is_empty() { translate("resume.none", lang).to_string() } else { shown.join(", ") };
-        text.replace("{recorded}", &list)
+    let render = |kept: &[usize]| {
+        lists.iter().zip(kept).fold(text.to_string(), |block, ((slot, items), &kept)| {
+            let mut shown: Vec<String> = items[..kept].to_vec();
+            if kept < items.len() {
+                shown.push(translate("conversation_size.more", lang).replace("{count}", &(items.len() - kept).to_string()));
+            }
+            let list = if shown.is_empty() { translate("resume.none", lang).to_string() } else { shown.join(", ") };
+            block.replace(slot, &list)
+        })
     };
-    (0..=recorded.len()).rev().map(with).find(|block| block.len() <= cap).unwrap_or_else(|| with(0))
+    let mut kept: Vec<usize> = lists.iter().map(|(_, items)| items.len()).collect();
+    for at in 0..lists.len() {
+        while kept[at] > 0 && render(&kept).len() > cap {
+            kept[at] -= 1;
+        }
+    }
+    render(&kept)
 }
 
 /// O último passo do fluxo: o comando da chamada mais nova que deu certo.

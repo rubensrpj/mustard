@@ -236,13 +236,127 @@ mod tests {
         assert_eq!(outcome.verdict, Verdict::Allow, "sem degrau de tokens, nada barra mais a chamada");
     }
 
+    /// Grava na spec `x`, em `root`, o evento `event_type` com `body` e
+    /// devolve o número dele.
+    fn seed(root: &Path, event_type: &str, body: serde_json::Value) -> u64 {
+        crate::shared::spec_state::seed_event(root, "x", event_type, body)
+    }
+
+    /// Grava a onda `n` da spec `x` no plano, com o critério `crit`.
+    fn plan_wave(root: &Path, n: u64, crit: u64, said: u64) {
+        seed(
+            root,
+            "wave",
+            serde_json::json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x",
+                "origin": said}),
+        );
+    }
+
+    /// Grava a volta da onda `n` pedindo mudança de plano, à espera da rodada.
+    fn seed_replan_return(root: &Path, n: u64) {
+        seed(
+            root,
+            "delivered",
+            serde_json::json!({"wave": n, "text": "O plano não fecha.", "replan": format!("Dividir a onda {n}."),
+                "returned": true, "author": "wave"}),
+        );
+    }
+
+    /// Grava a última rodada que deu certo e, depois dela, `count` decisões;
+    /// devolve o código de cada uma, na ordem.
+    fn seed_decisions_after_round(root: &Path, said: u64, count: usize) -> Vec<String> {
+        seed(root, "call", serde_json::json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
+        let ids: Vec<u64> = (0..count)
+            .map(|at| {
+                seed(
+                    root,
+                    "decision",
+                    serde_json::json!({"text": format!("Decisão {at}."), "keys": ["retomada"],
+                        "why": "o usuário pediu", "origin": said}),
+                )
+            })
+            .collect();
+        let codes = read_log(root).codes();
+        ids.iter().map(|id| codes[id].clone()).collect()
+    }
+
+    /// O arquivo de eventos da spec `x`, em `root`.
+    fn read_log(root: &Path) -> mustard_core::domain::spec_events::SpecLog {
+        mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap())
+            .unwrap()
+            .unwrap()
+    }
+
+    /// O texto que o início da sessão depois da compactação e o aviso antes
+    /// de compactar injetam em `root`, pelo evento do gancho, nessa ordem.
+    fn hook_contexts(root: &Path, lang: Locale) -> (String, String) {
+        let event = |name: &str, trigger: Trigger, raw: serde_json::Value| {
+            let input = HookInput {
+                hook_event_name: Some(name.to_string()),
+                session_id: Some("s1".to_string()),
+                cwd: Some(root.to_string_lossy().into_owned()),
+                raw,
+                ..HookInput::default()
+            };
+            match crate::dispatch::run_event(Some(trigger), &input).verdict {
+                Verdict::Inject { context } => context,
+                other => panic!("{lang:?}: {name} injects nothing: {other:?}"),
+            }
+        };
+        (
+            event("SessionStart", Trigger::SessionStart, serde_json::json!({"source": "compact"})),
+            event("PreCompact", Trigger::PreCompact, serde_json::json!({})),
+        )
+    }
+
+    /// O que o bloco em `context` mostra na vaga `slot` do modelo do bloco em
+    /// `lang`: o trecho entre o rótulo que antecede a vaga e o texto que a
+    /// segue até a vaga seguinte.
+    fn slot_value<'a>(context: &'a str, lang: Locale, slot: &str) -> &'a str {
+        let template = translate("conversation_size.block", lang);
+        let at = template.find(slot).expect("the slot is in the template");
+        let before = &template[..at];
+        let label = &before[before.rfind('}').map_or(0, |end| end + 1)..];
+        let after = &template[at + slot.len()..];
+        let tail = &after[..after.find('{').unwrap_or(after.len())];
+        let start = context.find(label).unwrap_or_else(|| panic!("{lang:?}: no {slot} label: {context}")) + label.len();
+        let len = context[start..].find(tail).unwrap_or_else(|| panic!("{lang:?}: no end of {slot}: {context}"));
+        &context[start..start + len]
+    }
+
+    /// A lista `items` cortada depois de `kept` itens, como o bloco a mostra:
+    /// os primeiros e quantos ficaram de fora.
+    fn cut_list(items: &[String], kept: usize, lang: Locale) -> String {
+        let mut shown = items[..kept].to_vec();
+        if kept < items.len() {
+            shown.push(translate("conversation_size.more", lang).replace("{count}", &(items.len() - kept).to_string()));
+        }
+        shown.join(", ")
+    }
+
+    /// A lista `items` que o bloco `block` mostra na vaga `slot` cortada no
+    /// teto: guarda os primeiros itens e diz quantos ficaram de fora, e um item
+    /// a mais já não caberia. Devolve quantos ficaram.
+    fn assert_cut_at_the_cap(block: &str, lang: Locale, slot: &str, items: &[String]) -> usize {
+        use crate::hooks::session::session_start_inject::MAX_BYTES;
+        let shown = slot_value(block, lang, slot);
+        let kept = (0..items.len())
+            .find(|kept| shown == cut_list(items, *kept, lang))
+            .unwrap_or_else(|| panic!("{lang:?}: {slot} is not the first items and how many were left out: {shown}"));
+        let one_more = block.replacen(shown, &cut_list(items, kept + 1, lang), 1);
+        assert!(block.len() <= MAX_BYTES, "{lang:?}: {} bytes", block.len());
+        assert!(one_more.len() > MAX_BYTES, "{lang:?}: {slot} keeps {kept}, but {} bytes still fit", one_more.len());
+        kept
+    }
+
     /// Depois da compactação, o início da sessão coloca sozinho o bloco de
-    /// retomada, pelo evento do gancho: a onda em andamento com a pasta da
-    /// cópia dela, a onda cuja volta espera a rodada pedindo mudança de plano
-    /// ainda sem o clique, e o código da decisão gravada depois da última
-    /// rodada — e não o da gravada antes dela. O aviso antes de compactar traz
-    /// o mesmo bloco e não pede para colá-lo. Nos dois idiomas, e dentro do
-    /// teto do início da sessão.
+    /// retomada, pelo evento do gancho: a onda entregue, a onda em andamento
+    /// com a pasta da cópia dela, a onda cuja volta espera a rodada pedindo
+    /// mudança de plano ainda sem o clique, a onda parada no limite de
+    /// consertos, e o código da decisão gravada depois da última rodada — e
+    /// não o da gravada antes dela. O aviso antes de compactar traz o mesmo
+    /// bloco e não pede para colá-lo. Nos dois idiomas, e dentro do teto do
+    /// início da sessão.
     #[test]
     fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra() {
         use crate::hooks::session::session_start_inject::MAX_BYTES;
@@ -252,56 +366,38 @@ mod tests {
             let dir = open_project_in("x", lang);
             let root = dir.path();
             let crit = seed_running_wave(root, "x");
-            let seed = |event_type: &str, body: serde_json::Value| {
-                crate::shared::spec_state::seed_event(root, "x", event_type, body)
-            };
-            let said = seed("message", json!({"author": "user", "text": "mais uma onda"}));
-            seed("wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit], "done_when": "x", "origin": said}));
+            let said = seed(root, "message", json!({"author": "user", "text": "mais ondas"}));
+            plan_wave(root, 2, crit, said);
             let (pid, started) = crate::commands::flow::stuck::this_process();
-            seed("send", json!({"wave": 2, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+            seed(root, "send", json!({"wave": 2, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
                 "items": [crit], "mustard": "0", "author": "binary", "copy": copy_of(root, 2),
                 "claude_pid": pid, "claude_started": started}));
-            seed("delivered", json!({"wave": 2, "text": "O plano não fecha.", "replan": "Dividir a onda 2.",
-                "returned": true, "author": "wave"}));
-            let decision = |text: &str| {
-                seed("decision", json!({"text": text, "keys": ["retomada"], "why": "o usuário pediu",
-                    "origin": said}))
-            };
-            let before = decision("Antes da rodada.");
-            seed("call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
-            let after = decision("Depois da rodada.");
-            let log = mustard_core::io::spec_events::read(
-                &mustard_core::io::spec_events::spec_file(root, "x").unwrap(),
-            )
-            .unwrap()
-            .unwrap();
-            let codes = log.codes();
-            let (before, after) = (codes[&before].clone(), codes[&after].clone());
+            seed_replan_return(root, 2);
+            // A onda 3 entregue, e a 4 reprovada uma vez e depois de cada uma
+            // das duas rodadas de conserto: parada no limite.
+            plan_wave(root, 3, crit, said);
+            seed(root, "delivered", json!({"wave": 3, "text": "Pronta.", "files": ["src/tres.rs"], "author": "wave"}));
+            plan_wave(root, 4, crit, said);
+            for _ in 0..3 {
+                crate::shared::spec_state::seed_verdict(root, "x", 4, "rejected", crit);
+            }
+            let before = seed(root, "decision", json!({"text": "Antes da rodada.", "keys": ["retomada"],
+                "why": "o usuário pediu", "origin": said}));
+            let after = seed_decisions_after_round(root, said, 1);
+            let before = read_log(root).codes()[&before].clone();
 
-            let event = |name: &str, trigger: Trigger, raw: serde_json::Value| {
-                let input = HookInput {
-                    hook_event_name: Some(name.to_string()),
-                    session_id: Some("s1".to_string()),
-                    cwd: Some(root.to_string_lossy().into_owned()),
-                    raw,
-                    ..HookInput::default()
-                };
-                match crate::dispatch::run_event(Some(trigger), &input).verdict {
-                    Verdict::Inject { context } => context,
-                    other => panic!("{lang:?}: {name} injects nothing: {other:?}"),
-                }
-            };
-            let started = event("SessionStart", Trigger::SessionStart, json!({"source": "compact"}));
-            let precompact = event("PreCompact", Trigger::PreCompact, json!({}));
+            let (started, precompact) = hook_contexts(root, lang);
 
             let running = translate("conversation_size.copy", lang)
                 .replace("{wave}", "1")
                 .replace("{copy}", &copy_of(root, 1));
             let replan = translate("conversation_size.replan", lang).replace("{wave}", "2");
             for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
-                assert!(context.contains(&running), "{lang:?} {moment}: the wave in flight and its copy: {context}");
-                assert!(context.contains(&replan), "{lang:?} {moment}: the return asking a plan change: {context}");
-                assert!(context.contains(&after), "{lang:?} {moment}: the decision after the round: {context}");
+                assert_eq!(slot_value(context, lang, "{delivered}"), "3", "{lang:?} {moment}: the delivered wave");
+                assert_eq!(slot_value(context, lang, "{running}"), running, "{lang:?} {moment}: the wave in flight");
+                assert_eq!(slot_value(context, lang, "{returned}"), replan, "{lang:?} {moment}: the return");
+                assert_eq!(slot_value(context, lang, "{stuck}"), "4", "{lang:?} {moment}: the wave at the fix limit");
+                assert_eq!(slot_value(context, lang, "{recorded}"), after[0], "{lang:?} {moment}: after the round");
                 assert!(!context.contains(&before), "{lang:?} {moment}: the decision before the round: {context}");
                 assert!(context.contains("mustard-rt run round --spec x"), "{lang:?} {moment}: {context}");
             }
@@ -311,6 +407,72 @@ mod tests {
             for paste in ["cole", "colar", "paste"] {
                 assert!(!precompact.contains(paste), "{lang:?}: the notice still asks to paste: {precompact}");
             }
+        }
+    }
+
+    /// Com mais códigos gravados depois da última rodada do que cabem no teto
+    /// do início da sessão, o bloco que o gancho injeta mostra os primeiros
+    /// que cabem — um a mais já não caberia — e quantos ficaram de fora; o
+    /// resto do bloco fica inteiro. Nos dois idiomas.
+    #[test]
+    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra_com_os_codigos_cortados_no_teto() {
+        use serde_json::json;
+
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = open_project_in("x", lang);
+            let root = dir.path();
+            seed_running_wave(root, "x");
+            let said = seed(root, "message", json!({"author": "user", "text": "muitas decisões"}));
+            let codes = seed_decisions_after_round(root, said, 250);
+
+            let (started, precompact) = hook_contexts(root, lang);
+            let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
+            assert!(started.contains(&block) && precompact.contains(&block), "{lang:?}: the same block");
+            let kept = assert_cut_at_the_cap(&block, lang, "{recorded}", &codes);
+            assert!(kept > 0, "{lang:?}: the codes that fit are shown: {block}");
+            let running = translate("conversation_size.copy", lang)
+                .replace("{wave}", "1")
+                .replace("{copy}", &copy_of(root, 1));
+            assert_eq!(slot_value(&block, lang, "{running}"), running, "{lang:?}: the wave in flight stays whole");
+        }
+    }
+
+    /// Quando nem a lista de códigos vazia faz o bloco caber, as outras
+    /// partes também encolhem até ele caber no teto: os códigos saem todos
+    /// primeiro, e das voltas à espera da rodada ficam as primeiras que cabem —
+    /// uma a mais já não caberia — e quantas ficaram de fora. A onda em
+    /// andamento, que cede por último, fica inteira. Nos dois idiomas.
+    #[test]
+    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra_cortando_as_outras_partes_ate_caber() {
+        use serde_json::json;
+
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = open_project_in("x", lang);
+            let root = dir.path();
+            let crit = seed_running_wave(root, "x");
+            let said = seed(root, "message", json!({"author": "user", "text": "muitas voltas"}));
+            let waves: Vec<u64> = (2..62).collect();
+            for n in &waves {
+                plan_wave(root, *n, crit, said);
+                seed_replan_return(root, *n);
+            }
+            let codes = seed_decisions_after_round(root, said, 3);
+
+            let (started, precompact) = hook_contexts(root, lang);
+            let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
+            assert!(started.contains(&block) && precompact.contains(&block), "{lang:?}: the same block");
+            assert_eq!(slot_value(&block, lang, "{recorded}"), cut_list(&codes, 0, lang), "{lang:?}: {block}");
+            let returns: Vec<String> = waves
+                .iter()
+                .map(|n| translate("conversation_size.replan", lang).replace("{wave}", &n.to_string()))
+                .collect();
+            let kept = assert_cut_at_the_cap(&block, lang, "{returned}", &returns);
+            assert!(kept > 0, "{lang:?}: the returns that fit are shown: {block}");
+            let running = translate("conversation_size.copy", lang)
+                .replace("{wave}", "1")
+                .replace("{copy}", &copy_of(root, 1));
+            assert_eq!(slot_value(&block, lang, "{running}"), running, "{lang:?}: the wave in flight stays whole");
+            assert!(block.contains("mustard-rt run round --spec x"), "{lang:?}: the next command: {block}");
         }
     }
 }
