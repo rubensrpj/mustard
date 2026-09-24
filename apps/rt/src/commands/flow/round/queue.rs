@@ -1562,7 +1562,8 @@ mod tests {
 
     /// A spec aprovada da análise antes do envio: uma onda, com a tarefa que
     /// faz uma das regras do projeto todo, duas regras do projeto todo que
-    /// ela não faz, dois itens sem dono e uma decisão da onda. Devolve o
+    /// ela não faz, dois itens sem dono, que a palavra-chave liga à tarefa, e
+    /// uma decisão da onda. Devolve o
     /// número de cada item, pelo código.
     fn with_items_to_judge(root: &Path) -> BTreeMap<String, u64> {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
@@ -1573,7 +1574,8 @@ mod tests {
             rule("Vale sempre: a tabela nova tem chave.");
             rule("Vale sempre: a spec vira um PR só.");
             let done = rule("Vale sempre: a tabela nova tem índice.");
-            for (text, extra) in [("Sem dono: a tabela nasce vazia.", json!({})), ("Sem dono: o download não muda.", json!({})),
+            for (text, extra) in [("Sem dono: a tabela nasce vazia.", json!({"keys": ["tabela"]})),
+                ("Sem dono: o download não muda.", json!({"keys": ["índice"]})),
                 ("Da onda um: a coluna é texto.", json!({"waves": [1]}))] {
                 let mut body = json!({"text": text, "keys": ["k"], "why": "w", "origin": said});
                 body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());

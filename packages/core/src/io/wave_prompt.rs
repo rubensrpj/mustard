@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
 use crate::domain::project_map::{check_skill, file_history, has_rust_part, tests_for, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
-use crate::domain::wave_prompt::{self, wave_files, Choice, Execution, Material, Skill, WaveCopy};
+use crate::domain::wave_prompt::{self, tasks_text, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
 
 /// O pedido de uma onda, como o disco o entrega.
@@ -452,17 +452,6 @@ fn execution(context: &Context, wave: u64) -> Execution {
         build_dir: recorded.and_then(|copy| copy.build_dir),
     };
     Execution { running, commit, copy, review, ..context.base.clone() }
-}
-
-/// O texto das tarefas de uma onda, uma por linha: a consulta que escolhe as
-/// lições que o pedido da onda e o da revisão levam.
-fn tasks_text(log: &SpecLog, wave: u64) -> String {
-    log.block(BlockQuery::Wave(wave))
-        .iter()
-        .filter(|e| e.event_type == "task")
-        .filter_map(|task| task.str_field("text"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.

@@ -1688,9 +1688,10 @@ exit "${2:-0}"
             "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous", "origin": said})));
         // O código de cada decisão sai da ordem em que ela nasce na spec: a
         // primeira decisão gravada ganha o código de número um, a segunda o
-        // de número dois.
+        // de número dois. A primeira se liga à tarefa pela palavra-chave e é
+        // candidata da onda um; a segunda não serve a onda nenhuma.
         id_of(&write(root, "x", "decision",
-            json!({"text": "Sem dono, a onda um leva.", "keys": ["k"], "why": "w", "origin": said})));
+            json!({"text": "Sem dono, a onda um leva.", "keys": ["tarefa"], "why": "w", "origin": said})));
         id_of(&write(root, "x", "decision",
             json!({"text": "Sem dono, nenhuma onda leva.", "keys": ["k"], "why": "w", "origin": said})));
         write(root, "x", "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
