@@ -65,6 +65,9 @@ pub(crate) struct WaveReport {
     /// As sobras, cada uma com o título, o detalhe e o que ela é: a rodada
     /// as grava quando assume a volta ([`Leftover`]).
     pub leftovers: Vec<Leftover>,
+    /// A resposta por cada item combinado que o pedido da onda levou, como a
+    /// onda a gravou: o item, pelo código ou pelo número, e se foi cumprido.
+    pub agreed: Vec<Value>,
     /// Todas as voltas da onda desde o envio que a despachou, que a entrega
     /// oficial substitui.
     pub returns: Vec<u64>,
@@ -524,6 +527,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         fixes,
         replan,
         leftovers,
+        agreed: listed("agreed"),
         returns: Vec::new(),
         usage: Usage::default(),
     })
@@ -534,8 +538,10 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
 /// onda; a volta se lê como a rodada a assumirá; o título do commit que sairá
 /// do resumo cabe no teto e não traz o que nunca leva; cada arquivo entregue
 /// está no disco ou no git; cada prova aponta um critério da spec e é uma
-/// linha de comando. Passando, a volta ganha `returned` e o autor da onda, e
-/// os arquivos ficam relativos ao repositório. A conferência que depende de
+/// linha de comando; cada item combinado que o pedido da onda levou tem
+/// resposta em `agreed` ([`request_agreed`]). Passando, a volta ganha
+/// `returned` e o autor da onda, e os arquivos ficam relativos ao
+/// repositório. A conferência que depende de
 /// juntar a cópia fica na rodada. Sem o número da onda, nada aqui é
 /// conferido: a gravação recusa pelo campo que falta.
 ///
@@ -573,6 +579,14 @@ pub(crate) fn check_return(
         let id = criterion_id(&log, reference).map_err(RoundRefusal::Refused)?;
         let code = log.codes().get(&id).cloned().unwrap_or_else(|| id.to_string());
         agreed_prompt::proof_rule(&code, proof).map_err(RoundRefusal::Refused)?;
+    }
+    // A entrega presta conta de cada item combinado que o pedido levou, como
+    // o veredito final presta de todo o combinado: faltar algum recusa, com
+    // os códigos. O pedido sem item combinado não exige o campo.
+    let expected = request_agreed(&log, wave);
+    let (_, missing) = settle_agreed(&log, &mut draft.clone(), &expected, "wave").map_err(RoundRefusal::Refused)?;
+    if !missing.is_empty() {
+        return Err(RoundRefusal::Refused(Refusal::DeliveryAgreedMissing { wave, missing }));
     }
     if draft.contains_key("files") {
         draft.insert("files".into(), json!(report.files));
@@ -616,6 +630,34 @@ fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<M
     if draft.get("final") != Some(&Value::Bool(true)) {
         return Ok(Vec::new());
     }
+    let (tasks, missing) = settle_agreed(log, draft, &agreed_prompt::all_agreed(log), "review")?;
+    if !missing.is_empty() {
+        return Err(Refusal::AgreedItemsMissing { missing });
+    }
+    if !tasks.is_empty() {
+        draft.insert("result".into(), json!("rejected"));
+    }
+    Ok(tasks)
+}
+
+/// O que [`settle_agreed`] devolve: a tarefa de cada item não cumprido e o
+/// código de cada item esperado que ficou sem resposta.
+type SettledAgreed = (Vec<Map<String, Value>>, Vec<String>);
+
+/// A resposta `agreed` de uma volta — a entrega de uma onda ou o veredito
+/// final — resolvida contra os itens combinados que ela precisa responder
+/// (`expected`): cada item citado vira o número vigente dele, e o que não
+/// vem `met:true` vira uma tarefa nova no backlog, de autor `author`,
+/// cobrindo o item, com o que a resposta diz em `text` — sem ele, o texto do
+/// próprio item — e os arquivos que ela cita. Devolve essas tarefas e o
+/// código de cada item esperado que ficou sem resposta. O item citado que a
+/// spec não tem é recusado.
+fn settle_agreed(
+    log: &SpecLog,
+    draft: &mut Map<String, Value>,
+    expected: &[&SpecEvent],
+    author: &str,
+) -> Result<SettledAgreed, Refusal> {
     let (mut answered, mut tasks) = (Vec::new(), Vec::new());
     for item in draft.get_mut("agreed").and_then(Value::as_array_mut).into_iter().flatten() {
         let id = agreed_item_id(log, item.get("item").unwrap_or(&Value::Null))?;
@@ -624,25 +666,30 @@ fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<M
         if item.get("met").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        let text = item.get("text").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+        let said = item.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
+        let text = said.or_else(|| log.get(id).and_then(|e| e.str_field("text"))).unwrap_or_default();
         let files = item.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
         let files: Vec<Value> = files.map(|f| json!({ "path": f })).collect();
-        let task = json!({ "text": text, "files": files, "depends_on": [], "covers": [id], "author": "review" });
+        let task = json!({ "text": text, "files": files, "depends_on": [], "covers": [id], "author": author });
         tasks.extend(task.as_object().cloned());
     }
     let codes = log.codes();
-    let missing: Vec<String> = agreed_prompt::all_agreed(log)
+    let missing = expected
         .iter()
         .filter(|item| !answered.contains(&item.id))
         .map(|item| codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string()))
         .collect();
-    if !missing.is_empty() {
-        return Err(Refusal::AgreedItemsMissing { missing });
-    }
-    if !tasks.is_empty() {
-        draft.insert("result".into(), json!("rejected"));
-    }
-    Ok(tasks)
+    Ok((tasks, missing))
+}
+
+/// Os itens combinados que o pedido da onda `wave` levou: o que ele lê
+/// ([`agreed_prompt::dispatch_items`]), só com os tipos do bloco do
+/// combinado que o veredito final também responde — regra, limite, contrato,
+/// erro, caso de borda, fora do escopo e decisão. A entrega da onda responde
+/// por cada um deles.
+pub(super) fn request_agreed(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
+    let agreed: BTreeSet<u64> = agreed_prompt::all_agreed(log).iter().map(|item| item.id).collect();
+    agreed_prompt::dispatch_items(log, wave, None).into_iter().filter(|item| agreed.contains(&item.id)).collect()
 }
 
 /// O `replaces` do evento oficial que assume as voltas `returns`: o número
@@ -866,9 +913,10 @@ struct CheckedReport {
     /// Uma tarefa nova no backlog por item combinado que a revisão final
     /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
     agreed_tasks: Vec<Map<String, Value>>,
-    /// Uma tarefa nova no backlog por sobra que quebra, com a onda que a
+    /// Uma tarefa nova no backlog por item combinado que a entrega de uma
+    /// onda marcou `met:false` e por sobra que quebra, com a onda que a
     /// apontou: também sem onda própria, para a rodada seguinte formar o lote.
-    leftover_tasks: Vec<(u64, Map<String, Value>)>,
+    wave_tasks: Vec<(u64, Map<String, Value>)>,
 }
 
 /// O caminho como a rodada grava `file` da onda `wave`: quando é o caminho
@@ -891,9 +939,9 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// `commits`, na ordem em que serão gravados — pela conferência inteira da
 /// gravação, contra a spec, sem gravar nada: a linha sem campo obrigatório
 /// nunca deixa gravada a que veio antes dela, e nada é recusado depois do
-/// commit. O entregou vai também em cada onda que o conserto fecha, e a
-/// sobra que quebra vira tarefa no backlog, pela mesma conferência das
-/// tarefas que nascem do veredito.
+/// commit. O entregou vai também em cada onda que o conserto fecha, e o item
+/// combinado que a entrega não cumpriu e a sobra que quebra viram tarefa no
+/// backlog, pela mesma conferência das tarefas que nascem do veredito.
 fn check_reports(
     start: &Path,
     root: &Path,
@@ -932,6 +980,7 @@ fn check_reports(
     // dela desde o envio que a despachou: nenhuma volta velha fica esperando
     // outra rodada. A cópia na onda que o conserto fecha não substitui nada.
     let mut deliveries = Vec::new();
+    let mut wave_tasks = Vec::new();
     for report in &report.waves {
         for wave in std::iter::once(report.wave).chain(report.fixes.iter().copied()) {
             let mut draft = Map::new();
@@ -947,18 +996,26 @@ fn check_reports(
             {
                 draft.insert("replaces".into(), returns);
             }
+            // A resposta pelo combinado do pedido fica na entrega oficial,
+            // com cada item pelo número; o item não cumprido vira tarefa. A
+            // falta de resposta já foi recusada na gravação da volta.
+            if wave == report.wave && !report.agreed.is_empty() {
+                draft.insert("agreed".into(), json!(report.agreed));
+                let (tasks, _) = settle_agreed(check.log(), &mut draft, &[], "wave")?;
+                wave_tasks.extend(tasks.into_iter().map(|task| (wave, task)));
+            }
             draft.insert("author".into(), json!("wave"));
             check.record("delivered", draft.clone())?;
             deliveries.push((wave, draft));
         }
     }
-    let mut leftover_tasks = Vec::new();
     for wave in &report.waves {
         for leftover in wave.leftovers.iter().filter(|l| l.kind == Some(LeftoverKind::Breaks)) {
-            let task = leftover_task(root, check.log(), wave.wave, leftover);
-            check.record("task", task.clone())?;
-            leftover_tasks.push((wave.wave, task));
+            wave_tasks.push((wave.wave, leftover_task(root, check.log(), wave.wave, leftover)));
         }
+    }
+    for (_, task) in &wave_tasks {
+        check.record("task", task.clone())?;
     }
     // O consumo, que só se sabe na volta: quando a rodada mede algum dos
     // cinco campos, o envio da onda ganha uma versão nova com eles, sem
@@ -1006,7 +1063,7 @@ fn check_reports(
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks, leftover_tasks })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks, wave_tasks })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -1038,12 +1095,13 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 
 /// Grava o que [`check_reports`] conferiu, pela mesma porta de gravação das
 /// outras: primeiro os vereditos, que julgam entregas já gravadas; depois o
-/// entregou de cada onda, a tarefa de cada sobra que quebra e a versão nova
-/// de cada critério com prova nova.
+/// entregou de cada onda, a tarefa de cada item combinado que ela não cumpriu
+/// e de cada sobra que quebra, e a versão nova de cada critério com prova
+/// nova.
 /// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando.
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
-    let CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks, leftover_tasks } = checked;
+    let CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks, wave_tasks } = checked;
     let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
     let mut recorded = Vec::new();
@@ -1063,7 +1121,7 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;
         recorded.push(json!({ "wave": wave, "type": "delivered", "id": written.written.id }));
     }
-    for (wave, draft) in leftover_tasks {
+    for (wave, draft) in wave_tasks {
         let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
         recorded.push(json!({ "wave": wave, "type": "task", "id": written.written.id }));
     }
@@ -2273,6 +2331,106 @@ mod tests {
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_ne!(head(), seed, "the corrected call commits: {went}");
         assert_eq!(delivered_count(root), 1, "the corrected call records the delivery once");
+    }
+
+    /// A entrega de uma onda cujo pedido levou itens combinados responde por
+    /// cada um em `agreed`, pela porta do agente: faltando algum, a gravação é
+    /// recusada com o código de cada um que falta, e nada é gravado; o item
+    /// que o pedido de outra onda leva não é cobrado. Com todos respondidos,
+    /// a volta grava, e a rodada que a assume grava no backlog uma tarefa por
+    /// item `met:false`, de autor da onda e cobrindo o item, e nenhuma pelo
+    /// cumprido; a entrega oficial leva a resposta. O pedido sem item
+    /// combinado grava a entrega sem o campo.
+    #[test]
+    fn a_delivery_that_leaves_out_an_agreed_item_of_its_request_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let plan: &[(u64, &[&str], &[u64])] = &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1]), (3, &["src/c.rs"], &[2])];
+        approved_with(root, "x", plan, |said| {
+            for (kind, body) in [
+                ("decision", json!({"text": "A soma arredonda para baixo.", "why": "w", "waves": [1]})),
+                ("edge_case", json!({"text": "A lista vazia soma zero.", "expected": "0", "waves": [1]})),
+                ("rule", json!({"text": "O nome da função é curto.", "example": "e", "waves": [2]})),
+            ] {
+                let mut body = body;
+                body["keys"] = json!(["k"]);
+                body["origin"] = json!(said);
+                assert_eq!(write(root, "x", kind, body)["ok"], json!(true), "{kind}");
+            }
+        });
+        let read = || store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let id_of_code = |code: &str| read().codes().iter().find(|(_, c)| c.as_str() == code).map(|(id, _)| *id).unwrap();
+        let (decision, edge) = (id_of_code("MSTD-DEC-0001"), id_of_code("MSTD-EDGE-0001"));
+        let spec_lines = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
+        let backlog = || {
+            let log = read();
+            let tasks = log.events.iter().filter(|e| e.event_type == "task" && !e.fields.contains_key("replaces"));
+            tasks.filter(|e| e.wave().is_none()).map(|e| e.fields.clone()).collect::<Vec<_>>()
+        };
+        let deliver = |wave: u64, agreed: Option<Value>| {
+            let mut body = json!({"wave": wave, "text": format!("A onda {wave} saiu.")});
+            if let Some(agreed) = agreed {
+                body["agreed"] = agreed;
+            }
+            returned(root, body)
+        };
+        let sent = round(root, "x", None);
+        assert_eq!(sent["ok"], json!(true), "{sent}");
+
+        // Sem o campo, faltam os dois itens do pedido, e a regra da onda 2 não.
+        let before = spec_lines();
+        let refused = deliver(1, None);
+        assert_eq!(refused["reason"], json!("delivery-agreed-missing"), "{refused}");
+        let expected = translate("spec_events.delivery_agreed_missing", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{missing}", "MSTD-DEC-0001, MSTD-EDGE-0001");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        assert_eq!(spec_lines(), before, "nothing was written: {refused}");
+
+        // Na divisa, um item só sem resposta ainda recusa, citando só ele.
+        let one_short = deliver(1, Some(json!([{"item": "MSTD-DEC-0001", "met": true}])));
+        assert_eq!(one_short["reason"], json!("delivery-agreed-missing"), "{one_short}");
+        let hint = one_short["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-EDGE-0001") && !hint.contains("MSTD-DEC-0001"), "{one_short}");
+        assert_eq!(spec_lines(), before, "nothing was written: {one_short}");
+
+        let answered = json!([{"item": "MSTD-DEC-0001", "met": true},
+            {"item": "MSTD-EDGE-0001", "met": false, "text": "Falta a lista vazia somar zero."}]);
+        let wrote = deliver(1, Some(answered));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        assert!(backlog().is_empty(), "the task is born when the round takes the return");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+        let tasks = backlog();
+        assert_eq!(tasks.len(), 1, "one task, for the item not met: {tasks:?}");
+        assert_eq!(tasks[0]["covers"], json!([edge]), "{tasks:?}");
+        assert_eq!(tasks[0]["author"], json!("wave"), "{tasks:?}");
+        assert_eq!(tasks[0]["text"], json!("Falta a lista vazia somar zero."), "{tasks:?}");
+        let log = read();
+        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
+        let items: Vec<(Value, Value)> = official.fields["agreed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| (item["item"].clone(), item["met"].clone()))
+            .collect();
+        assert_eq!(items, vec![(json!(decision), json!(true)), (json!(edge), json!(false))], "{:?}", official.fields);
+
+        // Com todos cumpridos, a entrega grava como sempre, sem tarefa nova.
+        let refused = deliver(2, None);
+        assert_eq!(refused["reason"], json!("delivery-agreed-missing"), "{refused}");
+        let wrote = deliver(2, Some(json!([{"item": "MSTD-RULE-0001", "met": true}])));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+        assert_eq!(backlog().len(), 1, "no task for the items met: {:?}", backlog());
+
+        // O pedido sem item combinado não exige o campo.
+        let wrote = deliver(3, None);
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+        assert_eq!(backlog().len(), 1, "{:?}", backlog());
     }
 
     /// Todo agente do Mustard sai em Opus: a onda de várias tarefas e a de

@@ -1860,7 +1860,9 @@ exit "${2:-0}"
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
 
         std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
-        returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));
+        // A entrega responde pela decisão que o pedido da onda levou.
+        returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai",
+            "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
         let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();

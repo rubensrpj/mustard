@@ -611,6 +611,10 @@ pub const TYPES: &[TypeSpec] = &[
             // sobra com título e detalhe (`title`, `detail`): vira pendência
             // da spec quando a rodada assume a volta.
             opt("leftovers", Kind::Objects),
+            // A resposta por cada item combinado que o pedido da onda levou,
+            // como a do veredito final (`item`, `met`): o item que não vem
+            // cumprido vira tarefa no backlog quando a rodada assume a volta.
+            opt("agreed", Kind::Objects),
             RETURNED,
         ],
     ),

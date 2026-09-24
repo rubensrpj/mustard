@@ -241,7 +241,15 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
         std::fs::write(copy.join(path), content).expect("the change");
     }
     let files: Vec<&str> = changes.iter().map(|(path, _)| *path).collect();
-    let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da onda {wave}")});
+    // A entrega responde por cada item combinado que o pedido da onda levou:
+    // as respostas do levantamento valem para o projeto todo, e o pedido as
+    // leva todas.
+    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log)
+        .iter()
+        .map(|item| json!({"item": item.id, "met": true}))
+        .collect();
+    let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da onda {wave}"),
+        "agreed": agreed});
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC])
 }

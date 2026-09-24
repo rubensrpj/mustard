@@ -38,5 +38,6 @@ Grave a entrega com `run write delivered --json '<a linha>'`, mesmo --root e --s
 - `text`: no idioma do projeto, até 8.000 caracteres: cada arquivo mudado numa frase; de cada critério, o teste e a verificação do vermelho (o que foi cortado e o que caiu); o que decidiu fora do pedido; o que ficou aberto, e por quê.
 - `commit`: o que a onda fez, sem código, até 45 caracteres; a rodada soma o começo e recusa acima de 60.
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando novo>"}]`.
+- Pedido com item combinado (regra, caso de borda, decisão, contrato): `"agreed":[{"item":"<código>","met":true}]`, um por item; o não cumprido vai como `{"item":"<código>","met":false,"text":"<o que falta>"}` e vira tarefa no backlog.
 - Num conserto: `"fixes":[<as ondas que ele fecha>]`.
 - O plano não funciona: `"replan":"<a mudança, numa frase>"`.

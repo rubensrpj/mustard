@@ -38,5 +38,6 @@ Record the delivery with `run write delivered --json '<the line>'`, same --root 
 - `text`: in the project's language, up to 8,000 characters: each changed file in a sentence; for each criterion, the test and its red verification (what was cut, what fell); what you decided outside the request; what's left open, and why.
 - `commit`: what the wave did, no spec code, at most 45 characters; the round adds a prefix, refusing over 60.
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the new command>"}]`.
+- A request with agreed items (rule, edge case, decision, contract): `"agreed":[{"item":"<code>","met":true}]`, one per item; one not met goes as `{"item":"<code>","met":false,"text":"<what is missing>"}` and becomes a backlog task.
 - In a fix: `"fixes":[<waves it closes>]`.
 - The plan does not work: `"replan":"<the change, in one sentence>"`.

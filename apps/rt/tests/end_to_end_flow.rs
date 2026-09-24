@@ -276,10 +276,11 @@ impl Project {
     }
 }
 
-/// A lista `agreed` do veredito final, com todo o combinado vigente atendido:
-/// estes testes provam o fluxo do fechamento e do pull request, não o do
-/// combinado — sem a lista inteira, a revisão final seria recusada por
-/// faltar item.
+/// A lista `agreed` do veredito final e da entrega da onda, com todo o
+/// combinado vigente atendido: estes testes provam o fluxo do fechamento e do
+/// pull request, não o do combinado — sem a lista, a revisão final e a
+/// entrega da onda, cujo pedido leva as respostas do levantamento, seriam
+/// recusadas por faltar item.
 fn agreed_all_met(project: &Project) -> Value {
     let log = project.log();
     let codes = log.codes();
@@ -441,7 +442,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     // rodada assume a volta e não pede revisão nenhuma dela.
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
-        "commit": "a saudação vira olá"});
+        "commit": "a saudação vira olá", "agreed": agreed_all_met(&project)});
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(second.get("reviews").is_none(), "{second}");
@@ -510,7 +511,7 @@ fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
     let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
-        "commit": "a saudação vira olá"});
+        "commit": "a saudação vira olá", "agreed": agreed_all_met(&project)});
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC]);
     project.run(&["close", "--spec", SPEC]);
@@ -683,7 +684,8 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     std::fs::write(copy.join(SUB_FILE), "a biblioteca nova\n").expect("the submodule change");
     let delivered = json!({"wave": 1, "text": "A saudação e a biblioteca mudaram.",
-        "files": ["src/main.rs", SUB_FILE], "commit": "a saudação e a biblioteca mudam"});
+        "files": ["src/main.rs", SUB_FILE], "commit": "a saudação e a biblioteca mudam",
+        "agreed": agreed_all_met(project)});
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(!copy.exists(), "the copy and the submodule copy inside it are removed: {second}");

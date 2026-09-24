@@ -141,6 +141,10 @@ pub enum Refusal {
     /// item combinado vigente de fora dela. Nada é gravado, e a mensagem
     /// nomeia pelo código cada item que faltou.
     AgreedItemsMissing { missing: Vec<String> },
+    /// A entrega da onda `wave` sem a resposta, em `agreed`, por algum item
+    /// combinado que o pedido dela levou. Nada é gravado, e a mensagem nomeia
+    /// pelo código cada item que faltou.
+    DeliveryAgreedMissing { wave: u64, missing: Vec<String> },
     /// Um critério gravado sem declarar a forma: nenhuma das cinco do padrão
     /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
     /// pelo nome, nos dois idiomas.
@@ -252,6 +256,7 @@ impl Refusal {
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
+            Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
             Self::RequestOnClosedSpec { .. } => "request-on-closed-spec",
@@ -464,6 +469,10 @@ impl Refusal {
             Self::AgreedItemsMissing { missing } => fill(
                 "spec_events.agreed_items_missing",
                 &[("{missing}", missing.join(", "))],
+            ),
+            Self::DeliveryAgreedMissing { wave, missing } => fill(
+                "spec_events.delivery_agreed_missing",
+                &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
             ),
             Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
             Self::ProofNotACommand { criterion, found } => fill(

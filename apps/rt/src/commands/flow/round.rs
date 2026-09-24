@@ -385,8 +385,10 @@ mod tests {
 
     /// A volta da onda `wave`, com o resumo do commit, gravada pela porta do
     /// agente. Cada arquivo entregue que existe ganha uma linha, para o commit
-    /// ter o que levar. Devolve o relatório que o agente deixa depois de
-    /// gravar: vazio, porque a entrega mora na spec.
+    /// ter o que levar, e cada item combinado que o pedido da onda levou vem
+    /// cumprido em `agreed`, como o texto do agente ensina. Devolve o
+    /// relatório que o agente deixa depois de gravar: vazio, porque a entrega
+    /// mora na spec.
     pub(super) fn delivered(root: &Path, wave: u64, text: &str, files: &[&str]) -> String {
         for file in files {
             let path = root.join(file);
@@ -394,7 +396,13 @@ mod tests {
                 std::fs::write(&path, format!("{before}// {text}\n")).unwrap();
             }
         }
-        let body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
+        let mut body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let agreed: Vec<Value> =
+            report::request_agreed(&log, wave).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+        if !agreed.is_empty() {
+            body["agreed"] = json!(agreed);
+        }
         let wrote = returned(root, body);
         assert_eq!(wrote["ok"], json!(true), "a volta da onda {wave} não foi gravada: {wrote}");
         String::new()

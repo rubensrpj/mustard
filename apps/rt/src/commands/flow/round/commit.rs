@@ -1024,6 +1024,7 @@ mod tests {
                 fixes: Vec::new(),
                 replan: None,
                 leftovers: Vec::new(),
+                agreed: Vec::new(),
                 returns: Vec::new(),
                 usage: Default::default(),
             };
@@ -1054,6 +1055,7 @@ mod tests {
             fixes: Vec::new(),
             replan: None,
             leftovers: Vec::new(),
+            agreed: Vec::new(),
             returns: Vec::new(),
             usage: Default::default(),
         };
@@ -1540,6 +1542,7 @@ mod tests {
             fixes: Vec::new(),
             replan: None,
             leftovers: Vec::new(),
+            agreed: Vec::new(),
             returns: Vec::new(),
             usage: Default::default(),
         }

@@ -366,7 +366,13 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
         log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("o envio da onda 1");
     let copy = PathBuf::from(sent.str_field("copy").expect("a cópia da onda 1"));
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("a mudança");
-    let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu"});
+    // A entrega responde pelas decisões do levantamento, que o pedido leva.
+    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log)
+        .iter()
+        .map(|item| json!({"item": item.id, "met": true}))
+        .collect();
+    let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu",
+        "agreed": agreed});
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC]);
 
