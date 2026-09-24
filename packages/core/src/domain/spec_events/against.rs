@@ -14,7 +14,7 @@ use super::check::missing;
 use super::read::ints;
 use super::{is_empty, EventRef, Refusal, SpecEvent, SpecLog, TimeFilter};
 
-/// Troca cada código (`MSTD-RULE-0002`) dos campos que apontam eventos pelos
+/// Troca cada código (`MSTD-RULE-NNNN`) dos campos que apontam eventos pelos
 /// números que ele nomeia no arquivo como está, para que a linha gravada
 /// guarde só números: em `replaces` (um só ou a lista) e no `closes` de um
 /// ponto, a versão mais nova do item; nos alvos de `remove` e `purge`, todas

@@ -35,7 +35,7 @@ pub enum SpecEventsCmd {
         spec: Option<String>,
         /// Keep only the events whose words or item code match this term —
         /// the conversation searched for a subject, or an item found by the
-        /// code the page shows, like `MSTD-CRIT-0016`.
+        /// code the page shows, like `MSTD-CRIT-NNNN`.
         #[arg(long)]
         term: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
@@ -49,7 +49,7 @@ pub enum SpecEventsCmd {
     /// a source or citing a file that does not exist. `remove`,
     /// `purge` and a new version (`replaces`) are events like any other; they
     /// point at an item by its event number or by the code the page shows,
-    /// like `MSTD-RULE-0002`. A `remove` by the code takes out the whole
+    /// like `MSTD-RULE-NNNN`. A `remove` by the code takes out the whole
     /// item, every version of it; by the number, only that version, and the
     /// version it replaced comes back. With the `lesson` type it writes one lesson to
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:

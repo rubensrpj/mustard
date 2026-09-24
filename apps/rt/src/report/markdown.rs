@@ -7,7 +7,7 @@
 //! asterisco ou sublinhado não é lido: nome de arquivo e de variável usam os
 //! dois. HTML escrito dentro do markdown não passa: sai escapado, como texto.
 //!
-//! Todo código do Mustard (`MSTD-RULE-0005`) cujo item está na página vira
+//! Todo código do Mustard (`MSTD-RULE-NNNN`) cujo item está na página vira
 //! link para o item, também dentro de um trecho entre crases; o resto do
 //! texto fica como está.
 

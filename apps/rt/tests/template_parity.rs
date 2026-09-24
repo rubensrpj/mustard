@@ -903,17 +903,20 @@ fn comments_and_code(source: &str) -> (Vec<(usize, String)>, String) {
     (comments, String::from_utf8_lossy(&code).into_owned())
 }
 
-/// Os códigos de spec que um comentário cita: o código do Mustard
-/// (`MSTD-RULE-0005`), o rótulo com hífen de critério, ponto ou limite
+/// Os códigos de spec que um comentário cita: o código de item com número
+/// (`MSTD-RULE-NNNN`), o rótulo com hífen de critério, ponto ou limite
 /// (`AC-3`, `P-17`, `L-3.3`), a letra com número de regra, onda ou tarefa
-/// (`R5`, `W4`, `T1.7`, `W8A-2`) e a seção com o sinal de parágrafo. O que
-/// está entre crases ou aspas é dado, não citação: o formato de um código ou a
+/// (`R5`, `W4`, `T1.7`, `W8A-2`) e a seção com o sinal de parágrafo. O código
+/// de item com número cita um item mesmo entre crases; o resto do que está
+/// entre crases ou aspas é dado, não citação: o formato de um código ou a
 /// entrada de um teste.
 fn spec_codes_in(comment: &str) -> Vec<String> {
     static QUOTED: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"`[^`]*`|"[^"]*"|“[^”]*”"#).expect("the quote pattern compiles"));
     // Um código começa o texto ou vem depois de um caractere que não o
     // continua: `release/2026-Q3` e `U+E0B0` não são códigos.
+    static ITEM: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?:^|[^\w/.+-])(MSTD-[A-Z]+-\d+)").expect("the item pattern compiles"));
     static CODE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(concat!(
             r"(?:^|[^\w/.+-])(",
@@ -926,7 +929,16 @@ fn spec_codes_in(comment: &str) -> Vec<String> {
         ))
         .expect("the code pattern compiles")
     });
-    let bare = QUOTED.replace_all(comment, " ");
+    // Cada trecho entre crases fica só com os códigos de item que traz, na
+    // posição em que estavam; o trecho entre aspas some.
+    let bare = QUOTED.replace_all(comment, |quoted: &regex::Captures| {
+        let items: Vec<&str> = if quoted[0].starts_with('`') {
+            ITEM.captures_iter(&quoted[0]).filter_map(|c| c.get(1)).map(|m| m.as_str()).collect()
+        } else {
+            Vec::new()
+        };
+        format!(" {} ", items.join(" "))
+    });
     CODE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
 }
 
@@ -989,11 +1001,13 @@ fn the_comment_sweep_finds_each_spec_code_and_lets_data_pass() {
         ("// Layer promotion guard (T1.7)", "T1.7"),
         ("/// W8A-2 supersedes the old reader", "W8A-2"),
         ("// see the audit § 4", "§ 4"),
+        ("/// like `MSTD-CRIT-0016`", "MSTD-CRIT-0016"),
+        ("/// `parse(\"MSTD-RULE-0005\")` devolve a sigla", "MSTD-RULE-0005"),
     ] {
         assert_eq!(spec_codes_in(comment), [cited], "{comment}");
     }
     for clean in [
-        "/// like `MSTD-CRIT-0016`",
+        "/// like `MSTD-RULE-NNNN`",
         "/// o número escrito `P-12` vira `12`",
         r#"/// um código como "MSTD-RULE-0008" e uma frase"#,
         "/// UTF-8, SHA-256, BCP-47 and ISO-8601 are not codes",

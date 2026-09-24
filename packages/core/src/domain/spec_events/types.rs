@@ -200,7 +200,7 @@ pub enum EventRef {
 
 impl EventRef {
     /// O evento apontado por um valor: um número positivo ou um código
-    /// inteiro, como `MSTD-RULE-0002`. `None` para qualquer outra coisa.
+    /// inteiro, como `MSTD-RULE-NNNN`. `None` para qualquer outra coisa.
     #[must_use]
     pub fn from_value(value: &Value) -> Option<Self> {
         if let Some(id) = value.as_u64() {
