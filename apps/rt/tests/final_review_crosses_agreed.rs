@@ -227,8 +227,8 @@ fn dispatch_wave(project: &Project, wave: u64) -> Value {
 }
 
 /// O conserto da onda `wave` já despachada: muda `changes` na cópia que a
-/// rodada abriu para ela e devolve a linha `DELIVERED`, que fecha a onda com
-/// o commit.
+/// rodada abriu para ela e grava a entrega na spec, que a rodada assume e
+/// fecha com o commit.
 fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str)]) -> Value {
     let log = project.log();
     let sent = log
@@ -242,7 +242,8 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
     }
     let files: Vec<&str> = changes.iter().map(|(path, _)| *path).collect();
     let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da onda {wave}")});
-    project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")])
+    project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
+    project.run(&["round", "--spec", SPEC])
 }
 
 /// A spec pronta para a revisão final: aberta, levantada, planejada,

@@ -413,10 +413,14 @@ fn body_of(event: &SpecEvent) -> Option<Value> {
     (!holds_secret(&body)).then_some(body)
 }
 
-/// A linha que a cópia nunca leva: o registro interno e a linha que o
-/// formato antigo do expurgo esvaziou, que saiu da leitura.
+/// A linha que a cópia nunca leva: o registro interno, a linha que o formato
+/// antigo do expurgo esvaziou, que saiu da leitura, e a volta que o próprio
+/// agente gravou (`returned`), que a página só conhece pela versão oficial
+/// que a rodada ou o fechamento grava no lugar dela.
 fn never_copied(event: &SpecEvent, log_hidden: &std::collections::BTreeMap<u64, Hidden>) -> bool {
-    LEFT_OUT.contains(&event.event_type.as_str()) || matches!(log_hidden.get(&event.id), Some(Hidden::Purged { .. }))
+    LEFT_OUT.contains(&event.event_type.as_str())
+        || matches!(log_hidden.get(&event.id), Some(Hidden::Purged { .. }))
+        || event.returned()
 }
 
 /// Os itens com número maior que `since` que vão para o banco, em ordem de

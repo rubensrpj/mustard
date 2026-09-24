@@ -289,8 +289,9 @@ mod tests {
 
         let change = "A onda 1 precisa da 2 antes.";
         let code = replan_code(1, change);
-        let report = line("DELIVERED", json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change}));
-        let stopped = round(root, "x", Some(&report));
+        let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+        let stopped = round(root, "x", None);
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
         let question = stopped["question"].as_str().unwrap_or_default().to_string();
         assert_eq!(question, change_question(1, change, Locale::PtBr), "{stopped}");
@@ -315,20 +316,20 @@ mod tests {
         assert_eq!(forged["reason"], json!("user-message-by-hook"), "{forged}");
         let own = by_hand(json!({ "text": format!("{question}\nAceitar"), "witness": witness }));
         assert_eq!(own["reason"], json!("user-message-by-hook"), "{own}");
-        let still = round(root, "x", Some(&report));
+        let still = round(root, "x", None);
         assert_eq!(still["reason"], json!("wave-plan-does-not-work"), "a forged yes accepts nothing: {still}");
 
         click(root, session, &question, &code, "Recusar");
-        let refused = round(root, "x", Some(&report));
+        let refused = round(root, "x", None);
         assert_eq!(refused["reason"], json!("wave-plan-does-not-work"), "a declined change stays stopped: {refused}");
 
         // O "sim" de uma mudança nunca serve para outra.
         click(root, session, &question, &replan_code(1, "Outra mudança."), "Aceitar");
-        let other = round(root, "x", Some(&report));
+        let other = round(root, "x", None);
         assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "{other}");
 
         click(root, session, &question, &code, "Aceitar");
-        let went = round(root, "x", Some(&report));
+        let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(delivered_count(root), 1, "the round records what the wave delivered");
     }
@@ -353,8 +354,9 @@ mod tests {
 
         let change = "A onda 1 precisa da onda 2 antes dela.";
         let code = replan_code(1, change);
-        let report = line("DELIVERED", json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change}));
-        let stopped = round(root, "x", Some(&report));
+        let back = json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+        let stopped = round(root, "x", None);
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
 
         // A pergunta pronta é a do usuário: o que muda e o que acontece em
@@ -373,18 +375,18 @@ mod tests {
 
         // O código de outra mudança no cabeçalho não aceita esta.
         click(root, session, mine, &replan_code(1, "Outra mudança."), "Aceitar");
-        let other = round(root, "x", Some(&report));
+        let other = round(root, "x", None);
         assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "o sim de outra mudança não vale: {other}");
 
         // Sem código nenhum no cabeçalho, nada diz qual mudança o clique
         // decide, e a rodada segue parada.
         click(root, session, mine, "Mudança", "Aceitar");
-        let blind = round(root, "x", Some(&report));
+        let blind = round(root, "x", None);
         assert_eq!(blind["reason"], json!("wave-plan-does-not-work"), "sem código não destrava: {blind}");
 
         // Com o código no cabeçalho, o "sim" vale, seja qual for a frase.
         click(root, session, mine, &code, "Aceitar");
-        let went = round(root, "x", Some(&report));
+        let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(delivered_count(root), 1, "a rodada gravou o que a onda entregou: {went}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();

@@ -62,6 +62,13 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
         .map(|field| field.name.to_string())
         .collect();
     absent.extend(nested_absent(event, spec.name));
+    // A sobra sem título ou sem detalhe tem recusa própria, com o campo que
+    // falta na primeira sobra incompleta: ela vira pendência da spec, e a
+    // mensagem diz o que a pendência não teria. Faltando também outro campo,
+    // a recusa de sempre cita todos de uma vez.
+    if let Some(field) = leftover_field_missing(&absent) {
+        return Err(Refusal::LeftoverFieldMissing { field });
+    }
     if !absent.is_empty() {
         return Err(missing(spec.name, &absent.join(", ")));
     }
@@ -94,7 +101,9 @@ fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
         req("author", Kind::OneOf(AUTHORS)),
         Field { name: "origin", kind: Kind::Int, required: spec.needs_origin && by_assistant },
         opt("label", Kind::Text),
-        opt("replaces", Kind::Ref),
+        // A versão nova aponta um item só; a entrega oficial de uma onda
+        // aponta a lista de todas as voltas que ela assume.
+        opt("replaces", if event.get("replaces").is_some_and(Value::is_array) { Kind::Refs } else { Kind::Ref }),
     ];
     fields.extend(
         [opt("text", Kind::Text), opt("keys", Kind::Texts)]
@@ -167,6 +176,21 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("message", "witness", &["question", "answer"]),
     ("remove", "filter", &["type", "from", "to"]),
 ];
+
+/// O campo que falta na primeira sobra incompleta da entrega (`title` ou
+/// `detail`), lido do caminho que [`nested_absent`] devolve
+/// (`leftovers[2].detail`); `None` quando toda sobra está completa, e também
+/// quando falta outro campo além das sobras.
+fn leftover_field_missing(absent: &[String]) -> Option<String> {
+    let field = |path: &String| {
+        let rest = path.strip_prefix("leftovers[")?;
+        rest.split_once("].").map(|(_, field)| field.to_string())
+    };
+    if absent.iter().any(|path| field(path).is_none()) {
+        return None;
+    }
+    absent.iter().find_map(field)
+}
 
 /// Os campos de dentro que faltam, todos, com o caminho de cada um, como
 /// `files[2].path` ou `witness.answer`.

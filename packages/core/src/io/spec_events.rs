@@ -1191,10 +1191,7 @@ mod tests {
         let mut missing = wave_return(2, "Sobra pela metade.");
         missing["leftovers"] = json!([{"title": "  ", "detail": "d"}, {"title": "Outra sobra"}]);
         let refused = write_at(&path, "delivered", obj(missing), &[], &at("10:01")).unwrap_err();
-        assert_eq!(
-            refused,
-            Refusal::MissingField { event_type: "delivered".into(), field: "leftovers[1].title, leftovers[2].detail".into() }
-        );
+        assert_eq!(refused, Refusal::LeftoverFieldMissing { field: "title".into() });
         assert_eq!(std::fs::read(&path).unwrap(), before, "nada foi gravado");
 
         let first = put(&path, &[], "delivered", &at("10:02"), wave_return(2, "Primeira volta.")).id;

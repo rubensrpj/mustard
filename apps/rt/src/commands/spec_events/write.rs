@@ -91,11 +91,19 @@
 //! [`record`], a mesma gravação deste comando.
 //!
 //! Este comando também não grava a execução de um critério (`criterion_run`),
-//! o veredito (`verdict`), o envio do pedido (`send`), o que uma onda entregou
-//! (`delivered`), o commit (`commit`) nem a resposta do assistente
-//! (`response`), nem tira ou revê um deles: quem os grava é o binário — a
-//! rodada, o fechamento e o despachante. O autor `binary` é só das gravações
-//! de dentro do binário.
+//! o veredito (`verdict`), o envio do pedido (`send`), o commit (`commit`) nem
+//! a resposta do assistente (`response`), nem tira ou revê um deles: quem os
+//! grava é o binário — a rodada, o fechamento e o despachante. O autor
+//! `binary` é só das gravações de dentro do binário.
+//!
+//! A entrega de uma onda (`delivered`) entra por aqui só como a volta que a
+//! própria onda grava, com envio aberto para ela: a gravação a marca com
+//! `returned`, e ela fica fora de toda leitura até a rodada assumi-la,
+//! gravando a entrega oficial no lugar dela. As conferências que só leem a
+//! volta — o título do commit, o resumo com cara de código de commit, o
+//! arquivo que não existe, a prova — recusam antes de gravar. A entrega
+//! oficial continua do binário: o `run write` não a grava, não a tira nem a
+//! revê.
 //!
 //! O clique (a `message` com `witness`, de qualquer autor: a resposta a uma
 //! pergunta com opções) também não passa por aqui, nem para ser tirado ou
@@ -185,10 +193,11 @@ use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
 /// fechamento grava ao rodar a prova; o veredito, o envio do pedido de uma
-/// onda, o que ela entregou e o commit, que só a rodada grava; a tabela de
-/// rastreabilidade, que o fechamento grava ao aceitar o veredito final; e a
-/// resposta do assistente, que o despachante grava no fim de cada resposta.
-/// O `run write` não os grava, nem tira ou revê um deles.
+/// onda, a entrega oficial dela e o commit, que só a rodada grava; a tabela
+/// de rastreabilidade, que o fechamento grava ao aceitar o veredito final; e
+/// a resposta do assistente, que o despachante grava no fim de cada resposta.
+/// O `run write` não os grava, nem tira ou revê um deles. A única entrada é a
+/// volta da onda, escondida da leitura até a rodada assumi-la.
 const BINARY_ONLY: &[&str] =
     &["criterion_run", "verdict", "send", "delivered", "commit", "tracking", "response"];
 
@@ -289,7 +298,9 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     if event_type == "work_type" {
         return refuse(Refusal::WorkTypeByGrill);
     }
-    if BINARY_ONLY.contains(&event_type) {
+    // A entrega é a exceção dos tipos do binário: a onda grava a própria
+    // volta, conferida mais abaixo, e a rodada grava a versão oficial.
+    if BINARY_ONLY.contains(&event_type) && event_type != "delivered" {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
     }
     // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
@@ -307,6 +318,14 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     }
     if let Err(refusal) = spec_was_opened(&project.root, spec) {
         return refuse(refusal);
+    }
+    // A volta da onda só entra com envio aberto para ela, e passa antes pelas
+    // conferências que só leem a volta: a recusa vem antes de gravar, e o
+    // agente grava de novo.
+    if event_type == "delivered"
+        && let Err(refusal) = crate::commands::flow::round::check_return(&opts.root, spec, &mut draft)
+    {
+        return refusal.to_value(lang);
     }
     // O passo seguinte de um pedido, pelo efeito dele; a conferência do tipo
     // recusa um efeito que não existe antes de o relatório sair.
@@ -1466,13 +1485,14 @@ mod tests {
         }
     }
 
-    /// O que cada onda entregou, o commit, o clique e a fala digitada do
-    /// usuário não são gravados à mão: o `run write` recusa os quatro, e recusa
-    /// tirar ou rever uma entrega, um clique ou uma fala do usuário, sem gravar
-    /// nada. A mensagem do assistente segue aceita, e o expurgo da fala do
-    /// usuário também: o segredo colado na conversa precisa poder sair.
+    /// O commit, o clique e a fala digitada do usuário não são gravados à mão,
+    /// e a entrega só entra como volta da onda com o envio dela aberto: sem
+    /// envio, o `run write` a recusa. Ele recusa também tirar ou rever uma
+    /// entrega, um clique ou uma fala do usuário, sem gravar nada. A mensagem
+    /// do assistente segue aceita, e o expurgo da fala do usuário também: o
+    /// segredo colado na conversa precisa poder sair.
     #[test]
-    fn deliveries_commits_and_user_clicks_are_never_written_by_hand() {
+    fn commits_and_user_clicks_are_never_written_by_hand() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = message(root, "user", "a senha é abc123");
@@ -1497,7 +1517,7 @@ mod tests {
         let witness = json!({"question": "Seguir?", "answer": "Sim"});
         let before = lines(root);
         for (event_type, body, reason) in [
-            ("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["src/a.rs"]}), "binary-only-type"),
+            ("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["src/a.rs"]}), "no-open-send"),
             ("commit", json!({"sha": "abc", "title": "t", "waves": [1], "files": ["src/a.rs"], "repo": "r"}), "binary-only-type"),
             ("remove", json!({"targets": [delivered], "reason": "engano"}), "binary-only-type"),
             ("message", json!({"author": "user", "text": "Seguir?\nSim", "witness": witness}), "user-message-by-hook"),

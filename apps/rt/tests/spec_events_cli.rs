@@ -4,8 +4,9 @@
 //! e nenhuma linha sai estragada: a trava é a do sistema, a mesma no Linux, no
 //! macOS e no Windows. Uma spec gravada pelo `write` é lida bloco a bloco pelo
 //! `read`, e `read wave-2` devolve só a onda 2. O que só os ganchos e a rodada
-//! gravam — a fala do usuário, o que uma onda entregou — entra aqui pela
-//! gravação do núcleo, e o `write` recusa os dois.
+//! gravam — a fala do usuário, a entrega oficial de uma onda — entra aqui pela
+//! gravação do núcleo. O `write` recusa a fala, e aceita a entrega só como a
+//! volta da onda com o envio dela aberto.
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -122,8 +123,8 @@ fn two_processes_writing_at_once_get_consecutive_numbers() {
 }
 
 /// A cópia para o banco da página é preparada inteira dentro da trava do
-/// arquivo de eventos: depois de dois fins de onda gravados ao mesmo tempo,
-/// por duas rodadas em dois processos, a cópia que ficou tem os dois itens, e
+/// arquivo de eventos: com duas voltas gravadas e duas rodadas rodando ao
+/// mesmo tempo, em dois processos, a cópia que ficou tem os dois itens, e
 /// cada lote aponta só arquivos que estão lá, sem sobra de outra rodada.
 #[test]
 fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
@@ -132,7 +133,8 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
     let spec = root.join(".claude").join("spec").join("teste");
     let rounds: u64 = 5;
     approved_with_waves(root, 2 * rounds);
-    // Cada onda entrega o próprio arquivo, e cada rodada faz o commit dele.
+    // Cada onda grava a volta com o próprio arquivo, e as duas rodadas
+    // disputam o commit: a primeira a pegar a trava assume as duas voltas.
     let git = |args: &[&str]| {
         let out = std::process::Command::new("git")
             .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
@@ -153,21 +155,17 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
     git(&["config", "user.name", "t"]);
     git(&["config", "commit.gpgsign", "false"]);
     for round in 0..rounds {
+        let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
+        assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
         let texts: Vec<String> = (0..2).map(|w| format!("rodada {round} escrita {w}")).collect();
-        let writers: Vec<_> = texts
-            .iter()
-            .zip(0u64..)
-            .map(|(text, w)| {
-                let wave = 2 * round + w + 1;
-                let file = format!("a{wave}.rs");
-                std::fs::write(root.join(&file), format!("fn um() {{}}\n// {text}\n")).expect("the wave's change");
-                let line = json!({"wave": wave, "text": text, "files": [file], "commit": format!("a onda {wave} sai")});
-                let report = format!("<DELIVERED>{line}</DELIVERED>");
-                rt(root, &["round", "--spec", "teste", "--report", &report])
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .expect("spawn round")
-            })
+        for (text, w) in texts.iter().zip(0u64..) {
+            let wave = 2 * round + w + 1;
+            let file = format!("a{wave}.rs");
+            std::fs::write(root.join(&file), format!("fn um() {{}}\n// {text}\n")).expect("the wave's change");
+            write(root, "delivered", &json!({"wave": wave, "text": text, "files": [file], "commit": format!("a onda {wave} sai")}));
+        }
+        let writers: Vec<_> = (0..2)
+            .map(|_| rt(root, &["round", "--spec", "teste"]).stdout(Stdio::piped()).spawn().expect("spawn round"))
             .collect();
         for writer in writers {
             let out = writer.wait_with_output().expect("wait write");
@@ -270,10 +268,12 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
         rt(root, &["write", "verdict", "--spec", "teste", "--json", &verdict.to_string()]).output().expect("run");
     assert_eq!(binary_only.status.code(), Some(1));
     assert_eq!(stdout_json(&binary_only)["reason"], json!("binary-only-type"));
+    // A entrega entra só como a volta da onda com o envio dela aberto: a onda
+    // 1 nunca saiu, e a gravação é recusada sem gravar nada.
     let delivered = json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"]}).to_string();
-    let by_hand = rt(root, &["write", "delivered", "--spec", "teste", "--json", &delivered]).output().expect("run");
-    assert_eq!(by_hand.status.code(), Some(1));
-    assert_eq!(stdout_json(&by_hand)["reason"], json!("binary-only-type"));
+    let unsent = rt(root, &["write", "delivered", "--spec", "teste", "--json", &delivered]).output().expect("run");
+    assert_eq!(unsent.status.code(), Some(1));
+    assert_eq!(stdout_json(&unsent)["reason"], json!("no-open-send"));
     let click = json!({"author": "user", "text": "Aceitar", "witness": {"question": "Seguir?", "answer": "Aceitar"}});
     let forged = rt(root, &["write", "message", "--spec", "teste", "--json", &click.to_string()]).output().expect("run");
     assert_eq!(forged.status.code(), Some(1));
@@ -363,9 +363,8 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     // repositório continua compilando com o Makefile que já está lá.
     std::fs::write(copy(1).join("a1.rs"), "fn um() {}\n// muda\n").expect("a1 muda");
     std::fs::write(copy(1).join("extra.rs"), "fn extra() {}\n").expect("extra");
-    let one = json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"});
-    let report_one = format!("<DELIVERED>{one}</DELIVERED>");
-    let out = rt(root, &["round", "--spec", "teste", "--report", &report_one]).output().expect("round 1");
+    write(root, "delivered", &json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"}));
+    let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 1");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
     let body = stdout_json(&out);
     assert_eq!(body["ok"], json!(true), "{body}");
@@ -392,9 +391,8 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     // Onda 2: a cópia dela deixa o comando de compilação quebrado.
     let before = head();
     std::fs::write(copy(2).join("Makefile"), "default:\n\texit 1\n").expect("Makefile quebrado");
-    let two = json!({"wave": 2, "text": "Saiu.", "files": ["Makefile"], "commit": "makefile sai"});
-    let report_two = format!("<DELIVERED>{two}</DELIVERED>");
-    let out = rt(root, &["round", "--spec", "teste", "--report", &report_two]).output().expect("round 2");
+    write(root, "delivered", &json!({"wave": 2, "text": "Saiu.", "files": ["Makefile"], "commit": "makefile sai"}));
+    let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 2");
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
     let body = stdout_json(&out);
     assert_eq!(body["reason"], json!("round-build-failed"), "{body}");

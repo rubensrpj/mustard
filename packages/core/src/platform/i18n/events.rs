@@ -280,6 +280,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The delivery note has {chars} characters, and the cap is {max}. It goes back to the main \
              window: say what changed, without repeating the request. Nothing was written."
         }
+        ("spec_events.no_open_send", Locale::PtBr) => {
+            "Não há envio aberto para a onda {wave}. Nada foi gravado."
+        }
+        ("spec_events.no_open_send", Locale::EnUs) => {
+            "There is no open send for wave {wave}. Nothing was written."
+        }
+        ("spec_events.leftover_field_missing", Locale::PtBr) => {
+            "Falta o campo {field} numa sobra (leftovers) da entrega. Nada foi gravado."
+        }
+        ("spec_events.leftover_field_missing", Locale::EnUs) => {
+            "A leftover (leftovers) of the delivery lacks the field {field}. Nothing was written."
+        }
+        ("spec_events.report_carries_return_line", Locale::PtBr) => {
+            "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
+             relatório leva só as linhas USAGE, PAUSED e ANALYSIS."
+        }
+        ("spec_events.report_carries_return_line", Locale::EnUs) => {
+            "The delivery and the verdict live in the spec: the agent writes them with mustard-rt \
+             run write. The report carries only the USAGE, PAUSED and ANALYSIS lines."
+        }
+        ("spec_events.return_missing", Locale::PtBr) => {
+            "A onda {wave} terminou sem gravar a entrega: peça ao agente que a grave com `mustard-rt \
+             run write delivered` e rode a rodada de novo com o mesmo relatório. Nada foi gravado."
+        }
+        ("spec_events.return_missing", Locale::EnUs) => {
+            "Wave {wave} ended without writing its delivery: ask the agent to write it with \
+             `mustard-rt run write delivered` and run the round again with the same report. Nothing \
+             was written."
+        }
+        ("spec_events.return_needs_commit", Locale::PtBr) => {
+            "A cópia da onda {wave} mudou arquivo, e a entrega que ela gravou não traz o resumo do \
+             commit (`commit`): peça ao agente que grave a entrega de novo, com o campo, e rode a \
+             rodada de novo. Nada foi gravado."
+        }
+        ("spec_events.return_needs_commit", Locale::EnUs) => {
+            "The copy of wave {wave} changed files, and the delivery it wrote lacks the commit \
+             summary (`commit`): ask the agent to write the delivery again, with the field, and run \
+             the round again. Nothing was written."
+        }
         ("spec_events.unknown_target", Locale::PtBr) => {
             "O evento {id} não existe nesta spec. Nada foi gravado."
         }
@@ -370,14 +409,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.binary_only_type", Locale::PtBr) => {
             "O tipo {type} da spec {spec} não é gravado pelo `run write`, nem tirado ou revisto por \
              ele, e nada foi gravado: o binário grava a execução dos critérios no fechamento, o \
-             veredito, o envio, o que cada onda entregou e o commit pela rodada, e a resposta do \
-             assistente no fim de cada resposta."
+             veredito, o envio, a entrega oficial de cada onda e o commit pela rodada, e a resposta \
+             do assistente no fim de cada resposta. A onda grava só a própria volta, com `run write \
+             delivered` enquanto o envio dela está aberto, e a rodada a assume."
         }
         ("spec_events.binary_only_type", Locale::EnUs) => {
             "The type {type} of the spec {spec} is not written, removed or revised by `run write`, \
              and nothing was written: the binary writes the criteria runs at the close, the \
-             verdict, the send, what each wave delivered and the commit through the round, and the \
-             assistant's response at the end of each answer."
+             verdict, the send, the official delivery of each wave and the commit through the \
+             round, and the assistant's response at the end of each answer. A wave writes only its \
+             own return, with `run write delivered` while its send is open, and the round takes it \
+             over."
         }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
             "Na spec {spec}, a resposta a uma pergunta com opções (a mensagem com `witness`, de \
@@ -606,8 +648,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            84,
-            0x4596_c2f0_5703_cfaa,
+            89,
+            0x2a80_7d5b_887b_1762,
         );
     }
 
@@ -649,6 +691,11 @@ mod tests {
             ("spec_events.purge_excerpt_not_found", &["{code}"][..]),
             ("spec_events.closing_point_last_record", &["{code}"][..]),
             ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),
+            ("spec_events.no_open_send", &["{wave}"][..]),
+            ("spec_events.leftover_field_missing", &["{field}"][..]),
+            ("spec_events.report_carries_return_line", &[][..]),
+            ("spec_events.return_missing", &["{wave}"][..]),
+            ("spec_events.return_needs_commit", &["{wave}"][..]),
             ("approve_spec.open_points", &["{count}", "{points}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),
             ("spec_events.deferred_closed_pending", &["{pending}"][..]),

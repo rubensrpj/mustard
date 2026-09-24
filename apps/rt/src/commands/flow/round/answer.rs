@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog, DELIVERED_MAX_CHARS};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::wave_prompt::{agent_from_template, estimate_tokens, token_cap_message, wave_files};
 use mustard_core::io::spec_events as store;
@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 use super::commit::git_lock;
 use super::queue::{
     analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, emptied_backlog_waves, first_unfinished, max_parallel, next_waves,
-    only_analysis, open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
+    open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
 };
 use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
@@ -52,8 +52,16 @@ pub(crate) enum RoundRefusal {
     FileUnknown { file: String, wave: u64 },
     /// A spec ainda não foi aprovada.
     NotApproved { phase: String },
-    /// O que uma onda entregou passa do teto de caracteres.
-    DeliveredTooLong { wave: u64, chars: usize },
+    /// O relatório trouxe a linha da entrega colada: a entrega mora na spec,
+    /// e o agente a grava.
+    ReturnLine,
+    /// A linha de consumo chegou para uma onda com envio aberto, sem volta
+    /// gravada, e com o Claude Code dela ainda aberto: o agente terminou sem
+    /// gravar a entrega.
+    ReturnMissing { wave: u64 },
+    /// A cópia da onda mudou arquivo, e a volta gravada não traz o resumo do
+    /// commit: o agente grava a entrega de novo.
+    ReturnNeedsCommit { wave: u64 },
     /// A mensagem do commit não cabe no modelo.
     CommitTooLong { part: String, chars: usize, max: usize },
     /// A mensagem do commit traz o que ela nunca leva.
@@ -86,7 +94,9 @@ impl RoundRefusal {
             Self::MergeConflict { .. } => "round-merge-conflict".into(),
             Self::FileUnknown { .. } => "round-file-unknown".into(),
             Self::NotApproved { .. } => "round-not-approved".into(),
-            Self::DeliveredTooLong { .. } => "delivered-too-long".into(),
+            Self::ReturnLine => "round-return-line".into(),
+            Self::ReturnMissing { .. } => "round-return-missing".into(),
+            Self::ReturnNeedsCommit { .. } => "round-return-needs-commit".into(),
             Self::CommitTooLong { .. } => "commit-too-long".into(),
             Self::CommitForbidden { .. } => "commit-forbidden-text".into(),
             Self::CommitLooksLikeSha { .. } => "commit-looks-like-sha".into(),
@@ -126,14 +136,11 @@ impl RoundRefusal {
                 fill("round.file_unknown", &[("{file}", file.clone()), ("{wave}", wave.to_string())])
             }
             Self::NotApproved { phase } => fill("round.not_approved", &[("{phase}", phase.clone())]),
-            Self::DeliveredTooLong { wave, chars } => fill(
-                "round.delivered_too_long",
-                &[
-                    ("{wave}", wave.to_string()),
-                    ("{chars}", chars.to_string()),
-                    ("{max}", DELIVERED_MAX_CHARS.to_string()),
-                ],
-            ),
+            Self::ReturnLine => fill("spec_events.report_carries_return_line", &[]),
+            Self::ReturnMissing { wave } => fill("spec_events.return_missing", &[("{wave}", wave.to_string())]),
+            Self::ReturnNeedsCommit { wave } => {
+                fill("spec_events.return_needs_commit", &[("{wave}", wave.to_string())])
+            }
             Self::CommitTooLong { part, chars, max } => fill(
                 "round.commit_too_long",
                 &[("{part}", part.clone()), ("{chars}", chars.to_string()), ("{max}", max.to_string())],
@@ -428,15 +435,13 @@ pub(super) fn run_round_with_mine(
     // já estava pronta antes desta rodada começar é empacotada aqui.
     let log_on_entry = log.clone();
 
-    // O relatório que só traz a escolha antes do envio não tem o que juntar:
-    // a rodada vai direto ao despacho, com a escolha de cada onda.
+    // A rodada assume, antes de despachar, a volta que cada onda gravou na
+    // spec, com ou sem relatório: o relatório traz só as linhas de quem
+    // despacha. Sem volta e sem linha a assumir, nada é juntado, e a rodada
+    // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let Taken { mut recorded, formatted, mut warnings, commit, paused } = match raw {
-        Some(raw) if !only_analysis(raw) => {
-            super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, mine)?
-        }
-        _ => Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused: Vec::new() },
-    };
+    let Taken { mut recorded, formatted, mut warnings, commit, paused } =
+        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, mine)?;
     let (given, unread) = analysis_lines(raw, lang);
     warnings.extend(unread);
 

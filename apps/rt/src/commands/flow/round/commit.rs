@@ -1023,11 +1023,9 @@ mod tests {
                 proofs: Vec::new(),
                 fixes: Vec::new(),
                 replan: None,
-                model_used: None,
-                steps: None,
-                tokens: None,
-                caller_steps: None,
-                caller_tokens: None,
+                leftovers: Vec::new(),
+                returns: Vec::new(),
+                usage: Default::default(),
             };
             let (title, _) = commit_message(&[report("a".repeat(limit))], lang)
                 .unwrap_or_else(|_| panic!("{lang:?}: a {limit}-character summary fits"))
@@ -1055,11 +1053,9 @@ mod tests {
             proofs: Vec::new(),
             fixes: Vec::new(),
             replan: None,
-            model_used: None,
-            steps: None,
-            tokens: None,
-            caller_steps: None,
-            caller_tokens: None,
+            leftovers: Vec::new(),
+            returns: Vec::new(),
+            usage: Default::default(),
         };
 
         let waves = [report(1, "a".repeat(43)), report(2, "a".repeat(43))];
@@ -1081,9 +1077,9 @@ mod tests {
         assert_eq!(body.lines().count(), 2, "{body}");
     }
 
-    /// A mensagem do commit é conferida antes de qualquer gravação: o
-    /// relatório com e-mail no corpo é recusado sem gravar o entregou, e a
-    /// chamada seguinte, com a mensagem limpa, grava uma vez só.
+    /// A mensagem do commit é conferida antes de qualquer gravação: a volta
+    /// com e-mail no resumo é recusada na gravação, sem escrever nada, e a
+    /// volta seguinte, com a mensagem limpa, é assumida uma vez só.
     #[test]
     fn a_report_with_a_bad_commit_message_records_nothing() {
         let dir = tempdir().unwrap();
@@ -1092,19 +1088,16 @@ mod tests {
         round(root, "x", None);
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
-        let delivered = |summary: &str| {
-            line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": summary}))
-        };
-        let refused = round(root, "x", Some(&delivered("pedido de fulano@empresa.com.br")));
+        let delivered =
+            |summary: &str| json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": summary});
+        let refused = returned(root, delivered("pedido de fulano@empresa.com.br"));
         assert_eq!(refused["reason"], json!("commit-forbidden-text"), "{refused}");
-        let path = store::spec_file(root, "x").unwrap();
-        let log = store::read(&path).unwrap().unwrap();
-        assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 0, "nada foi gravado");
+        assert_eq!(written_deliveries(root), 0, "nada foi gravado");
 
-        let went = round(root, "x", Some(&delivered("a soma sai")));
+        assert_eq!(returned(root, delivered("a soma sai"))["ok"], json!(true));
+        let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
-        let log = store::read(&path).unwrap().unwrap();
-        assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 1, "sem duplicar");
+        assert_eq!(delivered_count(root), 1, "sem duplicar");
     }
 
     /// A rodada faz o commit da rodada e grava o código dele na spec.
@@ -1119,9 +1112,9 @@ mod tests {
         git_at(root, &["config", "user.name", "t"]);
         git_at(root, &["config", "commit.gpgsign", "false"]);
 
-        let report = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
-            "commit": "a soma sai"}));
-        let out = round(root, "x", Some(&report));
+        let report = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai"});
+        assert_eq!(returned(root, report)["ok"], json!(true));
+        let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["commit"]["title"], json!("feat(onda-1): a soma sai"), "{out}");
         let sha = out["commit"]["sha"].as_str().unwrap_or_default().to_string();
@@ -1150,9 +1143,9 @@ mod tests {
         std::fs::write(root.join("src/c.rs"), "fn um() {}\nfn tres() {}\n").unwrap();
 
         let files = ["src/a.rs", "src/b.rs", "src/c.rs"];
-        let report = line("DELIVERED", json!({"wave": 1, "text": "Dois arquivos saíram.", "files": files,
-            "commit": "tira dois arquivos"}));
-        let out = round(root, "x", Some(&report));
+        let report = json!({"wave": 1, "text": "Dois arquivos saíram.", "files": files, "commit": "tira dois arquivos"});
+        assert_eq!(returned(root, report)["ok"], json!(true));
+        let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
 
         let shown = Command::new("git")
@@ -1184,9 +1177,11 @@ mod tests {
         std::fs::write(copy(2).join("src/c.rs"), "fn um() {}\nfn c() {}\n").unwrap();
         std::fs::write(copy(2).join("src/esquecido.rs"), "fn esquecido() {}\n").unwrap();
 
-        let one = line("DELIVERED", json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "src/b.rs"], "commit": "a sai"}));
-        let two = line("DELIVERED", json!({"wave": 2, "text": "Saiu.", "files": ["src/c.rs"], "commit": "c muda"}));
-        let out = round(root, "x", Some(&format!("{one}\n{two}")));
+        let one = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "src/b.rs"], "commit": "a sai"});
+        let two = json!({"wave": 2, "text": "Saiu.", "files": ["src/c.rs"], "commit": "c muda"});
+        assert_eq!(returned(root, one)["ok"], json!(true));
+        assert_eq!(returned(root, two)["ok"], json!(true));
+        let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(!root.join("src/a.rs").exists());
         assert_eq!(std::fs::read_to_string(root.join("src/c.rs")).unwrap(), "fn um() {}\nfn c() {}\n");
@@ -1219,21 +1214,28 @@ mod tests {
         assert_eq!(json!(warned), json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
     }
 
-    /// Cada relatório de `wrong` é recusado pelo git, com o motivo que o git
-    /// deu, e não deixa nada gravado; depois de `fix`, a chamada que entrega
-    /// `fixed` grava a entrega uma vez só.
-    fn refused_by_git_records_nothing(root: &Path, wrong: &[String], fix: impl FnOnce(), fixed: &[&str]) {
+    /// A volta da onda 1 com os arquivos `files`, gravada sem mexer neles.
+    fn listing(files: &[&str]) -> Value {
+        json!({"wave": 1, "text": "Saiu.", "files": files, "commit": "a onda 1 saiu"})
+    }
+
+    /// Cada volta de `wrong`, gravada pelo agente, é recusada pelo git na
+    /// rodada, com o motivo que o git deu, e a rodada não deixa nada gravado;
+    /// depois de `fix`, a volta que entrega `fixed` é assumida uma vez só.
+    fn refused_by_git_records_nothing(root: &Path, wrong: &[Value], fix: impl FnOnce(), fixed: &[&str]) {
         let spec_lines = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
-        let before = spec_lines();
-        for report in wrong {
-            let refused = round(root, "x", Some(report));
+        for body in wrong {
+            assert_eq!(returned(root, body.clone())["ok"], json!(true), "{body}");
+            let before = spec_lines();
+            let refused = round(root, "x", None);
             assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
             assert_eq!(spec_lines(), before, "nothing was recorded: {refused}");
             let bare = translate("round.git_refused", Locale::PtBr).replace("{detail}", "");
             assert_ne!(refused["hint"], json!(bare), "the refusal carries git's reason: {refused}");
         }
         fix();
-        let went = round(root, "x", Some(&delivered(root, 1, "Saiu.", fixed)));
+        delivered(root, 1, "Saiu.", fixed);
+        let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(delivered_count(root), 1, "the corrected call records the delivery once");
     }
@@ -1252,10 +1254,8 @@ mod tests {
 
         let name = outside.path().file_name().unwrap().to_string_lossy().to_string();
         let absolute = outside.path().join("fora.rs").to_string_lossy().to_string();
-        let wrong: Vec<String> = [absolute, format!("../{name}/fora.rs")]
-            .iter()
-            .map(|path| delivered(root, 1, "Saiu.", &["src/a.rs", path.as_str()]))
-            .collect();
+        let wrong: Vec<Value> =
+            [absolute, format!("../{name}/fora.rs")].iter().map(|path| listing(&["src/a.rs", path.as_str()])).collect();
         std::fs::write(root.join("src/novo.rs"), "fn novo() {}\n").unwrap();
         refused_by_git_records_nothing(root, &wrong, || {}, &["src/a.rs", "src/novo.rs"]);
         let shown = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(root).output();
@@ -1274,7 +1274,7 @@ mod tests {
         std::fs::write(root.join(".gitignore"), "src/gerado.rs\n").unwrap();
         std::fs::write(root.join("src/gerado.rs"), "fn gerado() {}\n").unwrap();
 
-        let wrong = [delivered(root, 1, "Saiu.", &["src/a.rs", "src/gerado.rs"])];
+        let wrong = [listing(&["src/a.rs", "src/gerado.rs"])];
         refused_by_git_records_nothing(root, &wrong, || {}, &["src/a.rs"]);
     }
 
@@ -1295,7 +1295,8 @@ mod tests {
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
 
-        let wrong = [delivered(root, 1, "Saiu.", &["src/a.rs"])];
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// Saiu.\n").unwrap();
+        let wrong = [listing(&["src/a.rs"])];
         refused_by_git_records_nothing(root, &wrong, || std::fs::remove_file(&hook).unwrap(), &["src/a.rs"]);
     }
 
@@ -1326,16 +1327,16 @@ mod tests {
         std::fs::write(&hook, "#!/bin/sh\necho 'o gancho recusou' >&2\nexit 1\n").unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
-        let report = line("DELIVERED", json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "libs/sub/lib.txt"],
-            "commit": "a onda 1 sai"}));
-        let refused = round(root, "x", Some(&report));
+        let report = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "libs/sub/lib.txt"], "commit": "a onda 1 sai"});
+        assert_eq!(returned(root, report)["ok"], json!(true));
+        let refused = round(root, "x", None);
         assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
         assert_eq!(git_text(&sub, &["rev-parse", "HEAD"]), before, "the submodule commit was undone");
         assert_eq!(git_text(&sub, &["status", "--porcelain"]), "", "the submodule disk and index are back");
         assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n");
 
         std::fs::remove_file(&hook).unwrap();
-        let went = round(root, "x", Some(&report));
+        let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(git_text(&sub, &["rev-list", "--count", &format!("{before}..HEAD")]), "1", "one submodule commit");
         assert_eq!(git_text(root, &["rev-parse", "HEAD:libs/sub"]), git_text(&sub, &["rev-parse", "HEAD"]));
@@ -1370,11 +1371,11 @@ mod tests {
         std::fs::write(&hook, script).unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
-        let report = delivered(root, 1, "Saiu.", &["src/a.rs"]);
+        delivered(root, 1, "Saiu.", &["src/a.rs"]);
         let spec = store::spec_file(root, "x").unwrap();
 
         std::thread::scope(|scope| {
-            let going = scope.spawn(|| round(root, "x", Some(&report)));
+            let going = scope.spawn(|| round(root, "x", None));
             for _ in 0..3000 {
                 if started.exists() {
                     break;
@@ -1411,8 +1412,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
 
-        let unchanged = [line("DELIVERED", json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"],
-            "commit": "a onda 1 saiu"}))];
+        let unchanged = [listing(&["src/a.rs"])];
         refused_by_git_records_nothing(root, &unchanged, || {}, &["src/a.rs"]);
     }
 
@@ -1438,9 +1438,9 @@ mod tests {
         git_at(&copy, &["add", "-A"]);
         git_at(&copy, &["commit", "-q", "-m", "o agente comitou dentro da cópia"]);
 
-        let report =
-            line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"}));
-        let out = round(root, "x", Some(&report));
+        let report = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
+        assert_eq!(returned(root, report)["ok"], json!(true));
+        let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         let content = std::fs::read_to_string(root.join("src/a.rs")).unwrap();
         assert!(content.contains("A soma saiu."), "o que a cópia comitou chegou ao repositório principal: {content}");
@@ -1539,11 +1539,9 @@ mod tests {
             proofs: Vec::new(),
             fixes: Vec::new(),
             replan: None,
-            model_used: None,
-            steps: None,
-            tokens: None,
-            caller_steps: None,
-            caller_tokens: None,
+            leftovers: Vec::new(),
+            returns: Vec::new(),
+            usage: Default::default(),
         }
     }
 

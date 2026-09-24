@@ -18,7 +18,7 @@ use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use super::report::{has_agent_lines, tagged};
+use super::report::tagged;
 use super::stops::waves_replanned;
 use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
@@ -143,7 +143,7 @@ pub(super) fn next_waves(
 // ---------------------------------------------------------------------------
 
 /// A linha em que o orquestrador devolve a escolha de uma onda.
-const ANALYSIS_LINE: &str = "ANALYSIS";
+pub(super) const ANALYSIS_LINE: &str = "ANALYSIS";
 
 /// O que a linha `ANALYSIS` de uma onda trouxe: cada entrada que sai e cada
 /// uma que entra, como veio — o item pelo código ou pelo número em `item`, a
@@ -156,12 +156,6 @@ pub(super) struct AnalysisLine {
     /// linha trouxe: cada entrada crua, ainda por validar contra as tarefas
     /// desta onda.
     tasks: Vec<Value>,
-}
-
-/// `true` quando o relatório só traz a escolha antes do envio: não há entrega
-/// nem veredito a juntar, e a rodada vai direto ao despacho.
-pub(super) fn only_analysis(raw: &str) -> bool {
-    !has_agent_lines(raw) && !tagged(raw, ANALYSIS_LINE).is_empty()
 }
 
 /// As linhas `ANALYSIS` do relatório `raw`. A que não se lê fica de fora com
@@ -1797,8 +1791,8 @@ mod tests {
     /// mesmos itens do projeto todo e sem dono, o conserto reusa a escolha
     /// gravada; mas uma lição do banco que passa a casar com a onda — sem
     /// nenhum item novo do projeto — já basta para a escolha gravada não
-    /// cobrir mais os candidatos, e o conserto volta a perguntar
-    /// (`MSTD-TASK-0016`, `MSTD-DEC-0009`).
+    /// cobrir mais os candidatos, e o conserto volta a perguntar antes de
+    /// sair.
     #[test]
     fn a_new_lesson_alone_makes_the_fix_ask_for_the_choice_again() {
         let dir = tempdir().unwrap();
@@ -1847,8 +1841,8 @@ mod tests {
     /// A lição posta em `added` na linha da escolha vira aviso e nunca entra
     /// no pedido por essa via: a lição que casa com a onda já vai por conta
     /// própria, e pedir para "acrescentar" ela não a soma de novo nem some
-    /// nenhum item sem dono que a mesma linha acrescente de verdade
-    /// (`MSTD-TASK-0016`, `MSTD-DEC-0009`).
+    /// nenhum item sem dono que a mesma linha acrescente de verdade: o item
+    /// entra no pedido, e a lição sai só como aviso.
     #[test]
     fn a_lesson_put_in_added_becomes_a_warning() {
         let dir = tempdir().unwrap();
@@ -1987,11 +1981,10 @@ mod tests {
         // A onda 1 entrega apagando o arquivo parecido antigo: o mapa relê
         // antes de a onda 2 pedir a escolha, na mesma volta.
         std::fs::remove_file(root.join("src/calculadora_velha.rs")).unwrap();
-        let delivered = line(
-            "DELIVERED",
-            json!({"wave": 1, "text": "Saiu.", "files": ["src/calculadora_velha.rs"], "commit": "tira a calculadora velha"}),
-        );
-        let asked = round_with_mine(root, "x", Some(&delivered), &rescan_disk);
+        let back = json!({"wave": 1, "text": "Saiu.", "files": ["src/calculadora_velha.rs"],
+            "commit": "tira a calculadora velha"});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+        let asked = round_with_mine(root, "x", None, &rescan_disk);
         assert_eq!(asked["ok"], json!(true), "{asked}");
         assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
         let tasks = asked["analysis"][0]["tasks"].as_array().cloned().unwrap_or_default();

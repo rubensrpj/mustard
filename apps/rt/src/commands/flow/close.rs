@@ -232,13 +232,13 @@ fn run_close(
         crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(root), lang);
 
     // O que voltou da última rodada entra antes das conferências, pela mesma
-    // porta da rodada, com o commit: é ele que fecha a última onda.
-    let mut recorded: Vec<Value> = Vec::new();
-    if let Some(raw) = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
-        let taken = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang)
-            .map_err(CloseRefusal::Report)?;
-        recorded = taken.recorded;
-    }
+    // porta da rodada, com o commit: a volta que a última onda gravou na spec
+    // é assumida aqui, com ou sem relatório, e é o commit dela que fecha a
+    // última onda.
+    let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let recorded: Vec<Value> = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang)
+        .map_err(CloseRefusal::Report)?
+        .recorded;
 
     // A spec antiga passa para o backlog antes de ler as ondas: a onda
     // desenhada à mão que nunca saiu não recusa o fechamento, porque a versão
@@ -939,6 +939,19 @@ mod tests {
         })
     }
 
+    /// A entrega que o agente da onda grava pela porta do binário, antes de
+    /// a rodada assumi-la. Ela precisa sair gravada: a rodada lê a volta da
+    /// spec, e não do relatório.
+    fn returned(root: &Path, spec: &str, body: Value) {
+        let out = crate::commands::spec_events::write::write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some(spec.to_string()),
+            event_type: "delivered".into(),
+            json: body.to_string(),
+        });
+        assert_eq!(out["ok"], json!(true), "a volta não gravou: {out}");
+    }
+
     fn id_of(report: &Value) -> u64 {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
@@ -1025,19 +1038,19 @@ mod tests {
         };
         let dispatch = round(None);
         assert_eq!(dispatch["ok"], json!(true), "{dispatch}");
-        let mut delivered = String::new();
+        let mut delivered = false;
         for n in (1..=waves).filter(|n| !checked.contains(n)) {
             std::fs::write(root.join(wave_file(n)), "fn um() {}\nfn dois() {}\n").unwrap();
-            let line = json!({"wave": n, "text": "Saiu.", "files": [wave_file(n)], "commit": "a soma sai"});
-            delivered.push_str(&format!("<DELIVERED>{line}</DELIVERED>\n"));
+            returned(root, spec, json!({"wave": n, "text": "Saiu.", "files": [wave_file(n)], "commit": "a soma sai"}));
+            delivered = true;
         }
-        if !delivered.is_empty() {
-            let back = round(Some(delivered));
+        if delivered {
+            let back = round(None);
             assert_eq!(back["ok"], json!(true), "{back}");
         }
         for n in checked {
-            let line = json!({"wave": n, "text": "Nada a mudar: a tarefa já estava entregue. Rodei git --version e passou."});
-            let back = round(Some(format!("<DELIVERED>{line}</DELIVERED>\n")));
+            returned(root, spec, json!({"wave": n, "text": "Nada a mudar: a tarefa já estava entregue. Rodei git --version e passou."}));
+            let back = round(None);
             assert_eq!(back["ok"], json!(true), "{back}");
             assert!(back.get("commit").is_none(), "a onda que só conferiu não comita: {back}");
         }
@@ -1153,8 +1166,8 @@ mod tests {
             "#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma_um_mais_um() { assert_eq!(1 + 1, 2); }\n}\n",
         )
         .unwrap();
-        let delivered = json!({"wave": 1, "text": "Saiu.", "files": ["src/w1.rs"], "commit": "soma o teste novo"});
-        let back = round(Some(format!("<DELIVERED>{delivered}</DELIVERED>\n")));
+        returned(root, spec, json!({"wave": 1, "text": "Saiu.", "files": ["src/w1.rs"], "commit": "soma o teste novo"}));
+        let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
 
@@ -1455,13 +1468,10 @@ exit "${2:-0}"
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     }
 
-    /// O motor do comando `qa-run` saiu de `qa_run/mod.rs` e
-    /// `qa_run/runner.rs`, junto com `run_qa_cli`, `run_qa` e o gravador de
-    /// evento e de relatório em HTML que só ele alcançava. O fechamento
-    /// continua chamando `run_proof` do jeito de sempre: o critério roda uma
-    /// vez, e a execução grava `pass`.
+    /// O fechamento roda a prova de cada critério por `run_proof` uma vez, e
+    /// a execução grava `pass`.
     #[test]
-    fn the_proofs_still_run_after_the_old_qa_command_left() {
+    fn closing_runs_each_proof_once_and_records_pass() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["echo running 1 test"]);
@@ -1705,8 +1715,8 @@ exit "${2:-0}"
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
 
         std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
-        let delivered = json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"});
-        let back = round(Some(format!("<DELIVERED>{delivered}</DELIVERED>\n")));
+        returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));
+        let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
 
@@ -1772,10 +1782,15 @@ exit "${2:-0}"
         let round = |report: Option<String>| {
             round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report }, None)
         };
+        // Com a regra e a decisão sem dono, a onda espera a escolha do
+        // orquestrador; sem item a acrescentar, ela sai como está.
         round(None);
+        let analysis = json!({"wave": 1, "removed": [], "added": []});
+        let dispatched = round(Some(format!("<ANALYSIS>{analysis}</ANALYSIS>")));
+        assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
         std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
-        let delivered = json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"});
-        let back = round(Some(format!("<DELIVERED>{delivered}</DELIVERED>\n")));
+        returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));
+        let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
 
@@ -1896,7 +1911,8 @@ exit "${2:-0}"
         assert_eq!(sent, vec![2], "{fix}");
         std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetição"});
-        let back = round(Some(format!("<DELIVERED>{line}</DELIVERED>")));
+        returned(root, "x", line);
+        let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
         assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");
 
@@ -1992,7 +2008,8 @@ exit "${2:-0}"
         assert!(fix.get("reviews").is_none(), "{fix}");
         std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Consertou.", "files": [wave_file(2)], "commit": "conserta a onda 2"});
-        let back = round(Some(format!("<DELIVERED>{line}</DELIVERED>")));
+        returned(root, "x", line);
+        let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
         assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");
 
@@ -2012,7 +2029,8 @@ exit "${2:-0}"
         assert_eq!(waves_in(&fix_again, "dispatch"), vec![2], "{fix_again}");
         std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn quatro() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Consertou de novo.", "files": [wave_file(2)], "commit": "conserta de novo"});
-        assert_eq!(round(Some(format!("<DELIVERED>{line}</DELIVERED>")))["ok"], json!(true));
+        returned(root, "x", line);
+        assert_eq!(round(None)["ok"], json!(true));
 
         // A terceira reprovação seguida para a onda: a rodada deixa de
         // despachá-la, e a decisão passa a ser do usuário.
@@ -2059,7 +2077,8 @@ exit "${2:-0}"
         // estava no disco.
         std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 1, "text": "Sem faltar o teste.", "files": [wave_file(1)], "commit": "conserta a onda 1"});
-        let back = round(Some(format!("<DELIVERED>{line}</DELIVERED>")));
+        returned(root, "x", line);
+        let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
 
         // (2) Entregue o conserto, a fila solta a onda: a rodada não tem mais
