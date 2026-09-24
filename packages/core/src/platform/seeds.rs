@@ -131,6 +131,39 @@ mod tests {
         }
     }
 
+    /// O pedido novo numa spec fechada, ou com o pull request aberto, passa
+    /// antes pela reabertura, e só depois entra pelo `write request`: sem
+    /// ela, a gravação é recusada e o assistente propõe uma spec nova em
+    /// outra branch. O pull request que o servidor reprovou vai à porta de
+    /// conserto, pedida pelo nome; o pedido novo nunca vai a ela. Os dois
+    /// mapas dizem as duas coisas.
+    #[test]
+    fn the_session_map_sends_a_request_on_a_closed_spec_through_the_reopen() {
+        for (text, closed, pr_open, first, server_failed) in [
+            (Locale::PtBr, "spec fechada", "pull request aberto", "vem antes", "reprovado pelo servidor"),
+            (Locale::EnUs, "closed spec", "pull request open", "comes first", "the server failed"),
+        ] {
+            let map = session_map(text);
+            let sentence_with = |needle: &str| {
+                map.lines().flat_map(|line| line.split(". ")).find(|sentence| sentence.contains(needle))
+            };
+
+            let request = sentence_with(closed)
+                .unwrap_or_else(|| panic!("the {text} map says nothing of a request on a closed spec: {map}"));
+            assert!(request.contains("`write request`"), "the {text} map does not say where the request is recorded: {request}");
+            assert!(request.contains(pr_open), "the {text} map leaves out the spec with the pull request open: {request}");
+            let reopen = request
+                .find("`mustard-rt run reopen --reason")
+                .unwrap_or_else(|| panic!("the {text} map does not send the request through the reopen: {request}"));
+            assert!(request[reopen..].contains(first), "the {text} map does not put the reopen before the request: {request}");
+            assert!(!request.contains("--fix"), "the {text} map sends a new request to the fix door: {request}");
+
+            let fix = sentence_with(server_failed)
+                .unwrap_or_else(|| panic!("the {text} map says nothing of a pull request the server failed: {map}"));
+            assert!(fix.contains("`mustard-rt run reopen --fix"), "the {text} map does not send the failed pull request to the fix: {fix}");
+        }
+    }
+
     /// Os dois moldes de onda, nos dois idiomas, não pedem mais um relatório
     /// pelo tamanho: a entrega vai gravada na spec pela ferramenta, a última
     /// mensagem só diz que gravou, e todo o detalhe do trabalho vai no campo

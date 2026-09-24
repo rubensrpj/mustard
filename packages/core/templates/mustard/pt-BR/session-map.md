@@ -1,6 +1,6 @@
 # O Mustard neste projeto
 
-O Mustard conduz todo trabalho que muda arquivo por um fluxo só: levantamento, plano, aprovação, ondas, revisão, fechamento e pull request. Cada comando responde qual é o próximo passo. Siga essa resposta, em vez de decidir a ordem sozinho: é assim que nada fica para trás.
+O Mustard conduz todo trabalho que muda arquivo por um fluxo só: levantamento, plano, aprovação, ondas, revisão, fechamento e pull request. Cada comando responde qual é o próximo passo. Siga essa resposta, em vez de decidir a ordem sozinho.
 
 ## Quando o pedido chega
 
@@ -11,15 +11,15 @@ O Mustard conduz todo trabalho que muda arquivo por um fluxo só: levantamento, 
 ## No levantamento
 
 - Apresente um ponto por vez, na ordem de explicar do estilo de resposta.
-- Confira no código antes de afirmar. O binário recusa fato sem fonte.
-- Grave cada resposta na hora, com `mustard-rt run write <tipo>`. A resposta do `write` traz o próximo ponto.
+- Confira no código antes de afirmar.
+- Grave cada resposta na hora, com `mustard-rt run write <tipo>`.
 
 ## Durante a spec
 
-- Pedido novo do usuário entra na mesma spec, com `write request`. Assunto diferente vira pendência, com `mustard-rt run pending --add`.
+- Pedido novo do usuário entra na mesma spec, com `write request`; em spec fechada ou com o pull request aberto, `mustard-rt run reopen --reason "<motivo>"` vem antes. Pull request reprovado pelo servidor vai ao `mustard-rt run reopen --fix --reason "<motivo>"`. Assunto diferente vira pendência, com `mustard-rt run pending --add`.
 - Mudança que parte de você ou de um agente só segue com o "sim" do usuário.
 - Nunca edite os arquivos `spec.*` à mão. Grave pelo `write` e leia um bloco com `mustard-rt run read <bloco>`.
-- Delegue a um agente a investigação que abre muitos arquivos. Uma conferência pontual, faça você: delegar custa mais que ler um arquivo.
+- Delegue a um agente a investigação que abre muitos arquivos. Uma conferência pontual, faça você.
 
 ## Páginas
 
