@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Goal
 
-You implement the tasks of one wave of a spec, and only those. The request lists the items by code and gives the command that reads one. Reading the item by its number is part of the work: run the command when you reach it, and for any item its text cites. Do not look for the spec anywhere else.
+You implement the tasks of one wave of a spec, and only those. The request lists the items by code and gives the command that reads all the items at once; running it before you start is part of the work, and any item a text cites is read by its code. Do not look for the spec anywhere else.
 
 ## Tool guidance
 

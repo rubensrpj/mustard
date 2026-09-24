@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Objetivo
 
-Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista os itens pelo código e traz o comando que lê um. Ler o item pelo número é parte do trabalho: rode o comando ao chegar nele e no item que o texto citar. Não procure a spec em outro lugar.
+Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista os itens pelo código e traz o comando que lê todos os itens de uma vez; rodá-lo antes de começar é parte do trabalho, e o item que um texto citar se lê pelo código. Não procure a spec em outro lugar.
 
 ## Orientação sobre ferramentas
 

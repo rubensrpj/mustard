@@ -1184,15 +1184,17 @@ mod tests {
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{out}");
         let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default().to_string();
-        // A tarefa ganha linha própria, pelo código, e o comando de leitura
-        // uma vez só, no exemplo, com o caminho do repositório principal: a
+        // A tarefa ganha linha própria, pelo código, e a leitura aparece uma
+        // vez só, na linha de como ler — o comando do pedido inteiro e o de
+        // um item pelo código —, com o caminho do repositório principal: a
         // onda trabalha na cópia que a rodada criou.
         assert!(prompt.lines().any(|l| l.starts_with("- `MSTD-TASK-0001`") && l.contains("src/a.rs")), "{prompt}");
-        let example = translate("prompt.read", Locale::PtBr)
+        let example = translate("prompt.read.wave", Locale::PtBr)
             .replace("{root}", &format!("--root {} ", mustard_core::io::wave_prompt::shown(root)))
-            .replace("{spec}", "x");
+            .replace("{spec}", "x")
+            .replace("{n}", "1");
         assert!(prompt.contains(&example), "{prompt}");
-        assert_eq!(prompt.matches("mustard-rt run read").count(), 1, "{prompt}");
+        assert_eq!(prompt.matches("mustard-rt run read").count(), 2, "{prompt}");
 
         // O envio gravado guarda o pedido exato, letra por letra.
         let path = store::spec_file(root, "x").unwrap();

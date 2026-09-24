@@ -113,9 +113,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `text` says what is missing and `files` the files, and they become a new task. Missing \
              any agreed requirement from the list is a malformed verdict: nothing gets recorded."
         }
-        // O exemplo único do comando que lê um item, que os dois pedidos
-        // trazem logo depois da parte fixa. `{root}` é `--root <caminho> `
+        // Como ler, logo depois da parte fixa. `{root}` é `--root <caminho> `
         // quando o agente trabalha numa cópia, e nada quando não trabalha.
+        // O pedido de uma onda manda ler tudo o que ele lista de uma vez, com
+        // o número da onda em `{n}`, e deixa a leitura por código para o item
+        // que um texto cita e não veio; o da revisão final lê item por item.
+        ("prompt.read.wave", Locale::PtBr) => {
+            "**Como ler.** Antes de começar, leia o pedido inteiro com `mustard-rt run read dispatch-{n} \
+             {root}--spec {spec}`. O item que um texto cita e não veio, leia com `mustard-rt run read \
+             <bloco> {root}--spec {spec} --term <código>`."
+        }
+        ("prompt.read.wave", Locale::EnUs) => {
+            "**How to read.** Before you start, read the whole request with `mustard-rt run read \
+             dispatch-{n} {root}--spec {spec}`. For an item a text cites that did not come, read it with \
+             `mustard-rt run read <block> {root}--spec {spec} --term <item-code>`."
+        }
         ("prompt.read", Locale::PtBr) => {
             "**Como ler.** Leia cada código na ordem com `mustard-rt run read <bloco> {root}--spec {spec} \
              --term <código>`, trocando `<bloco>` pelo bloco que abre a linha do código."
@@ -319,8 +331,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            42,
-            0xf3e5_92b8_6695_af25,
+            43,
+            0xe926_46d6_ca06_dd4d,
         );
     }
 }
