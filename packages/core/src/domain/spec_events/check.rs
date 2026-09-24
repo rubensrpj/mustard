@@ -22,9 +22,18 @@ pub(crate) fn is_empty(value: &Value) -> bool {
     }
 }
 
+/// A marca que o binário põe em toda remoção que grava. Com ela, a remoção
+/// que aponta pelo número a versão nova de um item tira só essa versão, e a
+/// versão que ela substituiu volta à leitura. A remoção gravada antes da
+/// marca segue a regra de quando foi gravada: tirava o item inteiro, e a
+/// leitura de uma spec antiga não muda. Por isso a marca é só do binário: o
+/// que vier nela de quem grava é trocado.
+pub(super) const GIVES_BACK_FIELD: &str = "gives_back";
+
 /// O rascunho de quem grava, pronto para a conferência: sem os campos que só
-/// o binário escreve, com o tipo pedido e com o autor (o assistente, quando
-/// quem grava não diz). Os campos de [`REFUSED_FIELDS`] ficam, para que
+/// o binário escreve, com o tipo pedido, com o autor (o assistente, quando
+/// quem grava não diz) e, na remoção, com a marca `gives_back`, que diz que
+/// ela devolve a versão anterior. Os campos de [`REFUSED_FIELDS`] ficam, para que
 /// [`validate`] recuse o evento que os trouxe.
 #[must_use]
 pub fn normalize(mut draft: Map<String, Value>, event_type: &str) -> Map<String, Value> {
@@ -32,7 +41,12 @@ pub fn normalize(mut draft: Map<String, Value>, event_type: &str) -> Map<String,
         draft.remove(*field);
     }
     draft.remove(PURGED_FIELD);
-    draft.insert("type".into(), Value::String(event_type.trim().to_string()));
+    draft.remove(GIVES_BACK_FIELD);
+    let event_type = event_type.trim();
+    if event_type == "remove" {
+        draft.insert(GIVES_BACK_FIELD.into(), Value::Bool(true));
+    }
+    draft.insert("type".into(), Value::String(event_type.to_string()));
     if draft.get("author").is_none_or(is_empty) {
         draft.insert("author".into(), Value::String(DEFAULT_AUTHOR.into()));
     }
@@ -120,10 +134,12 @@ fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
 const COMMON_FIELDS: &[&str] =
     &["v", "id", "code", "at", "type", "author", "search", "purged", "label", "replaces", "origin", "text", "keys"];
 
-/// O tipo aceita este campo? Aceita os comuns a toda linha e os que ele
-/// declara.
+/// O tipo aceita este campo? Aceita os comuns a toda linha, os que ele
+/// declara e, na remoção, a marca que o binário põe nela.
 fn accepts_field(spec: &TypeSpec, name: &str) -> bool {
-    COMMON_FIELDS.contains(&name) || spec.fields.iter().any(|field| field.name == name)
+    COMMON_FIELDS.contains(&name)
+        || spec.fields.iter().any(|field| field.name == name)
+        || (spec.name == "remove" && name == GIVES_BACK_FIELD)
 }
 
 /// Os campos que um tipo aceita, separados por vírgula: os que ele declara,
@@ -390,6 +406,22 @@ mod tests {
             assert!(message.contains("8001"), "{message}");
             assert!(message.contains("8000"), "{message}");
         }
+    }
+
+    /// A marca que faz a remoção devolver a versão anterior é do binário:
+    /// toda remoção sai com ela, mesmo quando quem grava manda outro valor, e
+    /// num evento de outro tipo ela não entra.
+    #[test]
+    fn a_marca_da_remocao_e_posta_pelo_binario() {
+        let draft = |v: Value| v.as_object().cloned().expect("um objeto");
+        for sent in [json!({"targets": [3], "reason": "r"}), json!({"targets": [3], "reason": "r", "gives_back": false})] {
+            let removal = normalize(draft(sent.clone()), "remove");
+            assert_eq!(removal.get(GIVES_BACK_FIELD), Some(&Value::Bool(true)), "{sent}");
+            assert_eq!(validate(&removal), Ok(()), "{sent}");
+        }
+        let note = normalize(draft(json!({"text": "t", "keys": ["k"], "origin": 1, "gives_back": true})), "note");
+        assert_eq!(note.get(GIVES_BACK_FIELD), None);
+        assert_eq!(validate(&note), Ok(()));
     }
 
     #[test]

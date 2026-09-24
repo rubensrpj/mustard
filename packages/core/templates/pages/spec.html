@@ -306,21 +306,31 @@ details.item.old .t{color:var(--muted)}
     }
     return targets;
   }
-  // Os números que alguma remoção tira da leitura.
+  // Os números que alguma remoção tira da leitura, cada um com a primeira
+  // remoção que o aponta: o número dela e se ela devolve a versão anterior.
+  // Só devolve a remoção gravada com a marca `gives_back`, que o binário põe
+  // em toda remoção de hoje; a gravada antes da marca tira o item inteiro,
+  // como tirava quando foi gravada.
   function removalsOf(all) {
-    var removed = new Set();
+    var removed = new Map();
     all.forEach(function (e) {
-      if (e.type === 'remove') removeTargets(e, all).forEach(function (id) { removed.add(id); });
+      if (e.type !== 'remove') return;
+      var back = e.gives_back === true;
+      removeTargets(e, all).forEach(function (id) { if (!removed.has(id)) removed.set(id, { by: e.id, back: back }); });
     });
     return removed;
   }
   // As substituições que valem, como pares [versão antiga, versão nova], do
-  // mesmo jeito que o binário lê. A versão removida de um item não substitui
-  // nada; a removida do meio da cadeia sai dela, e a versão seguinte passa a
-  // substituir as que ela substituía. Seguem substituídas pela versão
-  // removida a volta do agente já assumida e o que não tem tipo conhecido.
+  // mesmo jeito que o binário lê. A versão removida pela remoção de hoje não
+  // substitui nada; a removida do meio da cadeia sai dela, e a versão
+  // seguinte passa a substituir as que ela substituía. Seguem substituídas
+  // pela versão removida a volta do agente já assumida, o que não tem tipo
+  // conhecido e a versão tirada pela remoção de antes da marca.
   function replacementsOf(all, byId, removed) {
-    function givesBack(id) { return removed.has(id) && byId.has(id) && has(TYPES, byId.get(id).type); }
+    function givesBack(id) {
+      var r = removed.get(id);
+      return !!r && r.back && byId.has(id) && has(TYPES, byId.get(id).type);
+    }
     var pairs = [];
     all.forEach(function (e) {
       var pending = replacedBy(e), seen = new Set();
@@ -338,16 +348,21 @@ details.item.old .t{color:var(--muted)}
     return pairs;
   }
   // O que some da leitura, como o binário lê: o expurgo vence; depois dele,
-  // a remoção, lida antes das substituições. A versão removida não esconde a
-  // que ela substituiu, que volta com o mesmo código: remover pelo número
-  // tira só aquela versão, e pelo código, todas.
+  // a remoção de hoje, lida antes das substituições; por último, a remoção
+  // de antes da marca e as substituições, na ordem do arquivo, e vale a
+  // primeira. A versão removida pela remoção de hoje não esconde a que ela
+  // substituiu, que volta com o mesmo código: remover pelo número tira só
+  // aquela versão, e pelo código, todas.
   function hiddenOf(all, byId) {
-    var hidden = new Map(), removed = removalsOf(all);
+    var hidden = new Map(), removed = removalsOf(all), inOrder = [];
     all.forEach(function (e) { if (isInt(e.purged)) hidden.set(e.id, 'purged'); });
-    removed.forEach(function (id) { if (!hidden.has(id)) hidden.set(id, 'removed'); });
-    replacementsOf(all, byId, removed).forEach(function (pair) {
-      if (!hidden.has(pair[0])) hidden.set(pair[0], 'replaced');
+    removed.forEach(function (r, id) {
+      if (r.back) { if (!hidden.has(id)) hidden.set(id, 'removed'); }
+      else inOrder.push([r.by, 0, id, 'removed']);
     });
+    replacementsOf(all, byId, removed).forEach(function (pair) { inOrder.push([pair[1], 1, pair[0], 'replaced']); });
+    inOrder.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+    inOrder.forEach(function (x) { if (!hidden.has(x[2])) hidden.set(x[2], x[3]); });
     return hidden;
   }
   // O que saiu da spec, pelo número de cada item: o item que uma remoção
@@ -429,8 +444,8 @@ details.item.old .t{color:var(--muted)}
       }
       return at;
     }
-    // A versão vigente: segue as substituições só pelas versões que não
-    // foram removidas; removida a mais nova, vale a anterior.
+    // A versão vigente: segue as substituições que valem; removida a mais
+    // nova pela remoção de hoje, vale a anterior.
     var nextVersion = new Map();
     replacementsOf(all, byId, removalsOf(all)).forEach(function (pair) { nextVersion.set(pair[0], pair[1]); });
     function currentOf(id) {

@@ -1102,6 +1102,164 @@ mod tests {
         assert_eq!(removed_codes(&page_after), expected_removed, "os removidos ganham só a regra e a decisão");
     }
 
+    /// A remoção gravada antes da marca segue lida como era quando foi
+    /// gravada. A que apontou pelo número a versão nova do critério tirou o
+    /// critério inteiro; a que apontou a versão antiga da regra revista, já
+    /// substituída, deixou essa versão na conversa como versão antiga. A
+    /// leitura do binário é a da regra de antes — o motivo de cada evento que
+    /// some e a versão vigente de cada um —, e a página mostra o mesmo. Uma
+    /// remoção de hoje, gravada depois pela porta do binário na mesma spec,
+    /// leva a marca, devolve a versão anterior do item dela e deixa a leitura
+    /// e a página como estavam antes da versão nova que ela tira.
+    #[test]
+    fn uma_remocao_antiga_sem_a_marca_le_como_antes_na_leitura_e_na_pagina() {
+        use crate::domain::spec_events::{Hidden, SpecLog, TimeFilter};
+        use crate::io::spec_events::write_at;
+
+        // A leitura de antes da marca: na ordem do arquivo, a primeira
+        // remoção ou substituição que esconde um evento dá o motivo, e a
+        // versão vigente segue toda substituição.
+        let old_hidden = |log: &SpecLog| -> BTreeMap<u64, Hidden> {
+            let mut hidden = BTreeMap::new();
+            for e in &log.events {
+                if let Some(by) = e.int("purged") {
+                    hidden.insert(e.id, Hidden::Purged { by });
+                }
+                if e.event_type == "remove" {
+                    let mut targets = e.ints("targets");
+                    if let Some(filter) = e.fields.get("filter").and_then(TimeFilter::from_value) {
+                        targets.extend(log.filter_matches(&filter, e.id));
+                    }
+                    for id in targets {
+                        hidden.entry(id).or_insert(Hidden::Removed { by: e.id });
+                    }
+                }
+                for old in e.replaced() {
+                    hidden.entry(old).or_insert(Hidden::Replaced { by: e.id });
+                }
+            }
+            for e in log.events.iter().filter(|e| e.returned()) {
+                hidden.entry(e.id).or_insert(Hidden::Returned);
+            }
+            hidden
+        };
+        let old_current = |log: &SpecLog, id: u64| -> Option<u64> {
+            let next: BTreeMap<u64, u64> =
+                log.events.iter().flat_map(|e| e.replaced().into_iter().map(move |old| (old, e.id))).collect();
+            let mut id = id;
+            for _ in 0..=log.events.len() {
+                match next.get(&id) {
+                    Some(newer) => id = *newer,
+                    None => break,
+                }
+            }
+            (log.get(id).is_some() && !old_hidden(log).contains_key(&id)).then_some(id)
+        };
+        let reads_as_before = |log: &SpecLog| {
+            assert_eq!(log.hidden(), old_hidden(log), "cada evento some pelo motivo de antes");
+            for e in &log.events {
+                assert_eq!(log.current(e.id).map(|c| c.id), old_current(log, e.id), "a versão vigente de {}", e.id);
+            }
+        };
+
+        // A spec de exemplo e, gravadas antes da marca, a versão nova do
+        // critério 19, a remoção dela pelo número e a da versão antiga da
+        // regra 9, que a 42 já substituía. Cada linha leva o código dela,
+        // como o binário grava.
+        let mut lines = spec_lines();
+        lines.extend([
+            json!({"v":1,"id":60,"at":"2026-09-12T15:00:00-03:00","type":"criterion","author":"assistant",
+                "when":"O pedido montado de uma onda passa de 400 linhas.",
+                "then":"O binário recusa o despacho e diz quantas linhas passaram.",
+                "proof":"cargo test -p mustard-rt --test wave_request_limit","form":"event_driven","replaces":19,"origin":2}),
+            json!({"v":1,"id":61,"at":"2026-09-12T15:01:00-03:00","type":"remove","author":"user","targets":[60],
+                "reason":"O critério voltou ao que era.","origin":2}),
+            json!({"v":1,"id":62,"at":"2026-09-12T15:02:00-03:00","type":"remove","author":"user","targets":[9],
+                "reason":"A versão antiga saiu.","origin":2}),
+        ]);
+        let codes = parse_log(&lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).codes();
+        for line in &mut lines {
+            if let Some(code) = line["id"].as_u64().and_then(|id| codes.get(&id)) {
+                line["code"] = json!(code);
+            }
+        }
+        let (criterion_code, rule_code) = (codes[&19].clone(), codes[&42].clone());
+        assert_eq!((codes[&60].as_str(), codes[&9].as_str()), (criterion_code.as_str(), rule_code.as_str()));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        std::fs::write(&path, lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let file = || std::fs::read_to_string(&path).unwrap();
+        let page_of = |content: &str| -> Value {
+            let lines: Vec<Value> =
+                content.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect();
+            let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+            run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps)["page"].clone()
+        };
+        let with_code = |page: &Value, anchor: &str, code: &str| -> Vec<Value> {
+            cards(page, anchor).iter().filter(|i| i["code"] == json!(code)).map(card_seen).collect()
+        };
+
+        // O binário lê como antes: o critério sai inteiro, e a regra segue
+        // pela 42, com a 9 substituída, não removida.
+        let old = parse_log(&file());
+        reads_as_before(&old);
+        assert_eq!(old.current(19).map(|e| e.id), None, "o critério saiu inteiro");
+        assert_eq!(old.hidden().get(&19), Some(&Hidden::Replaced { by: 60 }));
+        assert_eq!(old.hidden().get(&9), Some(&Hidden::Replaced { by: 42 }), "a versão antiga segue substituída");
+        assert_eq!(old.current(9).map(|e| e.id), Some(42));
+
+        // A página mostra o mesmo: nenhum cartão do critério, que aparece uma
+        // vez nos removidos, e a versão antiga da regra na conversa.
+        let page = page_of(&file());
+        assert_eq!(with_code(&page, "criteria", &criterion_code), Vec::<Value>::new(), "o critério saiu inteiro da página");
+        assert_eq!(with_code(&page, "removed", &criterion_code).len(), 1, "o critério aparece uma vez nos removidos");
+        let old_rule: Vec<Value> = with_code(&page, "conversation", &rule_code).into_iter().map(|i| i["mark"].clone()).collect();
+        assert_eq!(old_rule, [json!(translate("page.replaced", Locale::PtBr))], "a versão antiga da regra fica na conversa");
+        assert_eq!(with_code(&page, "agreed", &rule_code).len(), 1, "a regra segue à mostra pela versão nova");
+
+        // Depois, pela porta do binário: uma versão nova da regra e a
+        // remoção dela pelo número. A remoção de hoje leva a marca e devolve
+        // a 42; as remoções antigas seguem lidas como antes.
+        let put = |event_type: &str, at: &str, draft: Value| {
+            let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
+            write_at(&path, event_type, draft, &[], at).unwrap_or_else(|r| panic!("{event_type} foi recusado: {r:?}"))
+        };
+        let newer = put(
+            "rule",
+            "2026-09-12T16:00:00-03:00",
+            json!({"text": "A trava de comandos confere o programa, as opções, o caminho e o diretório.",
+                "example": "`rm -rf pasta` é barrado.", "keys": ["trava"], "replaces": 42, "origin": 2}),
+        );
+        let removal = put(
+            "remove",
+            "2026-09-12T16:01:00-03:00",
+            json!({"targets": [newer.id], "reason": "A versão nova saiu.", "origin": 2}),
+        );
+        let after = parse_log(&file());
+        assert_eq!(
+            after.get(removal.id).and_then(|e| e.fields.get("gives_back")),
+            Some(&json!(true)),
+            "o binário põe a marca na remoção que grava"
+        );
+        assert_eq!(after.current(9).map(|e| e.id), Some(42), "a versão anterior da regra volta a valer");
+        let before_writes: BTreeMap<u64, Hidden> = old.hidden();
+        let mut kept = after.hidden();
+        kept.retain(|id, _| *id < newer.id);
+        assert_eq!(kept, before_writes, "as remoções antigas seguem lidas como antes");
+        for id in [9, 19, 42, 60] {
+            assert_eq!(after.current(id).map(|e| e.id), old.current(id).map(|e| e.id), "a versão vigente de {id}");
+        }
+
+        let page_after = page_of(&file());
+        let mut seen_after = page_seen(&page_after);
+        let removal_code = removal.code.clone().expect("a remoção tem código");
+        for tab in seen_after.as_array_mut().expect("tabs") {
+            tab["items"].as_array_mut().expect("items").retain(|i| i["code"] != json!(removal_code));
+        }
+        assert_eq!(seen_after, page_seen(&page), "a página volta à de antes da versão nova da regra");
+    }
+
     /// Por decisão da onda 13, o item que continua à mostra numa versão nova
     /// não entra em Removidos quando só a versão antiga dele foi removida: a
     /// regra revista some da conversa, mas a regra em si segue de pé pela
