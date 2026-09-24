@@ -1639,7 +1639,7 @@ mod tests {
         let root = dir.path();
         let ids = with_items_to_judge(root);
         let lesson = |text: &str, key: &str| {
-            id_of(&write(root, "x", "lesson", json!({"class": "defect", "text": text, "keys": [key],
+            id_of(&write(root, "x", "lesson", json!({"class": "environment_trap", "text": text, "keys": [key],
                 "applies_to": {"files": ["**"]}})))
         };
         let kept = lesson("A tabela nova precisa de migração.", "tabela");
@@ -1817,7 +1817,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         with_items_to_judge(root);
-        let kept = id_of(&write(root, "x", "lesson", json!({"class": "defect",
+        let kept = id_of(&write(root, "x", "lesson", json!({"class": "environment_trap",
             "text": "A tabela nova precisa de migração.", "keys": ["tabela"], "applies_to": {"files": ["**"]}})));
         let sends = || {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1847,7 +1847,7 @@ mod tests {
         // Uma lição nova passa a casar com a onda — nenhum item do projeto
         // mudou. O conserto seguinte não reusa a escolha: ele pergunta de
         // novo, com a lição nova entre os candidatos.
-        let newer = id_of(&write(root, "x", "lesson", json!({"class": "defect",
+        let newer = id_of(&write(root, "x", "lesson", json!({"class": "environment_trap",
             "text": "O índice novo evita busca lenta.", "keys": ["índice"], "applies_to": {"files": ["**"]}})));
         round(root, "x", Some(&delivered(root, 1, "O índice entrou.", &["src/a.rs"])));
         let again = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou o nome", &vigent)));
@@ -1868,7 +1868,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let ids = with_items_to_judge(root);
-        let kept = id_of(&write(root, "x", "lesson", json!({"class": "defect",
+        let kept = id_of(&write(root, "x", "lesson", json!({"class": "environment_trap",
             "text": "A tabela nova precisa de migração.", "keys": ["tabela"], "applies_to": {"files": ["**"]}})));
 
         let removed = json!([]);

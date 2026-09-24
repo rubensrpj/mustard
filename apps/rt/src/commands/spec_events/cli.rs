@@ -53,8 +53,11 @@ pub enum SpecEventsCmd {
     /// item, every version of it; by the number, only that version, and the
     /// version it replaced comes back. With the `lesson` type it writes one lesson to
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
-    /// `{"class":"defect","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
+    /// `{"class":"environment_trap","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
     /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`. A
+    /// `defect` lesson is refused, alone or merging others: the bank never
+    /// goes to git, so a defect that can happen again becomes a `task` that
+    /// fixes the code, with the test that fails if it comes back. A
     /// lesson is the assistant's summary, written the project's way: its text
     /// goes through the writing check that ends a response, and a text that
     /// repeats a lesson already in the bank (spaces, case and accents aside)

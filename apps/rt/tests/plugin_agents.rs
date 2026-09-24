@@ -526,6 +526,52 @@ fn o_molde_do_revisor_diz_os_dois_caminhos() {
     assert!(pr.contains("`mustard-review` agent, from that brief: it returns its text to you and records nothing"), "{pr}");
 }
 
+/// O erro que pode se repetir não vira lição no molde do revisor, nos dois
+/// idiomas: o banco de lições fica só na máquina de quem programa e não vai
+/// ao git. O revisor escreve como achado do veredito o conserto no código,
+/// com o teste que falha se o erro voltar. Nenhuma frase do molde fala em
+/// lição fora da linha de exemplo do veredito, que segue dizendo se uma
+/// lição do pedido se repetiu; a proposta de mudança na skill continua.
+#[test]
+fn o_revisor_propoe_o_conserto_com_teste_no_lugar_da_licao() {
+    for (lang, header, lesson_word, asked, skill) in [
+        (
+            "pt-BR",
+            "## Propostas",
+            "liç",
+            ["Erro que pode se repetir?", "achado do veredito", "conserto no código", "teste que falha se o erro voltar"],
+            "Proponha a mudança nela",
+        ),
+        (
+            "en-US",
+            "## Proposals",
+            "lesson",
+            ["A mistake that can happen again?", "finding of the verdict", "fix in the code", "test that fails if the mistake comes back"],
+            "Propose the change to it",
+        ),
+    ] {
+        let review = template(lang, "review");
+        for line in review.lines().filter(|line| !line.starts_with('{')) {
+            assert!(
+                !line.to_lowercase().contains(lesson_word),
+                "the {lang} reviewer still talks about lessons outside the verdict example: {line}"
+            );
+        }
+        let proposals = section(&review, header);
+        let line = proposals
+            .lines()
+            .find(|line| line.contains(asked[0]))
+            .unwrap_or_else(|| panic!("the {lang} reviewer no longer says what to do with a mistake that repeats:{proposals}"));
+        for phrase in asked {
+            assert!(line.contains(phrase), "the {lang} reviewer does not say `{phrase}`: {line}");
+        }
+        assert!(proposals.contains(skill), "the {lang} reviewer lost the proposal to change a skill:{proposals}");
+        let example = review.lines().find(|line| line.starts_with("{\"final\"")).unwrap_or_else(|| panic!("no {lang} example"));
+        let parsed: Value = serde_json::from_str(example).unwrap_or_else(|e| panic!("{lang}: {e}: {example}"));
+        assert!(parsed["lessons"].is_array(), "the verdict still says whether a lesson of the request repeated: {example}");
+    }
+}
+
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
 /// reler depois de editar, rodar só os testes do que mudou, a suíte inteira
 /// uma vez no fim pelo `rtk`, nada em segundo plano, não comitar nem usar

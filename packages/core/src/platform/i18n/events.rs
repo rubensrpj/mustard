@@ -623,6 +623,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              of the end of a response found: {defects}. Rewrite the text and write it again. \
              Nothing was written."
         }
+        ("lessons.defect_by_task", Locale::PtBr) => {
+            "O defeito que pode se repetir não entra no banco de lições, que fica só nesta máquina \
+             e não vai ao git. Ele vira conserto no código, com o teste que falha se o defeito \
+             voltar: grave a tarefa desse conserto com `mustard-rt run write task`, na spec da \
+             obra. Nada foi gravado."
+        }
+        ("lessons.defect_by_task", Locale::EnUs) => {
+            "A defect that can happen again does not go in the lesson bank, which stays on this \
+             machine only and never goes to git. It becomes a fix in the code, with the test that \
+             fails if the defect comes back: write the task of that fix with \
+             `mustard-rt run write task`, in the spec of the work. Nothing was written."
+        }
         // O que o scan aponta para enxugar o banco de lições (`run scan`).
         ("lessons.scan_merge", Locale::PtBr) => {
             "Junte cada grupo de lições parecidas numa lição só, resumida no jeito de escrever do \
@@ -667,8 +679,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            91,
-            0x0b85_ce0e_7f24_9598,
+            92,
+            0xdcf3_b4a3_2be3_0ae4,
         );
     }
 
@@ -784,6 +796,7 @@ mod tests {
             ("lessons.origin_missing", &[][..]),
             ("lessons.repeated", &["{id}", "{text}"][..]),
             ("lessons.unclear", &["{defects}"][..]),
+            ("lessons.defect_by_task", &[][..]),
             ("lessons.scan_merge", &["{groups}"][..]),
             ("lessons.scan_retire", &["{lessons}"][..]),
             ("lessons.scan_untouched", &[][..]),

@@ -4,7 +4,13 @@
 //! pode se repetir (`defect`), uma regra do projeto (`project_rule`), uma
 //! armadilha do ambiente (`environment_trap`) ou uma preferência do usuário
 //! (`user_preference`). O banco fica fora das pastas das specs e é escrito só
-//! pelo binário, pelo `write lesson`. Cada linha tem o mesmo envelope dos
+//! pelo binário, pelo `write lesson`. Ele mora só na máquina de quem programa
+//! e não vai ao git: por isso o `write lesson` recusa a lição de defeito
+//! ([`is_defect`]), que viraria regra presa numa máquina só. O defeito que
+//! pode se repetir vira conserto no código, com o teste que falha se ele
+//! voltar, e esse conserto vai ao git com a obra. As lições de defeito já
+//! guardadas seguem na leitura, e a retirada as tira como qualquer outra.
+//! Cada linha tem o mesmo envelope dos
 //! eventos da spec (`v`, `id`, `at`, `type`, `author`), sem código de item e
 //! sem `origin`: o `type` guarda a classe da lição, e a lição é apontada pelo
 //! número dela no banco.
@@ -70,8 +76,21 @@ use crate::domain::spec_events::{
 /// O tipo com que o `write` recebe uma lição.
 pub const LESSON: &str = "lesson";
 
-/// As classes de lição, gravadas no `type` da linha.
-pub const CLASSES: &[&str] = &["defect", "project_rule", "environment_trap", "user_preference"];
+/// As classes de lição, gravadas no `type` da linha. A de defeito ([`DEFECT`])
+/// continua na lista porque as linhas antigas dela seguem válidas na leitura;
+/// quem a recusa na gravação é o `write lesson`.
+pub const CLASSES: &[&str] = &[DEFECT, "project_rule", "environment_trap", "user_preference"];
+
+/// A classe do defeito que pode se repetir.
+pub const DEFECT: &str = "defect";
+
+/// O rascunho que o `write lesson` recebe grava uma lição de defeito, sozinha
+/// ou juntando outras em `replaces`: a classe dele (`class`) é [`DEFECT`]. A
+/// retirada, que não traz classe, nunca é.
+#[must_use]
+pub fn is_defect(draft: &Map<String, Value>) -> bool {
+    draft.get("class").and_then(Value::as_str).map(str::trim) == Some(DEFECT)
+}
 
 /// O tipo da linha que retira lições do banco: o mesmo `remove` da spec, com
 /// as lições em `targets` e o motivo em `reason`. Quem grava pelo `write

@@ -35,7 +35,7 @@ Só o crítico reprova.
 
 ## Propostas
 
-Erro que pode se repetir? Proponha uma lição curta. Veio de skill com passo errado ou faltando? Proponha a mudança nela. As duas só entram com o "sim" do usuário.
+Erro que pode se repetir? Escreva como achado do veredito o conserto no código, com o teste que falha se o erro voltar. Veio de skill com passo errado ou faltando? Proponha a mudança nela; ela só entra com o "sim" do usuário.
 
 ## O que devolver
 

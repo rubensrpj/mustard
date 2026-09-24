@@ -35,7 +35,7 @@ Only a critical finding rejects.
 
 ## Proposals
 
-A mistake that can happen again? Propose a short lesson. Did it come from a skill with a wrong or missing step? Propose the change to it. Both only go in with the user's "yes".
+A mistake that can happen again? Write, as a finding of the verdict, the fix in the code with the test that fails if the mistake comes back. Did it come from a skill with a wrong or missing step? Propose the change to it; it only goes in with the user's "yes".
 
 ## What to return
 

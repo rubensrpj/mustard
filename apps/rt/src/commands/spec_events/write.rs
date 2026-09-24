@@ -37,10 +37,14 @@
 //! leitura e idioma), e a lição com defeito é recusada com os defeitos, sem
 //! gravar. A lição cujo texto repete o de outra já guardada, depois de
 //! igualar espaços, maiúsculas e acentos, também é recusada, apontando a que
-//! existe. A página e o índice não mudam:
+//! existe. A lição de defeito (`"class":"defect"`), sozinha ou juntando
+//! outras, é recusada sem gravar: o banco fica só nesta máquina e não vai ao
+//! git, então o defeito que pode se repetir vira a tarefa do conserto, com o
+//! teste que falha se ele voltar, e a recusa manda gravá-la pelo `run write
+//! task`. A página e o índice não mudam:
 //!
 //! ```text
-//! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
+//! {"ok": true, "id": 8, "type": "lesson", "class": "environment_trap"}
 //! ```
 //!
 //! A publicação da página do projeto (`publish` com `"page":"project"`) é o
@@ -61,7 +65,7 @@
 //! como o `remove` tira um item da spec:
 //!
 //! ```text
-//! {"ok": true, "id": 9, "type": "lesson", "class": "defect", "replaced": [3, 5]}
+//! {"ok": true, "id": 9, "type": "lesson", "class": "environment_trap", "replaced": [3, 5]}
 //! {"ok": true, "id": 10, "type": "lesson", "retired": [4]}
 //! ```
 //!
@@ -180,7 +184,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::lessons::{LESSON, RETIRE};
+use mustard_core::domain::lessons::{is_defect, LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
     type_spec, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
     TASK_TITLE_MAX,
@@ -209,6 +213,10 @@ use crate::shared::spec_state::DiskSpecState;
 /// rodada ou o fechamento assumi-las.
 const BINARY_ONLY: &[&str] =
     &["criterion_run", "verdict", "send", "delivered", "commit", "tracking", "response"];
+
+/// A razão curta da recusa da lição de defeito: ela vira a tarefa do
+/// conserto, com o teste que falha se o defeito voltar.
+const DEFECT_BY_TASK: &str = "defect-by-task";
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
@@ -1171,7 +1179,14 @@ fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
 /// que spec a lição nasceu. O texto passa antes pela medição da conferência
 /// de escrita do fim da resposta; com defeito, nada é gravado.
+///
+/// A lição de defeito, sozinha ou juntando outras, é recusada antes de tudo,
+/// sem gravar: o banco não vai ao git, e o defeito que pode se repetir vira a
+/// tarefa do conserto, com o teste que falha se ele voltar.
 fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String, Value>) -> Value {
+    if is_defect(&draft) {
+        return json!({ "ok": false, "reason": DEFECT_BY_TASK, "hint": translate("lessons.defect_by_task", project.lang) });
+    }
     let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
     if let Some(text) = draft.get("text").and_then(Value::as_str) {
         let report = crate::hooks::task::clarity_check::measure_in_project(&project.root, text, &[]);
@@ -2104,26 +2119,76 @@ mod tests {
         let files = [specs.join("teste").join("spec.ndjson"), specs.join("index.ndjson")];
         let before: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
 
-        let lesson = r#"{"class":"defect","text":"Um rm -rf na pasta errada perde trabalho.","keys":["apagar","rm"],"applies_to":{"subproject":"apps/rt"}}"#;
-        assert_eq!(write(root, "lesson", lesson), json!({"ok": true, "id": 1, "type": "lesson", "class": "defect"}));
+        let lesson = r#"{"class":"environment_trap","text":"Um rm -rf na pasta errada perde trabalho.","keys":["apagar","rm"],"applies_to":{"subproject":"apps/rt"}}"#;
+        assert_eq!(write(root, "lesson", lesson), json!({"ok": true, "id": 1, "type": "lesson", "class": "environment_trap"}));
         let after: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
         assert!(before == after, "the spec's files did not move");
         let bank = std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap();
-        assert!(bank.contains(r#""found_in":{"spec":"teste"}"#) && bank.contains(r#""type":"defect""#), "{bank}");
+        assert!(bank.contains(r#""found_in":{"spec":"teste"}"#) && bank.contains(r#""type":"environment_trap""#), "{bank}");
 
         let everywhere = r#"{"class":"user_preference","text":"Resposta curta.","keys":["resposta"],"applies_to":{"files":["**"]},"found_in":{"source":"CLAUDE.md"}}"#;
         let second = write_to(root, None, "lesson", everywhere);
         assert_eq!(second["id"], json!(2), "{second}");
-        let no_origin = r#"{"class":"defect","text":"t","keys":["k"],"applies_to":{"skill":"s"}}"#;
+        let no_origin = r#"{"class":"environment_trap","text":"t","keys":["k"],"applies_to":{"skill":"s"}}"#;
         let refused = write_to(root, None, "lesson", no_origin);
         assert_eq!(refused["reason"], json!("lesson-origin-missing"), "{refused}");
         assert_eq!(std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap().lines().count(), 2);
     }
 
+    /// Pelo comando de gravar lição, a lição de defeito é recusada e nada
+    /// entra no banco: nem o banco nasce, nem muda um byte dele. A recusa
+    /// manda gravar a tarefa do conserto, com o teste que falha se o defeito
+    /// voltar, nos dois idiomas. A junção que daria uma lição de defeito
+    /// também é recusada. A armadilha do ambiente e a preferência do usuário
+    /// continuam entrando, e a retirada também.
+    #[test]
+    fn a_licao_de_defeito_e_recusada_e_aponta_a_tarefa() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let bank = root.join(".claude").join("spec").join("lessons.ndjson");
+        let lesson = |class: &str, text: &str| {
+            let draft = json!({"class": class, "text": text, "keys": ["pasta"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
+            write_to(root, None, "lesson", &draft.to_string())
+        };
+        let points_to_the_task = |out: &Value, test: &str, nothing: &str| {
+            assert_eq!(out["ok"], json!(false), "{out}");
+            assert_eq!(out["reason"], json!("defect-by-task"), "{out}");
+            let hint = out["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains("mustard-rt run write task") && hint.contains(test) && hint.contains(nothing), "{hint}");
+        };
+
+        let defect = lesson("defect", "Apagar a pasta errada perde trabalho.");
+        points_to_the_task(&defect, "teste que falha se o defeito voltar", "Nada foi gravado");
+        assert!(!bank.exists(), "a recusa não criou o banco");
+
+        let trap = lesson("environment_trap", "O cargo fica fora do caminho do shell.");
+        assert_eq!(trap, json!({"ok": true, "id": 1, "type": "lesson", "class": "environment_trap"}));
+        let preference = lesson("user_preference", "Resposta curta e sem sigla.");
+        assert_eq!(preference, json!({"ok": true, "id": 2, "type": "lesson", "class": "user_preference"}));
+
+        let before = std::fs::read(&bank).unwrap();
+        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+            "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
+        let merge = write_to(root, None, "lesson", &merged.to_string());
+        points_to_the_task(&merge, "teste que falha se o defeito voltar", "Nada foi gravado");
+        assert_eq!(std::fs::read(&bank).unwrap(), before, "a recusa não mudou o banco");
+
+        let retired = write_to(root, None, "lesson", r#"{"targets":[2],"reason":"a resposta mudou de jeito"}"#);
+        assert_eq!(retired, json!({"ok": true, "id": 3, "type": "lesson", "retired": [2]}));
+
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+        let before = std::fs::read(&bank).unwrap();
+        let english = lesson("defect", "Deleting the wrong folder loses work.");
+        points_to_the_task(&english, "test that fails if the defect comes back", "Nothing was written");
+        assert_eq!(std::fs::read(&bank).unwrap(), before, "a recusa não mudou o banco");
+        let kept = std::fs::read_to_string(&bank).unwrap();
+        assert!(!kept.contains(r#""type":"defect""#), "nenhuma lição de defeito entrou: {kept}");
+    }
+
     /// Uma lição com o texto `text`, que vale no projeto todo, como o
     /// assistente a grava pelo `run write lesson`.
     fn lesson_text(root: &std::path::Path, text: &str) -> Value {
-        let draft = json!({"class": "defect", "text": text, "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
+        let draft = json!({"class": "environment_trap", "text": text, "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
         write_to(root, None, "lesson", &draft.to_string())
     }
 
@@ -2178,7 +2243,7 @@ mod tests {
         let hint = again["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("lição 1") && hint.contains("Não apague a pasta de outra sessão."), "{hint}");
         assert_eq!(std::fs::read(root.join(".claude/spec/lessons.ndjson")).unwrap(), before);
-        let draft = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 1});
+        let draft = json!({"class": "environment_trap", "text": "Nunca apague a pasta de outra sessão.", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 1});
         assert_eq!(write_to(root, None, "lesson", &draft.to_string())["id"], json!(2));
     }
 
@@ -2194,10 +2259,10 @@ mod tests {
         assert_eq!(lesson_text(root, "Remover a pasta alheia perde trabalho.")["id"], json!(2));
         assert_eq!(lesson_text(root, "A suíte roda no servidor antigo.")["id"], json!(3));
 
-        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+        let merged = json!({"class": "environment_trap", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
             "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
         let out = write_to(root, None, "lesson", &merged.to_string());
-        assert_eq!(out, json!({"ok": true, "id": 4, "type": "lesson", "class": "defect", "replaced": [1, 2]}));
+        assert_eq!(out, json!({"ok": true, "id": 4, "type": "lesson", "class": "environment_trap", "replaced": [1, 2]}));
 
         let lines = bank_lines(root);
         let no_reason = write_to(root, None, "lesson", r#"{"targets":[3]}"#);
@@ -2237,7 +2302,7 @@ mod tests {
             mustard_core::domain::lessons::kept(&bank).iter().map(|l| l.id).collect()
         };
         let lines = bank_lines(root);
-        let every_lesson = json!({"type": "defect", "from": "2000-01-01T00:00", "to": "2100-01-01T00:00"});
+        let every_lesson = json!({"type": "environment_trap", "from": "2000-01-01T00:00", "to": "2100-01-01T00:00"});
         for (extra, value) in [("filter", every_lesson), ("replaces", json!(4))] {
             let mut draft = json!({"targets": [3], "reason": "o servidor antigo saiu"});
             draft[extra] = value;
@@ -2258,7 +2323,7 @@ mod tests {
         assert_eq!(out["retired"], json!([3]));
 
         let before = kept();
-        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+        let merged = json!({"class": "environment_trap", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
             "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
         let out = write_to(root, None, "lesson", &merged.to_string());
         assert_eq!(out["replaced"], gone(&before, &kept()), "{out}");
