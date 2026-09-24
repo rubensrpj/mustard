@@ -7,3 +7,4 @@ pub mod spec_index;
 pub mod lessons;
 pub mod project_map;
 pub mod wave_prompt;
+pub mod transcript;

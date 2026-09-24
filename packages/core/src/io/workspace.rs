@@ -367,8 +367,38 @@ fn main_checkout_if_linked(dir: &Path) -> Option<PathBuf> {
 /// ancestor carrying the `.git` FILE a linked worktree has — a folder outside
 /// any git checkout, or inside a plain one, never spawns git.
 fn outside_worktree_main(start_dir: &Path) -> Option<PathBuf> {
-    let top = start_dir.ancestors().find(|dir| dir.join(".git").is_file())?;
-    main_checkout_if_linked(top)
+    main_checkout_if_linked(linked_top(start_dir)?)
+}
+
+/// The nearest ancestor of `start_dir` (itself included) whose `.git` is a
+/// FILE — the `gitdir:` pointer a linked worktree, or a submodule, carries.
+fn linked_top(start_dir: &Path) -> Option<&Path> {
+    start_dir.ancestors().find(|dir| dir.join(".git").is_file())
+}
+
+/// The main checkout of the linked worktree `start_dir` sits in, read from the
+/// files git leaves behind and WITHOUT running git — for the one caller that
+/// cannot ask git: the git executor ([`crate::platform::git::run`]), deciding
+/// which program answers for a wave copy that lives outside its project.
+///
+/// The worktree's `.git` file names its admin folder (`gitdir:
+/// <main>/.git/worktrees/<name>`, absolute or relative to the worktree); the
+/// `commondir` file there leads to the shared `<main>/.git`; the folder above
+/// it is the main checkout. `None` for anything else — no `.git` file above, a
+/// submodule (its admin folder has no `commondir`), a shared folder not named
+/// `.git` (a bare repository has no checkout) or a pointer to nowhere.
+#[must_use]
+pub fn worktree_main_from_files(start_dir: &Path) -> Option<PathBuf> {
+    let top = linked_top(start_dir)?;
+    let pointer = std::fs::read_to_string(top.join(".git")).ok()?;
+    let admin = pointer.lines().find_map(|line| line.strip_prefix("gitdir:"))?.trim();
+    let admin = top.join(admin);
+    let common = std::fs::read_to_string(admin.join("commondir")).ok()?;
+    let common = std::fs::canonicalize(admin.join(common.trim())).ok()?;
+    if common.file_name().and_then(|name| name.to_str()) != Some(".git") {
+        return None;
+    }
+    common.parent().map(Path::to_path_buf)
 }
 
 /// The MAIN checkout when `dir` is inside a LINKED git worktree; `None` in the
