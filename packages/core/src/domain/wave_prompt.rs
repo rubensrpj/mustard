@@ -112,6 +112,14 @@ pub struct Execution {
     pub build: Option<String>,
     /// O comando que roda os testes do projeto, quando ele declara um.
     pub test: Option<String>,
+    /// O comando de preparo que o projeto declara (`prepareCommand`), como
+    /// `npm ci`: os dois pedidos mandam rodá-lo dentro da cópia antes de
+    /// compilar. Sem ele, nenhum dos dois fala de preparo.
+    pub prepare: Option<String>,
+    /// Os arquivos locais que o git ignora e a cópia precisa (`localFiles`),
+    /// relativos à raiz e já sem o caminho que sairia do projeto: o pedido
+    /// do revisor os lista, a copiar pelo conteúdo. Vazia, ele não fala deles.
+    pub local_files: Vec<String>,
     /// As outras ondas em andamento, cada uma com os arquivos das tarefas
     /// dela: o arquivo dividido com elas é juntado na volta.
     pub running: Vec<(u64, Vec<String>)>,
@@ -1327,7 +1335,8 @@ impl Writer<'_> {
 
     /// As regras da execução do agente da onda que carregam valor deste
     /// projeto e desta rodada — a cópia separada, a pasta de compilação num
-    /// projeto Rust, os comandos do projeto e as outras ondas em andamento,
+    /// projeto Rust, o preparo que o projeto declara, os comandos do projeto
+    /// e as outras ondas em andamento,
     /// com os arquivos delas — e, ligadas à cópia, as três frases que dizem
     /// com todas as letras que o agente não comita, que o campo `commit` da
     /// entrega é o título, nunca o código do commit, e que a entrega vai para
@@ -1343,6 +1352,7 @@ impl Writer<'_> {
             let line = self.t("prompt.execution.copy").replace("{copy}", &copy.path).replace("{root}", &execution.root);
             let _ = writeln!(out, "- {line}");
             self.build_dir(out, copy);
+            self.prepare(out);
             let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
             let _ = writeln!(out, "- {}", self.t("prompt.execution.commit_field"));
             let _ = writeln!(out, "- {}", self.t("prompt.execution.report_lines"));
@@ -1365,7 +1375,9 @@ impl Writer<'_> {
 
     /// As regras da execução do revisor: a cópia que o fechamento já criou no
     /// commit da obra, compilar na pasta de compilação dela num projeto Rust,
-    /// os comandos do projeto com menos processos, e desfazer cada corte
+    /// o preparo que o projeto declara, os arquivos locais que a cópia recebe
+    /// pelo conteúdo, os comandos do projeto com menos processos, e desfazer
+    /// cada corte
     /// antes de gravar o veredito — quem apaga a cópia é o fechamento. De onde ler a
     /// spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
@@ -1376,10 +1388,25 @@ impl Writer<'_> {
         let line = self.t("prompt.review.copy").replace("{copy}", &copy.path).replace("{root}", root);
         let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
         self.build_dir(out, copy);
+        self.prepare(out);
+        if !execution.local_files.is_empty() {
+            let files: Vec<String> = execution.local_files.iter().map(|file| format!("`{file}`")).collect();
+            let line = self.t("prompt.review.local_files").replace("{files}", &files.join(", ")).replace("{root}", root);
+            let _ = writeln!(out, "- {line}");
+        }
         self.commands(out);
         let _ = writeln!(out, "- {}", self.t("prompt.review.jobs"));
         let _ = writeln!(out, "- {}", self.t("prompt.review.cleanup").replace("{copy}", &copy.path));
         out.push('\n');
+    }
+
+    /// O preparo que o projeto declara, rodado dentro da cópia antes de
+    /// compilar, com o arquivo versionado que ele mudar de volta ao commit;
+    /// sem comando declarado, nada.
+    fn prepare(&self, out: &mut String) {
+        if let Some(command) = &self.material.execution.prepare {
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.prepare").replace("{command}", command));
+        }
     }
 
     /// A pasta de compilação da cópia, quando ela tem uma e o projeto é Rust:
@@ -2488,6 +2515,7 @@ mod tests {
             copy: Some(WaveCopy { path: "/repo/copia-1".into(), build_dir: Some("/repo/target/copias/a".into()) }),
             review: WaveCopy { path: "/repo/revisao-1".into(), build_dir: Some("/repo/target/copias/b".into()) },
             rust: true,
+            ..Execution::default()
         }
     }
 

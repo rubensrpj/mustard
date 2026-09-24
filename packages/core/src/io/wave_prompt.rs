@@ -1,7 +1,8 @@
 //! O pedido de cada onda, montado do disco: o arquivo de eventos da spec, o
 //! banco de lições, os arquivos das skills que as tarefas nomeiam, os
-//! comandos de compilar e testar que o projeto declara e o mapa do projeto,
-//! que diz se ele tem uma parte Rust.
+//! comandos de compilar, testar e preparar a cópia que o projeto declara, os
+//! arquivos locais dele e o mapa do projeto, que diz se ele tem uma parte
+//! Rust.
 //!
 //! A regra de escrever o pedido mora em `domain::wave_prompt`, sem disco;
 //! aqui ficam só as leituras. Os dois leitores do pedido — o passo do plano,
@@ -70,16 +71,52 @@ pub struct Flight {
 pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Flight) -> Vec<WavePrompt> {
     let bank = lesson_bank(root);
     let map = crate::io::project_map::read(root).ok();
-    let commands = crate::ProjectConfig::load(root).commands();
-    let base = Execution {
-        build: commands.build,
-        test: commands.test,
-        root: shown(root),
-        rust: has_rust_part(map.as_ref()),
-        ..Execution::default()
-    };
+    let base = Execution { rust: has_rust_part(map.as_ref()), ..project_execution(root) };
     let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, flight, lang };
     log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
+}
+
+/// O que os dois pedidos leem do `mustard.json` do projeto `root`: os
+/// comandos de compilar e de testar, o de preparo e os arquivos locais, com
+/// o repositório principal.
+fn project_execution(root: &Path) -> Execution {
+    let config = crate::ProjectConfig::load(root);
+    let commands = config.commands();
+    Execution {
+        build: commands.build,
+        test: commands.test,
+        prepare: commands.prepare,
+        local_files: local_files(&config),
+        root: shown(root),
+        ..Execution::default()
+    }
+}
+
+/// Os arquivos locais que o projeto declara (`localFiles`) e que uma cópia
+/// pode receber ([`local_file_inside`]), na ordem da lista, sem as entradas
+/// em branco. Vazia quando a lista falta ou está vazia.
+#[must_use]
+pub fn local_files(config: &crate::ProjectConfig) -> Vec<String> {
+    config
+        .local_files
+        .iter()
+        .flatten()
+        .map(|file| file.trim())
+        .filter(|file| local_file_inside(file))
+        .map(str::to_string)
+        .collect()
+}
+
+/// O item da lista de arquivos locais é um caminho relativo que fica dentro
+/// do projeto: nem absoluto, nem com `..`, nem vazio. Só esse chega a uma
+/// cópia; o outro escreveria fora dela, ou sobre o próprio arquivo do
+/// repositório principal.
+#[must_use]
+pub fn local_file_inside(item: &str) -> bool {
+    use std::path::Component;
+    let path = Path::new(item);
+    path.components().all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+        && path.components().any(|part| matches!(part, Component::Normal(_)))
 }
 
 /// O banco de lições do projeto `root`; `None` quando ele não existe ou não
@@ -228,18 +265,14 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
     };
     let commit = final_review_commit(root, log);
     let last_sent = log.last_by_wave("send").into_iter().max_by_key(|(_, id)| *id).map(|(n, _)| n);
-    let commands = crate::ProjectConfig::load(root).commands();
     let execution = Execution {
-        build: commands.build,
-        test: commands.test,
         commit,
-        root: shown(root),
         review: WaveCopy {
             path: shown(&final_copy_path(root, spec)),
             build_dir: last_sent.and_then(|n| recorded_copy(log, n)).and_then(|copy| copy.build_dir),
         },
         rust: has_rust_part(crate::io::project_map::read(root).ok().as_ref()),
-        ..Execution::default()
+        ..project_execution(root)
     };
     let material = Material {
         spec: spec.to_string(),
@@ -1380,6 +1413,55 @@ mod tests {
                     assert_eq!(text.contains("target/copias"), cites, "{map:?} {lang:?} {what}: {text}");
                 }
                 assert!(built[0].text.contains(&format!("`{copy}`")), "{map:?} {lang:?}: {}", built[0].text);
+            }
+        }
+    }
+
+    /// Num projeto que declara o preparo (`npm ci`) e os arquivos locais, o
+    /// pedido da onda e o do revisor mandam rodar o preparo dentro da cópia
+    /// antes de compilar — a linha vem antes da de compilar — e devolver ao
+    /// commit, pelo `git checkout`, o arquivo versionado que ele mudar, salvo
+    /// o que a tarefa declara. Só o pedido do revisor lista os arquivos
+    /// locais, a copiar pelo conteúdo do repositório principal, sem o item
+    /// que sairia do projeto. Sem os dois — chaves ausentes, ou comando vazio
+    /// e lista vazia —, nenhum pedido traz essas linhas. Nos dois idiomas.
+    #[test]
+    fn the_wave_requests_cite_the_prepare_command_and_the_local_files() {
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+        ]);
+        let declared = json!({"buildCommand": "npm run build", "prepareCommand": "npm ci",
+            "localFiles": [".env", "apps/api/.env.local", "../fora.env", "/etc/fora.env"]});
+        let empty = json!({"buildCommand": "npm run build", "prepareCommand": "  ", "localFiles": []});
+        let absent = json!({"buildCommand": "npm run build"});
+        for (config, cites) in [(declared, true), (empty, false), (absent, false)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+            let copy = WaveCopy { path: "/c/um".into(), build_dir: Some("/t/a".into()) };
+            let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                let t = |key: &str| crate::platform::i18n::translate(key, lang);
+                let prepare = t("prompt.execution.prepare").replace("{command}", "npm ci");
+                let build = t("prompt.execution.build").replace("{command}", "npm run build");
+                let local = t("prompt.review.local_files")
+                    .replace("{files}", "`.env`, `apps/api/.env.local`")
+                    .replace("{root}", &shown(root));
+                let wave = prompts(root, "teste", &log, lang, &flight).remove(0).text;
+                let last = final_review(root, "teste", &log, lang);
+                for (what, text) in [("wave", &wave), ("final", &last)] {
+                    assert_eq!(text.contains(&prepare), cites, "{config} {lang:?} {what}: {text}");
+                    assert_eq!(text.contains("npm ci"), cites, "{config} {lang:?} {what}: {text}");
+                    assert_eq!(text.contains("git checkout --"), cites, "{config} {lang:?} {what}: {text}");
+                    if cites {
+                        let (at, built_at) = (text.find(&prepare).unwrap(), text.find(&build).unwrap());
+                        assert!(at < built_at, "o preparo vem antes de compilar: {lang:?} {what}: {text}");
+                    }
+                    assert!(!text.contains("fora.env"), "{lang:?} {what}: {text}");
+                }
+                assert_eq!(last.contains(&local), cites, "{config} {lang:?}: {last}");
+                assert!(!wave.contains(".env"), "a cópia da onda já recebe os arquivos da rodada: {lang:?}: {wave}");
             }
         }
     }

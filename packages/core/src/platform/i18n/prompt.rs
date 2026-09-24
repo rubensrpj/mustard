@@ -210,6 +210,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              main repository `{root}`, and the copy stays where it is: on the way back, the round \
              merges the delivered files, new and deleted ones included, and deletes it after the commit."
         }
+        // O preparo que o projeto declara traz à cópia as dependências que o
+        // git não leva. Ele pode mexer num arquivo comitado, como o lockfile,
+        // e essa mudança não é trabalho da onda: volta ao commit, a não ser
+        // que a tarefa declare o arquivo.
+        ("prompt.execution.prepare", Locale::PtBr) => {
+            "Antes de compilar, rode `{command}` dentro da cópia: é o preparo que o projeto declara. O \
+             arquivo versionado que ele mudar, como o lockfile, volta ao commit com `git checkout -- \
+             <arquivo>`, salvo o que a tarefa declara."
+        }
+        ("prompt.execution.prepare", Locale::EnUs) => {
+            "Before building, run `{command}` inside the copy: it is the preparation the project \
+             declares. A versioned file it changes, such as the lockfile, goes back to the commit with \
+             `git checkout -- <file>`, unless the task declares it."
+        }
         // O agente nunca comita: quem junta a cópia ao repositório principal
         // e faz o commit é a rodada. Precisa dizer isso com todas as letras,
         // porque em 22/09/2026 dois agentes comitaram dentro da cópia e
@@ -263,6 +277,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Review in the separate copy `{copy}`, never in the main repository `{root}`: the close \
              already created it at commit `{commit}`; run everything inside it."
         }
+        // Os arquivos locais que o git ignora não vêm com a cópia: o
+        // fechamento os copia para ela, e o revisor copia de novo, pelo
+        // conteúdo, o que faltar — nunca por link, que deixaria a cópia
+        // escrever no repositório principal.
+        ("prompt.review.local_files", Locale::PtBr) => {
+            "Os arquivos locais que o git ignora e a cópia precisa são {files}: o que faltar nela, \
+             copie do repositório principal `{root}` pelo conteúdo, nunca por link ou atalho."
+        }
+        ("prompt.review.local_files", Locale::EnUs) => {
+            "The local files git ignores and the copy needs are {files}: whatever is missing from it, \
+             copy from the main repository `{root}` by content, never by link or shortcut."
+        }
         ("prompt.review.jobs", Locale::PtBr) => {
             "Compile e teste com menos processos em paralelo que o normal: as ondas compilam ao mesmo \
              tempo que você."
@@ -293,8 +319,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            40,
-            0x84c2_0646_3408_560e,
+            42,
+            0xf3e5_92b8_6695_af25,
         );
     }
 }

@@ -377,6 +377,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave}'s copy could not be created: {detail}. The wave did not go out this round; \
              fix it and run the round again."
         }
+        // Um arquivo da lista de arquivos locais do projeto não chegou à
+        // cópia. Não trava nada: a cópia sai sem ele, e o aviso diz qual.
+        ("round.local_file_missing", Locale::PtBr) => {
+            "O arquivo local `{file}`, da lista `localFiles` do `mustard.json`, não chegou à cópia \
+             `{copy}`: não existe no repositório principal, não é um caminho relativo dentro do projeto \
+             ou não pôde ser copiado. A cópia saiu sem ele."
+        }
+        ("round.local_file_missing", Locale::EnUs) => {
+            "The local file `{file}`, from the `localFiles` list in `mustard.json`, did not reach the \
+             copy `{copy}`: it does not exist in the main repository, is not a relative path inside \
+             the project, or could not be copied. The copy went out without it."
+        }
         ("round.copy_kept", Locale::PtBr) => {
             "A cópia da onda {wave}, {copy}, ficou no disco: {files} mudou nela e não estava na \
              entrega. Leve o que servir ao repositório principal e apague a cópia com \
@@ -1272,8 +1284,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            159,
-            0xf175_f3ba_ff37_fb8f,
+            160,
+            0x11b9_9090_105c_4acf,
         );
     }
 
@@ -1404,6 +1416,7 @@ mod tests {
             ("round.line_field", &["{line}", "{field}"][..]),
             ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),
             ("round.copy_failed", &["{wave}", "{detail}"][..]),
+            ("round.local_file_missing", &["{file}", "{copy}"][..]),
             ("pr.submodules.waiting", &["{pr}", "{paths}"][..]),
             ("pr.submodules.ready", &["{pr}", "{paths}"][..]),
             ("pr.submodules.stuck", &["{pr}", "{reason}"][..]),
@@ -1480,6 +1493,8 @@ mod tests {
             ("prompt.execution.build_dir", &["{dir}"][..]),
             ("prompt.review.copy", &["{copy}", "{root}", "{commit}"][..]),
             ("prompt.review.cleanup", &["{copy}"][..]),
+            ("prompt.execution.prepare", &["{command}"][..]),
+            ("prompt.review.local_files", &["{files}", "{root}"][..]),
             ("page.wave.prompt", &["{n}"][..]),
             ("page.wave.prompt.summary", &["{lines}"][..]),
         ] {

@@ -127,7 +127,9 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
 pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{backlog_left, ensure_copy, open_review, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use queue::{
+    backlog_left, ensure_copy, local_file_missing, open_review, wave_states, waves_in_progress, waves_pending_fix,
+};
 pub(crate) use report::{check_return, check_verdict_return, take_report};
 
 /// As opções de `mustard-rt run round`.
