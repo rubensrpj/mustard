@@ -950,25 +950,6 @@ mod tests {
         assert_eq!(witness(none.path(), &input), Verdict::Allow, "no notice without a spec either");
     }
 
-    /// A testemunha não confere mais as marcas do comando antigo de
-    /// aprovação: uma spec com o `meta.json` de uma spec Full e sem o
-    /// `.clarified` é aprovada pela resposta.
-    #[test]
-    fn a_spec_without_the_old_clarified_mark_is_approved_by_the_answer() {
-        if ambient_override() {
-            return;
-        }
-        let dir = in_plan();
-        let root = dir.path();
-        let spec_dir = root.join(".claude").join("spec").join("epic");
-        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"full (wave plan)","stage":"Plan"}"#).unwrap();
-
-        let said = witness(root, &approve_or_adjust("Aprovar"));
-        let expected = say("approval.witness.clear", lang(root), &[("{spec}", "epic")]);
-        assert_eq!(said, Verdict::Inject { context: expected });
-        assert!(state(root).approved, "the answer approves");
-    }
-
     /// Um ponto do levantamento aberto barra a aprovação: a gravação é
     /// recusada pela regra do núcleo, nada é gravado, e a testemunha diz ao
     /// assistente o motivo do núcleo, com o código e a lacuna do ponto.

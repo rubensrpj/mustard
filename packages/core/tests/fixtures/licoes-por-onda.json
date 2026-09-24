@@ -1,0 +1,929 @@
+{
+  "about": "Os envios das treze ondas de uma obra real deste projeto. Por onda: os arquivos e o texto das tarefas, as lições que chegaram ao orquestrador antes do envio, as que ele tirou à mão e as que manteve. As lições são as do banco do projeto, pelo número, com a classe, o texto, onde valem e as palavras-chave.",
+  "lessons": [
+    {
+      "id": 3,
+      "class": "defect",
+      "text": "Subagente nunca roda compilação ou teste em segundo plano: o aviso de término não chega a ele, e ele encerra dizendo que espera a suíte, com o trabalho pela metade. Rode tudo em primeiro plano, com o teto de tempo do comando, e só devolva o relatório depois de ver o resultado. Em 17/09 duas revisões pararam assim e precisaram ser retomadas.",
+      "applies_to": {
+        "files": [
+          "**"
+        ]
+      },
+      "keys": [
+        "segundo plano",
+        "suíte",
+        "subagente",
+        "revisão",
+        "espera"
+      ]
+    },
+    {
+      "id": 5,
+      "class": "project_rule",
+      "text": "Hook nunca pode entrar em pânico nem barrar a sessão por erro próprio: a degradação mora UMA vez no dispatcher (um `Check` com `Err` vira `Allow`) e no `main` (todo caminho termina em `process::exit(0)`); bloqueio se expressa no JSON `permissionDecision`, jamais via exit não-zero.",
+      "applies_to": {
+        "subproject": "apps/rt"
+      },
+      "keys": [
+        "rt",
+        "nunca",
+        "entrar",
+        "pânico",
+        "barrar",
+        "sessão",
+        "próprio"
+      ]
+    },
+    {
+      "id": 6,
+      "class": "project_rule",
+      "text": "`clippy::unwrap_used`/`expect_used` são `deny` em todo o crate (fora de `#[cfg(test)]`); em hook, degrade com `unwrap_or` / `let-else` / `ok()?`.",
+      "applies_to": {
+        "subproject": "apps/rt"
+      },
+      "keys": [
+        "rt",
+        "clippy",
+        "unwrap",
+        "expect",
+        "crate",
+        "degrade"
+      ]
+    },
+    {
+      "id": 8,
+      "class": "project_rule",
+      "text": "Observers (`hooks/observe`,`session`,`task`) são só efeito-colateral/telemetria: `observe()` retorna `()` e roda fire-and-forget — nunca devolva veredito por ali (decisão de bloqueio vive num `Check`).",
+      "applies_to": {
+        "subproject": "apps/rt"
+      },
+      "keys": [
+        "rt",
+        "observers",
+        "hooks",
+        "observe",
+        "session",
+        "efeito",
+        "colateral"
+      ]
+    },
+    {
+      "id": 9,
+      "class": "project_rule",
+      "text": "A face `run` NÃO lê o stdin do harness (despachada antes da leitura no `main.rs`); só `on`/`check` consomem o `HookInput`. Mantenha `main.rs` magro: roteamento de argv + match das faces, sem lógica de negócio.",
+      "applies_to": {
+        "subproject": "apps/rt"
+      },
+      "keys": [
+        "rt",
+        "stdin",
+        "harness",
+        "despachada",
+        "antes",
+        "leitura",
+        "check"
+      ]
+    },
+    {
+      "id": 10,
+      "class": "project_rule",
+      "text": "Saída de comando `run` deve ser determinística e byte-estável (JSON ordenado, sem timestamps/caminhos voláteis) — há snapshots `insta` e gates que comparam a saída.",
+      "applies_to": {
+        "subproject": "apps/rt"
+      },
+      "keys": [
+        "rt",
+        "saída",
+        "comando",
+        "determinística",
+        "estável",
+        "ordenado",
+        "timestamps"
+      ]
+    },
+    {
+      "id": 11,
+      "class": "project_rule",
+      "text": "Mantenha o miner 100% determinístico e SEM IA: nada de síntese, rede ou heurística não reprodutível — ordene/deduplique tudo e use desempates estáveis (a ordem do `HashMap` muda entre execuções).",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "mantenha",
+        "miner",
+        "determinístico",
+        "síntese",
+        "heurística",
+        "reprodutível"
+      ]
+    },
+    {
+      "id": 12,
+      "class": "project_rule",
+      "text": "Nunca cite uma linguagem, extensão, nó de gramática ou nome de framework dentro de `src/`: esses dados vivem só em `languages.toml`, `manifests.toml` e `queries/<dir>/*.scm` — adicionar linguagem ou build-system é uma linha de dado, jamais lógica nova.",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "nunca",
+        "linguagem",
+        "extensão",
+        "gramática",
+        "framework",
+        "dentro"
+      ]
+    },
+    {
+      "id": 13,
+      "class": "project_rule",
+      "text": "As queries `.scm` só falam o vocabulário genérico de captura (`@import`, `@namespace`, `@definition.<kind>`, `@name`, `@supertype`); o motor copia o sufixo de `kind` verbatim, então não ensine nomes de nó específicos da gramática a `extract.rs`.",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "queries",
+        "falam",
+        "vocabulário",
+        "genérico",
+        "captura",
+        "import"
+      ]
+    },
+    {
+      "id": 14,
+      "class": "project_rule",
+      "text": "Não detecte papéis por nome conhecido (tipo \"Controller\"/\"Repository\"): o miner descobre convenção por recorrência (afixos, pastas-papel, clusters por Jaccard) — mantenha-o cego a qualquer arquitetura.",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "detecte",
+        "papéis",
+        "conhecido",
+        "controller",
+        "repository",
+        "miner"
+      ]
+    },
+    {
+      "id": 16,
+      "class": "project_rule",
+      "text": "O produto é o `grain.model.json`; `facts`/`digest`/`spec` projetam a partir do modelo e nunca releem o repositório — não quebre o `preserve_order` do `serde_json` (o ranking de deps segue a ordem do manifesto, não a alfabética).",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "produto",
+        "grain",
+        "model",
+        "facts",
+        "digest",
+        "projetam"
+      ]
+    },
+    {
+      "id": 48,
+      "class": "project_rule",
+      "text": "Tipos `serde` em `domain/model/` são contrato público: outras crates (rt, dashboard) renderizam em cima deles — mude campo/forma só com migração, não quebre o shape.",
+      "applies_to": {
+        "subproject": "packages/core"
+      },
+      "keys": [
+        "core",
+        "tipos",
+        "serde",
+        "domain",
+        "model",
+        "contrato",
+        "público"
+      ]
+    },
+    {
+      "id": 49,
+      "class": "project_rule",
+      "text": "Mantenha `domain/model/` puro: zero IO, log ou disco. Efeito colateral só nas camadas `io`/`platform` — não importe `fs` aqui.",
+      "applies_to": {
+        "subproject": "packages/core"
+      },
+      "keys": [
+        "core",
+        "mantenha",
+        "domain",
+        "model",
+        "disco",
+        "efeito",
+        "colateral"
+      ]
+    },
+    {
+      "id": 50,
+      "class": "project_rule",
+      "text": "Escreva arquivos sempre via `io::fs::write_atomic` (tempfile + rename); nunca `std::fs` direto.",
+      "applies_to": {
+        "subproject": "packages/core"
+      },
+      "keys": [
+        "core",
+        "escreva",
+        "arquivos",
+        "sempre",
+        "write",
+        "atomic",
+        "tempfile"
+      ]
+    },
+    {
+      "id": 51,
+      "class": "project_rule",
+      "text": "Trate ausência de arquivo como `Error::NotFound` (distinto de `Error::Io`) e degrade sem panic — nada nesta crate entra em pânico por erro de IO/config.",
+      "applies_to": {
+        "subproject": "packages/core"
+      },
+      "keys": [
+        "core",
+        "trate",
+        "ausência",
+        "arquivo",
+        "error",
+        "notfound",
+        "distinto"
+      ]
+    },
+    {
+      "id": 52,
+      "class": "project_rule",
+      "text": "`ProjectConfig` (`domain/config.rs`) é o dono único do schema de `mustard.json`: chaves de topo em camelCase, lido só do raiz via `ClaudePaths` — não crie parser ad-hoc nem leia o JSON como `Value` solto.",
+      "applies_to": {
+        "subproject": "packages/core"
+      },
+      "keys": [
+        "core",
+        "projectconfig",
+        "domain",
+        "config",
+        "único",
+        "schema",
+        "mustard"
+      ]
+    },
+    {
+      "id": 53,
+      "class": "project_rule",
+      "text": "`unwrap()`/`expect()` são `deny` no workspace fora de teste; propague `Result`. O automaton Aho-Corasick (`vocabulary/`) é único — reúse `KeyedAutomaton`, não instancie outro.",
+      "applies_to": {
+        "subproject": "packages/core"
+      },
+      "keys": [
+        "core",
+        "unwrap",
+        "expect",
+        "workspace",
+        "teste",
+        "propague",
+        "result"
+      ]
+    },
+    {
+      "id": 59,
+      "class": "project_rule",
+      "text": "Ferramentas externas (`git`, registro npm via `ureq`) em `add.rs` degradam em cascata (GitHub primeiro, npm depois) e nunca abortam o processo com pânico — todo novo fetch deve seguir esse padrão fail-open, não `unwrap` a resposta HTTP.",
+      "applies_to": {
+        "subproject": "apps/cli"
+      },
+      "keys": [
+        "cli",
+        "ferramentas",
+        "externas",
+        "registro",
+        "degradam",
+        "cascata",
+        "github"
+      ]
+    },
+    {
+      "id": 79,
+      "class": "project_rule",
+      "text": "`notify`, `sha2` e `rayon` já foram removidos por não terem import nenhum consumindo — não os reintroduza no `Cargo.toml` sem um `use` real no mesmo commit; `regex` é dependência inline (fora do workspace table) só para o matcher `Expect:` do `qa-run`, não para uso genérico.",
+      "applies_to": {
+        "subproject": "apps/rt"
+      },
+      "keys": [
+        "rt",
+        "notify",
+        "rayon",
+        "foram",
+        "removidos",
+        "terem",
+        "import"
+      ]
+    },
+    {
+      "id": 80,
+      "class": "project_rule",
+      "text": "[critical] never `edit langs_generated.rs directly` in `apps/scan/**`",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "critical",
+        "never",
+        "langs",
+        "generated",
+        "directly"
+      ]
+    },
+    {
+      "id": 81,
+      "class": "project_rule",
+      "text": "[critical] never `hardcode language or build-system names in src/*.rs` in `apps/scan/src/**`",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "critical",
+        "never",
+        "hardcode",
+        "language",
+        "build",
+        "system"
+      ]
+    },
+    {
+      "id": 82,
+      "class": "project_rule",
+      "text": "`build.rs` gera `$OUT_DIR/langs_generated.rs` a partir de `languages.toml` + `queries/<dir>/*.scm`; é o único lugar que referencia crates de gramática — adicionar linguagem é editar `languages.toml`/`queries/`, nunca `src/`.",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "build",
+        "langs",
+        "generated",
+        "partir",
+        "languages",
+        "queries"
+      ]
+    },
+    {
+      "id": 84,
+      "class": "project_rule",
+      "text": "Regexes de `manifests.rs` (`dep_regex`/`module_regex`) são compiladas uma única vez em `OnceLock<Registry>` — não regride para `Regex::new` por chamada dentro do loop de parsing.",
+      "applies_to": {
+        "subproject": "apps/scan"
+      },
+      "keys": [
+        "scan",
+        "regexes",
+        "manifests",
+        "regex",
+        "module",
+        "compiladas",
+        "única"
+      ]
+    },
+    {
+      "id": 93,
+      "class": "project_rule",
+      "text": "`ast::GrammarLoader` é o dono único de `tree_sitter::Language`: nenhum outro módulo sob `ast::*` chama `tree_sitter_*::language()` direto — sempre resolva a linguagem via `loader.language(id)` (fail-open: id ausente retorna `None`, nunca erro).",
+      "applies_to": {
+        "subproject": "packages/core"
+      },
+      "keys": [
+        "core",
+        "grammarloader",
+        "único",
+        "sitter",
+        "language",
+        "nenhum",
+        "outro"
+      ]
+    },
+    {
+      "id": 95,
+      "class": "project_rule",
+      "text": "`KeyedAutomaton` (`domain/vocabulary/aho.rs`) usa `MatchKind::LeftmostFirst` com case-sensitive: a ordem dos grupos passados a `from_groups` é a ordem de prioridade (primeira ocorrência de um termo vence em colisão entre grupos) — não reordene grupos existentes sem entender que isso muda qual camada \"ganha\" um termo compartilhado.",
+      "applies_to": {
+        "subproject": "packages/core"
+      },
+      "keys": [
+        "core",
+        "keyedautomaton",
+        "domain",
+        "vocabulary",
+        "matchkind",
+        "leftmostfirst",
+        "sensitive"
+      ]
+    },
+    {
+      "id": 96,
+      "class": "defect",
+      "text": "O teste tem de falhar quando o código está errado. Teste na divisa: o último valor que passa e o primeiro que já não passa. Teste pelo caminho que a pessoa usa, com os ganchos e os comandos, sem montar a conversa à mão. E teste com os dados completos de uma sessão real. Em 18/09, três testes desta obra passavam com o código errado por falta disso.",
+      "applies_to": {
+        "files": [
+          "**"
+        ]
+      },
+      "keys": [
+        "teste",
+        "prova",
+        "vermelho",
+        "divisa",
+        "caminho real",
+        "dados completos"
+      ]
+    },
+    {
+      "id": 98,
+      "class": "project_rule",
+      "text": "Subcomando novo de `run` pede quatro registros, e esquecer um deles compila, mas quebra em silêncio. No `cli.rs` da família entram a variante no enum e o braço no `dispatch()`. Sem o braço, o comando some. O terceiro é o retrato da lista em `apps/rt/tests/fixtures/run-surface.txt`, conferido por `apps/rt/tests/run_command_surface.rs`. O quarto é um chamador real, num texto do produto ou num código que roda o comando. Sem ele, `apps/rt/tests/template_parity.rs` reprova o comando, e não há lista de exceções.",
+      "applies_to": {
+        "subproject": "apps/rt"
+      },
+      "keys": [
+        "subcomando",
+        "run",
+        "registro",
+        "dispatch",
+        "chamador"
+      ]
+    },
+    {
+      "id": 100,
+      "class": "defect",
+      "text": "Cortar ou renomear um comando pede varrer tudo o que o binário imprime: catálogo de textos, dicas, próximo passo e ajuda. Não basta o registro do comando e o plugin, porque o texto montado na hora escapa da conferência de nomes. Ao apagar um arquivo de teste inteiro, confira cada teste dele. O teste de um comando que continua publicado muda de arquivo, e não sai. Em 16/09 a recusa do pr-review perdeu o único teste, e o aviso do início da sessão seguiu citando comandos cortados.",
+      "applies_to": {
+        "files": [
+          "apps/rt/**",
+          "packages/core/**"
+        ]
+      },
+      "keys": [
+        "corte",
+        "comando",
+        "catálogo",
+        "teste apagado"
+      ]
+    },
+    {
+      "id": 101,
+      "class": "defect",
+      "text": "Antes de propor trazer algo de volta ao Mustard, confira no histórico do git se aquilo já existiu e saiu de propósito. Em 18/09, o assistente propôs levar o aviso de escrita na mensagem seguinte. Isso já tinha existido e saído em 12/09, e a proposta desfez sem aviso uma decisão do usuário.",
+      "applies_to": {
+        "files": [
+          "**"
+        ]
+      },
+      "keys": [
+        "historico",
+        "git",
+        "proposta",
+        "decisao anterior",
+        "levantamento"
+      ]
+    },
+    {
+      "id": 102,
+      "class": "defect",
+      "text": "Depois de desfazer um corte, compile de novo antes de rodar o programa à mão. O teste deixa na pasta de compilação o programa com o corte. Em 18/09, uma revisão rodou esse programa velho e viu um defeito que não existia.",
+      "applies_to": {
+        "files": [
+          "**"
+        ]
+      },
+      "keys": [
+        "corte",
+        "compilar",
+        "ponta a ponta",
+        "binário"
+      ]
+    },
+    {
+      "id": 109,
+      "class": "defect",
+      "text": "O stash do git é um só para o repositório inteiro. As cópias de trabalho o compartilham. Um agente que guarda mudanças no stash engole o trabalho não comitado das outras cópias. O pop devolve tudo misturado, na cópia errada. Em 19/09 a onda que tirava o motor antigo de páginas levou embora os dois arquivos da onda da busca, que rodava ao lado. Para ver o conteúdo de antes, use `git show HEAD:<arquivo>`. Para guardar um trecho, copie para um arquivo fora do repositório.",
+      "applies_to": {
+        "files": [
+          "**"
+        ]
+      },
+      "keys": [
+        "stash",
+        "cópia",
+        "worktree",
+        "simultâneo",
+        "perda"
+      ]
+    },
+    {
+      "id": 110,
+      "class": "project_rule",
+      "text": "Conserto que troca a prova gravada de um critério mantém a cobertura do texto inteiro dele. Se o teste novo cobre só o defeito, ele absorve o teste antigo. Ou a prova aponta os dois testes. Em 20/09 isso falhou no critério do agente de teste dedicado. A prova passou a rodar só a obra de duas ondas. Ficaram sem prova a obra de uma onda só e as entregas dentro do pedido.",
+      "applies_to": {
+        "files": [
+          "**"
+        ]
+      },
+      "keys": [
+        "critério",
+        "prova",
+        "teste",
+        "conserto",
+        "cobertura"
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "n": 1,
+      "files": [
+        "apps/scan/src/graph.rs",
+        "apps/scan/src/model.rs",
+        "apps/scan/src/extract.rs",
+        "apps/scan/queries/README.md",
+        "apps/scan/tests/uso_em_toda_linguagem.rs"
+      ],
+      "text": "O que é: o scan grava, para cada declaração, a lista de quem a usa. Quem liga cada chamada à declaração chamada é apps/scan/src/graph.rs (resolve_declaration_links, perto da linha 336, e o trecho que decide o que o arquivo enxerga, perto da linha 400). Hoje ele liga a chamada a todas as declarações de mesmo nome à vista, e o prefixo escrito (git::run) só amplia o que o arquivo enxerga. Pra que serve: a lista de quem usa tem de ser certa, porque a busca a mostra embaixo de cada achado. O que mudar, segue a MSTD-DEC-0006, a MSTD-DEC-0010 e a MSTD-RULE-0003: (1) a declaração ganha o dono dela quando existe (a classe, o impl, o tipo), em apps/scan/src/model.rs; (2) a chamada guarda o que está escrito antes do nome (o prefixo ou a variável) e, quando a variável tem tipo escrito onde nasceu (parâmetro, campo, let com tipo), o tipo dela; apps/scan/src/extract.rs já acha o prefixo em qualifier_before (linha 756) e passa a ler esses dados de capturas das consultas de cada linguagem, com nomes de captura genéricos, nunca com nome de linguagem no código (o teste apps/scan/tests/engine_is_language_blind.rs continua passando); (3) em graph.rs, o prefixo e o tipo restringem: git::run liga só ao run do módulo git, pedido.new() com pedido do tipo Pedido liga só ao new de Pedido; sem prefixo nem tipo, liga só quando uma única declaração de mesmo nome está à vista pelo import ou pelo namespace; quando o contexto não decide, a chamada fica sem ligação, nunca ligada a todas; (4) o import que passa por reexportação é seguido até quem declara; (5) sai o limite fixo MAX_SAME_NAME (linha 250). Documente as capturas novas em apps/scan/queries/README.md. Testes em graph.rs, que é onde o limite agia (segue a MSTD-DEC-0023): com_oito_new_a_vista_pedido_new_liga_so_ao_de_pedido, com_nove_new_a_vista_pedido_new_liga_so_ao_de_pedido e a_chamada_que_o_contexto_nao_decide_nao_liga_a_nenhum_new. Em apps/scan/tests/uso_em_toda_linguagem.rs, ajuste os casos que esperavam a ligação por nome. Cada teste novo falha antes do conserto. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p scan.",
+      "arrived": [
+        3,
+        12,
+        13,
+        82,
+        84,
+        96,
+        101,
+        110
+      ],
+      "removed": [
+        84,
+        101
+      ],
+      "kept": [
+        3,
+        12,
+        13,
+        82,
+        96,
+        110
+      ]
+    },
+    {
+      "n": 2,
+      "files": [
+        "packages/core/src/platform/code_tools.rs",
+        "apps/cli/src/commands/init/tools.rs",
+        "apps/cli/src/commands/init/mod.rs",
+        "apps/cli/src/cli.rs",
+        "apps/cli/tests/rtk_gate.rs"
+      ],
+      "text": "O que é: a etapa que instala o plugin de linguagem de cada linguagem do projeto (ensure_code_tools, apps/cli/src/commands/init/tools.rs:142) mora hoje só no mustard init (apps/cli/src/cli.rs:104-109), e a tabela das linguagens mora em packages/core/src/platform/code_tools.rs. Pra que serve: a atualização (mustard-rt run upsert) roda a mesma etapa, e o modelo da busca entra nela depois (T23), segue a MSTD-DEC-0026 e a MSTD-DEC-0027. O que mudar: a etapa (detectar as linguagens mapeadas, conferir o que já está instalado, instalar o que falta e devolver aviso com o comando pronto para o que falhar) passa para packages/core/src/platform/code_tools.rs, recebendo quem roda o comando como parâmetro, para o teste não tocar a máquina; apps/cli/src/commands/init/tools.rs e apps/cli/src/commands/init/mod.rs passam a chamá-la; a chamada em cli.rs continua no mesmo ponto. O que falha vira aviso, e a instalação segue. Os moldes dos agentes não ganham a ferramenta do editor. Confira que apps/cli/tests/rtk_gate.rs (linhas 290-315) continua valendo com a etapa no núcleo e ajuste o que ele cita. Teste em code_tools.rs: a_etapa_das_ferramentas_instala_o_plugin_de_cada_linguagem (com um executor falso). Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-core code_tools; PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-cli.",
+      "arrived": [
+        48,
+        49,
+        52,
+        53,
+        59,
+        96,
+        100,
+        102
+      ],
+      "removed": [
+        48,
+        49,
+        52,
+        100,
+        102
+      ],
+      "kept": [
+        53,
+        59,
+        96
+      ]
+    },
+    {
+      "n": 3,
+      "files": [
+        "apps/rt/src/commands/git_settle.rs",
+        "apps/rt/src/commands/maint/scratch_gc.rs",
+        "apps/rt/src/commands/orient.rs",
+        "apps/rt/src/commands/review/pr_door.rs",
+        "apps/rt/src/commands/review/qa_run/mod.rs"
+      ],
+      "text": "O que é: comentários do código de apps/rt que ainda citam run e o nome de um comando que saiu (git-settle, scratch-gc, orient, qa-run, pr-list e outros da lista de 95 de apps/rt/tests/template_parity.rs). Pra que serve: segue a MSTD-RULE-0008 e a MSTD-DEC-0024, item 3. O que mudar: em apps/rt/src/commands/git_settle.rs (1 menção), apps/rt/src/commands/maint/scratch_gc.rs (3), apps/rt/src/commands/orient.rs (3), apps/rt/src/commands/review/pr_door.rs (1) e apps/rt/src/commands/review/qa_run/mod.rs (1), o comentário passa a descrever o que o código faz, sem o nome do comando que saiu; o código não muda. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --locked -p mustard-rt.",
+      "arrived": [
+        6,
+        9,
+        10,
+        79,
+        98,
+        100,
+        101
+      ],
+      "removed": [
+        6,
+        9,
+        10,
+        79,
+        98,
+        101
+      ],
+      "kept": [
+        100
+      ]
+    },
+    {
+      "n": 4,
+      "files": [
+        "apps/rt/src/commands/flow/round/queue.rs",
+        "apps/rt/src/commands/flow/plan.rs",
+        "apps/rt/src/commands/flow/skill_search.rs",
+        "packages/core/src/platform/i18n/flow.rs"
+      ],
+      "text": "O que é: a fila da rodada (task_hints em apps/rt/src/commands/flow/round/queue.rs:238-252) e a conferência do plano (a tarefa sem arquivo em apps/rt/src/commands/flow/plan.rs:411-415) chamam suggested_files com o texto da tarefa, que é os exemplos pela tarefa do mapa. Pra que serve: a busca não recebe o texto da tarefa (MSTD-DEC-0007), e os exemplos pela tarefa saem (MSTD-DEC-0017). O que mudar: (1) em queue.rs, a dica de cada tarefa perde o campo files; ficam as skills; (2) em plan.rs, a recusa da tarefa sem arquivo continua bloqueando, sem sugestão do mapa; o texto dela (plan.task_without_file em packages/core/src/platform/i18n/flow.rs:84-91) passa a dizer para nomear o arquivo e achá-lo com mustard-rt run search e a pergunta; sai a chave plan.no_suggestion (linhas 106-107) e a entrada dela no teste da linha 1244; (3) sai a constante MAP_SUGGESTIONS de apps/rt/src/commands/flow/skill_search.rs:19. A leitura dos exemplos por arquivo em plan.rs:512-516 fica como está. Acerte os dois números do teste the_part_keeps_its_keys_and_texts de flow.rs. Teste em queue.rs: a_fila_nao_sugere_arquivo_pelo_texto_da_tarefa. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-rt flow; PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-core i18n.",
+      "arrived": [
+        9,
+        10,
+        50,
+        51,
+        52,
+        96,
+        100,
+        109
+      ],
+      "removed": [
+        9,
+        50,
+        51,
+        52
+      ],
+      "kept": [
+        10,
+        96,
+        100,
+        109
+      ]
+    },
+    {
+      "n": 5,
+      "files": [
+        "apps/rt/src/hooks/observe/approval_witness.rs",
+        "apps/rt/src/hooks/task/clarity_check.rs",
+        "apps/scan/tests/match_tiers.rs",
+        "apps/rt/src/shared/prompt.rs"
+      ],
+      "text": "O que é: restos do glossário antigo (o CONTEXT.md da entrevista de termos e o marcador .clarified) e um gancho que saiu citado num comentário. Pra que serve: no Mustard só existe o glossário novo, segue a MSTD-RULE-0007, a MSTD-DEC-0021 e a MSTD-RULE-0008. O que mudar: (1) apps/rt/src/hooks/observe/approval_witness.rs:953-956: sai o teste de que a spec sem o marcador .clarified é aprovada; (2) apps/rt/src/hooks/task/clarity_check.rs:527-538: o teste das palavras do estilo antigo continua, sem o CONTEXT.md '# Glossário' e sem o 'projeto com glossário'; (3) apps/scan/tests/match_tiers.rs:88 e 114: sai o 'no glossary needed' do comentário e da mensagem; (4) apps/rt/src/shared/prompt.rs: sai a menção aos ganchos que saíram (as duas linhas que o git grep com os 30 nomes mostra). Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-rt approval_witness clarity_check; PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p scan --test match_tiers.",
+      "arrived": [
+        8,
+        9,
+        10,
+        16,
+        96,
+        100,
+        101,
+        110
+      ],
+      "removed": [
+        8,
+        9,
+        10,
+        16,
+        96,
+        101
+      ],
+      "kept": [
+        100,
+        110
+      ]
+    },
+    {
+      "n": 6,
+      "files": [
+        "IMPLEMENTACAO-MUSTARD-2.md",
+        "docs/2026-08-11-git-settle-poda-antes-de-verificar.md",
+        "docs/2026-07-25-revisao-portoes-pipeline-ondas.md",
+        "apps/scan/README.md"
+      ],
+      "text": "O que é: documentos do repositório que citam o glossário antigo, comandos e ganchos que saíram. Pra que serve: segue a MSTD-DEC-0021 e a MSTD-DEC-0024. O que mudar: (1) IMPLEMENTACAO-MUSTARD-2.md: sai a linha 94 (a clarificação pelo .clarified), a menção ao run feature (linha 56) e as três menções a ganchos que saíram; (2) docs/2026-08-11-git-settle-poda-antes-de-verificar.md: sai a menção ao comando que saiu; (3) docs/2026-07-25-revisao-portoes-pipeline-ondas.md: saem as três menções a ganchos que saíram; (4) apps/scan/README.md:58-72: saem os parágrafos do glossário de papéis do scan (role skill, playbook, 'usually implements'). Tire a frase, não reescreva o documento. Comando: git grep -nE '\\.clarified|run feature|role skill|usually implements' -- IMPLEMENTACAO-MUSTARD-2.md docs apps/scan/README.md sai vazio.",
+      "arrived": [
+        3,
+        11,
+        12,
+        13,
+        14,
+        80,
+        101
+      ],
+      "removed": [
+        3,
+        11,
+        12,
+        13,
+        14,
+        80,
+        101
+      ],
+      "kept": []
+    },
+    {
+      "n": 7,
+      "files": [
+        ".gitignore",
+        "packages/core/templates/.gitignore",
+        "packages/core/tests/seeded_ignore.rs",
+        "packages/core/templates/pages/spec.html",
+        "packages/core/src/platform/page_templates.rs"
+      ],
+      "text": "O que é: o .gitignore deste repositório e o molde entregue aos projetos (packages/core/templates/.gitignore) ainda explicam o marcador .clarified e o digest do run feature. Pra que serve: segue a MSTD-DEC-0021 e a MSTD-DEC-0024. O que mudar: (1) .gitignore: saem a explicação e a linha do .clarified (linhas 106-112) e o comentário do run feature (linha 100), com a linha que ele explica, se o arquivo que ela ignora não é mais escrito por ninguém; (2) packages/core/templates/.gitignore: saem a explicação e a linha do .clarified (linhas 64-77); (3) packages/core/tests/seeded_ignore.rs:58: sai o comentário do run feature e o que o teste conferia sobre a linha que saiu do molde. O molde é arquivo de instrução que o instalador copia: revise-o contra esta spec nesta onda (MSTD-DEC-0029). Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-core --test seeded_ignore.\nO que é: a página da spec é o molde HTML packages/core/templates/pages/spec.html, que o binário copia para cada projeto. Hoje ela ocupa a tela inteira e o gráfico das ondas cresce com a largura. Pra que serve: ler a página numa tela larga sem o gráfico virar um painel gigante. O que mudar, segue a MSTD-DEC-0031 e a MSTD-RULE-0009: (1) na regra .page (linha 51), acrescente max-width:1040px e margin-inline:auto, como a página do projeto (packages/core/templates/pages/project.html:30); o recuo de 12 pixels do celular (linha 182) fica. (2) Na regra .chart svg (linha 110), troque width:100%, min-width:560px e height:auto por altura fixa de 200px com a largura seguindo o desenho (width:auto); a moldura .chart (linha 109) já rola de lado. (3) Apague a regra do celular .chart svg{min-width:820px} (linha 189). O desenho em renderChart continua com 16 unidades por onda. Teste, em packages/core/src/platform/page_templates.rs, junto dos testes que já leem o SPEC_PAGE: a_pagina_da_spec_tem_coluna_de_1040_e_grafico_de_altura_fixa, que lê o molde e confere max-width:1040px na .page e altura fixa, sem height:auto nem min-width, na .chart svg. Rode o teste antes de mudar o molde e veja-o falhar. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-core a_pagina_da_spec_tem_coluna_de_1040_e_grafico_de_altura_fixa.",
+      "arrived": [
+        50,
+        51,
+        52,
+        53,
+        96,
+        100,
+        102,
+        109,
+        110
+      ],
+      "removed": [
+        50,
+        51,
+        52,
+        102
+      ],
+      "kept": [
+        53,
+        96,
+        100,
+        109,
+        110
+      ]
+    },
+    {
+      "n": 8,
+      "files": [
+        "packages/core/src/domain/skill/frontmatter.rs",
+        "packages/core/src/domain/skill/mod.rs"
+      ],
+      "text": "O que é: dois comentários do núcleo citam comandos que o binário não tem (run skills validate --strict-frontmatter em packages/core/src/domain/skill/frontmatter.rs:339 e run skill-resolve em packages/core/src/domain/skill/mod.rs:4). Pra que serve: o Mustard não guarda menção a comando que não existe, segue a MSTD-RULE-0008. O que mudar: o comentário passa a dizer quem confere de fato (a conferência de skill do binário), sem nome de comando inexistente; o código não muda. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --locked -p mustard-core.",
+      "arrived": [
+        48,
+        49,
+        52,
+        93,
+        95,
+        100,
+        102
+      ],
+      "removed": [
+        48,
+        49,
+        52,
+        93,
+        95,
+        102
+      ],
+      "kept": [
+        100
+      ]
+    },
+    {
+      "n": 9,
+      "files": [
+        "plugin/output-styles/mustard-pt-BR.md",
+        "plugin/output-styles/mustard-en-US.md"
+      ],
+      "text": "O que é: o estilo de resposta do plugin (plugin/output-styles/mustard-pt-BR.md e plugin/output-styles/mustard-en-US.md) é o texto que diz ao Claude como o Mustard fala com a pessoa, em qualquer projeto. Tem a seção '## A ordem de explicar' (as quatro partes: o que é, pra que serve, exemplo, proposta) e a seção '## Exemplos' (pares de antes e depois). Pra que serve: segue a MSTD-RULE-0011; a pessoa entende o ponto na primeira leitura. O que mudar: (1) na seção '## A ordem de explicar', depois das quatro partes, entram as quatro exigências da regra, curtas, uma por linha: um ponto por mensagem, e o ponto com várias partes vai uma parte por vez; palavra que nasceu no código, na spec ou na conversa vem dita pelo efeito que a pessoa vê; o exemplo é uma cena que a pessoa viu, na tela, no terminal ou no projeto dela, nunca um número medido pelo assistente; a pergunta diz o que muda para a pessoa no sim e no não; onde uma linha que já existe diz quase o mesmo (como a das palavras do dia a dia, no topo), ela é reescrita, não repetida; (2) na seção '## Exemplos', entra o par de antes e depois da regra (a lista de onde a função run é usada); (3) o en-US recebe o mesmo, em inglês, e os dois arquivos ficam com a mesma estrutura. O título '## A ordem de explicar' não muda, porque as dicas do binário apontam para ele (packages/core/src/platform/i18n/flow.rs:1414-1415). O arquivo continua curto. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-core i18n; PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-rt end_of_turn_check; PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-cli --test dev_install.",
+      "arrived": [
+        96,
+        101,
+        102,
+        110
+      ],
+      "removed": [
+        96,
+        101,
+        102,
+        110
+      ],
+      "kept": []
+    },
+    {
+      "n": 10,
+      "files": [
+        "apps/rt/src/commands/maint/upsert.rs"
+      ],
+      "text": "O que é: mustard-rt run upsert (apps/rt/src/commands/maint/upsert.rs) atualiza o projeto. Pra que serve: os plugins de linguagem ficam instalados também em projeto que só atualiza, segue a MSTD-DEC-0027. O que mudar: o upsert chama a etapa comum da T19 depois de atualizar os arquivos, e os avisos dela entram na resposta do upsert, cada um com o comando pronto. Teste no próprio arquivo: a_atualizacao_roda_a_etapa_das_ferramentas_de_codigo (com executor falso). Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p mustard-rt upsert.",
+      "arrived": [
+        5,
+        6,
+        10,
+        96,
+        98,
+        100,
+        110
+      ],
+      "removed": [
+        5,
+        98,
+        100,
+        110
+      ],
+      "kept": [
+        6,
+        10,
+        96
+      ]
+    },
+    {
+      "n": 11,
+      "files": [
+        "apps/scan/queries/rust/tags.scm",
+        "apps/scan/languages.toml",
+        "apps/scan/tests/uso_em_rust.rs"
+      ],
+      "text": "O que é: a leitura de Rust do scan mora em apps/scan/queries/rust/tags.scm (as capturas) e em apps/scan/languages.toml (os dados da linguagem, como root_aliases na linha 74). Pra que serve: os números medidos neste repositório (MSTD-DEC-0006) viram certos. O que mudar, segue a MSTD-DEC-0006, a MSTD-DEC-0015 (o caso de Rust) e a MSTD-DEC-0008: com as capturas genéricas da T2, a consulta de Rust passa a dar o dono de cada fn (o tipo do impl), o tipo da variável onde ela nasce (parâmetro, campo, let com tipo), o mod x; como dependência do arquivo x e o pub use como reexportação. Testes num arquivo novo, apps/scan/tests/uso_em_rust.rs, com projetos pequenos numa pasta temporária, como em apps/scan/tests/uso_em_toda_linguagem.rs: a_chamada_por_nome_reexportado_liga_a_quem_declara, o_metodo_chamado_por_variavel_liga_pelo_mod_do_arquivo e o_prefixo_escrito_restringe_a_declaracao_de_mesmo_nome. Depois, confira os números reais com o comando da prova do C2 (o scan deste repositório e a contagem em python): check_message 3, extract 1, o run de apps/rt/src/commands/scan.rs 1, e 0 linhas ligadas a duas declarações. Número diferente é conserto que falta, não teste a afrouxar. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p scan --test uso_em_rust.",
+      "arrived": [
+        12,
+        13,
+        16,
+        82,
+        96,
+        110
+      ],
+      "removed": [
+        16,
+        110
+      ],
+      "kept": [
+        12,
+        13,
+        82,
+        96
+      ]
+    },
+    {
+      "n": 12,
+      "files": [
+        "apps/scan/queries/python/tags.scm",
+        "apps/scan/queries/go/tags.scm",
+        "apps/scan/tests/uso_em_python_e_go.rs"
+      ],
+      "text": "O que é: as consultas de Python e Go do scan (apps/scan/queries/python/tags.scm e apps/scan/queries/go/tags.scm). Pra que serve: o conserto de quem usa vale para toda linguagem que o scan lê, segue a MSTD-DEC-0025. O que mudar: com as capturas genéricas da T2, cada consulta dá o dono do método (a classe em Python, o tipo do receptor em Go) e o tipo da variável quando está escrito (anotação de tipo em Python, declaração com tipo e receptor em Go). Testes num arquivo novo, apps/scan/tests/uso_em_python_e_go.rs, um projeto pequeno por linguagem: a_chamada_pelo_objeto_liga_ao_metodo_da_classe_dele, com dois tipos que declaram um método de mesmo nome. Se alguma linguagem precisar de dado em apps/scan/languages.toml, pare e avise o condutor: esse arquivo é da sequência T3, T4, T5 e T8. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p scan --test uso_em_python_e_go.",
+      "arrived": [
+        12,
+        13,
+        16,
+        82,
+        96,
+        110
+      ],
+      "removed": [
+        16,
+        110
+      ],
+      "kept": [
+        12,
+        13,
+        82,
+        96
+      ]
+    },
+    {
+      "n": 13,
+      "files": [
+        "apps/scan/queries/php/tags.scm",
+        "apps/scan/queries/dart/tags.scm",
+        "apps/scan/tests/uso_em_php_e_dart.rs"
+      ],
+      "text": "O que é: as consultas de PHP e Dart do scan (apps/scan/queries/php/tags.scm e apps/scan/queries/dart/tags.scm). Pra que serve: igual à T6, segue a MSTD-DEC-0025. O que mudar: com as capturas genéricas da T2, cada consulta dá o dono do método e o tipo da variável quando está escrito (propriedade e parâmetro com tipo em PHP, declaração com tipo em Dart). Testes num arquivo novo, apps/scan/tests/uso_em_php_e_dart.rs, um projeto pequeno por linguagem: a_chamada_pelo_objeto_liga_ao_metodo_da_classe_dele. Se alguma linguagem precisar de dado em apps/scan/languages.toml, pare e avise o condutor. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --locked -p scan --test uso_em_php_e_dart.",
+      "arrived": [
+        12,
+        13,
+        16,
+        81,
+        82,
+        96
+      ],
+      "removed": [
+        16
+      ],
+      "kept": [
+        12,
+        13,
+        81,
+        82,
+        96
+      ]
+    }
+  ]
+}

@@ -9,15 +9,14 @@
 //! here writes rtk's own configuration: its hook lives in the project's
 //! `.claude/settings.local.json`, written by the seed.
 //!
-//! [`ensure_code_tools`] carries no language name of its own — it only walks
-//! what `mustard_core::platform::code_tools` returns, keeping this crate free
-//! of a hardcoded language/framework identifier. It also never
-//! `cfg!(test)`-skips: the table it drives is exactly what the proof needs to
-//! exercise, so it takes the `PATH` it searches and spawns against as a
+//! [`ensure_code_tools`] carries no language name and no step of its own — it
+//! hands the machine to `mustard_core::platform::code_tools::ensure_code_tools`,
+//! the step the project update runs too, and prints what comes back. It never
+//! `cfg!(test)`-skips: it takes the `PATH` it searches and spawns against as a
 //! parameter instead, and a test points that parameter at fake programs in a
 //! temporary directory rather than touching the real machine.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// Whether `rtk --version` succeeds (RTK reachable on PATH).
@@ -131,105 +130,18 @@ fn install_ripgrep() -> bool {
 /// Claude Code's official catalog — the same best-effort shape
 /// [`ensure_ripgrep`] already applies to `rg`.
 ///
-/// Per language `mustard_core::platform::code_tools::detect_code_languages`
-/// returns: when the program is not on `path_env` and the package manager its
-/// install command starts with IS, the install command runs; either way, the
-/// catalog plugin is then installed and enabled (already-installed is not an
-/// error — `claude plugin install`/`enable` are idempotent). A language the
-/// catalog does not cover (Dart, today) gets its own "no plugin" notice
-/// instead. Every failure degrades to a printed warning with the command to
-/// run by hand; `init` always finishes.
+/// The step itself lives in `mustard_core::platform::code_tools::ensure_code_tools`,
+/// shared with the project update, so the two can never drift apart. This
+/// wrapper only hands it the machine — every program found and spawned against
+/// `path_env` — and prints each warning it returns, the command to run by hand
+/// included. Nothing here aborts: `init` always finishes.
 pub(crate) fn ensure_code_tools(project_root: &Path, model_path: &Path, path_env: &str) {
-    use mustard_core::platform::code_tools::{code_tool_for_language, detect_code_languages};
+    use mustard_core::platform::code_tools::{self, MachineRunner};
 
-    let languages = detect_code_languages(project_root, model_path);
-    for language in &languages {
-        let Some(tool) = code_tool_for_language(language) else {
-            println!("  {language}: no code-tool plugin in the catalog yet - install a language server manually if you want one");
-            continue;
-        };
-
-        if !on_path(tool.program, path_env) {
-            let pkg_manager = tool.install_cmd.split_whitespace().next().unwrap_or_default();
-            if on_path(pkg_manager, path_env) {
-                run_shell_words(tool.install_cmd, path_env);
-            }
-        }
-
-        if !on_path(tool.program, path_env) {
-            if let Some(found_at) = find_in_conventional_dirs(tool.program) {
-                println!(
-                    "  {language}: {} found at {} but not on PATH - add its folder to PATH",
-                    tool.program,
-                    found_at.display()
-                );
-            } else {
-                println!(
-                    "  {language}: {} not found on PATH - install manually: {}",
-                    tool.program, tool.install_cmd
-                );
-            }
-        }
-
-        if let Some(plugin) = tool.plugin {
-            let full = format!("{plugin}@claude-plugins-official");
-            if !run_ok(Command::new("claude").args(["plugin", "install", &full]).env("PATH", path_env)) {
-                println!("  {language}: could not install the {full} plugin - run manually: claude plugin install {full}");
-            }
-            if !run_ok(Command::new("claude").args(["plugin", "enable", &full]).env("PATH", path_env)) {
-                println!("  {language}: could not enable the {full} plugin - run manually: claude plugin enable {full}");
-            }
-        }
+    let runner = MachineRunner::new(path_env);
+    for warning in code_tools::ensure_code_tools(project_root, model_path, &runner) {
+        println!("  {warning}");
     }
-}
-
-/// Whether `cmd.output()` succeeded. Shared by every spawn in
-/// [`ensure_code_tools`] so a swallowed spawn failure is written once.
-fn run_ok(cmd: &mut Command) -> bool {
-    cmd.output().is_ok_and(|o| o.status.success())
-}
-
-/// Whether `program` resolves inside `path_env` (an OS-formatted `PATH`
-/// string, not necessarily the process's own environment — the parameter a
-/// test points at a temporary directory of fake programs).
-fn on_path(program: &str, path_env: &str) -> bool {
-    if program.is_empty() {
-        return false;
-    }
-    let sep = if cfg!(windows) { ';' } else { ':' };
-    let names: Vec<String> = if cfg!(windows) {
-        ["exe", "cmd", "bat"].iter().map(|ext| format!("{program}.{ext}")).collect()
-    } else {
-        vec![program.to_string()]
-    };
-    path_env
-        .split(sep)
-        .any(|dir| names.iter().any(|n| Path::new(dir).join(n).is_file()))
-}
-
-/// Split `cmd` on whitespace and spawn it against `path_env`. Naive
-/// whitespace splitting is enough: every install command in the code-tool
-/// table is a plain argument list, no quoting.
-fn run_shell_words(cmd: &str, path_env: &str) -> bool {
-    let mut parts = cmd.split_whitespace();
-    let Some(program) = parts.next() else {
-        return false;
-    };
-    run_ok(Command::new(program).args(parts).env("PATH", path_env))
-}
-
-/// Per-user toolchain directories a program can land in without being on
-/// `PATH` — e.g. `rustup component add` puts `rust-analyzer` in
-/// `~/.cargo/bin`. Reads the REAL `HOME`, never `path_env`: this only runs
-/// against the actual machine, to word the warning precisely, and a test that
-/// never reaches this branch (its fake program IS on `path_env`) does not pay
-/// for it.
-fn find_in_conventional_dirs(program: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    [".cargo/bin", ".local/bin", ".dotnet/tools", "go/bin"]
-        .iter()
-        .map(|d| home.join(d).join(program))
-        .find(|p| p.is_file())
 }
 
 #[cfg(test)]
@@ -239,7 +151,7 @@ mod tests {
     /// Write a fake executable named `name` under `dir` that appends its own
     /// argv to `log` — the "programs used in fake temp dir, log arguments
     /// instead of installing anything real" shape the proof needs. On Windows
-    /// it is a `.cmd` batch file, the extension `on_path` looks for there; a
+    /// it is a `.cmd` batch file, an extension the machine runner looks for; a
     /// shell script under a bare name is found on Unix only.
     fn write_fake_program(dir: &Path, name: &str, log: &Path) {
         let path = if cfg!(windows) { dir.join(format!("{name}.cmd")) } else { dir.join(name) };
@@ -308,14 +220,5 @@ mod tests {
         ensure_code_tools(project.path(), &model_path, &path_env);
 
         assert!(!log.is_file(), "no program should have been spawned for a language with no catalog entry");
-    }
-
-    #[test]
-    fn on_path_finds_a_program_inside_the_given_path_string() {
-        let dir = tempfile::tempdir().unwrap();
-        write_fake_program(dir.path(), "toolx", &dir.path().join("unused.log"));
-        let path_env = dir.path().display().to_string();
-        assert!(on_path("toolx", &path_env));
-        assert!(!on_path("tooly", &path_env));
     }
 }

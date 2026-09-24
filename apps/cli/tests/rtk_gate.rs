@@ -173,10 +173,12 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
 
 /// The end-to-end proof for the code-tool install: a Rust project driven
 /// through the REAL binary, with `rustup` and `claude` shimmed alongside the
-/// rest of `shim_dir`. Deleting `init::ensure_code_tools(...)` from
-/// `cli::dispatch` — the same cut `the_library_half_of_init_calls_no_environment_installer`
-/// pins by source — makes every one of these log lines vanish; unlike that
-/// structural test, this one drives the actual command that goes out.
+/// rest of `shim_dir`. The step is `mustard_core::platform::code_tools::ensure_code_tools`,
+/// reached through `init::ensure_code_tools(...)` in `cli::dispatch`. Deleting
+/// that call — or the wrapper's call into the core — makes every one of these
+/// log lines vanish, the same cuts `the_library_half_of_init_calls_no_environment_installer`
+/// pins by source; unlike that structural test, this one drives the actual
+/// command that goes out.
 #[test]
 #[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
 fn the_binary_installs_the_code_tool_of_a_detected_language() {
@@ -292,6 +294,9 @@ fn the_library_half_of_init_calls_no_environment_installer() {
         source.push_str(&fs::read_to_string(dir.join(part)).expect("the init part is readable"));
     }
 
+    // `ensure_code_tools(` also catches the core step called straight from
+    // here (`code_tools::ensure_code_tools(...)`): the name is the same on
+    // purpose.
     for call in ["ensure_ripgrep();", "probe_rtk();", "ensure_code_tools("] {
         assert!(
             !source.contains(call),
@@ -314,6 +319,16 @@ fn the_library_half_of_init_calls_no_environment_installer() {
             "`{call}` vanished from cli::dispatch — the terminal user lost the tooling"
         );
     }
+
+    // The code-tool step is ONE, in the core, shared with the project update.
+    // The wrapper dispatch calls must hand it the machine rather than carry a
+    // copy of its own that the update would not run.
+    let tools = fs::read_to_string(dir.join("tools.rs")).expect("tools.rs is readable");
+    assert!(
+        tools.contains("code_tools::ensure_code_tools("),
+        "the code-tool wrapper no longer calls the core step — `mustard init` and the \
+         project update would install different things"
+    );
 
     // And the installer must be gated on what the run actually DID, never on
     // "no error". `Ok` covers the operator answering Cancel to an existing

@@ -17,8 +17,9 @@ pub(super) const PREFIXES: &[&str] = &["page", "project"];
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
         // A cópia para o banco de dados das páginas publicadas, dita pelos
-        // marcos (o plano, a rodada e o fechamento) e pela gravação de um
-        // pedido que muda o plano (`commands/spec_events/pages/copy.rs`).
+        // marcos (o plano, a rodada e o fechamento) e pela gravação com
+        // `--copy` depois de um pedido que muda o plano
+        // (`commands/spec_events/pages/copy.rs`).
         ("page.copy.publish", Locale::PtBr) => {
             "A {page} ainda não foi publicada: publique o template `{template}` com a ferramenta \
              `Artifact`, passando em `capabilities` o valor `{capabilities}`, e grave o endereço com \
@@ -63,18 +64,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              publish the template as a new page, with a new link, without touching the old one or \
              copying anything into it, and the status line starts showing the new link."
         }
-        // A primeira cópia leva a spec inteira e fica com um agente separado.
-        ("page.copy.agent", Locale::PtBr) => {
-            "A primeira cópia para o banco da {page} leva a spec inteira e fica com um agente \
-             separado, para esta conversa continuar leve: despache um agente com o texto entre « e », \
-             com o endereço da página escrito nele, e espere a volta dele antes de seguir. «{order}»"
-        }
-        ("page.copy.agent", Locale::EnUs) => {
-            "The first copy into the {page}'s database carries the whole spec and goes to a separate \
-             agent, so this conversation stays light: dispatch an agent with the text between « and », \
-             with the page's address written in it, and wait for it to come back before going on. \
-             «{order}»"
-        }
         // A migração de uma spec antiga: as notas de trabalho das tarefas das
         // ondas que ainda não saíram.
         ("page.migration.unrated", Locale::PtBr) => {
@@ -97,36 +86,53 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}: \
              it goes back to the user to approve its split before it goes out."
         }
+        // Quem copia é o orquestrador, na própria conversa, também na
+        // primeira cópia, que leva a spec inteira.
         ("page.copy.batches", Locale::PtBr) => {
-            "Copie para o banco de dados da {page}, no endereço {url}, os lotes {files}, nessa ordem: \
-             cada arquivo é a lista `writes` de uma chamada da ferramenta `ArtifactData` com `action` \
-             `batch`, e cada documento vai pelo `file_path` dele, sem você ler os itens."
+            "Copie você mesmo, nesta conversa e sem agente, para o banco de dados da {page}, no \
+             endereço {url}, os lotes {files}, nessa ordem: cada arquivo é a lista `writes` de uma \
+             chamada da ferramenta `ArtifactData` com `action` `batch`, e cada documento vai pelo \
+             `file_path` dele, sem você ler os itens."
         }
         ("page.copy.batches", Locale::EnUs) => {
-            "Copy into the {page}'s database, at {url}, the batches {files}, in this order: each file is \
-             the `writes` list of one `ArtifactData` call with `action` `batch`, and each document goes \
-             by its `file_path`, without reading the items."
+            "Copy it yourself, in this conversation and without an agent, into the {page}'s database, \
+             at {url}, the batches {files}, in this order: each file is the `writes` list of one \
+             `ArtifactData` call with `action` `batch`, and each document goes by its `file_path`, \
+             without reading the items."
         }
         // Só entra depois de `page.copy.batches`, quando algum documento do
-        // lote já existe no banco de uma cópia anterior: o banco recusa a
-        // troca de um documento assim sem a versão dele.
+        // lote já existe no banco sem versão guardada, de uma cópia gravada
+        // antes de o registro guardar as versões: o banco recusa a troca de um
+        // documento assim sem a versão dele. O que tem versão guardada já vai
+        // com ela no lote.
         ("page.copy.existing", Locale::PtBr) => {
-            "Os documentos {docs} já existem no banco: leia a versão de cada um com a ação `get` da \
-             ferramenta `ArtifactData` e ponha cada uma em `if_version` na escrita dele antes de mandar o \
-             lote; os outros documentos vão sem versão."
+            "Os documentos {docs} já existem no banco sem versão guardada: leia a versão de cada um com \
+             a ação `get` da ferramenta `ArtifactData` e ponha cada uma em `if_version` na escrita dele \
+             antes de mandar o lote; as escritas que já trazem `if_version` vão como estão, e as outras \
+             vão sem versão. Se o banco recusar uma versão, leia aquele documento com `get`, ponha a \
+             versão dele na escrita e mande o lote de novo."
         }
         ("page.copy.existing", Locale::EnUs) => {
-            "The documents {docs} already exist in the database: read each one's version with the `get` \
-             action of the `ArtifactData` tool and put it in `if_version` on that write before sending the \
-             batch; the other documents go without a version."
+            "The documents {docs} already exist in the database without a stored version: read each \
+             one's version with the `get` action of the `ArtifactData` tool and put it in `if_version` on \
+             that write before sending the batch; the writes that already carry `if_version` go as they \
+             are, and the others go without a version. If the database refuses a version, read that \
+             document with `get`, put its version on the write and send the batch again."
         }
         // Só entra depois de `page.copy.batches`, e só fora do descarte: a
         // spec descartada é terminal, sem cópia seguinte para continuar dela.
+        // As versões gravadas poupam a leitura na cópia seguinte.
         ("page.copy.record", Locale::PtBr) => {
-            "Depois grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`."
+            "Depois grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`, \
+             somando ao `--json` o campo `versions`: a versão que o resultado do lote devolveu para cada \
+             documento escrito, pelo nome `coleção/doc_id` dele, como \
+             `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
         }
         ("page.copy.record", Locale::EnUs) => {
-            "Then record the copy with `mustard-rt run write copy --spec {spec} --json '{record}'`."
+            "Then record the copy with `mustard-rt run write copy --spec {spec} --json '{record}'`, adding \
+             to the `--json` the `versions` field: the version the batch result returned for each document \
+             written, by its `collection/doc_id` name, as in \
+             `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
         }
         // Sempre entra em `{url}` de `page.copy.batches`, depois de "no
         // endereço": sem "o endereço" aqui, ou a frase dobra a palavra.
@@ -620,6 +626,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.stamp", Locale::EnUs) => "Template stamp",
         ("page.field.last", Locale::PtBr) => "Último item copiado",
         ("page.field.last", Locale::EnUs) => "Last item copied",
+        ("page.field.versions", Locale::PtBr) => "Versões no banco",
+        ("page.field.versions", Locale::EnUs) => "Database versions",
         ("page.field.kinds", Locale::PtBr) => "Tipos",
         ("page.field.kinds", Locale::EnUs) => "Kinds",
         ("page.field.block", Locale::PtBr) => "Grupo de lacunas",
@@ -977,7 +985,7 @@ mod tests {
             include_str!("page.rs"),
             super::PREFIXES,
             385,
-            0x4040_78bf_6f9f_a732,
+            0x57c0_a867_d1ce_d5eb,
         );
     }
 

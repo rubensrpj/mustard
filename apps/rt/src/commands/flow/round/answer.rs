@@ -5,10 +5,10 @@
 //! rodada não pede a revisão de onda nenhuma: quem confere o trabalho é o
 //! agente de teste dedicado que o fechamento pede, uma vez por obra.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog, DELIVERED_MAX_CHARS};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::wave_prompt::{agent_from_template, estimate_tokens, token_cap_message, wave_files};
 use mustard_core::io::spec_events as store;
@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 use super::commit::git_lock;
 use super::queue::{
     analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, emptied_backlog_waves, first_unfinished, max_parallel, next_waves,
-    only_analysis, open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
+    open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, Analysed,
 };
 use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
@@ -52,8 +52,21 @@ pub(crate) enum RoundRefusal {
     FileUnknown { file: String, wave: u64 },
     /// A spec ainda não foi aprovada.
     NotApproved { phase: String },
-    /// O que uma onda entregou passa do teto de caracteres.
-    DeliveredTooLong { wave: u64, chars: usize },
+    /// O relatório trouxe a linha da entrega colada: a entrega mora na spec,
+    /// e o agente a grava.
+    ReturnLine,
+    /// A linha de consumo chegou para uma onda com envio aberto, sem volta
+    /// gravada, e com o Claude Code dela ainda aberto: o agente terminou sem
+    /// gravar a entrega.
+    ReturnMissing { wave: u64 },
+    /// A cópia da onda mudou arquivo, e a volta gravada não traz o resumo do
+    /// commit: o agente grava a entrega de novo.
+    ReturnNeedsCommit { wave: u64 },
+    /// O revisor gravou o veredito sem pedido de revisão aberto.
+    NoOpenReview,
+    /// O pedido de revisão segue aberto e o revisor ainda não gravou o
+    /// veredito: o fechamento não pede outra revisão.
+    VerdictMissing,
     /// A mensagem do commit não cabe no modelo.
     CommitTooLong { part: String, chars: usize, max: usize },
     /// A mensagem do commit traz o que ela nunca leva.
@@ -86,7 +99,11 @@ impl RoundRefusal {
             Self::MergeConflict { .. } => "round-merge-conflict".into(),
             Self::FileUnknown { .. } => "round-file-unknown".into(),
             Self::NotApproved { .. } => "round-not-approved".into(),
-            Self::DeliveredTooLong { .. } => "delivered-too-long".into(),
+            Self::ReturnLine => "round-return-line".into(),
+            Self::ReturnMissing { .. } => "round-return-missing".into(),
+            Self::ReturnNeedsCommit { .. } => "round-return-needs-commit".into(),
+            Self::NoOpenReview => "no-open-review".into(),
+            Self::VerdictMissing => "review-verdict-missing".into(),
             Self::CommitTooLong { .. } => "commit-too-long".into(),
             Self::CommitForbidden { .. } => "commit-forbidden-text".into(),
             Self::CommitLooksLikeSha { .. } => "commit-looks-like-sha".into(),
@@ -126,14 +143,13 @@ impl RoundRefusal {
                 fill("round.file_unknown", &[("{file}", file.clone()), ("{wave}", wave.to_string())])
             }
             Self::NotApproved { phase } => fill("round.not_approved", &[("{phase}", phase.clone())]),
-            Self::DeliveredTooLong { wave, chars } => fill(
-                "round.delivered_too_long",
-                &[
-                    ("{wave}", wave.to_string()),
-                    ("{chars}", chars.to_string()),
-                    ("{max}", DELIVERED_MAX_CHARS.to_string()),
-                ],
-            ),
+            Self::ReturnLine => fill("spec_events.report_carries_return_line", &[]),
+            Self::ReturnMissing { wave } => fill("spec_events.return_missing", &[("{wave}", wave.to_string())]),
+            Self::ReturnNeedsCommit { wave } => {
+                fill("spec_events.return_needs_commit", &[("{wave}", wave.to_string())])
+            }
+            Self::NoOpenReview => fill("spec_events.no_open_review", &[]),
+            Self::VerdictMissing => fill("spec_events.verdict_missing", &[]),
             Self::CommitTooLong { part, chars, max } => fill(
                 "round.commit_too_long",
                 &[("{part}", part.clone()), ("{chars}", chars.to_string()), ("{max}", max.to_string())],
@@ -256,6 +272,47 @@ fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
     let at = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
     let now = chrono::Local::now().with_timezone(at.offset());
     Some((now - at).num_minutes())
+}
+
+/// As tarefas das ondas `waves` que pedem conferência no código, pelo
+/// código: as que têm arquivo declarado mudado num commit da branch
+/// posterior ao texto vigente delas. Sem git, sem arquivo declarado ou sem
+/// hora legível, a tarefa fica fora.
+fn tasks_to_check(root: &Path, log: &SpecLog, waves: &BTreeSet<u64>, codes: &BTreeMap<u64, String>) -> Vec<String> {
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task" && e.wave().is_some_and(|wave| waves.contains(&wave)))
+        .filter(|task| changed_after_text(root, log, task))
+        .map(|task| codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()))
+        .collect()
+}
+
+/// `true` quando o último commit que toca um arquivo declarado da tarefa é
+/// posterior ao texto vigente dela: o instante da última versão que mudou o
+/// texto ou os arquivos. A versão que só põe a tarefa numa onda — que a
+/// rodada grava antes de mostrar a escolha — herda o instante da anterior;
+/// contada, ela esconderia todo commit anterior à própria rodada.
+fn changed_after_text(root: &Path, log: &SpecLog, task: &SpecEvent) -> bool {
+    let files = task_files(task);
+    if files.is_empty() {
+        return false;
+    }
+    let mut written = task;
+    while let Some(previous) = written.replaced().first().and_then(|id| log.get(*id)) {
+        if previous.fields.get("text") != written.fields.get("text") || task_files(previous) != files {
+            break;
+        }
+        written = previous;
+    }
+    let Ok(at) = chrono::DateTime::parse_from_rfc3339(written.at().trim()) else {
+        return false;
+    };
+    let mut args = vec!["log", "-1", "--format=%ct", "HEAD", "--"];
+    args.extend(files.iter().map(String::as_str));
+    mustard_core::platform::git::run(root, &args)
+        .out()
+        .and_then(|seconds| seconds.parse::<i64>().ok())
+        .is_some_and(|commit| commit > at.timestamp())
 }
 
 /// Os arquivos mudados na cópia da onda `wave`, pelo `git status` curto dela.
@@ -428,15 +485,13 @@ pub(super) fn run_round_with_mine(
     // já estava pronta antes desta rodada começar é empacotada aqui.
     let log_on_entry = log.clone();
 
-    // O relatório que só traz a escolha antes do envio não tem o que juntar:
-    // a rodada vai direto ao despacho, com a escolha de cada onda.
+    // A rodada assume, antes de despachar, a volta que cada onda gravou na
+    // spec, com ou sem relatório: o relatório traz só as linhas de quem
+    // despacha. Sem volta e sem linha a assumir, nada é juntado, e a rodada
+    // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let Taken { mut recorded, formatted, mut warnings, commit, paused } = match raw {
-        Some(raw) if !only_analysis(raw) => {
-            super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, mine)?
-        }
-        _ => Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused: Vec::new() },
-    };
+    let Taken { mut recorded, formatted, mut warnings, commit, paused } =
+        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, mine)?;
     let (given, unread) = analysis_lines(raw, lang);
     warnings.extend(unread);
 
@@ -548,22 +603,18 @@ pub(super) fn run_round_with_mine(
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
-        // Os dois textos do input, na ordem em que o agente os recebe: o
-        // molde dele, instalado no projeto, e só depois o pedido. O modelo
-        // pedido vai junto — nada disso é remontado na leitura, é o que foi
+        // O nome do agente escolhido pelo tamanho do lote (`wave` ou
+        // `wave-solo`), e não o molde dele, que mora no projeto: é o nome que
+        // o reenvio chama de novo, e a resposta desta rodada o repete, para
+        // quem despacha saber qual dos dois chamar. O pedido e o modelo
+        // pedido vão junto — nada disso é remontado na leitura, é o que foi
         // enviado.
-        if !prompt.template.is_empty() {
-            draft.insert("template".into(), json!(prompt.template));
-        }
+        let agent = prompt.agent.clone();
+        draft.insert("agent".into(), json!(agent));
         draft.insert("text".into(), json!(prompt.text));
         draft.insert("model".into(), json!(prompt.model));
         draft.insert("lines".into(), json!(prompt.lines));
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
-        // O nome do agente escolhido pelo tamanho do lote (`wave` ou
-        // `wave-solo`) não é campo do envio — o molde inteiro já viaja no
-        // próprio `template` — mas a resposta desta rodada o repete, para
-        // quem despacha saber qual dos dois chamar.
-        let agent = prompt.agent.clone();
         // Os itens que ficaram, e à parte a escolha do orquestrador: o que
         // saiu e o que entrou, cada um com o motivo.
         draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave))));
@@ -607,15 +658,15 @@ pub(super) fn run_round_with_mine(
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
-        // O molde e o modelo pedido são os do envio original: um reenvio não
+        // O agente e o modelo pedido são os do envio original: um reenvio não
         // remonta o input, só acrescenta o aviso do que mudou na cópia. O
-        // nome do agente sai do próprio molde — o reenvio chama o mesmo dos
-        // dois que o envio original chamou.
-        let template = prior.str_field("template").unwrap_or_default();
-        let agent = agent_from_template(template);
-        if let Some(template) = prior.str_field("template") {
-            draft.insert("template".into(), json!(template));
-        }
+        // reenvio chama o mesmo dos dois agentes que o envio original chamou:
+        // pelo nome gravado nele ou, no envio antigo que só guardou o molde,
+        // pelo nome que o molde traz.
+        let agent = prior
+            .str_field("agent")
+            .map_or_else(|| agent_from_template(prior.str_field("template").unwrap_or_default()), str::to_string);
+        draft.insert("agent".into(), json!(agent));
         if let Some(model) = prior.str_field("model") {
             draft.insert("model".into(), json!(model));
         }
@@ -714,7 +765,18 @@ pub(super) fn run_round_with_mine(
     // pedido da escolha vem logo depois.
     let (stopped, question) = stopped_waves(&stuck, &codes, lang);
     let waiting: Vec<String> = asked.iter().filter_map(|a| a["wave"].as_u64()).map(|n| n.to_string()).collect();
-    let analysis = (!asked.is_empty()).then(|| translate("round.analysis", lang).replace("{waves}", &waiting.join(", ")));
+    // A conferência das tarefas no código só entra quando um commit mudou
+    // arquivo de alguma delas depois do texto; sem nenhuma, a frase não sai.
+    let analysis = (!asked.is_empty()).then(|| {
+        let choice = translate("round.analysis", lang).replace("{waves}", &waiting.join(", "));
+        let waves: BTreeSet<u64> = asked.iter().filter_map(|a| a["wave"].as_u64()).collect();
+        let tasks = tasks_to_check(root, &log, &waves, &codes);
+        if tasks.is_empty() {
+            choice
+        } else {
+            format!("{choice} {}", translate("round.analysis_check", lang).replace("{tasks}", &tasks.join(", ")))
+        }
+    });
     let then = question
         .into_iter()
         .chain(analysis)
@@ -764,7 +826,7 @@ pub(super) fn run_round_with_mine(
 /// nenhum, e foi por isso que existiu um portão só para reparar que ele tinha
 /// envelhecido.
 fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
-    let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, spec, lang);
+    let prepared = crate::commands::spec_events::pages::copy::prepare(root, spec, lang);
     crate::commands::spec_events::pages::end_milestone(out, prepared.as_ref(), spec, "round", then, lang);
     shorten_publish_order(root, spec, out, then, lang);
     if let Some(number) = rewrite_open_pr(root, spec) {
@@ -777,9 +839,9 @@ fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale
 /// quando há mais de uma ordem —, sai dali: o texto vai para
 /// `.claude/spec/<spec>/copy/next.md`, sob a pasta da spec, e `out["next"]`
 /// fica só com uma linha curta que manda ler o arquivo, seguida do `then`, que
-/// já era curto. O que o agente de cópia executa não muda: só onde o pedido
-/// mora. Sem instrução de página — `next` já é só o `then` —, nada muda;
-/// falha de disco também deixa `next` como estava.
+/// já era curto. O que o orquestrador copia não muda, ele mesmo e sem agente:
+/// só onde a ordem mora. Sem instrução de página — `next` já é só o `then` —,
+/// nada muda; falha de disco também deixa `next` como estava.
 fn shorten_publish_order(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
     let Some(next) = out.get("next").and_then(Value::as_str).map(str::to_string) else { return };
     if next == then {
@@ -925,60 +987,14 @@ mod tests {
         assert_eq!(sent[0].wave(), Some(1));
     }
 
-    /// Os moldes de agente de verdade, os que o Mustard instala no projeto,
-    /// gravados em `root` como o instalador os grava. É o molde do produto,
-    /// e não uma cópia de mentira escrita aqui, que o envio da rodada leva:
-    /// assim um teto de idas e voltas que voltasse ao cabeçalho derrubaria
-    /// o teste.
-    fn write_agent_template(root: &Path) {
-        let dir = root.join(".claude").join("agents").join("mustard");
-        std::fs::create_dir_all(&dir).unwrap();
-        for (name, body) in mustard_core::platform::seeds::agent_texts(Locale::PtBr) {
-            std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
-        }
-    }
-
-    /// O molde que o envio da rodada grava não traz teto de idas e voltas,
-    /// nem o da onda de uma tarefa só (`wave-solo.md`) nem o da onda de
-    /// várias (`wave.md`). A medição de treze agentes de onda deste projeto
-    /// deu de 36 a 315 idas e voltas: nenhuma onda cabia no teto que havia,
-    /// então toda onda era cortada no meio e recomeçava do zero.
-    #[test]
-    fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
-        let solo_dir = tempdir().unwrap();
-        let solo_root = solo_dir.path();
-        write_agent_template(solo_root);
-        approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(solo_root, "x", None);
-        let solo_log = store::read(&store::spec_file(solo_root, "x").unwrap()).unwrap().unwrap();
-        let solo_sent = solo_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
-        let solo_template = solo_sent.str_field("template").unwrap_or_default();
-        assert!(!solo_template.contains("maxTurns"), "{solo_template}");
-
-        let multi_dir = tempdir().unwrap();
-        let multi_root = multi_dir.path();
-        write_agent_template(multi_root);
-        approved_with(multi_root, "x", &[(1, &["src/a.rs"], &[])], |said| {
-            write(multi_root, "x", "task", json!({"wave": 1, "text": "Tarefa 2 da onda 1.",
-                "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": said}));
-        });
-        round(multi_root, "x", None);
-        let multi_log = store::read(&store::spec_file(multi_root, "x").unwrap()).unwrap().unwrap();
-        let multi_sent = multi_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
-        let multi_template = multi_sent.str_field("template").unwrap_or_default();
-        assert!(!multi_template.contains("maxTurns"), "{multi_template}");
-    }
-
     /// A resposta da rodada diz qual dos dois arquivos de agente usar em
     /// cada lote despachado, pelo tamanho dele: `wave-solo` para uma tarefa
     /// só, `wave` para várias — no envio novo e no reenvio, que ecoa o
-    /// mesmo nome do molde original, sem remontar o pedido
-    /// (`MSTD-TASK-0011`, `MSTD-CRIT-0008`).
+    /// mesmo agente do envio original, sem remontar o pedido.
     #[test]
     fn a_resposta_da_rodada_diz_qual_agente_usar() {
         let solo_dir = tempdir().unwrap();
         let solo_root = solo_dir.path();
-        write_agent_template(solo_root);
         approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
         let first = round(solo_root, "x", None);
         let agent_of = |out: &Value, wave: u64| -> String {
@@ -1001,7 +1017,6 @@ mod tests {
 
         let multi_dir = tempdir().unwrap();
         let multi_root = multi_dir.path();
-        write_agent_template(multi_root);
         approved_with(multi_root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             write(
                 multi_root,
@@ -1013,6 +1028,60 @@ mod tests {
         });
         let multi_out = round(multi_root, "x", None);
         assert_eq!(agent_of(&multi_out, 1), "wave", "{multi_out}");
+    }
+
+    /// O envio grava o nome do agente e não o molde dele; a lista das ondas
+    /// e o painel mostram o envio sem o pedido, e só a leitura da onda o
+    /// traz inteiro. O envio antigo, que só guardou o molde, é reenviado ao
+    /// mesmo agente que o molde nomeia.
+    #[test]
+    fn a_leitura_das_ondas_nao_repete_o_molde_nem_o_pedido() {
+        use crate::commands::spec_events::read::{read_for, ReadOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(!prompt.is_empty(), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send").cloned().expect("the send");
+        assert_eq!(sent.str_field("agent"), Some("wave-solo"), "{sent:?}");
+        assert_eq!(sent.str_field("template"), None, "{sent:?}");
+
+        let read = |block: &str| -> Value {
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: block.into(), term: None };
+            serde_json::from_str(&read_for(&opts, None).expect("the block reads")).expect("the output is JSON")
+        };
+        let send_of = |shown: &Value| -> Value {
+            shown["events"].as_array().unwrap().iter().find(|e| e["type"] == json!("send")).cloned().expect("send")
+        };
+        for block in ["waves", "metrics"] {
+            let shown = send_of(&read(block));
+            assert!(shown.get("text").is_none(), "{block} shows the request: {shown}");
+            assert_eq!(shown["agent"], json!("wave-solo"), "{block}: {shown}");
+        }
+        assert_eq!(send_of(&read("wave-1"))["text"], json!(prompt), "the wave shows the whole request");
+
+        // O envio antigo: o molde, com o nome do agente de tarefa única, e
+        // nenhum nome à parte.
+        let mut old = sent.fields.clone();
+        for key in ["v", "id", "code", "at", "search", "type", "agent"] {
+            old.remove(key);
+        }
+        old.insert("template".into(), json!("---\nname: mustard-wave-solo\n---\n\nO molde."));
+        old.insert("replaces".into(), json!(sent.id));
+        crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(old));
+
+        let resent = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(resent["dispatch"][0]["agent"], json!("wave-solo"), "{resent}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let last = log.last_by_wave("send").get(&1).and_then(|id| log.get(*id)).cloned().expect("the new send");
+        assert!(last.fields.contains_key("resends"), "{last:?}");
+        assert_eq!(last.str_field("agent"), Some("wave-solo"), "{last:?}");
+        assert_eq!(last.str_field("template"), None, "{last:?}");
     }
 
     /// A instrução de publicar e copiar a página, por extenso, fica só no
@@ -1081,13 +1150,13 @@ mod tests {
         store::write_at(&path, "send", draft.as_object().cloned().unwrap(), &[], at).unwrap();
     }
 
-    /// O passo que o agente grava (`MSTD-TASK-0041`); a onda pausada e a
+    /// O passo que o agente grava pelo `run write step`; a onda pausada e a
     /// órfã, de um Claude Code que fechou, reenviam o pedido de antes,
     /// palavra por palavra, com os passos e o aviso, e o envio novo aponta o
     /// anterior; a onda de um Claude Code ainda aberto — mesmo depois de um
     /// `/clear`, que não muda o processo do sistema — não é reenviada; e a
     /// onda viva sem sinal por 40 minutos sai como aviso, enquanto a de 39
-    /// minutos não sai (`MSTD-TASK-0042`, `MSTD-CRIT-0031`).
+    /// minutos não sai.
     /// Só roda no Linux: fora dele nenhum processo é dado como morto, então
     /// onda órfã não existe para ser provada.
     #[test]
@@ -1196,7 +1265,7 @@ mod tests {
     /// as do primeiro envio: a onda 2, em andamento no primeiro envio da onda
     /// 1, entrega no mesmo relatório que pausa a 1, e a vaga dela libera a
     /// onda 4; o pedido reenviado à onda 1 mostra a 3 e a 4 em andamento, e
-    /// não mais a 2 (`MSTD-TASK-0017`, `MSTD-WAVE-0007`).
+    /// não mais a 2.
     #[test]
     fn a_resend_shows_the_waves_in_flight_now_not_the_ones_from_the_first_send() {
         let dir = tempdir().unwrap();
@@ -1313,10 +1382,12 @@ mod tests {
         // O veredito final, com o item combinado vigente atendido: sem a
         // lista `agreed`, a revisão final seria recusada por faltar item,
         // antes de a rodada montar o pedido do conserto que este teste prova.
-        let rejected_with_agreed = line("VERDICT", json!({"wave": 1, "result": "rejected", "final": true,
+        seed_review(root);
+        let rejected_with_agreed = judged(root, json!({"wave": 1, "result": "rejected", "final": true,
             "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
-        let fix = text(&round(root, "x", Some(&rejected_with_agreed)), "dispatch", 1);
+        assert_eq!(rejected_with_agreed["ok"], json!(true), "{rejected_with_agreed}");
+        let fix = text(&round(root, "x", None), "dispatch", 1);
         let heading =
             format!("## {}\n\n{}", translate("prompt.part.items", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");
@@ -1333,8 +1404,8 @@ mod tests {
         assert_eq!(waves_in(&back, "dispatch"), Vec::<u64>::new(), "{back}");
     }
 
-    /// O texto da linha VERDICT traz o veredito e cada achado, um por
-    /// linha: o pedido de conserto aponta o código dela pelo mesmo
+    /// O texto do veredito que o revisor grava traz o veredito e cada achado,
+    /// um por linha: o pedido de conserto aponta o código dela pelo mesmo
     /// `fix_lines` de sempre, e ler por esse código devolve os quatro
     /// achados inteiros, sem cortar nenhum.
     #[test]
@@ -1355,7 +1426,7 @@ mod tests {
             let found = out[field].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
             found.and_then(|d| d["prompt"].as_str()).unwrap_or_default().to_string()
         };
-        let fix = text(&round(root, "x", Some(&verdict(1, "rejected", findings))), "dispatch", 1);
+        let fix = text(&round(root, "x", Some(&verdict(root, 1, "rejected", findings))), "dispatch", 1);
         assert!(fix.contains("MSTD-VERD-0001"), "o pedido de conserto aponta o veredito: {fix}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1557,7 +1628,7 @@ mod tests {
     /// mudou pelo caminho certo, sem a letra de estado do `git status
     /// --porcelain` na frente — inclusive na primeira linha, cujo espaço
     /// inicial o trim da saída inteira apaga —, e o arquivo renomeado sai
-    /// com o caminho novo (`MSTD-TASK-0090`).
+    /// com o caminho novo.
     #[test]
     fn the_running_wave_lists_each_changed_file_by_its_path() {
         let dir = tempdir().unwrap();

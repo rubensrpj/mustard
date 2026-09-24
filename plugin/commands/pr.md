@@ -17,8 +17,8 @@ Print each JSON answer as it came. The PR body is not yours to write. The binary
 ## review
 
 1. `mustard-rt run pr-review` lists the open pull requests; `--pr <n>` prints the brief of one.
-2. Review it with the `mustard-review` agent, from that brief.
-3. Relay the outcome to the user. This door records no verdict: each wave's verdict is recorded by `mustard-rt run round`, from the review agent's own line.
+2. Review it with the `mustard-review` agent, from that brief: it returns its text to you and records nothing.
+3. Relay the outcome to the user.
 
 ## merge — only when the user asks
 

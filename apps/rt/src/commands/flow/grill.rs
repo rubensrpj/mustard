@@ -509,7 +509,7 @@ mod tests {
             root,
             None,
             "lesson",
-            json!({"class": "defect", "text": LESSON, "keys": ["merge", "pendência"],
+            json!({"class": "environment_trap", "text": LESSON, "keys": ["merge", "pendência"],
                    "applies_to": {"files": ["**"]}, "found_in": {"spec": "antiga"}}),
         );
         assert_eq!(lesson["ok"], json!(true), "{lesson}");
@@ -736,7 +736,7 @@ mod tests {
             root,
             None,
             "lesson",
-            json!({"class": "defect", "text": LESSON, "keys": ["merge", "pendência"],
+            json!({"class": "environment_trap", "text": LESSON, "keys": ["merge", "pendência"],
                    "applies_to": {"files": ["apps/rt/src/**"]}, "found_in": {"spec": "antiga"}}),
         );
         assert_eq!(written["ok"], json!(true), "{written}");

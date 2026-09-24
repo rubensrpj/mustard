@@ -556,8 +556,8 @@ pub(crate) fn evidence_rows(
 /// `GitPullRequest` REST contract the source-branch commit the completed
 /// merge actually consumed, recorded on the pull request at completion. It is
 /// the Azure twin of GitHub's `headRefOid`: a commit pushed to the branch
-/// AFTER the merge is beyond it, which is exactly what lets `git-settle`
-/// refuse to prune a branch that moved.
+/// AFTER the merge is beyond it, which is exactly what lets the exit ritual
+/// (`crate::commands::git_settle`) refuse to prune a branch that moved.
 pub(crate) fn evidence_from_rows(rows: &[Value]) -> PrEvidence {
     let status_of =
         |row: &Value| status_from_azure(row.get("status").and_then(Value::as_str).unwrap_or_default());

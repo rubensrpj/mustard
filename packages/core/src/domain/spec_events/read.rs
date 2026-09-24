@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::platform::i18n::{translate, Locale};
 
+use super::check::GIVES_BACK_FIELD;
 use super::search::{found_by, roots};
 use super::{shown_line, type_spec, Block, BlockQuery, METRIC_TYPES, PURGED_FIELD};
 
@@ -53,6 +54,13 @@ impl SpecEvent {
     #[must_use]
     pub fn replaced(&self) -> Vec<u64> {
         self.int("replaces").map_or_else(|| self.ints("replaces"), |old| vec![old])
+    }
+
+    /// `true` na volta que o próprio agente gravou (`returned`), que só a
+    /// rodada ou o fechamento assume.
+    #[must_use]
+    pub fn returned(&self) -> bool {
+        self.fields.get("returned") == Some(&Value::Bool(true))
     }
 
     /// O bloco do tipo; `None` para um tipo que este binário não conhece.
@@ -153,6 +161,19 @@ pub enum Hidden {
     /// O expurgo de número `by`, no formato antigo, tirou o texto dele do
     /// arquivo.
     Purged { by: u64 },
+    /// É a volta que o próprio agente gravou (`returned`): a entrega da onda
+    /// ou o veredito do revisor, que só contam quando a rodada ou o
+    /// fechamento grava a versão oficial.
+    Returned,
+}
+
+/// A primeira remoção que aponta um evento: o número dela e se ela leva a
+/// marca de `GIVES_BACK_FIELD`, que faz a versão removida devolver a
+/// anterior.
+#[derive(Debug, Clone, Copy)]
+struct Removal {
+    by: u64,
+    gives_back: bool,
 }
 
 /// Um filtro de remoção: um tipo e um intervalo de horário, na hora local de
@@ -297,30 +318,106 @@ impl SpecLog {
     }
 
     /// Os eventos que somem da leitura, cada um com o motivo. O expurgo vence;
-    /// entre remoção e substituição, vale a primeira.
+    /// depois dele, a remoção de hoje, a que leva a marca de
+    /// `GIVES_BACK_FIELD`, lida antes das substituições; por último, a
+    /// remoção sem a marca e as substituições que valem, as de
+    /// `replacements`, na ordem do arquivo, como eram lidas quando ela foi
+    /// gravada: entre as duas, vale a primeira. A volta do agente só fica com
+    /// o motivo dela quando nada mais a esconde — é assim que o leitor de
+    /// voltas separa a que espera a rodada da que já foi assumida.
     #[must_use]
     pub fn hidden(&self) -> BTreeMap<u64, Hidden> {
+        let removed = self.removals();
         let mut hidden = BTreeMap::new();
+        // Só a linha que o formato antigo esvaziou sai da leitura: o expurgo
+        // de hoje deixa o item com o resto do texto.
         for event in &self.events {
-            // Só a linha que o formato antigo esvaziou sai da leitura: o
-            // expurgo de hoje deixa o item com o resto do texto.
             if let Some(by) = event.int(PURGED_FIELD) {
                 hidden.insert(event.id, Hidden::Purged { by });
             }
-            if event.event_type == "remove" {
-                let mut targets = event.ints("targets");
-                if let Some(filter) = event.fields.get("filter").and_then(TimeFilter::from_value) {
-                    targets.extend(self.filter_matches(&filter, event.id));
-                }
-                for id in targets {
-                    hidden.entry(id).or_insert(Hidden::Removed { by: event.id });
-                }
-            }
-            for old in event.replaced() {
-                hidden.entry(old).or_insert(Hidden::Replaced { by: event.id });
-            }
+        }
+        for (id, removal) in removed.iter().filter(|(_, r)| r.gives_back) {
+            hidden.entry(*id).or_insert(Hidden::Removed { by: removal.by });
+        }
+        // Cada motivo com o número do evento que o deu; a ordenação estável
+        // deixa a remoção antes da substituição que viesse do mesmo evento,
+        // como a leitura antiga fazia.
+        let mut in_order: Vec<(u64, u64, Hidden)> = removed
+            .iter()
+            .filter(|(_, r)| !r.gives_back)
+            .map(|(id, r)| (r.by, *id, Hidden::Removed { by: r.by }))
+            .collect();
+        in_order.extend(self.replacements(&removed).into_iter().map(|(old, by)| (by, old, Hidden::Replaced { by })));
+        in_order.sort_by_key(|(by, _, _)| *by);
+        for (_, id, why) in in_order {
+            hidden.entry(id).or_insert(why);
+        }
+        for event in self.events.iter().filter(|e| e.returned()) {
+            hidden.entry(event.id).or_insert(Hidden::Returned);
         }
         hidden
+    }
+
+    /// Os números que uma remoção tira da leitura, cada um com a primeira
+    /// remoção que o aponta: os alvos dela e, com o filtro, cada evento do
+    /// tipo e do intervalo gravado antes dela.
+    fn removals(&self) -> BTreeMap<u64, Removal> {
+        let mut removed = BTreeMap::new();
+        for event in self.events.iter().filter(|e| e.event_type == "remove") {
+            let mut targets = event.ints("targets");
+            if let Some(filter) = event.fields.get("filter").and_then(TimeFilter::from_value) {
+                targets.extend(self.filter_matches(&filter, event.id));
+            }
+            let gives_back = event.fields.get(GIVES_BACK_FIELD) == Some(&Value::Bool(true));
+            for id in targets {
+                removed.entry(id).or_insert(Removal { by: event.id, gives_back });
+            }
+        }
+        removed
+    }
+
+    /// As substituições que valem, como pares (versão antiga, versão que a
+    /// substitui), em ordem de número da versão nova.
+    ///
+    /// A versão de um item da spec removida pela remoção de hoje, a que leva
+    /// a marca de `GIVES_BACK_FIELD`, não substitui nada: a que ela
+    /// substituiu volta à leitura, com o mesmo código. Remover pelo número
+    /// tira só aquela versão; pelo código, que a gravação troca por todas as
+    /// versões, tira o item inteiro. A versão removida do meio da cadeia sai
+    /// dela, e a seguinte passa a substituir as que ela substituía: o item
+    /// segue pela versão mais nova, sem trazer a antiga de volta.
+    ///
+    /// A remoção sem a marca, gravada antes dela, segue a regra de quando foi
+    /// gravada: a versão que ela tirou continua substituindo as anteriores, e
+    /// o item sai inteiro. Seguem substituídos pela versão removida também a
+    /// volta do agente, que a rodada já assumiu e que não volta a esperar a
+    /// rodada, e o evento de tipo sem código — a lição do banco, que só se
+    /// retira pelo número e sai inteira, com as versões que ela juntou.
+    fn replacements(&self, removed: &BTreeMap<u64, Removal>) -> Vec<(u64, u64)> {
+        let gives_back = |id: u64| {
+            removed.get(&id).is_some_and(|r| r.gives_back)
+                && self.get(id).is_some_and(|e| type_spec(&e.event_type).is_some())
+        };
+        let mut pairs = Vec::new();
+        for event in &self.events {
+            let mut pending = event.replaced();
+            if gives_back(event.id) {
+                pending.retain(|old| self.get(*old).is_some_and(SpecEvent::returned));
+            }
+            let mut seen = BTreeSet::new();
+            while let Some(old) = pending.pop() {
+                if !seen.insert(old) {
+                    continue;
+                }
+                pairs.push((old, event.id));
+                if gives_back(old)
+                    && let Some(skipped) = self.get(old)
+                {
+                    pending.extend(skipped.replaced());
+                }
+            }
+        }
+        pairs
     }
 
     /// Os eventos que a leitura mostra, em ordem.
@@ -330,12 +427,14 @@ impl SpecLog {
         self.events.iter().filter(|e| !hidden.contains_key(&e.id)).collect()
     }
 
-    /// A versão vigente de um item: segue as substituições a partir de `id` e
-    /// devolve a última, se ela não foi removida.
+    /// A versão vigente de um item: segue as substituições que valem a partir
+    /// de `id` e devolve a última, se ela está na leitura. Removida pelo
+    /// número, pela remoção de hoje, a versão mais nova de um item da spec, a
+    /// vigente é a anterior; pela remoção gravada antes da marca, o item não
+    /// tem versão vigente.
     #[must_use]
     pub fn current(&self, id: u64) -> Option<&SpecEvent> {
-        let replaced_by: BTreeMap<u64, u64> =
-            self.events.iter().flat_map(|e| e.replaced().into_iter().map(move |old| (old, e.id))).collect();
+        let replaced_by: BTreeMap<u64, u64> = self.replacements(&self.removals()).into_iter().collect();
         let mut id = id;
         for _ in 0..=self.events.len() {
             match replaced_by.get(&id) {
@@ -348,7 +447,8 @@ impl SpecLog {
     }
 
     /// As ondas que já têm registro de entrega. O que elas fizeram está
-    /// provado pelo código que entrou, e não pelo texto que o descreveu.
+    /// provado pelo código que entrou, e não pelo texto que o descreveu. A
+    /// volta que a rodada ainda não assumiu não conta: está fora da leitura.
     #[must_use]
     pub fn delivered_waves(&self) -> BTreeSet<u64> {
         self.block(BlockQuery::Block(Block::Waves))
@@ -356,6 +456,39 @@ impl SpecLog {
             .filter(|event| event.event_type == "delivered")
             .filter_map(SpecEvent::wave)
             .collect()
+    }
+
+    /// As voltas que a rodada ou o fechamento ainda não assumiu, em ordem de
+    /// número: a última de cada onda, uma por tipo — a entrega da onda e o
+    /// veredito do revisor —, e a do veredito final, que vem sem onda. A
+    /// volta é o evento que o próprio agente grava com `returned`, fora da
+    /// leitura; a rodada a assume gravando a versão oficial, sem o campo, com
+    /// `replaces` para ela. Da versão oficial para trás, nenhuma volta da
+    /// mesma onda espera mais, nem a que ela não apontou: só a gravada depois
+    /// dela.
+    #[must_use]
+    pub fn unassumed_returns(&self) -> Vec<&SpecEvent> {
+        let hidden = self.hidden();
+        let mut official: BTreeMap<(&str, Option<u64>), u64> = BTreeMap::new();
+        let mut last: BTreeMap<(&str, Option<u64>), &SpecEvent> = BTreeMap::new();
+        for event in self.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "verdict")) {
+            let key = (event.event_type.as_str(), event.wave());
+            if !event.returned() {
+                let newest = official.entry(key).or_insert(event.id);
+                *newest = (*newest).max(event.id);
+            } else if hidden.get(&event.id) == Some(&Hidden::Returned)
+                && last.get(&key).is_none_or(|kept| kept.id < event.id)
+            {
+                last.insert(key, event);
+            }
+        }
+        let mut out: Vec<&SpecEvent> = last
+            .into_iter()
+            .filter(|(key, event)| official.get(key).is_none_or(|id| *id < event.id))
+            .map(|(_, event)| event)
+            .collect();
+        out.sort_by_key(|event| event.id);
+        out
     }
 
     /// Os arquivos que os commits desta obra tocaram, de toda onda — a prova
@@ -599,6 +732,73 @@ mod tests {
             log.delivered_files(),
             BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()])
         );
+    }
+
+    fn log_of(lines: &[serde_json::Value]) -> SpecLog {
+        parse_log(&lines.iter().map(serde_json::Value::to_string).collect::<Vec<_>>().join("\n"))
+    }
+
+    /// A volta do agente que a rodada assumiu segue substituída pela entrega
+    /// oficial mesmo depois que a oficial é removida, pela remoção de hoje,
+    /// com a marca, e pela gravada antes dela: a volta fica fora da leitura
+    /// sem o motivo de volta, que é o que a rodada lê como espera, e o leitor
+    /// de voltas não a devolve.
+    #[test]
+    fn a_volta_assumida_nao_volta_a_esperar_quando_a_entrega_oficial_sai() {
+        use serde_json::json;
+        for removal in [
+            json!({"v":1,"id":4,"at":"t","type":"remove","targets":[3],"reason":"engano","gives_back":true}),
+            json!({"v":1,"id":4,"at":"t","type":"remove","targets":[3],"reason":"engano"}),
+        ] {
+            let log = log_of(&[
+                json!({"v":1,"id":1,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido."}),
+                json!({"v":1,"id":2,"at":"t","type":"delivered","wave":2,"text":"Saiu.","returned":true}),
+                json!({"v":1,"id":3,"at":"t","type":"delivered","wave":2,"text":"Saiu.","replaces":2}),
+                removal.clone(),
+            ]);
+            let hidden = log.hidden();
+            assert_eq!(hidden.get(&2), Some(&Hidden::Replaced { by: 3 }), "a volta segue assumida: {removal}");
+            assert_eq!(hidden.get(&3), Some(&Hidden::Removed { by: 4 }), "{removal}");
+            assert!(log.unassumed_returns().is_empty(), "nenhuma volta espera a rodada: {removal}");
+            assert!(log.delivered_waves().is_empty(), "a entrega oficial saiu da leitura: {removal}");
+            assert_eq!(log.current(2).map(|e| e.id), None, "{removal}");
+        }
+    }
+
+    /// Remover pelo número, com a marca que o binário põe na remoção de hoje,
+    /// tira só aquela versão. A versão mais nova removida devolve a anterior,
+    /// com o mesmo código; a versão do meio removida sai da cadeia, e o item
+    /// segue pela mais nova, sem trazer a antiga de volta.
+    #[test]
+    fn remover_uma_versao_pelo_numero_tira_so_ela() {
+        use serde_json::json;
+        let versions = [
+            json!({"v":1,"id":1,"at":"t","type":"note","text":"Primeira.","keys":["k"]}),
+            json!({"v":1,"id":2,"at":"t","type":"note","text":"Segunda.","keys":["k"],"replaces":1}),
+            json!({"v":1,"id":3,"at":"t","type":"note","text":"Terceira.","keys":["k"],"replaces":2}),
+        ];
+        let shown = |log: &SpecLog| log.visible().iter().filter(|e| e.event_type == "note").map(|e| e.id).collect::<Vec<_>>();
+        let with = |remove: serde_json::Value| {
+            let mut lines = versions.to_vec();
+            lines.push(remove);
+            log_of(&lines)
+        };
+
+        let newest = with(json!({"v":1,"id":4,"at":"t","type":"remove","targets":[3],"reason":"r","gives_back":true}));
+        assert_eq!(shown(&newest), [2], "a versão anterior volta");
+        assert_eq!(newest.codes().get(&2), log_of(&versions).codes().get(&3), "com o mesmo código");
+        assert_eq!(newest.current(1).map(|e| e.id), Some(2));
+        assert_eq!(newest.hidden().get(&3), Some(&Hidden::Removed { by: 4 }));
+
+        let middle = with(json!({"v":1,"id":4,"at":"t","type":"remove","targets":[2],"reason":"r","gives_back":true}));
+        assert_eq!(shown(&middle), [3], "a mais nova segue sozinha");
+        assert_eq!(middle.current(1).map(|e| e.id), Some(3));
+        assert_eq!(middle.current(2).map(|e| e.id), Some(3));
+        assert_eq!(middle.hidden().get(&1), Some(&Hidden::Replaced { by: 3 }));
+
+        let all = with(json!({"v":1,"id":4,"at":"t","type":"remove","targets":[1, 2, 3],"reason":"r","gives_back":true}));
+        assert!(shown(&all).is_empty(), "todas as versões saem");
+        assert_eq!(all.current(1).map(|e| e.id), None);
     }
 
     #[test]

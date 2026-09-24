@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::kept;
-use mustard_core::domain::spec_events::{found_by, shown_line, BlockQuery, Refusal, SpecEvent};
+use mustard_core::domain::spec_events::{found_by, shown_line, Block, BlockQuery, Refusal, SpecEvent};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::Locale;
@@ -82,8 +82,12 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
     };
     let codes = log.codes();
     let term = opts.term.as_deref().unwrap_or_default();
+    // O pedido de cada envio é o texto maior da spec: a lista das ondas e o
+    // painel mostram o envio sem ele, e só a leitura de uma onda o traz
+    // inteiro.
+    let brief = matches!(query, BlockQuery::Block(Block::Waves | Block::Metrics));
     let events: Vec<String> =
-        found_by(log.block(query), term, &codes).into_iter().map(|e| shown_with_code(e, &codes)).collect();
+        found_by(log.block(query), term, &codes).into_iter().map(|e| shown_with_code(e, &codes, brief)).collect();
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &warnings))
 }
@@ -114,11 +118,15 @@ pub(crate) fn checkout(start: &Path) -> PathBuf {
 
 /// A linha como a leitura mostra, com o código do item (`MSTD-<sigla>-<NNNN>`),
 /// que é o jeito de citá-lo e o endereço dele na página: o gravado na linha
-/// ou, numa linha sem código, o que a leitura dá a ela.
-fn shown_with_code(event: &SpecEvent, codes: &BTreeMap<u64, String>) -> String {
+/// ou, numa linha sem código, o que a leitura dá a ela. Com `brief`, o envio
+/// sai sem o pedido (`text`).
+fn shown_with_code(event: &SpecEvent, codes: &BTreeMap<u64, String>, brief: bool) -> String {
     let mut fields = event.fields.clone();
     if let Some(code) = codes.get(&event.id) {
         fields.insert("code".into(), Value::String(code.clone()));
+    }
+    if brief && event.event_type == "send" {
+        fields.remove("text");
     }
     shown_line(&fields)
 }

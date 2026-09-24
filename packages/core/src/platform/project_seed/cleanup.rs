@@ -27,28 +27,31 @@
 //! deleted only when nothing is left but the title Mustard wrote (and the
 //! `## Guards` heading that held the block). A file with the breadcrumb or the
 //! `## Guards` heading of an older scan and no mark at all is not touched: it
-//! is listed, and the person decides. Each guard of the guards block that
-//! leaves becomes a project-rule lesson before any file changes; the old map
-//! block leaves without becoming one. A text becomes one lesson only, however
-//! many files carry it: the guards are compared as the assistant's own lesson
-//! write compares them (`domain::lessons::comparable`), and the lesson holds
-//! in every place its text came from. A guard is known in the bank by its text
-//! and by where it holds: when the bank keeps the same text only for other
-//! places, that lesson gets a new version (`replaces`) that holds where the
-//! guard held too, and only then does the guard leave its file.
+//! is listed, and the person decides.
+//!
+//! The rules of the guards block that leave go to the project's pending list
+//! ([`PendingList`]), in one item per cleanup, with the text of each rule and
+//! the files it left, before any file changes: when that item cannot be
+//! written, no file changes. They go neither to the lesson bank, which stays
+//! on one machine and never goes to git, nor back to the files, because
+//! nothing of Mustard's goes to git: the person turns each rule into a test in
+//! the code, one that fails if the rule is broken, or drops it. A text is
+//! listed once, however many files carry it, compared as the lesson write
+//! compares texts (`domain::lessons::comparable`). The old map block leaves
+//! without becoming a rule.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-use crate::domain::lessons::{self as model, Scope, WHOLE_PROJECT};
-use crate::domain::spec_events::{SpecEvent, SpecLog};
+use crate::domain::config::ProjectConfig;
+use crate::domain::lessons as model;
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs::{self, PRUNE_DIRS};
-use crate::io::lessons;
 use crate::io::spec_index::DISCARDED_DIR;
 use crate::platform::error::Result;
+use crate::platform::i18n::{translate, Locale};
 
 use super::settings::{parse_json_object, team_settings_path, without_seed_lines, TEAM_SETTINGS};
 use super::{CLAUDE_LOCAL_MD, CLAUDE_MD};
@@ -80,9 +83,6 @@ const PLANTED_ORCHESTRATOR: &str = ".claude/CLAUDE.md";
 /// is not one an older scan wrote into.
 const MAX_DEPTH: usize = 12;
 
-/// How many words of a guard become the keys of its lesson.
-const KEY_WORDS: usize = 6;
-
 /// What happens to one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,44 +104,36 @@ pub struct FileChange {
     pub removes: Vec<String>,
 }
 
-/// One guard that leaves an instruction file and becomes a lesson.
+/// One rule of a guards block that leaves the instruction files and goes to
+/// the pending list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GuardLesson {
-    /// The guard, as it was written.
+pub struct LeavingRule {
+    /// The rule, as it was written.
     pub text: String,
-    /// The file it came from.
-    pub source: String,
-    /// The subproject it holds for; `None` for the project root.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subproject: Option<String>,
-    /// The other subprojects whose instruction files carry the same text: the
-    /// one lesson holds there too.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub also_in: Vec<String>,
-    /// The lesson of the bank with the same text, when it does not hold yet in
-    /// every place of this guard: the guard becomes a new version of it, which
-    /// holds where it held and where the guard held.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub replaces: Option<u64>,
+    /// Every file it leaves, project-root-relative: the versioned instruction
+    /// file before its local twin.
+    pub sources: Vec<String>,
 }
 
-impl GuardLesson {
-    /// The lesson also holds in `place` (`None`: the whole project, which
-    /// covers every subproject).
-    fn hold_also(&mut self, place: Option<String>) {
-        let Some(own) = self.subproject.as_deref() else { return };
-        match place {
-            None => {
-                self.subproject = None;
-                self.also_in.clear();
-            }
-            Some(sub) => {
-                if sub != own && !self.also_in.contains(&sub) {
-                    self.also_in.push(sub);
-                }
-            }
-        }
+/// The project's pending list, where the rules that leave wait for the person
+/// to turn each into a test or drop it. The core does not know its format: the
+/// caller of the cleanup (`run upsert`) hands its door in.
+pub trait PendingList {
+    /// Write one open item with `title` and `detail` and answer its number.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing was written.
+    fn add(&self, title: &str, detail: &str) -> std::result::Result<String, String>;
+}
+
+/// No pending list: the write always fails, so no rule leaves its file.
+pub struct NoPendingList;
+
+impl PendingList for NoPendingList {
+    fn add(&self, _title: &str, _detail: &str) -> std::result::Result<String, String> {
+        Err("this install has no pending list, so no rule leaves its file".to_string())
     }
 }
 
@@ -154,23 +146,23 @@ pub struct CleanupPlan {
     /// listed for the person to decide, never touched.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unmarked: Vec<String>,
-    /// The guards that would become lessons, those the bank already holds
-    /// where they held left out.
+    /// The rules of the guards blocks that would leave, each text once: they
+    /// go to the pending list.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub lessons: Vec<GuardLesson>,
+    pub rules: Vec<LeavingRule>,
 }
 
 impl CleanupPlan {
     /// Nothing to take out and nothing to list.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.files.is_empty() && self.unmarked.is_empty() && self.lessons.is_empty()
+        self.files.is_empty() && self.unmarked.is_empty() && self.rules.is_empty()
     }
 
     /// Whether taking the list out would change anything.
     #[must_use]
     pub fn has_changes(&self) -> bool {
-        !self.files.is_empty() || !self.lessons.is_empty()
+        !self.files.is_empty() || !self.rules.is_empty()
     }
 }
 
@@ -182,9 +174,9 @@ pub struct CleanupDone {
     pub edited: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deleted: Vec<String>,
-    /// The numbers the new lessons got in the bank.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub lessons: Vec<u64>,
+    /// The number of the pending item that holds the rules that left.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
     /// What could not be done, with the reason.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub failed: Vec<String>,
@@ -215,14 +207,7 @@ pub fn plan(root: &Path) -> CleanupPlan {
             Stripped::Untouched => {}
             Stripped::Unmarked => out.unmarked.push(rel),
             Stripped::Changed { removes, delete, guards: found, .. } => {
-                let subproject = subproject_of(&rel);
-                guards.extend(found.into_iter().map(|text| GuardLesson {
-                    text,
-                    source: rel.clone(),
-                    subproject: subproject.clone(),
-                    also_in: Vec::new(),
-                    replaces: None,
-                }));
+                guards.extend(found.into_iter().map(|text| (text, rel.clone())));
                 out.files.push(FileChange {
                     path: rel,
                     action: if delete { Action::Delete } else { Action::Edit },
@@ -238,7 +223,7 @@ pub fn plan(root: &Path) -> CleanupPlan {
 
     out.files.extend(stale_spec_pages(root));
 
-    out.lessons = new_lessons(root, guards);
+    out.rules = leaving_rules(guards);
     out
 }
 
@@ -291,132 +276,25 @@ fn team_settings_change(root: &Path) -> Option<FileChange> {
     })
 }
 
-/// The guards the bank does not hold yet where they held, each text once.
-/// The versioned instruction file wins over its local twin, which usually
-/// repeats it; the same text in another subproject does not become a second
-/// lesson, it makes the first one hold there too. Texts are compared as the
-/// assistant's own lesson write compares them (spaces, case and accents
-/// aside), so a guard never reaches the write as a repeated lesson.
-///
-/// Against the bank, a guard is known by its text and by where it holds: the
-/// lesson with the same text that already holds in every place of the guard
-/// leaves the guard out; the one that holds only elsewhere is replaced by a
-/// version that holds in the guard's places too. Recognized by the text alone,
-/// the guard would leave its file while the rule held only somewhere else.
-fn new_lessons(root: &Path, mut guards: Vec<GuardLesson>) -> Vec<GuardLesson> {
-    guards.sort_by_key(|g| g.source.ends_with(CLAUDE_LOCAL_MD));
-    let mut out: Vec<GuardLesson> = Vec::new();
-    for guard in guards {
-        let text = model::comparable(&guard.text);
-        match out.iter_mut().find(|taken| model::comparable(&taken.text) == text) {
-            Some(taken) => taken.hold_also(guard.subproject),
-            None => out.push(guard),
-        }
-    }
-    let Some(bank) = lesson_bank(root).and_then(|path| lessons::read(&path).ok().flatten()) else {
-        return out;
-    };
-    out.into_iter()
-        .filter_map(|mut guard| match model::repeated(&bank, &guard.text, &[]) {
-            None => Some(guard),
-            Some(kept) if places(&guard).iter().all(|place| holds_in(kept, place.as_deref())) => None,
-            Some(kept) => {
-                guard.replaces = Some(kept.id);
-                Some(guard)
-            }
-        })
-        .collect()
-}
-
-/// Every place a guard's lesson holds for: `None` is the whole project.
-fn places(guard: &GuardLesson) -> Vec<Option<String>> {
-    match &guard.subproject {
-        None => vec![None],
-        Some(sub) => std::iter::once(sub).chain(&guard.also_in).cloned().map(Some).collect(),
-    }
-}
-
-/// Whether the bank's `lesson` already holds in `place`: for every file of
-/// the subproject, or, with `None`, for the whole project.
-fn holds_in(lesson: &SpecEvent, place: Option<&str>) -> bool {
-    let scope = match place {
-        // Sem arquivo, sem subprojeto e sem skill, só a lição do projeto todo
-        // vale.
-        None => Scope::default(),
-        Some(sub) => Scope { files: vec![sub.to_string()], subproject: Some(sub.to_string()), skill: None },
-    };
-    model::applies_to(lesson, &scope)
-}
-
-/// The new version of the bank's lesson `id` that holds also in every place
-/// of `guard`: the same class, author, text, keys, label and origin, and where
-/// it holds widened. `None` when `id` is no longer a lesson the reading of
-/// `bank` shows: the lesson changed after the plan read it. The write checks
-/// the same thing again with the bank's lock held, so a new version written
-/// between this reading and the write refuses this one.
-fn widened(bank: &SpecLog, id: u64, guard: &GuardLesson) -> Option<Map<String, Value>> {
-    let lesson = model::kept(bank).into_iter().find(|lesson| lesson.id == id)?;
-    let mut draft = Map::new();
-    draft.insert("class".into(), Value::from(lesson.event_type.as_str()));
-    for field in ["author", "text", "keys", "label", "found_in"] {
-        if let Some(value) = lesson.fields.get(field) {
-            draft.insert(field.into(), value.clone());
-        }
-    }
-    draft.insert("applies_to".into(), widened_scope(lesson, guard));
-    draft.insert("replaces".into(), Value::from(id));
-    Some(draft)
-}
-
-/// Where the bank's `lesson` holds once it holds in every place of `guard`
-/// too: the whole project, when one of them is; otherwise its own places,
-/// with the subproject of the guard it did not cover yet as its subproject,
-/// or, when it already has one, among its files.
-fn widened_scope(lesson: &SpecEvent, guard: &GuardLesson) -> Value {
-    let places = places(guard);
-    if places.iter().any(Option::is_none) {
-        return serde_json::json!({ "files": [WHOLE_PROJECT] });
-    }
-    let mut scope = lesson.fields.get("applies_to").and_then(Value::as_object).cloned().unwrap_or_default();
-    for sub in places.into_iter().flatten().filter(|sub| !holds_in(lesson, Some(sub.as_str()))) {
-        let has_subproject = scope.get("subproject").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty());
-        if !has_subproject {
-            scope.insert("subproject".into(), Value::from(sub));
-            continue;
-        }
-        match scope.get_mut("files") {
-            Some(Value::Array(files)) => {
-                if !files.iter().any(|file| file.as_str() == Some(sub.as_str())) {
-                    files.push(Value::from(sub));
+/// The rules that leave, each text once, with every file it leaves. The
+/// versioned instruction file comes before its local twin, which usually
+/// repeats it. Texts are compared as the lesson write compares them (spaces,
+/// case and accents aside), so the same rule in two files is listed once.
+fn leaving_rules(mut found: Vec<(String, String)>) -> Vec<LeavingRule> {
+    found.sort_by_key(|(_, source)| source.ends_with(CLAUDE_LOCAL_MD));
+    let mut out: Vec<LeavingRule> = Vec::new();
+    for (text, source) in found {
+        let key = model::comparable(&text);
+        match out.iter_mut().find(|taken| model::comparable(&taken.text) == key) {
+            Some(taken) => {
+                if !taken.sources.contains(&source) {
+                    taken.sources.push(source);
                 }
             }
-            _ => {
-                scope.insert("files".into(), Value::Array(vec![Value::from(sub)]));
-            }
+            None => out.push(LeavingRule { text, sources: vec![source] }),
         }
     }
-    Value::Object(scope)
-}
-
-/// Where a guard's lesson holds: its subproject, with the other subprojects
-/// that carry the same text, or the whole project.
-fn applies_to(guard: &GuardLesson) -> Value {
-    match guard.subproject.as_deref() {
-        None => serde_json::json!({ "files": [WHOLE_PROJECT] }),
-        Some(sub) if guard.also_in.is_empty() => serde_json::json!({ "subproject": sub }),
-        Some(sub) => serde_json::json!({ "subproject": sub, "files": guard.also_in }),
-    }
-}
-
-fn lesson_bank(root: &Path) -> Option<PathBuf> {
-    ClaudePaths::for_project(root).ok().map(|paths| paths.lessons_path())
-}
-
-/// The subproject an instruction file sits in: its folder, or `None` at the
-/// project root.
-fn subproject_of(rel: &str) -> Option<String> {
-    let dir = rel.rsplit_once('/').map(|(dir, _)| dir)?;
-    (!dir.is_empty()).then(|| dir.to_string())
+    out
 }
 
 /// Every `CLAUDE.md` and `CLAUDE.local.md` of the project, relative, sorted.
@@ -595,48 +473,26 @@ fn guards_in(lines: &[String]) -> Vec<String> {
 
 /// Do what [`plan`] listed.
 ///
-/// The guards become lessons first, or new versions of the bank's lessons
-/// that hold where the guards held too. When one of them cannot be written, no
-/// file is touched, so no guard leaves a file without its rule holding there;
-/// the next run finds the ones already written in the bank and retries only
-/// the rest. After that every file is handled on its own: a failure is
-/// reported and the rest goes on.
+/// The rules that leave go first to the pending list (`pending`), in one item
+/// with the text of each rule and the files it left. When that item cannot be
+/// written, no file is touched, so no rule leaves a file without being
+/// written down; the next run lists them again. After that every file is
+/// handled on its own: a failure is reported and the rest goes on.
 ///
 /// # Errors
 ///
 /// None today; the signature keeps room for a failure that stops everything.
-pub fn apply(root: &Path, plan: &CleanupPlan) -> Result<CleanupDone> {
+pub fn apply(root: &Path, plan: &CleanupPlan, pending: &dyn PendingList) -> Result<CleanupDone> {
     let mut done = CleanupDone::default();
-    if !plan.lessons.is_empty() {
-        let Some(bank) = lesson_bank(root) else {
-            done.failed.push("lessons: the lesson bank of this project could not be found".to_string());
-            return Ok(done);
-        };
-        // A nova versão de uma lição parte do banco como está agora; se a
-        // lição mudou depois do plano, a guard falha e nenhum arquivo sai.
-        let current = if plan.lessons.iter().any(|guard| guard.replaces.is_some()) {
-            lessons::read(&bank).ok().flatten()
-        } else {
-            None
-        };
-        for guard in &plan.lessons {
-            let draft = match guard.replaces {
-                None => lesson_draft(guard),
-                Some(id) => match current.as_ref().and_then(|log| widened(log, id, guard)) {
-                    Some(draft) => draft,
-                    None => {
-                        done.failed.push(format!("{}: lesson {id} changed after the plan", guard.source));
-                        continue;
-                    }
-                },
-            };
-            match lessons::write(&bank, draft, None) {
-                Ok(written) => done.lessons.push(written.id),
-                Err(refusal) => done.failed.push(format!("{}: {refusal:?}", guard.source)),
+    if !plan.rules.is_empty() {
+        let lang = ProjectConfig::load(root).language().text_or_default();
+        let (title, detail) = pending_item(&plan.rules, lang);
+        match pending.add(&title, &detail) {
+            Ok(id) => done.pending = Some(id),
+            Err(why) => {
+                done.failed.push(format!("pending: {why}"));
+                return Ok(done);
             }
-        }
-        if !done.failed.is_empty() {
-            return Ok(done);
         }
     }
     for change in &plan.files {
@@ -650,6 +506,27 @@ pub fn apply(root: &Path, plan: &CleanupPlan) -> Result<CleanupDone> {
         }
     }
     Ok(done)
+}
+
+/// The one pending item of a cleanup, in the project's language `lang`: the
+/// title says how many rules left, and the detail says what to do with them
+/// and lists each rule's text with the files it left.
+fn pending_item(rules: &[LeavingRule], lang: Locale) -> (String, String) {
+    let title = translate("lessons.rules_left.title", lang).replace("{count}", &rules.len().to_string());
+    let listed: Vec<String> = rules
+        .iter()
+        .enumerate()
+        .map(|(at, rule)| {
+            // O texto da regra entra por último: uma vaga escrita dentro dele
+            // não é preenchida.
+            translate("lessons.rules_left.rule", lang)
+                .replace("{n}", &(at + 1).to_string())
+                .replace("{sources}", &rule.sources.join(", "))
+                .replace("{text}", &rule.text)
+        })
+        .collect();
+    let detail = translate("lessons.rules_left.detail", lang).replace("{rules}", &listed.join("; "));
+    (title, detail)
 }
 
 /// Rewrite one file without Mustard's lines, as [`plan`] read it.
@@ -669,49 +546,10 @@ fn rewrite(root: &Path, rel: &str) -> Result<()> {
     Ok(())
 }
 
-/// The lesson a guard becomes: a project rule that holds where the guard held
-/// (its subproject, or the whole project), born in the file it came from.
-fn lesson_draft(guard: &GuardLesson) -> Map<String, Value> {
-    let draft = serde_json::json!({
-        "class": model::PROJECT_RULE,
-        "author": "binary",
-        "text": guard.text,
-        "keys": lesson_keys(guard),
-        "applies_to": applies_to(guard),
-        "found_in": { "source": guard.source },
-    });
-    draft.as_object().cloned().unwrap_or_default()
-}
-
-/// The keys of a guard's lesson: the subproject's name and the first long
-/// words of the guard, lowercased, each once.
-fn lesson_keys(guard: &GuardLesson) -> Vec<String> {
-    let mut keys: Vec<String> = Vec::new();
-    if let Some(name) = guard.subproject.as_deref().and_then(|s| s.rsplit('/').next()) {
-        keys.push(name.to_lowercase());
-    }
-    let words = guard
-        .text
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.chars().count() >= 5 && !w.starts_with(|c: char| c.is_ascii_digit()))
-        .map(str::to_lowercase);
-    for word in words {
-        if keys.len() > KEY_WORDS {
-            break;
-        }
-        if !keys.contains(&word) {
-            keys.push(word);
-        }
-    }
-    if keys.is_empty() {
-        keys.push("guard".to_string());
-    }
-    keys
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::fs as std_fs;
     use tempfile::tempdir;
 
@@ -721,10 +559,35 @@ mod tests {
         std_fs::write(path, body).unwrap();
     }
 
+    /// A lista de pendências dos testes: guarda na memória o título e o
+    /// detalhe de cada item gravado e responde o número seguinte; quebrada,
+    /// recusa sem gravar.
+    #[derive(Default)]
+    struct Memory {
+        items: RefCell<Vec<(String, String)>>,
+        broken: bool,
+    }
+
+    impl PendingList for Memory {
+        fn add(&self, title: &str, detail: &str) -> std::result::Result<String, String> {
+            if self.broken {
+                return Err("the pending list cannot be written".to_string());
+            }
+            let mut items = self.items.borrow_mut();
+            items.push((title.to_string(), detail.to_string()));
+            Ok(format!("P-{}", items.len()))
+        }
+    }
+
+    /// O banco de lições do projeto em `root`.
+    fn bank(root: &Path) -> std::path::PathBuf {
+        ClaudePaths::for_project(root).unwrap().lessons_path()
+    }
+
     const SUBPROJECT_MD: &str = "@.claude/scan-map.md\n\n# Rt\n\n> Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/mustard/orchestrator.md](../../.claude/mustard/orchestrator.md)\n\n## Guards\n\n<!-- mustard:guards -->\n<!-- facts: kind=cargo -->\n- Never panic in a hook.\n- Keep `main.rs` thin:\n  routing only.\n<!-- /mustard:guards -->\n";
 
     /// Um arquivo que só tem o que o Mustard escreveu sai inteiro, e as duas
-    /// Guards dele viram lições, com a linha que continua a segunda.
+    /// regras do bloco dele são lidas, com a linha que continua a segunda.
     #[test]
     fn a_file_that_is_only_mustard_goes_and_its_guards_are_read() {
         let Stripped::Changed { delete, guards, removes, .. } = strip_marks(SUBPROJECT_MD) else {
@@ -797,8 +660,10 @@ mod tests {
         assert_eq!(listed.files.len(), 1, "{listed:?}");
         assert_eq!((listed.files[0].path.as_str(), &listed.files[0].action), ("apps/web/CLAUDE.md", &Action::Delete));
         assert!(listed.unmarked.is_empty(), "a file with the import is not left for the person: {listed:?}");
-        let done = apply(root, &listed).unwrap();
+        let list = Memory::default();
+        let done = apply(root, &listed, &list).unwrap();
         assert_eq!(done.deleted, ["apps/web/CLAUDE.md"]);
+        assert!(list.items.borrow().is_empty() && done.pending.is_none(), "no rule left, so no pending item: {done:?}");
     }
 
     /// Dentro do bloco, cada linha começa uma guard, com ou sem o `- `; só a
@@ -851,11 +716,13 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
 <!-- /mustard:guards -->
 ";
 
-    /// As guards que o scan escreveu em prosa, sem `- `, viram lições antes de
-    /// o arquivo sair: a cópia do `CLAUDE.md` da fixture do scan em Go, numa
-    /// pasta temporária, dá cinco lições, uma por linha, e só então é apagada.
+    /// As regras que o scan escreveu em prosa, sem `- `, vão à lista de
+    /// pendências antes de o arquivo sair: a cópia do `CLAUDE.md` da fixture
+    /// do scan em Go, numa pasta temporária, dá um item só, com as cinco
+    /// regras, cada uma com o arquivo de onde saiu. O arquivo é apagado, e o
+    /// banco de lições nem nasce.
     #[test]
-    fn prose_guards_of_the_scan_fixtures_become_lessons_before_the_file_goes() {
+    fn prose_guards_of_the_scan_fixtures_go_to_the_pending_list_before_the_file_goes() {
         let body = SCAN_FIXTURE_MD;
         let expected = block_lines(body);
         assert_eq!(expected.len(), 5, "the fixture keeps its five guards: {expected:?}");
@@ -865,296 +732,77 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         let root = dir.path();
         write(root, "apps/graph_go/CLAUDE.md", body);
         let listed = plan(root);
-        let texts: Vec<&str> = listed.lessons.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(texts, expected, "one lesson per guard line");
+        let texts: Vec<&str> = listed.rules.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, expected, "one rule per guard line");
+        assert!(listed.rules.iter().all(|r| r.sources == ["apps/graph_go/CLAUDE.md"]), "{:?}", listed.rules);
         assert_eq!(listed.files[0].action, Action::Delete);
 
-        let done = apply(root, &listed).unwrap();
+        let list = Memory::default();
+        let done = apply(root, &listed, &list).unwrap();
         assert!(done.failed.is_empty(), "{done:?}");
-        assert_eq!(done.lessons.len(), 5);
+        assert_eq!(done.pending.as_deref(), Some("P-1"));
+        let items = list.items.borrow();
+        assert_eq!(items.len(), 1, "one item for the whole cleanup: {items:?}");
+        let (title, detail) = &items[0];
+        assert!(title.contains("(5)"), "{title}");
+        for (at, rule) in expected.iter().enumerate() {
+            let line = format!("{}) {rule} (saiu de apps/graph_go/CLAUDE.md)", at + 1);
+            assert!(detail.contains(&line), "the item keeps `{line}`: {detail}");
+        }
         assert!(!root.join("apps/graph_go/CLAUDE.md").exists());
-        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
-        let written: Vec<String> = bank
-            .visible()
-            .into_iter()
-            .filter(|l| l.event_type == model::PROJECT_RULE)
-            .filter_map(|l| l.str_field("text").map(str::to_string))
-            .collect();
-        assert_eq!(written, expected);
+        assert!(!bank(root).exists(), "nothing goes to the lesson bank");
     }
 
-    /// A mesma guard em dois subprojetos vira uma lição só, que vale nos
-    /// dois: os três arquivos saem, e a busca de lições pelos arquivos de cada
-    /// subprojeto acha a mesma lição. O par `CLAUDE.md` e `CLAUDE.local.md` do
-    /// mesmo subprojeto continua valendo uma lição só.
+    /// A mesma regra em dois subprojetos, com outros espaços, maiúsculas e
+    /// acentos, é listada uma vez só, com os arquivos de onde saiu, o
+    /// versionado antes do gêmeo local: os três arquivos saem.
     #[test]
-    fn the_same_guard_in_two_subprojects_enters_the_lessons_once_and_holds_in_both() {
-        let body = "# Svc\n\n<!-- mustard:guards -->\n- Never call the database from a handler.\n<!-- /mustard:guards -->\n";
+    fn the_same_guard_in_two_subprojects_is_listed_once_with_every_file() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        write(root, "apps/a/CLAUDE.md", body);
-        write(root, "apps/a/CLAUDE.local.md", body);
-        write(root, "apps/b/CLAUDE.md", body);
-
-        let listed = plan(root);
-        assert_eq!(listed.lessons.len(), 1, "{:?}", listed.lessons);
-        assert_eq!(listed.lessons[0].source, "apps/a/CLAUDE.md", "the versioned file wins over its local twin");
-        assert_eq!(listed.lessons[0].subproject.as_deref(), Some("apps/a"));
-        assert_eq!(listed.lessons[0].also_in, ["apps/b"]);
-
-        let done = apply(root, &listed).unwrap();
-        assert!(done.failed.is_empty(), "{done:?}");
-        assert_eq!(done.lessons.len(), 1);
-        assert_eq!(done.deleted.len(), 3, "{done:?}");
-        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
-        for file in ["apps/a/src/x.rs", "apps/b/src/x.rs"] {
-            let scope = crate::domain::lessons::Scope { files: vec![file.to_string()], ..Default::default() };
-            let found = crate::domain::lessons::in_scope(&bank, &scope);
-            assert_eq!(found.len(), 1, "{file} keeps the rule");
-            assert_eq!(found[0].str_field("text"), Some("Never call the database from a handler."));
-        }
-        let elsewhere = crate::domain::lessons::Scope { files: vec!["apps/c/src/x.rs".into()], ..Default::default() };
-        assert!(crate::domain::lessons::in_scope(&bank, &elsewhere).is_empty(), "the rule holds only where it came from");
-    }
-
-    /// As lições vigentes do banco com o texto `text`, pela comparação da
-    /// gravação.
-    fn kept_with<'a>(bank: &'a SpecLog, text: &str) -> Vec<&'a SpecEvent> {
-        let wanted = model::comparable(text);
-        model::kept(bank).into_iter().filter(|l| l.str_field("text").is_some_and(|t| model::comparable(t) == wanted)).collect()
-    }
-
-    /// Os números das lições vigentes que valem para o arquivo `file`.
-    fn holding_for(bank: &SpecLog, file: &str) -> Vec<u64> {
-        let scope = Scope { files: vec![file.to_string()], ..Default::default() };
-        model::in_scope(bank, &scope).iter().map(|l| l.id).collect()
-    }
-
-    /// Grava no banco uma lição do assistente que vale só em `apps/a`.
-    fn kept_in_a(root: &Path, text: &str, key: &str) -> u64 {
-        let draft = serde_json::json!({"class": "project_rule", "author": "assistant", "text": text, "keys": [key],
-                                       "label": key, "applies_to": {"subproject": "apps/a"}, "found_in": {"spec": "s"}});
-        lessons::write(&lesson_bank(root).unwrap(), draft.as_object().cloned().unwrap_or_default(), None).unwrap().id
-    }
-
-    /// A regra que o banco já guarda, mas só para outro lugar, não se perde
-    /// onde a instrução valia. A instalação dá à lição do banco uma versão
-    /// nova, com o mesmo texto, a mesma classe, o mesmo autor e as mesmas
-    /// chaves, que vale lá também, e só então a instrução sai do arquivo; o
-    /// banco segue com uma lição só para cada texto. A instrução da raiz do
-    /// projeto faz a lição valer no projeto todo. E a que o banco já guarda
-    /// para o mesmo lugar não mexe no banco.
-    #[test]
-    fn a_guard_whose_text_the_lessons_hold_elsewhere_widens_that_lesson_to_its_place() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let handler = kept_in_a(root, "Não chame o banco de dentro do controlador.", "controlador");
-        let suite = kept_in_a(root, "Rode a suíte em primeiro plano.", "suite");
-        let local = kept_in_a(root, "Feche a trava antes de gravar.", "trava");
-        write(root, "apps/b/CLAUDE.md", "# B\n<!-- mustard:guards -->\n- NAO chame o banco  de dentro do controlador.\n<!-- /mustard:guards -->\n");
-        write(root, "CLAUDE.md", "# Root\n<!-- mustard:guards -->\n- rode a suite em primeiro plano.\n<!-- /mustard:guards -->\n");
-        write(root, "apps/a/CLAUDE.md", "# A\n<!-- mustard:guards -->\n- feche a trava antes de gravar.\n<!-- /mustard:guards -->\n");
-
-        let report = super::super::upsert_project(root, None, super::super::InstallMode::Private).unwrap();
-        let listed = report.cleanup.expect("the plan was shown");
-        let replaced: Vec<(&str, Option<u64>)> = listed.lessons.iter().map(|l| (l.source.as_str(), l.replaces)).collect();
-        assert_eq!(replaced, [("CLAUDE.md", Some(suite)), ("apps/b/CLAUDE.md", Some(handler))], "{:?}", listed.lessons);
-        let done = report.cleaned.expect("the cleanup ran");
-        assert!(done.failed.is_empty(), "{done:?}");
-        assert_eq!(done.lessons.len(), 2, "{done:?}");
-        assert_eq!(done.deleted, ["CLAUDE.md", "apps/a/CLAUDE.md", "apps/b/CLAUDE.md"]);
-
-        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
-        let widened = kept_with(&bank, "nao chame o banco de dentro do controlador.");
-        assert_eq!(widened.len(), 1, "one lesson for the text: {widened:?}");
-        let widened = widened[0];
-        assert_eq!(widened.int("replaces"), Some(handler));
-        assert_eq!(widened.str_field("text"), Some("Não chame o banco de dentro do controlador."));
-        assert_eq!((widened.event_type.as_str(), widened.str_field("author")), (model::PROJECT_RULE, Some("assistant")));
-        assert_eq!(widened.fields.get("keys"), Some(&serde_json::json!(["controlador"])));
-        assert_eq!(widened.fields.get("found_in"), Some(&serde_json::json!({"spec": "s"})));
-        for file in ["apps/a/src/x.rs", "apps/b/src/x.rs"] {
-            assert!(holding_for(&bank, file).contains(&widened.id), "{file} keeps the rule");
-        }
-        assert!(!holding_for(&bank, "apps/c/src/x.rs").contains(&widened.id), "the rule holds only where it held");
-
-        let everywhere = kept_with(&bank, "Rode a suíte em primeiro plano.");
-        assert_eq!(everywhere.len(), 1, "{everywhere:?}");
-        assert_eq!(everywhere[0].int("replaces"), Some(suite));
-        assert!(holding_for(&bank, "apps/c/src/x.rs").contains(&everywhere[0].id), "the root rule holds everywhere");
-
-        let same_place = kept_with(&bank, "Feche a trava antes de gravar.");
-        assert_eq!(same_place.iter().map(|l| l.id).collect::<Vec<_>>(), [local], "the bank already held it there");
-        assert_eq!(bank.events.len(), 5, "three lessons and two new versions");
-        assert!(plan(root).is_empty(), "a second install finds nothing");
-    }
-
-    /// A mesma instrução em dois subprojetos vira uma guarda só, com os dois
-    /// lugares. Se o banco já guarda o texto, mas só para um dos dois, a
-    /// guarda não pode ser descartada — ela só sai quando o banco já vale
-    /// nos dois lugares dela, nunca quando vale só num.
-    #[test]
-    fn a_guard_in_two_subprojects_is_not_dropped_when_the_bank_only_holds_in_one() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let text = "Não chame o banco de dentro do controlador.";
-        let handler = kept_in_a(root, text, "controlador");
-        let body = "# Svc\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n";
-        write(root, "apps/a/CLAUDE.md", body);
-        write(root, "apps/b/CLAUDE.md", body);
-
-        let listed = plan(root);
-        assert_eq!(listed.lessons.len(), 1, "a guarda não pode sumir: {:?}", listed.lessons);
-        assert_eq!(listed.lessons[0].replaces, Some(handler), "o banco só vale em apps/a, não nos dois lugares da guarda");
-
-        let done = apply(root, &listed).unwrap();
-        assert!(done.failed.is_empty(), "{done:?}");
-        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
-        let widened = kept_with(&bank, text);
-        assert_eq!(widened.len(), 1, "{widened:?}");
-        for file in ["apps/a/src/x.rs", "apps/b/src/x.rs"] {
-            assert!(holding_for(&bank, file).contains(&widened[0].id), "{file} keeps the rule");
-        }
-    }
-
-    /// Duas limpezas ao mesmo tempo, cada uma dando à mesma lição do banco um
-    /// lugar novo, não perdem regra nem repetem lição: com a trava presa, a
-    /// gravação confere que a lição substituída ainda é a que a leitura mostra
-    /// e que o texto não repete outra, então uma entra e a outra é recusada
-    /// sem apagar o arquivo dela. A instalação seguinte completa o que faltou.
-    #[test]
-    fn two_installs_widening_one_of_the_lessons_at_once_lose_no_rule() {
-        let body = "# X\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n";
-        for _ in 0..10 {
-            let dir = tempdir().unwrap();
-            let root = dir.path().to_path_buf();
-            let first = kept_in_a(&root, "Não chame o banco de dentro do controlador.", "controlador");
-            write(&root, "apps/b/CLAUDE.md", body);
-            let for_b = plan(&root);
-            std_fs::remove_file(root.join("apps/b/CLAUDE.md")).unwrap();
-            write(&root, "apps/c/CLAUDE.md", body);
-            let for_c = plan(&root);
-            write(&root, "apps/b/CLAUDE.md", body);
-            assert_eq!(for_b.lessons[0].replaces, Some(first));
-            assert_eq!(for_c.lessons[0].replaces, Some(first));
-
-            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
-            let runs: Vec<_> = [for_b, for_c]
-                .into_iter()
-                .map(|listed| {
-                    let root = root.clone();
-                    let start = std::sync::Arc::clone(&start);
-                    std::thread::spawn(move || {
-                        start.wait();
-                        apply(&root, &listed).unwrap()
-                    })
-                })
-                .collect();
-            let done: Vec<CleanupDone> = runs.into_iter().map(|run| run.join().unwrap()).collect();
-            let widened: Vec<usize> = (0..2).filter(|i| done[*i].failed.is_empty()).collect();
-            assert_eq!(widened.len(), 1, "one widens, the other is refused: {done:?}");
-            let loser = ["apps/b/CLAUDE.md", "apps/c/CLAUDE.md"][1 - widened[0]];
-            assert!(root.join(loser).exists(), "the refused one keeps its file: {done:?}");
-            let bank = lessons::read(&lesson_bank(&root).unwrap()).unwrap().unwrap();
-            assert_eq!(kept_with(&bank, "nao chame o banco de dentro do controlador.").len(), 1, "{:?}", bank.events);
-
-            let again = apply(&root, &plan(&root)).unwrap();
-            assert!(again.failed.is_empty(), "{again:?}");
-            let bank = lessons::read(&lesson_bank(&root).unwrap()).unwrap().unwrap();
-            let kept = kept_with(&bank, "nao chame o banco de dentro do controlador.");
-            assert_eq!(kept.len(), 1, "{:?}", bank.events);
-            for file in ["apps/a/src/x.rs", "apps/b/src/x.rs", "apps/c/src/x.rs"] {
-                assert!(holding_for(&bank, file).contains(&kept[0].id), "{file} keeps the rule");
-            }
-            assert!(!root.join("apps/b/CLAUDE.md").exists() && !root.join("apps/c/CLAUDE.md").exists());
-        }
-    }
-
-    /// A instalação que amplia uma lição e o assistente que grava, ao mesmo
-    /// tempo, outra versão dela com outro texto não deixam duas versões da
-    /// mesma lição: a gravação confere, com a trava presa, que a lição
-    /// substituída ainda é a que a leitura mostra, então só uma das duas
-    /// entra. Se a da instalação é recusada, o arquivo fica, e a instalação
-    /// seguinte grava a regra onde ela valia.
-    #[test]
-    fn an_install_and_a_new_version_of_one_of_the_lessons_at_once_leave_one_version() {
-        let body = "# X\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n";
-        for _ in 0..10 {
-            let dir = tempdir().unwrap();
-            let root = dir.path().to_path_buf();
-            let first = kept_in_a(&root, "Não chame o banco de dentro do controlador.", "controlador");
-            write(&root, "apps/b/CLAUDE.md", body);
-            let listed = plan(&root);
-            assert_eq!(listed.lessons[0].replaces, Some(first));
-            let rewrite = serde_json::json!({"class": "project_rule", "author": "assistant", "text": "Nunca chame o banco pelo controlador.",
-                                             "keys": ["controlador"], "applies_to": {"subproject": "apps/a"}, "found_in": {"spec": "s"},
-                                             "replaces": first});
-
-            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
-            let install = {
-                let (root, start) = (root.clone(), std::sync::Arc::clone(&start));
-                std::thread::spawn(move || {
-                    start.wait();
-                    apply(&root, &listed).unwrap()
-                })
-            };
-            let assistant = {
-                let (bank, start) = (lesson_bank(&root).unwrap(), std::sync::Arc::clone(&start));
-                std::thread::spawn(move || {
-                    start.wait();
-                    lessons::write(&bank, rewrite.as_object().cloned().unwrap_or_default(), None)
-                })
-            };
-            let installed = install.join().unwrap();
-            let rewritten = assistant.join().unwrap();
-            let bank = lessons::read(&lesson_bank(&root).unwrap()).unwrap().unwrap();
-            let versions: Vec<u64> = bank.events.iter().filter(|e| e.replaced().contains(&first)).map(|e| e.id).collect();
-            assert_eq!(versions.len(), 1, "one version of the lesson: {installed:?} {rewritten:?} {:?}", bank.events);
-            assert_ne!(installed.failed.is_empty(), rewritten.is_ok(), "only one of the two writes: {installed:?} {rewritten:?}");
-            if !installed.failed.is_empty() {
-                assert!(root.join("apps/b/CLAUDE.md").exists(), "the refused install keeps the file: {installed:?}");
-            }
-
-            let again = apply(&root, &plan(&root)).unwrap();
-            assert!(again.failed.is_empty(), "{again:?}");
-            let bank = lessons::read(&lesson_bank(&root).unwrap()).unwrap().unwrap();
-            let rule = kept_with(&bank, "nao chame o banco de dentro do controlador.");
-            assert_eq!(rule.len(), 1, "{:?}", bank.events);
-            assert!(holding_for(&bank, "apps/b/src/x.rs").contains(&rule[0].id), "apps/b keeps the rule");
-            assert!(!root.join("apps/b/CLAUDE.md").exists());
-        }
-    }
-
-    /// A instalação num projeto com a mesma instrução em dois arquivos, com
-    /// outros espaços, maiúsculas e acentos, grava uma regra só no banco, e os
-    /// dois arquivos saem. A instrução cujo texto o assistente já gravou como
-    /// lição não entra de novo, e o arquivo dela sai também.
-    #[test]
-    fn the_install_writes_the_same_instruction_of_two_files_as_one_rule_in_the_lessons() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let bank_path = lesson_bank(root).unwrap();
-        let mine = serde_json::json!({"class": "defect", "text": "Rode a suíte em primeiro plano.", "keys": ["suite"],
-                                      "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}});
-        lessons::write(&bank_path, mine.as_object().cloned().unwrap_or_default(), None).unwrap();
         write(root, "apps/a/CLAUDE.md", "# A\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n");
-        write(root, "apps/b/CLAUDE.local.md", "# B\n<!-- mustard:guards -->\n- NAO chame o banco  de dentro do controlador.\n- rode a suite em primeiro plano.\n<!-- /mustard:guards -->\n");
+        write(root, "apps/a/CLAUDE.local.md", "# A\n<!-- mustard:guards -->\n- Não chame o banco de dentro do controlador.\n<!-- /mustard:guards -->\n");
+        write(root, "apps/b/CLAUDE.md", "# B\n<!-- mustard:guards -->\n- NAO chame o banco  de dentro do controlador.\n<!-- /mustard:guards -->\n");
 
-        let report = super::super::upsert_project(root, None, super::super::InstallMode::Private).unwrap();
-        let done = report.cleaned.expect("the cleanup ran");
+        let listed = plan(root);
+        assert_eq!(listed.rules.len(), 1, "{:?}", listed.rules);
+        assert_eq!(listed.rules[0].text, "Não chame o banco de dentro do controlador.");
+        assert_eq!(listed.rules[0].sources, ["apps/a/CLAUDE.md", "apps/b/CLAUDE.md", "apps/a/CLAUDE.local.md"]);
+
+        let list = Memory::default();
+        let done = apply(root, &listed, &list).unwrap();
         assert!(done.failed.is_empty(), "{done:?}");
-        assert_eq!(done.lessons.len(), 1, "{done:?}");
-        assert_eq!(done.deleted, ["apps/a/CLAUDE.md", "apps/b/CLAUDE.local.md"]);
-        let bank = lessons::read(&bank_path).unwrap().unwrap();
-        let texts: Vec<&str> = bank.visible().iter().filter_map(|l| l.str_field("text")).collect();
-        assert_eq!(texts, ["Rode a suíte em primeiro plano.", "Não chame o banco de dentro do controlador."]);
+        assert_eq!(done.deleted.len(), 3, "{done:?}");
+        let detail = &list.items.borrow()[0].1;
+        assert!(
+            detail.contains("1) Não chame o banco de dentro do controlador. (saiu de apps/a/CLAUDE.md, apps/b/CLAUDE.md, apps/a/CLAUDE.local.md)"),
+            "{detail}"
+        );
+        assert!(!detail.contains("2)"), "the rule is listed once: {detail}");
+    }
+
+    /// O item fala o idioma do projeto: em inglês, o título, o detalhe e cada
+    /// regra saem do catálogo em inglês.
+    #[test]
+    fn the_pending_item_speaks_the_project_language() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "mustard.json", r#"{"language":{"text":"en-US"}}"#);
+        write(root, "apps/rt/CLAUDE.md", SUBPROJECT_MD);
+        let list = Memory::default();
+        let done = apply(root, &plan(root), &list).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        let (title, detail) = list.items.borrow()[0].clone();
+        assert!(title.starts_with("Rules the install took out") && title.contains("(2)"), "{title}");
+        assert!(detail.contains("1) Never panic in a hook. (taken from apps/rt/CLAUDE.md)"), "{detail}");
+        assert!(detail.contains("2) Keep `main.rs` thin: routing only. (taken from apps/rt/CLAUDE.md)"), "{detail}");
     }
 
     /// O bloco antigo do mapa guardava o resumo da pasta, não regras: ele sai
-    /// do arquivo sem virar lição nenhuma. Num arquivo com os dois blocos, só
-    /// o das Guards vira lição.
+    /// do arquivo sem virar regra nenhuma. Num arquivo com os dois blocos, só
+    /// o das Guards vai à lista.
     #[test]
-    fn the_old_map_block_leaves_without_becoming_a_lesson() {
+    fn the_old_map_block_leaves_without_becoming_a_rule() {
         let map_only = "# Dashboard\n\n> Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)\n\n<!-- mustard:scan-map -->\nTipo: typescript · 10 arquivos\nPesquise via `mustard-rt run feature` (digest) — não leia o repo direto.\n<!-- /mustard:scan-map -->\n\n## Architecture\n\nHand-written prose that must NOT move.\n";
         let Stripped::Changed { text, guards, removes, delete } = strip_marks(map_only) else {
             panic!("the map block is a mark");
@@ -1170,35 +818,40 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         let both = "# Web\n\n<!-- mustard:scan-map -->\nTipo: npm · 1 arquivos\n<!-- /mustard:scan-map -->\n\n## Guards\n\n<!-- mustard:guards -->\n- Keep pages free of inline styles.\n<!-- /mustard:guards -->\n";
         write(root, "apps/web/CLAUDE.md", both);
         let listed = plan(root);
-        let texts: Vec<&str> = listed.lessons.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(texts, ["Keep pages free of inline styles."], "{:?}", listed.lessons);
+        let texts: Vec<&str> = listed.rules.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, ["Keep pages free of inline styles."], "{:?}", listed.rules);
 
-        let done = apply(root, &listed).unwrap();
+        let list = Memory::default();
+        let done = apply(root, &listed, &list).unwrap();
         assert!(done.failed.is_empty(), "{done:?}");
-        assert_eq!(done.lessons.len(), 1);
+        assert_eq!(list.items.borrow().len(), 1);
         assert_eq!(done.edited, ["apps/dashboard/CLAUDE.md"]);
         assert_eq!(done.deleted, ["apps/web/CLAUDE.md"]);
         assert!(!std_fs::read_to_string(root.join("apps/dashboard/CLAUDE.md")).unwrap().contains("Tipo:"));
     }
 
-    /// Uma guard que não vira lição segura todos os arquivos: nada é apagado
-    /// nem reescrito, e a falha é dita.
+    /// Com a lista de pendências impossível de gravar, nenhum arquivo muda:
+    /// nada é apagado nem reescrito, a falha é dita e o banco de lições nem
+    /// nasce. Sem lista nenhuma, é igual.
     #[test]
-    fn a_guard_that_cannot_become_a_lesson_keeps_every_file() {
+    fn a_pending_list_that_cannot_be_written_keeps_every_file() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "apps/rt/CLAUDE.md", SUBPROJECT_MD);
         write(root, "apps/api/CLAUDE.md", "# Api\n\nOurs.\n<!-- mustard:guards -->\n- A guard.\n<!-- /mustard:guards -->\n");
+        write(root, ".claude/settings.json", "{\n  \"respectGitignore\": true,\n  \"team\": 1\n}\n");
         let listed = plan(root);
-        assert_eq!(listed.lessons.len(), 3, "{listed:?}");
-        // O banco de lições não pode ser escrito: no lugar dele há uma pasta.
-        std_fs::create_dir_all(lesson_bank(root).unwrap()).unwrap();
+        assert_eq!(listed.rules.len(), 3, "{listed:?}");
 
-        let done = apply(root, &listed).unwrap();
-        assert!(!done.failed.is_empty(), "the failure is said: {done:?}");
-        assert!(done.deleted.is_empty() && done.edited.is_empty(), "{done:?}");
-        assert_eq!(std_fs::read_to_string(root.join("apps/rt/CLAUDE.md")).unwrap(), SUBPROJECT_MD);
-        assert!(std_fs::read_to_string(root.join("apps/api/CLAUDE.md")).unwrap().contains("- A guard."));
+        for list in [&Memory { broken: true, ..Memory::default() } as &dyn PendingList, &NoPendingList] {
+            let done = apply(root, &listed, list).unwrap();
+            assert!(done.failed.iter().any(|f| f.starts_with("pending:")), "the failure is said: {done:?}");
+            assert!(done.deleted.is_empty() && done.edited.is_empty() && done.pending.is_none(), "{done:?}");
+            assert_eq!(std_fs::read_to_string(root.join("apps/rt/CLAUDE.md")).unwrap(), SUBPROJECT_MD);
+            assert!(std_fs::read_to_string(root.join("apps/api/CLAUDE.md")).unwrap().contains("- A guard."));
+            assert!(std_fs::read_to_string(root.join(".claude/settings.json")).unwrap().contains("respectGitignore"));
+            assert!(!bank(root).exists(), "nothing goes to the lesson bank");
+        }
     }
 
     /// O plano acha o orquestrador plantado, os arquivos marcados em qualquer
@@ -1225,9 +878,12 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         assert_eq!(plan.files[3].action, Action::Edit);
         assert_eq!(plan.files[3].removes, ["respectGitignore"]);
         assert_eq!(plan.unmarked, ["apps/cli/CLAUDE.md"]);
-        assert_eq!(plan.lessons.len(), 2, "the local twin repeats the same guards: {:?}", plan.lessons);
-        assert!(plan.lessons.iter().all(|l| l.source == "apps/rt/CLAUDE.md"), "{:?}", plan.lessons);
-        assert_eq!(plan.lessons[0].subproject.as_deref(), Some("apps/rt"));
+        assert_eq!(plan.rules.len(), 2, "the local twin repeats the same guards: {:?}", plan.rules);
+        assert!(
+            plan.rules.iter().all(|r| r.sources == ["apps/rt/CLAUDE.md", "apps/rt/CLAUDE.local.md"]),
+            "{:?}",
+            plan.rules
+        );
     }
 
     /// O plano tira `spec.md` e `spec.html` de dentro de uma pasta de spec que
@@ -1254,8 +910,8 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         );
         assert!(listed.files.iter().all(|f| f.action == Action::Delete), "{listed:?}");
 
-        let done = apply(root, &listed).unwrap();
-        assert!(done.failed.is_empty(), "{done:?}");
+        let done = apply(root, &listed, &NoPendingList).unwrap();
+        assert!(done.failed.is_empty(), "no rule leaves, so no list is needed: {done:?}");
         assert!(!root.join(".claude/spec/zerar-as-pendencias/spec.md").exists());
         assert!(!root.join(".claude/spec/zerar-as-pendencias/spec.html").exists());
         assert!(
@@ -1287,7 +943,7 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
             change.removes,
             ["respectGitignore", "cleanupPeriodDays", "env.MUSTARD_BOUNDARY_MODE", "permissions.allow: Read", "permissions.allow: Grep"],
         );
-        let done = apply(root, &listed).unwrap();
+        let done = apply(root, &listed, &NoPendingList).unwrap();
         assert!(done.failed.is_empty(), "{done:?}");
         assert_eq!(done.edited, [".claude/settings.json"]);
         let left: Value = serde_json::from_str(&std_fs::read_to_string(root.join(".claude/settings.json")).unwrap()).unwrap();
@@ -1301,29 +957,21 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         assert_eq!(listed.files[0].action, Action::Delete, "only the seed and no deny rule: {listed:?}");
     }
 
-    /// Aplicar tira o que o plano listou, grava as Guards como lições, e uma
-    /// segunda passada não acha mais nada: as lições não se repetem.
+    /// Aplicar tira o que o plano listou e grava as regras num item só da
+    /// lista; uma segunda passada não acha mais nada, e o banco de lições nem
+    /// nasce.
     #[test]
-    fn applying_empties_the_plan_and_the_lessons_are_written_once() {
+    fn applying_empties_the_plan_and_writes_one_item() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "apps/rt/CLAUDE.md", SUBPROJECT_MD);
-        let first = plan(root);
-        let done = apply(root, &first).unwrap();
+        let list = Memory::default();
+        let done = apply(root, &plan(root), &list).unwrap();
         assert_eq!(done.deleted, ["apps/rt/CLAUDE.md"]);
-        assert_eq!(done.lessons.len(), 2, "{done:?}");
+        assert_eq!(done.pending.as_deref(), Some("P-1"), "{done:?}");
         assert!(done.failed.is_empty(), "{done:?}");
         assert!(plan(root).is_empty());
-
-        write(root, "apps/rt/CLAUDE.local.md", SUBPROJECT_MD);
-        let again = plan(root);
-        assert!(again.lessons.is_empty(), "the guards are already lessons: {:?}", again.lessons);
-        assert_eq!(again.files.len(), 1);
-
-        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
-        let written = bank.visible();
-        assert_eq!(written.len(), 2);
-        assert_eq!(written[0].event_type, model::PROJECT_RULE);
-        assert_eq!(written[0].str_field("text"), Some("Never panic in a hook."));
+        assert_eq!(list.items.borrow().len(), 1);
+        assert!(!bank(root).exists(), "nothing goes to the lesson bank");
     }
 }

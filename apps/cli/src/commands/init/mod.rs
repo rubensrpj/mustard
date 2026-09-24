@@ -50,9 +50,12 @@
 //! seeded. There is no flag and no prompt for it.
 //!
 //! What is NOT a step of `init`, though it still happens on a `mustard init`
-//! run: the rtk gate and the ripgrep installer ([`tools`]). They act on the
-//! MACHINE, so they live in `cli::dispatch`, and a library call never takes
-//! them on its caller's behalf. `apps/cli/tests/library_is_pure.rs` measures it.
+//! run: the rtk gate, the ripgrep installer and the code-tool step ([`tools`]).
+//! They act on the MACHINE, so they live in `cli::dispatch`, and a library call
+//! never takes them on its caller's behalf. `apps/cli/tests/library_is_pure.rs`
+//! measures it. The code-tool step itself is
+//! `mustard_core::platform::code_tools::ensure_code_tools`, the one the project
+//! update runs too; [`tools`] only hands it the machine.
 //!
 //! ## The parts
 //!
@@ -60,7 +63,8 @@
 //! - [`questions`] — what to do with an existing `.claude/`;
 //! - [`seeding`] — the guard, the footprint, the narration and the payload;
 //! - [`project_config`] — the one write of `mustard.json`;
-//! - [`tools`] — the rtk gate and the ripgrep installer.
+//! - [`tools`] — the rtk gate, the ripgrep installer and the call into the
+//!   code-tool step.
 
 use std::path::Path;
 

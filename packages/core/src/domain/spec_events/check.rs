@@ -22,9 +22,18 @@ pub(crate) fn is_empty(value: &Value) -> bool {
     }
 }
 
+/// A marca que o binário põe em toda remoção que grava. Com ela, a remoção
+/// que aponta pelo número a versão nova de um item tira só essa versão, e a
+/// versão que ela substituiu volta à leitura. A remoção gravada antes da
+/// marca segue a regra de quando foi gravada: tirava o item inteiro, e a
+/// leitura de uma spec antiga não muda. Por isso a marca é só do binário: o
+/// que vier nela de quem grava é trocado.
+pub(super) const GIVES_BACK_FIELD: &str = "gives_back";
+
 /// O rascunho de quem grava, pronto para a conferência: sem os campos que só
-/// o binário escreve, com o tipo pedido e com o autor (o assistente, quando
-/// quem grava não diz). Os campos de [`REFUSED_FIELDS`] ficam, para que
+/// o binário escreve, com o tipo pedido, com o autor (o assistente, quando
+/// quem grava não diz) e, na remoção, com a marca `gives_back`, que diz que
+/// ela devolve a versão anterior. Os campos de [`REFUSED_FIELDS`] ficam, para que
 /// [`validate`] recuse o evento que os trouxe.
 #[must_use]
 pub fn normalize(mut draft: Map<String, Value>, event_type: &str) -> Map<String, Value> {
@@ -32,7 +41,12 @@ pub fn normalize(mut draft: Map<String, Value>, event_type: &str) -> Map<String,
         draft.remove(*field);
     }
     draft.remove(PURGED_FIELD);
-    draft.insert("type".into(), Value::String(event_type.trim().to_string()));
+    draft.remove(GIVES_BACK_FIELD);
+    let event_type = event_type.trim();
+    if event_type == "remove" {
+        draft.insert(GIVES_BACK_FIELD.into(), Value::Bool(true));
+    }
+    draft.insert("type".into(), Value::String(event_type.to_string()));
     if draft.get("author").is_none_or(is_empty) {
         draft.insert("author".into(), Value::String(DEFAULT_AUTHOR.into()));
     }
@@ -62,6 +76,13 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
         .map(|field| field.name.to_string())
         .collect();
     absent.extend(nested_absent(event, spec.name));
+    // A sobra sem título ou sem detalhe tem recusa própria, com o campo que
+    // falta na primeira sobra incompleta: ela vira pendência da spec, e a
+    // mensagem diz o que a pendência não teria. Faltando também outro campo,
+    // a recusa de sempre cita todos de uma vez.
+    if let Some(field) = leftover_field_missing(&absent) {
+        return Err(Refusal::LeftoverFieldMissing { field });
+    }
     if !absent.is_empty() {
         return Err(missing(spec.name, &absent.join(", ")));
     }
@@ -94,7 +115,9 @@ fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
         req("author", Kind::OneOf(AUTHORS)),
         Field { name: "origin", kind: Kind::Int, required: spec.needs_origin && by_assistant },
         opt("label", Kind::Text),
-        opt("replaces", Kind::Ref),
+        // A versão nova aponta um item só; a entrega oficial de uma onda
+        // aponta a lista de todas as voltas que ela assume.
+        opt("replaces", if event.get("replaces").is_some_and(Value::is_array) { Kind::Refs } else { Kind::Ref }),
     ];
     fields.extend(
         [opt("text", Kind::Text), opt("keys", Kind::Texts)]
@@ -111,10 +134,12 @@ fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
 const COMMON_FIELDS: &[&str] =
     &["v", "id", "code", "at", "type", "author", "search", "purged", "label", "replaces", "origin", "text", "keys"];
 
-/// O tipo aceita este campo? Aceita os comuns a toda linha e os que ele
-/// declara.
+/// O tipo aceita este campo? Aceita os comuns a toda linha, os que ele
+/// declara e, na remoção, a marca que o binário põe nela.
 fn accepts_field(spec: &TypeSpec, name: &str) -> bool {
-    COMMON_FIELDS.contains(&name) || spec.fields.iter().any(|field| field.name == name)
+    COMMON_FIELDS.contains(&name)
+        || spec.fields.iter().any(|field| field.name == name)
+        || (spec.name == "remove" && name == GIVES_BACK_FIELD)
 }
 
 /// Os campos que um tipo aceita, separados por vírgula: os que ele declara,
@@ -149,12 +174,17 @@ pub(super) fn missing(event_type: &str, field: &str) -> Refusal {
 
 /// Os objetos com campos obrigatórios próprios, dentro de uma lista ou de um
 /// campo: o tipo, o campo e os campos de dentro. A fonte de cada fato do ponto
-/// tem recusa própria e não entra aqui.
+/// tem recusa própria e não entra aqui. O que falta sai na mesma recusa dos
+/// campos do tipo, com o caminho de cada um (`leftovers[2].detail`).
 const NESTED: &[(&str, &str, &[&str])] = &[
     ("point", "facts", &["text"]),
     ("task", "files", &["path"]),
     ("skill", "examples", &["path", "why"]),
     ("send", "skills", &["name", "sha"]),
+    // A sobra que a onda relata vira pendência da spec: sem título ou sem
+    // detalhe, não há o que abrir.
+    ("delivered", "leftovers", &["title", "detail"]),
+    ("delivered", "proofs", &["criterion", "proof"]),
     ("verdict", "criteria", &["criterion", "tests_rule"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
     ("tracking", "items", &["item", "met"]),
@@ -162,6 +192,21 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("message", "witness", &["question", "answer"]),
     ("remove", "filter", &["type", "from", "to"]),
 ];
+
+/// O campo que falta na primeira sobra incompleta da entrega (`title` ou
+/// `detail`), lido do caminho que [`nested_absent`] devolve
+/// (`leftovers[2].detail`); `None` quando toda sobra está completa, e também
+/// quando falta outro campo além das sobras.
+fn leftover_field_missing(absent: &[String]) -> Option<String> {
+    let field = |path: &String| {
+        let rest = path.strip_prefix("leftovers[")?;
+        rest.split_once("].").map(|(_, field)| field.to_string())
+    };
+    if absent.iter().any(|path| field(path).is_none()) {
+        return None;
+    }
+    absent.iter().find_map(field)
+}
 
 /// Os campos de dentro que faltam, todos, com o caminho de cada um, como
 /// `files[2].path` ou `witness.answer`.
@@ -361,6 +406,22 @@ mod tests {
             assert!(message.contains("8001"), "{message}");
             assert!(message.contains("8000"), "{message}");
         }
+    }
+
+    /// A marca que faz a remoção devolver a versão anterior é do binário:
+    /// toda remoção sai com ela, mesmo quando quem grava manda outro valor, e
+    /// num evento de outro tipo ela não entra.
+    #[test]
+    fn a_marca_da_remocao_e_posta_pelo_binario() {
+        let draft = |v: Value| v.as_object().cloned().expect("um objeto");
+        for sent in [json!({"targets": [3], "reason": "r"}), json!({"targets": [3], "reason": "r", "gives_back": false})] {
+            let removal = normalize(draft(sent.clone()), "remove");
+            assert_eq!(removal.get(GIVES_BACK_FIELD), Some(&Value::Bool(true)), "{sent}");
+            assert_eq!(validate(&removal), Ok(()), "{sent}");
+        }
+        let note = normalize(draft(json!({"text": "t", "keys": ["k"], "origin": 1, "gives_back": true})), "note");
+        assert_eq!(note.get(GIVES_BACK_FIELD), None);
+        assert_eq!(validate(&note), Ok(()));
     }
 
     #[test]

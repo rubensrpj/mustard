@@ -240,15 +240,16 @@ impl BranchEnumerator {
     /// comes back `Ambiguous` and is filed under the empty base. Every
     /// per-base measurement below then skips it —
     /// [`refs_ahead_of_base`] iterates `flow.bases()` and matches on equality —
-    /// so the unit is invisible to every consumer of this sweep. Measured
-    /// 2026-08-28: a branch cut by hand (no `work-unit-open`) merged into `dev`
-    /// and left alive was reported by nothing at all, which is the exact debt
-    /// the prune advisory exists to name.
+    /// so the unit is invisible to every consumer of this sweep. A branch cut
+    /// by hand, with no base recorded at the cut, merged into `dev` and left
+    /// alive would be reported by nothing at all, which is the exact debt the
+    /// prune advisory exists to name.
     ///
     /// Containment IS the answer this sweep needs, and it needs no record: a
     /// unit reachable from exactly ONE declared base was demonstrably merged
-    /// there. `git-settle` already reaches for that measurement by hand when a
-    /// record is missing; this puts it where every consumer benefits.
+    /// there. The exit ritual (`crate::commands::git_settle`) already reaches
+    /// for that measurement when a record is missing; this puts it where every
+    /// consumer benefits.
     ///
     /// Reachable from NO base — the ordinary unmerged unit — keeps the empty
     /// base: there is nothing to prune and nothing to claim.

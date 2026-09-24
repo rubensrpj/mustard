@@ -17,7 +17,8 @@ pub const PREFIX: &str = "MSTD";
 pub const DIGITS: usize = 4;
 
 /// O código do item de número `number` do tipo de sigla `kind`:
-/// `format("RULE", 5)` é `MSTD-RULE-0005`.
+/// `format("RULE", n)` é `MSTD-RULE-NNNN`, com `n` escrito com zeros à frente
+/// até ter [`DIGITS`] dígitos.
 #[must_use]
 pub fn format(kind: &str, number: u64) -> String {
     format!("{PREFIX}-{kind}-{number:0DIGITS$}")
@@ -29,8 +30,9 @@ pub fn is_id(token: &str) -> bool {
     find(token) == [(0, token.len())]
 }
 
-/// A sigla e o número de um código inteiro: `parse("MSTD-RULE-0005")` é
-/// `Some(("RULE", 5))`. `None` para o que não é código.
+/// A sigla e o número de um código inteiro: `parse("MSTD-RULE-NNNN")` é
+/// `Some(("RULE", n))`, com `n` o número sem os zeros à frente. `None` para o
+/// que não é código.
 #[must_use]
 pub fn parse(token: &str) -> Option<(&str, u64)> {
     if !is_id(token) {
@@ -43,8 +45,8 @@ pub fn parse(token: &str) -> Option<(&str, u64)> {
 /// Os trechos `(início, fim)`, em bytes, de cada código de `text`, na ordem.
 ///
 /// Um código precisa começar e terminar numa fronteira de palavra: `xMSTD-…`
-/// e `MSTD-RULE-0005a` não contam. O hífen conta como fronteira no fim, então
-/// `MSTD-RULE-0005-` ainda aponta o código.
+/// e o número seguido de letra (`MSTD-RULE-NNNNa`) não contam. O hífen conta
+/// como fronteira no fim: o código seguido de hífen ainda conta.
 #[must_use]
 pub fn find(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();

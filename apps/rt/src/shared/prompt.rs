@@ -8,22 +8,14 @@
 //! arrive as a "user prompt", carrying a machine banner and, in the subagent
 //! case, an entire report.
 //!
-//! Every observer on that trigger therefore has the same blind spot, and each
-//! one paid for it differently:
+//! The one hook on that trigger,
+//! [`crate::hooks::session::prompt_entry`], writes each message the user
+//! sends into the spec's conversation block. Without this predicate every
+//! notice would land there as something the user said, and the reader of that
+//! block would take a finished background command for a request.
 //!
-//! - [`crate::hooks::observe::change_request_log`] recorded them as mid-pipeline
-//!   change requests. Measured in the field: one unit's `change-log.md` reached
-//!   20 KB over six entries, of which exactly one — 57 characters — was a person
-//!   asking for something. Both that file and its NDJSON twin are versioned.
-//! - [`crate::hooks::observe::prompt_observer`] emits `user.prompt` for EVERY
-//!   prompt by design, so each notice landed in the per-spec event log as
-//!   something the user said. That log is the source `metrics collect` reads,
-//!   so the noise reaches the instruments too.
-//! - [`crate::hooks::observe::amend_window_inject`] read them as amendment
-//!   intent whenever a post-close window happened to be open.
-//!
-//! One predicate, one owner: three copies of a rule like this drift the first
-//! time the runtime adds a banner.
+//! One predicate, one owner: a rule like this, copied into each reader, drifts
+//! the first time the runtime adds a banner.
 //!
 //! ## Contract
 //!

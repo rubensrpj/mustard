@@ -200,7 +200,7 @@ pub enum EventRef {
 
 impl EventRef {
     /// O evento apontado por um valor: um número positivo ou um código
-    /// inteiro, como `MSTD-RULE-0002`. `None` para qualquer outra coisa.
+    /// inteiro, como `MSTD-RULE-NNNN`. `None` para qualquer outra coisa.
     #[must_use]
     pub fn from_value(value: &Value) -> Option<Self> {
         if let Some(id) = value.as_u64() {
@@ -262,6 +262,11 @@ const WAVES: Field = opt("waves", Kind::Ints);
 /// O item combinado que não vira código: o valor é o motivo. Quem o traz sai
 /// do aviso dos itens sem tarefa, porque não há tarefa que o implemente.
 const NO_CODE: Field = opt("no_code", Kind::Text);
+/// A volta que o próprio agente grava — a entrega da onda ou o veredito do
+/// revisor —, com `true`. Ela fica fora da leitura até a rodada ou o
+/// fechamento a assumir, gravando a versão oficial, sem o campo, com
+/// `replaces` para ela.
+const RETURNED: Field = opt("returned", Kind::Bool);
 
 const HOOK_ACTIONS: &[&str] = &["warn", "block"];
 const CALL_RESULTS: &[&str] = &["ok", "refused"];
@@ -372,13 +377,21 @@ pub const TYPES: &[TypeSpec] = &[
     // A cópia dos itens para o banco de dados de uma página publicada, gravada
     // depois que ela foi feita: a da página da spec diz em `last` o número do
     // último item que ela levou; a da página do projeto diz em `phase` a fase
-    // da linha da spec que ela levou.
+    // da linha da spec que ela levou. Em `versions`, a versão que o banco
+    // devolveu a cada documento escrito, pelo nome `coleção/documento`
+    // (`ranges/200`, `computed/current`, `specs/<spec>`): a cópia seguinte a
+    // põe em `if_version` na troca dele, sem ler a versão antes.
     ty(
         "copy",
         "COPY",
         Block::State,
         false,
-        &[req("page", Kind::OneOf(PAGES)), opt("last", Kind::Int), opt("phase", Kind::OneOf(PHASES))],
+        &[
+            req("page", Kind::OneOf(PAGES)),
+            opt("last", Kind::Int),
+            opt("phase", Kind::OneOf(PHASES)),
+            opt("versions", Kind::Object),
+        ],
     ),
     // Combinado.
     ty("work_type", "WORK", Block::Agreed, true, &[req("kinds", Kind::ManyOf(WORK_KINDS))]),
@@ -514,11 +527,16 @@ pub const TYPES: &[TypeSpec] = &[
             // rodada usa para o pedido de cada onda.
             opt("wave", Kind::Int),
             req("role", Kind::OneOf(ROLES)),
-            // O molde do agente, como o instalador o gravou no projeto, e o
-            // pedido exato, como foi injetado no agente — nesta ordem, a
-            // mesma em que ele os recebe. É por eles que se confere depois se
-            // a onda recebeu o que devia; nada aqui é remontado na leitura.
+            // O nome do agente que a onda chamou (`wave` ou `wave-solo`): é
+            // por ele que o reenvio chama o mesmo agente. O molde em si não
+            // é gravado — ele mora no projeto, igual para todo envio.
+            opt("agent", Kind::Text),
+            // O molde do agente, como o instalador o gravou no projeto: só o
+            // envio antigo o traz, e o reenvio dele acha o nome do agente
+            // pelo molde.
             opt("template", Kind::Text),
+            // O pedido exato, como foi injetado no agente; nada aqui é
+            // remontado na leitura.
             TEXT,
             req("lines", Kind::Int),
             req("chars", Kind::Int),
@@ -570,9 +588,26 @@ pub const TYPES: &[TypeSpec] = &[
         "DELIV",
         Block::Waves,
         false,
-        // A lista de arquivos é opcional: a onda que só foi conferir volta sem
-        // mexer em nenhum, e o texto dela diz o que conferiu.
-        &[req("wave", Kind::Int), TEXT, opt("files", Kind::Texts), opt("replan", Kind::Text)],
+        &[
+            req("wave", Kind::Int),
+            TEXT,
+            // A lista de arquivos é opcional: a onda que só foi conferir volta
+            // sem mexer em nenhum, e o texto dela diz o que conferiu.
+            opt("files", Kind::Texts),
+            opt("replan", Kind::Text),
+            // O resumo do commit, em palavras, de onde a rodada monta o título.
+            opt("commit", Kind::Text),
+            // As provas dos testes de nome novo, cada uma com o critério e o
+            // comando (`criterion`, `proof`).
+            opt("proofs", Kind::Objects),
+            // As ondas que um conserto fecha.
+            opt("fixes", Kind::Ints),
+            // O que o agente achou fora da tarefa e não é dele consertar, cada
+            // sobra com título e detalhe (`title`, `detail`): vira pendência
+            // da spec quando a rodada assume a volta.
+            opt("leftovers", Kind::Objects),
+            RETURNED,
+        ],
     ),
     // O agente de onda grava um passo ao terminar cada tarefa e ao provar o
     // vermelho e o verde de cada critério: não substitui a entrega do fim.
@@ -607,6 +642,7 @@ pub const TYPES: &[TypeSpec] = &[
             // veredito (veja `check_conditions`).
             opt("final", Kind::Bool),
             opt("agreed", Kind::Objects),
+            RETURNED,
         ],
     ),
     // A tabela de rastreabilidade que a aceitação do veredito final grava:

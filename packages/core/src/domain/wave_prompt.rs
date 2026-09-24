@@ -27,7 +27,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use crate::domain::lessons::{applies_to, Scope};
+use crate::domain::lessons::{applies_to, same_file, text_only, tied_to_wave, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
@@ -368,14 +368,20 @@ fn applies_to_files(item: &SpecEvent) -> Vec<String> {
 /// tarefas dela tocam e os do projeto. O item dos arquivos casa pela mesma
 /// leitura de `applies_to` que acha a lição. O item sem dono não entra aqui;
 /// só a análise antes do envio ([`dispatch_items`]) pode pô-lo num pedido.
+/// A onda só de texto ([`text_only`]) não leva o item do projeto, pela mesma
+/// leitura que tira dela a lição do projeto todo; o item do projeto que as
+/// tarefas dela fazem vai mesmo assim, porque é o trabalho dela.
 #[must_use]
 pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let owners = owners(log);
-    let touched = Scope { files: wave_files(log, wave), ..Scope::default() };
+    let files = wave_files(log, wave);
+    let text = text_only(&files);
+    let done = done_by(log, wave);
+    let touched = Scope { files, ..Scope::default() };
     agreed_items(log)
         .into_iter()
         .filter(|item| match owners.get(&item.id) {
-            Some(Owner::Project) => true,
+            Some(Owner::Project) => !text || done.contains(&item.id),
             Some(Owner::Waves(waves)) => waves.contains(&wave),
             Some(Owner::Files(_)) => applies_to(item, &touched),
             None => false,
@@ -383,8 +389,8 @@ pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
         .collect()
 }
 
-/// Os itens combinados sem dono, em ordem de número: os que a análise antes
-/// do envio julga para cada onda.
+/// Os itens combinados sem dono, em ordem de número. A análise antes do
+/// envio julga, para cada onda, só os que servem a ela ([`candidates`]).
 #[must_use]
 pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
     let owners = owners(log);
@@ -410,9 +416,11 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 /// escolha.
 #[derive(Debug, Default)]
 pub struct Candidates<'a> {
-    /// Os do projeto todo que as tarefas da onda não fazem.
+    /// Os do projeto todo que as tarefas da onda não fazem; vazio na onda
+    /// só de texto.
     pub project: Vec<&'a SpecEvent>,
-    /// Os sem dono.
+    /// Os sem dono que servem à onda, pelas palavras-chave ou pelo arquivo
+    /// citado.
     pub unowned: Vec<&'a SpecEvent>,
     /// As lições do banco que casam com a onda. Elas vêm do banco, fora da
     /// spec, e o número de cada uma é o do banco, não o de um item.
@@ -440,26 +448,41 @@ impl Candidates<'_> {
 }
 
 /// Os dois grupos de itens da spec que o orquestrador julga para a onda
-/// `wave`; as lições, que moram no banco, quem lê o banco põe à parte.
+/// `wave`; as lições, que moram no banco, quem lê o banco põe à parte. A
+/// onda só de texto ([`text_only`]) não tem o grupo do projeto: o pedido
+/// dela não leva item do projeto, e não há o que julgar. Do grupo sem dono
+/// fica só o item que serve à onda, pela escolha que as lições usam
+/// ([`tied_to_wave`]): as palavras-chave dele casam com o texto das tarefas
+/// dela, ou o texto dele cita um arquivo que ela mexe. O que não serve a
+/// onda nenhuma não é candidato de nenhuma, e continua na lista da revisão
+/// final ([`all_agreed`]).
 #[must_use]
 pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
     let owners = owners(log);
-    let done: BTreeSet<u64> = log
-        .block(BlockQuery::Wave(wave))
+    let done = done_by(log, wave);
+    let files = wave_files(log, wave);
+    let text = text_only(&files);
+    let mut out = Candidates::default();
+    let mut unowned: Vec<&SpecEvent> = Vec::new();
+    for item in agreed_items(log).into_iter().filter(|item| !done.contains(&item.id)) {
+        match owners.get(&item.id) {
+            Some(Owner::Project) if !text => out.project.push(item),
+            None => unowned.push(item),
+            Some(Owner::Project | Owner::Waves(_) | Owner::Files(_)) => {}
+        }
+    }
+    out.unowned = tied_to_wave(unowned, &tasks_text(log, wave), &files);
+    out
+}
+
+/// Os itens que as tarefas da onda `wave` fazem, na versão vigente.
+fn done_by(log: &SpecLog, wave: u64) -> BTreeSet<u64> {
+    log.block(BlockQuery::Wave(wave))
         .into_iter()
         .filter(|e| e.event_type == "task")
         .flat_map(|task| task.ints("covers"))
         .filter_map(|id| log.current(id).map(|e| e.id))
-        .collect();
-    let mut out = Candidates::default();
-    for item in agreed_items(log).into_iter().filter(|item| !done.contains(&item.id)) {
-        match owners.get(&item.id) {
-            Some(Owner::Project) => out.project.push(item),
-            None => out.unowned.push(item),
-            Some(Owner::Waves(_) | Owner::Files(_)) => {}
-        }
-    }
-    out
+        .collect()
 }
 
 /// A escolha do orquestrador antes do envio de uma onda, como o envio a grava
@@ -772,6 +795,19 @@ pub fn wave_files(log: &SpecLog, wave: u64) -> Vec<String> {
     out
 }
 
+/// O texto das tarefas de uma onda, uma por linha: a consulta que escolhe as
+/// lições que o pedido da onda e o da revisão levam, e os itens sem dono que
+/// a onda julga antes do envio ([`candidates`]).
+#[must_use]
+pub fn tasks_text(log: &SpecLog, wave: u64) -> String {
+    log.block(BlockQuery::Wave(wave))
+        .iter()
+        .filter(|e| e.event_type == "task")
+        .filter_map(|task| task.str_field("text"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 // ---------------------------------------------------------------------------
 // A lista dos itens sem dono, para conferir antes de gravar
 // ---------------------------------------------------------------------------
@@ -1006,12 +1042,6 @@ fn by_files(item: &SpecEvent, files: &BTreeMap<u64, Vec<String>>) -> Option<(BTr
         }
     }
     (!waves.is_empty()).then(|| (waves, OwnerFrom::Files(shared.into_iter().collect())))
-}
-
-/// `true` quando o arquivo que um texto cita é o arquivo de uma tarefa: o
-/// mesmo caminho ou o fim dele (`spec_events/mod.rs`).
-fn same_file(cited: &str, file: &str) -> bool {
-    file == cited || file.ends_with(&format!("/{cited}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1299,9 +1329,10 @@ impl Writer<'_> {
     /// projeto e desta rodada — a cópia separada, a pasta de compilação num
     /// projeto Rust, os comandos do projeto e as outras ondas em andamento,
     /// com os arquivos delas — e, ligadas à cópia, as três frases que dizem
-    /// com todas as letras que o agente não comita, que o campo `commit` do
-    /// relatório é o título, nunca o código do commit, e que a última
-    /// mensagem tem só a linha `<DELIVERED>` e a de gasto. O resto (ler por
+    /// com todas as letras que o agente não comita, que o campo `commit` da
+    /// entrega é o título, nunca o código do commit, e que a entrega vai para
+    /// a spec por `run write delivered`, sem a rodada ler a última mensagem.
+    /// O resto (ler por
     /// trecho, a suíte uma vez no fim…) já mora no molde do agente, e não
     /// repete aqui. De onde ler a spec, o exemplo de leitura já diz.
     fn execution(&self, out: &mut String) {
@@ -1335,7 +1366,7 @@ impl Writer<'_> {
     /// As regras da execução do revisor: a cópia que o fechamento já criou no
     /// commit da obra, compilar na pasta de compilação dela num projeto Rust,
     /// os comandos do projeto com menos processos, e desfazer cada corte
-    /// antes de devolver — quem apaga a cópia é o fechamento. De onde ler a
+    /// antes de gravar o veredito — quem apaga a cópia é o fechamento. De onde ler a
     /// spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;
@@ -1440,8 +1471,7 @@ mod tests {
     /// escolha: o campo `analysis` dele não tem `judged_lessons` nem
     /// `removed_lessons`, e a leitura vale mesmo assim, com as duas listas de
     /// lição vazias — não é lido como envio quebrado, e a onda não pede a
-    /// escolha de novo só por causa do formato antigo (`MSTD-TASK-0016`,
-    /// `MSTD-DEC-0009`).
+    /// escolha de novo só por causa do formato antigo.
     #[test]
     fn from_value_reads_an_old_send_without_the_lesson_fields() {
         let old = json!({
@@ -1805,6 +1835,189 @@ mod tests {
         assert!(texts(&plan, 1).contains(&general), "{:?}", texts(&plan, 1));
         assert!(texts(&plan, 2).contains(&general), "{:?}", texts(&plan, 2));
         assert_eq!(owners(&plan).get(&5), Some(&Owner::Project));
+    }
+
+    /// A onda só de texto não recebe o item do projeto todo: nem no pedido,
+    /// nem entre os candidatos que o orquestrador julga. O item do projeto
+    /// que a tarefa dela faz vai mesmo assim. Na divisa, um arquivo de
+    /// código entre os de texto devolve o item; a onda só em views Razor ou
+    /// só na página HTML também o recebe.
+    #[test]
+    fn onda_so_de_texto_nao_recebe_item_do_projeto_inteiro() {
+        let everywhere = json!({"files": ["**"]});
+        let wave = |n: u64, files: &[&str], covers: &[u64]| -> [(&'static str, Value); 2] {
+            let paths: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
+            [
+                ("wave", json!({"n": n, "text": "Onda", "criteria": [], "done_when": "pronto"})),
+                ("task", json!({"wave": n, "text": "Fazer", "files": paths, "covers": covers})),
+            ]
+        };
+        let mut events: Vec<(&str, Value)> = vec![
+            ("rule", json!({"text": "O comentário diz o que o código faz", "keys": ["c"], "example": "e", "applies_to": everywhere})),
+            ("rule", json!({"text": "O documento diz o comando de hoje", "keys": ["d"], "example": "e", "applies_to": everywhere})),
+        ];
+        events.extend(wave(1, &["docs/guia.md", "LEIA.txt", ".gitignore"], &[2]));
+        events.extend(wave(2, &["docs/guia.md", "src/a.rs"], &[]));
+        events.extend(wave(3, &["Views/Home/Index.cshtml"], &[]));
+        events.extend(wave(4, &["site/spec.html"], &[]));
+        let log = log(&events);
+        assert_eq!(owners(&log).get(&1), Some(&Owner::Project));
+
+        assert_eq!(ids(&agreed_for(&log, 1)), [2], "só o item que a tarefa da onda faz");
+        let dispatched = ids(&log.step(&Step::Dispatch { wave: 1 }));
+        assert!(!dispatched.contains(&1) && dispatched.contains(&2), "{dispatched:?}");
+        assert!(candidates(&log, 1).project.is_empty(), "{:?}", ids(&candidates(&log, 1).project));
+        for n in 2..=4 {
+            assert!(ids(&agreed_for(&log, n)).contains(&1), "a onda {n} recebe o item do projeto");
+            assert_eq!(ids(&candidates(&log, n).project), [1, 2], "a onda {n} julga os itens do projeto");
+        }
+    }
+
+    /// Cada onda julga só o item sem dono que serve a ela: o que tem a
+    /// palavra-chave inteira no texto das tarefas dela, ou o que cita um
+    /// arquivo que ela mexe. O item que cita um arquivo de nenhuma onda e
+    /// cuja palavra-chave nenhuma tarefa diz não é candidato de onda nenhuma,
+    /// e continua sem dono na lista da revisão final. Na divisa, a
+    /// palavra-chave pela metade não liga o item, e a pasta citada também
+    /// não.
+    #[test]
+    fn item_sem_dono_so_aparece_na_onda_a_que_serve() {
+        let log = log(&[
+            (
+                "rule",
+                json!({"text": "A barra de status mostra o link da página", "keys": ["barra de status"], "example": "e"}),
+            ),
+            (
+                "rule",
+                json!({"text": "A gravação recusa o evento sem título (`src/gravar.rs`).", "keys": ["recusa sem título"], "example": "e"}),
+            ),
+            (
+                "rule",
+                json!({"text": "O texto em inglês segue o molde de `docs/molde.md` e a pasta `src/`.", "keys": ["idioma do molde"], "example": "e"}),
+            ),
+            (
+                "rule",
+                json!({"text": "A barra de rolagem some no celular", "keys": ["barra de rolagem"], "example": "e"}),
+            ),
+            ("wave", json!({"n": 1, "text": "Barra", "criteria": [], "done_when": "pronto"})),
+            (
+                "task",
+                json!({"wave": 1, "text": "A barra de status deixa de mostrar a contagem de linhas",
+                       "files": [{"path": "src/status.rs"}]}),
+            ),
+            ("wave", json!({"n": 2, "text": "Limite", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 2, "text": "O limite do texto passa a valer", "files": [{"path": "src/gravar.rs"}]})),
+        ]);
+        assert_eq!(ids(&unowned(&log)), [1, 2, 3, 4], "os quatro continuam sem dono");
+
+        assert_eq!(ids(&candidates(&log, 1).unowned), [1], "a onda 1 casa a palavra-chave do primeiro");
+        assert_eq!(ids(&candidates(&log, 2).unowned), [2], "a onda 2 mexe no arquivo que o segundo cita");
+        assert!(ids(&all_agreed(&log)).contains(&3), "o que não serve continua na revisão final");
+    }
+
+    /// O item também cita o arquivo solto no texto, sem crases e com a
+    /// linha, e isso o liga à onda que mexe nesse arquivo. Na divisa, o
+    /// caminho solto de um arquivo que a onda não mexe não liga o item, e a
+    /// pasta solta também não. A leitura de uma skill continua só entre
+    /// crases: o caminho solto não entra nela.
+    #[test]
+    fn caminho_sem_crases_so_liga_o_item_a_onda_que_mexe_no_arquivo() {
+        let log = log(&[
+            (
+                "limit",
+                json!({"text": "O texto da entrega tem o limite de hoje (TETO, src/gravar.rs:269).", "keys": ["teto"], "value": "8000"}),
+            ),
+            (
+                "limit",
+                json!({"text": "O título tem o limite de hoje (TITULO, src/titulo.rs:12).", "keys": ["teto"], "value": "60"}),
+            ),
+            ("limit", json!({"text": "Tudo em src/ tem o mesmo teto.", "keys": ["teto"], "value": "1"})),
+            ("wave", json!({"n": 1, "text": "Limite", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "text": "O limite do texto passa a valer", "files": [{"path": "src/gravar.rs"}]})),
+        ]);
+        assert_eq!(ids(&unowned(&log)), [1, 2, 3], "os três continuam sem dono");
+        assert_eq!(ids(&candidates(&log, 1).unowned), [1], "só o que cita solto o arquivo da onda");
+        assert!(cited_paths("O texto da entrega tem o limite de hoje (TETO, src/gravar.rs:269).").is_empty());
+    }
+
+    /// A primeira rodada de uma obra real: as ondas 1 a 4 saíram juntas, e
+    /// a rodada mostrou os mesmos 25 itens sem dono a cada uma. Só a onda 3
+    /// usou algum: o orquestrador pôs seis no pedido dela, e as outras três
+    /// não pegaram nenhum. Remontada cada onda com o texto e os arquivos reais
+    /// da tarefa dela, cinco dos seis continuam candidatos da onda 3, e a
+    /// escolha gravada no envio dela continua pondo os cinco; o limite do
+    /// texto da entrega entra porque cita, sem crases, um arquivo que a onda
+    /// mexe. Fica de fora só a entrega gravada duas vezes antes de a rodada
+    /// assumir: nenhuma palavra-chave dela aparece inteira no texto da
+    /// tarefa, e ela não cita arquivo. Cada uma das outras ondas recebe
+    /// menos que os 25.
+    #[test]
+    fn os_itens_que_o_orquestrador_pos_na_onda_continuam_candidatos() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/itens-sem-dono-por-onda.json"
+        )))
+        .unwrap();
+        let numbers = |value: &Value| -> BTreeSet<u64> {
+            value.as_array().unwrap().iter().map(|id| id.as_u64().unwrap()).collect()
+        };
+        let mut content = String::new();
+        let mut line = |id: u64, event_type: &str, body: Value| {
+            let mut map = crate::domain::spec_events::normalize(body.as_object().cloned().unwrap_or_default(), event_type);
+            map.insert("type".into(), json!(event_type));
+            content.push_str(&render_line(&stamp(map, id, None, "2026-09-23T19:30:00-03:00")));
+            content.push('\n');
+        };
+        let items = fixture["items"].as_array().unwrap();
+        for item in items {
+            let body = json!({"text": item["text"], "keys": item["keys"]});
+            line(item["id"].as_u64().unwrap(), item["type"].as_str().unwrap(), body);
+        }
+        let waves = fixture["waves"].as_array().unwrap();
+        for (i, wave) in waves.iter().enumerate() {
+            let n = wave["n"].as_u64().unwrap();
+            let paths: Vec<Value> = wave["files"].as_array().unwrap().iter().map(|path| json!({"path": path})).collect();
+            line(1000 + 2 * i as u64, "wave", json!({"n": n, "text": "A onda", "criteria": [], "done_when": "passa"}));
+            line(1001 + 2 * i as u64, "task", json!({"wave": n, "text": wave["text"], "files": paths}));
+        }
+        let log = parse_log(&content);
+        let all: BTreeSet<u64> = items.iter().map(|item| item["id"].as_u64().unwrap()).collect();
+        assert_eq!(all.len(), 25);
+        assert_eq!(unowned(&log).iter().map(|e| e.id).collect::<BTreeSet<_>>(), all, "os 25 continuam sem dono");
+
+        let twice: BTreeSet<u64> = items
+            .iter()
+            .filter(|item| item["text"] == json!("A onda grava a entrega duas vezes antes de a rodada assumir."))
+            .map(|item| item["id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(twice.len(), 1, "a amostra tem a entrega gravada duas vezes");
+
+        let mut shortfalls: Vec<String> = Vec::new();
+        for wave in waves {
+            let n = wave["n"].as_u64().unwrap();
+            let (judged, added) = (numbers(&wave["judged"]), numbers(&wave["added"]));
+            assert_eq!(judged, all, "onda {n}: a rodada mostrou os 25");
+            let found = candidates(&log, n);
+            let got: BTreeSet<u64> = found.unowned.iter().map(|e| e.id).collect();
+            let lost: BTreeSet<u64> = added.difference(&got).copied().collect();
+            if n == 3 {
+                assert_eq!(added.len(), 6, "o orquestrador pôs seis na onda 3");
+                if lost != twice {
+                    shortfalls.push(format!("onda 3 perdeu {lost:?}, e não só {twice:?}; recebe {got:?}"));
+                }
+                let recorded = Choice { added: added.iter().map(|id| (*id, "motivo".to_string())).collect(), ..Choice::default() };
+                let kept = recorded.within(&found).added.len();
+                if kept != 5 {
+                    shortfalls.push(format!("a escolha gravada da onda 3 põe {kept} dos seis, e não cinco"));
+                }
+            } else {
+                assert!(added.is_empty() && lost.is_empty(), "onda {n}: o orquestrador não pôs nenhum");
+                if got.len() >= judged.len() {
+                    shortfalls.push(format!("onda {n} recebe {} de {}", got.len(), judged.len()));
+                }
+            }
+        }
+        assert!(shortfalls.is_empty(), "{shortfalls:#?}");
     }
 
     /// A busca por palavras não decide quem recebe o item: a regra que fala

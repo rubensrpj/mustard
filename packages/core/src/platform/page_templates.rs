@@ -984,10 +984,286 @@ mod tests {
         assert_eq!(removed.matches(&format!("**{}**", code(42))).count(), 1, "the removed rule shows once:\n{removed}");
     }
 
-    /// Por decisão da onda 13, o item que continua à mostra numa versão nova
-    /// não entra em Removidos quando só a versão antiga dele foi removida: a
-    /// regra revista some da conversa, mas a regra em si segue de pé pela
-    /// versão nova, com o mesmo código.
+    /// Remover pela versão nova tira só ela: a versão que ela substituiu
+    /// volta, com o mesmo código, à leitura do arquivo e à página. Sobre a
+    /// spec de exemplo, três gravações pela porta do binário — uma regra, uma
+    /// decisão que a cita pelo código e a versão nova de um critério que já
+    /// existia — e uma remoção só, com os códigos da regra e da decisão e o
+    /// número da versão nova do critério, deixam a leitura e a página iguais
+    /// às de antes das três gravações, com a versão antiga do critério; só a
+    /// aba dos removidos ganha a regra e a decisão, e a conversa, o registro
+    /// da remoção.
+    #[test]
+    fn remover_a_versao_nova_devolve_a_anterior_na_leitura_e_na_pagina() {
+        use crate::domain::spec_events::SpecLog;
+        use crate::io::spec_events::write_at;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        // Cada linha leva o código dela, como o binário grava: sem ele, o
+        // código gravado na versão nova tomaria o lugar do item antigo.
+        let mut base = spec_lines();
+        let base_codes = parse_log(&base.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).codes();
+        for line in &mut base {
+            if let Some(code) = line["id"].as_u64().and_then(|id| base_codes.get(&id)) {
+                line["code"] = json!(code);
+            }
+        }
+        std::fs::write(&path, base.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let file = || std::fs::read_to_string(&path).unwrap();
+        let lines_of = |content: &str| -> Vec<Value> {
+            content.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect()
+        };
+        // A leitura do binário: cada evento à mostra, com o código dele.
+        let reading = |log: &SpecLog| -> Vec<(u64, Option<String>)> {
+            let codes = log.codes();
+            log.visible().iter().map(|e| (e.id, codes.get(&e.id).cloned())).collect()
+        };
+        let page_of = |content: &str| -> Value {
+            let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+            run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines_of(content))), steps)["page"].clone()
+        };
+        let removed_codes = |page: &Value| -> Vec<Value> { cards(page, "removed").iter().map(|i| i["code"].clone()).collect() };
+        let put = |event_type: &str, at: &str, draft: Value| {
+            let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
+            write_at(&path, event_type, draft, &[], at).unwrap_or_else(|r| panic!("{event_type} foi recusado: {r:?}"))
+        };
+
+        let before = parse_log(&file());
+        let criterion_code = before.codes()[&19].clone();
+        let page_before = page_of(&file());
+
+        let rule = put(
+            "rule",
+            "2026-09-12T15:00:00-03:00",
+            json!({"text": "A página mostra a versão vigente de cada item.", "example": "O critério revisto aparece uma vez.",
+                "keys": ["página", "versão"], "origin": 2}),
+        );
+        let rule_code = rule.code.clone().expect("a regra tem código");
+        let decision = put(
+            "decision",
+            "2026-09-12T15:01:00-03:00",
+            json!({"text": format!("A página segue a {rule_code}."), "why": "Quem lê vê o que vale.",
+                "keys": ["página"], "origin": 2}),
+        );
+        let decision_code = decision.code.clone().expect("a decisão tem código");
+        let criterion = put(
+            "criterion",
+            "2026-09-12T15:02:00-03:00",
+            json!({"when": "O pedido montado de uma onda passa de 400 linhas.",
+                "then": "O binário recusa o despacho e diz quantas linhas passaram.",
+                "proof": "cargo test -p mustard-rt --test wave_request_limit", "form": "event_driven",
+                "replaces": 19, "origin": 2}),
+        );
+        assert_eq!(criterion.code.as_deref(), Some(criterion_code.as_str()), "a versão nova do critério tem o mesmo código");
+
+        // As três gravações mudam a leitura e a página: a prova de baixo não
+        // passa por falta do que desfazer.
+        let written = parse_log(&file());
+        assert_eq!(written.current(19).map(|e| e.id), Some(criterion.id));
+        let page_written = page_of(&file());
+        assert_ne!(page_seen(&page_written), page_seen(&page_before), "as três gravações aparecem na página");
+
+        let removal = put(
+            "remove",
+            "2026-09-12T15:03:00-03:00",
+            json!({"targets": [rule_code, decision_code, criterion.id], "reason": "Voltar ao que a spec tinha.", "origin": 2}),
+        );
+        assert_eq!(removal.removed, [rule.id, decision.id, criterion.id], "pelo código, o item inteiro; pelo número, a versão");
+        let removal_code = removal.code.clone().expect("a remoção tem código");
+
+        // A leitura do arquivo volta à de antes, menos o próprio registro da
+        // remoção; o critério volta pela versão antiga, com o mesmo código.
+        let after = parse_log(&file());
+        let mut read_after = reading(&after);
+        read_after.retain(|(id, _)| *id != removal.id);
+        assert_eq!(read_after, reading(&before), "a leitura volta à de antes das três gravações");
+        assert_eq!(after.current(19).map(|e| e.id), Some(19), "a versão antiga do critério volta a valer");
+        assert_eq!(after.current(criterion.id).map(|e| e.id), None, "a versão removida sai da leitura");
+        assert_eq!(after.codes()[&19], criterion_code);
+
+        // A página, no Node, lê do mesmo jeito: as abas voltam às de antes,
+        // menos o registro da remoção na conversa, e os removidos listam só a
+        // regra e a decisão.
+        let page_after = page_of(&file());
+        let mut seen_after = page_seen(&page_after);
+        for tab in seen_after.as_array_mut().expect("tabs") {
+            tab["items"].as_array_mut().expect("items").retain(|i| i["code"] != json!(removal_code));
+        }
+        assert_eq!(seen_after, page_seen(&page_before), "a página volta à de antes das três gravações");
+        let criterion_card = cards(&page_after, "criteria").iter().find(|i| i["code"] == json!(criterion_code)).cloned();
+        assert_eq!(
+            criterion_card.map(|i| i["title"].clone()),
+            cards(&page_before, "criteria").iter().find(|i| i["code"] == json!(criterion_code)).map(|i| i["title"].clone()),
+            "o critério aparece pela versão antiga"
+        );
+        let mut expected_removed = removed_codes(&page_before);
+        expected_removed.extend([json!(rule_code), json!(decision_code)]);
+        assert_eq!(removed_codes(&page_after), expected_removed, "os removidos ganham só a regra e a decisão");
+    }
+
+    /// A remoção gravada antes da marca segue lida como era quando foi
+    /// gravada. A que apontou pelo número a versão nova do critério tirou o
+    /// critério inteiro; a que apontou a versão antiga da regra revista, já
+    /// substituída, deixou essa versão na conversa como versão antiga. A
+    /// leitura do binário é a da regra de antes — o motivo de cada evento que
+    /// some e a versão vigente de cada um —, e a página mostra o mesmo. Uma
+    /// remoção de hoje, gravada depois pela porta do binário na mesma spec,
+    /// leva a marca, devolve a versão anterior do item dela e deixa a leitura
+    /// e a página como estavam antes da versão nova que ela tira.
+    #[test]
+    fn uma_remocao_antiga_sem_a_marca_le_como_antes_na_leitura_e_na_pagina() {
+        use crate::domain::spec_events::{Hidden, SpecLog, TimeFilter};
+        use crate::io::spec_events::write_at;
+
+        // A leitura de antes da marca: na ordem do arquivo, a primeira
+        // remoção ou substituição que esconde um evento dá o motivo, e a
+        // versão vigente segue toda substituição.
+        let old_hidden = |log: &SpecLog| -> BTreeMap<u64, Hidden> {
+            let mut hidden = BTreeMap::new();
+            for e in &log.events {
+                if let Some(by) = e.int("purged") {
+                    hidden.insert(e.id, Hidden::Purged { by });
+                }
+                if e.event_type == "remove" {
+                    let mut targets = e.ints("targets");
+                    if let Some(filter) = e.fields.get("filter").and_then(TimeFilter::from_value) {
+                        targets.extend(log.filter_matches(&filter, e.id));
+                    }
+                    for id in targets {
+                        hidden.entry(id).or_insert(Hidden::Removed { by: e.id });
+                    }
+                }
+                for old in e.replaced() {
+                    hidden.entry(old).or_insert(Hidden::Replaced { by: e.id });
+                }
+            }
+            for e in log.events.iter().filter(|e| e.returned()) {
+                hidden.entry(e.id).or_insert(Hidden::Returned);
+            }
+            hidden
+        };
+        let old_current = |log: &SpecLog, id: u64| -> Option<u64> {
+            let next: BTreeMap<u64, u64> =
+                log.events.iter().flat_map(|e| e.replaced().into_iter().map(move |old| (old, e.id))).collect();
+            let mut id = id;
+            for _ in 0..=log.events.len() {
+                match next.get(&id) {
+                    Some(newer) => id = *newer,
+                    None => break,
+                }
+            }
+            (log.get(id).is_some() && !old_hidden(log).contains_key(&id)).then_some(id)
+        };
+        let reads_as_before = |log: &SpecLog| {
+            assert_eq!(log.hidden(), old_hidden(log), "cada evento some pelo motivo de antes");
+            for e in &log.events {
+                assert_eq!(log.current(e.id).map(|c| c.id), old_current(log, e.id), "a versão vigente de {}", e.id);
+            }
+        };
+
+        // A spec de exemplo e, gravadas antes da marca, a versão nova do
+        // critério 19, a remoção dela pelo número e a da versão antiga da
+        // regra 9, que a 42 já substituía. Cada linha leva o código dela,
+        // como o binário grava.
+        let mut lines = spec_lines();
+        lines.extend([
+            json!({"v":1,"id":60,"at":"2026-09-12T15:00:00-03:00","type":"criterion","author":"assistant",
+                "when":"O pedido montado de uma onda passa de 400 linhas.",
+                "then":"O binário recusa o despacho e diz quantas linhas passaram.",
+                "proof":"cargo test -p mustard-rt --test wave_request_limit","form":"event_driven","replaces":19,"origin":2}),
+            json!({"v":1,"id":61,"at":"2026-09-12T15:01:00-03:00","type":"remove","author":"user","targets":[60],
+                "reason":"O critério voltou ao que era.","origin":2}),
+            json!({"v":1,"id":62,"at":"2026-09-12T15:02:00-03:00","type":"remove","author":"user","targets":[9],
+                "reason":"A versão antiga saiu.","origin":2}),
+        ]);
+        let codes = parse_log(&lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).codes();
+        for line in &mut lines {
+            if let Some(code) = line["id"].as_u64().and_then(|id| codes.get(&id)) {
+                line["code"] = json!(code);
+            }
+        }
+        let (criterion_code, rule_code) = (codes[&19].clone(), codes[&42].clone());
+        assert_eq!((codes[&60].as_str(), codes[&9].as_str()), (criterion_code.as_str(), rule_code.as_str()));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        std::fs::write(&path, lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let file = || std::fs::read_to_string(&path).unwrap();
+        let page_of = |content: &str| -> Value {
+            let lines: Vec<Value> =
+                content.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect();
+            let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+            run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps)["page"].clone()
+        };
+        let with_code = |page: &Value, anchor: &str, code: &str| -> Vec<Value> {
+            cards(page, anchor).iter().filter(|i| i["code"] == json!(code)).map(card_seen).collect()
+        };
+
+        // O binário lê como antes: o critério sai inteiro, e a regra segue
+        // pela 42, com a 9 substituída, não removida.
+        let old = parse_log(&file());
+        reads_as_before(&old);
+        assert_eq!(old.current(19).map(|e| e.id), None, "o critério saiu inteiro");
+        assert_eq!(old.hidden().get(&19), Some(&Hidden::Replaced { by: 60 }));
+        assert_eq!(old.hidden().get(&9), Some(&Hidden::Replaced { by: 42 }), "a versão antiga segue substituída");
+        assert_eq!(old.current(9).map(|e| e.id), Some(42));
+
+        // A página mostra o mesmo: nenhum cartão do critério, que aparece uma
+        // vez nos removidos, e a versão antiga da regra na conversa.
+        let page = page_of(&file());
+        assert_eq!(with_code(&page, "criteria", &criterion_code), Vec::<Value>::new(), "o critério saiu inteiro da página");
+        assert_eq!(with_code(&page, "removed", &criterion_code).len(), 1, "o critério aparece uma vez nos removidos");
+        let old_rule: Vec<Value> = with_code(&page, "conversation", &rule_code).into_iter().map(|i| i["mark"].clone()).collect();
+        assert_eq!(old_rule, [json!(translate("page.replaced", Locale::PtBr))], "a versão antiga da regra fica na conversa");
+        assert_eq!(with_code(&page, "agreed", &rule_code).len(), 1, "a regra segue à mostra pela versão nova");
+
+        // Depois, pela porta do binário: uma versão nova da regra e a
+        // remoção dela pelo número. A remoção de hoje leva a marca e devolve
+        // a 42; as remoções antigas seguem lidas como antes.
+        let put = |event_type: &str, at: &str, draft: Value| {
+            let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
+            write_at(&path, event_type, draft, &[], at).unwrap_or_else(|r| panic!("{event_type} foi recusado: {r:?}"))
+        };
+        let newer = put(
+            "rule",
+            "2026-09-12T16:00:00-03:00",
+            json!({"text": "A trava de comandos confere o programa, as opções, o caminho e o diretório.",
+                "example": "`rm -rf pasta` é barrado.", "keys": ["trava"], "replaces": 42, "origin": 2}),
+        );
+        let removal = put(
+            "remove",
+            "2026-09-12T16:01:00-03:00",
+            json!({"targets": [newer.id], "reason": "A versão nova saiu.", "origin": 2}),
+        );
+        let after = parse_log(&file());
+        assert_eq!(
+            after.get(removal.id).and_then(|e| e.fields.get("gives_back")),
+            Some(&json!(true)),
+            "o binário põe a marca na remoção que grava"
+        );
+        assert_eq!(after.current(9).map(|e| e.id), Some(42), "a versão anterior da regra volta a valer");
+        let before_writes: BTreeMap<u64, Hidden> = old.hidden();
+        let mut kept = after.hidden();
+        kept.retain(|id, _| *id < newer.id);
+        assert_eq!(kept, before_writes, "as remoções antigas seguem lidas como antes");
+        for id in [9, 19, 42, 60] {
+            assert_eq!(after.current(id).map(|e| e.id), old.current(id).map(|e| e.id), "a versão vigente de {id}");
+        }
+
+        let page_after = page_of(&file());
+        let mut seen_after = page_seen(&page_after);
+        let removal_code = removal.code.clone().expect("a remoção tem código");
+        for tab in seen_after.as_array_mut().expect("tabs") {
+            tab["items"].as_array_mut().expect("items").retain(|i| i["code"] != json!(removal_code));
+        }
+        assert_eq!(seen_after, page_seen(&page), "a página volta à de antes da versão nova da regra");
+    }
+
+    /// O item que continua à mostra numa versão nova não entra em Removidos
+    /// quando só a versão antiga dele foi removida: a regra revista some da
+    /// conversa, mas a regra em si segue de pé pela versão nova, com o mesmo
+    /// código.
     #[test]
     fn the_removed_section_handles_an_item_still_shown() {
         let lines = vec![
@@ -1168,11 +1444,10 @@ mod tests {
     /// Uma cópia que só muda o documento das coisas calculadas — nenhum item
     /// novo, nenhum apagado, nenhum tocado — sozinha faz a página aberta
     /// reler: a escuta de `computed/current` não depende de nada acontecer
-    /// na coleção dos itens. As outras provas de recarga sempre mudavam as
-    /// duas coisas juntas (um item novo ou apagado ao lado da mudança no
-    /// documento calculado), então cortar só a escuta do documento calculado
-    /// não derrubava nenhuma delas — a prova isolada que a revisão de 18/09
-    /// pediu (onda 7).
+    /// na coleção dos itens. As outras provas de recarga mudam as duas coisas
+    /// juntas (um item novo ou apagado ao lado da mudança no documento
+    /// calculado), então só esta cai quando a escuta do documento calculado é
+    /// cortada.
     #[test]
     fn a_change_only_in_the_computed_document_alone_reloads_the_page() {
         let lines = spec_lines();
@@ -1771,9 +2046,58 @@ mod tests {
         }
     }
 
+    /// A coluna da página da spec tem no máximo 1040 pixels e fica no meio
+    /// da tela, como a da página do projeto; no celular, o recuo de 12
+    /// pixels continua. O gráfico das ondas tem altura fixa de 200 pixels e
+    /// a largura segue o desenho: não cresce com a largura da tela nem com
+    /// o número de barras, e a moldura rola de lado quando as barras não
+    /// cabem. Nenhuma regra do celular devolve ao gráfico uma largura mínima.
+    #[test]
+    fn a_pagina_da_spec_tem_coluna_de_1040_e_grafico_de_altura_fixa() {
+        // As declarações de cada regra do molde com exatamente esse seletor,
+        // na ordem, contando também as de dentro de um @media, numa linha
+        // própria ou na mesma linha dele. Um seletor mais longo que termina
+        // igual, como `.x .chart svg`, não conta.
+        let rules = |selector: &str| -> Vec<Vec<&str>> {
+            let open = format!("{selector}{{");
+            SPEC_PAGE
+                .match_indices(&open)
+                .filter(|(at, _)| {
+                    let before = &SPEC_PAGE[..*at];
+                    let start = before.rfind(['\n', '{', '}']).map_or(0, |i| i + 1);
+                    before[start..].trim().is_empty()
+                })
+                .filter_map(|(at, _)| SPEC_PAGE[at + open.len()..].split('}').next())
+                .map(|body| body.split(';').filter(|d| !d.is_empty()).collect())
+                .collect()
+        };
+
+        let page = rules(".page");
+        assert_eq!(page.len(), 2, "the column rule and the phone indent: {page:?}");
+        for decl in ["max-width:1040px", "margin-inline:auto"] {
+            assert!(page[0].contains(&decl), "the column lacks {decl}: {:?}", page[0]);
+        }
+        assert_eq!(page[1], ["padding-inline:12px"], "the phone keeps its 12 pixel indent");
+
+        assert_eq!(rules(".chart"), [["overflow-x:auto"]], "the chart frame scrolls sideways");
+        let svg = rules(".chart svg");
+        assert_eq!(svg.len(), 1, "a single rule sizes the chart, none on the phone: {svg:?}");
+        for decl in ["height:200px", "width:auto"] {
+            assert!(svg[0].contains(&decl), "the chart lacks {decl}: {:?}", svg[0]);
+        }
+        for decl in &svg[0] {
+            assert!(
+                !decl.starts_with("min-width") && *decl != "height:auto" && *decl != "width:100%",
+                "the chart would grow with the screen or the bars: {decl}",
+            );
+        }
+        // Cada onda continua ocupando 16 unidades do desenho: 12 de barra e 4
+        // de espaço.
+        assert!(SPEC_PAGE.contains("bw = 12, gap = 4"), "the drawing keeps 16 units per wave");
+    }
+
     /// As cores do painel moram em variáveis, com o tema escuro pelo sistema
-    /// e pela escolha da página, e o painel ocupa a largura toda, sem teto
-    /// de largura do texto, e cabe na tela do celular.
+    /// e pela escolha da página, e o painel cabe na tela do celular.
     #[test]
     fn o_painel_segue_o_tema_e_cabe_no_celular() {
         let html = spec_page_template(Locale::PtBr);
@@ -1788,8 +2112,6 @@ mod tests {
         }
         let body = html.split("\nbody{").nth(1).and_then(|b| b.split('}').next()).unwrap_or_default();
         assert!(body.contains("background"), "the body has its own background: {body}");
-        let page = html.split("\n.page{").nth(1).and_then(|b| b.split('}').next()).unwrap_or_default();
-        assert!(!page.is_empty() && !page.contains("max-width"), "the page takes the whole width: {page}");
     }
 
     /// Todo texto que os templates citam existe nos dois idiomas, e o

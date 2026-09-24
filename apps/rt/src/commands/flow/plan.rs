@@ -285,7 +285,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     // link mora na barra de status. O item que ainda guarda um trecho com
     // cara de segredo sai dito, para ser expurgado, sem segurar a cópia nem a
     // pergunta.
-    let prepared = match spec_events::pages::copy::prepare_milestone(&project.root, &spec, lang) {
+    let prepared = match spec_events::pages::copy::prepare(&project.root, &spec, lang) {
         Ok(prepared) => prepared,
         Err(refusal) => return refuse(&refusal),
     };
@@ -1336,12 +1336,12 @@ mod tests {
 
     /// A aprovação é o primeiro marco de uma spec nova, que ainda não tem
     /// template: a ordem manda publicar o template, sem falar de página
-    /// antiga, e entregar a primeira cópia, a spec inteira, a um agente
-    /// separado, antes da pergunta. Uma spec que uma versão antiga publicou
-    /// inteira, ainda no plano, ganha o template num link novo na aprovação.
+    /// antiga, e o próprio orquestrador copiar a spec inteira, antes da
+    /// pergunta, sem agente. Uma spec que uma versão antiga publicou inteira,
+    /// ainda no plano, ganha o template num link novo na aprovação.
     #[test]
-    fn the_first_copy_goes_to_an_agent_at_the_approval_of_a_new_spec() {
-        use crate::commands::spec_events::pages::copy::{agent_order, batches_order, old_page_order};
+    fn a_aprovacao_de_uma_spec_nova_manda_o_orquestrador_copiar_a_spec_inteira() {
+        use crate::commands::spec_events::pages::copy::{batches_order, old_page_order};
         let lang = Locale::PtBr;
         for old in [false, true] {
             let dir = tempdir().unwrap();
@@ -1369,15 +1369,22 @@ mod tests {
             );
             assert!(next.contains(&record), "{old}: {next}");
             assert_eq!(next.contains(&old_page_order("spec", lang)), old, "{old}: {next}");
-            assert_eq!(report["copy"]["spec"]["first"], json!(true), "{old}: {report}");
-            assert_eq!(sent_items(root, &report).first(), Some(&1), "{old}: the whole spec");
+            // A cópia leva a spec inteira, do primeiro item ao último.
+            let items = sent_items(root, &report);
+            let last = report["copy"]["spec"]["record"]["last"].as_u64().expect("the number copied");
+            assert_eq!(items.first(), Some(&1), "{old}: the whole spec: {items:?}");
+            assert_eq!(items.last(), Some(&last), "{old}: up to the last item: {items:?}");
+            // O orquestrador copia ele mesmo: a frase dos lotes vai solta, uma
+            // vez, antes da pergunta, sem texto a despachar para um agente.
             let copy = batches_order(&report, "x", translate("page.copy.new_address", lang), lang);
-            let agent = agent_order(&copy, lang);
-            assert!(next.contains(&agent), "{old}: the first copy goes to an agent: {next}");
+            assert!(copy.starts_with("Copie você mesmo, nesta conversa e sem agente,"), "{old}: {copy}");
+            assert_eq!(next.matches(copy.as_str()).count(), 1, "{old}: the conversation copies it: {next}");
+            assert!(!next.contains('«'), "{old}: no text goes to an agent: {next}");
+            assert!(report["copy"]["spec"].get("first").is_none(), "{old}: no first-copy mark: {report}");
             let ask = translate("plan.next", lang)
                 .replace("{question}", translate("approval.question", lang))
                 .replace("{option}", translate("approval.option", lang));
-            assert!(next.find(&agent) < next.find(&ask) && next.ends_with(&ask), "{old}: {next}");
+            assert!(next.find(&copy) < next.find(&ask) && next.ends_with(&ask), "{old}: {next}");
             assert!(report.get("migration").is_none(), "{old}: a migração de nota não existe mais: {report}");
         }
     }

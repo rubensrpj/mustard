@@ -2,8 +2,10 @@
 //! antes de montar o relatório da rodada seguinte, sem abrir código nenhum.
 //! Ela precisa dizer que existe a linha `USAGE`, que só o orquestrador
 //! escreve com o consumo que a plataforma lhe entrega — nunca um número
-//! digitado pelo agente —, ao lado de `DELIVERED` e `VERDICT`. Sem essa
-//! frase, o marcador funciona mas ninguém descobre que ele existe.
+//! digitado pelo agente —, ao lado de `PAUSED` e `ANALYSIS`; a entrega e o
+//! veredito não vêm no relatório, porque cada agente grava a própria volta
+//! com `run write delivered` ou `run write verdict`. Sem essa frase, o
+//! marcador funciona mas ninguém descobre que ele existe.
 
 use std::process::Command;
 

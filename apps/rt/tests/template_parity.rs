@@ -118,10 +118,8 @@ struct RunInvocation {
 /// Extract every `run <name> [--flag …]` instruction reachable through one of
 /// the [`CALLER_PREFIXES`].
 ///
-/// Um nome é um token só. As duas formas de dois tokens que existiam aqui
-/// (`metrics wave-status` e `scan spec`, que o `main.rs` colava antes do clap)
-/// saíram com os comandos que as usavam, e a colagem saiu junto: o `main.rs`
-/// não reescreve mais argv nenhum.
+/// Um nome é um token só: o `main.rs` não reescreve argv nenhum antes do
+/// clap, então a instrução chega ao parser como está escrita.
 fn extract_run_invocations(text: &str) -> Vec<RunInvocation> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -612,20 +610,38 @@ fn whole_name_at<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize
     })
 }
 
+/// `true` quando `text` dá `spelling` ao leitor como comando: manda rodá-lo
+/// (`run <grafia>`) ou, com `as_code`, o cita como código, logo depois de uma
+/// crase.
+fn given_as_command(text: &str, spelling: &str, as_code: bool) -> bool {
+    let bytes = text.as_bytes();
+    whole_name_at(text, spelling).any(|at| text[..at].ends_with("run ") || (as_code && at > 0 && bytes[at - 1] == b'`'))
+}
+
+/// Os comandos que saíram, de mais de uma palavra, que `text` escreve com
+/// espaço no lugar do hífen e dá ao leitor como comando: mandado rodar ou
+/// citado como código, logo depois da crase. Sem a crase ou o `run` antes, as
+/// palavras são prosa, como no comando `gh` que lista os pedidos de merge.
+fn spaced_commands_in(text: &str) -> Vec<&'static str> {
+    REMOVED_COMMANDS
+        .iter()
+        .filter(|name| name.contains('-') && given_as_command(text, &name.replace('-', " "), true))
+        .copied()
+        .collect()
+}
+
 /// Os nomes que saíram e que `text` ainda dá ao leitor. Um gancho conta em
 /// qualquer lugar, porque o nome dele não é palavra comum. Um comando conta
 /// quando o texto manda rodá-lo (`run <nome>`) ou, se o nome tem hífen, quando
-/// o cita como código (`` `<nome>` ``): é assim que o leitor o toma por um
-/// comando que existe. Um nome de uma palavra só, como `status`, citado como
-/// código é outra coisa, e não conta.
+/// o cita como código (`` `<nome>` ``), com o hífen ou com espaço no lugar
+/// dele: é assim que o leitor o toma por um comando que existe. Um nome de uma
+/// palavra só, como `status`, citado como código é outra coisa, e não conta.
 fn removed_names_in(text: &str) -> Vec<&'static str> {
-    let bytes = text.as_bytes();
     let hooks = REMOVED_HOOKS.iter().filter(|name| whole_name_at(text, name).next().is_some());
-    let commands = REMOVED_COMMANDS.iter().filter(|name| {
-        whole_name_at(text, name).any(|at| {
-            text[..at].ends_with("run ") || (name.contains('-') && at > 0 && bytes[at - 1] == b'`')
-        })
-    });
+    let spaced = spaced_commands_in(text);
+    let commands = REMOVED_COMMANDS
+        .iter()
+        .filter(|name| given_as_command(text, name, name.contains('-')) || spaced.contains(*name));
     hooks.chain(commands).copied().collect()
 }
 
@@ -843,7 +859,15 @@ fn the_sweep_finds_each_way_a_removed_name_reaches_the_reader() {
     assert_eq!(removed_names_in("O `spec-draft` saiu do fluxo."), ["spec-draft"]);
     assert_eq!(removed_names_in("mustard-rt run status"), ["status"]);
     assert_eq!(removed_names_in("o gancho amend_window_inject grava"), ["amend_window_inject"]);
-    for clean in ["mustard-rt run statusline", "o campo `status`", "[qa-run] aviso", "run open-spec-draft", "subagent_inject"] {
+    assert_eq!(removed_names_in("o `git settle` poda a unidade"), ["git-settle"]);
+    for clean in [
+        "mustard-rt run statusline",
+        "o campo `status`",
+        "[qa-run] aviso",
+        "run open-spec-draft",
+        "subagent_inject",
+        "`gh pr list --state open`",
+    ] {
         assert!(removed_names_in(clean).is_empty(), "{clean}");
     }
 
@@ -903,17 +927,22 @@ fn comments_and_code(source: &str) -> (Vec<(usize, String)>, String) {
     (comments, String::from_utf8_lossy(&code).into_owned())
 }
 
-/// Os códigos de spec que um comentário cita: o código do Mustard
-/// (`MSTD-RULE-0005`), o rótulo com hífen de critério, ponto ou limite
+/// O trecho de um comentário entre crases ou aspas: dado, não citação.
+static QUOTED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"`[^`]*`|"[^"]*"|“[^”]*”"#).expect("the quote pattern compiles"));
+
+/// Os códigos de spec que um comentário cita: o código de item com número
+/// (`MSTD-RULE-NNNN`), o rótulo com hífen de critério, ponto ou limite
 /// (`AC-3`, `P-17`, `L-3.3`), a letra com número de regra, onda ou tarefa
-/// (`R5`, `W4`, `T1.7`, `W8A-2`) e a seção com o sinal de parágrafo. O que
-/// está entre crases ou aspas é dado, não citação: o formato de um código ou a
+/// (`R5`, `W4`, `T1.7`, `W8A-2`) e a seção com o sinal de parágrafo. O código
+/// de item com número cita um item mesmo entre crases; o resto do que está
+/// entre crases ou aspas é dado, não citação: o formato de um código ou a
 /// entrada de um teste.
 fn spec_codes_in(comment: &str) -> Vec<String> {
-    static QUOTED: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"`[^`]*`|"[^"]*"|“[^”]*”"#).expect("the quote pattern compiles"));
     // Um código começa o texto ou vem depois de um caractere que não o
     // continua: `release/2026-Q3` e `U+E0B0` não são códigos.
+    static ITEM: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?:^|[^\w/.+-])(MSTD-[A-Z]+-\d+)").expect("the item pattern compiles"));
     static CODE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(concat!(
             r"(?:^|[^\w/.+-])(",
@@ -926,7 +955,16 @@ fn spec_codes_in(comment: &str) -> Vec<String> {
         ))
         .expect("the code pattern compiles")
     });
-    let bare = QUOTED.replace_all(comment, " ");
+    // Cada trecho entre crases fica só com os códigos de item que traz, na
+    // posição em que estavam; o trecho entre aspas some.
+    let bare = QUOTED.replace_all(comment, |quoted: &regex::Captures| {
+        let items: Vec<&str> = if quoted[0].starts_with('`') {
+            ITEM.captures_iter(&quoted[0]).filter_map(|c| c.get(1)).map(|m| m.as_str()).collect()
+        } else {
+            Vec::new()
+        };
+        format!(" {} ", items.join(" "))
+    });
     CODE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
 }
 
@@ -941,9 +979,41 @@ fn spec_coded_fn_names(code: &str) -> Vec<String> {
     NAME.captures_iter(code).map(|c| c[1].to_string()).filter(|n| CODED.is_match(n)).collect()
 }
 
-/// Nenhum comentário nem nome de teste do código cita código de spec: a spec
-/// fica fora do git, e o código que aponta para ela não leva a lugar nenhum.
-/// Cada comentário diz o comportamento em palavras.
+/// Os números de onda que um comentário dá como origem do que diz: a onda
+/// entre parênteses, como referência (`(onda 7)`, `(wave 7)`), e a onda que
+/// decidiu (`por decisão da onda 13`, `decided in wave 13`). A onda do cenário
+/// de um teste, como em "a onda 1 entrega", é dado e passa, e o que está entre
+/// crases ou aspas também.
+fn wave_numbers_in(comment: &str) -> Vec<String> {
+    static WAVE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(concat!(
+            r"(?i)(?:\(\s*",
+            r"|\bdecis(?:ão|ao|ion)\s+(?:da|na|de|of|in)\s+",
+            r"|\bdecid(?:ida|ido|ed)\s+(?:na|in|by)\s+",
+            r")((?:onda|wave)s?\s+\d+)",
+        ))
+        .expect("the wave pattern compiles")
+    });
+    let bare = QUOTED.replace_all(comment, " ");
+    WAVE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
+}
+
+/// O que um comentário cita e quem lê o código não acha: o código de spec, o
+/// comando que saiu escrito com espaço no lugar do hífen e o número de onda.
+/// O comando entre aspas é dado de exemplo e passa; entre crases, é citado.
+fn cited_in_comment(comment: &str) -> Vec<String> {
+    let unquoted = QUOTED.replace_all(comment, |quoted: &regex::Captures| {
+        if quoted[0].starts_with('`') { quoted[0].to_string() } else { " ".to_string() }
+    });
+    let commands = spaced_commands_in(&unquoted).into_iter().map(str::to_string);
+    spec_codes_in(comment).into_iter().chain(commands).chain(wave_numbers_in(comment)).collect()
+}
+
+/// Nenhum comentário nem nome de teste do código cita código de spec, e
+/// nenhum comentário cita comando que saiu escrito com espaço nem número de
+/// onda: a spec fica fora do git, e o que aponta para ela ou para um comando
+/// que não existe não leva a lugar nenhum. Cada comentário diz o
+/// comportamento em palavras.
 #[test]
 fn no_comment_or_test_name_cites_a_spec_code() {
     let root = repo_root();
@@ -960,7 +1030,7 @@ fn no_comment_or_test_name_cites_a_spec_code() {
         let (comments, code) = comments_and_code(&read_lossy(file));
         read += comments.len();
         for (line, comment) in comments {
-            for cited in spec_codes_in(&comment) {
+            for cited in cited_in_comment(&comment) {
                 found.push(format!("{shown}:{line}: {cited} in {}", comment.trim()));
             }
         }
@@ -969,7 +1039,8 @@ fn no_comment_or_test_name_cites_a_spec_code() {
     assert!(read > 20_000, "the sweep read only {read} comment lines");
     assert!(
         found.is_empty(),
-        "comments or test names still cite a spec code - say the behaviour in words:\n{}",
+        "comments or test names still cite a spec code, a command that left or a wave number - \
+         say the behaviour in words:\n{}",
         found.join("\n")
     );
 }
@@ -989,11 +1060,13 @@ fn the_comment_sweep_finds_each_spec_code_and_lets_data_pass() {
         ("// Layer promotion guard (T1.7)", "T1.7"),
         ("/// W8A-2 supersedes the old reader", "W8A-2"),
         ("// see the audit § 4", "§ 4"),
+        ("/// like `MSTD-CRIT-0016`", "MSTD-CRIT-0016"),
+        ("/// `parse(\"MSTD-RULE-0005\")` devolve a sigla", "MSTD-RULE-0005"),
     ] {
         assert_eq!(spec_codes_in(comment), [cited], "{comment}");
     }
     for clean in [
-        "/// like `MSTD-CRIT-0016`",
+        "/// like `MSTD-RULE-NNNN`",
         "/// o número escrito `P-12` vira `12`",
         r#"/// um código como "MSTD-RULE-0008" e uma frase"#,
         "/// UTF-8, SHA-256, BCP-47 and ISO-8601 are not codes",
@@ -1011,6 +1084,37 @@ fn the_comment_sweep_finds_each_spec_code_and_lets_data_pass() {
     let (comments, code) = comments_and_code(source);
     assert_eq!(comments, [(1, "/// T3 — um código".to_string()), (3, "/* bloco".to_string()), (4, "   com W4 */".to_string())]);
     assert_eq!(spec_coded_fn_names(&code), ["ac8_host_is_clean"]);
+}
+
+/// A varredura dos comentários acha o comando que saiu escrito com espaço e o
+/// número de onda dado como origem, e deixa passar o módulo que continua, o
+/// comando que fica, as palavras soltas de outra ferramenta e a onda do
+/// cenário de um teste.
+#[test]
+fn the_comment_sweep_finds_a_spaced_command_that_left_and_a_wave_number() {
+    for (comment, cited) in [
+        ("///    `git settle`'s containment check included, asserting", "git-settle"),
+        ("/// `git delete` offered to REMOVE the release line", "git-delete"),
+        ("/// and `pr list` refused to run from it", "pr-list"),
+        ("/// mais essas frases (onda 11), e o molde da onda", "onda 11"),
+        ("/// a prova isolada que a revisão pediu (wave 7).", "wave 7"),
+        ("/// Por decisão da onda 13, o item que continua à mostra", "onda 13"),
+        ("// decided in wave 4, the reader keeps both", "wave 4"),
+    ] {
+        assert_eq!(cited_in_comment(comment), [cited], "{comment}");
+    }
+    for clean in [
+        "/// the exit ritual (`crate::commands::git_settle`) prunes the unit",
+        "/// the tidying up `pr-merge` runs right after its merge",
+        "/// `gh pr list --state open` answers the provider",
+        "// A onda 1 entrega e a onda 2 espera pela vaga.",
+        "/// Retrato da barra com uma spec em execução na onda 2 de 4",
+        r#"/// e procurar por "onda 13" acha o que é dela"#,
+        "/// o rótulo `(onda 3)` é o dado da página",
+        r#"/// o dado de exemplo "`git settle`" de um teste"#,
+    ] {
+        assert!(cited_in_comment(clean).is_empty(), "{clean}: {:?}", cited_in_comment(clean));
+    }
 }
 
 /// Os eventos que o manifesto do Claude Code registra.

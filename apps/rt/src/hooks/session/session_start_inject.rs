@@ -9,7 +9,8 @@
 //! 2. **Os textos declarados** — as entradas `on: sessionStart` de
 //!    `mustard.json#inject`, que voltam depois de `/clear` e da compactação.
 //! 3. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
-//!    a mesma linha que o `resume` devolve.
+//!    a mesma linha que o `resume` devolve; depois da compactação, o bloco de
+//!    retomada inteiro, o mesmo que o aviso antes dela mostrou.
 //! 4. **A página do projeto** — num projeto em que ela ainda não foi
 //!    publicada, a ordem de publicar o template dela e gravar o endereço, que
 //!    vira o link da barra de status. Com a página publicada, nada.
@@ -66,8 +67,9 @@ use crate::commands::review::pr_door::{merged_elsewhere, MergedElsewhere};
 use crate::hooks::session::injectables;
 use crate::shared::branch_state::merged_by_another;
 
-/// O teto do texto que o início da sessão coloca: 3 kB.
-const MAX_BYTES: usize = 3_000;
+/// O teto do texto que o início da sessão coloca: 3 kB. O bloco de retomada
+/// cabe nele sozinho.
+pub(crate) const MAX_BYTES: usize = 3_000;
 
 /// Quantas branches o aviso do merge nomeia antes de só contar o resto.
 const MERGED_NAMES: usize = 4;
@@ -82,6 +84,8 @@ struct Probe<'a> {
     lang: Locale,
     /// A janela foi renovada: `/clear` ou compactação.
     refreshed: bool,
+    /// A janela foi renovada pela compactação: a retomada vem em bloco.
+    compacted: bool,
     /// A versão que o registro de plugins dá como instalada, quando ele
     /// respondeu.
     installed: Option<&'a str>,
@@ -146,11 +150,9 @@ fn session_start_core(
     // a outra.
     crate::commands::flow::round::refresh_map_if_stale(root, &|root, out| mustard_core::Scan::locate().scan(root, out));
     let session = session_of(input);
-    let refreshed = input
-        .raw
-        .get("source")
-        .and_then(|v| v.as_str())
-        .is_some_and(|s| s.eq_ignore_ascii_case("compact") || s.eq_ignore_ascii_case("clear"));
+    let source = input.raw.get("source").and_then(|v| v.as_str()).unwrap_or_default();
+    let compacted = source.eq_ignore_ascii_case("compact");
+    let refreshed = compacted || source.eq_ignore_ascii_case("clear");
     // O merge feito por outra pessoa age antes de qualquer aviso: com a spec
     // entregue e a branch arrumada, a retomada já lê o estado novo.
     let landing = spec_merged_elsewhere(root, session.as_deref());
@@ -159,6 +161,7 @@ fn session_start_core(
         session: session.as_deref(),
         lang: crate::shared::context::config::project_config_cached(root).language().text_or_default(),
         refreshed,
+        compacted,
         installed,
         scratch,
         landing: landing.as_ref(),
@@ -217,8 +220,12 @@ fn declared_notice(probe: &Probe<'_>) -> Option<String> {
     injectables::collect(&probe.root.to_string_lossy(), probe.session, probe.refreshed)
 }
 
-/// A linha de retomada da spec atual.
+/// A retomada da spec atual: depois da compactação, o bloco de retomada; nas
+/// outras aberturas, a linha.
 fn resume_notice(probe: &Probe<'_>) -> Option<String> {
+    if probe.compacted {
+        return crate::commands::flow::resume::current_block(probe.root, probe.session);
+    }
     crate::commands::flow::resume::current_line(probe.root, probe.session)
 }
 
@@ -700,6 +707,7 @@ mod tests {
                 session: Some("s-mapa"),
                 lang,
                 refreshed: true,
+                compacted: false,
                 installed: NO_REGISTRY,
                 scratch: Some(&scratch),
                 landing: None,

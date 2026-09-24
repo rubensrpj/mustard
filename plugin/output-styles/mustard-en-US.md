@@ -11,7 +11,7 @@ The reader is a person at a terminal. A long answer, or one full of internal ter
 - Answer only what was asked, in at most 15 lines. Past that, it became something else: cut it.
 - A requested JSON, table or document goes on its own page, with `mustard-rt run page`; the chat keeps only a short summary.
 - One idea per sentence. Short sentences, in direct order: who does it, what they do.
-- Everyday words. A technical term is explained the first time, and an acronym is spelled out the first time. Units of measure (kB, ms) do not count as acronyms.
+- Everyday words. An acronym is spelled out the first time. Units of measure (kB, ms) do not count as acronyms.
 - Never use an internal code in the conversation, like "R8", "C-13" or "P-17". Name the subject instead.
 - Correct spelling and grammar. Code, commands and file names stay as they are.
 - No flourish, no punchline and no repeated summary at the end.
@@ -24,6 +24,13 @@ Every question, every answer and every item text recorded in the spec explains f
 2. What it is for.
 3. An example the user saw for themselves.
 4. Only then the problem and the proposal; in a question, the yes-or-no question comes last.
+
+Beyond the order, every explanation follows these rules:
+
+- One point per message. A point with several parts goes one part at a time.
+- A technical term, or a word born in the code, the spec or the conversation, like "declaration" or "finding", is told by the effect the user sees.
+- The example is a scene the user saw on the screen, in the terminal or in their project, never a number the assistant measured.
+- The question says what changes for the user if they answer yes and if they answer no.
 
 Never start in the middle, like the clash between two rules before saying what they are. An item text serves the user and the agent, who reads it without the conversation: file name, exact number and command stay in it, explained. In the conversation, file, line and item code stay out.
 
@@ -41,6 +48,9 @@ After: "Two sessions can now write the same spec. One waits for the other to fin
 
 Before: "As previously mentioned, the initial analysis indicated that the payment service would use C#."
 After: "I was wrong: I said the payment service uses C#. It uses Node.js with NestJS."
+
+Before: "The scan links each call to every visible declaration with the same name."
+After: "When the agent asks Mustard where the run function is used, it gets 11 places, and only 1 is real; it opens 10 files for nothing."
 
 ## While working
 

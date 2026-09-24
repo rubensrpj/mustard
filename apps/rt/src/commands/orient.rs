@@ -1,4 +1,4 @@
-//! `run orient` — the orientation census (the terrain map).
+//! The orientation census (the terrain map) the session start injects.
 //!
 //! ## Why this exists
 //!
@@ -23,7 +23,8 @@
 //! sessions measured 1 useful suggestion in 17: prompt words are problem
 //! vocabulary, path tokens are code vocabulary, and they only overlap by
 //! coincidence. Locating code is on-demand work — `grep` for known literals,
-//! the digest (`run feature`) for concepts — never a per-prompt guess.
+//! the project map's search (`run map search`) for concepts — never a
+//! per-prompt guess.
 //!
 //! Fail-open throughout: a missing / unreadable / unparseable grain model
 //! yields an empty [`Orientation`] (no terrain), so every consumer degrades
@@ -220,11 +221,6 @@ pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> 
     }
     Some(out)
 }
-
-// ===========================================================================
-// Command entry — `mustard-rt run orient`.
-// ===========================================================================
-
 
 #[cfg(test)]
 mod tests {

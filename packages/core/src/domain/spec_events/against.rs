@@ -14,15 +14,17 @@ use super::check::missing;
 use super::read::ints;
 use super::{is_empty, EventRef, Refusal, SpecEvent, SpecLog, TimeFilter};
 
-/// Troca cada código (`MSTD-RULE-0002`) dos campos que apontam eventos pelos
+/// Troca cada código (`MSTD-RULE-NNNN`) dos campos que apontam eventos pelos
 /// números que ele nomeia no arquivo como está, para que a linha gravada
-/// guarde só números: em `replaces` e no `closes` de um ponto, a versão mais
-/// nova do item; nos alvos de `remove` e `purge`, todas as versões dele. Um
-/// código que não existe na spec recusa o evento. Um evento sem código nenhum
-/// sai como entrou.
+/// guarde só números: em `replaces` (um só ou a lista) e no `closes` de um
+/// ponto, a versão mais nova do item; nos alvos de `remove` e `purge`, todas
+/// as versões dele. Um código que não existe na spec recusa o evento. Um
+/// evento sem código nenhum sai como entrou.
 pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<(), Refusal> {
     let is_code = |v: &Value| matches!(EventRef::from_value(v), Some(EventRef::Code(_)));
-    let replaces_code = event.get("replaces").is_some_and(is_code);
+    let replaces_list = event.get("replaces").and_then(Value::as_array).cloned();
+    let replaces_code = event.get("replaces").is_some_and(is_code)
+        || replaces_list.as_ref().is_some_and(|list| list.iter().any(is_code));
     let closes_code = event.get("closes").is_some_and(is_code);
     let targets = event.get("targets").and_then(Value::as_array).cloned().unwrap_or_default();
     if !replaces_code && !closes_code && !targets.iter().any(is_code) {
@@ -43,6 +45,18 @@ pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<()
             let newest = ids_of(&code)?.last().copied().unwrap_or_default();
             event.insert(field.into(), Value::from(newest));
         }
+    }
+    // A lista de `replaces` troca cada código pela versão mais nova dele, na
+    // mesma posição; o número que já veio fica como está.
+    if let Some(list) = replaces_list.filter(|list| list.iter().any(is_code)) {
+        let mut resolved = Vec::with_capacity(list.len());
+        for item in &list {
+            resolved.push(match EventRef::from_value(item) {
+                Some(EventRef::Code(code)) => Value::from(ids_of(&code)?.last().copied().unwrap_or_default()),
+                _ => item.clone(),
+            });
+        }
+        event.insert("replaces".into(), Value::Array(resolved));
     }
     if targets.iter().any(is_code) {
         let mut resolved: Vec<Value> = Vec::new();
@@ -71,8 +85,8 @@ pub struct Effects {
     pub purged: Vec<u64>,
 }
 
-/// Confere o evento contra o arquivo como está: o número que `replaces`
-/// aponta existe e é do mesmo tipo; os alvos de `remove` e `purge` existem; o
+/// Confere o evento contra o arquivo como está: cada número que `replaces`
+/// aponta, um só ou a lista, existe e é do mesmo tipo; os alvos de `remove` e `purge` existem; o
 /// filtro de `remove` acha pelo menos um evento anterior.
 ///
 /// No ponto do levantamento: o `closes` aponta um ponto aberto, por qualquer
@@ -92,7 +106,8 @@ pub fn check_against(
     // `Some(false)` quando é, conforme a versão substituída já declarava a
     // forma do critério ou não.
     let mut replaces_form = None;
-    if let Some(old) = event.get("replaces").and_then(Value::as_u64) {
+    let replaced = event.get("replaces").and_then(Value::as_u64).map_or_else(|| ints(event.get("replaces")), |old| vec![old]);
+    for old in replaced {
         let Some(previous) = log.get(old) else {
             return Err(Refusal::UnknownTarget { target: EventRef::Id(old) });
         };
@@ -103,8 +118,11 @@ pub fn check_against(
                 event_type: event_type.to_string(),
             });
         }
+        // Basta uma versão substituída sem a forma para a emenda herdar a
+        // ausência dela.
         if event_type == "criterion" {
-            replaces_form = Some(previous.str_field("form").is_some_and(|form| !form.trim().is_empty()));
+            let has_form = previous.str_field("form").is_some_and(|form| !form.trim().is_empty());
+            replaces_form = Some(replaces_form.unwrap_or(true) && has_form);
         }
     }
     // A forma é obrigatória para o critério que nasce agora; a emenda de um

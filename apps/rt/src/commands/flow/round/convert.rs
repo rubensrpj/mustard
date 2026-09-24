@@ -9,6 +9,7 @@
 //!
 //! **O que se grava.** Para cada onda convertida, uma remoção com autor do
 //! programa e o motivo em palavras, que a página mostra na lista do que saiu.
+//! A remoção aponta a onda pelo código e tira todas as versões dela.
 //! Cada tarefa dela ganha uma versão nova sem o número de onda e sem a nota:
 //! a dependência entre ondas vira dependência das tarefas da onda de que ela
 //! dependia; a tarefa sem arquivo leva os da onda, e sem nenhum leva o
@@ -253,8 +254,12 @@ fn planned_writes(log: &SpecLog, lang: Locale) -> Vec<(String, Map<String, Value
 
     let mut writes: Vec<(String, Map<String, Value>)> = Vec::new();
     for wave in waves.values().filter(|w| w.visible) {
+        // A onda sai pelo código, que a gravação troca por todas as versões
+        // dela: pelo número, só a versão à mostra sairia, e a anterior
+        // voltaria à leitura.
+        let target = codes.get(&wave.event.id).map_or_else(|| json!(wave.event.id), |code| json!(code));
         let draft = json!({
-            "targets": [wave.event.id],
+            "targets": [target],
             "reason": translate("wave.hand_drawn_removed", lang),
             "author": "binary",
         });
@@ -610,6 +615,50 @@ mod tests {
             s.iter().map(|(k, (f, d, _))| (k.clone(), (f.clone(), d.clone()))).collect::<BTreeMap<_, _>>()
         };
         assert_eq!(without_lot(&rest), without_lot(&whole), "o mesmo resultado da conversão inteira");
+    }
+
+    /// A onda desenhada à mão que foi revista, com uma versão anterior, sai
+    /// inteira na conversão: depois da rodada, nenhuma das duas versões está
+    /// na leitura, as duas saíram pela remoção do programa, e a tarefa dela
+    /// foi para o backlog, de onde o lote a leva.
+    #[test]
+    fn a_onda_a_mao_com_versao_anterior_sai_inteira_na_conversao() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/um.rs"), "fn um() {}\n").unwrap();
+        let (mut first, mut second, mut task) = (0, 0, 0);
+        approved_with(root, "x", &[], |said| {
+            let crit = criterion(root, said, "a parte um passa");
+            first = hand_wave(root, said, 1, &[crit], &[]);
+            second = seed_event(root, "x", "wave", json!({"n": 1, "text": "Onda 1, à mão, revista.", "criteria": [crit],
+                "done_when": "A suíte passa.", "depends_on": [], "origin": said, "author": "assistant", "replaces": first}));
+            task = hand_task(root, said, 1, "Fazer a parte um.", Some("src/um.rs"), &[crit]);
+        });
+        let before = log_of(root);
+        assert_eq!(before.current(first).map(|e| e.id), Some(second), "a versão revista é a vigente");
+
+        let out = round(root, "x", None);
+        assert_ne!(out["ok"], json!(false), "{out}");
+        let log = log_of(root);
+        let hidden = log.hidden();
+        for (version, id) in [("anterior", first), ("revista", second)] {
+            let by = match hidden.get(&id) {
+                Some(Hidden::Removed { by }) => *by,
+                other => panic!("a versão {version} da onda devia sair pela remoção: {other:?}"),
+            };
+            assert_eq!(log.get(by).and_then(|e| e.str_field("author")), Some("binary"), "a remoção é do programa");
+        }
+        let hand_drawn: Vec<u64> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "wave" && e.str_field("author") != Some("binary"))
+            .map(|e| e.id)
+            .collect();
+        assert!(hand_drawn.is_empty(), "nenhuma versão da onda à mão fica na leitura: {hand_drawn:?}");
+        let lot = now(&log, task).wave().expect("a tarefa está no lote");
+        let lot_wave = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(lot));
+        assert_eq!(lot_wave.and_then(|w| w.str_field("author")), Some("binary"), "o lote é do programa: {out}");
     }
 
     /// A onda desenhada à mão que já saiu e ainda roda termina como saiu, e a

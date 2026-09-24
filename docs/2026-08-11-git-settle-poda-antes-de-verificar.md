@@ -1,6 +1,6 @@
 # `git-settle` poda antes de verificar — e o laudo chega tarde
 
-Proposta de correção no ritual de saída (`mustard-rt run git-settle`), a partir de um `pr close` real numa unidade de dois repositórios (monorepo + submódulo).
+Proposta de correção no ritual de saída, a partir de um `pr close` real numa unidade de dois repositórios (monorepo + submódulo).
 
 Confiança: **alta** no diagnóstico — reproduzido nos dois repositórios da mesma unidade, com causas de sujeira diferentes e desfecho idêntico, e confirmado lendo `apps/rt/src/commands/git_settle.rs`. **Média** na terceira proposta, que muda um critério de segurança e merece revisão de quem escreveu a exceção original.
 

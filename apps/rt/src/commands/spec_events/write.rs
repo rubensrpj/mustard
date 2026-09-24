@@ -9,7 +9,7 @@
 //! afetados:
 //!
 //! ```text
-//! {"ok": true, "spec": "teste", "id": 41, "type": "remove", "code": "MSTD-RMV-0002", "removed": [12, 13]}
+//! {"ok": true, "spec": "teste", "id": 41, "type": "remove", "code": "MSTD-RMV-NNNN", "removed": [12, 13]}
 //! ```
 //!
 //! A linha da spec no índice das specs é refeita a cada gravação, ainda com a
@@ -17,10 +17,15 @@
 //! página publicada lê o banco de dados dela, e a cópia para o banco sai nos
 //! marcos (`super::pages::copy`).
 //!
-//! Um pedido (`request`) muda o plano, e a cópia sai logo depois dele: numa
-//! spec cuja página já foi publicada, a saída traz em `copy` os lotes
-//! preparados e, em `next`, a ordem de copiá-los e de gravar a cópia feita
-//! (`copy`), que diz o número do último item que ela levou.
+//! Um pedido (`request`) muda o plano, e a página recebe uma cópia só depois
+//! dele, já com o que ele gerou: a última gravação do pedido — a tarefa, ou o
+//! próprio pedido quando ele não gera outra — leva `--copy`, e só ela prepara
+//! a cópia, com os lotes calculados na hora. A saída traz em `copy` os lotes
+//! e, em `next`, a ordem de copiá-los e de gravar a cópia feita (`copy`), que
+//! diz o número do último item que ela levou. A página que ainda não tem
+//! endereço não é publicada aqui: fica para o marco seguinte. Sem `--copy`,
+//! nenhuma gravação prepara cópia, mesmo a que muda o plano de uma spec
+//! aprovada.
 //!
 //! Com o tipo `lesson`, a gravação vai para o banco de lições
 //! (`.claude/spec/lessons.ndjson`), e não para a spec: a classe vem em
@@ -32,10 +37,19 @@
 //! leitura e idioma), e a lição com defeito é recusada com os defeitos, sem
 //! gravar. A lição cujo texto repete o de outra já guardada, depois de
 //! igualar espaços, maiúsculas e acentos, também é recusada, apontando a que
-//! existe. A página e o índice não mudam:
+//! existe. A lição de defeito (`"class":"defect"`) e a de regra do projeto
+//! (`"class":"project_rule"`), sozinhas ou juntando outras, são recusadas sem
+//! gravar: o banco fica só nesta máquina e não vai ao git, então o defeito
+//! vira conserto no código, com o teste que falha se ele voltar, e a regra
+//! vira teste no código, que falha se ela for quebrada; o teste vai ao git no
+//! commit. Com uma spec aberta, a recusa manda gravar a tarefa pelo `run
+//! write task` nela; sem spec aberta, a recusa não fala em spec. O banco
+//! guarda só a armadilha do ambiente e a preferência do usuário, e as lições
+//! antigas das duas classes recusadas seguem na leitura. A página e o índice
+//! não mudam:
 //!
 //! ```text
-//! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
+//! {"ok": true, "id": 8, "type": "lesson", "class": "environment_trap"}
 //! ```
 //!
 //! A publicação da página do projeto (`publish` com `"page":"project"`) é o
@@ -56,7 +70,7 @@
 //! como o `remove` tira um item da spec:
 //!
 //! ```text
-//! {"ok": true, "id": 9, "type": "lesson", "class": "defect", "replaced": [3, 5]}
+//! {"ok": true, "id": 9, "type": "lesson", "class": "environment_trap", "replaced": [3, 5]}
 //! {"ok": true, "id": 10, "type": "lesson", "retired": [4]}
 //! ```
 //!
@@ -86,11 +100,27 @@
 //! [`record`], a mesma gravação deste comando.
 //!
 //! Este comando também não grava a execução de um critério (`criterion_run`),
-//! o veredito (`verdict`), o envio do pedido (`send`), o que uma onda entregou
-//! (`delivered`), o commit (`commit`) nem a resposta do assistente
-//! (`response`), nem tira ou revê um deles: quem os grava é o binário — a
-//! rodada, o fechamento e o despachante. O autor `binary` é só das gravações
-//! de dentro do binário.
+//! o envio do pedido (`send`), o commit (`commit`) nem a resposta do
+//! assistente (`response`), nem tira ou revê um deles: quem os grava é o
+//! binário — a rodada, o fechamento e o despachante. O autor `binary` é só
+//! das gravações de dentro do binário.
+//!
+//! A entrega de uma onda (`delivered`) entra por aqui só como a volta que a
+//! própria onda grava, com envio aberto para ela: a gravação a marca com
+//! `returned`, e ela fica fora de toda leitura até a rodada assumi-la,
+//! gravando a entrega oficial no lugar dela. As conferências que só leem a
+//! volta — o título do commit, o resumo com cara de código de commit, o
+//! arquivo que não existe, a prova — recusam antes de gravar. A entrega
+//! oficial continua do binário: o `run write` não a grava, não a tira nem a
+//! revê.
+//!
+//! O veredito (`verdict`) segue o mesmo caminho: o revisor grava o próprio,
+//! só com pedido de revisão aberto — o envio de revisão que o fechamento
+//! grava, sem veredito oficial depois dele —, e a gravação o marca com
+//! `returned`. O critério ou item do combinado que a spec não tem e o
+//! veredito final que não responde por todo o combinado vigente recusam
+//! antes de gravar. A rodada ou o fechamento assume a volta e grava o
+//! veredito oficial, que o `run write` não grava, não tira nem revê.
 //!
 //! O clique (a `message` com `witness`, de qualquer autor: a resposta a uma
 //! pergunta com opções) também não passa por aqui, nem para ser tirado ou
@@ -159,15 +189,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::lessons::{LESSON, RETIRE};
+use mustard_core::domain::lessons::{for_the_code, DEFECT, LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
-    type_spec, Block, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+    type_spec, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
     TASK_TITLE_MAX,
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, PhaseWriter, SpecState,
-    State,
+    birth_event, goal_rule, phase_write_allowed, reopenable, reply_rule, survey_rule, PhaseWriter,
+    SpecState, State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::owner_rule;
@@ -176,16 +206,26 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
-/// fechamento grava ao rodar a prova; o veredito, o envio do pedido de uma
-/// onda, o que ela entregou e o commit, que só a rodada grava; a tabela de
-/// rastreabilidade, que o fechamento grava ao aceitar o veredito final; e a
-/// resposta do assistente, que o despachante grava no fim de cada resposta.
-/// O `run write` não os grava, nem tira ou revê um deles.
+/// fechamento grava ao rodar a prova; o veredito oficial, o envio do pedido
+/// de uma onda, a entrega oficial dela e o commit, que só a rodada grava; a
+/// tabela de rastreabilidade, que o fechamento grava ao aceitar o veredito
+/// final; e a resposta do assistente, que o despachante grava no fim de cada
+/// resposta. O `run write` não os grava, nem tira ou revê um deles. As únicas
+/// entradas são a volta da onda e a do revisor, escondidas da leitura até a
+/// rodada ou o fechamento assumi-las.
 const BINARY_ONLY: &[&str] =
     &["criterion_run", "verdict", "send", "delivered", "commit", "tracking", "response"];
+
+/// A razão curta da recusa da lição de defeito: ela vira a tarefa do
+/// conserto, com o teste que falha se o defeito voltar.
+const DEFECT_BY_TASK: &str = "defect-by-task";
+
+/// A razão curta da recusa da lição de regra do projeto: ela vira teste no
+/// código, que falha se a regra for quebrada.
+const RULE_BY_TEST: &str = "rule-by-test";
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
@@ -235,9 +275,17 @@ pub struct WriteOpts {
     pub json: String,
 }
 
-/// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Nunca
-/// entra em pânico.
+/// Para os testes: [`write_at_with`] sem `--copy`, a gravação como o
+/// `run write` a faz sem a opção.
+#[cfg(test)]
 pub(crate) fn write_at(opts: &WriteOpts) -> Value {
+    write_at_with(opts, false)
+}
+
+/// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
+/// `copy`, a gravação feita prepara a cópia da página para o banco dela.
+/// Nunca entra em pânico.
+pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     let project = super::project(&opts.root);
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
@@ -276,7 +324,10 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     if event_type == "work_type" {
         return refuse(Refusal::WorkTypeByGrill);
     }
-    if BINARY_ONLY.contains(&event_type) {
+    // A entrega e o veredito são as exceções dos tipos do binário: a onda e o
+    // revisor gravam a própria volta, conferida mais abaixo, e a rodada ou o
+    // fechamento grava a versão oficial.
+    if BINARY_ONLY.contains(&event_type) && !["delivered", "verdict"].contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
     }
     // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
@@ -295,12 +346,34 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     if let Err(refusal) = spec_was_opened(&project.root, spec) {
         return refuse(refusal);
     }
+    // A volta da onda só entra com envio aberto para ela, e passa antes pelas
+    // conferências que só leem a volta: a recusa vem antes de gravar, e o
+    // agente grava de novo. A trava do passo do git que a conferência prende
+    // fica presa até a volta estar no arquivo: a rodada que assume a mesma
+    // onda nunca grava a entrega oficial entre a conferência e a gravação.
+    let held = if event_type == "delivered" {
+        match crate::commands::flow::round::check_return(&opts.root, spec, &mut draft) {
+            Ok(held) => Some(held),
+            Err(refusal) => return refusal.to_value(lang),
+        }
+    } else {
+        None
+    };
+    // A volta do revisor só entra com pedido de revisão aberto, e o veredito
+    // final que não responde por todo o combinado recusa antes de gravar.
+    if event_type == "verdict"
+        && let Err(refusal) = crate::commands::flow::round::check_verdict_return(&opts.root, spec, &mut draft)
+    {
+        return refusal.to_value(lang);
+    }
     // O passo seguinte de um pedido, pelo efeito dele; a conferência do tipo
     // recusa um efeito que não existe antes de o relatório sair.
     let next = (event_type == "request")
         .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
         .flatten();
-    match record_in(&project, &opts.root, spec, event_type, draft, None) {
+    let recorded = record_in(&project, &opts.root, spec, event_type, draft, None);
+    drop(held);
+    match recorded {
         Ok(Recorded { written, survey }) => {
             let mut report = json!({
                 "ok": true,
@@ -327,45 +400,34 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             for (fact, finding) in &written.citation_warnings {
                 warnings.extend(finding.warning(*fact, lang));
             }
-            // O pedido muda o plano: a cópia para o banco da página sai logo
-            // depois dele. Toda gravação que muda o plano de uma spec já
-            // aprovada — onda, tarefa, critério ou item do combinado — leva
-            // a mesma cópia, sem esperar um pedido: sem isso a cópia do
-            // pedido saía antes das ondas novas, e a página ficava sem elas
-            // até a rodada seguinte. A que não pôde ser preparada só avisa, e
-            // a cópia seguinte leva os mesmos itens.
+            // Só a gravação com `--copy` prepara a cópia: a última de um
+            // pedido do usuário que muda o plano, que a leva uma vez, já com
+            // tudo o que o pedido gerou. A ordem sai sem marco: a página que
+            // ainda não tem endereço fica para o marco seguinte, e sem nada a
+            // copiar a saída não traz cópia. A que não pôde ser preparada só
+            // avisa, e a cópia seguinte leva os mesmos itens.
             let mut next = next.map(|key| translate(&key, lang).to_string());
-            let changes_plan =
-                matches!(type_spec(event_type).map(|t| t.block), Some(Block::Waves | Block::Criteria | Block::Agreed));
-            let already_approved = store::spec_file(&project.root, spec)
-                .ok()
-                .and_then(|path| store::read(&path).ok().flatten())
-                .is_some_and(|log| State::from_log(&log).approved);
-            if next.is_some() || (changes_plan && already_approved) {
-                match super::pages::copy::prepare(&project.root, spec, super::pages::copy::Moment::Request, lang) {
-                    Ok(Some(prepared)) => {
-                        report["copy"] = prepared.to_value();
+            if copy {
+                let sentences = match super::pages::copy::prepare(&project.root, spec, lang) {
+                    Ok(prepared) => {
                         let sentences = prepared.order(spec.trim(), None, lang);
-                        match next.as_mut() {
-                            Some(said) => {
-                                for sentence in sentences {
-                                    said.push(' ');
-                                    said.push_str(&sentence);
-                                }
-                            }
-                            None => next = Some(sentences.join(" ")),
+                        if !sentences.is_empty() {
+                            report["copy"] = prepared.to_value();
                         }
+                        sentences
                     }
-                    Ok(None) => {}
                     Err(refusal) => {
                         warnings.push(refusal.message(lang));
-                        match next.as_mut() {
-                            Some(said) => {
-                                said.push(' ');
-                                said.push_str(translate("page.copy.failed", lang));
-                            }
-                            None => next = Some(translate("page.copy.failed", lang).to_string()),
+                        vec![translate("page.copy.failed", lang).to_string()]
+                    }
+                };
+                if !sentences.is_empty() {
+                    let said = next.get_or_insert_with(String::new);
+                    for sentence in sentences {
+                        if !said.is_empty() {
+                            said.push(' ');
                         }
+                        said.push_str(&sentence);
                     }
                 }
             }
@@ -1126,7 +1188,15 @@ fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
 /// que spec a lição nasceu. O texto passa antes pela medição da conferência
 /// de escrita do fim da resposta; com defeito, nada é gravado.
+///
+/// A lição de defeito e a de regra do projeto, sozinhas ou juntando outras,
+/// são recusadas antes de tudo, sem gravar ([`fixed_in_code`]): o banco não
+/// vai ao git, e o que vale para o projeto vira ajuste no código, com o teste
+/// que falha se o erro voltar ou se a regra for quebrada.
 fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String, Value>) -> Value {
+    if let Some(class) = for_the_code(&draft) {
+        return fixed_in_code(project, spec, class);
+    }
     let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
     if let Some(text) = draft.get("text").and_then(Value::as_str) {
         let report = crate::hooks::task::clarity_check::measure_in_project(&project.root, text, &[]);
@@ -1150,9 +1220,41 @@ fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String,
     }
 }
 
-/// Run `write` and print the JSON report; exit 1 on a refusal.
-pub fn run(opts: &WriteOpts) {
-    let report = write_at(opts);
+/// A recusa da lição da classe `class`, que vale para o projeto: o defeito
+/// vira conserto no código e a regra do projeto vira teste, e o teste vai ao
+/// git. Com uma spec aberta ([`open_spec_for_the_fix`]), a recusa manda gravar
+/// a tarefa nela, pelo nome; sem spec aberta, ela não fala em spec.
+fn fixed_in_code(project: &super::Project, spec: Option<&str>, class: &str) -> Value {
+    let (reason, with_spec, without_spec) = if class == DEFECT {
+        (DEFECT_BY_TASK, "lessons.defect_by_task", "lessons.defect_in_code")
+    } else {
+        (RULE_BY_TEST, "lessons.rule_by_task", "lessons.rule_in_code")
+    };
+    let hint = match open_spec_for_the_fix(&project.root, spec) {
+        Some(open) => translate(with_spec, project.lang).replace("{spec}", &open),
+        None => translate(without_spec, project.lang).to_string(),
+    };
+    json!({ "ok": false, "reason": reason, "hint": hint })
+}
+
+/// A spec aberta em que cabe a tarefa do ajuste: a do `--spec` ou, sem ele, a
+/// ativa no checkout, desde que tenha arquivo de eventos e ainda não tenha
+/// fechado. `None` quando não há nenhuma: a spec em que a lição nasceu pode já
+/// ter fechado, e aí não recebe tarefa.
+fn open_spec_for_the_fix(root: &Path, spec: Option<&str>) -> Option<String> {
+    let disk = DiskSpecState::new(&super::read::checkout(root));
+    let spec = match spec.map(str::trim).filter(|named| !named.is_empty()) {
+        Some(named) => named.to_string(),
+        None => disk.active(session_from_env().as_deref())?,
+    };
+    let state = disk.state(&spec)?;
+    state.phase.is_none_or(reopenable).then_some(spec)
+}
+
+/// Run `write` and print the JSON report; with `copy`, the write also
+/// prepares the copy of the spec page. Exit 1 on a refusal.
+pub fn run(opts: &WriteOpts, copy: bool) {
+    let report = write_at_with(opts, copy);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
         std::process::exit(1);
@@ -1282,10 +1384,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&md).unwrap(), document, "the document is left alone");
     }
 
-    /// A execução de um critério, o veredito e a resposta do assistente são
-    /// gravados só pelo binário: o `run write` recusa os três, e recusa tirar
-    /// uma execução gravada. Uma execução aprovada escrita à mão nunca abre o
-    /// fechamento.
+    /// A execução de um critério e a resposta do assistente são gravadas só
+    /// pelo binário: o `run write` recusa as duas, e recusa tirar uma execução
+    /// gravada. O veredito escrito sem pedido de revisão aberto também é
+    /// recusado. Uma execução aprovada escrita à mão nunca abre o fechamento.
     #[test]
     fn criteria_runs_and_verdicts_are_written_by_the_binary_only() {
         use crate::shared::spec_state::{seed_run, seed_runs};
@@ -1302,7 +1404,7 @@ mod tests {
             criteria[0]
         );
         let refused = write(root, "verdict", &verdict);
-        assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
+        assert_eq!(refused["reason"], json!("no-open-review"), "{refused}");
         let removal = write(root, "remove", &format!(r#"{{"targets":[{failing}],"reason":"engano"}}"#));
         assert_eq!(removal["reason"], json!("binary-only-type"), "taking the red run out is refused too: {removal}");
 
@@ -1322,6 +1424,90 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
+    }
+
+    /// Um pedido de revisão aberto na spec `teste`, como o fechamento o grava.
+    /// Devolve o número dele.
+    fn review_asked(root: &std::path::Path) -> u64 {
+        crate::shared::spec_state::seed_event(root, "teste", "send", json!({"role": "review", "text": "revise",
+            "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}))
+    }
+
+    /// O revisor grava o próprio veredito só com pedido de revisão aberto:
+    /// sem ele, a gravação recusa com a mensagem combinada e nada é gravado.
+    /// Com o pedido aberto, a volta entra marcada como volta, do revisor, fora
+    /// da leitura, e vale gravar de novo enquanto ninguém a assumiu — a volta
+    /// não fecha o pedido. O veredito oficial que a assume fecha: a gravação
+    /// seguinte recusa outra vez.
+    #[test]
+    fn o_revisor_so_grava_veredito_com_revisao_pedida() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        message(root, "user", "revise a obra");
+        let approved = r#"{"final":true,"result":"approved","text":"Sem achados."}"#;
+        let before = lines(root);
+        let refused = write(root, "verdict", approved);
+        assert_eq!(refused["reason"], json!("no-open-review"), "{refused}");
+        assert_eq!(refused["hint"], json!("Não há pedido de revisão aberto nesta spec. Nada foi gravado."));
+        assert_eq!(lines(root), before, "nothing was written");
+
+        let asked = review_asked(root);
+        let first = write(root, "verdict", approved);
+        assert_eq!((&first["ok"], &first["type"]), (&json!(true), &json!("verdict")), "{first}");
+        let second = write(root, "verdict", r#"{"final":true,"wave":1,"result":"rejected","text":"Falta o teste."}"#);
+        assert_eq!(second["ok"], json!(true), "o revisor grava de novo antes de a volta ser assumida: {second}");
+        let read = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let log = read();
+        let returns = [first["id"].as_u64().unwrap(), second["id"].as_u64().unwrap()];
+        for id in returns {
+            let event = log.get(id).unwrap();
+            assert_eq!(event.fields.get("returned"), Some(&json!(true)), "{event:?}");
+            assert_eq!(event.str_field("author"), Some("review"), "{event:?}");
+        }
+        assert!(log.visible().iter().all(|e| e.event_type != "verdict"), "a volta fica fora da leitura");
+        assert_eq!(crate::commands::flow::round::open_review(&log), Some(asked), "a volta não fecha o pedido");
+
+        let official = json!({"final": true, "wave": 1, "result": "rejected", "text": "Falta o teste.",
+            "replaces": returns, "author": "review"});
+        record(root, "teste", "verdict", official.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+        assert_eq!(crate::commands::flow::round::open_review(&read()), None, "o veredito oficial fecha o pedido");
+        let before = lines(root);
+        let again = write(root, "verdict", approved);
+        assert_eq!(again["reason"], json!("no-open-review"), "{again}");
+        assert_eq!(lines(root), before, "nothing was written");
+    }
+
+    /// O veredito final responde por todo o combinado vigente, item a item: o
+    /// que deixa um item de fora é recusado na gravação, antes de gravar,
+    /// nomeando o item e mandando o revisor gravar de novo; o que responde
+    /// por todos entra, mesmo com um item não atendido.
+    #[test]
+    fn o_veredito_final_sem_todo_o_combinado_e_recusado_na_gravacao() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "revise a obra");
+        let rule = json!({"text": "A trava confere o programa.", "keys": ["trava"], "example": "rm -rf é barrado.",
+            "origin": said});
+        assert_eq!(write(root, "rule", &rule.to_string())["code"], json!("MSTD-RULE-0001"));
+        let decision = json!({"text": "Sem prova extra.", "keys": ["prova"], "why": "w", "origin": said});
+        assert_eq!(write(root, "decision", &decision.to_string())["code"], json!("MSTD-DEC-0001"));
+        review_asked(root);
+        let before = lines(root);
+
+        let partial = json!({"final": true, "result": "approved", "text": "Sem achados.",
+            "agreed": [{"item": "MSTD-RULE-0001", "met": true}]});
+        let refused = write(root, "verdict", &partial.to_string());
+        assert_eq!(refused["reason"], json!("agreed-items-missing"), "{refused}");
+        let expected = translate("spec_events.agreed_items_missing", Locale::PtBr).replace("{missing}", "MSTD-DEC-0001");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        assert!(expected.contains("grava o veredito de novo"), "{expected}");
+        assert_eq!(lines(root), before, "nothing was written");
+
+        let whole = json!({"final": true, "result": "rejected", "text": "Falta a prova.",
+            "agreed": [{"item": "MSTD-RULE-0001", "met": true}, {"item": "MSTD-DEC-0001", "met": false, "text": "Falta."}]});
+        let accepted = write(root, "verdict", &whole.to_string());
+        assert_eq!(accepted["ok"], json!(true), "{accepted}");
+        assert_eq!(lines(root), before + 1, "a volta foi gravada, e só ela");
     }
 
     /// Uma decisão revista fica no arquivo de eventos com as duas versões, a
@@ -1463,13 +1649,14 @@ mod tests {
         }
     }
 
-    /// O que cada onda entregou, o commit, o clique e a fala digitada do
-    /// usuário não são gravados à mão: o `run write` recusa os quatro, e recusa
-    /// tirar ou rever uma entrega, um clique ou uma fala do usuário, sem gravar
-    /// nada. A mensagem do assistente segue aceita, e o expurgo da fala do
-    /// usuário também: o segredo colado na conversa precisa poder sair.
+    /// O commit, o clique e a fala digitada do usuário não são gravados à mão,
+    /// e a entrega só entra como volta da onda com o envio dela aberto: sem
+    /// envio, o `run write` a recusa. Ele recusa também tirar ou rever uma
+    /// entrega, um clique ou uma fala do usuário, sem gravar nada. A mensagem
+    /// do assistente segue aceita, e o expurgo da fala do usuário também: o
+    /// segredo colado na conversa precisa poder sair.
     #[test]
-    fn deliveries_commits_and_user_clicks_are_never_written_by_hand() {
+    fn commits_and_user_clicks_are_never_written_by_hand() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = message(root, "user", "a senha é abc123");
@@ -1494,7 +1681,7 @@ mod tests {
         let witness = json!({"question": "Seguir?", "answer": "Sim"});
         let before = lines(root);
         for (event_type, body, reason) in [
-            ("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["src/a.rs"]}), "binary-only-type"),
+            ("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["src/a.rs"]}), "no-open-send"),
             ("commit", json!({"sha": "abc", "title": "t", "waves": [1], "files": ["src/a.rs"], "repo": "r"}), "binary-only-type"),
             ("remove", json!({"targets": [delivered], "reason": "engano"}), "binary-only-type"),
             ("message", json!({"author": "user", "text": "Seguir?\nSim", "witness": witness}), "user-message-by-hook"),
@@ -1973,26 +2160,177 @@ mod tests {
         let files = [specs.join("teste").join("spec.ndjson"), specs.join("index.ndjson")];
         let before: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
 
-        let lesson = r#"{"class":"defect","text":"Um rm -rf na pasta errada perde trabalho.","keys":["apagar","rm"],"applies_to":{"subproject":"apps/rt"}}"#;
-        assert_eq!(write(root, "lesson", lesson), json!({"ok": true, "id": 1, "type": "lesson", "class": "defect"}));
+        let lesson = r#"{"class":"environment_trap","text":"Um rm -rf na pasta errada perde trabalho.","keys":["apagar","rm"],"applies_to":{"subproject":"apps/rt"}}"#;
+        assert_eq!(write(root, "lesson", lesson), json!({"ok": true, "id": 1, "type": "lesson", "class": "environment_trap"}));
         let after: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
         assert!(before == after, "the spec's files did not move");
         let bank = std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap();
-        assert!(bank.contains(r#""found_in":{"spec":"teste"}"#) && bank.contains(r#""type":"defect""#), "{bank}");
+        assert!(bank.contains(r#""found_in":{"spec":"teste"}"#) && bank.contains(r#""type":"environment_trap""#), "{bank}");
 
         let everywhere = r#"{"class":"user_preference","text":"Resposta curta.","keys":["resposta"],"applies_to":{"files":["**"]},"found_in":{"source":"CLAUDE.md"}}"#;
         let second = write_to(root, None, "lesson", everywhere);
         assert_eq!(second["id"], json!(2), "{second}");
-        let no_origin = r#"{"class":"defect","text":"t","keys":["k"],"applies_to":{"skill":"s"}}"#;
+        let no_origin = r#"{"class":"environment_trap","text":"t","keys":["k"],"applies_to":{"skill":"s"}}"#;
         let refused = write_to(root, None, "lesson", no_origin);
         assert_eq!(refused["reason"], json!("lesson-origin-missing"), "{refused}");
         assert_eq!(std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap().lines().count(), 2);
     }
 
+    /// A recusa de uma lição que vale para o projeto: `ok` falso, a razão
+    /// `reason` e a dica com cada trecho de `said`, sem nenhum de `unsaid`.
+    fn refused_to_the_code(out: &Value, reason: &str, said: &[&str], unsaid: &[&str]) {
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!(reason), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        for part in said {
+            assert!(hint.contains(part), "the hint lacks `{part}`: {hint}");
+        }
+        for part in unsaid {
+            assert!(!hint.contains(part), "the hint says `{part}`: {hint}");
+        }
+    }
+
+    /// Pelo comando de gravar lição, a lição de defeito é recusada e nada
+    /// entra no banco: nem o banco nasce, nem muda um byte dele. Com uma spec
+    /// aberta, a recusa manda gravar a tarefa do conserto nela, pelo nome;
+    /// sem spec aberta, e com a spec em que a lição nasceu já fechada, a
+    /// recusa diz o conserto com teste e não fala em spec. Nos dois idiomas.
+    /// A junção que daria uma lição de defeito também é recusada. A armadilha
+    /// do ambiente e a preferência do usuário continuam entrando, e a
+    /// retirada também.
+    #[test]
+    fn a_licao_de_defeito_e_recusada_e_aponta_a_tarefa() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let bank = root.join(".claude").join("spec").join("lessons.ndjson");
+        let lesson = |spec: Option<&str>, class: &str, text: &str| {
+            let draft = json!({"class": class, "text": text, "keys": ["pasta"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
+            write_to(root, spec, "lesson", &draft.to_string())
+        };
+        let fix = ["teste que falha se o defeito voltar", "vai ao git", "Nada foi gravado"];
+
+        let defect = lesson(None, "defect", "Apagar a pasta errada perde trabalho.");
+        refused_to_the_code(&defect, "defect-by-task", &fix, &["spec", "run write task"]);
+        assert!(!bank.exists(), "a recusa não criou o banco");
+        let in_the_spec = lesson(Some("obra-aberta"), "defect", "Apagar a pasta errada perde trabalho.");
+        refused_to_the_code(&in_the_spec, "defect-by-task", &["mustard-rt run write task", "na spec obra-aberta", fix[0]], &[]);
+        assert!(!bank.exists(), "a recusa não criou o banco");
+
+        let trap = lesson(None, "environment_trap", "O cargo fica fora do caminho do shell.");
+        assert_eq!(trap, json!({"ok": true, "id": 1, "type": "lesson", "class": "environment_trap"}));
+        let preference = lesson(None, "user_preference", "Resposta curta e sem sigla.");
+        assert_eq!(preference, json!({"ok": true, "id": 2, "type": "lesson", "class": "user_preference"}));
+
+        let before = std::fs::read(&bank).unwrap();
+        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+            "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
+        let merge = write_to(root, None, "lesson", &merged.to_string());
+        refused_to_the_code(&merge, "defect-by-task", &fix, &["spec"]);
+        assert_eq!(std::fs::read(&bank).unwrap(), before, "a recusa não mudou o banco");
+
+        // A spec em que a lição nasceu já fechou: não recebe tarefa.
+        crate::shared::spec_state::seed_event(root, "obra-fechada", "state", json!({"phase": "closed"}));
+        let closed = lesson(Some("obra-fechada"), "defect", "Apagar a pasta errada perde trabalho.");
+        refused_to_the_code(&closed, "defect-by-task", &fix, &["spec", "run write task"]);
+
+        let retired = write_to(root, None, "lesson", r#"{"targets":[2],"reason":"a resposta mudou de jeito"}"#);
+        assert_eq!(retired, json!({"ok": true, "id": 3, "type": "lesson", "retired": [2]}));
+
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+        let before = std::fs::read(&bank).unwrap();
+        let english = lesson(None, "defect", "Deleting the wrong folder loses work.");
+        refused_to_the_code(&english, "defect-by-task", &["test that fails if the defect comes back", "Nothing was written"], &["spec"]);
+        let english = lesson(Some("obra-aberta"), "defect", "Deleting the wrong folder loses work.");
+        refused_to_the_code(&english, "defect-by-task", &["mustard-rt run write task", "in the spec obra-aberta"], &[]);
+        assert_eq!(std::fs::read(&bank).unwrap(), before, "a recusa não mudou o banco");
+        let kept = std::fs::read_to_string(&bank).unwrap();
+        assert!(!kept.contains(r#""type":"defect""#), "nenhuma lição de defeito entrou: {kept}");
+    }
+
+    /// Pelo comando de gravar lição, a lição de regra do projeto é recusada
+    /// antes de gravar, sozinha ou juntando outras, e o banco fica com os
+    /// mesmos bytes. A recusa diz o caminho: a regra vira teste no código,
+    /// que falha se ela for quebrada, e o teste vai ao git. Com uma spec
+    /// aberta, manda gravar a tarefa nela, pelo nome; sem spec aberta, não
+    /// fala em spec. Nos dois idiomas.
+    #[test]
+    fn a_licao_de_regra_do_projeto_e_recusada_e_vira_teste() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let bank = root.join(".claude").join("spec").join("lessons.ndjson");
+        let rule = |spec: Option<&str>, extra: Value| {
+            let mut draft = json!({"class": "project_rule", "text": "O gancho nunca trava a sessão por erro próprio.",
+                "keys": ["gancho"], "applies_to": {"subproject": "apps/rt"}, "found_in": {"source": "apps/rt/CLAUDE.md"}});
+            if let (Some(draft), Value::Object(extra)) = (draft.as_object_mut(), extra) {
+                draft.extend(extra);
+            }
+            write_to(root, spec, "lesson", &draft.to_string())
+        };
+        let test = ["regra do projeto não entra no banco de lições", "vira teste no código", "falha se a regra for quebrada", "vai ao git", "Nada foi gravado"];
+
+        let alone = rule(None, json!({}));
+        refused_to_the_code(&alone, "rule-by-test", &test, &["spec", "run write task"]);
+        assert!(!bank.exists(), "a recusa não criou o banco");
+
+        let trap = write_to(root, None, "lesson", &json!({"class": "environment_trap", "text": "O cargo fica fora do caminho do shell.",
+            "keys": ["cargo"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}}).to_string());
+        assert_eq!(trap["ok"], json!(true), "{trap}");
+        let before = std::fs::read(&bank).unwrap();
+
+        let in_the_spec = rule(Some("obra-aberta"), json!({}));
+        refused_to_the_code(&in_the_spec, "rule-by-test", &["vira teste no código da obra", "mustard-rt run write task", "na spec obra-aberta"], &[]);
+        let merge = rule(None, json!({"replaces": [1]}));
+        refused_to_the_code(&merge, "rule-by-test", &test, &["spec"]);
+        assert_eq!(std::fs::read(&bank).unwrap(), before, "o banco ficou com os mesmos bytes");
+
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+        let english = rule(None, json!({}));
+        refused_to_the_code(&english, "rule-by-test", &["becomes a test in the code", "fails if the rule is broken", "Nothing was written"], &["spec"]);
+        let english = rule(Some("obra-aberta"), json!({}));
+        refused_to_the_code(&english, "rule-by-test", &["mustard-rt run write task", "in the spec obra-aberta"], &[]);
+        assert_eq!(std::fs::read(&bank).unwrap(), before, "o banco ficou com os mesmos bytes");
+    }
+
+    /// As regras do projeto que já estão no banco, gravadas antes da recusa,
+    /// seguem na leitura como antes: a leitura da lição pelo número a traz, e
+    /// a busca por escopo que o pedido de cada onda usa a acha para um
+    /// arquivo do subprojeto dela. A recusa de uma regra nova não apaga nada.
+    #[test]
+    fn a_regra_do_projeto_ja_no_banco_segue_na_leitura() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join(".claude").join("spec").join("lessons.ndjson");
+        let old = json!({"class": "project_rule", "author": "binary", "text": "Nunca trave a sessão por erro do gancho.",
+            "keys": ["gancho"], "applies_to": {"subproject": "apps/rt"}, "found_in": {"source": "apps/rt/CLAUDE.md"}});
+        let Value::Object(old) = old else { unreachable!() };
+        let id = lessons::write(&path, old, None).expect("a linha antiga entra pelo gravador do banco").id;
+
+        let refused = write_to(root, None, "lesson", &json!({"class": "project_rule", "text": "Outra regra do projeto.",
+            "keys": ["regra"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}}).to_string());
+        assert_eq!(refused["reason"], json!("rule-by-test"), "{refused}");
+
+        let read = super::super::read::read_at(&super::super::read::ReadOpts {
+            root: root.to_path_buf(),
+            spec: None,
+            block: "lessons".into(),
+            term: Some(id.to_string()),
+        })
+        .expect("the lesson block reads");
+        let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
+        assert_eq!(read["events"][0]["id"], json!(id), "{read}");
+        assert_eq!(read["events"][0]["type"], json!("project_rule"), "{read}");
+
+        let bank = lessons::read(&path).unwrap().unwrap();
+        let scope = mustard_core::domain::lessons::Scope { files: vec!["apps/rt/src/main.rs".into()], ..Default::default() };
+        let found: Vec<u64> = mustard_core::domain::lessons::in_scope(&bank, &scope).iter().map(|l| l.id).collect();
+        assert_eq!(found, [id], "the wave that touches apps/rt still gets the rule");
+        assert_eq!(bank.events.len(), 1, "nothing was written or taken out of the bank");
+    }
+
     /// Uma lição com o texto `text`, que vale no projeto todo, como o
     /// assistente a grava pelo `run write lesson`.
     fn lesson_text(root: &std::path::Path, text: &str) -> Value {
-        let draft = json!({"class": "defect", "text": text, "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
+        let draft = json!({"class": "environment_trap", "text": text, "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
         write_to(root, None, "lesson", &draft.to_string())
     }
 
@@ -2047,7 +2385,7 @@ mod tests {
         let hint = again["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("lição 1") && hint.contains("Não apague a pasta de outra sessão."), "{hint}");
         assert_eq!(std::fs::read(root.join(".claude/spec/lessons.ndjson")).unwrap(), before);
-        let draft = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 1});
+        let draft = json!({"class": "environment_trap", "text": "Nunca apague a pasta de outra sessão.", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 1});
         assert_eq!(write_to(root, None, "lesson", &draft.to_string())["id"], json!(2));
     }
 
@@ -2063,10 +2401,10 @@ mod tests {
         assert_eq!(lesson_text(root, "Remover a pasta alheia perde trabalho.")["id"], json!(2));
         assert_eq!(lesson_text(root, "A suíte roda no servidor antigo.")["id"], json!(3));
 
-        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+        let merged = json!({"class": "environment_trap", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
             "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
         let out = write_to(root, None, "lesson", &merged.to_string());
-        assert_eq!(out, json!({"ok": true, "id": 4, "type": "lesson", "class": "defect", "replaced": [1, 2]}));
+        assert_eq!(out, json!({"ok": true, "id": 4, "type": "lesson", "class": "environment_trap", "replaced": [1, 2]}));
 
         let lines = bank_lines(root);
         let no_reason = write_to(root, None, "lesson", r#"{"targets":[3]}"#);
@@ -2106,7 +2444,7 @@ mod tests {
             mustard_core::domain::lessons::kept(&bank).iter().map(|l| l.id).collect()
         };
         let lines = bank_lines(root);
-        let every_lesson = json!({"type": "defect", "from": "2000-01-01T00:00", "to": "2100-01-01T00:00"});
+        let every_lesson = json!({"type": "environment_trap", "from": "2000-01-01T00:00", "to": "2100-01-01T00:00"});
         for (extra, value) in [("filter", every_lesson), ("replaces", json!(4))] {
             let mut draft = json!({"targets": [3], "reason": "o servidor antigo saiu"});
             draft[extra] = value;
@@ -2127,7 +2465,7 @@ mod tests {
         assert_eq!(out["retired"], json!([3]));
 
         let before = kept();
-        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+        let merged = json!({"class": "environment_trap", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
             "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
         let out = write_to(root, None, "lesson", &merged.to_string());
         assert_eq!(out["replaced"], gone(&before, &kept()), "{out}");
@@ -2231,6 +2569,77 @@ mod tests {
         assert_eq!(specs, ["teste"], "no spec was opened");
     }
 
+    /// Numa spec aprovada, com a página já publicada, a gravação que muda o
+    /// plano — um critério, uma tarefa do backlog, uma regra e o próprio
+    /// pedido do usuário — não prepara cópia da página: a saída não traz
+    /// `copy` nem manda copiar, o pedido responde só o passo do efeito, e a
+    /// pasta de cópia nem nasce. Só a gravação com `--copy` prepara a cópia,
+    /// uma vez, com os lotes calculados na hora: eles levam tudo o que veio
+    /// desde a publicação, o pedido e a tarefa dele juntos.
+    #[test]
+    fn a_gravacao_que_muda_o_plano_nao_prepara_copia() {
+        use mustard_core::platform::i18n::Locale;
+        use mustard_core::platform::page_templates::{spec_page_template, template_stamp};
+        const URL: &str = "https://claude.ai/code/artifact/teste";
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        born(root);
+        let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
+        let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        witness_approves(root);
+        let template = spec_page_template(Locale::PtBr);
+        let stamp = template_stamp(&template).expect("the stamp");
+        let publish = json!({"page": "spec", "milestone": "approval", "ok": true, "template": true, "stamp": stamp,
+            "url": URL});
+        assert_eq!(write(root, "publish", &publish.to_string())["ok"], json!(true));
+        let copy_folder = root.join(".claude").join("spec").join("teste").join("copy");
+
+        let asked = write(root, "message", r#"{"author":"user","text":"inclua a subtração"}"#)["id"].as_u64().unwrap();
+        let drafts = [
+            ("request", json!({"text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves",
+                "origin": asked})),
+            ("criterion", json!({"when": "o programa roda", "then": "a subtração aparece", "proof": "cargo test",
+                "form": "ubiquitous", "origin": asked})),
+            ("rule", json!({"text": "A subtração usa o formato da soma.", "keys": ["subtração"],
+                "example": "3 - 1 imprime 2.", "applies_to": {"files": ["**"]}, "origin": asked})),
+            ("task", json!({"title": "Subtrair", "text": "Subtrair dois números.", "files": [], "depends_on": [],
+                "covers": [criterion], "origin": asked})),
+        ];
+        let mut written = Vec::new();
+        for (event_type, draft) in &drafts {
+            let out = write(root, event_type, &draft.to_string());
+            assert_eq!(out["ok"], json!(true), "{event_type}: {out}");
+            assert!(out.get("copy").is_none(), "{event_type} prepared a copy: {out}");
+            assert!(!out.to_string().contains("write copy"), "{event_type} ordered a copy: {out}");
+            assert!(!copy_folder.exists(), "{event_type} wrote the copy folder");
+            written.push(out["id"].as_u64().unwrap());
+        }
+        let request = write(root, "request", &drafts[0].1.to_string());
+        assert_eq!(request["next"], json!(translate("request.new_waves", Locale::PtBr)), "{request}");
+
+        // A última gravação do pedido, com `--copy`: a cópia sai uma vez só,
+        // com tudo o que o pedido gerou.
+        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "files": [], "depends_on": [],
+            "covers": [criterion], "origin": asked});
+        let last = write_at_with(
+            &WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(),
+                json: task.to_string() },
+            true,
+        );
+        assert_eq!(last["ok"], json!(true), "{last}");
+        assert_eq!(last["copy"]["spec"]["published"], json!(true), "{last}");
+        let next = last["next"].as_str().unwrap_or_default();
+        assert!(next.contains("write copy") && next.contains(URL), "the last write orders the copy: {last}");
+        assert!(!next.contains("write publish"), "the page already has its address: {next}");
+        let copied = crate::commands::spec_events::pages::copy::sent_items(root, &last);
+        written.push(last["id"].as_u64().unwrap());
+        for id in &written {
+            assert!(copied.contains(id), "the copy misses item {id}: {copied:?}");
+        }
+    }
+
     /// A onda nasce do backlog: pela porta do modelo, a onda nova e a versão
     /// nova de uma onda são recusadas, antes e depois da aprovação, e nada é
     /// gravado. Tirar uma onda continua valendo.
@@ -2263,8 +2672,7 @@ mod tests {
     /// A onda semeada pelos testes sai como a rodada a grava: com o autor do
     /// programa, pela porta do binário. A tarefa que traz o número da onda
     /// vai pela mesma porta. Nada passa pela gravação do modelo: ela recusa o
-    /// autor do programa, e numa spec aprovada juntaria ao relatório a cópia
-    /// para o banco da página.
+    /// autor do programa, a onda e a tarefa que já traz o número da onda.
     #[test]
     fn a_onda_semeada_pelos_testes_sai_com_autor_binario() {
         let dir = tempdir().unwrap();

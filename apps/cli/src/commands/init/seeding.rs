@@ -487,7 +487,7 @@ mod tests {
 
         let plan = mustard_core::platform::project_seed::cleanup::plan(root);
         assert_eq!(plan.files.len(), 3, "fixture: três arquivos com sobras: {plan:?}");
-        assert!(!plan.lessons.is_empty(), "fixture: a Guard que sai vira lição: {plan:?}");
+        assert!(!plan.rules.is_empty(), "fixture: a regra da Guard que sai vai à lista de pendências: {plan:?}");
 
         assert_eq!(
             cleanup_notice(root),
