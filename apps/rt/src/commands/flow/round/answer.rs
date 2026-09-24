@@ -10,7 +10,7 @@ use std::path::Path;
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{agent_from_template, estimate_tokens, token_cap_message, wave_files};
+use mustard_core::domain::wave_prompt::{estimate_tokens, token_cap_message, wave_files};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -633,10 +633,9 @@ pub(super) fn run_round_with_mine(
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
-        // O nome do agente escolhido pelo tamanho do lote (`wave` ou
-        // `wave-solo`), e não o molde dele, que mora no projeto: é o nome que
-        // o reenvio chama de novo, e a resposta desta rodada o repete, para
-        // quem despacha saber qual dos dois chamar. O pedido e o modelo
+        // O nome do agente, `wave` em toda onda, de uma tarefa ou de várias,
+        // e não o molde dele, que mora no projeto: a resposta desta rodada o
+        // repete, para quem despacha saber qual chamar. O pedido e o modelo
         // pedido vão junto — nada disso é remontado na leitura, é o que foi
         // enviado.
         let agent = prompt.agent.clone();
@@ -688,14 +687,11 @@ pub(super) fn run_round_with_mine(
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
-        // O agente e o modelo pedido são os do envio original: um reenvio não
-        // remonta o input, só acrescenta o aviso do que mudou na cópia. O
-        // reenvio chama o mesmo dos dois agentes que o envio original chamou:
-        // pelo nome gravado nele ou, no envio antigo que só guardou o molde,
-        // pelo nome que o molde traz.
-        let agent = prior
-            .str_field("agent")
-            .map_or_else(|| agent_from_template(prior.str_field("template").unwrap_or_default()), str::to_string);
+        // O modelo pedido é o do envio original: um reenvio não remonta o
+        // input, só acrescenta o aviso do que mudou na cópia. O agente é o
+        // `wave`, o de toda onda, mesmo quando o envio antigo chamou o agente
+        // de tarefa única, que foi juntado a ele e não existe mais no projeto.
+        let agent = "wave";
         draft.insert("agent".into(), json!(agent));
         if let Some(model) = prior.str_field("model") {
             draft.insert("model".into(), json!(model));
@@ -1208,33 +1204,59 @@ mod tests {
         assert_eq!(sent[0].wave(), Some(1));
     }
 
-    /// A resposta da rodada diz qual dos dois arquivos de agente usar em
-    /// cada lote despachado, pelo tamanho dele: `wave-solo` para uma tarefa
-    /// só, `wave` para várias — no envio novo e no reenvio, que ecoa o
-    /// mesmo agente do envio original, sem remontar o pedido.
+    /// Toda onda vai ao agente `wave`. A de uma tarefa só grava o `wave` no
+    /// envio, e a resposta da rodada o nomeia no despacho e no próximo passo,
+    /// que manda ao `mustard-wave` e nunca ao agente de tarefa única, juntado
+    /// a ele. O reenvio de um envio antigo gravado com o agente de tarefa
+    /// única — pelo nome ou só pelo molde — também sai ao `wave`, sem
+    /// remontar o pedido. A onda de várias tarefas vai ao mesmo agente.
     #[test]
-    fn a_resposta_da_rodada_diz_qual_agente_usar() {
-        let solo_dir = tempdir().unwrap();
-        let solo_root = solo_dir.path();
-        approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
-        let first = round(solo_root, "x", None);
-        let agent_of = |out: &Value, wave: u64| -> String {
+    fn a_single_task_wave_is_sent_to_the_wave_agent() {
+        let agent_of = |out: &Value| -> String {
             out["dispatch"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|d| d["wave"].as_u64() == Some(wave))
+                .find(|d| d["wave"].as_u64() == Some(1))
                 .and_then(|d| d["agent"].as_str())
                 .unwrap_or_default()
                 .to_string()
         };
-        assert_eq!(agent_of(&first, 1), "wave-solo", "{first}");
+        let last_send = |root: &Path| -> SpecEvent {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            log.last_by_wave("send").get(&1).and_then(|id| log.get(*id)).cloned().expect("the send")
+        };
 
-        // O reenvio não remonta o pedido, mas a resposta segue dizendo qual
-        // dos dois agentes chamar: o mesmo do envio original.
-        let paused = line("PAUSED", json!({"wave": 1}));
-        let resent = round(solo_root, "x", Some(&paused));
-        assert_eq!(agent_of(&resent, 1), "wave-solo", "{resent}");
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(agent_of(&first), "wave", "{first}");
+        let sent = last_send(root);
+        assert_eq!(sent.str_field("agent"), Some("wave"), "{sent:?}");
+        let next = first["next"].as_str().unwrap_or_default();
+        assert!(next.contains("`mustard-wave`") && !next.contains("wave-solo"), "{first}");
+
+        // O envio antigo gravado com o nome do agente de tarefa única, e o
+        // mais antigo ainda, que só guardou o molde dele: cada um é reenviado
+        // ao `wave`, e o envio novo não guarda o molde.
+        for (key, old_value) in [("agent", "wave-solo"), ("template", "---\nname: mustard-wave-solo\n---\n\nO molde.")] {
+            let current = last_send(root);
+            let mut old = current.fields.clone();
+            for gone in ["v", "id", "code", "at", "search", "type", "agent", "template", "resends", "replaces"] {
+                old.remove(gone);
+            }
+            old.insert(key.into(), json!(old_value));
+            old.insert("replaces".into(), json!(current.id));
+            crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(old));
+
+            let resent = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+            assert_eq!(agent_of(&resent), "wave", "{key}: {resent}");
+            let last = last_send(root);
+            assert!(last.fields.contains_key("resends"), "{key}: {last:?}");
+            assert_eq!(last.str_field("agent"), Some("wave"), "{key}: {last:?}");
+            assert_eq!(last.str_field("template"), None, "{key}: {last:?}");
+        }
 
         let multi_dir = tempdir().unwrap();
         let multi_root = multi_dir.path();
@@ -1248,13 +1270,12 @@ mod tests {
             );
         });
         let multi_out = round(multi_root, "x", None);
-        assert_eq!(agent_of(&multi_out, 1), "wave", "{multi_out}");
+        assert_eq!(agent_of(&multi_out), "wave", "{multi_out}");
     }
 
     /// O envio grava o nome do agente e não o molde dele; a lista das ondas
     /// e o painel mostram o envio sem o pedido, e só a leitura da onda o
-    /// traz inteiro. O envio antigo, que só guardou o molde, é reenviado ao
-    /// mesmo agente que o molde nomeia.
+    /// traz inteiro.
     #[test]
     fn a_leitura_das_ondas_nao_repete_o_molde_nem_o_pedido() {
         use crate::commands::spec_events::read::{read_for, ReadOpts};
@@ -1269,7 +1290,7 @@ mod tests {
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send").cloned().expect("the send");
-        assert_eq!(sent.str_field("agent"), Some("wave-solo"), "{sent:?}");
+        assert_eq!(sent.str_field("agent"), Some("wave"), "{sent:?}");
         assert_eq!(sent.str_field("template"), None, "{sent:?}");
 
         let read = |block: &str| -> Value {
@@ -1282,27 +1303,9 @@ mod tests {
         for block in ["waves", "metrics"] {
             let shown = send_of(&read(block));
             assert!(shown.get("text").is_none(), "{block} shows the request: {shown}");
-            assert_eq!(shown["agent"], json!("wave-solo"), "{block}: {shown}");
+            assert_eq!(shown["agent"], json!("wave"), "{block}: {shown}");
         }
         assert_eq!(send_of(&read("wave-1"))["text"], json!(prompt), "the wave shows the whole request");
-
-        // O envio antigo: o molde, com o nome do agente de tarefa única, e
-        // nenhum nome à parte.
-        let mut old = sent.fields.clone();
-        for key in ["v", "id", "code", "at", "search", "type", "agent"] {
-            old.remove(key);
-        }
-        old.insert("template".into(), json!("---\nname: mustard-wave-solo\n---\n\nO molde."));
-        old.insert("replaces".into(), json!(sent.id));
-        crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(old));
-
-        let resent = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
-        assert_eq!(resent["dispatch"][0]["agent"], json!("wave-solo"), "{resent}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let last = log.last_by_wave("send").get(&1).and_then(|id| log.get(*id)).cloned().expect("the new send");
-        assert!(last.fields.contains_key("resends"), "{last:?}");
-        assert_eq!(last.str_field("agent"), Some("wave-solo"), "{last:?}");
-        assert_eq!(last.str_field("template"), None, "{last:?}");
     }
 
     /// A instrução de publicar e copiar a página, por extenso, fica só no

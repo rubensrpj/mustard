@@ -34,41 +34,8 @@ use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog,
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
-/// O nome do agente de onda a chamar, pelo número de tarefas do lote:
-/// `"wave-solo"` para uma tarefa só, `"wave"` para várias. É o nome do
-/// arquivo, sem a extensão, sob `.claude/agents/mustard/`. Nenhum dos dois
-/// limita as idas e voltas do agente: a medição das ondas já entregues deu de
-/// 36 a 403 idas, com média de 153, e nada que a montagem do lote conhece
-/// prevê esse gasto — quem cuida da janela cheia é a compactação, que o agente
-/// faz sozinho, e quem cuida da onda parada é o sinal de vida da rodada.
-#[must_use]
-pub fn agent_role(tasks: usize) -> &'static str {
-    if tasks <= 1 {
-        "wave-solo"
-    } else {
-        "wave"
-    }
-}
-
-/// O nome do agente que o molde `template` identifica, pelo campo `name` do
-/// frontmatter dele: `mustard-wave-solo` vira `"wave-solo"`, `mustard-wave`
-/// vira `"wave"`. Sem o campo, ou um nome fora do prefixo `mustard-`, volta
-/// `"wave"` — o papel que a plataforma já aceitava antes dos dois moldes. É
-/// como o reenvio, que não remonta o pedido, sabe qual dos dois o envio
-/// original usou.
-#[must_use]
-pub fn agent_from_template(template: &str) -> String {
-    template
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("name:"))
-        .map(str::trim)
-        .and_then(|name| name.strip_prefix("mustard-"))
-        .unwrap_or("wave")
-        .to_string()
-}
-
-/// O modelo pedido no envio, seja qual for o papel (`wave`, `wave-solo`,
-/// `review` ou `skill`): todo agente do Mustard sai em Opus, pelo apelido que
+/// O modelo pedido no envio, seja qual for o papel (`wave`, `review` ou
+/// `skill`): todo agente do Mustard sai em Opus, pelo apelido que
 /// a plataforma resolve sempre para a versão mais nova. Quem manda isso é o
 /// binário, no próprio pedido — sem escolha explícita, o agente herda o
 /// modelo da sessão e a decisão morre em silêncio.

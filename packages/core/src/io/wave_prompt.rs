@@ -33,9 +33,8 @@ use crate::platform::i18n::Locale;
 pub struct WavePrompt {
     /// O número da onda.
     pub wave: u64,
-    /// O nome do agente escolhido para este lote, pelo número de tarefas
-    /// ([`wave_prompt::agent_role`]): `"wave-solo"` numa tarefa só, `"wave"`
-    /// em várias — o molde que o projeto instalou com esse nome.
+    /// O nome do agente que recebe a onda: sempre `"wave"`, numa tarefa só
+    /// ou em várias — o molde que o projeto instalou com esse nome.
     pub agent: String,
     /// O modelo pedido para a onda: fixo, pelo papel `wave`
     /// ([`wave_prompt::requested_model`]).
@@ -464,9 +463,9 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
-    // O nome do agente, pelo número de tarefas do lote: o molde com esse
-    // nome mora no projeto, e o envio grava só o nome.
-    let agent = wave_prompt::agent_role(of_type("task").len()).to_string();
+    // O nome do agente, o mesmo em toda onda, de uma tarefa ou de várias: o
+    // molde com esse nome mora no projeto, e o envio grava só o nome.
+    let agent = "wave".to_string();
     let model = wave_prompt::requested_model(&agent).to_string();
     WavePrompt { wave, agent, model, text, lines, bad_skills, stale_skills }
 }

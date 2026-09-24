@@ -609,6 +609,33 @@ mod tests {
         );
     }
 
+    /// A instalação sobre um projeto de uma versão antiga, que ainda tem o
+    /// agente de onda de tarefa única, tira esse arquivo e deixa os três
+    /// agentes de hoje; o agente do projeto com o mesmo nome, fora da pasta do
+    /// Mustard, fica intocado.
+    #[test]
+    fn an_install_over_an_older_project_removes_the_retired_single_task_wave_agent() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        let claude = project.join(".claude");
+        fs::create_dir_all(claude.join("agents/mustard")).unwrap();
+        fs::write(claude.join("agents/mustard/wave-solo.md"), "---\nname: mustard-wave-solo\n---\n").unwrap();
+        let own = "---\nname: wave-solo\n---\n\nO agente do projeto.\n";
+        fs::write(claude.join("agents/wave-solo.md"), own).unwrap();
+
+        init_with_templates(&project, &templates, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+
+        let mut agents: Vec<String> = fs::read_dir(claude.join("agents/mustard"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        agents.sort();
+        assert_eq!(agents, ["review.md", "skill.md", "wave.md"], "the install left another set of agents");
+        assert_eq!(fs::read_to_string(claude.join("agents/wave-solo.md")).unwrap(), own, "the project's agent changed");
+    }
+
     /// Um orquestrador plantado por uma instalação antiga e as marcas do
     /// Mustard num `CLAUDE.md` são só listados: o instalador não tira nada, e
     /// o `.claude/CLAUDE.md` que não é do Mustard nem aparece.

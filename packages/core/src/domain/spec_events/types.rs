@@ -527,13 +527,15 @@ pub const TYPES: &[TypeSpec] = &[
             // rodada usa para o pedido de cada onda.
             opt("wave", Kind::Int),
             req("role", Kind::OneOf(ROLES)),
-            // O nome do agente que a onda chamou (`wave` ou `wave-solo`): é
-            // por ele que o reenvio chama o mesmo agente. O molde em si não
-            // é gravado — ele mora no projeto, igual para todo envio.
+            // O nome do agente que a onda chamou: `wave`, o mesmo em toda
+            // onda. O envio antigo pode trazer `wave-solo`, o agente de
+            // tarefa única que foi juntado ao `wave`; o reenvio dele chama o
+            // `wave`. O molde em si não é gravado — ele mora no projeto,
+            // igual para todo envio.
             opt("agent", Kind::Text),
             // O molde do agente, como o instalador o gravou no projeto: só o
-            // envio antigo o traz, e o reenvio dele acha o nome do agente
-            // pelo molde.
+            // envio antigo o traz, e nada mais o lê — o reenvio dele chama o
+            // `wave`, como todo envio.
             opt("template", Kind::Text),
             // O pedido exato, como foi injetado no agente; nada aqui é
             // remontado na leitura.

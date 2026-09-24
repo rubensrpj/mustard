@@ -2316,18 +2316,17 @@ mod tests {
         assert_eq!(delivered_count(root), 1, "the corrected call records the delivery once");
     }
 
-    /// Todo agente do Mustard sai em Opus: a onda de lote e a de tarefa única
-    /// saem com o modelo pedido no campo `model` do envio gravado, e o pedido
-    /// que o agente recebe diz o mesmo na linha do modelo, nos dois idiomas.
-    /// Nem o envio nem o pedido voltam a falar de Sonnet.
+    /// Todo agente do Mustard sai em Opus: a onda de várias tarefas e a de
+    /// uma só saem com o modelo pedido no campo `model` do envio gravado, e o
+    /// pedido que o agente recebe diz o mesmo na linha do modelo, nos dois
+    /// idiomas. Nem o envio nem o pedido voltam a falar de Sonnet.
     #[test]
     fn a_onda_que_implementa_sai_em_opus() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            // A onda 1 leva duas tarefas e chama o agente de lote; a onda 2
-            // leva uma só e chama o de tarefa única: os dois papéis saem no
-            // mesmo despacho.
+            // A onda 1 leva duas tarefas e a onda 2 leva uma só: as duas saem
+            // no mesmo despacho, ao mesmo agente de onda.
             approved_with(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], |said| {
                 write(
                     root,
@@ -2357,7 +2356,7 @@ mod tests {
                 assert_eq!(sent.str_field("model"), Some("Opus"), "the send carries the requested model: {sent:?}");
             }
             let agents: Vec<_> = (0..2).map(|at| out["dispatch"][at]["agent"].as_str().unwrap_or_default()).collect();
-            assert_eq!(agents, vec!["wave", "wave-solo"], "the two roles are the batch one and the solo one: {out}");
+            assert_eq!(agents, vec!["wave", "wave"], "every wave goes to the wave agent, whatever its size: {out}");
         }
     }
 
@@ -2377,8 +2376,7 @@ mod tests {
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        // A onda de uma tarefa só chama o agente `wave-solo`.
-        assert_eq!(sent.str_field("agent"), Some("wave-solo"), "the send carries the agent's name");
+        assert_eq!(sent.str_field("agent"), Some("wave"), "the send carries the agent's name");
         assert_eq!(sent.str_field("model"), Some("Opus"), "the send carries the requested model");
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
@@ -2399,7 +2397,7 @@ mod tests {
         assert_eq!(revised.int("tokens"), Some(123_456), "{revised:?}");
         assert_eq!(revised.int("caller_steps"), Some(7), "{revised:?}");
         assert_eq!(revised.int("caller_tokens"), Some(89_000), "{revised:?}");
-        assert_eq!(revised.str_field("agent"), Some("wave-solo"), "keeps what was already there");
+        assert_eq!(revised.str_field("agent"), Some("wave"), "keeps what was already there");
         assert_eq!(revised.str_field("model"), Some("Opus"), "keeps what was already there");
     }
 
@@ -2448,7 +2446,6 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
         std::fs::write(root.join(".claude/agents/mustard/wave.md"), "molde da onda").unwrap();
-        std::fs::write(root.join(".claude/agents/mustard/wave-solo.md"), "molde da onda solo").unwrap();
         round(root, "x", None);
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();

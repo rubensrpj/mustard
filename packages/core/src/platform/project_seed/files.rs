@@ -288,8 +288,9 @@ pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<
 ///
 /// Mexe só no `mustard.json`, que é do Mustard, e nos arquivos que ele mesmo
 /// semeou antes: o estilo de resposta que virou estilo do plugin sai (com o
-/// arquivo órfão), o mapa do início da sessão troca o nome antigo pelo novo, e
-/// as três partes do roteador antigo dão lugar ao mapa. Idempotente e sem
+/// arquivo órfão), o mapa do início da sessão troca o nome antigo pelo novo,
+/// as três partes do roteador antigo dão lugar ao mapa, e o agente que o
+/// Mustard não entrega mais sai da pasta dos agentes dele. Idempotente e sem
 /// erro: uma configuração que não se lê ou não se grava vira "nada migrado".
 pub fn migrate_inject_declarations(root: &Path, claude_dir: &Path) -> Vec<String> {
     let mut migrated = Vec::new();
@@ -301,6 +302,9 @@ pub fn migrate_inject_declarations(root: &Path, claude_dir: &Path) -> Vec<String
     }
     if retire_router_parts(root, claude_dir) {
         migrated.push("mustard.json (router injectables → session map)".to_string());
+    }
+    for name in retire_agents(claude_dir) {
+        migrated.push(format!(".claude/{AGENTS_DIR}/{name}.md (retired agent)"));
     }
     migrated
 }
@@ -436,6 +440,26 @@ fn retire_router_parts(root: &Path, claude_dir: &Path) -> bool {
         }
     }
     changed
+}
+
+/// Os agentes que instalações antigas semeavam em [`AGENTS_DIR`] e que o
+/// Mustard não entrega mais: o de onda de tarefa única, juntado ao agente de
+/// onda, que recebe toda onda.
+const RETIRED_AGENTS: [&str; 1] = ["wave-solo"];
+
+/// Apaga de [`AGENTS_DIR`] o arquivo órfão de cada agente de
+/// [`RETIRED_AGENTS`]. A pasta é só do Mustard: o agente do projeto com o
+/// mesmo nome, ao lado dela em `agents/`, fica intocado.
+///
+/// Devolve os nomes que saíram. Idempotente e sem erro.
+fn retire_agents(claude_dir: &Path) -> Vec<&'static str> {
+    RETIRED_AGENTS
+        .into_iter()
+        .filter(|name| {
+            let orphan = claude_dir.join(AGENTS_DIR).join(format!("{name}.md"));
+            orphan.is_file() && fs::remove_file(&orphan).is_ok()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -806,7 +830,7 @@ mod tests {
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(agents.len(), 4, "{agents:?}");
+        assert_eq!(agents.len(), 3, "{agents:?}");
     }
 
     /// O mapa é declarado no início da sessão, o único evento que entrega
