@@ -27,7 +27,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista 
 
 ## Fronteira da tarefa
 
-Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa.
+Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…","kind":"breaks"}]`, como todo achado fora da tarefa. `kind`: `breaks` quando algo deixa de funcionar sem a sobra, citando o arquivo entre crases no detalhe; `cosmetic` quando nada quebra; sem `kind` quando a spec não diz, e aí o usuário decide.
 
 ## Formato de saída
 

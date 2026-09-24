@@ -398,8 +398,8 @@ fn o_molde_da_onda_poe_na_tarefa_o_arquivo_que_a_mudanca_exige() {
 /// A fronteira do molde de onda, nos dois idiomas, manda tirar na
 /// mesma onda o que a própria mudança deixou sem uso, com o teste que só
 /// existia para ele; num arquivo de outra onda em andamento, o agente não
-/// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada vira
-/// pendência.
+/// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
+/// grava, com o `kind` que diz se ela quebra algo ou é só cosmética.
 #[test]
 fn a_fronteira_manda_tirar_o_que_a_mudanca_deixou_sem_uso() {
     for (lang, said) in [
@@ -409,7 +409,8 @@ fn a_fronteira_manda_tirar_o_que_a_mudanca_deixou_sem_uso() {
         let name = "wave";
         let body = template(lang, name);
         let boundary = section(&body, wave_headers(lang).0);
-        for phrase in said.iter().chain(&["\"leftovers\":[{\"title\"", "\"detail\""]) {
+        let kinds = ["\"leftovers\":[{\"title\"", "\"detail\"", "\"kind\":\"breaks\"", "`cosmetic`"];
+        for phrase in said.iter().chain(&kinds) {
             assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
         }
     }

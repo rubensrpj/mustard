@@ -516,6 +516,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} delivered {file}, which is neither on disk nor in git: the commit would have \
              nothing to take. Ask the agent for the right path. Nothing was recorded."
         }
+        ("round.leftover_cosmetic", Locale::PtBr) => "cosmética, apontada pela onda {wave}",
+        ("round.leftover_cosmetic", Locale::EnUs) => "cosmetic, pointed out by wave {wave}",
         ("round.proof_ran_no_test", Locale::PtBr) => {
             "A verificação nova do critério {code} saiu verde sem rodar teste nenhum: o nome do teste não \
              casa. Peça a verificação certa antes de fechar."
@@ -1284,8 +1286,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            160,
-            0x11b9_9090_105c_4acf,
+            161,
+            0x28b2_54f0_2535_9707,
         );
     }
 
@@ -1443,6 +1445,7 @@ mod tests {
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
+            ("round.leftover_cosmetic", &["{wave}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
             ("round.commit.scope.many", &["{waves}"][..]),
             ("round.commit.line", &["{wave}", "{summary}"][..]),

@@ -25,9 +25,9 @@ use super::commit::{
     head, join_copies, make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file,
     write_joined, UNMADE_SHA,
 };
+use super::leftovers::{leftover_task, leftovers_of, open_leftovers, Leftover, LeftoverKind};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{change_accepted, replan_code};
-use crate::commands::event::pending::{pending_at, PendingOpts};
 use crate::commands::spec_events::write::{record, RecordCheck};
 
 /// A linha da entrega que o agente de onda devolvia colada no relatório: a
@@ -93,9 +93,9 @@ pub(crate) struct WaveReport {
     /// As ondas que este conserto fecha.
     pub fixes: Vec<u64>,
     pub replan: Option<String>,
-    /// As sobras, cada uma com o título e o detalhe: viram pendência da spec
-    /// quando a rodada assume a volta.
-    pub leftovers: Vec<(String, String)>,
+    /// As sobras, cada uma com o título, o detalhe e o que ela é: a rodada
+    /// as grava quando assume a volta ([`Leftover`]).
+    pub leftovers: Vec<Leftover>,
     /// Todas as voltas da onda desde o envio que a despachou, que a entrega
     /// oficial substitui.
     pub returns: Vec<u64>,
@@ -149,9 +149,10 @@ pub(crate) struct Taken {
 /// repositório principal sem gravar nada, e só então grava a junção, formata
 /// os arquivos da rodada e faz o commit; depois grava os vereditos, a entrega
 /// oficial de cada onda, com `replaces` para as voltas dela, a versão nova de
-/// cada critério com prova nova e o commit, abre uma pendência da spec por
-/// sobra e apaga as cópias. O git, que pode recusar, roda antes da primeira
-/// gravação na spec, e a recusa dele devolve o disco e o índice do
+/// cada critério com prova nova e o commit, a tarefa de cada sobra que
+/// quebra e a pendência de cada sobra que não quebra, e apaga as cópias. O
+/// git, que pode recusar, roda antes da primeira gravação na spec, e a
+/// recusa dele devolve o disco e o índice do
 /// repositório principal ao que eram: a chamada corrigida depois de uma
 /// recusa junta e grava tudo uma vez só, e o commit de outra onda nunca leva
 /// nada da recusada. A entrega que a junção segura por conflito fica de fora,
@@ -326,7 +327,7 @@ fn take_returns(
             .collect(),
         None => Vec::new(),
     };
-    let checked = check_reports(start, spec, &report, planned).map_err(RoundRefusal::Refused)?;
+    let checked = check_reports(start, root, spec, &report, planned).map_err(RoundRefusal::Refused)?;
 
     if let Err(refused) = write_joined(root, &joined, true) {
         let _ = write_joined(root, &joined, false);
@@ -394,9 +395,10 @@ fn take_returns(
     // backlog soltas, sem a onda que as levou, ainda sob a trava.
     recorded.extend(return_cut_batches(start, spec, log, cut).map_err(RoundRefusal::Refused)?);
     drop(held_lock);
-    // Cada sobra das voltas assumidas vira pendência da spec, com a entrega
-    // oficial já gravada.
-    let (opened, not_opened) = open_leftovers(start, &report.waves);
+    // Cada sobra das voltas assumidas que não quebra nada vira pendência, com
+    // a entrega oficial já gravada: a cosmética passa ao projeto, e a sem
+    // `kind` fica da spec, com a pergunta de destino.
+    let (opened, not_opened) = open_leftovers(start, spec, &report.waves, lang);
     recorded.extend(opened);
     warnings.extend(not_opened);
     // O mapa acompanha o commit, antes de a onda seguinte pedir a sugestão de
@@ -493,7 +495,8 @@ fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
 /// relativo ao repositório —, o resumo do commit, as provas, as ondas que o
 /// conserto fecha, a mudança de plano e as sobras. Arquivo entregue pede o
 /// resumo do commit, a não ser na mudança de plano, e o resumo nunca tem cara
-/// de código de commit.
+/// de código de commit. O `kind` de uma sobra, quando vem, é `breaks` ou
+/// `cosmetic`; outro valor é recusado.
 fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveReport, RoundRefusal> {
     let text = |key: &str| {
         fields.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
@@ -531,7 +534,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         .filter_map(|p| Some((p.get("criterion").filter(|c| !c.is_null())?.clone(), field(p, "proof")?)))
         .collect();
     let fixes = listed("fixes").iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect();
-    let leftovers = listed("leftovers").iter().filter_map(|l| Some((field(l, "title")?, field(l, "detail")?))).collect();
+    let leftovers = leftovers_of(&listed("leftovers")).map_err(RoundRefusal::Refused)?;
     Ok(WaveReport {
         wave,
         delivered,
@@ -824,40 +827,6 @@ fn return_cut_batches(start: &Path, spec: &str, log: &SpecLog, cut: &[u64]) -> R
     Ok(recorded)
 }
 
-/// Cada sobra das voltas assumidas vira pendência da spec, pela mesma porta
-/// do `pending --add`: a que repete o título de uma pendência aberta devolve
-/// a que já está aberta, sem duplicar. A que a lista recusa por outro motivo
-/// vira aviso, e a entrega segue gravada. Devolve o que foi aberto, com a
-/// pergunta de destino de cada pendência nova, e os avisos.
-fn open_leftovers(start: &Path, waves: &[WaveReport]) -> (Vec<Value>, Vec<Value>) {
-    let mut opened = Vec::new();
-    let mut warnings = Vec::new();
-    for wave in waves {
-        for (title, detail) in &wave.leftovers {
-            let out = pending_at(&PendingOpts {
-                root: start.to_path_buf(),
-                add: true,
-                title: Some(title.clone()),
-                detail: Some(detail.clone()),
-                ..PendingOpts::default()
-            });
-            let mut entry = json!({ "wave": wave.wave, "type": "pending", "id": out["id"] });
-            if out["ok"] == json!(true) {
-                if let Some(question) = out.get("pending_question") {
-                    entry["question"] = question.clone();
-                }
-                opened.push(entry);
-            } else if out["reason"] == json!("duplicate") {
-                entry["open"] = json!(true);
-                opened.push(entry);
-            } else {
-                warnings.push(json!({ "reason": "leftover-not-opened", "wave": wave.wave, "hint": out["hint"] }));
-            }
-        }
-    }
-    (opened, warnings)
-}
-
 /// O número do evento que `reference` aponta, dado pelo código que a página
 /// mostra ou pelo número, na versão gravada — sem conferir ainda se ele
 /// segue vigente nem de que tipo é.
@@ -927,6 +896,9 @@ struct CheckedReport {
     /// Uma tarefa nova no backlog por item combinado que a revisão final
     /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
     agreed_tasks: Vec<Map<String, Value>>,
+    /// Uma tarefa nova no backlog por sobra que quebra, com a onda que a
+    /// apontou: também sem onda própria, para a rodada seguinte formar o lote.
+    leftover_tasks: Vec<(u64, Map<String, Value>)>,
 }
 
 /// O caminho como a rodada grava `file` da onda `wave`: quando é o caminho
@@ -936,7 +908,7 @@ struct CheckedReport {
 /// começa igual — fica como veio, e segue pelo mesmo crivo do git mais
 /// adiante. Vale o caminho gravado, não o que a pasta das cópias daria hoje:
 /// a onda enviada antes de a pasta mudar volta da cópia onde nasceu.
-fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String {
+pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String {
     let Some(copy) = wave_prompt::recorded_copy(log, wave) else { return file.to_string() };
     file.strip_prefix(copy.path.as_str())
         .filter(|rest| rest.is_empty() || rest.starts_with('/'))
@@ -949,9 +921,12 @@ fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String {
 /// `commits`, na ordem em que serão gravados — pela conferência inteira da
 /// gravação, contra a spec, sem gravar nada: a linha sem campo obrigatório
 /// nunca deixa gravada a que veio antes dela, e nada é recusado depois do
-/// commit. O entregou vai também em cada onda que o conserto fecha.
+/// commit. O entregou vai também em cada onda que o conserto fecha, e a
+/// sobra que quebra vira tarefa no backlog, pela mesma conferência das
+/// tarefas que nascem do veredito.
 fn check_reports(
     start: &Path,
+    root: &Path,
     spec: &str,
     report: &Report,
     commits: Vec<Map<String, Value>>,
@@ -1007,6 +982,14 @@ fn check_reports(
             deliveries.push((wave, draft));
         }
     }
+    let mut leftover_tasks = Vec::new();
+    for wave in &report.waves {
+        for leftover in wave.leftovers.iter().filter(|l| l.kind == Some(LeftoverKind::Breaks)) {
+            let task = leftover_task(root, check.log(), wave.wave, leftover);
+            check.record("task", task.clone())?;
+            leftover_tasks.push((wave.wave, task));
+        }
+    }
     // O consumo, que só se sabe na volta: quando a linha `USAGE` traz algum
     // dos cinco campos, o envio da onda ganha uma versão nova com eles, sem
     // remontar o resto do que foi enviado — também na onda que uma rodada
@@ -1053,7 +1036,7 @@ fn check_reports(
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks, leftover_tasks })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -1085,11 +1068,12 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 
 /// Grava o que [`check_reports`] conferiu, pela mesma porta de gravação das
 /// outras: primeiro os vereditos, que julgam entregas já gravadas; depois o
-/// entregou de cada onda e a versão nova de cada critério com prova nova.
+/// entregou de cada onda, a tarefa de cada sobra que quebra e a versão nova
+/// de cada critério com prova nova.
 /// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando.
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
-    let CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks } = checked;
+    let CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks, leftover_tasks } = checked;
     let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
     let mut recorded = Vec::new();
@@ -1108,6 +1092,10 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
     for (wave, draft) in deliveries {
         let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;
         recorded.push(json!({ "wave": wave, "type": "delivered", "id": written.written.id }));
+    }
+    for (wave, draft) in leftover_tasks {
+        let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
+        recorded.push(json!({ "wave": wave, "type": "task", "id": written.written.id }));
     }
     for (wave, draft) in sends {
         let written = record(start, spec, "send", draft, PhaseWriter::Binary)?;
@@ -1132,6 +1120,7 @@ mod tests {
     use mustard_core::domain::spec_events::SpecEvent;
     use tempfile::tempdir;
 
+    use crate::commands::event::pending::{pending_at, PendingOpts};
     use crate::commands::flow::round::queue::{dispatch_backlog, waves_to_redo};
 
     use super::*;
@@ -3026,5 +3015,83 @@ mod tests {
             log.visible().iter().any(|e| e.event_type == "deferred" && e.int("pending") == Some(number)),
             "a pendência nova fica ligada à spec"
         );
+    }
+
+    /// A volta de uma onda com três sobras, assumida pela rodada: a que
+    /// quebra vira tarefa da spec no backlog, com o arquivo que o detalhe
+    /// cita e que existe, sem pergunta; a cosmética vira pendência do
+    /// projeto, na lista de depois, com a onda que a apontou e sem pergunta;
+    /// a sem `kind` vira pendência da spec com a pergunta de destino. A volta
+    /// com um `kind` de outro valor é recusada na gravação, e nada é gravado.
+    #[test]
+    fn a_breaking_leftover_becomes_a_task_and_a_cosmetic_one_goes_to_the_later_list_without_a_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/c.rs"), "fn tres() {}\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
+        round(root, "x", None);
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+
+        let before = spec_lines(root);
+        let odd = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a soma sai", "leftovers": [
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
+                {"title": "Depois eu vejo", "detail": "Talvez.", "kind": "later"},
+            ]}));
+        assert_eq!(odd["reason"], json!("invalid-value"), "{odd}");
+        let hint = odd["hint"].as_str().unwrap_or_default();
+        for said in ["leftovers[2].kind", "breaks", "cosmetic"] {
+            assert!(hint.contains(said), "a recusa não diz `{said}`: {odd}");
+        }
+        assert_eq!(spec_lines(root), before, "nada foi gravado: {odd}");
+
+        let breaks = "Sem o índice, `src/c.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
+        let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a soma sai", "leftovers": [
+                {"title": "A leitura para sem o índice", "detail": breaks, "kind": "breaks"},
+                {"title": "O nome da variável confunde", "detail": "Um nome mais claro.", "kind": "cosmetic"},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
+            ]}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let recorded = |kind: &str| -> Vec<Value> {
+            out["recorded"].as_array().into_iter().flatten().filter(|r| r["type"] == json!(kind)).cloned().collect()
+        };
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let tasks = recorded("task");
+        assert_eq!(tasks.len(), 1, "{out}");
+        assert_eq!(tasks[0]["wave"], json!(1), "{out}");
+        let task = log.get(tasks[0]["id"].as_u64().unwrap()).unwrap_or_else(|| panic!("{out}"));
+        assert_eq!(task.wave(), None, "a tarefa fica no backlog, sem onda: {:?}", task.fields);
+        assert_eq!(task.fields["title"], json!("A leitura para sem o índice"), "{:?}", task.fields);
+        assert_eq!(task.fields["text"], json!(breaks), "{:?}", task.fields);
+        assert_eq!(task.fields["files"], json!([{"path": "src/c.rs"}]), "{:?}", task.fields);
+        assert_eq!(task.fields["depends_on"], json!([]), "{:?}", task.fields);
+        assert_eq!(task.fields["author"], json!("wave"), "{:?}", task.fields);
+
+        let pendings = recorded("pending");
+        assert_eq!(pendings.len(), 2, "{out}");
+        let (cosmetic, unsorted) = (&pendings[0], &pendings[1]);
+        assert!(cosmetic.get("question").is_none(), "a cosmética não pergunta: {out}");
+        assert_eq!(cosmetic["owner"], json!("project"), "{out}");
+        assert!(unsorted["question"].as_str().unwrap_or_default().contains("O log não gira"), "{out}");
+
+        let listed = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+        let item = |title: &str| {
+            listed["open"].as_array().into_iter().flatten().find(|i| i["title"] == json!(title)).cloned()
+        };
+        assert!(item("A leitura para sem o índice").is_none(), "a que quebra não vira pendência: {listed}");
+        let later = item("O nome da variável confunde").unwrap_or_else(|| panic!("{listed}"));
+        assert_eq!(later["owner"], json!("project"), "{listed}");
+        assert_eq!(later["later"], json!("cosmética, apontada pela onda 1"), "{listed}");
+        let asked: Vec<String> = crate::commands::event::pending::open_pending_born_in(root, "x")
+            .into_iter()
+            .map(|p| p.title)
+            .collect();
+        assert_eq!(asked, ["O log não gira"], "só a sem `kind` espera a pergunta de destino: {listed}");
     }
 }

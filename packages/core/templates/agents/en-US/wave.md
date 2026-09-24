@@ -27,7 +27,7 @@ You implement the tasks of one wave of a spec, and only those. The request lists
 
 ## Task boundary
 
-A file outside the list that the same change needs is part of the work, in `files`. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`; whoever dispatched you takes it to the user. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…"}]`, as does any finding outside the task.
+A file outside the list that the same change needs is part of the work, in `files`. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`; whoever dispatched you takes it to the user. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…","kind":"breaks"}]`, as does any finding outside the task. `kind`: `breaks` when something stops working without the leftover, citing the file between backticks in the detail; `cosmetic` when nothing breaks; no `kind` when the spec does not say, and then the user decides.
 
 ## Output format
 
