@@ -25,6 +25,15 @@
 //!   como tarefas novas, e as ondas delas saem pela rodada, cada uma na sua
 //!   cópia. Depois vem o fechamento de novo, com o revisor final chamado de
 //!   novo, e o pull request continua o mesmo.
+//!
+//!   Com o pull request aberto, o provedor é perguntado antes de gravar se ele
+//!   já entrou na base. Entrou: a spec é entregue pelo mesmo caminho do merge
+//!   percebido no início da sessão, e a volta é recusada como a de qualquer
+//!   spec entregue. Sem resposta, a volta acontece e `warnings` avisa que o
+//!   merge não foi conferido. Depois de gravar a volta, o pull request vai
+//!   para rascunho, para ninguém juntar pelo botão a versão sem o ajuste; a
+//!   resposta traz `pr` e `draft`, e o rascunho recusado vira aviso, sem
+//!   desfazer a volta. O `pr-open` do fechamento seguinte tira o rascunho.
 //! - **Entregue na base, descartada ou sem fase gravada**, não volta por
 //!   caminho nenhum: pedido novo sobre ela é obra nova, pelo `open`.
 //!
@@ -38,7 +47,8 @@
 //! {"ok": true, "spec": "x", "phase": "survey", "from": "running", "id": 42,
 //!  "reason": "O pedido mudou de alvo.", "next": "A spec x voltou ao levantamento…"}
 //! {"ok": true, "spec": "x", "phase": "running", "from": "pr_open", "id": 57,
-//!  "reason": "Ajustar o pedido.", "next": "A spec x voltou à execução…"}
+//!  "reason": "Ajustar o pedido.", "pr": 12, "draft": true,
+//!  "next": "A spec x voltou à execução…"}
 //! ```
 //!
 //! Recusa sai com exit 1 e `ok: false`, com a razão curta em `reason` e a
@@ -87,9 +97,11 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use crate::commands::review::pr_door::{provider_checks, red_reported};
+use crate::commands::git_settle::settle_unit_at;
+use crate::commands::review::pr_door::{merged_elsewhere_with, project_root, provider_checks, red_reported, MergedElsewhere};
+use crate::commands::review::pr_publish::{spec_pr, SpecPr};
 use crate::commands::spec_events::{self, read::checkout, write::record};
-use crate::shared::pr_provider::PrChecks;
+use crate::shared::pr_provider::{provider_for, PrChecks, PrProvider, PrRef};
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// Como a porta pergunta ao provedor as verificações de um pull request.
@@ -100,6 +112,15 @@ type Checks<'a> = &'a dyn Fn(&Path, u64) -> Result<PrChecks, String>;
 /// Como a porta empurra a branch da spec para o servidor. Injetada pelo mesmo
 /// motivo, e para o teste provar em que branch o conserto foi empurrado.
 type Push<'a> = &'a dyn Fn(&Path, &str) -> Result<(), String>;
+
+/// Como a reabertura chega ao provedor do pull request da spec, a partir da
+/// raiz do repositório: para perguntar se ele já entrou na base e para pô-lo
+/// em rascunho. Injetado pelo mesmo motivo, para o teste rodar sem rede.
+type Provider<'a> = &'a dyn Fn(&Path) -> Box<dyn PrProvider>;
+
+/// A arrumação da branch depois de um merge feito fora, a mesma do início da
+/// sessão. Injetada para o teste não mexer em repositório nenhum.
+type Settle<'a> = &'a dyn Fn(&Path, &str) -> Value;
 
 /// As chaves de busca da onda de conserto e da nota do empurrão. Fixas nos
 /// dois idiomas: é por elas que a porta reconhece a onda de conserto e sabe,
@@ -190,9 +211,22 @@ fn push_to_server(root: &Path, branch: &str) -> Result<(), String> {
         .map_err(|error| if error.trim().is_empty() { "push-failed".to_string() } else { error })
 }
 
-/// [`reopen_for`] com os efeitos de fora recebidos, que é como um teste os
-/// escolhe.
+/// [`reopen_for`] com as verificações e o envio recebidos; o provedor do pull
+/// request e a arrumação são os de verdade.
 pub(crate) fn reopen_with(opts: &ReopenOpts, session: Option<&str>, checks: Checks, push: Push) -> Value {
+    reopen_with_provider(opts, session, checks, push, &provider_for, &settle_unit_at)
+}
+
+/// [`reopen_with`] com o provedor do pull request e a arrumação recebidos
+/// também, que é como um teste escolhe todos os efeitos de fora.
+pub(crate) fn reopen_with_provider(
+    opts: &ReopenOpts,
+    session: Option<&str>,
+    checks: Checks,
+    push: Push,
+    provider: Provider,
+    settle: Settle,
+) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
     let refuse = |refusal: ReopenRefusal| refusal.report(lang);
@@ -243,19 +277,77 @@ pub(crate) fn reopen_with(opts: &ReopenOpts, session: Option<&str>, checks: Chec
         return refuse(ReopenRefusal::Settled { spec, phase: from.to_string() });
     };
 
+    // Com o pull request aberto, o provedor é perguntado antes de gravar: um
+    // colega pode ter feito o merge sem o Mustard perceber, e o ajuste novo
+    // iria para uma branch já juntada. Juntado, a spec é entregue pelo mesmo
+    // caminho do merge percebido no início da sessão, e não volta. Sem
+    // resposta, ela volta, e a resposta avisa.
+    let mut warnings: Vec<String> = Vec::new();
+    if from == "pr_open" {
+        match merged_elsewhere_with(&opts.root, &spec, session, provider, settle) {
+            Some(MergedElsewhere::Landed { .. }) => {
+                let now = store::read(&path)
+                    .ok()
+                    .flatten()
+                    .and_then(|log| State::from_log(&log).phase)
+                    .unwrap_or("delivered");
+                return refuse(ReopenRefusal::Settled { spec, phase: now.to_string() });
+            }
+            Some(MergedElsewhere::Unanswered { reason }) => {
+                warnings.push(fill("reopen.merge_unchecked", lang, &[("{spec}", &spec), ("{reason}", &reason)]));
+            }
+            Some(MergedElsewhere::Submodules(_)) | None => {}
+        }
+    }
+
     // Só a fase e o motivo: a branch e a base ficam as que a spec já tinha,
     // herdadas pela dobra dos estados.
     let mut draft = Map::new();
     draft.insert("phase".to_string(), json!(to));
     draft.insert("author".to_string(), json!("binary"));
     draft.insert("reason".to_string(), json!(reason));
-    match record(&opts.root, &spec, "state", draft, PhaseWriter::Binary) {
-        Ok(recorded) => json!({
-            "ok": true, "spec": spec, "phase": to, "from": from, "recorded": true,
-            "id": recorded.written.id, "reason": reason,
-            "next": say(next, lang, &spec),
-        }),
-        Err(refusal) => refuse(ReopenRefusal::Spec(refusal)),
+    let recorded = match record(&opts.root, &spec, "state", draft, PhaseWriter::Binary) {
+        Ok(recorded) => recorded,
+        Err(refusal) => return refuse(ReopenRefusal::Spec(refusal)),
+    };
+    let mut answer = json!({
+        "ok": true, "spec": spec, "phase": to, "from": from, "recorded": true,
+        "id": recorded.written.id, "reason": reason,
+        "next": say(next, lang, &spec),
+    });
+    // Já em execução, o pull request vai para rascunho, e ninguém o junta
+    // pelo botão enquanto a spec não fecha de novo. O rascunho recusado não
+    // desfaz a volta: a resposta avisa que o pull request ficou liberado.
+    if from == "pr_open" {
+        let (pr, drafted) = put_in_draft(&opts.root, &spec, provider);
+        if let Some(number) = pr {
+            answer["pr"] = json!(number);
+        }
+        answer["draft"] = json!(drafted.is_ok());
+        if let Err(reason) = drafted {
+            warnings.push(fill("reopen.draft_failed", lang, &[("{spec}", &spec), ("{reason}", &reason)]));
+        }
+    }
+    if !warnings.is_empty() {
+        answer["warnings"] = json!(warnings);
+    }
+    answer
+}
+
+/// Põe em rascunho o pull request da spec `spec`: o número gravado no "pull
+/// request aberto" ou, sem ele, o que o provedor acha pela branch da spec.
+/// Devolve o número, quando se soube qual é, e o que o provedor respondeu.
+fn put_in_draft(root: &Path, spec: &str, provider: Provider) -> (Option<u64>, Result<(), String>) {
+    let repo = project_root(root);
+    let provider = provider(&repo);
+    let number = match spec_pr(&repo, spec) {
+        Some(SpecPr::Number(number)) => Ok(number),
+        Some(SpecPr::Head(branch)) => provider.view(PrRef::Head(&branch)).map(|view| view.number),
+        None => Err("pr-unknown".to_string()),
+    };
+    match number {
+        Ok(number) => (Some(number), provider.mark_draft(number)),
+        Err(reason) => (None, Err(reason)),
     }
 }
 
@@ -458,7 +550,11 @@ fn open_fix_wave(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: &FixRed, lan
 mod tests {
     use super::*;
     use crate::commands::spec_events::write::{seed_at, WriteOpts};
+    use crate::shared::branch_state::PrStatus;
+    use crate::shared::pr_provider::{PrOpened, PrToOpen, PrView};
+    use std::cell::RefCell;
     use std::path::Path;
+    use std::rc::Rc;
     use tempfile::tempdir;
 
     /// Uma spec aberta e levada até a fase `phase`, um `state` por fase, pela
@@ -488,6 +584,103 @@ mod tests {
         panic!("{phase} is not a phase of the flow");
     }
 
+    /// Um provedor de mentira para a reabertura: responde a consulta do pull
+    /// request e o pedido de rascunho como o teste manda, e grava cada pedido
+    /// com a fase em que a spec estava naquela hora. O que a reabertura nunca
+    /// pede grita.
+    struct FakeProvider {
+        root: PathBuf,
+        view: Result<PrStatus, String>,
+        draft: Result<(), String>,
+        seen: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl PrProvider for FakeProvider {
+        fn provider(&self) -> &'static str {
+            "github"
+        }
+
+        fn open(&self, _pr: &PrToOpen) -> Result<PrOpened, String> {
+            panic!("the reopen never opens a pull request")
+        }
+
+        fn edit_body(&self, _number: u64, _body: &str) -> Result<(), String> {
+            panic!("the reopen never rewrites the body")
+        }
+
+        fn ready(&self, _number: u64) -> Result<(), String> {
+            panic!("the reopen never takes the draft off")
+        }
+
+        fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
+            self.seen.borrow_mut().push(format!("view {which:?}"));
+            let status = self.view.clone()?;
+            Ok(PrView {
+                number: 1,
+                title: "a obra".into(),
+                head: "feature/epico".into(),
+                base: "dev".into(),
+                status,
+                merge_status: None,
+                draft: false,
+                url: "https://exemplo/1".into(),
+            })
+        }
+
+        fn checks(&self, _number: u64) -> Result<PrChecks, String> {
+            panic!("the reopen without --fix never asks the checks")
+        }
+
+        fn branch_protection(&self, _branch: &str) -> Result<bool, String> {
+            panic!("the reopen never asks what the server protects")
+        }
+
+        fn mark_draft(&self, number: u64) -> Result<(), String> {
+            let phase = phase_of(&self.root, "epico").unwrap_or("-");
+            self.seen.borrow_mut().push(format!("draft {number} phase={phase}"));
+            self.draft.clone()
+        }
+    }
+
+    /// A reabertura, sem opção, com o provedor do pull request respondendo
+    /// `view` à consulta e `draft` ao rascunho. Devolve a resposta, os pedidos
+    /// que o provedor recebeu e as branches que a arrumação recebeu.
+    fn reopen_through(
+        root: &Path,
+        view: Result<PrStatus, String>,
+        draft: Result<(), String>,
+    ) -> (Value, Vec<String>, Vec<String>) {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let settled = RefCell::new(Vec::new());
+        let provider = |repo: &Path| -> Box<dyn PrProvider> {
+            Box::new(FakeProvider {
+                root: repo.to_path_buf(),
+                view: view.clone(),
+                draft: draft.clone(),
+                seen: Rc::clone(&seen),
+            })
+        };
+        let settle = |_: &Path, branch: &str| {
+            settled.borrow_mut().push(branch.to_string());
+            json!({ "ok": true })
+        };
+        let out = reopen_with_provider(
+            &ReopenOpts {
+                root: root.to_path_buf(),
+                spec: Some("epico".into()),
+                reason: "Ajustar o pedido ao otimizador.".into(),
+                fix: false,
+            },
+            None,
+            &|_, _| panic!("the reopen without --fix never asks the checks"),
+            &|_, branch| panic!("nada empurra a branch {branch} neste teste"),
+            &provider,
+            &settle,
+        );
+        let seen = seen.borrow().clone();
+        (out, seen, settled.into_inner())
+    }
+
     /// A reabertura, sem opção, com um provedor que não responde e um git
     /// que não deixa empurrar nada sem alguém pedir.
     fn reopen(root: &Path, spec: &str, reason: &str) -> Value {
@@ -496,13 +689,119 @@ mod tests {
 
     /// O reopen com a opção `--fix` quando `fix`, e com as verificações do
     /// provedor escolhidas: é o vermelho delas que abre a porta de conserto.
+    /// O provedor do pull request não responde nada, e a arrumação grita.
     fn reopen_checked(root: &Path, spec: &str, reason: &str, fix: bool, checks: Checks) -> Value {
-        reopen_with(
+        let silent = |repo: &Path| -> Box<dyn PrProvider> {
+            Box::new(FakeProvider {
+                root: repo.to_path_buf(),
+                view: Err("no-provider".into()),
+                draft: Err("no-provider".into()),
+                seen: Rc::new(RefCell::new(Vec::new())),
+            })
+        };
+        reopen_with_provider(
             &ReopenOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), reason: reason.to_string(), fix },
             None,
             checks,
             &|_, branch| panic!("nada empurra a branch {branch} neste teste"),
+            &silent,
+            &|_, branch| panic!("nada arruma a branch {branch} neste teste"),
         )
+    }
+
+    /// A spec com o pull request aberto volta à execução, e o pull request
+    /// vai para rascunho depois de a volta estar gravada: com o provedor
+    /// aceitando, a resposta traz o número e `draft: true`, sem aviso. Com o
+    /// provedor recusando, a spec volta à execução do mesmo jeito, com
+    /// `draft: false` e o aviso de que o pull request ficou liberado.
+    #[test]
+    fn reopening_a_pr_open_spec_puts_its_pull_request_in_draft() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        let (out, seen, settled) = reopen_through(root, Ok(PrStatus::Open), Ok(()));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!((out["from"].clone(), out["phase"].clone()), (json!("pr_open"), json!("running")), "{out}");
+        assert_eq!(out["pr"], json!(1), "{out}");
+        assert_eq!(out["draft"], json!(true), "{out}");
+        assert!(out["warnings"].is_null(), "{out}");
+        assert_eq!(seen, ["view Number(1)", "draft 1 phase=running"], "the draft comes after the return is recorded");
+        assert!(settled.is_empty(), "an open pull request is not settled: {settled:?}");
+        assert_eq!(phase_of(root, "epico"), Some("running"));
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        let (out, seen, _) = reopen_through(root, Ok(PrStatus::Open), Err("gh-failed".into()));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("running"), "{out}");
+        assert_eq!(out["pr"], json!(1), "{out}");
+        assert_eq!(out["draft"], json!(false), "{out}");
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert_eq!(warnings.len(), 1, "{out}");
+        let warning = warnings[0].as_str().unwrap_or_default();
+        assert!(
+            warning.contains("epico") && warning.contains("gh-failed") && warning.contains("liberado"),
+            "{warning}",
+        );
+        assert_eq!(seen, ["view Number(1)", "draft 1 phase=running"]);
+        assert_eq!(phase_of(root, "epico"), Some("running"), "the refused draft does not undo the return");
+    }
+
+    /// O pull request que um colega já juntou pelo provedor, sem o Mustard
+    /// perceber: a reabertura grava a spec como entregue, pelo mesmo caminho
+    /// do merge percebido no início da sessão, e é recusada como a de spec
+    /// entregue, sem `state` de execução nem rascunho. Com o provedor sem
+    /// resposta, a spec volta à execução, e a resposta avisa que o merge não
+    /// foi conferido — e, com o rascunho também sem resposta, que o pull
+    /// request ficou liberado.
+    #[test]
+    fn a_pull_request_merged_outside_is_delivered_and_the_reopen_refused() {
+        let states = |root: &Path| -> Vec<String> {
+            DiskSpecState::new(root)
+                .log("epico")
+                .expect("the event file")
+                .events
+                .iter()
+                .filter(|e| e.event_type == "state")
+                .filter_map(|e| e.str_field("phase").map(str::to_string))
+                .collect()
+        };
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        let before = states(root);
+        let (out, seen, settled) = reopen_through(root, Ok(PrStatus::Merged), Ok(()));
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("spec-settled"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("epico") && hint.contains("delivered"), "{hint}");
+        assert_eq!(phase_of(root, "epico"), Some("delivered"));
+        let after = states(root);
+        assert_eq!(after.len(), before.len() + 1, "one state more: {after:?}");
+        assert_eq!(after.last().map(String::as_str), Some("delivered"), "no running after the merge: {after:?}");
+        assert_eq!(seen, ["view Number(1)"], "no draft on a merged pull request");
+        assert_eq!(settled, ["feature/epico"], "the same settling as the merge seen at the session start");
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        let (out, _, settled) = reopen_through(root, Err("gh-not-found".into()), Err("gh-not-found".into()));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("running"), "{out}");
+        assert_eq!(out["draft"], json!(false), "{out}");
+        let warnings: Vec<String> = out["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|w| w.as_str().map(str::to_string))
+            .collect();
+        assert_eq!(warnings.len(), 2, "{out}");
+        assert!(warnings[0].contains("conferir") && warnings[0].contains("gh-not-found"), "{warnings:?}");
+        assert!(warnings[1].contains("liberado"), "{warnings:?}");
+        assert!(settled.is_empty());
+        assert_eq!(phase_of(root, "epico"), Some("running"));
     }
 
     /// Os bytes do arquivo de eventos da spec, para provar que a recusa não

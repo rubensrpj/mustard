@@ -1024,6 +1024,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("pr.pointer_commit", Locale::PtBr) => "chore(submódulo): atualiza o ponteiro",
         ("pr.pointer_commit", Locale::EnUs) => "chore(submodule): update the pointer",
+        // A recusa do merge de uma spec reaberta: o pull request dela leva a
+        // versão sem o ajuste até a spec fechar de novo.
+        ("pr.merge_reopened", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela foi reaberta e ainda não fechou de novo, e o \
+             pull request #{pr} leva a versão sem o ajuste. Nada foi juntado, e o provedor nem foi \
+             perguntado. Termine o ajuste e feche a spec pela rodada (`mustard-rt run round --spec \
+             {spec}`); depois do fechamento, o `pr-open` que ele aponta atualiza o mesmo pull \
+             request, e o merge segue."
+        }
+        ("pr.merge_reopened", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it was reopened and has not closed again, and \
+             pull request #{pr} carries the version without the change. Nothing was merged, and \
+             the provider was not even asked. Finish the change and close the spec through the \
+             round (`mustard-rt run round --spec {spec}`); after the close, the `pr-open` it points \
+             to updates the same pull request, and the merge goes on."
+        }
         ("message.too_long", Locale::PtBr) => {
             "A parte `{part}` da mensagem tem {chars} caracteres e o limite é {max}. Escreva outro: o \
              corte automático mentiria sobre o que a mensagem diz. Nada foi enviado."
@@ -1091,6 +1107,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              open, on its branch, and the server's red reported by the provider; the spec is in \
              the phase {phase} without that. For a new request, run `mustard-rt run reopen` \
              without `--fix`. Nothing was written."
+        }
+        // Os avisos da reabertura de uma spec com o pull request aberto: o
+        // merge que não deu para conferir e o rascunho que o provedor recusou.
+        ("reopen.merge_unchecked", Locale::PtBr) => {
+            "Não deu para conferir no provedor se o pull request da spec {spec} já entrou na base \
+             ({reason}), e a spec voltou à execução mesmo assim. Se alguém já fez o merge, o \
+             ajuste novo iria para uma branch já juntada: confira no provedor antes de seguir."
+        }
+        ("reopen.merge_unchecked", Locale::EnUs) => {
+            "The provider could not be asked whether the pull request of the spec {spec} is already \
+             merged ({reason}), and the spec went back to running anyway. If someone already merged \
+             it, the new change would go to a branch already merged: check on the provider before \
+             going on."
+        }
+        ("reopen.draft_failed", Locale::PtBr) => {
+            "O pull request da spec {spec} não foi posto em rascunho ({reason}) e ficou liberado: um \
+             merge pelo botão do provedor agora juntaria na base a versão sem o ajuste. Ponha-o em \
+             rascunho pelo provedor, se puder; o merge do Mustard recusa até a spec fechar de novo."
+        }
+        ("reopen.draft_failed", Locale::EnUs) => {
+            "The pull request of the spec {spec} was not put in draft ({reason}) and stays open to \
+             merging: a merge through the provider's button now would take the version without the \
+             change into the base. Put it in draft on the provider if you can; Mustard's merge \
+             refuses until the spec closes again."
         }
         ("reopen.next", Locale::PtBr) => {
             "A spec {spec} voltou ao levantamento, e o motivo ficou gravado. Rode `mustard-rt run \
@@ -1221,8 +1261,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            155,
-            0x5ef0_50da_ed09_fd98,
+            158,
+            0x8670_fe76_0de2_ff04,
         );
     }
 
@@ -1357,6 +1397,7 @@ mod tests {
             ("pr.submodules.ready", &["{pr}", "{paths}"][..]),
             ("pr.submodules.stuck", &["{pr}", "{reason}"][..]),
             ("pr.pointer_commit", &[][..]),
+            ("pr.merge_reopened", &["{spec}", "{phase}", "{pr}"][..]),
             ("round.copy_kept", &["{wave}", "{copy}", "{files}"][..]),
             ("stuck.ended", &["{list}"][..]),
             ("stuck.reason.waiting_loop", &[][..]),

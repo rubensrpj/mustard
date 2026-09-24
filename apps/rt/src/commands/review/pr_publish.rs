@@ -187,6 +187,12 @@ pub(crate) fn edit_report(provider: &dyn PrProvider, number: u64, body: &str) ->
 /// o estado aberto é editado; qualquer outro (juntado, fechado, desconhecido)
 /// segue para `open_report`, que abre um pedido novo em vez de mexer no
 /// antigo.
+///
+/// O pull request aberto recebe o título e o corpo novos, e sai do rascunho
+/// quando o pedido não é de rascunho: é o que a spec reaberta pede ao fechar
+/// de novo, porque a reabertura o pôs em rascunho para ninguém juntar a versão
+/// sem o ajuste. Com `--draft`, ou com submódulo esperando, o pedido já chega
+/// como rascunho, e o rascunho fica.
 #[must_use]
 pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublishReport {
     match provider.view(PrRef::Head(&pr.head)) {
@@ -194,12 +200,40 @@ pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublis
         // grava junto com o número. Só o estado Open é reescrito — juntado
         // ou fechado seguem para open_report, como se a busca não tivesse
         // achado nada.
-        Ok(view) if view.status == PrStatus::Open => PrPublishReport {
-            url: Some(view.url).filter(|url| !url.trim().is_empty()),
-            ..edit_report(provider, view.number, &pr.body)
-        },
+        Ok(view) if view.status == PrStatus::Open => rewrite_open(provider, &view, pr),
         Ok(_) | Err(_) => open_report(provider, pr),
     }
+}
+
+/// Reescreve o pull request aberto `view` com o que `pr` pede: o corpo, o
+/// título e, fora do rascunho pedido, a saída do rascunho.
+///
+/// Qualquer passo recusado deixa o relatório com `ok: false` e o passo no
+/// erro: a porta não grava o pull request aberto, e rodar de novo refaz tudo,
+/// porque cada passo só escreve o que já devia estar lá.
+fn rewrite_open(provider: &dyn PrProvider, view: &PrView, pr: &PrToOpen) -> PrPublishReport {
+    let report = PrPublishReport {
+        url: Some(view.url.clone()).filter(|url| !url.trim().is_empty()),
+        ..edit_report(provider, view.number, &pr.body)
+    };
+    if !report.ok {
+        return report;
+    }
+    let refused = |step: &str, error: String| PrPublishReport {
+        ok: false,
+        error: Some(format!("{step}: {error}")),
+        ..report.clone()
+    };
+    if let Err(error) = provider.edit_title(view.number, &pr.title) {
+        return refused("edit-title-failed", error);
+    }
+    if view.draft
+        && !pr.draft
+        && let Err(error) = provider.ready(view.number)
+    {
+        return refused("ready-failed", error);
+    }
+    report
 }
 
 /// Refaz o corpo do pull request que a branch `head` carrega. Devolve o número
@@ -482,8 +516,8 @@ pub(crate) fn spec_pr(repo: &Path, spec: &str) -> Option<SpecPr> {
 ///
 /// The body comes from the spec's event file, or from the commits with
 /// `--fill` (a repository with no spec of its own). A head branch that
-/// already carries a pull request has its body REWRITTEN — the door never asks
-/// for a second one. Com submódulo mexido pela spec, os pull requests deles
+/// already carries a pull request has its title and body REWRITTEN, and leaves
+/// the draft unless a draft was asked — the door never asks for a second one. Com submódulo mexido pela spec, os pull requests deles
 /// abrem antes, e o do principal abre como rascunho enquanto algum não
 /// entrou; o que um submódulo recusa para a abertura antes do principal.
 pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: bool, draft: bool) {
@@ -520,8 +554,8 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
     }
     let name = provider.provider().to_string();
     let mut report = match (sourced, refused) {
-        // Já existe pull request para a branch que se ia abrir: o corpo é
-        // reescrito, e nenhum segundo pull request nasce.
+        // Já existe pull request para a branch que se ia abrir: o título e o
+        // corpo são reescritos, e nenhum segundo pull request nasce.
         (Ok((title, body)), None) => {
             let pr = PrToOpen {
                 title,
@@ -567,6 +601,7 @@ mod tests {
         name: &'static str,
         open: Result<PrOpened, String>,
         edit: Result<(), String>,
+        title: Result<(), String>,
         ready: Result<(), String>,
         /// O pull request que este provedor já tem aberto, com a branch que ele
         /// leva. `None` = nenhum, e a consulta responde erro.
@@ -585,6 +620,7 @@ mod tests {
                 name,
                 open: Ok(PrOpened { number: 7, url: "https://example.test/pr/7".into() }),
                 edit: Ok(()),
+                title: Ok(()),
                 ready: Ok(()),
                 opened_for: None,
                 status: PrStatus::Open,
@@ -612,6 +648,7 @@ mod tests {
                 name,
                 open: Err(token.to_string()),
                 edit: Err(token.to_string()),
+                title: Err(token.to_string()),
                 ready: Err(token.to_string()),
                 opened_for: None,
                 status: PrStatus::Open,
@@ -641,6 +678,11 @@ mod tests {
         fn ready(&self, number: u64) -> Result<(), String> {
             self.seen.borrow_mut().push(format!("ready {number}"));
             self.ready.clone()
+        }
+
+        fn edit_title(&self, number: u64, title: &str) -> Result<(), String> {
+            self.seen.borrow_mut().push(format!("title {number} title={title}"));
+            self.title.clone()
         }
 
         fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
@@ -820,6 +862,58 @@ mod tests {
         let fake = FakePub::with_open_pr("github", "feature/my-unit", 278);
         assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(278));
         assert!(fake.seen.borrow().iter().any(|call| call == "edit 278 body=outro corpo"), "{:?}", fake.seen.borrow());
+    }
+
+    /// O pr-open numa branch que já tem pull request aberto em rascunho manda
+    /// ao provedor o título novo e o corpo novo do MESMO pull request, que sai
+    /// do rascunho, e nenhum segundo pull request nasce. Com o rascunho pedido
+    /// — o `--draft` ou o submódulo que ainda não entrou, que chegam os dois
+    /// aqui como pedido de rascunho —, o título e o corpo mudam e o rascunho
+    /// fica. O título recusado pelo provedor não passa por feito.
+    #[test]
+    fn pr_open_rewrites_the_title_and_takes_the_draft_off() {
+        let novo = PrToOpen {
+            title: "Ajusta o pedido ao otimizador".into(),
+            body: "o corpo novo".into(),
+            head: "feature/pi-kpis".into(),
+            base: "dev".into(),
+            draft: false,
+        };
+
+        let fake = FakePub::with_open_pr("github", "feature/pi-kpis", 57);
+        let report = open_or_edit(&fake, &novo);
+        assert!(report.ok, "{report:?}");
+        assert_eq!((report.action, report.number), (ACTION_EDIT, Some(57)), "{report:?}");
+        assert_eq!(
+            fake.seen.borrow().as_slice(),
+            [
+                "view head=feature/pi-kpis",
+                "edit 57 body=o corpo novo",
+                "title 57 title=Ajusta o pedido ao otimizador",
+                "ready 57",
+            ],
+            "the same pull request, retitled, rewritten and out of the draft; nothing opened",
+        );
+
+        let rascunho = PrToOpen { draft: true, ..novo.clone() };
+        let fake = FakePub::with_open_pr("github", "feature/pi-kpis", 57);
+        let report = open_or_edit(&fake, &rascunho);
+        assert!(report.ok, "{report:?}");
+        assert_eq!(
+            fake.seen.borrow().as_slice(),
+            [
+                "view head=feature/pi-kpis",
+                "edit 57 body=o corpo novo",
+                "title 57 title=Ajusta o pedido ao otimizador",
+            ],
+            "a draft asked for keeps the draft, and nothing is opened",
+        );
+
+        let fake = FakePub { title: Err("gh-failed".into()), ..FakePub::with_open_pr("github", "feature/pi-kpis", 57) };
+        let report = open_or_edit(&fake, &novo);
+        assert!(!report.ok, "a refused title is not reported as done: {report:?}");
+        assert_eq!(report.error.as_deref(), Some("edit-title-failed: gh-failed"), "{report:?}");
+        assert!(!fake.seen.borrow().iter().any(|call| call.starts_with("ready")), "{:?}", fake.seen.borrow());
     }
 
     /// Every failure — table-driven over the two actions — degrades into the

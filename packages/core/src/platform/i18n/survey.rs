@@ -219,6 +219,8 @@ mod tests {
             ("reopen.already".into(), &["{spec}"][..]),
             ("reopen.reopened".into(), &["{spec}"][..]),
             ("reopen.fix_not_red".into(), &["{spec}", "{phase}"][..]),
+            ("reopen.merge_unchecked".into(), &["{spec}", "{reason}"][..]),
+            ("reopen.draft_failed".into(), &["{spec}", "{reason}"][..]),
             ("survey.present_point".into(), &["{code}", "{id}"][..]),
             ("survey.present_all".into(), &[][..]),
             ("survey.record_points".into(), &["{spec}"][..]),
