@@ -1329,9 +1329,10 @@ impl Writer<'_> {
     /// projeto e desta rodada — a cópia separada, a pasta de compilação num
     /// projeto Rust, os comandos do projeto e as outras ondas em andamento,
     /// com os arquivos delas — e, ligadas à cópia, as três frases que dizem
-    /// com todas as letras que o agente não comita, que o campo `commit` do
-    /// relatório é o título, nunca o código do commit, e que a última
-    /// mensagem tem só a linha `<DELIVERED>` e a de gasto. O resto (ler por
+    /// com todas as letras que o agente não comita, que o campo `commit` da
+    /// entrega é o título, nunca o código do commit, e que a entrega vai para
+    /// a spec por `run write delivered`, sem a rodada ler a última mensagem.
+    /// O resto (ler por
     /// trecho, a suíte uma vez no fim…) já mora no molde do agente, e não
     /// repete aqui. De onde ler a spec, o exemplo de leitura já diz.
     fn execution(&self, out: &mut String) {
@@ -1365,7 +1366,7 @@ impl Writer<'_> {
     /// As regras da execução do revisor: a cópia que o fechamento já criou no
     /// commit da obra, compilar na pasta de compilação dela num projeto Rust,
     /// os comandos do projeto com menos processos, e desfazer cada corte
-    /// antes de devolver — quem apaga a cópia é o fechamento. De onde ler a
+    /// antes de gravar o veredito — quem apaga a cópia é o fechamento. De onde ler a
     /// spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;

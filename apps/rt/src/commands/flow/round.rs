@@ -111,8 +111,10 @@ mod report;
 mod stops;
 
 /// O código de mudança que um texto traz: a testemunha dos gestos o lê no
-/// cabeçalho da pergunta que decide a mudança.
-pub(crate) use stops::change_code_of;
+/// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
+/// espera o clique e as ondas paradas no limite de consertos, o bloco de
+/// retomada as conta.
+pub(crate) use stops::{change_accepted, change_code_of, replan_code, waves_stuck};
 
 pub(crate) use commit::{reinstall_binary, refresh_map_if_stale, waves_checked_only};
 
@@ -425,11 +427,11 @@ mod tests {
         log.events.iter().filter(|e| e.event_type == "delivered").count()
     }
 
-    /// A linha do fim que o texto de um agente ensina, tirada do próprio
-    /// texto, com os valores de exemplo trocados por `values`.
-    pub(super) fn taught_line(template: &str, tag: &str, values: &[(&str, &str)]) -> String {
-        let open = format!("<{tag}>");
-        let found = template.lines().find(|l| l.starts_with(&open)).unwrap_or_else(|| panic!("no {tag} line"));
+    /// A linha de exemplo que o texto de um agente ensina a gravar — a que
+    /// começa com `start` —, tirada do próprio texto, com os valores de
+    /// exemplo trocados por `values`.
+    pub(super) fn taught_line(template: &str, start: &str, values: &[(&str, &str)]) -> String {
+        let found = template.lines().find(|l| l.starts_with(start)).unwrap_or_else(|| panic!("no line starting {start}"));
         values.iter().fold(found.to_string(), |line, (from, to)| line.replacen(from, to, 1))
     }
 

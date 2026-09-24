@@ -3,10 +3,11 @@
 //! Um gancho só, [`PrecompactNotice`], no evento `PreCompact`: antes de toda
 //! compactação — manual (`/compact`) ou automática, a que o próprio Claude
 //! Code dispara sozinho quando a conversa cresce —, a conversa recebe o
-//! bloco de retomada pronto para colar: a spec, a fase, as ondas entregues,
-//! as em andamento e o que falta, com o próximo comando. Sem controle de "já
-//! avisado": o próprio `PreCompact` já é o degrau, então cada compactação
-//! merece o bloco de novo, e não há como ele ficar velho.
+//! bloco de retomada ([`resume_block`](crate::commands::flow::resume::resume_block)),
+//! o mesmo que o início da sessão coloca sozinho depois do resumo: ninguém
+//! precisa colá-lo. Sem controle de "já avisado": o próprio `PreCompact` já é
+//! o degrau, então cada compactação merece o bloco de novo, e não há como ele
+//! ficar velho.
 //!
 //! O degrau de 200 mil tokens que media a conversa por conta própria foi
 //! retirado, dos dois lugares onde ele agia: a pausa ao agente de onda e a
@@ -15,13 +16,13 @@
 //! injeta o bloco sempre que uma compactação vai acontecer, para que a
 //! retomada nunca dependa de guardar o número certo no meio do caminho.
 //!
-//! `None` (e o gancho deixa passar, [`Verdict::Allow`]) sem spec atual ou sem
-//! arquivo de eventos legível: sem o que resumir, não há bloco para colar.
+//! `None` (e o gancho deixa passar, [`Verdict::Allow`]) sem spec atual, sem
+//! arquivo de eventos legível ou com a spec já terminada: sem o que retomar,
+//! não há bloco.
 
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::domain::spec_events::{Block, BlockQuery};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::translate;
@@ -32,9 +33,9 @@ use mustard_core::translate;
 /// (`docs/2026-07-25-revisao-portoes-pipeline-ondas.md`, seção 9).
 const RECOMMENDED_AUTOCOMPACT_PCT: &str = "15";
 
-/// O aviso, antes de compactar: o bloco de retomada pronto para colar.
-/// Dispara em toda compactação, manual ou automática, sem controle de "já
-/// avisado" — o próprio `PreCompact` é o degrau.
+/// O aviso, antes de compactar: o bloco de retomada, que volta sozinho
+/// depois do resumo. Dispara em toda compactação, manual ou automática, sem
+/// controle de "já avisado" — o próprio `PreCompact` é o degrau.
 pub struct PrecompactNotice;
 
 impl Check for PrecompactNotice {
@@ -43,28 +44,11 @@ impl Check for PrecompactNotice {
             return Ok(Verdict::Allow);
         }
         let root = ctx.workspace_root.clone().unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
-        let Some(context) = resume_block(&root, input.session_id.as_deref()) else {
+        let Some(context) = precompact_text(&root, input.session_id.as_deref()) else {
             return Ok(Verdict::Allow);
         };
         Ok(Verdict::Inject { context })
     }
-}
-
-/// As ondas entregues, as em andamento e as que faltam — planejadas, nem
-/// entregues nem em andamento — da spec de `log`.
-fn wave_lists(log: &mustard_core::domain::spec_events::SpecLog) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
-    let delivered = log.delivered_waves();
-    let running: std::collections::BTreeSet<u64> =
-        crate::commands::flow::round::waves_in_progress(log).into_keys().collect();
-    let planned: std::collections::BTreeSet<u64> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave")
-        .filter_map(|e| e.wave())
-        .collect();
-    let missing: Vec<u64> =
-        planned.into_iter().filter(|n| !delivered.contains(n) && !running.contains(n)).collect();
-    (delivered.into_iter().collect(), running.into_iter().collect(), missing)
 }
 
 /// A linha que compara o valor de compactação configurado na máquina (a
@@ -83,75 +67,17 @@ fn autocompact_line(machine: Option<&str>, lang: Locale) -> String {
         .replace("{installed}", RECOMMENDED_AUTOCOMPACT_PCT)
 }
 
-/// `waves`, separadas por vírgula, ou "nenhuma"/"none" quando vazia.
-fn join_waves(waves: &[u64], lang: mustard_core::platform::i18n::Locale) -> String {
-    if waves.is_empty() {
-        return translate("resume.none", lang).to_string();
-    }
-    waves.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
-}
-
-/// O bloco de retomada: spec, fase, ondas entregues, ondas em andamento e o
-/// que falta.
-fn resume_block_text(
-    spec: &str,
-    phase: &str,
-    log: &mustard_core::domain::spec_events::SpecLog,
-    lang: mustard_core::platform::i18n::Locale,
-) -> String {
-    let (delivered, running, missing) = wave_lists(log);
-    translate("conversation_size.block", lang)
-        .replace("{spec}", spec)
-        .replace("{phase}", phase)
-        .replace("{delivered}", &join_waves(&delivered, lang))
-        .replace("{running}", &join_waves(&running, lang))
-        .replace("{missing}", &join_waves(&missing, lang))
-}
-
-/// A spec atual, a fase dela e o log lido, para `session` sob `root`. `None`
-/// sem spec atual ou sem arquivo de eventos legível.
-fn active_spec_log(
-    root: &Path,
-    session: Option<&str>,
-) -> Option<(crate::commands::spec_events::Project, String, mustard_core::domain::spec_events::SpecLog)> {
-    use mustard_core::domain::spec_state::SpecState;
-
-    let project = crate::commands::spec_events::project(root);
-    let spec = crate::shared::spec_state::DiskSpecState::new(&crate::commands::spec_events::read::checkout(root))
-        .active(session)?;
-    let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(&project.root, &spec).ok()?)
-        .ok()??;
-    Some((project, spec, log))
-}
-
-/// O `command` e o `next` do passo seguinte da spec `spec`, pela mesma
-/// leitura do comando `resume`.
-fn next_step(root: &Path, spec: &str, session: Option<&str>) -> (String, String) {
-    let resume = crate::commands::flow::resume::resume_for(
-        &crate::commands::flow::resume::ResumeOpts { root: root.to_path_buf(), spec: Some(spec.to_string()) },
-        session,
-    );
-    (
-        resume["command"].as_str().unwrap_or_default().to_string(),
-        resume["next"].as_str().unwrap_or_default().to_string(),
-    )
-}
-
-/// O bloco de retomada pronto para colar, antes de compactar: spec, fase,
-/// ondas entregues, em andamento e o que falta, com o próximo comando.
-/// `None` sem spec atual ou sem arquivo de eventos.
-pub(crate) fn resume_block(root: &Path, session: Option<&str>) -> Option<String> {
-    let (project, spec, log) = active_spec_log(root, session)?;
-    let phase = mustard_core::domain::spec_state::State::from_log(&log).phase.unwrap_or("survey");
-    let block = resume_block_text(&spec, phase, &log, project.lang);
-    let (command, next) = next_step(&project.root, &spec, session);
+/// O aviso antes de compactar: o bloco de retomada da spec atual, dizendo
+/// que ele volta sozinho depois do resumo, e o valor de compactação. `None`
+/// sem spec atual, sem arquivo de eventos ou com a spec já terminada.
+fn precompact_text(root: &Path, session: Option<&str>) -> Option<String> {
+    let block = crate::commands::flow::resume::current_block(root, session)?;
+    let lang = crate::commands::spec_events::project(root).lang;
     let machine = std::env::var("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").ok();
-    let autocompact = autocompact_line(machine.as_deref(), project.lang);
+    let autocompact = autocompact_line(machine.as_deref(), lang);
     Some(
-        translate("conversation_size.precompact", project.lang)
+        translate("conversation_size.precompact", lang)
             .replace("{block}", &block)
-            .replace("{command}", &command)
-            .replace("{next}", &next)
             .replace("{autocompact}", &autocompact),
     )
 }
@@ -163,9 +89,15 @@ mod tests {
     /// Um projeto instalado, com a spec `spec` aprovada e o checkout parado
     /// na branch dela — o mesmo que a chamada de quem conduz vê.
     fn open_project(spec: &str) -> tempfile::TempDir {
+        open_project_in(spec, Locale::PtBr)
+    }
+
+    /// [`open_project`] com os textos no idioma `lang`.
+    fn open_project_in(spec: &str, lang: Locale) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+        let text = if lang == Locale::EnUs { "en-US" } else { "pt-BR" };
+        std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{text}"}}}}"#)).unwrap();
         crate::shared::spec_state::stand_on_spec_branch(root, spec);
         crate::commands::spec_events::write::record_open(root, spec, &format!("feature/{spec}"), "dev")
             .expect("open");
@@ -175,8 +107,9 @@ mod tests {
 
     /// Grava a onda 1 da spec `spec`, em `root`, em andamento — o mesmo
     /// pedido que a rodada grava, com o pid deste processo, que segue vivo
-    /// durante o teste, para que `waves_in_progress` a conte como rodando.
-    fn seed_running_wave(root: &Path, spec: &str) {
+    /// durante o teste, para que `waves_in_progress` a conte como rodando, e
+    /// a cópia dela em [`copy_of`]. Devolve o número do critério.
+    fn seed_running_wave(root: &Path, spec: &str) -> u64 {
         let said =
             crate::shared::spec_state::seed_event(root, spec, "message", serde_json::json!({"author": "user", "text": "o plano"}));
         let crit = crate::shared::spec_state::seed_event(
@@ -198,9 +131,15 @@ mod tests {
             spec,
             "send",
             serde_json::json!({"wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
-                "items": [crit], "mustard": "0", "author": "binary",
+                "items": [crit], "mustard": "0", "author": "binary", "copy": copy_of(root, 1),
                 "claude_pid": pid, "claude_started": started}),
         );
+        crit
+    }
+
+    /// A pasta da cópia da onda `wave`, como a rodada a grava no envio.
+    fn copy_of(root: &Path, wave: u64) -> String {
+        mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copy_path(root, "x", wave, false))
     }
 
     /// A chamada de ferramenta de quem conduz, com a transcrição `transcript`.
@@ -295,5 +234,83 @@ mod tests {
         .unwrap();
         let outcome = crate::dispatch::run_event(Some(Trigger::PreToolUse), &conductor_call(root, &transcript));
         assert_eq!(outcome.verdict, Verdict::Allow, "sem degrau de tokens, nada barra mais a chamada");
+    }
+
+    /// Depois da compactação, o início da sessão coloca sozinho o bloco de
+    /// retomada, pelo evento do gancho: a onda em andamento com a pasta da
+    /// cópia dela, a onda cuja volta espera a rodada pedindo mudança de plano
+    /// ainda sem o clique, e o código da decisão gravada depois da última
+    /// rodada — e não o da gravada antes dela. O aviso antes de compactar traz
+    /// o mesmo bloco e não pede para colá-lo. Nos dois idiomas, e dentro do
+    /// teto do início da sessão.
+    #[test]
+    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra() {
+        use crate::hooks::session::session_start_inject::MAX_BYTES;
+        use serde_json::json;
+
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = open_project_in("x", lang);
+            let root = dir.path();
+            let crit = seed_running_wave(root, "x");
+            let seed = |event_type: &str, body: serde_json::Value| {
+                crate::shared::spec_state::seed_event(root, "x", event_type, body)
+            };
+            let said = seed("message", json!({"author": "user", "text": "mais uma onda"}));
+            seed("wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit], "done_when": "x", "origin": said}));
+            let (pid, started) = crate::commands::flow::stuck::this_process();
+            seed("send", json!({"wave": 2, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+                "items": [crit], "mustard": "0", "author": "binary", "copy": copy_of(root, 2),
+                "claude_pid": pid, "claude_started": started}));
+            seed("delivered", json!({"wave": 2, "text": "O plano não fecha.", "replan": "Dividir a onda 2.",
+                "returned": true, "author": "wave"}));
+            let decision = |text: &str| {
+                seed("decision", json!({"text": text, "keys": ["retomada"], "why": "o usuário pediu",
+                    "origin": said}))
+            };
+            let before = decision("Antes da rodada.");
+            seed("call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
+            let after = decision("Depois da rodada.");
+            let log = mustard_core::io::spec_events::read(
+                &mustard_core::io::spec_events::spec_file(root, "x").unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+            let codes = log.codes();
+            let (before, after) = (codes[&before].clone(), codes[&after].clone());
+
+            let event = |name: &str, trigger: Trigger, raw: serde_json::Value| {
+                let input = HookInput {
+                    hook_event_name: Some(name.to_string()),
+                    session_id: Some("s1".to_string()),
+                    cwd: Some(root.to_string_lossy().into_owned()),
+                    raw,
+                    ..HookInput::default()
+                };
+                match crate::dispatch::run_event(Some(trigger), &input).verdict {
+                    Verdict::Inject { context } => context,
+                    other => panic!("{lang:?}: {name} injects nothing: {other:?}"),
+                }
+            };
+            let started = event("SessionStart", Trigger::SessionStart, json!({"source": "compact"}));
+            let precompact = event("PreCompact", Trigger::PreCompact, json!({}));
+
+            let running = translate("conversation_size.copy", lang)
+                .replace("{wave}", "1")
+                .replace("{copy}", &copy_of(root, 1));
+            let replan = translate("conversation_size.replan", lang).replace("{wave}", "2");
+            for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
+                assert!(context.contains(&running), "{lang:?} {moment}: the wave in flight and its copy: {context}");
+                assert!(context.contains(&replan), "{lang:?} {moment}: the return asking a plan change: {context}");
+                assert!(context.contains(&after), "{lang:?} {moment}: the decision after the round: {context}");
+                assert!(!context.contains(&before), "{lang:?} {moment}: the decision before the round: {context}");
+                assert!(context.contains("mustard-rt run round --spec x"), "{lang:?} {moment}: {context}");
+            }
+            let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
+            assert!(started.contains(&block) && precompact.contains(&block), "{lang:?}: the same block");
+            assert!(block.len() <= MAX_BYTES, "{lang:?}: {} bytes", block.len());
+            for paste in ["cole", "colar", "paste"] {
+                assert!(!precompact.contains(paste), "{lang:?}: the notice still asks to paste: {precompact}");
+            }
+        }
     }
 }

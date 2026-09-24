@@ -281,13 +281,10 @@ fn run_close(
         // O pedido do agente de revisão final é gravado como evento de
         // envio antes de sair daqui, pela mesma porta que grava o pedido de
         // cada onda: o texto inteiro, o papel de revisão e o modelo — nunca
-        // um segundo caminho de gravação.
+        // um segundo caminho de gravação. O molde do revisor não vai junto:
+        // ele mora no projeto, e o papel já diz qual é.
         let mut draft = Map::new();
         draft.insert("role".into(), json!("review"));
-        let template = mustard_core::io::wave_prompt::agent_template(root, "review");
-        if !template.is_empty() {
-            draft.insert("template".into(), json!(template));
-        }
         draft.insert("lines".into(), json!(count_lines(&prompt)));
         draft.insert("chars".into(), json!(prompt.chars().count()));
         draft.insert("text".into(), json!(prompt));

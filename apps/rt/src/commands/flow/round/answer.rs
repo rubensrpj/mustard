@@ -603,22 +603,18 @@ pub(super) fn run_round_with_mine(
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
-        // Os dois textos do input, na ordem em que o agente os recebe: o
-        // molde dele, instalado no projeto, e só depois o pedido. O modelo
-        // pedido vai junto — nada disso é remontado na leitura, é o que foi
+        // O nome do agente escolhido pelo tamanho do lote (`wave` ou
+        // `wave-solo`), e não o molde dele, que mora no projeto: é o nome que
+        // o reenvio chama de novo, e a resposta desta rodada o repete, para
+        // quem despacha saber qual dos dois chamar. O pedido e o modelo
+        // pedido vão junto — nada disso é remontado na leitura, é o que foi
         // enviado.
-        if !prompt.template.is_empty() {
-            draft.insert("template".into(), json!(prompt.template));
-        }
+        let agent = prompt.agent.clone();
+        draft.insert("agent".into(), json!(agent));
         draft.insert("text".into(), json!(prompt.text));
         draft.insert("model".into(), json!(prompt.model));
         draft.insert("lines".into(), json!(prompt.lines));
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
-        // O nome do agente escolhido pelo tamanho do lote (`wave` ou
-        // `wave-solo`) não é campo do envio — o molde inteiro já viaja no
-        // próprio `template` — mas a resposta desta rodada o repete, para
-        // quem despacha saber qual dos dois chamar.
-        let agent = prompt.agent.clone();
         // Os itens que ficaram, e à parte a escolha do orquestrador: o que
         // saiu e o que entrou, cada um com o motivo.
         draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave))));
@@ -662,15 +658,15 @@ pub(super) fn run_round_with_mine(
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
-        // O molde e o modelo pedido são os do envio original: um reenvio não
+        // O agente e o modelo pedido são os do envio original: um reenvio não
         // remonta o input, só acrescenta o aviso do que mudou na cópia. O
-        // nome do agente sai do próprio molde — o reenvio chama o mesmo dos
-        // dois que o envio original chamou.
-        let template = prior.str_field("template").unwrap_or_default();
-        let agent = agent_from_template(template);
-        if let Some(template) = prior.str_field("template") {
-            draft.insert("template".into(), json!(template));
-        }
+        // reenvio chama o mesmo dos dois agentes que o envio original chamou:
+        // pelo nome gravado nele ou, no envio antigo que só guardou o molde,
+        // pelo nome que o molde traz.
+        let agent = prior
+            .str_field("agent")
+            .map_or_else(|| agent_from_template(prior.str_field("template").unwrap_or_default()), str::to_string);
+        draft.insert("agent".into(), json!(agent));
         if let Some(model) = prior.str_field("model") {
             draft.insert("model".into(), json!(model));
         }
@@ -991,59 +987,14 @@ mod tests {
         assert_eq!(sent[0].wave(), Some(1));
     }
 
-    /// Os moldes de agente de verdade, os que o Mustard instala no projeto,
-    /// gravados em `root` como o instalador os grava. É o molde do produto,
-    /// e não uma cópia de mentira escrita aqui, que o envio da rodada leva:
-    /// assim um teto de idas e voltas que voltasse ao cabeçalho derrubaria
-    /// o teste.
-    fn write_agent_template(root: &Path) {
-        let dir = root.join(".claude").join("agents").join("mustard");
-        std::fs::create_dir_all(&dir).unwrap();
-        for (name, body) in mustard_core::platform::seeds::agent_texts(Locale::PtBr) {
-            std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
-        }
-    }
-
-    /// O molde que o envio da rodada grava não traz teto de idas e voltas,
-    /// nem o da onda de uma tarefa só (`wave-solo.md`) nem o da onda de
-    /// várias (`wave.md`). A medição de treze agentes de onda deste projeto
-    /// deu de 36 a 315 idas e voltas: nenhuma onda cabia no teto que havia,
-    /// então toda onda era cortada no meio e recomeçava do zero.
-    #[test]
-    fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
-        let solo_dir = tempdir().unwrap();
-        let solo_root = solo_dir.path();
-        write_agent_template(solo_root);
-        approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(solo_root, "x", None);
-        let solo_log = store::read(&store::spec_file(solo_root, "x").unwrap()).unwrap().unwrap();
-        let solo_sent = solo_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
-        let solo_template = solo_sent.str_field("template").unwrap_or_default();
-        assert!(!solo_template.contains("maxTurns"), "{solo_template}");
-
-        let multi_dir = tempdir().unwrap();
-        let multi_root = multi_dir.path();
-        write_agent_template(multi_root);
-        approved_with(multi_root, "x", &[(1, &["src/a.rs"], &[])], |said| {
-            write(multi_root, "x", "task", json!({"wave": 1, "text": "Tarefa 2 da onda 1.",
-                "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": said}));
-        });
-        round(multi_root, "x", None);
-        let multi_log = store::read(&store::spec_file(multi_root, "x").unwrap()).unwrap().unwrap();
-        let multi_sent = multi_log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
-        let multi_template = multi_sent.str_field("template").unwrap_or_default();
-        assert!(!multi_template.contains("maxTurns"), "{multi_template}");
-    }
-
     /// A resposta da rodada diz qual dos dois arquivos de agente usar em
     /// cada lote despachado, pelo tamanho dele: `wave-solo` para uma tarefa
     /// só, `wave` para várias — no envio novo e no reenvio, que ecoa o
-    /// mesmo nome do molde original, sem remontar o pedido.
+    /// mesmo agente do envio original, sem remontar o pedido.
     #[test]
     fn a_resposta_da_rodada_diz_qual_agente_usar() {
         let solo_dir = tempdir().unwrap();
         let solo_root = solo_dir.path();
-        write_agent_template(solo_root);
         approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
         let first = round(solo_root, "x", None);
         let agent_of = |out: &Value, wave: u64| -> String {
@@ -1066,7 +1017,6 @@ mod tests {
 
         let multi_dir = tempdir().unwrap();
         let multi_root = multi_dir.path();
-        write_agent_template(multi_root);
         approved_with(multi_root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             write(
                 multi_root,
@@ -1078,6 +1028,60 @@ mod tests {
         });
         let multi_out = round(multi_root, "x", None);
         assert_eq!(agent_of(&multi_out, 1), "wave", "{multi_out}");
+    }
+
+    /// O envio grava o nome do agente e não o molde dele; a lista das ondas
+    /// e o painel mostram o envio sem o pedido, e só a leitura da onda o
+    /// traz inteiro. O envio antigo, que só guardou o molde, é reenviado ao
+    /// mesmo agente que o molde nomeia.
+    #[test]
+    fn a_leitura_das_ondas_nao_repete_o_molde_nem_o_pedido() {
+        use crate::commands::spec_events::read::{read_for, ReadOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(!prompt.is_empty(), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send").cloned().expect("the send");
+        assert_eq!(sent.str_field("agent"), Some("wave-solo"), "{sent:?}");
+        assert_eq!(sent.str_field("template"), None, "{sent:?}");
+
+        let read = |block: &str| -> Value {
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: block.into(), term: None };
+            serde_json::from_str(&read_for(&opts, None).expect("the block reads")).expect("the output is JSON")
+        };
+        let send_of = |shown: &Value| -> Value {
+            shown["events"].as_array().unwrap().iter().find(|e| e["type"] == json!("send")).cloned().expect("send")
+        };
+        for block in ["waves", "metrics"] {
+            let shown = send_of(&read(block));
+            assert!(shown.get("text").is_none(), "{block} shows the request: {shown}");
+            assert_eq!(shown["agent"], json!("wave-solo"), "{block}: {shown}");
+        }
+        assert_eq!(send_of(&read("wave-1"))["text"], json!(prompt), "the wave shows the whole request");
+
+        // O envio antigo: o molde, com o nome do agente de tarefa única, e
+        // nenhum nome à parte.
+        let mut old = sent.fields.clone();
+        for key in ["v", "id", "code", "at", "search", "type", "agent"] {
+            old.remove(key);
+        }
+        old.insert("template".into(), json!("---\nname: mustard-wave-solo\n---\n\nO molde."));
+        old.insert("replaces".into(), json!(sent.id));
+        crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(old));
+
+        let resent = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(resent["dispatch"][0]["agent"], json!("wave-solo"), "{resent}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let last = log.last_by_wave("send").get(&1).and_then(|id| log.get(*id)).cloned().expect("the new send");
+        assert!(last.fields.contains_key("resends"), "{last:?}");
+        assert_eq!(last.str_field("agent"), Some("wave-solo"), "{last:?}");
+        assert_eq!(last.str_field("template"), None, "{last:?}");
     }
 
     /// A instrução de publicar e copiar a página, por extenso, fica só no

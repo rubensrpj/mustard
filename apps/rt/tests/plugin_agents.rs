@@ -199,8 +199,7 @@ fn frontmatter(body: &str) -> &str {
 /// nenhuma onda real cabia nos tetos de dez e quinze que havia aqui, e a onda
 /// cortada recomeçava do zero. Quem cuida da janela cheia é a compactação e
 /// quem cuida da onda parada é o sinal de vida da rodada. Nenhum dos dois pede
-/// mais um relatório pelo tamanho: a última mensagem tem só as duas linhas do
-/// formato (onda 13).
+/// mais um relatório pelo tamanho: a entrega vai gravada na spec.
 #[test]
 fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
     for (lang, tokens) in [("pt-BR", "mil e dois mil tokens"), ("en-US", "one and two thousand tokens")] {
@@ -279,10 +278,10 @@ fn the_wave_agent_never_uses_the_git_stash() {
     }
 }
 
-/// Os dois agentes que devolvem uma linha marcada dizem que ela é obrigatória
-/// e que fecha a última mensagem deles: sem isso um relatório em prosa vira
-/// entrega perdida, e a rodada não lê nada. Os dois também dizem que a lista
-/// de pendências não é deles para fechar. Nos dois idiomas.
+/// Os dois agentes que gravam a própria volta dizem que a gravação é
+/// obrigatória: sem isso um relatório em prosa vira entrega perdida, e a
+/// rodada não acha nada na spec. Os dois também dizem que a lista de
+/// pendências não é deles para fechar. Nos dois idiomas.
 #[test]
 fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_theirs() {
     for lang in ["pt-BR", "en-US"] {
@@ -356,6 +355,175 @@ fn the_wave_agent_template_has_exactly_four_items() {
         let found: Vec<&str> = wave.lines().filter(|line| line.starts_with("## ")).collect();
         assert_eq!(found, items, "the {lang} wave agent does not have exactly these four items: {wave}");
     }
+}
+
+/// O texto de uma seção de segundo nível de um molde: da linha `header` até a
+/// próxima seção, sem a própria linha do título.
+fn section<'a>(body: &'a str, header: &str) -> &'a str {
+    let start = body.find(&format!("\n{header}\n")).unwrap_or_else(|| panic!("no `{header}` section in:\n{body}"));
+    let rest = &body[start + header.len() + 2..];
+    rest.find("\n## ").map_or(rest, |end| &rest[..end])
+}
+
+/// Os títulos da fronteira da tarefa e do formato de saída, por idioma.
+fn wave_headers(lang: &str) -> (&'static str, &'static str) {
+    if lang == "pt-BR" { ("## Fronteira da tarefa", "## Formato de saída") } else { ("## Task boundary", "## Output format") }
+}
+
+/// Os dois moldes do agente de onda, nos dois idiomas, mandam mudar o arquivo
+/// que a mesma mudança exige, mesmo fora da lista da tarefa, e dizê-lo em
+/// `files`; a mudança de plano fica para o critério que precisa mudar ou a
+/// spec que não diz o que fazer, e sai ao perceber, antes de explorar o
+/// resto. A fronteira não manda mais parar porque falta arquivo na lista.
+#[test]
+fn o_molde_da_onda_poe_na_tarefa_o_arquivo_que_a_mudanca_exige() {
+    for (lang, said, gone) in [
+        ("pt-BR", ["entra no trabalho", "antes de explorar", "`files`", "`replan`"], "arquivo que falta"),
+        ("en-US", ["is part of the work", "before exploring", "`files`", "`replan`"], "a missing file"),
+    ] {
+        for name in ["wave", "wave-solo"] {
+            let body = template(lang, name);
+            let boundary = section(&body, wave_headers(lang).0);
+            for phrase in said {
+                assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
+            }
+            assert!(!body.contains(gone), "the {lang} `{name}` agent still stops for `{gone}`:{boundary}");
+        }
+    }
+}
+
+/// A fronteira dos dois moldes de onda, nos dois idiomas, manda tirar na
+/// mesma onda o que a própria mudança deixou sem uso, com o teste que só
+/// existia para ele; num arquivo de outra onda em andamento, o agente não
+/// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada vira
+/// pendência.
+#[test]
+fn a_fronteira_manda_tirar_o_que_a_mudanca_deixou_sem_uso() {
+    for (lang, said) in [
+        ("pt-BR", ["deixa sem uso", "com o teste só dele", "sai na mesma onda", "outra onda em andamento, não edite"]),
+        ("en-US", ["leaves unused", "with the test only it had", "goes in the same wave", "another running wave, do not edit"]),
+    ] {
+        for name in ["wave", "wave-solo"] {
+            let body = template(lang, name);
+            let boundary = section(&body, wave_headers(lang).0);
+            for phrase in said.iter().chain(&["\"leftovers\":[{\"title\"", "\"detail\""]) {
+                assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
+            }
+        }
+    }
+}
+
+/// Todo comando de compilação ou de teste leva o teto de dez minutos do
+/// terminal, e o que pode passar disso roda por pacote, um por comando: a
+/// frase mora na mesma linha que proíbe o segundo plano, nos três moldes que
+/// compilam — onda de lote, onda de tarefa única e revisor —, nos dois
+/// idiomas, e o teto vago do comando saiu.
+#[test]
+fn os_moldes_mandam_o_teto_de_dez_minutos_em_compilacao_e_teste() {
+    for (lang, rule, said, vague) in [
+        (
+            "pt-BR",
+            "Nunca mande compilação ou teste para segundo plano",
+            ["`timeout: 600000`", "dez minutos", "um pacote por comando"],
+            "teto de tempo do comando",
+        ),
+        (
+            "en-US",
+            "Never send a build or test to the background",
+            ["`timeout: 600000`", "ten minutes", "one package per command"],
+            "command's time limit",
+        ),
+    ] {
+        for name in ["wave", "wave-solo", "review"] {
+            let body = template(lang, name);
+            let line = body.lines().find(|l| l.contains(rule)).unwrap_or_else(|| panic!("the {lang} `{name}` agent lost `{rule}`"));
+            for phrase in said {
+                assert!(line.contains(phrase), "the {lang} `{name}` agent does not say `{phrase}`: {line}");
+            }
+            assert!(!body.contains(vague), "the {lang} `{name}` agent still says `{vague}`");
+        }
+    }
+}
+
+/// Comentário e nome de teste descrevem o comportamento em palavras e nunca
+/// citam código de item, número de onda, nome de spec, pendência ou o
+/// Mustard: os dois moldes de onda mandam isso na linha dos comentários, e o
+/// revisor confere nas linhas novas da obra, nos dois idiomas.
+#[test]
+fn os_moldes_proibem_codigo_da_spec_no_comentario() {
+    for (lang, comments, finding, review_check, cited) in [
+        (
+            "pt-BR",
+            "- Comentários",
+            "é achado",
+            "## Como conferir",
+            ["nome de teste", "código de item", "onda", "spec", "pendência", "Mustard"],
+        ),
+        (
+            "en-US",
+            "- Comments",
+            "is a finding",
+            "## How to check",
+            ["test name", "item code", "wave", "spec", "pending item", "Mustard"],
+        ),
+    ] {
+        for name in ["wave", "wave-solo"] {
+            let body = template(lang, name);
+            let line = body.lines().find(|l| l.starts_with(comments)).unwrap_or_else(|| panic!("the {lang} `{name}` agent has no comments line"));
+            for word in cited {
+                assert!(line.contains(word), "the {lang} `{name}` comments line does not name `{word}`: {line}");
+            }
+        }
+        let review = template(lang, "review");
+        let check = section(&review, review_check);
+        let line = check.lines().find(|l| l.contains(finding)).unwrap_or_else(|| panic!("the {lang} reviewer does not check comments:{check}"));
+        for word in cited {
+            assert!(line.contains(word), "the {lang} reviewer's comment check does not name `{word}`: {line}");
+        }
+    }
+}
+
+/// O revisor diz os dois caminhos da volta: na revisão final da obra, grava o
+/// veredito pela ferramenta, com a linha de exemplo que a gravação aceita; na
+/// revisão de um levantamento e no pull request de um colega, devolve o texto
+/// a quem despachou. O pedido de cada uso diz qual vale: o do fechamento manda
+/// gravar, o do levantamento e o da porta do pull request dizem que o texto
+/// volta sem gravar nada.
+#[test]
+fn o_molde_do_revisor_diz_os_dois_caminhos() {
+    for (lang, locale, header, said, survey_said) in [
+        (
+            "pt-BR",
+            Locale::PtBr,
+            "## O que devolver",
+            ["revisão final da obra", "`run write verdict", "levantamento", "pull request", "devolva o texto a quem despachou"],
+            "devolve o texto a você, sem gravar veredito",
+        ),
+        (
+            "en-US",
+            Locale::EnUs,
+            "## What to return",
+            ["final review", "`run write verdict", "survey", "pull request", "return the text to whoever dispatched you"],
+            "returns its text to you, recording no verdict",
+        ),
+    ] {
+        let review = template(lang, "review");
+        let back = section(&review, header);
+        for phrase in said {
+            assert!(back.contains(phrase), "the {lang} reviewer does not say `{phrase}`:{back}");
+        }
+        assert!(!review.contains("<VERDICT>"), "the {lang} reviewer still teaches the pasted line");
+        let example = back.lines().find(|l| l.starts_with("{\"final\"")).unwrap_or_else(|| panic!("no example line:{back}"));
+        let parsed: Value = serde_json::from_str(example).unwrap_or_else(|e| panic!("{lang}: {e}: {example}"));
+        assert_eq!(parsed["final"], json!(true), "{example}");
+
+        let close = translate("close.final_review", locale);
+        assert!(close.contains("run write verdict") && !close.contains("<VERDICT>"), "{close}");
+        let survey = translate("survey.outside_review_step", locale);
+        assert!(survey.contains(survey_said), "{survey}");
+    }
+    let pr = std::fs::read_to_string(repo_root().join("plugin/commands/pr.md")).unwrap();
+    assert!(pr.contains("`mustard-review` agent, from that brief: it returns its text to you and records nothing"), "{pr}");
 }
 
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
@@ -519,64 +687,80 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
     }
 }
 
-/// O pedido de onda, montado pelo binário de verdade, manda o agente
-/// devolver só a linha `<DELIVERED>` e a de gasto, sem prosa em volta, com
-/// todo o detalhe do trabalho dentro do campo de texto da entrega: a parte
-/// fixa do pedido diz isso, e a regra da execução repete a frase logo depois
-/// das duas frases sobre não comitar que a onda 12 acrescentou. Nos dois
-/// idiomas. A instrução volta também ao orquestrador, na saída da própria
-/// rodada: quando a última mensagem de um agente não trouxer as duas linhas,
-/// ou vier fora do padrão, o `next` da rodada manda exigi-las de novo, nos
-/// dois idiomas — antes desta prova, essa segunda metade só ficava protegida
-/// pela impressão digital do catálogo de textos. Prova o critério de o
-/// pedido mandar devolver só as duas linhas.
+/// O pedido de onda, montado pelo binário de verdade, manda o agente gravar
+/// a entrega pela ferramenta, `run write delivered`, com todo o detalhe do
+/// trabalho no campo de texto dela: a parte fixa do pedido diz isso, e a
+/// regra da execução repete logo depois das duas frases sobre não comitar.
+/// Nenhum texto ensina mais a linha colada na última mensagem: nem o pedido
+/// da onda, nem os dois moldes de onda — que trazem a linha de exemplo, sem
+/// marca, e o campo das sobras —, nem o pedido da revisão final. A instrução
+/// volta ao orquestrador na saída da própria rodada: quando a volta de um
+/// agente não estiver na spec, o `next` manda o agente gravá-la de novo. Nos
+/// dois idiomas.
 #[test]
-fn o_pedido_manda_devolver_so_as_duas_linhas() {
+fn o_pedido_manda_gravar_a_entrega_pela_ferramenta() {
     for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) =
             installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
-        let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "duaslinhas", "--base", "dev"], None);
+        let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "gravada", "--base", "dev"], None);
         assert_eq!(opened["ok"], json!(true), "{opened}");
-        let file = root.join(".claude/spec/duaslinhas/spec.ndjson");
+        let file = root.join(".claude/spec/gravada/spec.ndjson");
         let put =
             |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
         let said = put("message", json!({"author": "user", "text": "o objetivo"}));
         let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "form": "ubiquitous", "origin": said}));
         put("wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "passa", "origin": said}));
         put("task", json!({"wave": 1, "text": "Mexer no arquivo dela.", "files": [{"path": "src/onda1.rs"}], "origin": said}));
-        put("state", json!({"phase": "running", "branch": "feature/duaslinhas"}));
+        put("state", json!({"phase": "running", "branch": "feature/gravada"}));
 
-        let round = rt(&root, &home, &["run", "round", "--spec", "duaslinhas"], None);
+        let round = rt(&root, &home, &["run", "round", "--spec", "gravada"], None);
         assert_eq!(round["ok"], json!(true), "{round}");
         let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{round}");
         let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default();
 
-        assert!(prompt.contains(translate("prompt.fixed", text)), "{lang} wave request misses the fixed part: {prompt}");
+        let fixed = translate("prompt.fixed", text);
+        assert!(prompt.contains(fixed), "{lang} wave request misses the fixed part: {prompt}");
+        assert!(fixed.contains("`mustard-rt run write delivered`"), "{lang} fixed part: {fixed}");
 
         let commit_field = translate("prompt.execution.commit_field", text);
         let report_lines = translate("prompt.execution.report_lines", text);
-        assert!(prompt.contains(report_lines), "{lang} wave request misses the two-lines reminder: {prompt}");
+        assert!(report_lines.contains("`mustard-rt run write delivered`"), "{lang}: {report_lines}");
+        assert!(prompt.contains(report_lines), "{lang} wave request misses the recording reminder: {prompt}");
         let commit_at = prompt.find(commit_field).unwrap_or_else(|| panic!("{lang} wave request misses `commit_field`: {prompt}"));
         let report_at = prompt.find(report_lines).unwrap();
         assert!(
             report_at > commit_at,
-            "{lang} the two-lines reminder does not sit right after the no-commit phrases in the execution rules block: {prompt}"
+            "{lang} the recording reminder does not sit right after the no-commit phrases in the execution rules block: {prompt}"
         );
+        assert!(!prompt.contains("<DELIVERED>"), "{lang} wave request still teaches the pasted line: {prompt}");
 
-        // A segunda metade do critério: a instrução que a rodada devolve ao
-        // orquestrador depois de despachar, mandando exigir as duas linhas
-        // de novo quando elas não vierem, ou vierem fora do padrão.
+        let final_fixed = translate("prompt.final.fixed", text);
+        assert!(final_fixed.contains("run write verdict") && !final_fixed.contains("<VERDICT>"), "{final_fixed}");
+
+        for name in ["wave", "wave-solo"] {
+            let body = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            let output = section(&body, wave_headers(lang).1);
+            assert!(output.contains("`run write delivered --json"), "{lang} `{name}`:{output}");
+            assert!(body.contains("\"leftovers\""), "{lang} `{name}` lacks the leftovers field");
+            assert!(!body.contains("<DELIVERED>"), "{lang} `{name}` still teaches the pasted line");
+            let example = output.lines().find(|l| l.starts_with("{\"wave\"")).unwrap_or_else(|| panic!("no example line:{output}"));
+            let parsed: Value = serde_json::from_str(example).unwrap_or_else(|e| panic!("{lang} `{name}`: {e}: {example}"));
+            assert_eq!(parsed["wave"], json!(1), "{example}");
+        }
+
+        // A segunda metade: a instrução que a rodada devolve ao orquestrador
+        // depois de despachar, mandando o agente gravar de novo quando a volta
+        // dele não estiver na spec, e pedindo só a linha de consumo.
         let next = round["next"].as_str().unwrap_or_default();
-        let demand_again = match text {
-            Locale::PtBr => "mande o agente responder de novo no formato",
-            Locale::EnUs => "make the agent answer again in the format",
+        let record_again = match text {
+            Locale::PtBr => "mande o agente gravá-la de novo pela ferramenta",
+            Locale::EnUs => "have the agent record it again through the tool",
         };
-        assert!(
-            next.contains(demand_again),
-            "{lang} round output misses the instruction to the orchestrator to demand the two lines again: {next}"
-        );
+        assert!(next.contains(record_again), "{lang} round output misses the instruction to record again: {next}");
+        assert!(next.contains("<USAGE>"), "{lang} round output does not ask for the usage line: {next}");
+        assert!(!next.contains("<DELIVERED>") && !next.contains("<VERDICT>"), "{lang} round output teaches a pasted line: {next}");
     }
 }
 

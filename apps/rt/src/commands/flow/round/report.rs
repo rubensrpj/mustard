@@ -1338,10 +1338,12 @@ mod tests {
         assert_eq!(delivered_count(root), 1, "{out}");
     }
 
-    /// A gravação aceita a volta com os campos exatamente como o texto do
-    /// agente de onda os ensina, nos dois idiomas, e a rodada a assume: o
-    /// commit sai com o título e o corpo montados do resumo. O veredito entra
-    /// com os campos que o texto do revisor ensina, gravado por ele.
+    /// A gravação aceita a volta com os campos exatamente como a linha de
+    /// exemplo do texto do agente de onda os ensina, nos dois idiomas, e a
+    /// rodada a assume: o commit sai com o título e o corpo montados do
+    /// resumo. O veredito entra com os campos da linha de exemplo do texto do
+    /// revisor, gravado por ele. O próximo passo da rodada ensina as duas
+    /// gravações e pede só o consumo, sem nenhuma linha colada.
     #[test]
     fn the_round_takes_the_closing_lines_exactly_as_the_agent_texts_teach_and_commits() {
         for (lang, answer) in [(Locale::PtBr, "Entreguei a soma."), (Locale::EnUs, "I delivered the sum.")] {
@@ -1353,7 +1355,10 @@ mod tests {
             let first = round(root, "x", None);
             let taught = translate("round.report", lang);
             assert!(first["next"].as_str().unwrap_or_default().contains(taught), "{first}");
-            assert!(taught.contains("<VERDICT>") && taught.contains("\"commit\""), "{taught}");
+            for said in ["run write delivered", "run write verdict", "<USAGE>", "`commit`"] {
+                assert!(taught.contains(said), "{said}: {taught}");
+            }
+            assert!(!taught.contains("<DELIVERED>") && !taught.contains("<VERDICT>"), "{taught}");
 
             std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn soma() {}\n").unwrap();
             let (wave_text, review_text) = mustard_core::agent_texts(lang)
@@ -1368,9 +1373,9 @@ mod tests {
             } else {
                 [("<the delivery>", "The sum is out, with its test."), ("path/to/file.rs", "src/a.rs"), ("<the commit summary>", "the sum ships")]
             };
-            let line = taught_line(&wave_text, "DELIVERED", &example);
-            let fields = tagged(&line, "DELIVERED").first().copied().unwrap_or_default().to_string();
-            let body: Value = serde_json::from_str(&fields).unwrap_or_else(|e| panic!("{lang:?}: {e}: {line}"));
+            assert!(wave_text.contains("run write delivered"), "{lang:?}: {wave_text}");
+            let line = taught_line(&wave_text, "{\"wave\"", &example);
+            let body: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{lang:?}: {e}: {line}"));
             assert_eq!(returned(root, body)["ok"], json!(true), "{lang:?}: {answer}");
             let back = round(root, "x", None);
             assert_eq!(back["ok"], json!(true), "{lang:?}: {back}");
@@ -1386,9 +1391,9 @@ mod tests {
             let shown = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(root).output().unwrap();
             assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "src/a.rs");
 
-            let line = taught_line(&review_text, "VERDICT", &[]);
-            let fields = tagged(&line, "VERDICT").first().copied().unwrap_or_default().to_string();
-            let body: Value = serde_json::from_str(&fields).unwrap_or_else(|e| panic!("{lang:?}: {e}: {line}"));
+            assert!(review_text.contains("run write verdict"), "{lang:?}: {review_text}");
+            let line = taught_line(&review_text, "{\"final\"", &[]);
+            let body: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{lang:?}: {e}: {line}"));
             seed_review(root);
             assert_eq!(judged(root, body)["ok"], json!(true), "{lang:?}: {line}");
             let judged = round(root, "x", None);
@@ -2339,28 +2344,24 @@ mod tests {
         }
     }
 
-    /// O envio da onda guarda o molde do agente e o modelo pedido, na hora do
+    /// O envio da onda guarda o nome do agente e o modelo pedido, na hora do
     /// despacho; quando a rodada assume a volta da onda com a linha `USAGE`
     /// que só o orquestrador escreve, com o modelo usado, os passos, os tokens
     /// e o consumo de quem despacha, o envio ganha uma versão nova com esses
-    /// cinco campos, apontando para o envio original e mantendo o molde e o
+    /// cinco campos, apontando para o envio original e mantendo o agente e o
     /// modelo que já estavam lá.
     #[test]
     fn a_rounds_usage_line_records_a_new_version_of_the_waves_send() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
-        std::fs::write(root.join(".claude/agents/mustard/wave.md"), "molde da onda").unwrap();
-        // A onda de uma tarefa só chama o agente `wave-solo`: sem o arquivo
-        // dele, o pedido não teria molde nenhum para levar.
-        std::fs::write(root.join(".claude/agents/mustard/wave-solo.md"), "molde da onda solo").unwrap();
 
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!(sent.str_field("template"), Some("molde da onda solo"), "the send carries the agent's template");
+        // A onda de uma tarefa só chama o agente `wave-solo`.
+        assert_eq!(sent.str_field("agent"), Some("wave-solo"), "the send carries the agent's name");
         assert_eq!(sent.str_field("model"), Some("Opus"), "the send carries the requested model");
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
@@ -2381,7 +2382,7 @@ mod tests {
         assert_eq!(revised.int("tokens"), Some(123_456), "{revised:?}");
         assert_eq!(revised.int("caller_steps"), Some(7), "{revised:?}");
         assert_eq!(revised.int("caller_tokens"), Some(89_000), "{revised:?}");
-        assert_eq!(revised.str_field("template"), Some("molde da onda solo"), "keeps what was already there");
+        assert_eq!(revised.str_field("agent"), Some("wave-solo"), "keeps what was already there");
         assert_eq!(revised.str_field("model"), Some("Opus"), "keeps what was already there");
     }
 

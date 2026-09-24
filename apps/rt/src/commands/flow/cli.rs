@@ -105,13 +105,14 @@ pub enum FlowCmd {
         #[arg(long)]
         spec: Option<String>,
         /// O relatório da rodada anterior, uma linha por marca. A entrega da
-        /// onda não vem aqui: o agente a grava com `run write delivered`, e a
-        /// linha `<DELIVERED>` no relatório é recusada. Quem despacha escreve,
-        /// para cada onda que voltou, a linha `<USAGE>{…}</USAGE>` com o
-        /// consumo que a plataforma entregou — nunca digitado pelo agente:
-        /// `wave`, `model`, `steps`, `tokens`, `caller_steps` e
-        /// `caller_tokens` —, a `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>` da
-        /// escolha antes do envio; o revisor devolve `<VERDICT>{…}</VERDICT>`.
+        /// onda e o veredito não vêm aqui: o agente de onda grava a entrega
+        /// com `run write delivered`, o revisor grava o veredito com `run
+        /// write verdict`, e a linha `<DELIVERED>` ou `<VERDICT>` no relatório
+        /// é recusada. Quem despacha escreve, para cada onda que voltou, a
+        /// linha `<USAGE>{…}</USAGE>` com o consumo que a plataforma entregou
+        /// — nunca digitado pelo agente: `wave`, `model`, `steps`, `tokens`,
+        /// `caller_steps` e `caller_tokens` —, a `<PAUSED>` e a
+        /// `<ANALYSIS>{…}</ANALYSIS>` da escolha antes do envio.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
@@ -132,8 +133,9 @@ pub enum FlowCmd {
         /// A spec que fecha. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
-        /// O relatório da última rodada, no mesmo formato da rodada, e também
-        /// a linha do agente de teste dedicado.
+        /// O relatório da última rodada, no mesmo formato da rodada. O
+        /// veredito do agente de teste dedicado não vem aqui: ele o grava com
+        /// `run write verdict`.
         #[arg(long)]
         report: Option<String>,
         /// A resposta "fica para depois" do usuário a uma pendência desta

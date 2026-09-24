@@ -45,7 +45,7 @@ pub(super) fn stopped_waves(
 
 /// O código da mudança proposta, que vai na pergunta que a decide: a onda e
 /// uma chave do texto da mudança, para que um "sim" nunca sirva para outra.
-pub(super) fn replan_code(wave: u64, change: &str) -> String {
+pub(crate) fn replan_code(wave: u64, change: &str) -> String {
     let key = crate::commands::agent::render::prompt_ref::fnv1a64(&[change.trim()]) & 0x00ff_ffff;
     format!("onda-{wave}-{key:06x}")
 }
@@ -91,7 +91,7 @@ fn is_change_code(word: &str) -> bool {
 /// Só conta a mensagem de autor `user` com a testemunha. O `run write` recusa
 /// toda mensagem com a testemunha, de qualquer autor, e recusa rever ou tirar
 /// uma delas: só a testemunha grava o clique.
-pub(super) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
+pub(crate) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
     let langs = [Locale::PtBr, Locale::EnUs];
     let sent = log.last_by_wave("send").get(&wave).copied().unwrap_or(0);
     let last_click = log
@@ -111,7 +111,7 @@ pub(super) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
 /// conta começa na versão mais nova do plano da onda que o usuário pediu
 /// depois da última reprovação: a onda que ele replanejou volta à fila com a
 /// conta zerada, e o que o orquestrador acrescenta ao plano não zera nada.
-pub(super) fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
+pub(crate) fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
     let verdicts = log.verdicts_by_wave();
     let reset = last_reset_by_user(log, &verdicts);
     let mut out = BTreeMap::new();
