@@ -169,6 +169,12 @@
 //! plano —, ou o projeto todo, em `applies_to`. O item sem dono é recusado,
 //! e nada é gravado.
 //!
+//! Numa spec que já fechou, este comando não grava trabalho novo
+//! (`closed_spec_work_rule`): o pedido na fechada ou na com o pull request
+//! aberto é recusado e a recusa aponta a reabertura, pelo `reopen`; o pedido
+//! e a tarefa na entregue na base ou na descartada são recusados e a recusa
+//! aponta uma spec nova, pelo `open`. Nada é gravado.
+//!
 //! Numa spec em levantamento com o tipo de trabalho ou algum ponto gravado,
 //! a saída traz o passo seguinte (`mustard_core::domain::survey::next_step`):
 //! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
@@ -196,8 +202,8 @@ use mustard_core::domain::spec_events::{
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, not_closed_yet, phase_write_allowed, reply_rule, survey_rule, PhaseWriter,
-    SpecState, State,
+    birth_event, goal_rule, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
+    PhaseWriter, SpecState, State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::owner_rule;
@@ -672,9 +678,9 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 }
 
 /// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
-/// depois dela: a mudança de fase, a mensagem que a resposta responde, o
-/// objetivo, o levantamento, o dono do item combinado e a dependência entre
-/// tarefas.
+/// depois dela: a mudança de fase, o trabalho novo numa spec que já fechou, a
+/// mensagem que a resposta responde, o objetivo, o levantamento, o dono do
+/// item combinado e a dependência entre tarefas.
 fn record_rules(
     spec: &str,
     before: &SpecLog,
@@ -685,6 +691,7 @@ fn record_rules(
 ) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
     if by.is_none() {
+        closed_spec_work_rule(spec, before, after)?;
         wave_by_backlog_rule(before, after)?;
     }
     reply_rule(before, after)?;
@@ -692,6 +699,35 @@ fn record_rules(
     survey_rule(spec, before, after)?;
     task_dependency_rule(before, after)?;
     owner_rule(before, after)
+}
+
+/// O trabalho novo que o assistente grava numa spec que já fechou, pela fase
+/// dela antes da gravação. A fechada e a com o pull request aberto recebem o
+/// pedido novo depois de reabertas, na mesma spec e na mesma branch: o pedido
+/// é recusado e a recusa aponta a reabertura. A entregue na base e a
+/// descartada não voltam por caminho nenhum: o pedido e a tarefa são
+/// recusados, e a recusa aponta uma spec nova. Antes do fechamento, e na spec
+/// sem fase gravada, tudo grava como sempre.
+fn closed_spec_work_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    let Some(phase) = State::from_log(before).phase.filter(|phase| !not_closed_yet(phase)) else {
+        return Ok(());
+    };
+    let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
+    for event in after.events.iter().filter(|event| !had.contains(&event.id)) {
+        let event_type = event.event_type.as_str();
+        if returns_to_running(phase) {
+            if event_type == "request" {
+                return Err(Refusal::RequestOnClosedSpec { spec: spec.to_string(), phase: phase.to_string() });
+            }
+        } else if matches!(event_type, "request" | "task") {
+            return Err(Refusal::WorkOnFinishedSpec {
+                spec: spec.to_string(),
+                phase: phase.to_string(),
+                event_type: event_type.to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// A onda nasce do backlog: só o programa a grava, na hora de despachar. Pelo
@@ -2567,6 +2603,131 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(specs, ["teste"], "no spec was opened");
+    }
+
+    /// Deixa a spec `spec` na fase `phase` pelo caminho que ela anda: a
+    /// mensagem do usuário, o levantamento com a branch, a aprovação com a
+    /// testemunha, a execução, o fechamento e o pull request aberto até a
+    /// fase pedida; a descartada sai da execução. Devolve o número da
+    /// mensagem, de onde o pedido vem.
+    fn spec_in_phase(root: &std::path::Path, spec: &str, phase: &str) -> u64 {
+        const STEPS: &[&str] = &["survey", "plan", "approved", "running", "closed", "pr_open", "delivered"];
+        let said = write_to(root, Some(spec), "message", r#"{"author":"user","text":"mais um ajuste nela"}"#);
+        let said = said["id"].as_u64().unwrap_or_else(|| panic!("the user's message: {said}"));
+        let last = if phase == "discarded" { "running" } else { phase };
+        for step in STEPS.iter().take(STEPS.iter().position(|step| *step == last).unwrap() + 1) {
+            let mut fields = json!({"phase": step, "author": "binary"});
+            match *step {
+                "survey" => {
+                    fields["branch"] = json!(format!("feature/{spec}"));
+                    fields["base"] = json!("dev");
+                }
+                "approved" => fields["witness"] = json!({"question": "Aprovar?", "answer": "Aprovar"}),
+                "pr_open" => fields["pr"] = json!({"number": 1, "url": "https://exemplo/1"}),
+                _ => {}
+            }
+            crate::shared::spec_state::seed_event(root, spec, "state", fields);
+        }
+        if phase == "discarded" {
+            let gone = json!({"phase": "discarded", "author": "binary", "reason": "Descartada."});
+            crate::shared::spec_state::seed_event(root, spec, "state", gone);
+        }
+        assert_eq!(DiskSpecState::new(root).state(spec).and_then(|state| state.phase), Some(phase));
+        said
+    }
+
+    /// A gravação do assistente pelo `run write`, e os bytes do arquivo da
+    /// spec antes e depois dela.
+    fn by_assistant(root: &std::path::Path, spec: &str, event_type: &str, draft: &Value) -> (Value, Vec<u8>, Vec<u8>) {
+        let file = store::spec_file(root, spec).unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let out = write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some(spec.to_string()),
+            event_type: event_type.to_string(),
+            json: draft.to_string(),
+        });
+        (out, before, std::fs::read(&file).unwrap())
+    }
+
+    /// O pedido novo que o assistente grava numa spec fechada, e noutra com o
+    /// pull request aberto, é recusado com a razão própria e a frase que
+    /// manda reabrir a spec pelo `reopen`, nos dois idiomas, e o arquivo da
+    /// spec fica com os mesmos bytes. Na spec em execução, o mesmo pedido
+    /// grava como sempre.
+    #[test]
+    fn a_request_on_a_closed_spec_is_refused_pointing_to_the_reopen() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for (language, nothing) in [("pt-BR", "Nada foi gravado"), ("en-US", "Nothing was written")] {
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": language}}).to_string()).unwrap();
+            let tag = language.to_lowercase();
+            for phase in ["closed", "pr_open"] {
+                let spec = format!("fechada-{}-{tag}", phase.replace('_', "-"));
+                let said = spec_in_phase(root, &spec, phase);
+                let request = json!({"text": "Ajustar o otimizador.", "keys": ["otimizador"], "effect": "new_waves",
+                    "origin": said});
+                let (out, before, after) = by_assistant(root, &spec, "request", &request);
+                assert_eq!(out["ok"], json!(false), "{language} {phase}: {out}");
+                assert_eq!(out["reason"], json!("request-on-closed-spec"), "{language} {phase}: {out}");
+                let hint = out["hint"].as_str().unwrap_or_default();
+                let reopen = format!("mustard-rt run reopen --spec {spec}");
+                assert!(hint.contains(&reopen), "{language} {phase}: no {reopen:?} in {hint}");
+                assert!(hint.contains(phase) && hint.contains(nothing), "{language} {phase}: {hint}");
+                assert_eq!(after, before, "{language} {phase}: nothing was written");
+            }
+            let running = format!("em-execucao-{tag}");
+            let said = spec_in_phase(root, &running, "running");
+            let request = json!({"text": "Ajustar o otimizador.", "keys": ["otimizador"], "effect": "new_waves",
+                "origin": said});
+            let (out, before, after) = by_assistant(root, &running, "request", &request);
+            assert_eq!(out["ok"], json!(true), "{language}: the running spec takes the request: {out}");
+            assert_eq!(out["type"], json!("request"), "{out}");
+            assert!(after.len() > before.len(), "{language}: the request was written");
+        }
+    }
+
+    /// O pedido e a tarefa novos que o assistente grava numa spec entregue na
+    /// base e noutra descartada são recusados, e a frase manda abrir uma spec
+    /// nova pelo `open`, sem falar em reabrir, nos dois idiomas; o arquivo da
+    /// spec fica com os mesmos bytes. A tarefa na spec com o pull request
+    /// aberto, a última fase antes da entrega, grava como sempre.
+    #[test]
+    fn a_request_or_task_on_a_delivered_or_discarded_spec_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for (language, nothing) in [("pt-BR", "Nada foi gravado"), ("en-US", "Nothing was written")] {
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": language}}).to_string()).unwrap();
+            let tag = language.to_lowercase();
+            for phase in ["delivered", "discarded"] {
+                let spec = format!("saiu-{phase}-{tag}");
+                let said = spec_in_phase(root, &spec, phase);
+                let drafts = [
+                    ("request", json!({"text": "Ajustar o otimizador.", "keys": ["otimizador"], "effect": "new_waves",
+                        "origin": said})),
+                    ("task", json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "files": [],
+                        "depends_on": [], "origin": said})),
+                ];
+                for (event_type, draft) in &drafts {
+                    let (out, before, after) = by_assistant(root, &spec, event_type, draft);
+                    let case = format!("{language} {phase} {event_type}");
+                    assert_eq!(out["ok"], json!(false), "{case}: {out}");
+                    assert_eq!(out["reason"], json!("work-on-finished-spec"), "{case}: {out}");
+                    let hint = out["hint"].as_str().unwrap_or_default();
+                    assert!(hint.contains("mustard-rt run open"), "{case}: no new spec in {hint}");
+                    assert!(!hint.contains("reopen"), "{case}: a finished spec is never reopened: {hint}");
+                    assert!(hint.contains(phase) && hint.contains(nothing), "{case}: {hint}");
+                    assert_eq!(after, before, "{case}: nothing was written");
+                }
+            }
+            let open_pr = format!("pr-aberto-{tag}");
+            let said = spec_in_phase(root, &open_pr, "pr_open");
+            let task = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "files": [],
+                "depends_on": [], "origin": said});
+            let (out, before, after) = by_assistant(root, &open_pr, "task", &task);
+            assert_eq!(out["ok"], json!(true), "{language}: the task on the open pull request is written: {out}");
+            assert!(after.len() > before.len(), "{language}: the task was written");
+        }
     }
 
     /// Numa spec aprovada, com a página já publicada, a gravação que muda o
