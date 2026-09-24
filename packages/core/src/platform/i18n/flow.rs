@@ -539,6 +539,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              branch. If the server failed the pull request, the repair goes through the same \
              command with `--fix`."
         }
+        ("round.finished", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela já foi entregue na base, com o merge feito, \
+             ou descartada, e a rodada não despacha onda nela. Ela não volta: o pedido novo sobre \
+             ela abre uma spec nova com `mustard-rt run open`. Nada foi gravado."
+        }
+        ("round.finished", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it has already been delivered to the base, \
+             already merged, or discarded, and the round sends no wave on it. It does not come \
+             back: a new request on it opens a new spec with `mustard-rt run open`. Nothing was \
+             written."
+        }
         ("round.commit_too_long", Locale::PtBr) => {
             "O {part} da mensagem do commit tem {chars} caracteres e o teto é {max}."
         }
@@ -1261,8 +1272,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            158,
-            0x8670_fe76_0de2_ff04,
+            159,
+            0xf175_f3ba_ff37_fb8f,
         );
     }
 
@@ -1425,6 +1436,7 @@ mod tests {
             ("round.commit.fixes", &["{waves}"][..]),
             ("round.not_approved", &["{phase}"][..]),
             ("round.closed", &["{spec}", "{phase}"][..]),
+            ("round.finished", &["{spec}", "{phase}"][..]),
             ("round.commit_too_long", &["{part}", "{chars}", "{max}"][..]),
             ("round.commit_forbidden", &["{found}"][..]),
             ("round.commit_looks_like_sha", &["{found}"][..]),

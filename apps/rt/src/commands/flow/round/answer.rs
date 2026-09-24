@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::{returns_to_running, PhaseWriter, SpecState, State};
+use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
 use mustard_core::domain::wave_prompt::{agent_from_template, estimate_tokens, token_cap_message, wave_files};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
@@ -55,6 +55,9 @@ pub(crate) enum RoundRefusal {
     /// A spec fechou, ou está com o pull request aberto, e não tem onda de
     /// conserto aberta: o pedido novo nela passa antes pela reabertura.
     SpecClosed { spec: String, phase: String },
+    /// A spec já foi entregue na base ou descartada: ela não volta, e o
+    /// pedido novo sobre ela abre uma spec nova.
+    SpecFinished { spec: String, phase: String },
     /// O relatório trouxe a linha da entrega colada: a entrega mora na spec,
     /// e o agente a grava.
     ReturnLine,
@@ -103,6 +106,7 @@ impl RoundRefusal {
             Self::FileUnknown { .. } => "round-file-unknown".into(),
             Self::NotApproved { .. } => "round-not-approved".into(),
             Self::SpecClosed { .. } => "round-spec-closed".into(),
+            Self::SpecFinished { .. } => "round-spec-finished".into(),
             Self::ReturnLine => "round-return-line".into(),
             Self::ReturnMissing { .. } => "round-return-missing".into(),
             Self::ReturnNeedsCommit { .. } => "round-return-needs-commit".into(),
@@ -149,6 +153,9 @@ impl RoundRefusal {
             Self::NotApproved { phase } => fill("round.not_approved", &[("{phase}", phase.clone())]),
             Self::SpecClosed { spec, phase } => {
                 fill("round.closed", &[("{spec}", spec.clone()), ("{phase}", phase.clone())])
+            }
+            Self::SpecFinished { spec, phase } => {
+                fill("round.finished", &[("{spec}", spec.clone()), ("{phase}", phase.clone())])
             }
             Self::ReturnLine => fill("spec_events.report_carries_return_line", &[]),
             Self::ReturnMissing { wave } => fill("spec_events.return_missing", &[("{wave}", wave.to_string())]),
@@ -470,10 +477,18 @@ pub(super) fn run_round_with_mine(
     // A spec fechada, ou com o pull request aberto, sem onda de conserto tem
     // recusa própria: ela já foi aprovada, e o pedido novo nela entra pela
     // reabertura, que a leva de volta à execução.
-    let phase = State::from_log(&log).phase.unwrap_or_default().to_string();
+    //
+    // A spec entregue na base ou descartada também já passou da aprovação, e
+    // não volta por caminho nenhum: a recusa aponta uma spec nova, a mesma
+    // saída de quem grava pedido ou tarefa nela. A frase de spec não
+    // aprovada fica só para as fases antes da aprovação.
+    let recorded = State::from_log(&log).phase;
+    let phase = recorded.unwrap_or_default().to_string();
     if !can_run(&phase) && crate::commands::flow::reopen::open_fix_wave_of(&log).is_none() {
         return Err(if returns_to_running(&phase) {
             RoundRefusal::SpecClosed { spec, phase }
+        } else if recorded.is_some_and(|phase| !not_closed_yet(phase)) {
+            RoundRefusal::SpecFinished { spec, phase }
         } else {
             RoundRefusal::NotApproved { phase }
         });
@@ -1022,6 +1037,59 @@ mod tests {
             let early = round(root, "x", None);
             assert_eq!(early["reason"], json!("round-not-approved"), "{early}");
             assert_eq!(early["hint"], json!(translate("round.not_approved", lang).replace("{phase}", "survey")));
+        }
+    }
+
+    /// A rodada numa spec entregue na base ou descartada recusa com razão
+    /// própria, e nada é gravado: a frase diz que a spec foi entregue ou
+    /// descartada e manda abrir uma spec nova, nos dois idiomas. Nunca a
+    /// frase de spec não aprovada, nem a reabertura, que ela não aceita.
+    #[test]
+    fn a_round_on_a_delivered_or_discarded_spec_points_to_a_new_spec() {
+        use crate::commands::spec_events::write::record_phase;
+        let languages = [
+            ("pt-BR", Locale::PtBr, ["entregue", "descartada"], ["não foi aprovada", "reopen"]),
+            ("en-US", Locale::EnUs, ["delivered", "discarded"], ["not approved", "reopen"]),
+        ];
+        for (language, lang, says, never) in languages {
+            for phase in ["delivered", "discarded"] {
+                let dir = tempdir().unwrap();
+                let root = dir.path();
+                if phase == "delivered" {
+                    closed_work(root, true);
+                    assert!(record_phase(root, "x", "delivered", None), "the merge is recorded");
+                } else {
+                    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+                    let gone = json!({"phase": "discarded", "author": "binary", "reason": "Descartada."});
+                    store::write(
+                        &store::spec_file(root, "x").unwrap(),
+                        "state",
+                        gone.as_object().cloned().expect("an object"),
+                        &[],
+                    )
+                    .expect("the discard");
+                }
+                assert_eq!(State::from_log(&log_of(root)).phase, Some(phase), "{language} {phase}");
+                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
+                    .unwrap();
+                let before = std::fs::read(store::spec_file(root, "x").unwrap()).unwrap();
+
+                let refused = round(root, "x", None);
+                assert_eq!(refused["ok"], json!(false), "{language} {phase}: {refused}");
+                assert_eq!(refused["reason"], json!("round-spec-finished"), "{language} {phase}: {refused}");
+                let hint = refused["hint"].as_str().unwrap_or_default();
+                assert!(hint.contains("mustard-rt run open"), "{language} {phase}: {hint}");
+                assert!(hint.contains(phase), "{language} {phase}: {hint}");
+                for word in says {
+                    assert!(hint.contains(word), "{language} {phase}: no {word:?} in {hint}");
+                }
+                for word in never {
+                    assert!(!hint.contains(word), "{language} {phase}: {word:?} in {hint}");
+                }
+                assert_ne!(hint, translate("round.not_approved", lang).replace("{phase}", phase), "{language}");
+                assert!(refused["dispatch"].is_null(), "{refused}");
+                assert_eq!(std::fs::read(store::spec_file(root, "x").unwrap()).unwrap(), before, "nothing written");
+            }
         }
     }
 
