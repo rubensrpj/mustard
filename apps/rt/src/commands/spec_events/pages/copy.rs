@@ -38,6 +38,18 @@
 //! registro `copy` na spec, gravado pela conversa, com o número até onde a
 //! cópia foi: é por ele que a cópia seguinte começa.
 //!
+//! ## A versão de cada documento
+//!
+//! O banco recusa trocar um documento que já existe sem a versão dele
+//! (`if_version`). O registro da cópia guarda em `versions` a versão que o
+//! banco devolveu a cada documento escrito, pelo nome `coleção/doc_id`; a
+//! cópia seguinte procura cada documento que já existe no registro mais novo
+//! daquela página, para aquele endereço, que traz a versão dele, e a escrita
+//! dele no lote já sai com `if_version`. Assim a cópia é o lote e o registro,
+//! sem ler versão nenhuma antes. Só o documento sem versão guardada, de uma
+//! cópia gravada antes de o registro guardar as versões, ainda é nomeado na
+//! ordem, para a conversa ler a versão dele antes de mandar o lote.
+//!
 //! ## A primeira cópia e a spec antiga
 //!
 //! A página da spec é o template do Mustard, publicado com `template: true`.
@@ -157,8 +169,10 @@ pub(crate) struct Target {
     /// publicação.
     pub stamp: String,
     /// `{coleção}/{doc_id}` de cada documento que já existe no banco antes
-    /// desta cópia: o banco recusa a troca de um documento assim sem a
-    /// versão dele. Vazio na primeira cópia, quando nada existe ainda.
+    /// desta cópia sem versão guardada em registro de cópia: o banco recusa
+    /// a troca de um documento assim sem a versão dele, e a ordem manda ler.
+    /// O que tem versão guardada não entra aqui: a escrita dele já leva
+    /// `if_version`. Vazio na primeira cópia, quando nada existe ainda.
     pub existing: Vec<String>,
 }
 
@@ -237,15 +251,15 @@ fn build(
     others: &[ProjectLog],
     lang: Locale,
 ) -> Result<Prepared, Refusal> {
-    let SpecPage { url, since, old, republished, stamp: published } = spec_page(log);
+    let SpecPage { url, since, old, republished, stamp: published, versions } = spec_page(log);
     clear(&place.folder)?;
     let mut writes: Vec<Value> = Vec::new();
     let ranges = dirty_ranges(log, since);
     // O documento de uma faixa que começa até `since` já está no banco desde
     // uma cópia anterior; o mesmo vale para o documento calculado, fora da
     // primeira cópia. Na primeira cópia (`since == 0`) nada existe ainda,
-    // nem a faixa que começa em zero. A ordem lê a versão de cada um antes
-    // de trocar.
+    // nem a faixa que começa em zero. A troca de cada um leva a versão
+    // guardada dele; a ordem lê só a do que não tem versão guardada.
     let mut existing: Vec<String> = ranges
         .iter()
         .filter(|&&start| since != 0 && start <= since)
@@ -262,6 +276,7 @@ fn build(
     if since != 0 || republished {
         existing.push(COMPUTED.to_string());
     }
+    let existing = pin(&mut writes, existing, |doc| versions.get(doc).cloned());
     let template = spec_page_template(lang);
     let stamp = template_stamp(&template).unwrap_or_default().to_string();
     // A ordem de um marco publica de novo; depois de um pedido, a página com
@@ -299,6 +314,10 @@ struct SpecPage {
     /// O carimbo do molde dessa publicação; `None` na publicação de antes do
     /// carimbo.
     stamp: Option<String>,
+    /// A versão de cada documento no banco desse endereço, pelo nome
+    /// `coleção/doc_id`: a do registro de cópia mais novo para ele que traz a
+    /// versão do documento.
+    versions: Map<String, Value>,
 }
 
 /// A página da spec do arquivo `log`. Só a publicação do template conta: a
@@ -311,22 +330,54 @@ fn spec_page(log: &SpecLog) -> SpecPage {
         .collect();
     let old = published.iter().any(|(_, _, template, _)| !template);
     let Some((at, url, _, stamp)) = published.iter().copied().rfind(|(_, _, template, _)| *template) else {
-        return SpecPage { url: None, since: 0, old, republished: false, stamp: None };
+        return SpecPage { url: None, since: 0, old, republished: false, stamp: None, versions: Map::new() };
     };
     let republished = published.iter().any(|&(id, other, _, _)| id < at && other == url);
     // Cada cópia foi para o endereço da última publicação do template antes
     // dela: conta a que foi para o endereço de agora, mesmo antes de uma
-    // república nele.
+    // república nele. A versão de um banco de outro endereço não vale neste.
     let mut current: Option<&str> = None;
     let mut since = 0;
+    let mut versions = Map::new();
     for event in &visible {
         if let Some(to) = published_to(event, SPEC_PAGE).filter(|_| is_template(event)) {
             current = Some(to);
         } else if copy_of(event) == Some(SPEC_PAGE) && current == Some(url) {
             since = since.max(event.int("last").unwrap_or(0));
+            // Em ordem de arquivo: a do registro mais novo fica.
+            versions.extend(versions_of(event));
         }
     }
-    SpecPage { url: Some(url.to_string()), since, old, republished, stamp: stamp.map(str::to_string) }
+    SpecPage { url: Some(url.to_string()), since, old, republished, stamp: stamp.map(str::to_string), versions }
+}
+
+/// A versão que o registro de cópia `event` guardou para cada documento que
+/// ela escreveu, pelo nome `coleção/doc_id`; vazio no registro de antes das
+/// versões.
+fn versions_of(event: &SpecEvent) -> Map<String, Value> {
+    event.fields.get("versions").and_then(Value::as_object).cloned().unwrap_or_default()
+}
+
+/// Põe em `if_version` de cada escrita de `writes` a versão guardada do
+/// documento dela, pelo nome `coleção/doc_id`, quando ele está em `existing`
+/// e `stored` acha a versão dele; devolve os de `existing` sem versão
+/// guardada, na mesma ordem, os únicos que a ordem ainda nomeia para ler.
+fn pin(writes: &mut [Value], existing: Vec<String>, stored: impl Fn(&str) -> Option<Value>) -> Vec<String> {
+    existing
+        .into_iter()
+        .filter(|doc| {
+            let Some(version) = stored(doc) else { return true };
+            for write in writes.iter_mut().filter(|w| doc_name(w) == *doc) {
+                write["if_version"] = version.clone();
+            }
+            false
+        })
+        .collect()
+}
+
+/// O nome `coleção/doc_id` do documento de uma escrita do lote.
+fn doc_name(write: &Value) -> String {
+    format!("{}/{}", write["collection"].as_str().unwrap_or_default(), write["doc_id"].as_str().unwrap_or_default())
 }
 
 /// Uma publicação do template da página do projeto que deu certo, gravada
@@ -341,11 +392,13 @@ struct ProjectPublication {
 }
 
 /// Uma cópia para o banco da página do projeto gravada numa spec: o número
-/// dela no arquivo e a hora.
+/// dela no arquivo, a hora e a versão que o banco devolveu a cada linha
+/// escrita, pelo nome `specs/<spec>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectCopy {
     id: u64,
     at: String,
+    versions: Map<String, Value>,
 }
 
 /// A página do projeto como o arquivo de eventos de uma spec a conta: a hora
@@ -376,7 +429,7 @@ fn project_log(log: &SpecLog) -> ProjectLog {
     let copies = visible
         .iter()
         .filter(|e| copy_of(e) == Some(PROJECT_PAGE))
-        .map(|e| ProjectCopy { id: e.id, at: e.at().to_string() })
+        .map(|e| ProjectCopy { id: e.id, at: e.at().to_string(), versions: versions_of(e) })
         .collect();
     ProjectLog { born: log.events.first().map(|e| e.at().to_string()), publications, copies }
 }
@@ -758,7 +811,7 @@ fn project_rows(
     // cópia anterior para esse endereço a levou: uma cópia desta spec, que
     // leva sempre a própria linha, ou a cópia de todas as linhas feita por
     // outra spec depois que a pasta desta nasceu. O banco recusa a troca sem
-    // a versão, e a ordem a nomeia.
+    // a versão: a escrita leva a guardada, e sem ela a ordem a nomeia.
     let logs: Vec<&ProjectLog> = others.iter().chain(std::iter::once(&own_log)).collect();
     let ours = logs.len() - 1;
     let own_there = url.as_deref().is_some_and(|url| {
@@ -776,6 +829,10 @@ fn project_rows(
     for row in chosen {
         writes.push(set(place, SPECS, &row.name, &row_body(row))?);
     }
+    let existing = match url.as_deref() {
+        Some(url) => pin(&mut writes, existing, |doc| project_version(doc, &logs, url)),
+        None => existing,
+    };
     let mut record = json!({ "page": PROJECT_PAGE });
     if let Some(phase) = &own.phase {
         record["phase"] = json!(phase);
@@ -821,6 +878,36 @@ fn went_to(copy: &ProjectCopy, spec: usize, logs: &[&ProjectLog], url: &str) -> 
         Some(p) => p.url == url,
         None => all.iter().all(|(_, p)| p.url == url),
     }
+}
+
+/// A versão do documento `doc` no banco da página do projeto no endereço
+/// `url`: a do registro de cópia mais novo que foi para esse endereço e traz
+/// a versão dele, gravado em qualquer spec de `logs` — a linha de uma spec
+/// pode ter ido na cópia de todas as linhas feita por outra. Na mesma spec o
+/// número decide; entre specs, a hora, e no mesmo segundo a desta, a última
+/// de `logs`, vale.
+fn project_version(doc: &str, logs: &[&ProjectLog], url: &str) -> Option<Value> {
+    let ours = logs.len().saturating_sub(1);
+    let mut best: Option<(usize, &ProjectCopy, &Value)> = None;
+    for (spec, project) in logs.iter().enumerate() {
+        for copy in &project.copies {
+            let Some(version) = copy.versions.get(doc) else { continue };
+            if !went_to(copy, spec, logs, url) {
+                continue;
+            }
+            let newer = match best {
+                None => true,
+                Some((best_spec, best_copy, _)) if best_spec == spec => copy.id > best_copy.id,
+                Some((_, best_copy, _)) => {
+                    later(&copy.at, &best_copy.at) || (spec == ours && !later(&best_copy.at, &copy.at))
+                }
+            };
+            if newer {
+                best = Some((spec, copy, version));
+            }
+        }
+    }
+    best.map(|(_, _, version)| version.clone())
 }
 
 /// A cópia `copy`, gravada na spec de posição `spec` em `logs`, levou todas
@@ -937,9 +1024,10 @@ impl Prepared {
     /// tem endereço, no marco `milestone`, num link novo quando ela ainda é a
     /// página inteira de uma versão antiga, e publicar de novo no mesmo
     /// endereço a que foi publicada com um molde de outro carimbo; copiar os lotes de cada
-    /// página, nomeando os documentos que já existem no banco para ler a
-    /// versão de cada um antes de trocar, e, fora do descarte, gravar cada
-    /// cópia feita; no fim, não levar os endereços para a resposta. Quem copia
+    /// página, nomeando só os documentos que já existem no banco sem versão
+    /// guardada, para ler a versão de cada um antes de trocar, e, fora do
+    /// descarte, gravar cada cópia feita com a versão que o banco devolveu a
+    /// cada documento; no fim, não levar os endereços para a resposta. Quem copia
     /// é o orquestrador, sem agente, também na primeira cópia. Sem marco, como
     /// depois de um pedido, nada é publicado: a página sem endereço fica para
     /// o próximo marco, e a de molde velho é copiada no endereço que já tem.
@@ -1054,17 +1142,18 @@ pub(crate) fn sent_items(root: &Path, report: &Value) -> Vec<u64> {
 
 /// Para os testes: a frase da ordem que copia os lotes da página da spec
 /// `spec`, que a resposta `report` de um passo preparou, para o banco no
-/// endereço `url`, como o catálogo em `lang` a monta. Sem documento já
-/// existente no banco: ver [`batches_order_with`] para nomear os que já
-/// existem.
+/// endereço `url`, como o catálogo em `lang` a monta. Sem documento a ler:
+/// ver [`batches_order_with`] para nomear os que já existem sem versão
+/// guardada.
 #[cfg(test)]
 pub(crate) fn batches_order(report: &Value, spec: &str, url: &str, lang: Locale) -> String {
     batches_order_with(report, spec, url, &[], lang)
 }
 
 /// Como [`batches_order`], nomeando em `existing` (`{coleção}/{doc_id}`) os
-/// documentos que a ordem diz já existirem no banco, a pedir a versão de
-/// cada um antes de trocar.
+/// documentos que a ordem diz já existirem no banco sem versão guardada, a
+/// pedir a leitura da versão de cada um antes de trocar; vazio, a frase sai
+/// sem leitura nenhuma, como quando toda troca já leva a versão guardada.
 #[cfg(test)]
 pub(crate) fn batches_order_with(report: &Value, spec: &str, url: &str, existing: &[&str], lang: Locale) -> String {
     let batches = report["copy"][SPEC_PAGE]["batches"].as_array().cloned().unwrap_or_default();
@@ -1252,6 +1341,47 @@ mod tests {
                 write(root, "copy", report["copy"][page]["record"].clone());
             }
         }
+    }
+
+    /// Como [`follow`], mas a conversa grava cada cópia como a ordem manda
+    /// agora: com `versions`, a versão `version` que o banco devolveu a cada
+    /// documento que o lote escreveu.
+    fn follow_versioned(root: &Path, report: &Value, version: u64) {
+        let milestone = "round";
+        for page in report["publish"].as_array().cloned().unwrap_or_default() {
+            let page = page.as_str().unwrap_or_default();
+            let url = if page == SPEC_PAGE { SPEC_URL } else { PROJECT_URL };
+            write(root, "publish", json!({"page": page, "milestone": milestone, "ok": true, "template": true,
+                "stamp": stamp_of(page), "url": url}));
+        }
+        for page in ["spec", "project"] {
+            if !report["copy"][page].is_null() {
+                let mut record = report["copy"][page]["record"].clone();
+                let versions: Map<String, Value> = sent(root, report, page)
+                    .iter()
+                    .filter(|w| w["op"] == json!("set"))
+                    .map(|w| (doc_name(w), json!(version)))
+                    .collect();
+                record["versions"] = Value::Object(versions);
+                write(root, "copy", record);
+            }
+        }
+    }
+
+    /// A parte fixa da frase que manda ler a versão dos documentos, depois da
+    /// lista deles: está na ordem só quando algum documento que já existe no
+    /// banco não tem versão guardada.
+    fn read_order(lang: Locale) -> String {
+        translate("page.copy.existing", lang).split("{docs}").nth(1).unwrap_or_default().to_string()
+    }
+
+    /// A versão que a escrita do documento `doc` (`coleção/doc_id`) leva em
+    /// `if_version` nos lotes da página `page` da resposta `report`; `Null`
+    /// quando ela vai sem versão, e a falha quando nenhuma escrita o troca.
+    fn pinned(root: &Path, report: &Value, page: &str, doc: &str) -> Value {
+        let writes = sent(root, report, page);
+        let write = writes.iter().find(|w| doc_name(w) == doc).unwrap_or_else(|| panic!("no write of {doc}: {writes:?}"));
+        write.get("if_version").cloned().unwrap_or(Value::Null)
     }
 
     /// Um marco chega depois de itens novos no `spec.ndjson`, gravados pelos
@@ -1463,43 +1593,89 @@ mod tests {
     }
 
     /// O banco recusa a troca de um documento já existente sem a versão
-    /// dele: a partir da segunda cópia, a ordem nomeia os documentos que já
-    /// estão lá — a faixa tocada e o documento calculado — para ler a versão
-    /// de cada um antes de trocar. Na primeira cópia nada existe ainda, e a
-    /// ordem não fala em versão; um expurgo que troca de novo a faixa de um
-    /// item já copiado também pede a versão dela.
+    /// dele: a partir da segunda cópia, a escrita de cada documento que já
+    /// está lá — a faixa tocada e o documento calculado — leva em
+    /// `if_version` a versão que o registro de cópia mais novo guardou para
+    /// ele, e a ordem não manda ler versão nenhuma. Na primeira cópia nada
+    /// existe ainda, e nenhuma escrita leva versão; um expurgo que troca de
+    /// novo a faixa de um item já copiado também a leva, a da cópia mais nova.
     #[test]
     fn the_copy_order_pins_the_documents_it_overwrites() {
         let dir = approved_project();
         let root = dir.path();
         let lang = Locale::PtBr;
+        let read = read_order(lang);
 
         // Primeira cópia: nada existe ainda no banco.
         let first = round(root);
         let next1 = full_next(root, &first);
         assert_eq!(sent_items(root, &first).first(), Some(&1), "the whole spec: {first}");
         assert!(!next1.contains("if_version"), "the first copy has nothing to overwrite: {next1}");
-        follow(root, &first);
+        assert!(sent(root, &first, "spec").iter().all(|w| w.get("if_version").is_none()), "{first}");
+        follow_versioned(root, &first, 1);
 
         // Segunda cópia: um item novo troca de novo a mesma faixa, e o
-        // documento calculado já existe desde a primeira cópia.
+        // documento calculado já existe desde a primeira cópia; os dois vão
+        // com a versão que ela guardou, sem leitura.
         let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
         let added = id_of(&write(root, "note", json!({"text": "Nota nova.", "keys": ["k"], "origin": said})));
         let second = round(root);
         let next2 = full_next(root, &second);
         let touched = format!("{RANGES}/{}", range_start(added));
-        let expected2 = batches_order_with(&second, "x", SPEC_URL, &[touched.as_str(), COMPUTED], lang);
-        assert!(next2.contains(&expected2), "the touched range and the computed document are pinned: {next2}");
-        follow(root, &second);
+        for doc in [touched.as_str(), COMPUTED] {
+            assert_eq!(pinned(root, &second, "spec", doc), json!(1), "{doc} goes with its stored version");
+        }
+        let expected2 = batches_order_with(&second, "x", SPEC_URL, &[], lang);
+        assert!(next2.contains(&expected2) && !next2.contains(&read), "nothing left to read: {next2}");
+        follow_versioned(root, &second, 2);
 
         // Um expurgo troca de novo a faixa de um item que já estava no
-        // banco.
+        // banco: a versão é a da cópia mais nova.
         let purge = json!({"targets": [added], "reason": "client_data", "excerpt": "nova", "origin": said});
         write(root, "purge", purge);
         let third = round(root);
         let next3 = full_next(root, &third);
-        let expected3 = batches_order_with(&third, "x", SPEC_URL, &[touched.as_str(), COMPUTED], lang);
-        assert!(next3.contains(&expected3), "the range a purge trades again is pinned too: {next3}");
+        for doc in [touched.as_str(), COMPUTED] {
+            assert_eq!(pinned(root, &third, "spec", doc), json!(2), "{doc} goes with the newest version");
+        }
+        let expected3 = batches_order_with(&third, "x", SPEC_URL, &[], lang);
+        assert!(next3.contains(&expected3) && !next3.contains(&read), "the purge reads nothing: {next3}");
+    }
+
+    /// A cópia gravada antes de o registro guardar as versões não tem
+    /// `versions`: a cópia seguinte nomeia os documentos que já existem para
+    /// ler a versão, e nenhuma escrita leva `if_version`. A cópia para um
+    /// endereço novo não usa a versão guardada para o endereço antigo: o
+    /// banco dele é outro.
+    #[test]
+    fn a_copia_sem_versao_guardada_ainda_manda_ler() {
+        const NEW_URL: &str = "https://claude.ai/code/artifact/spec-x-2";
+        let dir = approved_project();
+        let root = dir.path();
+        let lang = Locale::PtBr;
+        let first = round(root);
+        follow(root, &first);
+
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        let added = id_of(&write(root, "note", json!({"text": "Nota nova.", "keys": ["k"], "origin": said})));
+        let second = round(root);
+        let touched = format!("{RANGES}/{}", range_start(added));
+        for doc in [touched.as_str(), COMPUTED] {
+            assert_eq!(pinned(root, &second, "spec", doc), Value::Null, "{doc}: no version was stored");
+        }
+        let expected = batches_order_with(&second, "x", SPEC_URL, &[touched.as_str(), COMPUTED], lang);
+        assert!(full_next(root, &second).contains(&expected), "both are named to be read");
+        follow_versioned(root, &second, 5);
+
+        // A página publicada num endereço novo: o banco dele está vazio.
+        write(root, "publish", json!({"page": "spec", "milestone": "round", "ok": true, "template": true,
+            "stamp": stamp_of("spec"), "url": NEW_URL}));
+        let third = round(root);
+        assert!(sent(root, &third, "spec").iter().all(|w| w.get("if_version").is_none()), "a new database");
+        follow_versioned(root, &third, 1);
+        write(root, "note", json!({"text": "Outra nota.", "keys": ["k"], "origin": said}));
+        let fourth = round(root);
+        assert_eq!(pinned(root, &fourth, "spec", COMPUTED), json!(1), "the version of the new address");
     }
 
     /// A linha da spec vai para o banco da página do projeto só quando a fase
@@ -1581,6 +1757,54 @@ mod tests {
         assert_eq!(first["copy"]["project"]["record"], json!({"page": "project", "phase": "running"}), "{first}");
         let next = full_next(root, &first);
         assert!(next.contains(PROJECT_URL) && next.contains(&named), "the row the other spec carried is named: {next}");
+    }
+
+    /// A linha da spec copiada antes com a versão que o banco devolveu vai
+    /// de novo para o mesmo endereço com essa versão em `if_version`, e a
+    /// ordem não a nomeia para ler.
+    #[test]
+    fn a_linha_do_projeto_com_versao_guardada_vai_com_ela_sem_leitura() {
+        let dir = approved_project();
+        let root = dir.path();
+        let lang = Locale::PtBr;
+        let read = read_order(lang);
+        let approval = prepare(root, "x", lang).expect("the approval copy");
+        let project = approval.project.as_ref().expect("the project row goes");
+        write(root, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "template": true,
+            "stamp": stamp_of("project"), "url": PROJECT_URL}));
+        let mut record = project.record.clone();
+        record["versions"] = json!({"specs/x": 4});
+        write(root, "copy", record);
+
+        // A rodada muda a fase, e a linha vai de novo para o mesmo endereço.
+        let second = round(root);
+        assert_eq!(pinned(root, &second, "project", "specs/x"), json!(4), "{second}");
+        let next = full_next(root, &second);
+        assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
+    }
+
+    /// A linha desta spec que outra spec levou, na cópia de todas as linhas,
+    /// com a versão que o banco devolveu a cada uma, vai com essa versão na
+    /// primeira cópia desta spec para o mesmo endereço, sem leitura.
+    #[test]
+    fn a_linha_levada_com_versao_por_outra_spec_vai_com_ela() {
+        let dir = approved_project();
+        let root = dir.path();
+        let lang = Locale::PtBr;
+        let read = read_order(lang);
+        let other = root.join(".claude/spec/y/spec.ndjson");
+        let put = |event_type: &str, fields: Value| {
+            store::write(&other, event_type, fields.as_object().cloned().unwrap(), &[]).unwrap();
+        };
+        put("state", json!({"phase": "survey"}));
+        put("publish", json!({"page": "project", "milestone": "round", "ok": true, "template": true,
+            "stamp": stamp_of(PROJECT_PAGE), "url": PROJECT_URL}));
+        put("copy", json!({"page": "project", "phase": "survey", "versions": {"specs/x": 9, "specs/y": 9}}));
+
+        let first = round(root);
+        assert_eq!(pinned(root, &first, "project", "specs/x"), json!(9), "{first}");
+        let next = full_next(root, &first);
+        assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
     }
 
     /// A cópia de uma spec longa vai em lotes de até 50 escritas, na ordem
@@ -1976,8 +2200,9 @@ mod tests {
                 }
                 write(root, "publish", publish);
             }
-            write(root, "copy", json!({"page": "spec", "last": log(root).max_id()}));
-            write(root, "copy", json!({"page": "project", "phase": "approved"}));
+            write(root, "copy", json!({"page": "spec", "last": log(root).max_id(),
+                "versions": {"ranges/0": 3, "computed/current": 3}}));
+            write(root, "copy", json!({"page": "project", "phase": "approved", "versions": {"specs/x": 3}}));
             std::fs::create_dir_all(root.join(SPEC_TEMPLATE).parent().expect("a pasta")).unwrap();
             for template in [SPEC_TEMPLATE, PROJECT_TEMPLATE] {
                 std::fs::write(root.join(template), "<!-- mustard: 0.0.1 -->\nmolde velho").unwrap();
@@ -2009,7 +2234,12 @@ mod tests {
                 assert_eq!(template_stamp(&installed), Some(stamp_of(page).as_str()), "{case}: the new template");
             }
             assert!(!next.contains(translate("page.copy.new_address", lang)), "{case}: the same address: {next}");
-            assert!(next.contains("if_version"), "{case}: the database is still there: {next}");
+            // O banco continua lá: cada troca leva a versão guardada, sem
+            // leitura.
+            for (page, doc) in [(SPEC_PAGE, "ranges/0"), (SPEC_PAGE, COMPUTED), (PROJECT_PAGE, "specs/x")] {
+                assert_eq!(pinned(root, &first, page, doc), json!(3), "{case}: {doc} keeps its version");
+            }
+            assert!(!next.contains(&read_order(lang)), "{case}: nothing to read: {next}");
 
             // A conversa publica de novo com o carimbo: o marco seguinte não
             // publica mais.

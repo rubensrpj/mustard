@@ -377,13 +377,21 @@ pub const TYPES: &[TypeSpec] = &[
     // A cópia dos itens para o banco de dados de uma página publicada, gravada
     // depois que ela foi feita: a da página da spec diz em `last` o número do
     // último item que ela levou; a da página do projeto diz em `phase` a fase
-    // da linha da spec que ela levou.
+    // da linha da spec que ela levou. Em `versions`, a versão que o banco
+    // devolveu a cada documento escrito, pelo nome `coleção/documento`
+    // (`ranges/200`, `computed/current`, `specs/<spec>`): a cópia seguinte a
+    // põe em `if_version` na troca dele, sem ler a versão antes.
     ty(
         "copy",
         "COPY",
         Block::State,
         false,
-        &[req("page", Kind::OneOf(PAGES)), opt("last", Kind::Int), opt("phase", Kind::OneOf(PHASES))],
+        &[
+            req("page", Kind::OneOf(PAGES)),
+            opt("last", Kind::Int),
+            opt("phase", Kind::OneOf(PHASES)),
+            opt("versions", Kind::Object),
+        ],
     ),
     // Combinado.
     ty("work_type", "WORK", Block::Agreed, true, &[req("kinds", Kind::ManyOf(WORK_KINDS))]),

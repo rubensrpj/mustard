@@ -101,25 +101,38 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              without reading the items."
         }
         // Só entra depois de `page.copy.batches`, quando algum documento do
-        // lote já existe no banco de uma cópia anterior: o banco recusa a
-        // troca de um documento assim sem a versão dele.
+        // lote já existe no banco sem versão guardada, de uma cópia gravada
+        // antes de o registro guardar as versões: o banco recusa a troca de um
+        // documento assim sem a versão dele. O que tem versão guardada já vai
+        // com ela no lote.
         ("page.copy.existing", Locale::PtBr) => {
-            "Os documentos {docs} já existem no banco: leia a versão de cada um com a ação `get` da \
-             ferramenta `ArtifactData` e ponha cada uma em `if_version` na escrita dele antes de mandar o \
-             lote; os outros documentos vão sem versão."
+            "Os documentos {docs} já existem no banco sem versão guardada: leia a versão de cada um com \
+             a ação `get` da ferramenta `ArtifactData` e ponha cada uma em `if_version` na escrita dele \
+             antes de mandar o lote; as escritas que já trazem `if_version` vão como estão, e as outras \
+             vão sem versão. Se o banco recusar uma versão, leia aquele documento com `get`, ponha a \
+             versão dele na escrita e mande o lote de novo."
         }
         ("page.copy.existing", Locale::EnUs) => {
-            "The documents {docs} already exist in the database: read each one's version with the `get` \
-             action of the `ArtifactData` tool and put it in `if_version` on that write before sending the \
-             batch; the other documents go without a version."
+            "The documents {docs} already exist in the database without a stored version: read each \
+             one's version with the `get` action of the `ArtifactData` tool and put it in `if_version` on \
+             that write before sending the batch; the writes that already carry `if_version` go as they \
+             are, and the others go without a version. If the database refuses a version, read that \
+             document with `get`, put its version on the write and send the batch again."
         }
         // Só entra depois de `page.copy.batches`, e só fora do descarte: a
         // spec descartada é terminal, sem cópia seguinte para continuar dela.
+        // As versões gravadas poupam a leitura na cópia seguinte.
         ("page.copy.record", Locale::PtBr) => {
-            "Depois grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`."
+            "Depois grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`, \
+             somando ao `--json` o campo `versions`: a versão que o resultado do lote devolveu para cada \
+             documento escrito, pelo nome `coleção/doc_id` dele, como \
+             `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
         }
         ("page.copy.record", Locale::EnUs) => {
-            "Then record the copy with `mustard-rt run write copy --spec {spec} --json '{record}'`."
+            "Then record the copy with `mustard-rt run write copy --spec {spec} --json '{record}'`, adding \
+             to the `--json` the `versions` field: the version the batch result returned for each document \
+             written, by its `collection/doc_id` name, as in \
+             `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
         }
         // Sempre entra em `{url}` de `page.copy.batches`, depois de "no
         // endereço": sem "o endereço" aqui, ou a frase dobra a palavra.
@@ -613,6 +626,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.stamp", Locale::EnUs) => "Template stamp",
         ("page.field.last", Locale::PtBr) => "Último item copiado",
         ("page.field.last", Locale::EnUs) => "Last item copied",
+        ("page.field.versions", Locale::PtBr) => "Versões no banco",
+        ("page.field.versions", Locale::EnUs) => "Database versions",
         ("page.field.kinds", Locale::PtBr) => "Tipos",
         ("page.field.kinds", Locale::EnUs) => "Kinds",
         ("page.field.block", Locale::PtBr) => "Grupo de lacunas",
@@ -969,8 +984,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            384,
-            0x0b49_27ca_7612_5369,
+            385,
+            0x57c0_a867_d1ce_d5eb,
         );
     }
 
