@@ -216,14 +216,14 @@ impl Scene {
     }
 
     /// O início da sessão depois de `/clear`, com o `gh` falso respondendo
-    /// `view` a `pr view` e uma lista vazia a `pr list`, ou falhando com
+    /// `view` a `gh pr view` e uma lista vazia a `gh pr list`, ou falhando com
     /// `exit`. Devolve o texto que ele pôs na sessão e as perguntas que o
     /// provedor recebeu.
     fn start(&self, view: &Value, exit: i32) -> (String, Vec<String>) {
         self.start_listing(view, &json!([]), exit)
     }
 
-    /// [`Scene::start`], com a lista que o `gh` falso dá a `pr list`.
+    /// [`Scene::start`], com a lista que o `gh` falso dá a `gh pr list`.
     fn start_listing(&self, view: &Value, list: &Value, exit: i32) -> (String, Vec<String>) {
         let log = self.dir.path().join(format!("gh-{}.log", std::process::id()));
         let _ = std::fs::remove_file(&log);

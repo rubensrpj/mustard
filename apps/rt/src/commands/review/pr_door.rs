@@ -386,7 +386,7 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
     let unit = flow.base_of(&branch);
     // The project's own RECORD of the unit, not the name's shape: an undeclared
     // base like `release/2026-Q3` splits into a kind and a slug exactly like a
-    // unit branch does, and `pr list` was measured refusing to run from it.
+    // unit branch does, and this list was measured refusing to run from it.
     // A pergunta "esta branch é base de integração" tem uma resposta só, a
     // mesma que as outras portas fazem: o que o projeto declarou MAIS o que o
     // próprio remoto chama de padrão. Sem a segunda metade, um projeto
@@ -413,13 +413,15 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
             .or_else(|| mustard_core::default_branch(&repo));
         let hint = match &target {
             Some(base) => format!(
-                "`pr list` asks about a BASE, not about one unit — switch to `{base}` \
-                 (`git checkout {base}`) and run it again"
+                "the list of open pull requests is asked from a BASE, not from inside one \
+                 unit — switch to `{base}` (`git checkout {base}`) and run \
+                 `mustard-rt run pr-review` again"
             ),
             // Nothing recorded the base and git named no default: say what to
             // do without inventing a branch nobody measured.
-            None => "`pr list` asks about a BASE, not about one unit — switch to the branch \
-                     this unit integrates into and run it again"
+            None => "the list of open pull requests is asked from a BASE, not from inside one \
+                     unit — switch to the branch this unit integrates into and run \
+                     `mustard-rt run pr-review` again"
                 .to_string(),
         };
         return PrListReport {
@@ -1278,8 +1280,10 @@ mod tests {
         dir
     }
 
-    /// `pr list` from a work branch REFUSES and names the base to switch
-    /// to; from the base it does not refuse (whatever the provider answers).
+    /// The list of open pull requests — `pr-review` with no number — REFUSES
+    /// from a work branch, names the base to switch to and the command to run
+    /// there again; from the base it does not refuse (whatever the provider
+    /// answers).
     #[test]
     fn pr_list_refuses_off_an_integration_base_and_names_it() {
         let dir = repo();
@@ -1308,7 +1312,13 @@ mod tests {
         assert_eq!(off_base.branch, "dev_some-unit");
         assert!(off_base.prs.is_empty(), "a refusal lists nothing");
         let hint = off_base.hint.unwrap_or_default();
-        assert!(hint.contains("dev"), "the refusal must name the base: {hint}");
+        assert!(hint.contains("`git checkout dev`"), "the refusal must name the base: {hint}");
+        // O que rodar de novo, lá na base, é o comando que existe: o mesmo
+        // `pr-review` sem número que pediu a lista.
+        assert!(
+            hint.contains("run `mustard-rt run pr-review` again"),
+            "the refusal must name the command to run again from the base: {hint}"
+        );
 
         // A branch that is NOBODY's unit is not refused any more. It used to
         // be, for the sole reason that `git.flow` does not list it — and the

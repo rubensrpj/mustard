@@ -867,9 +867,9 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             // every real base a work branch.
             //
             // The reading is the project's own RECORD of the unit, the SAME one
-            // `pr list` and `git delete` ask. The shape of the name cannot answer
-            // it: the kind vocabulary is open, so a release line named
-            // `release/2026-Q3` splits into a kind and a slug exactly like
+            // the pull request list and the discard ask. The shape of the name
+            // cannot answer it: the kind vocabulary is open, so a release line
+            // named `release/2026-Q3` splits into a kind and a slug exactly like
             // `fix/aba` and this door proceeded as if standing inside a unit.
             // Two doors reading the same checkout and disagreeing about it is
             // the drift `BaseFlow` exists to prevent, so there is one predicate,
