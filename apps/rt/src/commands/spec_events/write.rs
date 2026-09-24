@@ -37,11 +37,16 @@
 //! leitura e idioma), e a lição com defeito é recusada com os defeitos, sem
 //! gravar. A lição cujo texto repete o de outra já guardada, depois de
 //! igualar espaços, maiúsculas e acentos, também é recusada, apontando a que
-//! existe. A lição de defeito (`"class":"defect"`), sozinha ou juntando
-//! outras, é recusada sem gravar: o banco fica só nesta máquina e não vai ao
-//! git, então o defeito que pode se repetir vira a tarefa do conserto, com o
-//! teste que falha se ele voltar, e a recusa manda gravá-la pelo `run write
-//! task`. A página e o índice não mudam:
+//! existe. A lição de defeito (`"class":"defect"`) e a de regra do projeto
+//! (`"class":"project_rule"`), sozinhas ou juntando outras, são recusadas sem
+//! gravar: o banco fica só nesta máquina e não vai ao git, então o defeito
+//! vira conserto no código, com o teste que falha se ele voltar, e a regra
+//! vira teste no código, que falha se ela for quebrada; o teste vai ao git no
+//! commit. Com uma spec aberta, a recusa manda gravar a tarefa pelo `run
+//! write task` nela; sem spec aberta, a recusa não fala em spec. O banco
+//! guarda só a armadilha do ambiente e a preferência do usuário, e as lições
+//! antigas das duas classes recusadas seguem na leitura. A página e o índice
+//! não mudam:
 //!
 //! ```text
 //! {"ok": true, "id": 8, "type": "lesson", "class": "environment_trap"}
@@ -184,15 +189,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::lessons::{is_defect, LESSON, RETIRE};
+use mustard_core::domain::lessons::{for_the_code, DEFECT, LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
     type_spec, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
     TASK_TITLE_MAX,
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, PhaseWriter, SpecState,
-    State,
+    birth_event, goal_rule, phase_write_allowed, reopenable, reply_rule, survey_rule, PhaseWriter,
+    SpecState, State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::owner_rule;
@@ -201,7 +206,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
 /// fechamento grava ao rodar a prova; o veredito oficial, o envio do pedido
@@ -217,6 +222,10 @@ const BINARY_ONLY: &[&str] =
 /// A razão curta da recusa da lição de defeito: ela vira a tarefa do
 /// conserto, com o teste que falha se o defeito voltar.
 const DEFECT_BY_TASK: &str = "defect-by-task";
+
+/// A razão curta da recusa da lição de regra do projeto: ela vira teste no
+/// código, que falha se a regra for quebrada.
+const RULE_BY_TEST: &str = "rule-by-test";
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
@@ -1180,12 +1189,13 @@ fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> 
 /// que spec a lição nasceu. O texto passa antes pela medição da conferência
 /// de escrita do fim da resposta; com defeito, nada é gravado.
 ///
-/// A lição de defeito, sozinha ou juntando outras, é recusada antes de tudo,
-/// sem gravar: o banco não vai ao git, e o defeito que pode se repetir vira a
-/// tarefa do conserto, com o teste que falha se ele voltar.
+/// A lição de defeito e a de regra do projeto, sozinhas ou juntando outras,
+/// são recusadas antes de tudo, sem gravar ([`fixed_in_code`]): o banco não
+/// vai ao git, e o que vale para o projeto vira ajuste no código, com o teste
+/// que falha se o erro voltar ou se a regra for quebrada.
 fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String, Value>) -> Value {
-    if is_defect(&draft) {
-        return json!({ "ok": false, "reason": DEFECT_BY_TASK, "hint": translate("lessons.defect_by_task", project.lang) });
+    if let Some(class) = for_the_code(&draft) {
+        return fixed_in_code(project, spec, class);
     }
     let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
     if let Some(text) = draft.get("text").and_then(Value::as_str) {
@@ -1208,6 +1218,37 @@ fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String,
         Ok(written) => json!({ "ok": true, "id": written.id, "type": LESSON, "class": written.class }),
         Err(refusal) => refuse(refusal),
     }
+}
+
+/// A recusa da lição da classe `class`, que vale para o projeto: o defeito
+/// vira conserto no código e a regra do projeto vira teste, e o teste vai ao
+/// git. Com uma spec aberta ([`open_spec_for_the_fix`]), a recusa manda gravar
+/// a tarefa nela, pelo nome; sem spec aberta, ela não fala em spec.
+fn fixed_in_code(project: &super::Project, spec: Option<&str>, class: &str) -> Value {
+    let (reason, with_spec, without_spec) = if class == DEFECT {
+        (DEFECT_BY_TASK, "lessons.defect_by_task", "lessons.defect_in_code")
+    } else {
+        (RULE_BY_TEST, "lessons.rule_by_task", "lessons.rule_in_code")
+    };
+    let hint = match open_spec_for_the_fix(&project.root, spec) {
+        Some(open) => translate(with_spec, project.lang).replace("{spec}", &open),
+        None => translate(without_spec, project.lang).to_string(),
+    };
+    json!({ "ok": false, "reason": reason, "hint": hint })
+}
+
+/// A spec aberta em que cabe a tarefa do ajuste: a do `--spec` ou, sem ele, a
+/// ativa no checkout, desde que tenha arquivo de eventos e ainda não tenha
+/// fechado. `None` quando não há nenhuma: a spec em que a lição nasceu pode já
+/// ter fechado, e aí não recebe tarefa.
+fn open_spec_for_the_fix(root: &Path, spec: Option<&str>) -> Option<String> {
+    let disk = DiskSpecState::new(&super::read::checkout(root));
+    let spec = match spec.map(str::trim).filter(|named| !named.is_empty()) {
+        Some(named) => named.to_string(),
+        None => disk.active(session_from_env().as_deref())?,
+    };
+    let state = disk.state(&spec)?;
+    state.phase.is_none_or(reopenable).then_some(spec)
 }
 
 /// Run `write` and print the JSON report; with `copy`, the write also
@@ -2135,54 +2176,155 @@ mod tests {
         assert_eq!(std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap().lines().count(), 2);
     }
 
+    /// A recusa de uma lição que vale para o projeto: `ok` falso, a razão
+    /// `reason` e a dica com cada trecho de `said`, sem nenhum de `unsaid`.
+    fn refused_to_the_code(out: &Value, reason: &str, said: &[&str], unsaid: &[&str]) {
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!(reason), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        for part in said {
+            assert!(hint.contains(part), "the hint lacks `{part}`: {hint}");
+        }
+        for part in unsaid {
+            assert!(!hint.contains(part), "the hint says `{part}`: {hint}");
+        }
+    }
+
     /// Pelo comando de gravar lição, a lição de defeito é recusada e nada
-    /// entra no banco: nem o banco nasce, nem muda um byte dele. A recusa
-    /// manda gravar a tarefa do conserto, com o teste que falha se o defeito
-    /// voltar, nos dois idiomas. A junção que daria uma lição de defeito
-    /// também é recusada. A armadilha do ambiente e a preferência do usuário
-    /// continuam entrando, e a retirada também.
+    /// entra no banco: nem o banco nasce, nem muda um byte dele. Com uma spec
+    /// aberta, a recusa manda gravar a tarefa do conserto nela, pelo nome;
+    /// sem spec aberta, e com a spec em que a lição nasceu já fechada, a
+    /// recusa diz o conserto com teste e não fala em spec. Nos dois idiomas.
+    /// A junção que daria uma lição de defeito também é recusada. A armadilha
+    /// do ambiente e a preferência do usuário continuam entrando, e a
+    /// retirada também.
     #[test]
     fn a_licao_de_defeito_e_recusada_e_aponta_a_tarefa() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let bank = root.join(".claude").join("spec").join("lessons.ndjson");
-        let lesson = |class: &str, text: &str| {
+        let lesson = |spec: Option<&str>, class: &str, text: &str| {
             let draft = json!({"class": class, "text": text, "keys": ["pasta"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
-            write_to(root, None, "lesson", &draft.to_string())
+            write_to(root, spec, "lesson", &draft.to_string())
         };
-        let points_to_the_task = |out: &Value, test: &str, nothing: &str| {
-            assert_eq!(out["ok"], json!(false), "{out}");
-            assert_eq!(out["reason"], json!("defect-by-task"), "{out}");
-            let hint = out["hint"].as_str().unwrap_or_default();
-            assert!(hint.contains("mustard-rt run write task") && hint.contains(test) && hint.contains(nothing), "{hint}");
-        };
+        let fix = ["teste que falha se o defeito voltar", "vai ao git", "Nada foi gravado"];
 
-        let defect = lesson("defect", "Apagar a pasta errada perde trabalho.");
-        points_to_the_task(&defect, "teste que falha se o defeito voltar", "Nada foi gravado");
+        let defect = lesson(None, "defect", "Apagar a pasta errada perde trabalho.");
+        refused_to_the_code(&defect, "defect-by-task", &fix, &["spec", "run write task"]);
+        assert!(!bank.exists(), "a recusa não criou o banco");
+        let in_the_spec = lesson(Some("obra-aberta"), "defect", "Apagar a pasta errada perde trabalho.");
+        refused_to_the_code(&in_the_spec, "defect-by-task", &["mustard-rt run write task", "na spec obra-aberta", fix[0]], &[]);
         assert!(!bank.exists(), "a recusa não criou o banco");
 
-        let trap = lesson("environment_trap", "O cargo fica fora do caminho do shell.");
+        let trap = lesson(None, "environment_trap", "O cargo fica fora do caminho do shell.");
         assert_eq!(trap, json!({"ok": true, "id": 1, "type": "lesson", "class": "environment_trap"}));
-        let preference = lesson("user_preference", "Resposta curta e sem sigla.");
+        let preference = lesson(None, "user_preference", "Resposta curta e sem sigla.");
         assert_eq!(preference, json!({"ok": true, "id": 2, "type": "lesson", "class": "user_preference"}));
 
         let before = std::fs::read(&bank).unwrap();
         let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
             "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
         let merge = write_to(root, None, "lesson", &merged.to_string());
-        points_to_the_task(&merge, "teste que falha se o defeito voltar", "Nada foi gravado");
+        refused_to_the_code(&merge, "defect-by-task", &fix, &["spec"]);
         assert_eq!(std::fs::read(&bank).unwrap(), before, "a recusa não mudou o banco");
+
+        // A spec em que a lição nasceu já fechou: não recebe tarefa.
+        crate::shared::spec_state::seed_event(root, "obra-fechada", "state", json!({"phase": "closed"}));
+        let closed = lesson(Some("obra-fechada"), "defect", "Apagar a pasta errada perde trabalho.");
+        refused_to_the_code(&closed, "defect-by-task", &fix, &["spec", "run write task"]);
 
         let retired = write_to(root, None, "lesson", r#"{"targets":[2],"reason":"a resposta mudou de jeito"}"#);
         assert_eq!(retired, json!({"ok": true, "id": 3, "type": "lesson", "retired": [2]}));
 
         std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
         let before = std::fs::read(&bank).unwrap();
-        let english = lesson("defect", "Deleting the wrong folder loses work.");
-        points_to_the_task(&english, "test that fails if the defect comes back", "Nothing was written");
+        let english = lesson(None, "defect", "Deleting the wrong folder loses work.");
+        refused_to_the_code(&english, "defect-by-task", &["test that fails if the defect comes back", "Nothing was written"], &["spec"]);
+        let english = lesson(Some("obra-aberta"), "defect", "Deleting the wrong folder loses work.");
+        refused_to_the_code(&english, "defect-by-task", &["mustard-rt run write task", "in the spec obra-aberta"], &[]);
         assert_eq!(std::fs::read(&bank).unwrap(), before, "a recusa não mudou o banco");
         let kept = std::fs::read_to_string(&bank).unwrap();
         assert!(!kept.contains(r#""type":"defect""#), "nenhuma lição de defeito entrou: {kept}");
+    }
+
+    /// Pelo comando de gravar lição, a lição de regra do projeto é recusada
+    /// antes de gravar, sozinha ou juntando outras, e o banco fica com os
+    /// mesmos bytes. A recusa diz o caminho: a regra vira teste no código,
+    /// que falha se ela for quebrada, e o teste vai ao git. Com uma spec
+    /// aberta, manda gravar a tarefa nela, pelo nome; sem spec aberta, não
+    /// fala em spec. Nos dois idiomas.
+    #[test]
+    fn a_licao_de_regra_do_projeto_e_recusada_e_vira_teste() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let bank = root.join(".claude").join("spec").join("lessons.ndjson");
+        let rule = |spec: Option<&str>, extra: Value| {
+            let mut draft = json!({"class": "project_rule", "text": "O gancho nunca trava a sessão por erro próprio.",
+                "keys": ["gancho"], "applies_to": {"subproject": "apps/rt"}, "found_in": {"source": "apps/rt/CLAUDE.md"}});
+            if let (Some(draft), Value::Object(extra)) = (draft.as_object_mut(), extra) {
+                draft.extend(extra);
+            }
+            write_to(root, spec, "lesson", &draft.to_string())
+        };
+        let test = ["regra do projeto não entra no banco de lições", "vira teste no código", "falha se a regra for quebrada", "vai ao git", "Nada foi gravado"];
+
+        let alone = rule(None, json!({}));
+        refused_to_the_code(&alone, "rule-by-test", &test, &["spec", "run write task"]);
+        assert!(!bank.exists(), "a recusa não criou o banco");
+
+        let trap = write_to(root, None, "lesson", &json!({"class": "environment_trap", "text": "O cargo fica fora do caminho do shell.",
+            "keys": ["cargo"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}}).to_string());
+        assert_eq!(trap["ok"], json!(true), "{trap}");
+        let before = std::fs::read(&bank).unwrap();
+
+        let in_the_spec = rule(Some("obra-aberta"), json!({}));
+        refused_to_the_code(&in_the_spec, "rule-by-test", &["vira teste no código da obra", "mustard-rt run write task", "na spec obra-aberta"], &[]);
+        let merge = rule(None, json!({"replaces": [1]}));
+        refused_to_the_code(&merge, "rule-by-test", &test, &["spec"]);
+        assert_eq!(std::fs::read(&bank).unwrap(), before, "o banco ficou com os mesmos bytes");
+
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+        let english = rule(None, json!({}));
+        refused_to_the_code(&english, "rule-by-test", &["becomes a test in the code", "fails if the rule is broken", "Nothing was written"], &["spec"]);
+        let english = rule(Some("obra-aberta"), json!({}));
+        refused_to_the_code(&english, "rule-by-test", &["mustard-rt run write task", "in the spec obra-aberta"], &[]);
+        assert_eq!(std::fs::read(&bank).unwrap(), before, "o banco ficou com os mesmos bytes");
+    }
+
+    /// As regras do projeto que já estão no banco, gravadas antes da recusa,
+    /// seguem na leitura como antes: a leitura da lição pelo número a traz, e
+    /// a busca por escopo que o pedido de cada onda usa a acha para um
+    /// arquivo do subprojeto dela. A recusa de uma regra nova não apaga nada.
+    #[test]
+    fn a_regra_do_projeto_ja_no_banco_segue_na_leitura() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join(".claude").join("spec").join("lessons.ndjson");
+        let old = json!({"class": "project_rule", "author": "binary", "text": "Nunca trave a sessão por erro do gancho.",
+            "keys": ["gancho"], "applies_to": {"subproject": "apps/rt"}, "found_in": {"source": "apps/rt/CLAUDE.md"}});
+        let Value::Object(old) = old else { unreachable!() };
+        let id = lessons::write(&path, old, None).expect("a linha antiga entra pelo gravador do banco").id;
+
+        let refused = write_to(root, None, "lesson", &json!({"class": "project_rule", "text": "Outra regra do projeto.",
+            "keys": ["regra"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}}).to_string());
+        assert_eq!(refused["reason"], json!("rule-by-test"), "{refused}");
+
+        let read = super::super::read::read_at(&super::super::read::ReadOpts {
+            root: root.to_path_buf(),
+            spec: None,
+            block: "lessons".into(),
+            term: Some(id.to_string()),
+        })
+        .expect("the lesson block reads");
+        let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
+        assert_eq!(read["events"][0]["id"], json!(id), "{read}");
+        assert_eq!(read["events"][0]["type"], json!("project_rule"), "{read}");
+
+        let bank = lessons::read(&path).unwrap().unwrap();
+        let scope = mustard_core::domain::lessons::Scope { files: vec!["apps/rt/src/main.rs".into()], ..Default::default() };
+        let found: Vec<u64> = mustard_core::domain::lessons::in_scope(&bank, &scope).iter().map(|l| l.id).collect();
+        assert_eq!(found, [id], "the wave that touches apps/rt still gets the rule");
+        assert_eq!(bank.events.len(), 1, "nothing was written or taken out of the bank");
     }
 
     /// Uma lição com o texto `text`, que vale no projeto todo, como o

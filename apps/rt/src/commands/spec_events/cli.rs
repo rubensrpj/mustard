@@ -55,9 +55,11 @@ pub enum SpecEventsCmd {
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
     /// `{"class":"environment_trap","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
     /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`. A
-    /// `defect` lesson is refused, alone or merging others: the bank never
-    /// goes to git, so a defect that can happen again becomes a `task` that
-    /// fixes the code, with the test that fails if it comes back. A
+    /// `defect` or `project_rule` lesson is refused, alone or merging others:
+    /// the bank never goes to git, so a defect that can happen again becomes a
+    /// fix in the code, with the test that fails if it comes back, and a
+    /// project rule becomes a test that fails if the rule is broken; with a
+    /// spec open, the refusal names the `task` to write in it. A
     /// lesson is the assistant's summary, written the project's way: its text
     /// goes through the writing check that ends a response, and a text that
     /// repeats a lesson already in the bank (spaces, case and accents aside)

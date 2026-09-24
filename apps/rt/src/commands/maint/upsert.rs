@@ -29,10 +29,14 @@
 //! What an older Mustard left in files that are not its own (the marks in the
 //! `CLAUDE.md` files, the seed's lines in the team's `.claude/settings.json`,
 //! a planted `.claude/CLAUDE.md`) is its own leftover, and leaves in this same
-//! call, with no question: the Guards become project-rule lessons first, then
-//! the lines leave. `cleanup` lists what left and the files without a mark,
-//! which are never touched; `cleaned` says what was done. Nothing is staged or
-//! committed.
+//! call, with no question: the rules of the Guards go first to the project's
+//! pending list (`.claude/pending/ledger.json`), in one item with the text of
+//! each rule and the file it left, then the lines leave. They never go to the
+//! lesson bank, which stays on this machine and never goes to git: the person
+//! turns each rule into a test or drops it. When that item cannot be written,
+//! no file of the cleanup changes. `cleanup` lists what left and the files
+//! without a mark, which are never touched; `cleaned` says what was done, with
+//! the number of the pending item. Nothing is staged or committed.
 //!
 //! Once the files are written, the same code-tool step `mustard init` runs
 //! (`mustard_core::platform::code_tools::ensure_code_tools`) sets up the
@@ -86,9 +90,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use mustard_core::platform::code_tools::{self, MachineRunner, ToolRunner};
+use mustard_core::platform::project_seed::{upsert_project_with, PendingList};
 use mustard_core::InstallMode;
 use serde::Serialize;
 
+use crate::commands::event::pending::add_for_the_project;
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
 
 // The registry's path, the config dir it sits in and the key half this harness
@@ -253,7 +259,7 @@ fn upsert(
     let mode = InstallMode::Private;
 
     let version = mustard_core::harness_version();
-    let project = mustard_core::upsert_project(root, Some(&version), mode)?;
+    let project = upsert_project_with(root, Some(&version), mode, &ProjectPending { root })?;
 
     // Both steps below run only on the path where the project was really
     // seeded: a run that wrote nothing has no installation to finish. The
@@ -268,6 +274,19 @@ fn upsert(
 
     // The refresh is the LAST step.
     Ok(Report { project, plugin_refresh: refresh(root), code_tool_warnings })
+}
+
+/// The project's pending list, the same `.claude/pending/ledger.json` that
+/// `run pending` writes, as the cleanup of the install writes into it: one
+/// item of the project, with the rules that leave the instruction files.
+struct ProjectPending<'a> {
+    root: &'a Path,
+}
+
+impl PendingList for ProjectPending<'_> {
+    fn add(&self, title: &str, detail: &str) -> Result<String, String> {
+        add_for_the_project(self.root, title, detail)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -928,6 +947,87 @@ mod tests {
         );
         assert!(runner.log.borrow().is_empty(), "no code-tool command may run: {:?}", runner.log.borrow());
         assert!(!root.join("mustard.json").exists(), "nothing was written");
+    }
+
+    /// Dois arquivos de instrução com o bloco de regras que um Mustard antigo
+    /// escreveu: um é do time, com texto em volta; o outro é só do scan.
+    fn lay_out_rules(root: &Path) -> (String, String) {
+        let team = "# Api\n\nNossas regras ficam.\n\n## Guards\n\n<!-- mustard:guards -->\n\
+                    - Reuse the shared client.\n<!-- /mustard:guards -->\n\nFim do time.\n";
+        let only_ours = "@.claude/scan-map.md\n\n# Web\n\n## Guards\n\n<!-- mustard:guards -->\n\
+                         - Never block the render.\n<!-- /mustard:guards -->\n";
+        for (rel, body) in [("apps/api/CLAUDE.md", team), ("apps/web/CLAUDE.md", only_ours)] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(path, body).expect("write the instruction file");
+        }
+        (team.to_string(), only_ours.to_string())
+    }
+
+    fn ledger_items(root: &Path) -> Vec<serde_json::Value> {
+        let raw = std::fs::read_to_string(root.join(".claude/pending/ledger.json")).expect("the pending list");
+        let ledger: serde_json::Value = serde_json::from_str(&raw).expect("the pending list is JSON");
+        ledger["items"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// A atualização tira o bloco de regras e cada regra vai, antes, a um
+    /// item só da lista de pendências do projeto, com o texto dela e o
+    /// arquivo de onde saiu. Nenhuma vai ao banco de lições.
+    #[test]
+    fn as_regras_do_bloco_vao_a_um_item_da_lista_de_pendencias_e_nao_ao_banco() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        lay_out_rules(root);
+
+        let outcome = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+            .expect("the project is seeded");
+        let done = outcome.project.cleaned.clone().expect("the cleanup ran");
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(done.pending.as_deref(), Some("P-1"), "{done:?}");
+
+        let items = ledger_items(root);
+        assert_eq!(items.len(), 1, "um item só para todas as regras: {items:?}");
+        assert_eq!(items[0]["id"], "P-1");
+        assert_eq!(items[0]["status"], "open");
+        let title = items[0]["title"].as_str().expect("title");
+        assert!(title.contains("(2)"), "o título conta as regras: {title}");
+        let detail = items[0]["detail"].as_str().expect("detail");
+        for rule in ["Reuse the shared client. (saiu de apps/api/CLAUDE.md)", "Never block the render. (saiu de apps/web/CLAUDE.md)"] {
+            assert!(detail.contains(rule), "cada regra com o arquivo de onde saiu: {rule} em {detail}");
+        }
+
+        assert!(!root.join(".claude/spec/lessons.ndjson").exists(), "nada vai ao banco de lições");
+        let api = std::fs::read_to_string(root.join("apps/api/CLAUDE.md")).expect("the team file stays");
+        assert!(!api.contains("mustard:guards") && !api.contains("Reuse the shared client."), "o bloco saiu: {api}");
+        assert!(api.contains("Nossas regras ficam.") && api.contains("Fim do time."), "o texto do time fica: {api}");
+        assert!(!root.join("apps/web/CLAUDE.md").exists(), "o arquivo que era só do scan saiu");
+
+        // A segunda atualização não acha regra e não repete o item.
+        let again = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+            .expect("the second run");
+        assert!(again.project.cleaned.is_none(), "{:?}", again.project.cleaned);
+        assert_eq!(ledger_items(root).len(), 1, "a lista segue com um item");
+    }
+
+    /// Sem conseguir gravar a lista de pendências, nenhum arquivo muda: a
+    /// regra nunca sai do arquivo sem ficar escrita em algum lugar.
+    #[test]
+    fn sem_gravar_a_lista_de_pendencias_nenhum_arquivo_muda() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let (team, only_ours) = lay_out_rules(root);
+        // A lista não se grava: no lugar do arquivo dela há uma pasta.
+        std::fs::create_dir_all(root.join(".claude/pending/ledger.json")).expect("block the pending list");
+
+        let outcome = upsert(root, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+            .expect("the seeding itself goes through");
+        let done = outcome.project.cleaned.clone().expect("the cleanup says what it could not do");
+        assert!(done.failed.iter().any(|why| why.starts_with("pending:")), "{done:?}");
+        assert!(done.pending.is_none() && done.edited.is_empty() && done.deleted.is_empty(), "{done:?}");
+
+        assert_eq!(std::fs::read_to_string(root.join("apps/api/CLAUDE.md")).expect("api"), team, "o arquivo do time fica igual");
+        assert_eq!(std::fs::read_to_string(root.join("apps/web/CLAUDE.md")).expect("web"), only_ours, "o arquivo do scan fica");
+        assert!(!root.join(".claude/spec/lessons.ndjson").exists(), "nada vai ao banco de lições");
     }
 
     /// A failed step's output becomes one bounded line — the report stays a

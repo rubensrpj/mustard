@@ -628,6 +628,61 @@ fn write(file: &mut LockedFile, ledger: &mut Ledger, today: &str) -> Result<(), 
     file.replace(body.as_bytes()).map_err(|e| refused("write-failed", &e.to_string()))
 }
 
+/// Põe na lista um item aberto novo, com o próximo número e a data de hoje, e
+/// devolve o número. `born` é a unidade dona dele; `None`, o projeto.
+fn push_open(ledger: &mut Ledger, title: String, detail: String, born: Option<String>, today: &str) -> String {
+    let id = next_id(ledger);
+    ledger.items.push(PendingItem {
+        id: id.clone(),
+        title,
+        detail,
+        status: Status::Open,
+        born,
+        owner: Owner::Born,
+        later: None,
+        reason: None,
+        created: Some(today.to_string()),
+        swept: None,
+        became: None,
+    });
+    id
+}
+
+/// Grava na lista uma pendência do PROJETO, fora de toda unidade, e devolve o
+/// número dela. É a porta de quem grava sem conversa: a limpeza da
+/// instalação põe aqui, num item só, as regras que tirou dos arquivos de
+/// instrução, antes de mudar qualquer arquivo. O mesmo arquivo, a mesma
+/// trava, o mesmo número e a mesma data do `--add`, e a mesma regra do título
+/// repetido: o título de uma pendência aberta com o mesmo detalhe devolve essa
+/// pendência, que já guarda o mesmo texto, e com outro detalhe é recusado.
+///
+/// # Errors
+///
+/// O motivo, em texto, quando nada foi gravado: a lista que não abre, não se
+/// lê ou não grava, ou o título de outra pendência aberta.
+pub(crate) fn add_for_the_project(root: &Path, title: &str, detail: &str) -> Result<String, String> {
+    let hint = |refusal: Value| refusal["hint"].as_str().unwrap_or_default().to_string();
+    let (title, detail) = (one_line(title), one_line(detail));
+    if title.is_empty() || detail.is_empty() {
+        return Err("an item needs both a title and a detail; nothing was written".to_string());
+    }
+    let project = ledger_root(root);
+    let paths = mustard_core::ClaudePaths::for_project(&project).map_err(|e| e.to_string())?;
+    let (mut file, mut ledger) = open_locked(&paths.pending_ledger_path()).map_err(hint)?;
+    let key = text::fold(&title);
+    if let Some(open) = ledger.items.iter().find(|i| i.status == Status::Open && text::fold(&i.title) == key) {
+        if open.detail == detail {
+            return Ok(open.id.clone());
+        }
+        let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
+        return Err(hint(duplicate(open, lang)));
+    }
+    let today = today(None);
+    let id = push_open(&mut ledger, title, detail, None, &today);
+    write(&mut file, &mut ledger, &today).map_err(hint)?;
+    Ok(id)
+}
+
 /// O passe do ledger — o núcleo testável de [`run`]. Nunca entra em pânico.
 #[must_use]
 pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
@@ -663,24 +718,11 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             {
                 return duplicate(open, lang);
             }
-            let id = next_id(&ledger);
             let title_for_link = title.clone();
             // A unidade aberta no checkout é o dono da pendência desde a
             // gravação: sem ela, a pendência já nasce do projeto.
             let born = active_spec(&opts.root);
-            ledger.items.push(PendingItem {
-                id: id.clone(),
-                title,
-                detail,
-                status: Status::Open,
-                born: born.as_ref().map(|(_, spec)| spec.clone()),
-                owner: Owner::Born,
-                later: None,
-                reason: None,
-                created: Some(today.clone()),
-                swept: None,
-                became: None,
-            });
+            let id = push_open(&mut ledger, title, detail, born.as_ref().map(|(_, spec)| spec.clone()), &today);
             if let Err(refusal) = write(&mut file, &mut ledger, &today) {
                 return refusal;
             }

@@ -66,7 +66,7 @@ pub mod files;
 pub mod footprint;
 pub mod settings;
 
-pub use cleanup::{CleanupDone, CleanupPlan};
+pub use cleanup::{CleanupDone, CleanupPlan, PendingList};
 pub use files::{
     default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations,
     project_page_template_path, same_declared_path, seed_gitignore, seed_harness_texts,
@@ -170,14 +170,14 @@ pub struct UpsertReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_unavailable: Option<String>,
     /// What an older Mustard left in files that are not its own: the files this
-    /// run took it out of, with what left each one, the Guards that became
-    /// lessons, and the files without a mark, which are only listed and never
-    /// touched. Absent when there is nothing to list.
+    /// run took it out of, with what left each one, the rules of the Guards
+    /// that went to the pending list, and the files without a mark, which are
+    /// only listed and never touched. Absent when there is nothing to list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup: Option<CleanupPlan>,
     /// What taking that list out did: the files edited and deleted, the
-    /// numbers of the new lessons, and what failed. Absent when the list
-    /// changed nothing.
+    /// number of the pending item that holds the rules, and what failed.
+    /// Absent when the list changed nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleaned: Option<CleanupDone>,
 }
@@ -239,8 +239,8 @@ impl UpsertReport {
 ///    absent `runtime` is filled — everything else is preserved verbatim;
 /// 6. the cleanup ([`cleanup::plan`], then [`cleanup::apply`]) — what an older
 ///    Mustard left between its marks is taken out in this same call, with no
-///    question: the Guards become lessons first, and a file without a mark is
-///    only listed.
+///    question: the rules of the Guards go first to the project's pending list
+///    (see [`upsert_project_with`]), and a file without a mark is only listed.
 ///
 /// Nothing is staged or committed, whatever git tracks: the stamp in a
 /// versioned `mustard.json` stays a change for the person to commit.
@@ -265,6 +265,25 @@ pub fn upsert_project(
     root: &Path,
     version: Option<&str>,
     mode: InstallMode,
+) -> Result<UpsertReport> {
+    upsert_project_with(root, version, mode, &cleanup::NoPendingList)
+}
+
+/// [`upsert_project`] with the project's pending list, `pending`, where the
+/// cleanup writes the rules it takes out of the instruction files, in one
+/// item, before any file changes. The core does not own that list: the
+/// runtime's `run upsert` hands its door in. Without it ([`upsert_project`]),
+/// the rules cannot be written down, so no file of the cleanup changes while
+/// a rule would leave; every other step runs the same.
+///
+/// # Errors
+///
+/// The same as [`upsert_project`].
+pub fn upsert_project_with(
+    root: &Path,
+    version: Option<&str>,
+    mode: InstallMode,
+    pending: &dyn PendingList,
 ) -> Result<UpsertReport> {
     let installed_before = ProjectConfig::exists(root);
     let mut report = UpsertReport {
@@ -328,7 +347,7 @@ pub fn upsert_project(
         plan.files.retain(|change| change.path != SETTINGS_JSON);
     }
     if plan.has_changes() {
-        report.cleaned = Some(cleanup::apply(root, &plan)?);
+        report.cleaned = Some(cleanup::apply(root, &plan, pending)?);
     }
     report.cleanup = (!plan.is_empty()).then_some(plan);
 
@@ -581,11 +600,23 @@ mod tests {
     /// marcas, o import e a linha de navegação (o resto fica byte a byte, com
     /// os fins de linha), o arquivo que era só do Mustard é apagado, as linhas
     /// do molde saem do `settings.json`, o arquivo sem marca continua igual e
-    /// só aparece na lista, e o relatório diz o que saiu. As Guards tiradas
-    /// viram lições de regra do projeto uma vez só, e antes de qualquer
-    /// arquivo mudar: sem como gravar a lição, nenhum arquivo muda.
+    /// só aparece na lista, e o relatório diz o que saiu. As regras tiradas
+    /// das Guards vão à lista de pendências num item só, antes de qualquer
+    /// arquivo mudar, e nunca ao banco de lições: sem como gravar a
+    /// pendência, nenhum arquivo muda.
     #[test]
     fn migration_preserves_foreign_claude_md_and_is_byte_preserving() {
+        /// A lista de pendências do teste: guarda na memória cada item.
+        #[derive(Default)]
+        struct Memory(std::cell::RefCell<Vec<(String, String)>>);
+        impl PendingList for Memory {
+            fn add(&self, title: &str, detail: &str) -> std::result::Result<String, String> {
+                let mut items = self.0.borrow_mut();
+                items.push((title.to_string(), detail.to_string()));
+                Ok(format!("P-{}", items.len()))
+            }
+        }
+
         let dir = tempdir().unwrap();
         let root = dir.path();
         let write = |root: &Path, rel: &str, body: &str| {
@@ -614,7 +645,8 @@ mod tests {
         lay_out(root);
 
         // --- one call takes it out and says what left ---------------------------
-        let report = upsert_project(root, None, InstallMode::Private).unwrap();
+        let list = Memory::default();
+        let report = upsert_project_with(root, None, InstallMode::Private, &list).unwrap();
         let plan = report.cleanup.clone().expect("what left is listed");
         let listed: Vec<(&str, &cleanup::Action)> = plan.files.iter().map(|f| (f.path.as_str(), &f.action)).collect();
         assert_eq!(
@@ -626,15 +658,22 @@ mod tests {
             ],
         );
         assert_eq!(plan.unmarked, ["apps/cli/CLAUDE.md"], "the file without a mark is only listed");
-        let lessons: Vec<&str> = plan.lessons.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(lessons, ["Reuse the shared client.", "Never block the render."]);
+        let rules: Vec<&str> = plan.rules.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(rules, ["Reuse the shared client.", "Never block the render."]);
         let done = report.cleaned.clone().expect("the report says what the cleanup did");
         assert!(done.failed.is_empty(), "{done:?}");
         assert_eq!(done.edited, ["apps/api/CLAUDE.md", SETTINGS_JSON]);
         assert_eq!(done.deleted, ["apps/web/CLAUDE.md"]);
-        assert_eq!(done.lessons.len(), 2, "{done:?}");
+        assert_eq!(done.pending.as_deref(), Some("P-1"), "{done:?}");
+        let detail = list.0.borrow()[0].1.clone();
+        assert!(
+            detail.contains("Reuse the shared client. (saiu de apps/api/CLAUDE.md)")
+                && detail.contains("Never block the render. (saiu de apps/web/CLAUDE.md)"),
+            "{detail}"
+        );
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["cleaned"]["deleted"], json!(["apps/web/CLAUDE.md"]), "{json}");
+        assert_eq!(json["cleaned"]["pending"], json!("P-1"), "{json}");
         assert!(json.get("confirm").is_none() && !json.to_string().contains("token"), "no code to confirm: {json}");
 
         assert_eq!(
@@ -648,22 +687,15 @@ mod tests {
         let settings: Value = serde_json::from_slice(&read(root, SETTINGS_JSON)).unwrap();
         assert_eq!(settings, json!({ "teamKey": 1 }), "only the seed's line leaves the team's settings");
 
-        // --- once -----------------------------------------------------------------
-        write(root, "apps/web/CLAUDE.local.md", "# Web\n<!-- mustard:guards -->\n- Never block the render.\n<!-- /mustard:guards -->\n");
-        let again = upsert_project(root, None, InstallMode::Private).unwrap();
-        let again_plan = again.cleanup.expect("the local twin is listed");
-        assert!(again_plan.lessons.is_empty(), "a guard already in the bank is not written twice: {again_plan:?}");
-        assert_eq!(again.cleaned.expect("the twin left").deleted, ["apps/web/CLAUDE.local.md"]);
-        assert!(!root.join("apps/web/CLAUDE.local.md").exists());
-        let bank = crate::io::lessons::read(&root.join(".claude/spec/lessons.ndjson")).unwrap().unwrap();
-        let rules: Vec<_> = bank.visible().into_iter().filter(|l| l.event_type == "project_rule").collect();
-        assert_eq!(rules.len(), 2, "each guard became one project-rule lesson");
+        assert!(!root.join(".claude/spec/lessons.ndjson").exists(), "nothing goes to the lesson bank");
+        let again = upsert_project_with(root, None, InstallMode::Private, &list).unwrap();
+        assert!(again.cleaned.is_none(), "nothing left to take out: {again:?}");
+        assert_eq!(list.0.borrow().len(), 1, "a second install writes nothing more");
 
-        // --- the lessons come first ---------------------------------------------
+        // --- the pending item comes first ---------------------------------------
         let blocked = tempdir().unwrap();
         lay_out(blocked.path());
-        // The lesson bank cannot be written: a folder sits where it goes.
-        std_fs::create_dir_all(blocked.path().join(".claude/spec/lessons.ndjson")).unwrap();
+        // Without the pending list, no rule can be written down.
         let report = upsert_project(blocked.path(), None, InstallMode::Private).unwrap();
         let done = report.cleaned.expect("the report says what the cleanup did");
         assert!(!done.failed.is_empty(), "the failure is said: {done:?}");

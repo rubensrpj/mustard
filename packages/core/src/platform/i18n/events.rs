@@ -623,18 +623,83 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              of the end of a response found: {defects}. Rewrite the text and write it again. \
              Nothing was written."
         }
+        // A lição que vale para o projeto (o defeito e a regra do projeto) não
+        // entra no banco, que não vai ao git: vira ajuste no código, com teste.
+        // Com uma spec aberta, a recusa manda gravar a tarefa nela; sem spec
+        // aberta, a recusa não fala em spec.
         ("lessons.defect_by_task", Locale::PtBr) => {
             "O defeito que pode se repetir não entra no banco de lições, que fica só nesta máquina \
              e não vai ao git. Ele vira conserto no código, com o teste que falha se o defeito \
-             voltar: grave a tarefa desse conserto com `mustard-rt run write task`, na spec da \
-             obra. Nada foi gravado."
+             voltar, e o teste vai ao git no commit da obra: grave a tarefa desse conserto com \
+             `mustard-rt run write task`, na spec {spec}. Nada foi gravado."
         }
         ("lessons.defect_by_task", Locale::EnUs) => {
             "A defect that can happen again does not go in the lesson bank, which stays on this \
              machine only and never goes to git. It becomes a fix in the code, with the test that \
-             fails if the defect comes back: write the task of that fix with \
-             `mustard-rt run write task`, in the spec of the work. Nothing was written."
+             fails if the defect comes back, and the test goes to git in the commit of the work: \
+             write the task of that fix with `mustard-rt run write task`, in the spec {spec}. \
+             Nothing was written."
         }
+        ("lessons.defect_in_code", Locale::PtBr) => {
+            "O defeito que pode se repetir não entra no banco de lições, que fica só nesta máquina \
+             e não vai ao git. Ele vira conserto no código, com o teste que falha se o defeito \
+             voltar, e o teste vai ao git no commit. Nada foi gravado."
+        }
+        ("lessons.defect_in_code", Locale::EnUs) => {
+            "A defect that can happen again does not go in the lesson bank, which stays on this \
+             machine only and never goes to git. It becomes a fix in the code, with the test that \
+             fails if the defect comes back, and the test goes to git in the commit. Nothing was \
+             written."
+        }
+        ("lessons.rule_by_task", Locale::PtBr) => {
+            "A regra do projeto não entra no banco de lições, que fica só nesta máquina e não vai \
+             ao git: em outra máquina, ela some. Ela vira teste no código da obra, que falha se a \
+             regra for quebrada, e o teste vai ao git no commit da obra: grave a tarefa desse \
+             teste com `mustard-rt run write task`, na spec {spec}. Nada foi gravado."
+        }
+        ("lessons.rule_by_task", Locale::EnUs) => {
+            "A project rule does not go in the lesson bank, which stays on this machine only and \
+             never goes to git: on another machine, it is gone. It becomes a test in the code of \
+             the work, one that fails if the rule is broken, and the test goes to git in the \
+             commit of the work: write the task of that test with `mustard-rt run write task`, \
+             in the spec {spec}. Nothing was written."
+        }
+        ("lessons.rule_in_code", Locale::PtBr) => {
+            "A regra do projeto não entra no banco de lições, que fica só nesta máquina e não vai \
+             ao git: em outra máquina, ela some. Ela vira teste no código, que falha se a regra \
+             for quebrada, e o teste vai ao git no commit. Nada foi gravado."
+        }
+        ("lessons.rule_in_code", Locale::EnUs) => {
+            "A project rule does not go in the lesson bank, which stays on this machine only and \
+             never goes to git: on another machine, it is gone. It becomes a test in the code, \
+             one that fails if the rule is broken, and the test goes to git in the commit. \
+             Nothing was written."
+        }
+        // As regras que a limpeza da instalação tira dos arquivos de instrução
+        // viram um item só da lista de pendências, com o texto de cada uma e o
+        // arquivo de onde saiu.
+        ("lessons.rules_left.title", Locale::PtBr) => {
+            "Regras que a instalação tirou dos arquivos de instrução ({count}): cada uma vira \
+             teste ou sai"
+        }
+        ("lessons.rules_left.title", Locale::EnUs) => {
+            "Rules the install took out of the instruction files ({count}): each becomes a test or \
+             goes"
+        }
+        ("lessons.rules_left.detail", Locale::PtBr) => {
+            "Um Mustard antigo escreveu estas regras entre as marcas dele nos arquivos de \
+             instrução, e a instalação as tirou de lá. Elas não voltam para o arquivo nem vão ao \
+             banco de lições, que não vai ao git. Transforme cada uma num teste no código, que \
+             falha se a regra for quebrada, ou descarte a que já não vale. {rules}"
+        }
+        ("lessons.rules_left.detail", Locale::EnUs) => {
+            "An older Mustard wrote these rules between its marks in the instruction files, and \
+             the install took them out. They go back neither to the file nor to the lesson bank, \
+             which never goes to git. Turn each one into a test in the code, one that fails if \
+             the rule is broken, or drop the one that no longer holds. {rules}"
+        }
+        ("lessons.rules_left.rule", Locale::PtBr) => "{n}) {text} (saiu de {sources})",
+        ("lessons.rules_left.rule", Locale::EnUs) => "{n}) {text} (taken from {sources})",
         // O que o scan aponta para enxugar o banco de lições (`run scan`).
         ("lessons.scan_merge", Locale::PtBr) => {
             "Junte cada grupo de lições parecidas numa lição só, resumida no jeito de escrever do \
@@ -679,8 +744,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            92,
-            0xdcf3_b4a3_2be3_0ae4,
+            98,
+            0x5165_0806_b8a9_7240,
         );
     }
 
@@ -796,7 +861,13 @@ mod tests {
             ("lessons.origin_missing", &[][..]),
             ("lessons.repeated", &["{id}", "{text}"][..]),
             ("lessons.unclear", &["{defects}"][..]),
-            ("lessons.defect_by_task", &[][..]),
+            ("lessons.defect_by_task", &["{spec}"][..]),
+            ("lessons.defect_in_code", &[][..]),
+            ("lessons.rule_by_task", &["{spec}"][..]),
+            ("lessons.rule_in_code", &[][..]),
+            ("lessons.rules_left.title", &["{count}"][..]),
+            ("lessons.rules_left.detail", &["{rules}"][..]),
+            ("lessons.rules_left.rule", &["{n}", "{text}", "{sources}"][..]),
             ("lessons.scan_merge", &["{groups}"][..]),
             ("lessons.scan_retire", &["{lessons}"][..]),
             ("lessons.scan_untouched", &[][..]),

@@ -5,11 +5,14 @@
 //! armadilha do ambiente (`environment_trap`) ou uma preferência do usuário
 //! (`user_preference`). O banco fica fora das pastas das specs e é escrito só
 //! pelo binário, pelo `write lesson`. Ele mora só na máquina de quem programa
-//! e não vai ao git: por isso o `write lesson` recusa a lição de defeito
-//! ([`is_defect`]), que viraria regra presa numa máquina só. O defeito que
-//! pode se repetir vira conserto no código, com o teste que falha se ele
-//! voltar, e esse conserto vai ao git com a obra. As lições de defeito já
-//! guardadas seguem na leitura, e a retirada as tira como qualquer outra.
+//! e não vai ao git: numa cópia do projeto em outra máquina, ele não existe.
+//! Por isso o `write lesson` recusa as duas classes que valem para o projeto
+//! ([`for_the_code`]): a de defeito e a de regra do projeto. As duas viram
+//! ajuste no próprio código, com o teste que falha se o erro voltar ou se a
+//! regra for quebrada, e esse teste vai ao git com a obra. O banco guarda só o
+//! que é pessoal de quem programa: a armadilha do ambiente e a preferência do
+//! usuário. As lições de defeito e de regra do projeto já guardadas seguem na
+//! leitura, e a retirada as tira como qualquer outra.
 //! Cada linha tem o mesmo envelope dos
 //! eventos da spec (`v`, `id`, `at`, `type`, `author`), sem código de item e
 //! sem `origin`: o `type` guarda a classe da lição, e a lição é apontada pelo
@@ -77,19 +80,23 @@ use crate::domain::spec_events::{
 pub const LESSON: &str = "lesson";
 
 /// As classes de lição, gravadas no `type` da linha. A de defeito ([`DEFECT`])
-/// continua na lista porque as linhas antigas dela seguem válidas na leitura;
-/// quem a recusa na gravação é o `write lesson`.
-pub const CLASSES: &[&str] = &[DEFECT, "project_rule", "environment_trap", "user_preference"];
+/// e a de regra do projeto ([`PROJECT_RULE`]) continuam na lista porque as
+/// linhas antigas delas seguem válidas na leitura; quem as recusa na gravação
+/// é o `write lesson`.
+pub const CLASSES: &[&str] = &[DEFECT, PROJECT_RULE, "environment_trap", "user_preference"];
 
 /// A classe do defeito que pode se repetir.
 pub const DEFECT: &str = "defect";
 
-/// O rascunho que o `write lesson` recebe grava uma lição de defeito, sozinha
-/// ou juntando outras em `replaces`: a classe dele (`class`) é [`DEFECT`]. A
-/// retirada, que não traz classe, nunca é.
+/// A classe do rascunho que o `write lesson` recusa porque vale para o
+/// projeto, sozinho ou juntando outras lições em `replaces`: [`DEFECT`] ou
+/// [`PROJECT_RULE`]. As duas viram ajuste no código, com um teste, e não
+/// lição no banco, que não vai ao git. A retirada, que não traz classe, e as
+/// classes pessoais dão `None`.
 #[must_use]
-pub fn is_defect(draft: &Map<String, Value>) -> bool {
-    draft.get("class").and_then(Value::as_str).map(str::trim) == Some(DEFECT)
+pub fn for_the_code(draft: &Map<String, Value>) -> Option<&'static str> {
+    let class = draft.get("class").and_then(Value::as_str).map(str::trim)?;
+    [DEFECT, PROJECT_RULE].into_iter().find(|refused| *refused == class)
 }
 
 /// O tipo da linha que retira lições do banco: o mesmo `remove` da spec, com
@@ -356,7 +363,8 @@ pub fn in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
 }
 
 /// A classe da lição que guarda uma regra do projeto: vale sempre, então
-/// não vira pergunta no levantamento.
+/// não vira pergunta no levantamento. A gravação nova a recusa
+/// ([`for_the_code`]); as linhas antigas dela seguem na leitura.
 pub const PROJECT_RULE: &str = "project_rule";
 
 /// O "onde vale" de um evento casa com `scope`? A mesma leitura serve à lição
