@@ -281,15 +281,17 @@ fn a_revisao_final_recebe_o_acordado_inteiro() {
 }
 
 /// O veredito final malformado — sem a lista `agreed`, ou com ela faltando
-/// um item combinado vigente — é recusado na forma, nomeando pelo código
-/// quem faltou; nada é gravado, e a obra segue aberta, pedindo a revisão
-/// final de novo. Antes desta obra o binário aceitava o veredito final sem
-/// checar o combinado: a prova corta essa conferência e vê os dois vereditos
-/// malformados gravados como se estivessem completos.
+/// um item combinado vigente — é recusado na gravação pelo revisor, nomeando
+/// pelo código quem faltou; nada é gravado, e o pedido da revisão final segue
+/// aberto, esperando o veredito. Antes desta obra o binário aceitava o
+/// veredito final sem checar o combinado: a prova corta essa conferência e vê
+/// os dois vereditos malformados gravados como se estivessem completos.
 #[test]
 fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
     let project = Project::new();
     let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     // Cada chamada do binário grava sua própria telemetria (`call`), sucesso
     // ou recusa; "nada foi gravado" é sobre o efeito do veredito — nenhum
     // `verdict` nem `task` novo —, não sobre o total bruto de eventos.
@@ -300,7 +302,7 @@ fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
 
     // Sem a lista `agreed` nenhuma.
     let missing_list = json!({"final": true, "result": "approved", "text": "Tudo pronto."});
-    let refused = project.answer(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{missing_list}</VERDICT>")]);
+    let refused = project.answer(&["write", "verdict", "--spec", SPEC, "--json", &missing_list.to_string()]);
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(refused["reason"], json!("agreed-items-missing"), "{refused}");
     let hint = refused["hint"].as_str().unwrap_or_default();
@@ -316,7 +318,7 @@ fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
         .map(|decision| json!({"item": decision["code"], "met": true}))
         .collect();
     let partial = json!({"final": true, "result": "approved", "text": "Quase tudo.", "agreed": missing_one});
-    let refused_partial = project.answer(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{partial}</VERDICT>")]);
+    let refused_partial = project.answer(&["write", "verdict", "--spec", SPEC, "--json", &partial.to_string()]);
     assert_eq!(refused_partial["ok"], json!(false), "{refused_partial}");
     assert_eq!(refused_partial["reason"], json!("agreed-items-missing"), "{refused_partial}");
     let missing_code = decisions.last().expect("at least one decision")["code"].as_str().expect("the code");
@@ -324,10 +326,9 @@ fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
     assert!(hint_partial.contains(missing_code), "a recusa não nomeia o item de fora da lista: {hint_partial}");
     assert_eq!(recorded_kinds(&project), before, "nada foi gravado com um item de fora da lista");
 
-    // A obra segue aberta, pedindo a revisão final de novo.
-    let still_open = project.run(&["close", "--spec", SPEC]);
-    assert_eq!(still_open["phase"], json!("running"), "{still_open}");
-    assert_eq!(still_open["review"]["final"], json!(true), "{still_open}");
+    // O pedido da revisão final segue aberto: o fechamento espera o veredito.
+    let still_open = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(still_open["reason"], json!("review-verdict-missing"), "{still_open}");
 }
 
 /// O item combinado que a revisão final marca `met:false`, com o que falta e
@@ -356,7 +357,10 @@ fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
         })
         .collect();
     let verdict = json!({"final": true, "result": "approved", "text": "Quase tudo certo.", "agreed": agreed});
-    let after_verdict = project.answer(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.write("verdict", &verdict);
+    let after_verdict = project.answer(&["close", "--spec", SPEC]);
     // A obra não fecha: o item de fora força o veredito a reprovado e vira
     // tarefa no backlog, e o fechamento recusa enquanto o backlog tiver tarefa —
     // o veredito já ficou gravado, e o passo seguinte é a rodada.
@@ -390,6 +394,7 @@ fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
 
     let all_met: Vec<Value> = decisions.iter().map(|decision| json!({"item": decision["code"], "met": true})).collect();
     let approved = json!({"final": true, "result": "approved", "text": "Tudo atendido.", "agreed": all_met});
-    let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{approved}</VERDICT>")]);
+    project.write("verdict", &approved);
+    let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
 }

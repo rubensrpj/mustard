@@ -91,10 +91,10 @@
 //! [`record`], a mesma gravação deste comando.
 //!
 //! Este comando também não grava a execução de um critério (`criterion_run`),
-//! o veredito (`verdict`), o envio do pedido (`send`), o commit (`commit`) nem
-//! a resposta do assistente (`response`), nem tira ou revê um deles: quem os
-//! grava é o binário — a rodada, o fechamento e o despachante. O autor
-//! `binary` é só das gravações de dentro do binário.
+//! o envio do pedido (`send`), o commit (`commit`) nem a resposta do
+//! assistente (`response`), nem tira ou revê um deles: quem os grava é o
+//! binário — a rodada, o fechamento e o despachante. O autor `binary` é só
+//! das gravações de dentro do binário.
 //!
 //! A entrega de uma onda (`delivered`) entra por aqui só como a volta que a
 //! própria onda grava, com envio aberto para ela: a gravação a marca com
@@ -104,6 +104,14 @@
 //! arquivo que não existe, a prova — recusam antes de gravar. A entrega
 //! oficial continua do binário: o `run write` não a grava, não a tira nem a
 //! revê.
+//!
+//! O veredito (`verdict`) segue o mesmo caminho: o revisor grava o próprio,
+//! só com pedido de revisão aberto — o envio de revisão que o fechamento
+//! grava, sem veredito oficial depois dele —, e a gravação o marca com
+//! `returned`. O critério ou item do combinado que a spec não tem e o
+//! veredito final que não responde por todo o combinado vigente recusam
+//! antes de gravar. A rodada ou o fechamento assume a volta e grava o
+//! veredito oficial, que o `run write` não grava, não tira nem revê.
 //!
 //! O clique (a `message` com `witness`, de qualquer autor: a resposta a uma
 //! pergunta com opções) também não passa por aqui, nem para ser tirado ou
@@ -192,12 +200,13 @@ use serde_json::{json, Map, Value};
 use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
-/// fechamento grava ao rodar a prova; o veredito, o envio do pedido de uma
-/// onda, a entrega oficial dela e o commit, que só a rodada grava; a tabela
-/// de rastreabilidade, que o fechamento grava ao aceitar o veredito final; e
-/// a resposta do assistente, que o despachante grava no fim de cada resposta.
-/// O `run write` não os grava, nem tira ou revê um deles. A única entrada é a
-/// volta da onda, escondida da leitura até a rodada assumi-la.
+/// fechamento grava ao rodar a prova; o veredito oficial, o envio do pedido
+/// de uma onda, a entrega oficial dela e o commit, que só a rodada grava; a
+/// tabela de rastreabilidade, que o fechamento grava ao aceitar o veredito
+/// final; e a resposta do assistente, que o despachante grava no fim de cada
+/// resposta. O `run write` não os grava, nem tira ou revê um deles. As únicas
+/// entradas são a volta da onda e a do revisor, escondidas da leitura até a
+/// rodada ou o fechamento assumi-las.
 const BINARY_ONLY: &[&str] =
     &["criterion_run", "verdict", "send", "delivered", "commit", "tracking", "response"];
 
@@ -298,9 +307,10 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     if event_type == "work_type" {
         return refuse(Refusal::WorkTypeByGrill);
     }
-    // A entrega é a exceção dos tipos do binário: a onda grava a própria
-    // volta, conferida mais abaixo, e a rodada grava a versão oficial.
-    if BINARY_ONLY.contains(&event_type) && event_type != "delivered" {
+    // A entrega e o veredito são as exceções dos tipos do binário: a onda e o
+    // revisor gravam a própria volta, conferida mais abaixo, e a rodada ou o
+    // fechamento grava a versão oficial.
+    if BINARY_ONLY.contains(&event_type) && !["delivered", "verdict"].contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
     }
     // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
@@ -324,6 +334,13 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     // agente grava de novo.
     if event_type == "delivered"
         && let Err(refusal) = crate::commands::flow::round::check_return(&opts.root, spec, &mut draft)
+    {
+        return refusal.to_value(lang);
+    }
+    // A volta do revisor só entra com pedido de revisão aberto, e o veredito
+    // final que não responde por todo o combinado recusa antes de gravar.
+    if event_type == "verdict"
+        && let Err(refusal) = crate::commands::flow::round::check_verdict_return(&opts.root, spec, &mut draft)
     {
         return refusal.to_value(lang);
     }
@@ -1304,10 +1321,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&md).unwrap(), document, "the document is left alone");
     }
 
-    /// A execução de um critério, o veredito e a resposta do assistente são
-    /// gravados só pelo binário: o `run write` recusa os três, e recusa tirar
-    /// uma execução gravada. Uma execução aprovada escrita à mão nunca abre o
-    /// fechamento.
+    /// A execução de um critério e a resposta do assistente são gravadas só
+    /// pelo binário: o `run write` recusa as duas, e recusa tirar uma execução
+    /// gravada. O veredito escrito sem pedido de revisão aberto também é
+    /// recusado. Uma execução aprovada escrita à mão nunca abre o fechamento.
     #[test]
     fn criteria_runs_and_verdicts_are_written_by_the_binary_only() {
         use crate::shared::spec_state::{seed_run, seed_runs};
@@ -1324,7 +1341,7 @@ mod tests {
             criteria[0]
         );
         let refused = write(root, "verdict", &verdict);
-        assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
+        assert_eq!(refused["reason"], json!("no-open-review"), "{refused}");
         let removal = write(root, "remove", &format!(r#"{{"targets":[{failing}],"reason":"engano"}}"#));
         assert_eq!(removal["reason"], json!("binary-only-type"), "taking the red run out is refused too: {removal}");
 
@@ -1344,6 +1361,90 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
+    }
+
+    /// Um pedido de revisão aberto na spec `teste`, como o fechamento o grava.
+    /// Devolve o número dele.
+    fn review_asked(root: &std::path::Path) -> u64 {
+        crate::shared::spec_state::seed_event(root, "teste", "send", json!({"role": "review", "text": "revise",
+            "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}))
+    }
+
+    /// O revisor grava o próprio veredito só com pedido de revisão aberto:
+    /// sem ele, a gravação recusa com a mensagem combinada e nada é gravado.
+    /// Com o pedido aberto, a volta entra marcada como volta, do revisor, fora
+    /// da leitura, e vale gravar de novo enquanto ninguém a assumiu — a volta
+    /// não fecha o pedido. O veredito oficial que a assume fecha: a gravação
+    /// seguinte recusa outra vez.
+    #[test]
+    fn o_revisor_so_grava_veredito_com_revisao_pedida() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        message(root, "user", "revise a obra");
+        let approved = r#"{"final":true,"result":"approved","text":"Sem achados."}"#;
+        let before = lines(root);
+        let refused = write(root, "verdict", approved);
+        assert_eq!(refused["reason"], json!("no-open-review"), "{refused}");
+        assert_eq!(refused["hint"], json!("Não há pedido de revisão aberto nesta spec. Nada foi gravado."));
+        assert_eq!(lines(root), before, "nothing was written");
+
+        let asked = review_asked(root);
+        let first = write(root, "verdict", approved);
+        assert_eq!((&first["ok"], &first["type"]), (&json!(true), &json!("verdict")), "{first}");
+        let second = write(root, "verdict", r#"{"final":true,"wave":1,"result":"rejected","text":"Falta o teste."}"#);
+        assert_eq!(second["ok"], json!(true), "o revisor grava de novo antes de a volta ser assumida: {second}");
+        let read = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let log = read();
+        let returns = [first["id"].as_u64().unwrap(), second["id"].as_u64().unwrap()];
+        for id in returns {
+            let event = log.get(id).unwrap();
+            assert_eq!(event.fields.get("returned"), Some(&json!(true)), "{event:?}");
+            assert_eq!(event.str_field("author"), Some("review"), "{event:?}");
+        }
+        assert!(log.visible().iter().all(|e| e.event_type != "verdict"), "a volta fica fora da leitura");
+        assert_eq!(crate::commands::flow::round::open_review(&log), Some(asked), "a volta não fecha o pedido");
+
+        let official = json!({"final": true, "wave": 1, "result": "rejected", "text": "Falta o teste.",
+            "replaces": returns, "author": "review"});
+        record(root, "teste", "verdict", official.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+        assert_eq!(crate::commands::flow::round::open_review(&read()), None, "o veredito oficial fecha o pedido");
+        let before = lines(root);
+        let again = write(root, "verdict", approved);
+        assert_eq!(again["reason"], json!("no-open-review"), "{again}");
+        assert_eq!(lines(root), before, "nothing was written");
+    }
+
+    /// O veredito final responde por todo o combinado vigente, item a item: o
+    /// que deixa um item de fora é recusado na gravação, antes de gravar,
+    /// nomeando o item e mandando o revisor gravar de novo; o que responde
+    /// por todos entra, mesmo com um item não atendido.
+    #[test]
+    fn o_veredito_final_sem_todo_o_combinado_e_recusado_na_gravacao() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "revise a obra");
+        let rule = json!({"text": "A trava confere o programa.", "keys": ["trava"], "example": "rm -rf é barrado.",
+            "origin": said});
+        assert_eq!(write(root, "rule", &rule.to_string())["code"], json!("MSTD-RULE-0001"));
+        let decision = json!({"text": "Sem prova extra.", "keys": ["prova"], "why": "w", "origin": said});
+        assert_eq!(write(root, "decision", &decision.to_string())["code"], json!("MSTD-DEC-0001"));
+        review_asked(root);
+        let before = lines(root);
+
+        let partial = json!({"final": true, "result": "approved", "text": "Sem achados.",
+            "agreed": [{"item": "MSTD-RULE-0001", "met": true}]});
+        let refused = write(root, "verdict", &partial.to_string());
+        assert_eq!(refused["reason"], json!("agreed-items-missing"), "{refused}");
+        let expected = translate("spec_events.agreed_items_missing", Locale::PtBr).replace("{missing}", "MSTD-DEC-0001");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        assert!(expected.contains("grava o veredito de novo"), "{expected}");
+        assert_eq!(lines(root), before, "nothing was written");
+
+        let whole = json!({"final": true, "result": "rejected", "text": "Falta a prova.",
+            "agreed": [{"item": "MSTD-RULE-0001", "met": true}, {"item": "MSTD-DEC-0001", "met": false, "text": "Falta."}]});
+        let accepted = write(root, "verdict", &whole.to_string());
+        assert_eq!(accepted["ok"], json!(true), "{accepted}");
+        assert_eq!(lines(root), before + 1, "a volta foi gravada, e só ela");
     }
 
     /// Uma decisão revista fica no arquivo de eventos com as duas versões, a

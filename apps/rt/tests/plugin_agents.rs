@@ -673,12 +673,9 @@ fn every_flow_command_answers_its_next_step() {
     let asked = run_returned(&root, &home, &round);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     let approved = json!({"final": true, "result": "approved", "text": "Está pronto."});
-    let closed = rt(
-        &root,
-        &home,
-        &["run", "close", "--spec", "passo", "--report", &format!("<VERDICT>{approved}</VERDICT>")],
-        None,
-    );
+    let written = rt(&root, &home, &["run", "write", "verdict", "--spec", "passo", "--json", &approved.to_string()], None);
+    assert_eq!(written["ok"], json!(true), "{written}");
+    let closed = rt(&root, &home, &["run", "close", "--spec", "passo"], None);
     assert_eq!(closed["ok"], json!(true), "{closed}");
     let pr_open = "mustard-rt run pr-open --base dev --head feature/passo --spec passo";
     assert_eq!(closed["command"], json!(pr_open), "{closed}");

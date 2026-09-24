@@ -263,11 +263,13 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let unknown = rt(root, &["write", "licao", "--spec", "teste", "--json", "{}"]).output().expect("run");
     assert_eq!(unknown.status.code(), Some(1));
     assert_eq!(stdout_json(&unknown)["reason"], json!("unknown-type"));
+    // O veredito entra só como a volta do revisor com o pedido de revisão
+    // aberto: nenhum foi pedido, e a gravação é recusada.
     let verdict = json!({"author": "review", "wave": 2, "result": "rejected", "text": "t", "criteria": [{"criterion": c2, "tests_rule": false}]});
-    let binary_only =
+    let unasked =
         rt(root, &["write", "verdict", "--spec", "teste", "--json", &verdict.to_string()]).output().expect("run");
-    assert_eq!(binary_only.status.code(), Some(1));
-    assert_eq!(stdout_json(&binary_only)["reason"], json!("binary-only-type"));
+    assert_eq!(unasked.status.code(), Some(1));
+    assert_eq!(stdout_json(&unasked)["reason"], json!("no-open-review"));
     // A entrega entra só como a volta da onda com o envio dela aberto: a onda
     // 1 nunca saiu, e a gravação é recusada sem gravar nada.
     let delivered = json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"]}).to_string();

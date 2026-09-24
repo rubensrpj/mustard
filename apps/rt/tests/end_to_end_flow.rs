@@ -454,10 +454,11 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     assert_eq!(asked["phase"], json!("running"), "{asked}");
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
 
-    // Aprovado, o fechamento grava o veredito e fecha.
+    // O revisor grava o veredito aprovado; o fechamento o assume e fecha.
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(&project)});
-    let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
     assert!(closed.get("review").is_none(), "{closed}");
     let pr_line = format!("mustard-rt run pr-open --base dev --head feature/{SPEC} --spec {SPEC}");
@@ -515,7 +516,8 @@ fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
     project.run(&["close", "--spec", SPEC]);
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(&project)});
-    let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let closed = project.run(&["close", "--spec", SPEC]);
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
     project.run(&argv);
@@ -706,7 +708,8 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     let verdict = json!({"final": true, "result": "approved", "text": "Mudaram.", "agreed": agreed_all_met(project)});
-    let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let closed = project.run(&["close", "--spec", SPEC]);
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
     project.run(&argv)

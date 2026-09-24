@@ -584,6 +584,17 @@ pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
         .collect()
 }
 
+/// O pedido de revisão aberto, pelo número dele: o último envio de revisão,
+/// que o fechamento grava, sem veredito oficial depois dele. A volta que o
+/// revisor gravou e ninguém assumiu ainda não fecha o pedido: só o veredito
+/// que a rodada ou o fechamento grava ao assumi-la.
+pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
+    let visible = log.visible();
+    let asked =
+        visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).max()?;
+    (!visible.iter().any(|e| e.event_type == "verdict" && e.id > asked)).then_some(asked)
+}
+
 /// A versão nova do envio mais recente da onda `wave`: os campos dele, tirando
 /// `v`, `id`, `code`, `at`, `type` e `search`, com `replaces` apontando para
 /// ele e os campos de `extra` somados por cima. Usado quando a volta de uma
@@ -825,7 +836,7 @@ fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet
 
 /// Os arquivos que uma tarefa declara: cada item de `files` é o caminho, seja
 /// como texto solto ou como `{"path": ...}`.
-fn task_files(task: &SpecEvent) -> BTreeSet<String> {
+pub(super) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
     task.fields
         .get("files")
         .and_then(Value::as_array)
@@ -1295,7 +1306,7 @@ mod tests {
         assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
 
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
-        let again = round(root, "x", Some(&verdict(1, "rejected", "faltou o teste")));
+        let again = round(root, "x", Some(&verdict(root, 1, "rejected", "faltou o teste")));
         assert_eq!(again["dispatch"].as_array().map(Vec::len), Some(1), "a onda reprovada volta a sair: {again}");
 
         let quiet = round(root, "x", None);
@@ -1319,7 +1330,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
-        let fix = round(root, "x", Some(&verdict(1, "rejected", "faltou o teste")));
+        let fix = round(root, "x", Some(&verdict(root, 1, "rejected", "faltou o teste")));
         assert_eq!(waves_in(&fix, "dispatch"), vec![1], "{fix}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1589,14 +1600,19 @@ mod tests {
     }
 
     /// O veredito final reprovado, com o combinado inteiro vigente
-    /// atendido: os testes daqui provam o mecanismo da escolha (`ANALYSIS`),
-    /// não o do combinado — sem a lista `agreed` cobrindo todo mundo, a
-    /// revisão final seria recusada por faltar item, antes de chegar à
-    /// escolha que o teste quer provar.
-    fn verdict_with_agreed(wave: u64, result: &str, text: &str, agreed: &[&str]) -> String {
+    /// atendido, gravado como o revisor o grava, com o pedido de revisão
+    /// aberto antes: os testes daqui provam o mecanismo da escolha
+    /// (`ANALYSIS`), não o do combinado — sem a lista `agreed` cobrindo todo
+    /// mundo, a revisão final seria recusada por faltar item, antes de chegar
+    /// à escolha que o teste quer provar. Devolve o relatório do revisor,
+    /// vazio.
+    fn verdict_with_agreed(root: &Path, wave: u64, result: &str, text: &str, agreed: &[&str]) -> String {
         let agreed: Vec<Value> = agreed.iter().map(|item| json!({"item": item, "met": true})).collect();
-        line("VERDICT", json!({"wave": wave, "result": result, "final": true, "text": text,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}], "agreed": agreed}))
+        seed_review(root);
+        let wrote = judged(root, json!({"wave": wave, "result": result, "final": true, "text": text,
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}], "agreed": agreed}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        String::new()
     }
 
     /// A linha da escolha da onda 1: o que sai e o que entra, com o motivo.
@@ -1699,7 +1715,8 @@ mod tests {
         let ids = with_items_to_judge(root);
         let sends = || {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            log.visible().into_iter().filter(|e| e.event_type == "send").map(|e| e.fields.clone()).collect::<Vec<_>>()
+            let sent = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave().is_some());
+            sent.map(|e| e.fields.clone()).collect::<Vec<_>>()
         };
 
         // Sem a escolha, a onda não sai.
@@ -1763,7 +1780,7 @@ mod tests {
         round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
         let vigent_before = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003",
             "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
-        let fix = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o índice", &vigent_before)));
+        let fix = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou o índice", &vigent_before)));
         assert_eq!(waves_in(&fix, "dispatch"), vec![1], "{fix}");
         let sent = sends();
         assert_eq!(sent.len(), 2, "{fix}");
@@ -1778,7 +1795,7 @@ mod tests {
             "keys": ["k"], "applies_to": {"files": ["**"]}, "origin": said})));
         let vigent_with_newer = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-RULE-0004",
             "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
-        let again = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o nome", &vigent_with_newer)));
+        let again = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou o nome", &vigent_with_newer)));
         assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "{again}");
         assert_eq!(codes_in(&again["analysis"][0], "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0004"], "{again}");
         assert_eq!(sends().len(), 2, "{again}");
@@ -1804,7 +1821,8 @@ mod tests {
             "text": "A tabela nova precisa de migração.", "keys": ["tabela"], "applies_to": {"files": ["**"]}})));
         let sends = || {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            log.visible().into_iter().filter(|e| e.event_type == "send").map(|e| e.fields.clone()).collect::<Vec<_>>()
+            let sent = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave().is_some());
+            sent.map(|e| e.fields.clone()).collect::<Vec<_>>()
         };
 
         // A primeira rodada pede a escolha; com ela, a onda sai.
@@ -1820,7 +1838,7 @@ mod tests {
         round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
         let vigent = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003",
             "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
-        let fix = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou algo", &vigent)));
+        let fix = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou algo", &vigent)));
         assert_eq!(waves_in(&fix, "dispatch"), vec![1], "o conserto com os mesmos candidatos reusa a escolha: {fix}");
         let sent = sends();
         assert_eq!(sent.len(), 2, "{fix}");
@@ -1832,7 +1850,7 @@ mod tests {
         let newer = id_of(&write(root, "x", "lesson", json!({"class": "defect",
             "text": "O índice novo evita busca lenta.", "keys": ["índice"], "applies_to": {"files": ["**"]}})));
         round(root, "x", Some(&delivered(root, 1, "O índice entrou.", &["src/a.rs"])));
-        let again = round(root, "x", Some(&verdict_with_agreed(1, "rejected", "faltou o nome", &vigent)));
+        let again = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou o nome", &vigent)));
         assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "a lição nova pede a escolha de novo: {again}");
         let lessons: Vec<u64> = again["analysis"][0]["lessons"].as_array().unwrap_or(&Vec::new())
             .iter().filter_map(|l| l["lesson"].as_u64()).collect();

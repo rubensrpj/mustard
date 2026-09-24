@@ -43,17 +43,19 @@
 //! com a prova nova, formata só os arquivos da rodada, faz o commit com a
 //! mensagem montada do resumo e grava cada sobra como pendência da spec, pela
 //! mesma porta do `pending --add`. O `--report` leva só o que o orquestrador
-//! escreve — a linha `<USAGE>{…}</USAGE>` com o consumo de cada onda, a
-//! `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>` — e a linha
-//! `<VERDICT>{…}</VERDICT>` do revisor. A linha de consumo sozinha completa a
+//! escreve: a linha `<USAGE>{…}</USAGE>` com o consumo de cada onda, a
+//! `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>`. O veredito também mora na spec:
+//! o revisor o grava com `mustard-rt run write verdict`, só com pedido de
+//! revisão aberto, e a rodada ou o fechamento o assume antes das entregas,
+//! com `replaces` para as voltas dele. A linha de consumo sozinha completa a
 //! onda que voltou; a de uma onda de lote com envio aberto, sem volta e com o
 //! Claude Code dela fechado marca a onda cortada, e as tarefas dela voltam
 //! para o backlog.
 //!
 //! **O que trava.** Uma spec que ainda não foi aprovada; um relatório sem
-//! nenhuma das linhas que a rodada lê, ou com uma linha de veredito ou de
-//! escolha sem campo obrigatório; a linha de entrega no relatório, que manda
-//! gravar a entrega pelo `run write`; a linha de consumo de uma onda com o
+//! nenhuma das linhas que a rodada lê, ou com uma linha de escolha sem campo
+//! obrigatório; a linha de entrega ou de veredito no relatório, que manda
+//! gravá-la pelo `run write`; a linha de consumo de uma onda com o
 //! Claude Code dela aberto e sem volta gravada, e a volta cuja cópia mudou
 //! arquivo sem o resumo do commit — as duas pedem que o agente grave a
 //! entrega; um arquivo entregue que não está no disco nem no git, nem no
@@ -123,8 +125,8 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
 pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{backlog_left, ensure_copy, wave_states, waves_in_progress, waves_pending_fix};
-pub(crate) use report::{check_return, take_report};
+pub(crate) use queue::{backlog_left, ensure_copy, open_review, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use report::{check_return, check_verdict_return, take_report};
 
 /// As opções de `mustard-rt run round`.
 pub struct RoundOpts {
@@ -377,12 +379,38 @@ mod tests {
         String::new()
     }
 
-    /// A linha `VERDICT` da onda `wave`, com o critério pelo código. `final:
-    /// true`, porque só o veredito final do agente de teste dedicado pode
-    /// reprovar ou aprovar uma onda.
-    pub(super) fn verdict(wave: u64, result: &str, text: &str) -> String {
-        line("VERDICT", json!({"wave": wave, "result": result, "final": true, "text": text,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}))
+    /// O veredito da onda `wave`, com o critério pelo código, gravado como o
+    /// revisor o grava: pelo `run write verdict`, com o pedido de revisão
+    /// aberto antes, como o fechamento o abre. `final: true`, porque só o
+    /// veredito final do agente de teste dedicado pode reprovar ou aprovar
+    /// uma onda. Devolve o relatório que o revisor deixa depois de gravar:
+    /// vazio, porque o veredito mora na spec.
+    pub(super) fn verdict(root: &Path, wave: u64, result: &str, text: &str) -> String {
+        seed_review(root);
+        let body = json!({"wave": wave, "result": result, "final": true, "text": text,
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+        let wrote = judged(root, body);
+        assert_eq!(wrote["ok"], json!(true), "o veredito da onda {wave} não foi gravado: {wrote}");
+        String::new()
+    }
+
+    /// A volta do revisor da spec `x`, gravada como ele a grava: pelo `run
+    /// write verdict`, com os campos de `body`. Devolve a resposta da
+    /// gravação, com a recusa quando ela recusa.
+    pub(super) fn judged(root: &Path, body: Value) -> Value {
+        crate::commands::spec_events::write::write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".to_string()),
+            event_type: "verdict".into(),
+            json: body.to_string(),
+        })
+    }
+
+    /// Um pedido de revisão da spec `x`, gravado sem passar pelo fechamento.
+    /// Devolve o número dele.
+    pub(super) fn seed_review(root: &Path) -> u64 {
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"role": "review", "text": "revise",
+            "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}))
     }
 
     pub(super) fn delivered_count(root: &Path) -> usize {

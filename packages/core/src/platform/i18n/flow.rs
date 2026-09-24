@@ -687,11 +687,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              regras do projeto todo (`project`) e as lições (`lessons`) vão, a menos que você tire; \
              os itens sem dono (`unowned`) ficam fora, a menos que você ponha. Tire o que não ajuda \
              a onda, como uma regra da entrega numa onda que só cria uma tabela, e ponha o item sem \
-             dono que ajuda. A conferência das tarefas no código — achar se o que cada uma pede já \
-             está feito ou ainda falta — vai a um agente separado, que devolve só a tarefa ajustada \
-             para ser gravada: você não lê arquivo inteiro nem saída longa para isso. Rode a rodada \
-             de novo com uma linha por onda no `--report '…'`, só com o que muda e o motivo de cada \
-             um numa frase: <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
+             dono que ajuda. Rode a rodada de novo com uma linha por onda no `--report '…'`, só com \
+             o que muda e o motivo de cada um numa frase: \
+             <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
              motivo>\"},{\"lesson\":<número>,\"why\":\"<o motivo>\"}],\"added\":[{\"item\":\"<código>\
              \",\"why\":\"<o motivo>\"}]}</ANALYSIS>. Sem mudança, as duas listas vão vazias. Sem \
              essa linha, a onda não sai."
@@ -703,15 +701,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              whole-project rules (`project`) and the lessons (`lessons`) go unless you take them \
              out; the items without an owner (`unowned`) stay out unless you put them in. Take out \
              what does not help the wave, such as a rule about the delivery in a wave that only \
-             creates a table, and put in the item without an owner that helps. Checking the tasks \
-             against the code — finding whether what each one asks is already done or still missing \
-             — goes to a separate agent, which returns only the adjusted task to record: you do not \
-             read a whole file nor long output for this. Run the round again with one line per wave \
-             in the `--report '…'`, with only what changes and each one's reason in one sentence: \
+             creates a table, and put in the item without an owner that helps. Run the round again \
+             with one line per wave in the `--report '…'`, with only what changes and each one's \
+             reason in one sentence: \
              <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<item code>\",\"why\":\"<the \
              reason>\"},{\"lesson\":<number>,\"why\":\"<the reason>\"}],\"added\":[{\"item\":\"<item \
              code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>. With no change, both lists go empty. \
              Without that line, the wave does not go out."
+        }
+        ("round.analysis_check", Locale::PtBr) => {
+            "Um commit mudou arquivo das tarefas {tasks} depois que o texto delas foi escrito. A \
+             conferência delas no código — achar se o que cada uma pede já está feito ou ainda \
+             falta — vai a um agente separado, que devolve só a tarefa ajustada para ser gravada: \
+             você não lê arquivo inteiro nem saída longa para isso."
+        }
+        ("round.analysis_check", Locale::EnUs) => {
+            "A commit changed a file of tasks {tasks} after their text was written. Checking them \
+             against the code — finding whether what each one asks is already done or still \
+             missing — goes to a separate agent, which returns only the adjusted task to record: \
+             you do not read a whole file nor long output for this."
         }
         ("round.analysis_ignored", Locale::PtBr) => {
             "Na escolha da onda {wave}, o item {item} ficou como estava: ele não está entre os \
@@ -1163,8 +1171,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            149,
-            0x813b_cb07_4b7c_3686,
+            150,
+            0xeb00_ad6c_5e26_7a32,
         );
     }
 
@@ -1337,6 +1345,7 @@ mod tests {
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.analysis", &["{waves}"][..]),
+            ("round.analysis_check", &["{tasks}"][..]),
             ("round.analysis_ignored", &["{wave}", "{item}"][..]),
             ("round.analysis_ignored_lesson", &["{wave}", "{item}"][..]),
             ("round.analysis_unreadable", &["{detail}"][..]),
@@ -1387,17 +1396,22 @@ mod tests {
         }
     }
 
-    /// A dica que pede a escolha dos itens do pedido de uma onda manda a
-    /// conferência das tarefas no código para um agente separado, que devolve
-    /// só a tarefa ajustada para ser gravada, e diz que o orquestrador não lê
-    /// arquivo inteiro nem saída longa para isso — nos dois idiomas.
+    /// O texto que a rodada acrescenta à escolha do pedido quando um commit
+    /// mudou arquivo de uma tarefa depois do texto dela nomeia as tarefas e
+    /// manda a conferência delas no código para um agente separado, que
+    /// devolve só a tarefa ajustada para ser gravada, e diz que o
+    /// orquestrador não lê arquivo inteiro nem saída longa para isso; a dica
+    /// da escolha em si não fala mais dessa conferência — nos dois idiomas.
     #[test]
     fn the_analysis_hint_sends_the_reading_to_an_agent() {
         for (lang, agent_word, whole_file, long_output) in [
             (Locale::PtBr, "agente separado", "arquivo inteiro", "saída longa"),
             (Locale::EnUs, "separate agent", "whole file", "long output"),
         ] {
-            let hint = translate("round.analysis", lang).replace("{waves}", "1");
+            let choice = translate("round.analysis", lang).replace("{waves}", "1");
+            assert!(!choice.contains(agent_word), "{lang:?}: a escolha ainda manda conferir as tarefas: {choice}");
+            let hint = translate("round.analysis_check", lang).replace("{tasks}", "TASK-7");
+            assert!(hint.contains("TASK-7"), "{lang:?}: sem as tarefas nomeadas: {hint}");
             assert!(hint.contains(agent_word), "{lang:?}: sem o agente separado: {hint}");
             assert!(hint.contains("tarefa ajustada") || hint.contains("adjusted task"), "{lang:?}: sem a tarefa ajustada: {hint}");
             assert!(hint.contains(whole_file), "{lang:?}: não proíbe ler arquivo inteiro: {hint}");

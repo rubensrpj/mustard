@@ -5,10 +5,10 @@
 //! rodada não pede a revisão de onda nenhuma: quem confere o trabalho é o
 //! agente de teste dedicado que o fechamento pede, uma vez por obra.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::wave_prompt::{agent_from_template, estimate_tokens, token_cap_message, wave_files};
 use mustard_core::io::spec_events as store;
@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 use super::commit::git_lock;
 use super::queue::{
     analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, emptied_backlog_waves, first_unfinished, max_parallel, next_waves,
-    open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, waves_in_progress, Analysed,
+    open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, Analysed,
 };
 use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
@@ -62,6 +62,11 @@ pub(crate) enum RoundRefusal {
     /// A cópia da onda mudou arquivo, e a volta gravada não traz o resumo do
     /// commit: o agente grava a entrega de novo.
     ReturnNeedsCommit { wave: u64 },
+    /// O revisor gravou o veredito sem pedido de revisão aberto.
+    NoOpenReview,
+    /// O pedido de revisão segue aberto e o revisor ainda não gravou o
+    /// veredito: o fechamento não pede outra revisão.
+    VerdictMissing,
     /// A mensagem do commit não cabe no modelo.
     CommitTooLong { part: String, chars: usize, max: usize },
     /// A mensagem do commit traz o que ela nunca leva.
@@ -97,6 +102,8 @@ impl RoundRefusal {
             Self::ReturnLine => "round-return-line".into(),
             Self::ReturnMissing { .. } => "round-return-missing".into(),
             Self::ReturnNeedsCommit { .. } => "round-return-needs-commit".into(),
+            Self::NoOpenReview => "no-open-review".into(),
+            Self::VerdictMissing => "review-verdict-missing".into(),
             Self::CommitTooLong { .. } => "commit-too-long".into(),
             Self::CommitForbidden { .. } => "commit-forbidden-text".into(),
             Self::CommitLooksLikeSha { .. } => "commit-looks-like-sha".into(),
@@ -141,6 +148,8 @@ impl RoundRefusal {
             Self::ReturnNeedsCommit { wave } => {
                 fill("spec_events.return_needs_commit", &[("{wave}", wave.to_string())])
             }
+            Self::NoOpenReview => fill("spec_events.no_open_review", &[]),
+            Self::VerdictMissing => fill("spec_events.verdict_missing", &[]),
             Self::CommitTooLong { part, chars, max } => fill(
                 "round.commit_too_long",
                 &[("{part}", part.clone()), ("{chars}", chars.to_string()), ("{max}", max.to_string())],
@@ -263,6 +272,47 @@ fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
     let at = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
     let now = chrono::Local::now().with_timezone(at.offset());
     Some((now - at).num_minutes())
+}
+
+/// As tarefas das ondas `waves` que pedem conferência no código, pelo
+/// código: as que têm arquivo declarado mudado num commit da branch
+/// posterior ao texto vigente delas. Sem git, sem arquivo declarado ou sem
+/// hora legível, a tarefa fica fora.
+fn tasks_to_check(root: &Path, log: &SpecLog, waves: &BTreeSet<u64>, codes: &BTreeMap<u64, String>) -> Vec<String> {
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task" && e.wave().is_some_and(|wave| waves.contains(&wave)))
+        .filter(|task| changed_after_text(root, log, task))
+        .map(|task| codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()))
+        .collect()
+}
+
+/// `true` quando o último commit que toca um arquivo declarado da tarefa é
+/// posterior ao texto vigente dela: o instante da última versão que mudou o
+/// texto ou os arquivos. A versão que só põe a tarefa numa onda — que a
+/// rodada grava antes de mostrar a escolha — herda o instante da anterior;
+/// contada, ela esconderia todo commit anterior à própria rodada.
+fn changed_after_text(root: &Path, log: &SpecLog, task: &SpecEvent) -> bool {
+    let files = task_files(task);
+    if files.is_empty() {
+        return false;
+    }
+    let mut written = task;
+    while let Some(previous) = written.replaced().first().and_then(|id| log.get(*id)) {
+        if previous.fields.get("text") != written.fields.get("text") || task_files(previous) != files {
+            break;
+        }
+        written = previous;
+    }
+    let Ok(at) = chrono::DateTime::parse_from_rfc3339(written.at().trim()) else {
+        return false;
+    };
+    let mut args = vec!["log", "-1", "--format=%ct", "HEAD", "--"];
+    args.extend(files.iter().map(String::as_str));
+    mustard_core::platform::git::run(root, &args)
+        .out()
+        .and_then(|seconds| seconds.parse::<i64>().ok())
+        .is_some_and(|commit| commit > at.timestamp())
 }
 
 /// Os arquivos mudados na cópia da onda `wave`, pelo `git status` curto dela.
@@ -719,7 +769,18 @@ pub(super) fn run_round_with_mine(
     // pedido da escolha vem logo depois.
     let (stopped, question) = stopped_waves(&stuck, &codes, lang);
     let waiting: Vec<String> = asked.iter().filter_map(|a| a["wave"].as_u64()).map(|n| n.to_string()).collect();
-    let analysis = (!asked.is_empty()).then(|| translate("round.analysis", lang).replace("{waves}", &waiting.join(", ")));
+    // A conferência das tarefas no código só entra quando um commit mudou
+    // arquivo de alguma delas depois do texto; sem nenhuma, a frase não sai.
+    let analysis = (!asked.is_empty()).then(|| {
+        let choice = translate("round.analysis", lang).replace("{waves}", &waiting.join(", "));
+        let waves: BTreeSet<u64> = asked.iter().filter_map(|a| a["wave"].as_u64()).collect();
+        let tasks = tasks_to_check(root, &log, &waves, &codes);
+        if tasks.is_empty() {
+            choice
+        } else {
+            format!("{choice} {}", translate("round.analysis_check", lang).replace("{tasks}", &tasks.join(", ")))
+        }
+    });
     let then = question
         .into_iter()
         .chain(analysis)
@@ -1317,10 +1378,12 @@ mod tests {
         // O veredito final, com o item combinado vigente atendido: sem a
         // lista `agreed`, a revisão final seria recusada por faltar item,
         // antes de a rodada montar o pedido do conserto que este teste prova.
-        let rejected_with_agreed = line("VERDICT", json!({"wave": 1, "result": "rejected", "final": true,
+        seed_review(root);
+        let rejected_with_agreed = judged(root, json!({"wave": 1, "result": "rejected", "final": true,
             "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
-        let fix = text(&round(root, "x", Some(&rejected_with_agreed)), "dispatch", 1);
+        assert_eq!(rejected_with_agreed["ok"], json!(true), "{rejected_with_agreed}");
+        let fix = text(&round(root, "x", None), "dispatch", 1);
         let heading =
             format!("## {}\n\n{}", translate("prompt.part.items", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");
@@ -1337,8 +1400,8 @@ mod tests {
         assert_eq!(waves_in(&back, "dispatch"), Vec::<u64>::new(), "{back}");
     }
 
-    /// O texto da linha VERDICT traz o veredito e cada achado, um por
-    /// linha: o pedido de conserto aponta o código dela pelo mesmo
+    /// O texto do veredito que o revisor grava traz o veredito e cada achado,
+    /// um por linha: o pedido de conserto aponta o código dela pelo mesmo
     /// `fix_lines` de sempre, e ler por esse código devolve os quatro
     /// achados inteiros, sem cortar nenhum.
     #[test]
@@ -1359,7 +1422,7 @@ mod tests {
             let found = out[field].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
             found.and_then(|d| d["prompt"].as_str()).unwrap_or_default().to_string()
         };
-        let fix = text(&round(root, "x", Some(&verdict(1, "rejected", findings))), "dispatch", 1);
+        let fix = text(&round(root, "x", Some(&verdict(root, 1, "rejected", findings))), "dispatch", 1);
         assert!(fix.contains("MSTD-VERD-0001"), "o pedido de conserto aponta o veredito: {fix}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();

@@ -73,11 +73,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.agreed_items_missing", Locale::PtBr) => {
             "O veredito final precisa responder por todos os requisitos acordados vigentes: faltou {missing}. \
-             Nada foi gravado."
+             O revisor grava o veredito de novo, com todos eles. Nada foi gravado."
         }
         ("spec_events.agreed_items_missing", Locale::EnUs) => {
             "The final verdict must answer for all the vigent agreed requirements: {missing} is missing. \
-             Nothing was written."
+             The reviewer writes the verdict again, with all of them. Nothing was written."
         }
         ("spec_events.criterion_form_missing", Locale::PtBr) => {
             "O critério precisa declarar a forma dele, uma das cinco do padrão: a que vale sempre, a \
@@ -286,6 +286,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.no_open_send", Locale::EnUs) => {
             "There is no open send for wave {wave}. Nothing was written."
         }
+        ("spec_events.no_open_review", Locale::PtBr) => {
+            "Não há pedido de revisão aberto nesta spec. Nada foi gravado."
+        }
+        ("spec_events.no_open_review", Locale::EnUs) => {
+            "There is no open review request in this spec. Nothing was written."
+        }
+        ("spec_events.verdict_missing", Locale::PtBr) => {
+            "O pedido de revisão segue aberto, e o revisor ainda não gravou o veredito: peça a ele \
+             que o grave com `mustard-rt run write verdict` e rode o fechamento de novo. Nenhum \
+             pedido de revisão novo foi aberto."
+        }
+        ("spec_events.verdict_missing", Locale::EnUs) => {
+            "The review request is still open, and the reviewer has not written the verdict yet: \
+             ask them to write it with `mustard-rt run write verdict` and run the close again. No \
+             new review request was opened."
+        }
         ("spec_events.leftover_field_missing", Locale::PtBr) => {
             "Falta o campo {field} numa sobra (leftovers) da entrega. Nada foi gravado."
         }
@@ -409,17 +425,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.binary_only_type", Locale::PtBr) => {
             "O tipo {type} da spec {spec} não é gravado pelo `run write`, nem tirado ou revisto por \
              ele, e nada foi gravado: o binário grava a execução dos critérios no fechamento, o \
-             veredito, o envio, a entrega oficial de cada onda e o commit pela rodada, e a resposta \
-             do assistente no fim de cada resposta. A onda grava só a própria volta, com `run write \
-             delivered` enquanto o envio dela está aberto, e a rodada a assume."
+             veredito oficial, o envio, a entrega oficial de cada onda e o commit pela rodada, e a \
+             resposta do assistente no fim de cada resposta. A onda grava só a própria volta, com \
+             `run write delivered` enquanto o envio dela está aberto, e o revisor só o próprio \
+             veredito, com `run write verdict` enquanto o pedido de revisão está aberto; a rodada \
+             ou o fechamento assume a volta."
         }
         ("spec_events.binary_only_type", Locale::EnUs) => {
             "The type {type} of the spec {spec} is not written, removed or revised by `run write`, \
              and nothing was written: the binary writes the criteria runs at the close, the \
-             verdict, the send, the official delivery of each wave and the commit through the \
-             round, and the assistant's response at the end of each answer. A wave writes only its \
-             own return, with `run write delivered` while its send is open, and the round takes it \
-             over."
+             official verdict, the send, the official delivery of each wave and the commit through \
+             the round, and the assistant's response at the end of each answer. A wave writes only \
+             its own return, with `run write delivered` while its send is open, and the reviewer \
+             only its own verdict, with `run write verdict` while the review request is open; the \
+             round or the close takes the return over."
         }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
             "Na spec {spec}, a resposta a uma pergunta com opções (a mensagem com `witness`, de \
@@ -648,8 +667,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            89,
-            0x2a80_7d5b_887b_1762,
+            91,
+            0x0b85_ce0e_7f24_9598,
         );
     }
 
@@ -692,6 +711,8 @@ mod tests {
             ("spec_events.closing_point_last_record", &["{code}"][..]),
             ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),
             ("spec_events.no_open_send", &["{wave}"][..]),
+            ("spec_events.no_open_review", &[][..]),
+            ("spec_events.verdict_missing", &[][..]),
             ("spec_events.leftover_field_missing", &["{field}"][..]),
             ("spec_events.report_carries_return_line", &[][..]),
             ("spec_events.return_missing", &["{wave}"][..]),

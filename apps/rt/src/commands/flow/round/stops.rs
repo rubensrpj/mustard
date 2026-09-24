@@ -418,15 +418,17 @@ mod tests {
         let rejected = |n: usize| {
             let out = round(root, "x", Some(&delivered(root, 1, &format!("Tentativa {n}."), &["src/a.rs"])));
             assert_eq!(out["ok"], json!(true), "{out}");
-            round(root, "x", Some(&verdict(1, "rejected", &format!("reprovação {n}"))))
+            round(root, "x", Some(&verdict(root, 1, "rejected", &format!("reprovação {n}"))))
         };
         for n in 1..=2 {
             let fix = rejected(n);
             assert_eq!(waves_in(&fix, "dispatch"), vec![1], "rodada de conserto {n}: {fix}");
         }
+        // Os envios de onda: o pedido de revisão que cada veredito pede não
+        // conta.
         let sends = |root: &Path| {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            log.visible().iter().filter(|e| e.event_type == "send").count()
+            log.visible().iter().filter(|e| e.event_type == "send" && e.wave().is_some()).count()
         };
         assert_eq!(sends(root), 3);
         // O conserto que saiu está em andamento e ocupa a única vaga.
@@ -510,10 +512,12 @@ mod tests {
             let out = round(root, "x", Some(&delivered(root, 1, &format!("Tentativa {n}."), &["src/a.rs"])));
             assert_eq!(out["ok"], json!(true), "{out}");
             let agreed: Vec<Value> = agreed.iter().map(|item| json!({"item": item, "met": true})).collect();
-            let rejected = line("VERDICT", json!({"wave": 1, "result": "rejected", "final": true,
+            seed_review(root);
+            let wrote = judged(root, json!({"wave": 1, "result": "rejected", "final": true,
                 "text": format!("reprovação {n}"), "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
                 "agreed": agreed}));
-            round(root, "x", Some(&rejected))
+            assert_eq!(wrote["ok"], json!(true), "{wrote}");
+            round(root, "x", None)
         };
         assert_eq!(waves_in(&rejected(1, &[]), "dispatch"), vec![1]);
         // Uma fala do usuário antes da segunda reprovação: a tarefa que nasce

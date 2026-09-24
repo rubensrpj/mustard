@@ -14,7 +14,11 @@
 //! verde, o fechamento devolve o pedido dele, com as entregas da obra, os
 //! critérios, as mudanças da branch, as emendas gravadas entre as ondas e o
 //! que cada onda deixou aberto, e só fecha — e só então devolve o pull
-//! request — quando a linha dele volta aprovada, pelo mesmo relatório.
+//! request — quando o veredito que ele grava na spec, com `run write
+//! verdict` enquanto o pedido de revisão está aberto, volta aprovado: o
+//! fechamento o assume, sem relatório, e grava o veredito oficial no lugar
+//! da volta. Sem esse veredito, o fechamento não abre outro pedido de
+//! revisão: manda o revisor gravar o dele.
 //! Enquanto nada muda depois da máquina verde, a volta não roda o lint nem os
 //! critérios de novo. A reprovação fica na onda que ele apontou, que volta
 //! como conserto pela rodada; entregue o conserto, o fechamento pede o mesmo
@@ -246,6 +250,12 @@ fn run_close(
     crate::commands::flow::round::convert_hand_waves(&opts.root, root, &spec, lang).map_err(CloseRefusal::Refused)?;
     let log = read(&path)?;
     finished(&log)?;
+    // O pedido de revisão só fecha com o veredito que o revisor grava e que a
+    // leitura acima assume: sem ele, o fechamento não abre outro pedido, e a
+    // resposta manda o revisor gravar o veredito.
+    if crate::commands::flow::round::open_review(&log).is_some() {
+        return Err(CloseRefusal::Report(crate::commands::flow::round::RoundRefusal::VerdictMissing));
+    }
 
     // A cópia do revisor sai antes da máquina, pela mesma porta das cópias de
     // onda: a que chegou com mudança trava aqui, antes de gastar a suíte, e
@@ -1057,23 +1067,43 @@ mod tests {
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
     }
 
-    /// A linha `<VERDICT>` do agente de teste dedicado aprovando a obra
-    /// inteira.
-    fn final_approval() -> String {
-        let approved = json!({"final": true, "result": "approved", "text": "A obra está pronta."});
-        format!("<VERDICT>{approved}</VERDICT>")
+    /// O veredito que o revisor grava pela porta do binário. Devolve a
+    /// resposta da gravação, com a recusa quando ela recusa.
+    fn judged(root: &Path, spec: &str, body: Value) -> Value {
+        crate::commands::spec_events::write::write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some(spec.to_string()),
+            event_type: "verdict".into(),
+            json: body.to_string(),
+        })
+    }
+
+    /// O veredito `body` gravado pelo revisor, com o pedido de revisão já
+    /// aberto. Devolve o relatório que ele deixa depois de gravar: nenhum,
+    /// porque o veredito mora na spec.
+    fn verdict_written(root: &Path, spec: &str, body: Value) -> Option<String> {
+        let wrote = judged(root, spec, body);
+        assert_eq!(wrote["ok"], json!(true), "o veredito não gravou: {wrote}");
+        None
+    }
+
+    /// O veredito final do agente de teste dedicado aprovando a obra
+    /// inteira, gravado por ele.
+    fn approve(root: &Path, spec: &str) -> Option<String> {
+        verdict_written(root, spec, json!({"final": true, "result": "approved", "text": "A obra está pronta."}))
     }
 
     /// O fechamento, com a volta transparente do agente de teste dedicado: a
     /// obra pronta para fechar sempre passa por ele agora, mesmo a de uma
     /// onda só, e quem só quer o resultado final não precisa cuidar disso.
     /// Os testes que conferem o pedido dele por dentro chamam `close_for`
-    /// direto.
+    /// direto. Com o pedido já aberto por uma chamada anterior, o fechamento
+    /// espera o veredito, e o agente o grava do mesmo jeito.
     fn close(root: &Path, spec: &str) -> Value {
         let out = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: None, ..Default::default() }, None);
-        if out["review"]["final"] == json!(true) {
+        if out["review"]["final"] == json!(true) || out["reason"] == json!("review-verdict-missing") {
             return close_for(
-                &CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: Some(final_approval()), ..Default::default() },
+                &CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: approve(root, spec), ..Default::default() },
                 None,
             );
         }
@@ -1108,6 +1138,53 @@ mod tests {
         assert_eq!(sent.str_field("text"), Some(prompt.as_str()), "o texto gravado é o pedido inteiro que voltou: {sent:?}");
         assert!(sent.str_field("model").is_some_and(|m| !m.is_empty()), "o modelo pedido vai junto: {sent:?}");
         assert!(sent.wave().is_none(), "a revisão final não é dona de onda nenhuma: {sent:?}");
+    }
+
+    /// O revisor grava o veredito, e o fechamento o assume sem relatório. A
+    /// volta gravada antes de o fechamento pedir a revisão é recusada. Pedida
+    /// a revisão, o fechamento sem veredito gravado não abre outro pedido: a
+    /// resposta manda o revisor gravar o dele. Gravado o veredito, o
+    /// fechamento grava o oficial, com `replaces` para a volta, e fecha.
+    #[test]
+    fn o_fechamento_assume_o_veredito_gravado_pelo_revisor() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let approved = json!({"final": true, "result": "approved", "text": "A obra está pronta."});
+        let early = judged(root, "x", approved.clone());
+        assert_eq!(early["reason"], json!("no-open-review"), "sem pedido de revisão, a volta não entra: {early}");
+
+        let close = || {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None)
+        };
+        let read = || store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let asked_reviews = || {
+            let log = read();
+            log.visible().iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).count()
+        };
+        let asked = close();
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert_eq!(asked_reviews(), 1, "{asked}");
+
+        let waiting = close();
+        assert_eq!(waiting["reason"], json!("review-verdict-missing"), "{waiting}");
+        assert_eq!(waiting["hint"], json!(translate("spec_events.verdict_missing", Locale::PtBr)), "{waiting}");
+        assert_eq!(asked_reviews(), 1, "o fechamento sem veredito não abre outro pedido de revisão");
+        assert_eq!(State::from_log(&read()).phase, Some("running"), "a spec não fechou");
+
+        let wrote = judged(root, "x", approved);
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let returned_id = wrote["id"].as_u64().unwrap();
+        let closed = close();
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        let log = read();
+        let verdicts: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "verdict").collect();
+        assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+        assert_eq!(verdicts[0].fields.get("replaces"), Some(&json!(returned_id)), "o oficial aponta a volta");
+        assert_eq!(verdicts[0].str_field("result"), Some("approved"), "{verdicts:?}");
+        assert_eq!(verdicts[0].str_field("author"), Some("review"), "{verdicts:?}");
+        assert!(!verdicts[0].returned(), "o oficial não é volta: {verdicts:?}");
+        assert_eq!(asked_reviews(), 1, "{closed}");
     }
 
     /// O caminho de volta: a onda entrega um teste novo, e o único critério
@@ -1267,7 +1344,7 @@ mod tests {
 
         std::fs::remove_file(root.join("suite-verde")).unwrap();
         let out = close_for(
-            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: Some(final_approval()), ..Default::default() },
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: approve(root, "x"), ..Default::default() },
             None,
         );
         assert_eq!(out["ok"], json!(true), "{out}");
@@ -1309,10 +1386,11 @@ mod tests {
         let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains(&format!("`{shown}`")) && prompt.contains(&format!("`{commit}`")), "{prompt}");
 
-        // O revisor corta uma prova e não desfaz: o fechamento seguinte não
-        // revisa por cima do corte.
+        // O revisor corta uma prova, não desfaz e reprova a obra: o
+        // fechamento seguinte não pede outra revisão por cima do corte.
         std::fs::write(copy.join(wave_file(1)), "fn cortado() {}\n").unwrap();
-        let refused = ask(None);
+        let rejected = json!({"final": true, "result": "rejected", "text": "Refazer a conferência."});
+        let refused = ask(verdict_written(root, "x", rejected));
         assert_eq!(refused["reason"], json!("review-copy-dirty"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(&wave_file(1)) && hint.contains(&shown), "a recusa nomeia a cópia e o arquivo: {hint}");
@@ -1325,7 +1403,7 @@ mod tests {
         assert_eq!(git_out(&copy, &["rev-parse", "HEAD"]), commit, "{again}");
 
         // Aprovada a obra, o binário apaga a cópia, e o git não a lista mais.
-        let closed = ask(Some(final_approval()));
+        let closed = ask(approve(root, "x"));
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
         assert!(!copy.exists(), "o fechamento apagou a cópia: {closed}");
         assert!(!git_out(root, &["worktree", "list", "--porcelain"]).contains(&shown), "{closed}");
@@ -1584,7 +1662,7 @@ exit "${2:-0}"
             &CloseOpts {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
-                report: Some(final_approval()),
+                report: approve(root, "x"),
                 pending_later: vec!["P-1=o antivírus é de outra obra".into()],
             },
             None,
@@ -1731,7 +1809,7 @@ exit "${2:-0}"
         ]);
         let approval = json!({"final": true, "result": "approved", "text": "A obra está pronta.", "agreed": agreed});
         let out = close_for(
-            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: Some(format!("<VERDICT>{approval}</VERDICT>")), ..Default::default() },
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: verdict_written(root, "x", approval), ..Default::default() },
             None,
         );
         assert_eq!(out["ok"], json!(true), "{out}");
@@ -1813,7 +1891,7 @@ exit "${2:-0}"
             &CloseOpts {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
-                report: Some(format!("<VERDICT>{approval}</VERDICT>")),
+                report: verdict_written(root, "x", approval),
                 ..Default::default()
             },
             None,
@@ -1903,7 +1981,7 @@ exit "${2:-0}"
         // O agente reprova apontando a onda 2: a onda 2 volta como conserto,
         // e o fechamento recusa enquanto ela não sai.
         let rejected = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1."});
-        let out = close_with_lint(root, lint, Some(format!("<VERDICT>{rejected}</VERDICT>")));
+        let out = close_with_lint(root, lint, verdict_written(root, "x", rejected));
         assert_eq!(out["reason"], json!("wave-rejected"), "{out}");
         assert!(out["hint"].as_str().unwrap_or_default().contains('2'), "{out}");
         let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
@@ -1931,7 +2009,7 @@ exit "${2:-0}"
         std::fs::remove_dir_all(root.join("lint-rodou")).unwrap();
         let before = criterion_runs(root);
         let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
-        let closed = close_with_lint(root, lint, Some(format!("<VERDICT>{approved}</VERDICT>")));
+        let closed = close_with_lint(root, lint, verdict_written(root, "x", approved));
         assert_eq!(closed["ok"], json!(true), "{closed}");
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
         assert!(closed.get("review").is_none(), "{closed}");
@@ -2000,9 +2078,9 @@ exit "${2:-0}"
         let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None);
         let reject = |text: &str| {
             let body = json!({"final": true, "wave": 2, "result": "rejected", "text": text});
-            format!("<VERDICT>{body}</VERDICT>")
+            verdict_written(root, "x", body)
         };
-        let refused = close(Some(reject("Falta o teste da onda 2.")));
+        let refused = close(reject("Falta o teste da onda 2."));
         assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
         let fix = round(None);
         assert_eq!(waves_in(&fix, "dispatch"), vec![2], "{fix}");
@@ -2024,7 +2102,7 @@ exit "${2:-0}"
 
         // A segunda volta de conserto: reprovado de novo, o conserto sai mais
         // uma vez.
-        let refused_again = close(Some(reject("Ainda falta.")));
+        let refused_again = close(reject("Ainda falta."));
         assert_eq!(refused_again["reason"], json!("wave-rejected"), "{refused_again}");
         let fix_again = round(None);
         assert_eq!(waves_in(&fix_again, "dispatch"), vec![2], "{fix_again}");
@@ -2034,8 +2112,10 @@ exit "${2:-0}"
         assert_eq!(round(None)["ok"], json!(true));
 
         // A terceira reprovação seguida para a onda: a rodada deixa de
-        // despachá-la, e a decisão passa a ser do usuário.
-        close(Some(reject("Ainda não.")));
+        // despachá-la, e a decisão passa a ser do usuário. O fechamento pede
+        // a revisão do segundo conserto antes de o revisor reprovar.
+        assert_eq!(close(None)["review"]["final"], json!(true));
+        close(reject("Ainda não."));
         let stopped = round(None);
         assert_eq!(stopped["stopped"][0]["wave"], json!(2), "{stopped}");
         assert_eq!(waves_in(&stopped, "dispatch"), Vec::<u64>::new(), "a rodada para de despachar: {stopped}");
@@ -2058,9 +2138,11 @@ exit "${2:-0}"
         let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
         let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None);
 
-        // O agente de teste dedicado aponta a onda 1, não a última.
+        // O fechamento pede o agente de teste dedicado, que aponta a onda 1,
+        // não a última.
+        assert_eq!(close(None)["review"]["final"], json!(true));
         let reject = json!({"final": true, "wave": 1, "result": "rejected", "text": "Falta o teste da onda 1."});
-        let refused = close(Some(format!("<VERDICT>{reject}</VERDICT>")));
+        let refused = close(verdict_written(root, "x", reject));
         assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
 
         // A rodada despacha o conserto da onda 1.
@@ -2093,7 +2175,7 @@ exit "${2:-0}"
         let fix_prompt = close(None)["review"]["prompt"].as_str().unwrap_or_default().to_string();
         assert!(fix_prompt.contains("MSTD-WAVE-0001") && !fix_prompt.contains("MSTD-WAVE-0002"), "{fix_prompt}");
         let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
-        let closed = close(Some(format!("<VERDICT>{approved}</VERDICT>")));
+        let closed = close(verdict_written(root, "x", approved));
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
 
         // (3) Nenhuma onda fica com o estado de reprovada, nem a 1, cujo
@@ -2325,7 +2407,7 @@ exit "${2:-0}"
             Some("s-fecha"),
         )["review"]["final"], json!(true));
         let closed = close_for(
-            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: Some(final_approval()), ..Default::default() },
+            &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: approve(root, "x"), ..Default::default() },
             Some("s-fecha"),
         );
         assert_eq!(closed["ok"], json!(true), "{closed}");
@@ -2619,7 +2701,7 @@ exit "${2:-0}"
         let asked = close_with_lint(root, "echo Tests: 0 total", None);
         assert_eq!(asked["ok"], json!(true), "o lint verde não é lido como prova: {asked}");
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let closed = close_with_lint(root, "echo Tests: 0 total", Some(final_approval()));
+        let closed = close_with_lint(root, "echo Tests: 0 total", approve(root, "x"));
         assert_eq!(closed["ok"], json!(true), "{closed}");
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();

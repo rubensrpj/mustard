@@ -1,8 +1,9 @@
 //! O relatório da rodada e as voltas dos agentes: a entrega que cada onda
-//! grava na spec, lida de lá, conferida antes de qualquer gravação, juntada
-//! da cópia de cada onda e assumida pela mesma porta das outras gravações, com
-//! o commit no meio. O relatório que o orquestrador passa traz só as linhas
-//! dele: o consumo, a pausa e a escolha antes do envio.
+//! grava na spec e o veredito que o revisor grava, lidos de lá, conferidos
+//! antes de qualquer gravação, a entrega juntada da cópia de cada onda, e os
+//! dois assumidos pela mesma porta das outras gravações, com o commit no
+//! meio. O relatório que o orquestrador passa traz só as linhas dele: o
+//! consumo, a pausa e a escolha antes do envio.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -24,7 +25,7 @@ use super::commit::{
     head, join_copies, make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file,
     write_joined, UNMADE_SHA,
 };
-use super::queue::{backlog_wave, open_sends, waves_in_progress, ANALYSIS_LINE};
+use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{change_accepted, replan_code};
 use crate::commands::event::pending::{pending_at, PendingOpts};
 use crate::commands::spec_events::write::{record, RecordCheck};
@@ -32,7 +33,8 @@ use crate::commands::spec_events::write::{record, RecordCheck};
 /// A linha da entrega que o agente de onda devolvia colada no relatório: a
 /// entrega mora na spec, e a linha que ainda chega é recusada.
 const DELIVERED_LINE: &str = "DELIVERED";
-/// A linha do veredito, como o agente de teste dedicado a devolve.
+/// A linha do veredito que o revisor devolvia colada no relatório: o
+/// veredito mora na spec, e a linha que ainda chega é recusada.
 const VERDICT_LINE: &str = "VERDICT";
 /// A linha da pausa, do agente de onda ou do orquestrador em nome dele.
 const PAUSED_LINE: &str = "PAUSED";
@@ -101,12 +103,15 @@ pub(crate) struct WaveReport {
     pub usage: Usage,
 }
 
-/// O que a linha `VERDICT` de uma onda trouxe: os campos do veredito, com a
-/// onda à parte. Só a aprovação do agente de teste dedicado vem sem onda, e
-/// fica na última onda do plano.
+/// O veredito que o revisor gravou, como a rodada o assume: os campos dele,
+/// com a onda à parte. O veredito final vem sem onda, a não ser o reprovado
+/// que aponta a onda a refazer.
 pub(crate) struct VerdictReport {
     pub wave: Option<u64>,
     pub fields: Map<String, Value>,
+    /// Todas as voltas do revisor desde o pedido de revisão aberto, que o
+    /// veredito oficial substitui.
+    pub returns: Vec<u64>,
 }
 
 /// O que a rodada assume: as voltas gravadas na spec e as linhas do
@@ -177,6 +182,7 @@ pub(crate) fn take_report_with_mine(
     let mut report = parse_report(raw.unwrap_or_default())?;
     let nothing = |report: &Report| report.waves.is_empty() && report.verdicts.is_empty() && report.usage.is_empty();
     report.waves = returned_waves(root, spec, log)?;
+    report.verdicts = returned_verdict(log);
     // Sem volta, sem veredito e sem consumo, não há o que juntar nem comitar,
     // e a rodada não espera a trava: a pausa reenvia essas ondas com o pedido
     // de antes, mais adiante, em [`super::answer::run_round_with_mine`].
@@ -192,6 +198,7 @@ pub(crate) fn take_report_with_mine(
     let path = store::spec_file(root, spec).map_err(RoundRefusal::Refused)?;
     let fresh = store::read(&path).map_err(RoundRefusal::Refused)?.unwrap_or_else(|| log.clone());
     report.waves = returned_waves(root, spec, &fresh)?;
+    report.verdicts = returned_verdict(&fresh);
     let cut = match_usage(&fresh, &mut report)?;
     if nothing(&report) {
         // A onda de lote cortada não entra no commit: as tarefas dela voltam
@@ -463,6 +470,24 @@ fn returned_waves(root: &Path, spec: &str, log: &SpecLog) -> Result<Vec<WaveRepo
     Ok(waves)
 }
 
+/// O veredito que a rodada ou o fechamento assume agora: a última volta que o
+/// revisor gravou depois do pedido de revisão aberto — vale a última —, com
+/// todas as voltas dele desde esse pedido. Sem pedido aberto, nada espera.
+fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
+    let Some(asked) = open_review(log) else { return Vec::new() };
+    let hidden = log.hidden();
+    let returns: Vec<&SpecEvent> = log
+        .events
+        .iter()
+        .filter(|e| e.event_type == "verdict" && e.id > asked && hidden.get(&e.id) == Some(&Hidden::Returned))
+        .collect();
+    let Some(last) = returns.last() else { return Vec::new() };
+    let skipped = ["v", "id", "code", "at", "type", "search", "author", "returned", "wave"];
+    let fields = last.fields.iter().filter(|(key, _)| !skipped.contains(&key.as_str()));
+    let fields = fields.map(|(key, value)| (key.clone(), value.clone())).collect();
+    vec![VerdictReport { wave: last.wave(), fields, returns: returns.iter().map(|e| e.id).collect() }]
+}
+
 /// A volta gravada pela onda, lida como a rodada a assume: a onda, o texto,
 /// os arquivos — o caminho absoluto de dentro da cópia da onda vira o
 /// relativo ao repositório —, o resumo do commit, as provas, as ondas que o
@@ -532,11 +557,7 @@ fn wave_report_of(root: &Path, spec: &str, fields: &Map<String, Value>) -> Resul
 /// conferido: a gravação recusa pelo campo que falta.
 pub(crate) fn check_return(start: &Path, spec: &str, draft: &mut Map<String, Value>) -> Result<(), RoundRefusal> {
     let Some(wave) = draft.get("wave").and_then(Value::as_u64) else { return Ok(()) };
-    let project = crate::commands::spec_events::project(start);
-    let path = store::spec_file(&project.root, spec).map_err(RoundRefusal::Refused)?;
-    let log = store::read(&path)
-        .map_err(RoundRefusal::Refused)?
-        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.to_string() }))?;
+    let (project, log) = spec_log(start, spec)?;
     if !open_sends(&log).contains_key(&wave) {
         return Err(RoundRefusal::Refused(Refusal::NoOpenSend { wave }));
     }
@@ -563,6 +584,90 @@ pub(crate) fn check_return(start: &Path, spec: &str, draft: &mut Map<String, Val
     draft.insert("returned".into(), json!(true));
     draft.insert("author".into(), json!("wave"));
     Ok(())
+}
+
+/// As conferências do veredito que o revisor grava (`run write verdict`),
+/// feitas antes de gravar, como as da entrega: há pedido de revisão aberto;
+/// cada critério e cada item do combinado citado existe; o veredito final
+/// responde por todo o combinado vigente. Passando, o veredito ganha
+/// `returned` e o autor da revisão, e fica como o revisor o escreveu: a
+/// rodada o resolve de novo ao assumi-lo.
+pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<String, Value>) -> Result<(), RoundRefusal> {
+    let (_, log) = spec_log(start, spec)?;
+    if open_review(&log).is_none() {
+        return Err(RoundRefusal::NoOpenReview);
+    }
+    settle_verdict(&log, &mut draft.clone()).map_err(RoundRefusal::Refused)?;
+    draft.insert("returned".into(), json!(true));
+    draft.insert("author".into(), json!("review"));
+    Ok(())
+}
+
+/// O veredito como a rodada o grava: cada critério citado pelo número dele e,
+/// no veredito final, cada item do combinado também. A revisão final responde
+/// por todo o combinado vigente, item a item, em `agreed`: faltar algum, ou a
+/// lista inteira, é veredito malformado, e nada é gravado. O item que vem
+/// `met:false` força o resultado a reprovado e vira uma tarefa nova no
+/// backlog, cobrindo esse item: são essas tarefas que a função devolve.
+fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<Map<String, Value>>, Refusal> {
+    if let Some(Value::Array(criteria)) = draft.get_mut("criteria") {
+        for item in criteria.iter_mut() {
+            if let Some(reference) = item.get("criterion").cloned() {
+                item["criterion"] = json!(criterion_id(log, &reference)?);
+            }
+        }
+    }
+    if draft.get("final") != Some(&Value::Bool(true)) {
+        return Ok(Vec::new());
+    }
+    let (mut answered, mut tasks) = (Vec::new(), Vec::new());
+    for item in draft.get_mut("agreed").and_then(Value::as_array_mut).into_iter().flatten() {
+        let id = agreed_item_id(log, item.get("item").unwrap_or(&Value::Null))?;
+        item["item"] = json!(id);
+        answered.push(id);
+        if item.get("met").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let text = item.get("text").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+        let files = item.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+        let files: Vec<Value> = files.map(|f| json!({ "path": f })).collect();
+        let task = json!({ "text": text, "files": files, "depends_on": [], "covers": [id], "author": "review" });
+        tasks.extend(task.as_object().cloned());
+    }
+    let codes = log.codes();
+    let missing: Vec<String> = agreed_prompt::all_agreed(log)
+        .iter()
+        .filter(|item| !answered.contains(&item.id))
+        .map(|item| codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string()))
+        .collect();
+    if !missing.is_empty() {
+        return Err(Refusal::AgreedItemsMissing { missing });
+    }
+    if !tasks.is_empty() {
+        draft.insert("result".into(), json!("rejected"));
+    }
+    Ok(tasks)
+}
+
+/// O `replaces` do evento oficial que assume as voltas `returns`: o número
+/// da única, a lista de todas, ou nada sem volta nenhuma.
+fn replaced(returns: &[u64]) -> Option<Value> {
+    match returns {
+        [] => None,
+        [only] => Some(json!(only)),
+        _ => Some(json!(returns)),
+    }
+}
+
+/// O projeto de `start` e o arquivo de eventos da spec `spec`, que a
+/// gravação de uma volta confere.
+fn spec_log(start: &Path, spec: &str) -> Result<(crate::commands::spec_events::Project, SpecLog), RoundRefusal> {
+    let project = crate::commands::spec_events::project(start);
+    let path = store::spec_file(&project.root, spec).map_err(RoundRefusal::Refused)?;
+    let log = store::read(&path)
+        .map_err(RoundRefusal::Refused)?
+        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.to_string() }))?;
+    Ok((project, log))
 }
 
 /// Casa cada linha `USAGE` com a onda dela. A onda com volta nesta rodada
@@ -621,27 +726,19 @@ fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<Strin
     Ok((fields.get("wave").and_then(Value::as_u64), fields))
 }
 
-/// A linha é a da revisão final do agente de teste dedicado, aprovada ou
-/// reprovada: a única que vem sem onda, porque responde pelo combinado
-/// inteiro, não por uma onda dele.
-fn is_final(fields: &Map<String, Value>) -> bool {
-    fields.get("final") == Some(&Value::Bool(true))
-}
-
-/// As linhas do relatório que o orquestrador passa: o consumo (`USAGE`), a
-/// pausa (`PAUSED`) e o veredito (`VERDICT`), como vieram; a escolha antes do
-/// envio (`ANALYSIS`) é lida à parte, no despacho. A entrega não vem aqui:
-/// ela mora na spec, e a linha `DELIVERED` colada no relatório é recusada. O
+/// As linhas do relatório que o orquestrador passa: o consumo (`USAGE`) e a
+/// pausa (`PAUSED`), como vieram; a escolha antes do envio (`ANALYSIS`) é
+/// lida à parte, no despacho. A entrega e o veredito não vêm aqui: moram na
+/// spec, e a linha `DELIVERED` ou `VERDICT` colada no relatório é recusada. O
 /// texto sem nenhuma dessas linhas não se entende. O resto do texto não é
 /// lido.
 pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
-    if !tagged(raw, DELIVERED_LINE).is_empty() {
+    if !tagged(raw, DELIVERED_LINE).is_empty() || !tagged(raw, VERDICT_LINE).is_empty() {
         return Err(RoundRefusal::ReturnLine);
     }
     let usage_bodies = tagged(raw, USAGE_LINE);
-    let verdict_bodies = tagged(raw, VERDICT_LINE);
     let paused_bodies = tagged(raw, PAUSED_LINE);
-    let unmarked = usage_bodies.is_empty() && verdict_bodies.is_empty() && paused_bodies.is_empty();
+    let unmarked = usage_bodies.is_empty() && paused_bodies.is_empty();
     if unmarked && !raw.trim().is_empty() && tagged(raw, ANALYSIS_LINE).is_empty() {
         let shown: String = raw.trim().chars().take(80).collect();
         return Err(RoundRefusal::BadReport { detail: shown });
@@ -667,22 +764,13 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
             },
         ));
     }
-    let mut verdicts = Vec::new();
-    for body in verdict_bodies {
-        let (wave, mut fields) = line_object(body, VERDICT_LINE)?;
-        if wave.is_none() && !is_final(&fields) {
-            return Err(RoundRefusal::LineField { line: VERDICT_LINE, field: "wave" });
-        }
-        fields.remove("wave");
-        verdicts.push(VerdictReport { wave, fields });
-    }
     let mut paused = Vec::new();
     for body in paused_bodies {
         let (wave, _) = line_object(body, PAUSED_LINE)?;
         let wave = wave.ok_or(RoundRefusal::LineField { line: PAUSED_LINE, field: "wave" })?;
         paused.push(wave);
     }
-    Ok(Report { waves: Vec::new(), verdicts, paused, usage })
+    Ok(Report { waves: Vec::new(), verdicts: Vec::new(), paused, usage })
 }
 
 /// O texto `summary` tem cara de código de commit: só dígito hexadecimal, do
@@ -857,69 +945,19 @@ fn check_reports(
     let mut agreed_tasks: Vec<Map<String, Value>> = Vec::new();
     for verdict in &report.verdicts {
         let mut draft = verdict.fields.clone();
-        if let Some(Value::Array(criteria)) = draft.get_mut("criteria") {
-            for item in criteria.iter_mut() {
-                if let Some(reference) = item.get("criterion").cloned() {
-                    item["criterion"] = json!(criterion_id(check.log(), &reference)?);
-                }
-            }
-        }
-        let is_final = draft.get("final") == Some(&Value::Bool(true));
-        if is_final {
-            // A revisão final responde por todo o combinado vigente, item a
-            // item, em `agreed`: faltar algum, ou a lista inteira, é
-            // veredito malformado, e nada é gravado. Quem vem `met:false`
-            // força o resultado a reprovado e vira uma tarefa nova no backlog,
-            // cobrindo esse item.
-            let vigent = agreed_prompt::all_agreed(check.log());
-            let codes = check.log().codes();
-            let label = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
-            let mut answered: Vec<(u64, bool, Option<String>, Vec<String>)> = Vec::new();
-            if let Some(Value::Array(items)) = draft.get_mut("agreed") {
-                for item in items.iter_mut() {
-                    let reference = item.get("item").cloned().unwrap_or(Value::Null);
-                    let id = agreed_item_id(check.log(), &reference)?;
-                    item["item"] = json!(id);
-                    let met = item.get("met").and_then(Value::as_bool).unwrap_or(false);
-                    let text = item
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|t| !t.is_empty())
-                        .map(str::to_string);
-                    let files: Vec<String> = item
-                        .get("files")
-                        .and_then(Value::as_array)
-                        .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                        .unwrap_or_default();
-                    answered.push((id, met, text, files));
-                }
-            }
-            let missing: Vec<String> =
-                vigent.iter().filter(|item| !answered.iter().any(|(id, ..)| *id == item.id)).map(|item| label(item.id)).collect();
-            if !missing.is_empty() {
-                return Err(Refusal::AgreedItemsMissing { missing });
-            }
-            let unmet: Vec<&(u64, bool, Option<String>, Vec<String>)> = answered.iter().filter(|(_, met, ..)| !met).collect();
-            if !unmet.is_empty() {
-                draft.insert("result".into(), json!("rejected"));
-            }
-            for (id, _, text, files) in unmet {
-                let mut task = Map::new();
-                task.insert("text".into(), json!(text.clone().unwrap_or_default()));
-                task.insert("files".into(), json!(files.iter().map(|f| json!({ "path": f })).collect::<Vec<_>>()));
-                task.insert("depends_on".into(), json!([]));
-                task.insert("covers".into(), json!([id]));
-                task.insert("author".into(), json!("review"));
-                agreed_tasks.push(task);
-            }
-        }
+        agreed_tasks.extend(settle_verdict(check.log(), &mut draft)?);
         // A revisão final não aponta onda: ela responde pelo combinado
         // inteiro, não por uma onda dele. Só a revisão de uma onda usa a
         // última onda do plano quando o veredito não diz qual.
+        let is_final = draft.get("final") == Some(&Value::Bool(true));
         let wave = if is_final { verdict.wave } else { verdict.wave.or_else(|| check.log().planned_waves().last().copied()) };
         if let Some(wave) = wave {
             draft.insert("wave".into(), json!(wave));
+        }
+        // O veredito oficial aponta em `replaces` todas as voltas do revisor
+        // desde o pedido de revisão: é ele que fecha o pedido.
+        if let Some(returns) = replaced(&verdict.returns) {
+            draft.insert("replaces".into(), returns);
         }
         draft.insert("author".into(), json!("review"));
         check.record("verdict", draft.clone())?;
@@ -942,14 +980,10 @@ fn check_reports(
             if let Some(replan) = &report.replan {
                 draft.insert("replan".into(), json!(replan));
             }
-            match report.returns.as_slice() {
-                [only] if wave == report.wave => {
-                    draft.insert("replaces".into(), json!(only));
-                }
-                [_, _, ..] if wave == report.wave => {
-                    draft.insert("replaces".into(), json!(report.returns));
-                }
-                _ => {}
+            if wave == report.wave
+                && let Some(returns) = replaced(&report.returns)
+            {
+                draft.insert("replaces".into(), returns);
             }
             draft.insert("author".into(), json!("wave"));
             check.record("delivered", draft.clone())?;
@@ -1099,7 +1133,7 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(out.get("reviews").is_none(), "a rodada não pede revisão nenhuma: {out}");
 
-        let out = round(root, "x", Some(&verdict(1, "approved", "passou")));
+        let out = round(root, "x", Some(&verdict(root, 1, "approved", "passou")));
         assert!(out.get("reviews").is_none(), "{out}");
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
@@ -1307,7 +1341,7 @@ mod tests {
     /// A gravação aceita a volta com os campos exatamente como o texto do
     /// agente de onda os ensina, nos dois idiomas, e a rodada a assume: o
     /// commit sai com o título e o corpo montados do resumo. O veredito entra
-    /// como o texto do revisor o ensina.
+    /// com os campos que o texto do revisor ensina, gravado por ele.
     #[test]
     fn the_round_takes_the_closing_lines_exactly_as_the_agent_texts_teach_and_commits() {
         for (lang, answer) in [(Locale::PtBr, "Entreguei a soma."), (Locale::EnUs, "I delivered the sum.")] {
@@ -1352,7 +1386,12 @@ mod tests {
             let shown = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(root).output().unwrap();
             assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "src/a.rs");
 
-            let judged = round(root, "x", Some(&taught_line(&review_text, "VERDICT", &[])));
+            let line = taught_line(&review_text, "VERDICT", &[]);
+            let fields = tagged(&line, "VERDICT").first().copied().unwrap_or_default().to_string();
+            let body: Value = serde_json::from_str(&fields).unwrap_or_else(|e| panic!("{lang:?}: {e}: {line}"));
+            seed_review(root);
+            assert_eq!(judged(root, body)["ok"], json!(true), "{lang:?}: {line}");
+            let judged = round(root, "x", None);
             assert_eq!(judged["ok"], json!(true), "{lang:?}: {judged}");
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
             let visible = log.visible();
@@ -1370,14 +1409,15 @@ mod tests {
     }
 
     /// O texto corrido, sem linha nenhuma, a rodada recusa e não grava nada;
-    /// a volta sem o resumo do commit, a gravação recusa; um critério que a
-    /// spec não tem também.
+    /// a volta sem o resumo do commit, a gravação recusa; o veredito sem a
+    /// onda ou com um critério que a spec não tem também.
     #[test]
     fn a_report_without_the_closing_line_or_its_fields_is_refused_and_records_nothing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
+        seed_review(root);
         let lines_before = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
 
         let missing = round(root, "x", Some("Entreguei a soma, e os arquivos mudaram."));
@@ -1388,12 +1428,12 @@ mod tests {
         assert_eq!(refused["reason"], json!("missing-field"), "{refused}");
         assert!(refused["hint"].as_str().unwrap_or_default().contains("commit"), "{refused}");
 
-        let no_wave = line("VERDICT", json!({"result": "approved", "text": "passou", "criteria": []}));
-        assert_eq!(round(root, "x", Some(&no_wave))["reason"], json!("round-line-field-missing"));
+        let no_wave = json!({"result": "approved", "text": "passou", "criteria": []});
+        assert_eq!(judged(root, no_wave)["reason"], json!("missing-field"));
 
-        let unknown = line("VERDICT", json!({"wave": 1, "result": "approved", "text": "passou",
-            "criteria": [{"criterion": "MSTD-CRIT-0099", "tests_rule": true}]}));
-        let refused = round(root, "x", Some(&unknown));
+        let unknown = json!({"wave": 1, "result": "approved", "text": "passou",
+            "criteria": [{"criterion": "MSTD-CRIT-0099", "tests_rule": true}]});
+        let refused = judged(root, unknown);
         assert_eq!(refused["ok"], json!(false), "{refused}");
 
         let lines_after = std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
@@ -1543,8 +1583,7 @@ mod tests {
     /// Tudo é conferido antes da primeira gravação. O caminho que não está no
     /// disco nem no git é recusado na gravação da volta, sozinho e junto de um
     /// caminho certo, e a volta corrigida é assumida uma vez só. O veredito
-    /// sem resultado depois de um válido também é recusado sem deixar o
-    /// primeiro gravado.
+    /// sem resultado também é recusado na gravação, sem deixar nada gravado.
     #[test]
     fn a_wrong_path_or_a_line_missing_a_field_is_refused_before_anything_is_recorded() {
         let dir = tempdir().unwrap();
@@ -1565,12 +1604,13 @@ mod tests {
             assert_eq!(spec_lines(), before, "{files:?}: nothing was recorded");
         }
 
-        let valid = verdict(1, "approved", "passou");
-        let no_result = line("VERDICT", json!({"wave": 1, "text": "sem resultado",
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}));
-        let refused = round(root, "x", Some(&format!("{valid}\n{no_result}")));
+        seed_review(root);
+        let before = spec_lines();
+        let no_result = json!({"wave": 1, "text": "sem resultado",
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+        let refused = judged(root, no_result);
         assert_eq!(refused["reason"], json!("missing-field"), "{refused}");
-        assert_eq!(spec_lines(), before, "the valid verdict was not recorded either");
+        assert_eq!(spec_lines(), before, "the verdict without a result was not recorded");
 
         let went = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(went["ok"], json!(true), "{went}");
@@ -2078,7 +2118,7 @@ mod tests {
         assert_eq!(waves_in(&back, "dispatch"), vec![2], "{back}");
         // A onda 1 é reprovada com a única vaga ocupada pela 2: ela espera na
         // fila, e quem entrega o conserto dela é a 2.
-        let rejected = round(root, "x", Some(&verdict(1, "rejected", "faltou o commit")));
+        let rejected = round(root, "x", Some(&verdict(root, 1, "rejected", "faltou o commit")));
         assert_eq!(waves_in(&rejected, "dispatch"), Vec::<u64>::new(), "{rejected}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert!(waves_to_redo(&log).contains(&1), "the rejected wave waits in the queue");
@@ -2211,10 +2251,12 @@ mod tests {
         assert_eq!(json!(rest), json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
     }
 
-    /// A conferência antes do git é a da gravação inteira, contra a spec, e
-    /// não só a da forma de cada linha: o veredito que aponta uma origem que a
-    /// spec não tem é recusado antes do commit, sem commit e sem nada gravado,
-    /// e a chamada corrigida faz o commit e grava a entrega uma vez só.
+    /// A conferência antes do git é a da gravação inteira, contra a spec de
+    /// agora, e não só a que a volta passou ao ser gravada: o veredito final
+    /// gravado antes de uma regra nova do projeto todo não responde mais por
+    /// todo o combinado, e é recusado antes do commit, sem commit e sem nada
+    /// gravado; o veredito gravado de novo, com a regra, faz o commit e grava
+    /// a entrega uma vez só.
     #[test]
     fn a_line_the_spec_would_refuse_is_refused_before_the_commit() {
         let dir = tempdir().unwrap();
@@ -2227,15 +2269,25 @@ mod tests {
         };
         let spec_lines = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
         delivered(root, 1, "A soma saiu.", &["src/a.rs"]);
+        seed_review(root);
+        let judged_with = |agreed: Value| {
+            judged(root, json!({"result": "approved", "final": true, "text": "passou", "agreed": agreed,
+                "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}))
+        };
+        assert_eq!(judged_with(json!([]))["ok"], json!(true), "sem item combinado, o veredito entra");
+        let said = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
+            .visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
+        write(root, "x", "rule", json!({"text": "Vale sempre: o nome é curto.", "example": "e", "keys": ["k"],
+            "applies_to": {"files": ["**"]}, "origin": said}));
         let (seed, before) = (head(), spec_lines());
 
-        let unknown_origin = line("VERDICT", json!({"wave": 1, "result": "approved", "text": "passou",
-            "origin": 99_999, "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}));
-        let refused = round(root, "x", Some(&unknown_origin));
-        assert_eq!(refused["reason"], json!("unknown-target"), "{refused}");
+        let refused = round(root, "x", None);
+        assert_eq!(refused["reason"], json!("agreed-items-missing"), "{refused}");
         assert_eq!(head(), seed, "nothing was committed: {refused}");
         assert_eq!(spec_lines(), before, "nothing was recorded: {refused}");
 
+        let again = judged_with(json!([{"item": "MSTD-RULE-0001", "met": true}]));
+        assert_eq!(again["ok"], json!(true), "{again}");
         let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_ne!(head(), seed, "the corrected call commits: {went}");
@@ -2793,6 +2845,38 @@ mod tests {
                    leva só as linhas USAGE, PAUSED e ANALYSIS."),
             "{refused}"
         );
+        assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
+    }
+
+    /// A linha do veredito colada no relatório é recusada com o texto
+    /// combinado, na rodada e no fechamento, junto de qualquer outra linha, e
+    /// nada é gravado nem comitado: o veredito mora na spec, e é o revisor
+    /// quem o grava.
+    #[test]
+    fn a_linha_de_veredito_no_relatorio_e_recusada() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        delivered(root, 1, "A soma saiu.", &["src/a.rs"]);
+        seed_review(root);
+        let (head, before) = (git_text(root, &["rev-parse", "HEAD"]), spec_lines(root));
+
+        let pasted = line("VERDICT", json!({"final": true, "result": "approved", "text": "Sem achados."}));
+        let usage = line("USAGE", json!({"wave": 1, "model": "Opus", "steps": 3, "tokens": 900}));
+        let expected = json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
+                              relatório leva só as linhas USAGE, PAUSED e ANALYSIS.");
+        let refused = round(root, "x", Some(&format!("{pasted}\n{usage}")));
+        assert_eq!(refused["reason"], json!("round-return-line"), "{refused}");
+        assert_eq!(refused["hint"], expected, "{refused}");
+        let closing = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".into()),
+            report: Some(pasted),
+            ..Default::default()
+        });
+        assert_eq!(closing["reason"], json!("round-return-line"), "{closing}");
+        assert_eq!(closing["hint"], expected, "{closing}");
         assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
     }
 
