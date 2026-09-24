@@ -41,8 +41,8 @@ pub mod git_settle;
 pub mod scan;
 pub mod scan_claude;
 pub mod map;
-// O `orient` e o `work-unit-open` deixaram de ser comandos: sobraram como
-// motor do mapa do inicio da sessao e da porta do pull request.
+// O `orient` não é comando: monta o mapa do terreno que o início da sessão
+// injeta.
 pub mod orient;
 pub mod spec_events;
 pub mod flow;

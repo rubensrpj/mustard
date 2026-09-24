@@ -10,6 +10,10 @@
 //! retomada já acontece sozinha no início da sessão: a linha de retomada
 //! ([`resume_line`]) — a spec, a fase, o último passo e o próximo item — sai
 //! igual nos dois lugares.
+//!
+//! O bloco de retomada ([`resume_block`]), mais largo que a linha, também
+//! mora aqui, montado num lugar só para os dois momentos da compactação: o
+//! aviso antes dela e o início da sessão depois do resumo.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -101,6 +105,21 @@ pub(crate) fn resume_line(spec: &str, log: &SpecLog, lang: Locale) -> String {
 /// `None` sem spec atual, sem arquivo de eventos e na spec que já terminou,
 /// que não tem para onde voltar.
 pub(crate) fn current_line(root: &Path, session: Option<&str>) -> Option<String> {
+    let (spec, log, lang) = current_log(root, session)?;
+    Some(resume_line(&spec, &log, lang))
+}
+
+/// O bloco de retomada da spec atual da sessão `session`, vista de `root`,
+/// com os mesmos `None` de [`current_line`].
+pub(crate) fn current_block(root: &Path, session: Option<&str>) -> Option<String> {
+    let (spec, log, lang) = current_log(root, session)?;
+    Some(resume_block(&spec, &log, lang))
+}
+
+/// A spec atual da sessão `session`, o arquivo de eventos dela e o idioma do
+/// projeto. `None` sem spec atual, sem arquivo de eventos e na spec que já
+/// terminou.
+fn current_log(root: &Path, session: Option<&str>) -> Option<(String, SpecLog, Locale)> {
     let project = spec_events::project(root);
     let spec = DiskSpecState::new(&checkout(root)).active(session)?;
     let log = store::read(&store::spec_file(&project.root, &spec).ok()?).ok()??;
@@ -108,7 +127,133 @@ pub(crate) fn current_line(root: &Path, session: Option<&str>) -> Option<String>
     if matches!(phase, Some("delivered" | "discarded")) {
         return None;
     }
-    Some(resume_line(&spec, &log, project.lang))
+    Some((spec, log, project.lang))
+}
+
+/// Os tipos cujo código o bloco de retomada lista quando foram gravados depois
+/// da última rodada que deu certo: o que a conversa decidiu e a rodada ainda
+/// não levou às ondas.
+const RECORDED_KINDS: &[&str] = &["decision", "rule", "limit", "request", "criterion", "task"];
+
+/// O bloco de retomada da spec `spec`: a spec e a fase; as ondas entregues;
+/// cada onda em andamento com a pasta da cópia dela; as ondas cuja volta está
+/// gravada e espera a rodada, dizendo qual pede mudança de plano ainda sem o
+/// clique do usuário; as paradas no limite de consertos; as que faltam; o
+/// código de cada item gravado depois da última rodada; e o próximo comando.
+/// Cabe no teto do início da sessão: quando passa, as listas encolhem na
+/// ordem de [`fit`] e cada uma diz quantos ficaram de fora.
+pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
+    use crate::commands::flow::round::{change_accepted, replan_code, waves_in_progress, waves_stuck};
+
+    let state = State::from_log(log);
+    let phase = state.phase.unwrap_or("survey");
+    let none = translate("resume.none", lang);
+
+    let delivered = log.delivered_waves();
+    let returns: Vec<_> =
+        log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered").collect();
+    let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
+    let running: BTreeSet<u64> =
+        waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)).collect();
+    let stuck: Vec<String> = waves_stuck(log).into_keys().map(|n| n.to_string()).collect();
+    let missing: Vec<String> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "wave")
+        .filter_map(|e| e.wave())
+        .collect::<BTreeSet<u64>>()
+        .into_iter()
+        .filter(|n| !delivered.contains(n) && !running.contains(n) && !returned.contains(n))
+        .map(|n| n.to_string())
+        .collect();
+    let in_flight: Vec<String> = running
+        .iter()
+        .map(|n| match mustard_core::io::wave_prompt::recorded_copy(log, *n) {
+            Some(copy) => translate("conversation_size.copy", lang)
+                .replace("{wave}", &n.to_string())
+                .replace("{copy}", &copy.path),
+            None => n.to_string(),
+        })
+        .collect();
+    let waiting: Vec<String> = returns
+        .iter()
+        .filter_map(|e| {
+            let wave = e.wave()?;
+            let asks = e
+                .str_field("replan")
+                .is_some_and(|change| !change_accepted(log, wave, &replan_code(wave, change)));
+            Some(if asks {
+                translate("conversation_size.replan", lang).replace("{wave}", &wave.to_string())
+            } else {
+                wave.to_string()
+            })
+        })
+        .collect();
+    let command = next_command(phase, spec, &state).as_str().map_or_else(|| none.to_string(), str::to_string);
+    let next = translate(next_key(phase), lang)
+        .replace("{question}", translate("approval.question", lang))
+        .replace("{option}", translate("approval.option", lang));
+    let text = translate("conversation_size.block", lang)
+        .replace("{spec}", spec)
+        .replace("{phase}", phase)
+        .replace("{command}", &command)
+        .replace("{next}", &next);
+    let lists = [
+        ("{recorded}", recorded_since_round(log)),
+        ("{delivered}", delivered.iter().map(u64::to_string).collect()),
+        ("{missing}", missing),
+        ("{stuck}", stuck),
+        ("{returned}", waiting),
+        ("{running}", in_flight),
+    ];
+    fit(&text, &lists, lang)
+}
+
+/// O código de cada decisão, regra, limite, pedido, critério e tarefa
+/// gravado depois da última chamada da rodada que deu certo, na ordem do
+/// arquivo.
+fn recorded_since_round(log: &SpecLog) -> Vec<String> {
+    let since = log
+        .block(BlockQuery::Block(Block::Conversation))
+        .into_iter()
+        .filter(|e| e.event_type == "call" && e.str_field("command") == Some("round"))
+        .filter(|e| e.str_field("result") == Some("ok"))
+        .map(|e| e.id)
+        .max()
+        .unwrap_or(0);
+    let codes = log.codes();
+    log.visible()
+        .into_iter()
+        .filter(|e| e.id > since && RECORDED_KINDS.contains(&e.event_type.as_str()))
+        .map(|e| codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()))
+        .collect()
+}
+
+/// O bloco `text` com cada lista de `lists` no lugar da vaga dela: inteiras,
+/// quando cabem no teto do início da sessão. Senão, as listas cedem na ordem
+/// em que vêm — os códigos gravados primeiro, as ondas em andamento por
+/// último —, cada uma mostrando só os primeiros itens e quantos ficaram de
+/// fora, até o bloco caber; a lista seguinte só encolhe quando a anterior já
+/// não mostra item nenhum.
+fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale) -> String {
+    let cap = crate::hooks::session::session_start_inject::MAX_BYTES;
+    let render = |kept: &[usize]| {
+        lists.iter().zip(kept).fold(text.to_string(), |block, ((slot, items), &kept)| {
+            let mut shown: Vec<String> = items[..kept].to_vec();
+            if kept < items.len() {
+                shown.push(translate("conversation_size.more", lang).replace("{count}", &(items.len() - kept).to_string()));
+            }
+            let list = if shown.is_empty() { translate("resume.none", lang).to_string() } else { shown.join(", ") };
+            block.replace(slot, &list)
+        })
+    };
+    let mut kept: Vec<usize> = lists.iter().map(|(_, items)| items.len()).collect();
+    for at in 0..lists.len() {
+        while kept[at] > 0 && render(&kept).len() > cap {
+            kept[at] -= 1;
+        }
+    }
+    render(&kept)
 }
 
 /// O último passo do fluxo: o comando da chamada mais nova que deu certo.

@@ -354,8 +354,8 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
 
-    // A onda 1 sai e entrega de verdade, pelo relatório do fim do agente: a
-    // escolha antes do envio primeiro, porque as decisões do levantamento são
+    // A onda 1 sai e entrega de verdade, pela entrega que ela grava na spec:
+    // a escolha antes do envio primeiro, porque as decisões do levantamento são
     // itens do projeto todo e pedem a escolha do orquestrador antes da cópia.
     let asked = project.run(&["round", "--spec", SPEC]);
     assert_eq!(asked["dispatch"], json!([]), "{asked}");
@@ -367,7 +367,8 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     let copy = PathBuf::from(sent.str_field("copy").expect("a cópia da onda 1"));
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("a mudança");
     let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu"});
-    project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
+    project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
+    project.run(&["round", "--spec", SPEC]);
 
     // Uma tarefa de spec antiga: carrega o número 7, que nunca virou onda,
     // semeada crua como a spec antiga a traz.

@@ -45,7 +45,7 @@ pub(super) fn stopped_waves(
 
 /// O código da mudança proposta, que vai na pergunta que a decide: a onda e
 /// uma chave do texto da mudança, para que um "sim" nunca sirva para outra.
-pub(super) fn replan_code(wave: u64, change: &str) -> String {
+pub(crate) fn replan_code(wave: u64, change: &str) -> String {
     let key = crate::commands::agent::render::prompt_ref::fnv1a64(&[change.trim()]) & 0x00ff_ffff;
     format!("onda-{wave}-{key:06x}")
 }
@@ -91,7 +91,7 @@ fn is_change_code(word: &str) -> bool {
 /// Só conta a mensagem de autor `user` com a testemunha. O `run write` recusa
 /// toda mensagem com a testemunha, de qualquer autor, e recusa rever ou tirar
 /// uma delas: só a testemunha grava o clique.
-pub(super) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
+pub(crate) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
     let langs = [Locale::PtBr, Locale::EnUs];
     let sent = log.last_by_wave("send").get(&wave).copied().unwrap_or(0);
     let last_click = log
@@ -111,7 +111,7 @@ pub(super) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
 /// conta começa na versão mais nova do plano da onda que o usuário pediu
 /// depois da última reprovação: a onda que ele replanejou volta à fila com a
 /// conta zerada, e o que o orquestrador acrescenta ao plano não zera nada.
-pub(super) fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
+pub(crate) fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
     let verdicts = log.verdicts_by_wave();
     let reset = last_reset_by_user(log, &verdicts);
     let mut out = BTreeMap::new();
@@ -289,8 +289,9 @@ mod tests {
 
         let change = "A onda 1 precisa da 2 antes.";
         let code = replan_code(1, change);
-        let report = line("DELIVERED", json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change}));
-        let stopped = round(root, "x", Some(&report));
+        let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+        let stopped = round(root, "x", None);
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
         let question = stopped["question"].as_str().unwrap_or_default().to_string();
         assert_eq!(question, change_question(1, change, Locale::PtBr), "{stopped}");
@@ -315,20 +316,20 @@ mod tests {
         assert_eq!(forged["reason"], json!("user-message-by-hook"), "{forged}");
         let own = by_hand(json!({ "text": format!("{question}\nAceitar"), "witness": witness }));
         assert_eq!(own["reason"], json!("user-message-by-hook"), "{own}");
-        let still = round(root, "x", Some(&report));
+        let still = round(root, "x", None);
         assert_eq!(still["reason"], json!("wave-plan-does-not-work"), "a forged yes accepts nothing: {still}");
 
         click(root, session, &question, &code, "Recusar");
-        let refused = round(root, "x", Some(&report));
+        let refused = round(root, "x", None);
         assert_eq!(refused["reason"], json!("wave-plan-does-not-work"), "a declined change stays stopped: {refused}");
 
         // O "sim" de uma mudança nunca serve para outra.
         click(root, session, &question, &replan_code(1, "Outra mudança."), "Aceitar");
-        let other = round(root, "x", Some(&report));
+        let other = round(root, "x", None);
         assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "{other}");
 
         click(root, session, &question, &code, "Aceitar");
-        let went = round(root, "x", Some(&report));
+        let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(delivered_count(root), 1, "the round records what the wave delivered");
     }
@@ -353,8 +354,9 @@ mod tests {
 
         let change = "A onda 1 precisa da onda 2 antes dela.";
         let code = replan_code(1, change);
-        let report = line("DELIVERED", json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change}));
-        let stopped = round(root, "x", Some(&report));
+        let back = json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+        let stopped = round(root, "x", None);
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
 
         // A pergunta pronta é a do usuário: o que muda e o que acontece em
@@ -373,18 +375,18 @@ mod tests {
 
         // O código de outra mudança no cabeçalho não aceita esta.
         click(root, session, mine, &replan_code(1, "Outra mudança."), "Aceitar");
-        let other = round(root, "x", Some(&report));
+        let other = round(root, "x", None);
         assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "o sim de outra mudança não vale: {other}");
 
         // Sem código nenhum no cabeçalho, nada diz qual mudança o clique
         // decide, e a rodada segue parada.
         click(root, session, mine, "Mudança", "Aceitar");
-        let blind = round(root, "x", Some(&report));
+        let blind = round(root, "x", None);
         assert_eq!(blind["reason"], json!("wave-plan-does-not-work"), "sem código não destrava: {blind}");
 
         // Com o código no cabeçalho, o "sim" vale, seja qual for a frase.
         click(root, session, mine, &code, "Aceitar");
-        let went = round(root, "x", Some(&report));
+        let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(delivered_count(root), 1, "a rodada gravou o que a onda entregou: {went}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -416,15 +418,17 @@ mod tests {
         let rejected = |n: usize| {
             let out = round(root, "x", Some(&delivered(root, 1, &format!("Tentativa {n}."), &["src/a.rs"])));
             assert_eq!(out["ok"], json!(true), "{out}");
-            round(root, "x", Some(&verdict(1, "rejected", &format!("reprovação {n}"))))
+            round(root, "x", Some(&verdict(root, 1, "rejected", &format!("reprovação {n}"))))
         };
         for n in 1..=2 {
             let fix = rejected(n);
             assert_eq!(waves_in(&fix, "dispatch"), vec![1], "rodada de conserto {n}: {fix}");
         }
+        // Os envios de onda: o pedido de revisão que cada veredito pede não
+        // conta.
         let sends = |root: &Path| {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            log.visible().iter().filter(|e| e.event_type == "send").count()
+            log.visible().iter().filter(|e| e.event_type == "send" && e.wave().is_some()).count()
         };
         assert_eq!(sends(root), 3);
         // O conserto que saiu está em andamento e ocupa a única vaga.
@@ -508,10 +512,12 @@ mod tests {
             let out = round(root, "x", Some(&delivered(root, 1, &format!("Tentativa {n}."), &["src/a.rs"])));
             assert_eq!(out["ok"], json!(true), "{out}");
             let agreed: Vec<Value> = agreed.iter().map(|item| json!({"item": item, "met": true})).collect();
-            let rejected = line("VERDICT", json!({"wave": 1, "result": "rejected", "final": true,
+            seed_review(root);
+            let wrote = judged(root, json!({"wave": 1, "result": "rejected", "final": true,
                 "text": format!("reprovação {n}"), "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
                 "agreed": agreed}));
-            round(root, "x", Some(&rejected))
+            assert_eq!(wrote["ok"], json!(true), "{wrote}");
+            round(root, "x", None)
         };
         assert_eq!(waves_in(&rejected(1, &[]), "dispatch"), vec![1]);
         // Uma fala do usuário antes da segunda reprovação: a tarefa que nasce

@@ -69,9 +69,10 @@ pub enum MaintCmd {
     /// What an older Mustard wrote into files that are not its own — the
     /// marks in the `CLAUDE.md` files, the seed's lines in the team's
     /// `.claude/settings.json`, a planted `.claude/CLAUDE.md` — leaves in the
-    /// same call, with no question: the Guards become project-rule lessons
-    /// first, and `cleanup` and `cleaned` say what left. A file without a mark
-    /// is only listed. The commit stays with the person.
+    /// same call, with no question: the rules of the Guards go first to the
+    /// project's pending list, in one item, never to the lesson bank, and
+    /// `cleanup` and `cleaned` say what left. A file without a mark is only
+    /// listed. The commit stays with the person.
     #[command(display_order = 19)]
     Upsert,
 }

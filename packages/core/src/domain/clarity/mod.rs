@@ -2,7 +2,7 @@
 //!
 //! A regra pede uma escrita que se lê uma vez, por quem não escreveu o código:
 //! uma ideia por frase; nenhuma sigla sem as palavras por extenso; nenhum
-//! código do Mustard (`MSTD-RULE-0005`) no lugar do nome do assunto; e nenhuma
+//! código do Mustard (`MSTD-RULE-NNNN`) no lugar do nome do assunto; e nenhuma
 //! resposta maior do que o assunto pede. Este módulo confere isso por sinais
 //! objetivos — quantas palavras tem cada frase, quais siglas e códigos
 //! aparecem, quantas linhas a resposta tem e a nota de facilidade de leitura
@@ -151,7 +151,7 @@ pub struct ClarityReport {
     pub long_sentences: Vec<LongSentence>,
     /// Siglas sem as palavras por extenso nesta resposta nem antes na sessão.
     pub unexpanded_acronyms: Vec<String>,
-    /// Códigos do Mustard (`MSTD-RULE-0005`) no texto corrido, cada um uma
+    /// Códigos do Mustard (`MSTD-RULE-NNNN`) no texto corrido, cada um uma
     /// vez, na ordem em que aparecem.
     pub internal_codes: Vec<String>,
     /// Linhas de texto corrido, sem código, tabela nem JSON.
@@ -277,7 +277,7 @@ pub fn measure(text: &str, already_explained: &[String], expected: Option<Locale
 // Código interno
 // ---------------------------------------------------------------------------
 
-/// Os códigos do Mustard (`MSTD-RULE-0005`) no texto corrido, cada um uma
+/// Os códigos do Mustard (`MSTD-RULE-NNNN`) no texto corrido, cada um uma
 /// vez, na ordem em que aparecem: na conversa, o assunto se diz pelo nome.
 /// Só esse formato conta; letra com número ("R2 da Cloudflare", "S3", "A4")
 /// é texto comum. Código inline já saiu da prosa: entre crases, o código é
@@ -626,7 +626,7 @@ fn is_acronym(word: &str) -> bool {
 /// - a região de um código de idioma ("pt-BR", "en-US");
 /// - um numeral romano ("Fase II", "onda IV");
 /// - as letras de um rótulo com hífen e número ("AC" em "AC-5");
-/// - uma parte de um código do Mustard ("MSTD" e "RULE" em `MSTD-RULE-0005`),
+/// - uma parte de um código do Mustard ("MSTD" e "RULE" em `MSTD-RULE-NNNN`),
 ///   que a medição dos códigos já aponta inteiro.
 ///
 /// Limite aceito: ênfase curta e com poucas vogais, sozinha ("MUST"), continua

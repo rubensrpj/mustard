@@ -21,7 +21,7 @@
 
 1. Corte só passa com ORÁCULO verde (argv-string, refs de função, artefatos, hooks/remediation) — Explore executa e devolve a lista final.
 2. Toda mudança de superfície atualiza em LOCKSTEP: cli.rs da família · run_command_surface.rs · doctor.rs KNOWN_RUN_SUBCOMMANDS · MUSTARD-COMMANDS.md · whitelist do template_parity.
-3. Gate de fase (orquestrador): cargo check 0 warnings · cargo test verde · golden CLI com diff intencional · dashboard compila à parte · template_parity verde · smoke real (run status, run feature, scan em fixture).
+3. Gate de fase (orquestrador): cargo check 0 warnings · cargo test verde · golden CLI com diff intencional · dashboard compila à parte · template_parity verde · smoke real (scan em fixture).
 4. Fecho de fase: mustard-review adversarial → code-simplifier → commit → PR draft na dev.
 5. Princípios: reuso primeiro (duplicações do plano) · SOLID sem fachadas · código/comentários em inglês.
 
@@ -43,7 +43,6 @@
 |---|---|
 | F2.0 Mapear TODOS os leitores do store de memória + do caminho de aprovação | Explore |
 | F2.1 permissions.deny assume tabela de segurança (validar sintaxe antes) | claude-code-guide → general-purpose |
-| F2.2 Split SOLID do bash_command_gate (rtk_rewrite / review_gate / pr_detect / estruturais) + path_gate vira boundary | general-purpose |
 | F2.3 Aprovação via observer PostToolUse(ExitPlanMode) + plansDirectory | general-purpose |
 | F2.4 Memória híbrida (store + 5 hooks + comando saem; decision/lesson via eventos; dashboard/MCP leem eventos) | general-purpose |
 | F2.5 review.rs e security_scan saem; transcript/watcher/estimator saem; reader enxuto | general-purpose |
@@ -53,7 +52,7 @@
 
 | Ponto | Agente |
 |---|---|
-| F3.0 Baseline: tamanho binário, latência run feature, tempo de hook | Orquestrador |
+| F3.0 Baseline: tamanho binário, tempo de hook | Orquestrador |
 | F3.1 profile.release (strip/lto/cu1/panic) + profile.dev | Orquestrador (trivial) |
 | F3.2 scan feature-bundle (4 spawns → 1) | general-purpose |
 | F3.3 Memos no Ctx (ProjectConfig, spec/session) + count_active + canonicalize | general-purpose |
@@ -91,17 +90,14 @@
 | F6.1 ACs EARS no spec_draft (forma de capability/mod.rs:70) | general-purpose |
 | F6.2 Linter de AC-tautologia em analyze_validation | general-purpose |
 | F6.3 satisfies em WavePlanEntry + cobertura AC↔onda + cross-artifact analyze | general-purpose |
-| F6.4 Clarificação forçada no Full (.clarified marker) | general-purpose |
 | F6.5 Capability por padrão no close (resíduo EARS vivo) | general-purpose |
 | F6.6 doctor drift unificado | general-purpose |
-| F6.7 post_edit data-driven dos Guards (prova em 2 stacks) | general-purpose |
 | F6.8 MCP find_anchors + rank_files | general-purpose |
 | F6.9 QA da fase: spec gerado exibe EARS+traceabilidade; linter pega tautologia plantada | Orquestrador + mustard-review |
 
 ## Regras de sessão (gotchas desta base)
 
 - work_branch_gate bloqueia Write/Edit em worktree aninhado → agentes editam via shell (perl/node/pwsh); NUNCA tocar settings/hook para contornar (fix real é F2.6).
-- bash_command_gate falso-positiva prosa com "/nome" perto de verbo de remoção → em docs, usar notação mustard:x.
 - Heredoc bash longo quebra no Windows → here-string PowerShell.
 - rtk engole stdin de git commit -F- → gravar mensagem em arquivo e usar -F arquivo.
 - Binário precisa rebuild após mudanças no rt para os smoke tests (target/debug/mustard-rt.exe).

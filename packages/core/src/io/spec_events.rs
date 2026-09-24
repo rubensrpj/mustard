@@ -1145,4 +1145,142 @@ mod tests {
         assert!(read(&path).unwrap().is_none());
         assert_eq!(spec_file(dir.path(), "../fora").unwrap_err(), Refusal::BadSpecName { spec: "../fora".into() });
     }
+
+    /// O pedido de uma onda ou da revisão final, como a rodada e o fechamento
+    /// o gravam: sem ele, a volta do agente não teria a que responder.
+    fn put_send(path: &Path, wave: Option<u64>, time: &str) -> u64 {
+        let mut draft = json!({"author": "binary", "role": "review", "text": "# pedido", "lines": 1, "chars": 8, "mustard": "0.2.3"});
+        if let Some(n) = wave {
+            draft["wave"] = json!(n);
+            draft["role"] = json!("wave");
+        }
+        put(path, &[], "send", &at(time), draft).id
+    }
+
+    /// A entrega que a própria onda grava, com todos os campos da volta.
+    fn wave_return(wave: u64, text: &str) -> Value {
+        json!({
+            "author": "wave",
+            "wave": wave,
+            "text": text,
+            "files": ["src/a.rs"],
+            "commit": "a onda saiu",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "cargo test a"}],
+            "fixes": [1],
+            "leftovers": [{"title": "Comentário velho", "detail": "src/b.rs:3 cita um comando que saiu."}],
+            "returned": true,
+        })
+    }
+
+    /// A volta que a onda grava fica fora de toda leitura de entrega — as
+    /// ondas entregues, a última entrega de cada onda, o bloco das ondas, o
+    /// da onda, o painel e a versão vigente — até a rodada gravar a versão
+    /// oficial com `replaces` para ela. O leitor de voltas devolve só a última
+    /// de cada onda; depois da versão oficial, nenhuma volta anterior da onda
+    /// espera, nem a que ela não apontou, e a gravada depois volta a esperar.
+    /// A sobra sem título ou sem detalhe é recusada sem gravar nada, e a que
+    /// traz os dois passa.
+    #[test]
+    fn a_volta_da_onda_fica_fora_da_leitura_ate_a_rodada_assumir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
+        let send = put_send(&path, Some(2), "10:00");
+
+        let before = std::fs::read(&path).unwrap();
+        let mut missing = wave_return(2, "Sobra pela metade.");
+        missing["leftovers"] = json!([{"title": "  ", "detail": "d"}, {"title": "Outra sobra"}]);
+        let refused = write_at(&path, "delivered", obj(missing), &[], &at("10:01")).unwrap_err();
+        assert_eq!(refused, Refusal::LeftoverFieldMissing { field: "title".into() });
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nada foi gravado");
+
+        let first = put(&path, &[], "delivered", &at("10:02"), wave_return(2, "Primeira volta.")).id;
+        assert!(line_of(&path, first).contains("\"returned\":true"), "a volta fica no arquivo");
+        let log = read(&path).unwrap().unwrap();
+        assert!(log.delivered_waves().is_empty(), "a volta não conta como onda entregue");
+        assert!(log.last_by_wave("delivered").is_empty());
+        assert!(log.block(BlockQuery::Block(Block::Waves)).iter().all(|e| e.id != first));
+        assert_eq!(ids_of(&log.block(BlockQuery::Wave(2))), [send]);
+        assert_eq!(ids_of(&log.block(BlockQuery::Block(Block::Metrics))), [send]);
+        assert_eq!(log.current(first), None);
+        assert_eq!(log.hidden().get(&first), Some(&Hidden::Returned));
+        assert_eq!(ids_of(&log.unassumed_returns()), [first]);
+
+        let second = put(&path, &[], "delivered", &at("10:03"), wave_return(2, "Segunda volta.")).id;
+        let other = put(&path, &[], "delivered", &at("10:04"), wave_return(3, "Volta da onda 3.")).id;
+        let log = read(&path).unwrap().unwrap();
+        assert_eq!(ids_of(&log.unassumed_returns()), [second, other], "vale a última volta de cada onda");
+        assert!(log.delivered_waves().is_empty());
+
+        // A rodada assume a onda 2: a versão oficial, sem `returned`, aponta
+        // a última volta.
+        let official = put(
+            &path,
+            &[],
+            "delivered",
+            &at("10:05"),
+            json!({"author": "binary", "wave": 2, "text": "Segunda volta.", "files": ["src/a.rs"], "commit": "a onda saiu", "replaces": second}),
+        )
+        .id;
+        let log = read(&path).unwrap().unwrap();
+        assert_eq!(log.delivered_waves(), BTreeSet::from([2]));
+        assert_eq!(log.last_by_wave("delivered"), BTreeMap::from([(2, official)]));
+        let shown: Vec<u64> =
+            log.block(BlockQuery::Block(Block::Waves)).iter().filter(|e| e.event_type == "delivered").map(|e| e.id).collect();
+        assert_eq!(shown, [official], "só a versão oficial aparece");
+        assert_eq!(log.hidden()[&second], Hidden::Replaced { by: official });
+        assert_eq!(log.hidden()[&first], Hidden::Returned, "a volta velha nunca volta à leitura");
+        assert_eq!(ids_of(&log.unassumed_returns()), [other], "nenhuma volta da onda 2 espera mais");
+
+        // O conserto da onda 2 volta depois da versão oficial e espera de novo.
+        let fix = put(&path, &[], "delivered", &at("10:06"), wave_return(2, "Conserto.")).id;
+        let log = read(&path).unwrap().unwrap();
+        assert_eq!(ids_of(&log.unassumed_returns()), [other, fix]);
+        assert_eq!(log.last_by_wave("delivered"), BTreeMap::from([(2, official)]), "a oficial segue a vigente");
+    }
+
+    /// O veredito final, que o revisor grava sem onda como volta, fica fora de
+    /// toda leitura de veredito — o bloco da revisão, os vereditos por onda e
+    /// a aprovação final da obra —, e o leitor de voltas o devolve ao lado da
+    /// volta de uma onda, só o último. Depois que o fechamento grava o
+    /// veredito oficial com `replaces` para ele, ele não espera mais, e a
+    /// aprovação final é a oficial.
+    #[test]
+    fn o_veredito_final_sem_onda_e_lido_como_volta() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
+        put_send(&path, Some(1), "10:00");
+        put_send(&path, None, "10:01");
+        let verdict = |text: &str| {
+            json!({"author": "review", "final": true, "result": "approved", "text": text, "agreed": [{"item": 1, "met": true}], "returned": true})
+        };
+        let first = put(&path, &[], "verdict", &at("10:02"), verdict("Primeira leitura.")).id;
+        let delivery = put(&path, &[], "delivered", &at("10:03"), wave_return(1, "A onda 1 voltou.")).id;
+        let last = put(&path, &[], "verdict", &at("10:04"), verdict("Sem achados.")).id;
+
+        let log = read(&path).unwrap().unwrap();
+        assert_eq!(log.get(last).and_then(model::SpecEvent::wave), None, "o veredito final vem sem onda");
+        assert!(log.block(BlockQuery::Block(Block::Review)).is_empty());
+        assert!(log.verdicts_by_wave().is_empty());
+        assert!(log.last_rejected().is_empty());
+        assert!(crate::domain::spec_state::final_approval(&log).is_none(), "a volta não aprova a obra");
+        assert_eq!(log.hidden().get(&last), Some(&Hidden::Returned));
+        assert_eq!(ids_of(&log.unassumed_returns()), [delivery, last]);
+
+        // O fechamento assume o veredito final.
+        let official = put(
+            &path,
+            &[],
+            "verdict",
+            &at("10:05"),
+            json!({"author": "review", "final": true, "result": "approved", "text": "Sem achados.", "agreed": [{"item": 1, "met": true}], "replaces": last}),
+        )
+        .id;
+        let log = read(&path).unwrap().unwrap();
+        assert_eq!(ids_of(&log.block(BlockQuery::Block(Block::Review))), [official]);
+        assert_eq!(crate::domain::spec_state::final_approval(&log).map(|e| e.id), Some(official));
+        assert_eq!(log.hidden()[&first], Hidden::Returned);
+        assert_eq!(ids_of(&log.unassumed_returns()), [delivery], "a entrega da onda 1 segue à espera");
+    }
 }

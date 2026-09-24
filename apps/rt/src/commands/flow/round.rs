@@ -5,10 +5,10 @@
 //! arquivo inclusive —, cria a cópia separada de cada uma no commit atual e
 //! escolhe a pasta de compilação dela, monta o pedido de cada uma com as duas,
 //! grava o envio com o pedido exato como foi injetado e marca a spec como em
-//! execução na primeira rodada. Com o relatório da rodada anterior
-//! (`--report`), ela primeiro fecha o que voltou — junta ao repositório
-//! principal os arquivos que cada cópia entregou, comita e apaga a cópia — e
-//! só então despacha a rodada seguinte.
+//! execução na primeira rodada. Com a entrega que uma onda gravou na spec e
+//! que ainda não foi assumida, ela primeiro fecha o que voltou — junta ao
+//! repositório principal os arquivos que cada cópia entregou, comita e apaga a
+//! cópia — e só então despacha a rodada seguinte.
 //!
 //! **A spec antiga passa para o backlog.** Antes de tudo, a rodada converte a
 //! spec uma vez, no módulo `convert`: a onda desenhada à mão que nunca saiu deixa de
@@ -28,27 +28,41 @@
 //! novo sem plano novo usa a escolha do envio anterior, quando ela julgou cada
 //! candidato de agora. Sem escolha, a onda espera; nada é recusado.
 //!
-//! **O relatório é o que os agentes devolvem, como veio.** A rodada lê, do
-//! texto recebido, cada linha `<DELIVERED>{…}</DELIVERED>` do agente de onda e
-//! cada linha `<VERDICT>{…}</VERDICT>` do revisor, no formato que os textos
-//! deles ensinam. A linha da entrega traz a onda, a entrega, os arquivos, o
-//! resumo do commit e, quando é o caso, a prova nova de um critério cujo teste
-//! mudou de nome, as ondas que o conserto fecha e a mudança de plano; a do
-//! veredito traz a onda, o resultado, o texto e cada critério pelo código que
-//! a página mostra. Com isso a rodada grava o veredito e depois a entrega —
-//! também na onda que o conserto fecha, o que pede a revisão dela de novo —,
-//! grava a versão nova do critério com a prova nova, formata só os arquivos da
-//! rodada e faz o commit com a mensagem montada do resumo.
+//! **A entrega mora na spec, e a rodada a assume.** O agente de onda grava a
+//! própria entrega com `mustard-rt run write delivered`, e só com o envio da
+//! onda aberto: a gravação sai marcada como volta, escondida da leitura e da
+//! cópia da página, e já confere o título do commit, o resumo com cara de
+//! SHA, o arquivo que o projeto não conhece e a prova nova, sem gravar nada
+//! quando uma falha. A entrega traz a onda, o texto, os arquivos, o resumo do
+//! commit e, quando é o caso, a prova nova de um critério cujo teste mudou de
+//! nome, as ondas que o conserto fecha, a mudança de plano e as sobras. A
+//! rodada lê da spec a última volta de cada onda mais nova que a entrega
+//! oficial dela, grava o veredito e depois a entrega oficial, com `replaces`
+//! apontando as voltas desde o último envio — também na onda que o conserto
+//! fecha, o que pede a revisão dela de novo —, grava a versão nova do critério
+//! com a prova nova, formata só os arquivos da rodada, faz o commit com a
+//! mensagem montada do resumo e grava cada sobra como pendência da spec, pela
+//! mesma porta do `pending --add`. O `--report` leva só o que o orquestrador
+//! escreve: a linha `<USAGE>{…}</USAGE>` com o consumo de cada onda, a
+//! `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>`. O veredito também mora na spec:
+//! o revisor o grava com `mustard-rt run write verdict`, só com pedido de
+//! revisão aberto, e a rodada ou o fechamento o assume antes das entregas,
+//! com `replaces` para as voltas dele. A linha de consumo sozinha completa a
+//! onda que voltou; a de uma onda de lote com envio aberto, sem volta e com o
+//! Claude Code dela fechado marca a onda cortada, e as tarefas dela voltam
+//! para o backlog.
 //!
 //! **O que trava.** Uma spec que ainda não foi aprovada; um relatório sem
-//! nenhuma linha de entrega, de veredito ou de escolha, ou com uma linha de
-//! entrega ou de veredito sem campo obrigatório; um
-//! `entregou` acima do teto de caracteres; um arquivo entregue que não está no
-//! disco nem no git, nem no repositório principal nem na cópia; uma mensagem
-//! de commit fora do
+//! nenhuma das linhas que a rodada lê, ou com uma linha de escolha sem campo
+//! obrigatório; a linha de entrega ou de veredito no relatório, que manda
+//! gravá-la pelo `run write`; a linha de consumo de uma onda com o
+//! Claude Code dela aberto e sem volta gravada, e a volta cuja cópia mudou
+//! arquivo sem o resumo do commit — as duas pedem que o agente grave a
+//! entrega; um arquivo entregue que não está no disco nem no git, nem no
+//! repositório principal nem na cópia; uma mensagem de commit fora do
 //! modelo (título e corpo acima do teto, link do claude.ai, o nome do modelo,
 //! assinatura de coautoria ou e-mail de alguém); a prova de um critério que
-//! as ondas do relatório cobrem que não executa ou não passa — a rodada roda
+//! as ondas da rodada cobrem que não executa ou não passa — a rodada roda
 //! cada uma, na ordem do código, antes de comitar, e recusa nomeando o
 //! critério, o comando inteiro e a saída de erro; o relatório em que um agente
 //! diz que o plano da onda não funciona, que para a rodada e só segue com o
@@ -62,16 +76,18 @@
 //! segue, e a resposta traz a pergunta ao usuário com os vereditos dela. A
 //! onda que sai do plano deixa de contar, na rodada e no fechamento. A
 //! entrega com um trecho que a junção da cópia não resolve fica de fora, sem
-//! nada dela gravado: o resto do relatório é juntado, comitado e gravado, e a
+//! nada dela gravado: as outras voltas são juntadas, comitadas e gravadas, e a
 //! resposta traz a recusa dela, com os trechos e o comando que a resolve na
-//! cópia; só quando o relatório não traz mais nada a recusa é a resposta.
+//! cópia; só quando não sobra outra volta a recusa é a resposta.
 //!
 //! **O passo do git.** Da leitura do repositório à junção, ao commit e ao
 //! desfazer quando o git recusa, a rodada segura uma trava só dela, a mesma da
 //! remoção das cópias e do despacho — da escolha das ondas à criação das
 //! cópias e à gravação dos envios: duas rodadas ao mesmo tempo no mesmo
 //! checkout fazem cada um desses passos uma depois da outra, e nunca soltam a
-//! mesma onda duas vezes. O commit leva só os arquivos da rodada, por caminho;
+//! mesma onda duas vezes. As voltas são lidas de novo da spec já dentro da
+//! trava, e por isso a volta que uma rodada assumiu nunca é assumida de novo
+//! pela outra. O commit leva só os arquivos da rodada, por caminho;
 //! a recusa do git volta o disco e o índice deles, e nada da onda recusada
 //! entra no commit de outra. O arquivo de dentro de um submódulo é comitado no
 //! submódulo, na branch de mesmo nome da spec, e o commit do principal leva o
@@ -95,8 +111,10 @@ mod report;
 mod stops;
 
 /// O código de mudança que um texto traz: a testemunha dos gestos o lê no
-/// cabeçalho da pergunta que decide a mudança.
-pub(crate) use stops::change_code_of;
+/// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
+/// espera o clique e as ondas paradas no limite de consertos, o bloco de
+/// retomada as conta.
+pub(crate) use stops::{change_accepted, change_code_of, replan_code, waves_stuck};
 
 pub(crate) use commit::{reinstall_binary, refresh_map_if_stale, waves_checked_only};
 
@@ -109,8 +127,8 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
 pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{backlog_left, ensure_copy, wave_states, waves_in_progress, waves_pending_fix};
-pub(crate) use report::take_report;
+pub(crate) use queue::{backlog_left, ensure_copy, open_review, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use report::{check_return, check_verdict_return, take_report};
 
 /// As opções de `mustard-rt run round`.
 pub struct RoundOpts {
@@ -334,9 +352,22 @@ mod tests {
         format!("<{tag}>{body}</{tag}>")
     }
 
-    /// A linha `DELIVERED` da onda `wave`, com o resumo do commit. Cada
-    /// arquivo entregue que existe ganha uma linha, para o commit ter o que
-    /// levar.
+    /// A volta de uma onda da spec `x`, gravada como o agente a grava: pelo
+    /// `run write delivered`, com os campos de `body`. Devolve a resposta da
+    /// gravação, com a recusa quando ela recusa.
+    pub(super) fn returned(root: &Path, body: Value) -> Value {
+        crate::commands::spec_events::write::write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".to_string()),
+            event_type: "delivered".into(),
+            json: body.to_string(),
+        })
+    }
+
+    /// A volta da onda `wave`, com o resumo do commit, gravada pela porta do
+    /// agente. Cada arquivo entregue que existe ganha uma linha, para o commit
+    /// ter o que levar. Devolve o relatório que o agente deixa depois de
+    /// gravar: vazio, porque a entrega mora na spec.
     pub(super) fn delivered(root: &Path, wave: u64, text: &str, files: &[&str]) -> String {
         for file in files {
             let path = root.join(file);
@@ -344,15 +375,44 @@ mod tests {
                 std::fs::write(&path, format!("{before}// {text}\n")).unwrap();
             }
         }
-        line("DELIVERED", json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")}))
+        let body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
+        let wrote = returned(root, body);
+        assert_eq!(wrote["ok"], json!(true), "a volta da onda {wave} não foi gravada: {wrote}");
+        String::new()
     }
 
-    /// A linha `VERDICT` da onda `wave`, com o critério pelo código. `final:
-    /// true`, porque só o veredito final do agente de teste dedicado pode
-    /// reprovar ou aprovar uma onda.
-    pub(super) fn verdict(wave: u64, result: &str, text: &str) -> String {
-        line("VERDICT", json!({"wave": wave, "result": result, "final": true, "text": text,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}))
+    /// O veredito da onda `wave`, com o critério pelo código, gravado como o
+    /// revisor o grava: pelo `run write verdict`, com o pedido de revisão
+    /// aberto antes, como o fechamento o abre. `final: true`, porque só o
+    /// veredito final do agente de teste dedicado pode reprovar ou aprovar
+    /// uma onda. Devolve o relatório que o revisor deixa depois de gravar:
+    /// vazio, porque o veredito mora na spec.
+    pub(super) fn verdict(root: &Path, wave: u64, result: &str, text: &str) -> String {
+        seed_review(root);
+        let body = json!({"wave": wave, "result": result, "final": true, "text": text,
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+        let wrote = judged(root, body);
+        assert_eq!(wrote["ok"], json!(true), "o veredito da onda {wave} não foi gravado: {wrote}");
+        String::new()
+    }
+
+    /// A volta do revisor da spec `x`, gravada como ele a grava: pelo `run
+    /// write verdict`, com os campos de `body`. Devolve a resposta da
+    /// gravação, com a recusa quando ela recusa.
+    pub(super) fn judged(root: &Path, body: Value) -> Value {
+        crate::commands::spec_events::write::write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".to_string()),
+            event_type: "verdict".into(),
+            json: body.to_string(),
+        })
+    }
+
+    /// Um pedido de revisão da spec `x`, gravado sem passar pelo fechamento.
+    /// Devolve o número dele.
+    pub(super) fn seed_review(root: &Path) -> u64 {
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"role": "review", "text": "revise",
+            "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}))
     }
 
     pub(super) fn delivered_count(root: &Path) -> usize {
@@ -360,11 +420,18 @@ mod tests {
         log.visible().iter().filter(|e| e.event_type == "delivered").count()
     }
 
-    /// A linha do fim que o texto de um agente ensina, tirada do próprio
-    /// texto, com os valores de exemplo trocados por `values`.
-    pub(super) fn taught_line(template: &str, tag: &str, values: &[(&str, &str)]) -> String {
-        let open = format!("<{tag}>");
-        let found = template.lines().find(|l| l.starts_with(&open)).unwrap_or_else(|| panic!("no {tag} line"));
+    /// Todas as entregas escritas no arquivo da spec `x`: as oficiais e as
+    /// voltas que os agentes gravaram, assumidas ou não.
+    pub(super) fn written_deliveries(root: &Path) -> usize {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        log.events.iter().filter(|e| e.event_type == "delivered").count()
+    }
+
+    /// A linha de exemplo que o texto de um agente ensina a gravar — a que
+    /// começa com `start` —, tirada do próprio texto, com os valores de
+    /// exemplo trocados por `values`.
+    pub(super) fn taught_line(template: &str, start: &str, values: &[(&str, &str)]) -> String {
+        let found = template.lines().find(|l| l.starts_with(start)).unwrap_or_else(|| panic!("no line starting {start}"));
         values.iter().fold(found.to_string(), |line, (from, to)| line.replacen(from, to, 1))
     }
 

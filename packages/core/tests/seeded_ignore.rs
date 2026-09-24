@@ -3,12 +3,12 @@
 //!
 //! ## Why this file exists
 //!
-//! The Mustard runtime writes files into `.claude/` while it works: the feature
-//! digest, a spec's QA sidecars, rendered dispatch prompts, compaction memory,
-//! the knowledge store. None of it is code and none of it is user state — it is
-//! regenerable output. But the seeded ignore list did not cover it, so the more
-//! the harness worked, the dirtier its own tree became, and the exit ritual
-//! (`git-settle`) kept tripping over files the harness itself had just written.
+//! The Mustard runtime writes files into `.claude/` while it works: a spec's QA
+//! sidecars, rendered dispatch prompts, compaction memory, the knowledge store.
+//! None of it is code and none of it is user state — it is regenerable output.
+//! But the seeded ignore list did not cover it, so the more the harness worked,
+//! the dirtier its own tree became, and the exit ritual that prunes a merged
+//! unit kept tripping over files the harness itself had just written.
 //! In the field the sole dirt blocking a `pr close` was
 //! `.claude/feature-digest.json`, with a spec's `qa-report.json` and
 //! `qa-report.html` queued to do it again on the next close.
@@ -55,9 +55,6 @@ use std::process::Command;
 /// `.claude/`; every one of these is produced while a unit is in flight and must
 /// never reach a diff.
 const WRITER_PATHS: &[&str] = &[
-    // `run feature` writes the full digest here on every query.
-    // apps/rt/src/commands/feature.rs:842
-    "feature-digest.json",
     // The MACHINE renders of a spec's QA — regenerable from the run.
     "spec/demo/qa-report.json",
     "spec/demo/qa-report.html",
@@ -138,7 +135,7 @@ fn the_seeded_ignore_hides_every_path_the_runtime_writes() {
         );
     }
     assert!(
-        !status.contains("qa-report") && !status.contains("feature-digest"),
+        !status.contains("qa-report"),
         "…and adding it must not un-hide the artefacts: {status:?}",
     );
 }

@@ -1,0 +1,475 @@
+{
+  "about": "A primeira rodada de uma obra real deste projeto: os envios das ondas 1 a 4, que saíram juntos. Por onda: os arquivos e o texto da tarefa dela, os itens sem dono que o orquestrador julgou antes do envio (os mesmos 25 nas quatro) e os que ele pôs no pedido. Só a onda 3 recebeu algum: seis. Os itens sem dono vêm pelo número, com o tipo, as palavras-chave e o texto.",
+  "items": [
+    {
+      "id": 52,
+      "code": "MSTD-RULE-0002",
+      "type": "rule",
+      "keys": [
+        "sem convivência",
+        "linha colada",
+        "DELIVERED",
+        "VERDICT",
+        "troca"
+      ],
+      "text": "A troca é feita sem convivência: a mesma mudança que faz o agente gravar a entrega e o revisor gravar o veredito faz a rodada recusar a linha <DELIVERED> e <VERDICT> colada no relatório."
+    },
+    {
+      "id": 56,
+      "code": "MSTD-LIMIT-0001",
+      "type": "limit",
+      "keys": [
+        "teto de tempo",
+        "timeout",
+        "compilação",
+        "teste",
+        "agente"
+      ],
+      "text": "Tempo de cada comando de compilação ou teste do agente: o máximo do terminal. O que pode passar disso roda por pacote, um pacote por comando."
+    },
+    {
+      "id": 57,
+      "code": "MSTD-LIMIT-0002",
+      "type": "limit",
+      "keys": [
+        "entrega",
+        "tamanho",
+        "texto"
+      ],
+      "text": "Texto da entrega gravada pela onda, o mesmo limite de hoje (DELIVERED_MAX_CHARS, packages/core/src/domain/spec_events/types.rs:269)."
+    },
+    {
+      "id": 58,
+      "code": "MSTD-LIMIT-0003",
+      "type": "limit",
+      "keys": [
+        "resumo do commit",
+        "título",
+        "commit"
+      ],
+      "text": "Resumo do commit que a onda grava na entrega, de onde a rodada monta o título; o título continua recusado acima de 60 (apps/rt/src/commands/flow/round/commit.rs:1007-1013)."
+    },
+    {
+      "id": 62,
+      "code": "MSTD-ERR-0001",
+      "type": "error",
+      "keys": [
+        "entrega",
+        "sem envio aberto",
+        "recusa"
+      ],
+      "text": "A onda grava a entrega sem envio aberto para ela (a rodada já assumiu, ou a onda nunca foi despachada)."
+    },
+    {
+      "id": 64,
+      "code": "MSTD-ERR-0003",
+      "type": "error",
+      "keys": [
+        "sobra",
+        "leftovers",
+        "campo faltando"
+      ],
+      "text": "Uma sobra da entrega vem sem título ou sem detalhe."
+    },
+    {
+      "id": 68,
+      "code": "MSTD-EDGE-0003",
+      "type": "edge_case",
+      "keys": [
+        "USAGE",
+        "onda assumida",
+        "consumo"
+      ],
+      "text": "A linha USAGE chega para uma onda que uma rodada anterior já assumiu."
+    },
+    {
+      "id": 69,
+      "code": "MSTD-EDGE-0004",
+      "type": "edge_case",
+      "keys": [
+        "reenvio",
+        "onda reenviada"
+      ],
+      "text": "A onda é reenviada depois de voltar."
+    },
+    {
+      "id": 70,
+      "code": "MSTD-EDGE-0005",
+      "type": "edge_case",
+      "keys": [
+        "fechamento",
+        "sem veredito"
+      ],
+      "text": "O fechamento roda sem veredito gravado pelo revisor."
+    },
+    {
+      "id": 72,
+      "code": "MSTD-EDGE-0007",
+      "type": "edge_case",
+      "keys": [
+        "sobra",
+        "título repetido",
+        "pendência"
+      ],
+      "text": "A sobra que a onda relata tem o mesmo título de uma pendência aberta."
+    },
+    {
+      "id": 73,
+      "code": "MSTD-SCOPE-0001",
+      "type": "out_of_scope",
+      "keys": [
+        "pendências",
+        "ajuste do Mustard",
+        "fora"
+      ],
+      "text": "As outras pendências de ajuste do Mustard nascidas na obra validar-a-busca: leitura da skill sem campo sem uso, executor de provas sem a guarda que nada liga, configuração sem chave de modo, pergunta de mudança de plano, prova de critério só com comando, critério dividido entre ondas, avisos e limite de tempo da atualização e cópia final do descarte."
+    },
+    {
+      "id": 74,
+      "code": "MSTD-SCOPE-0002",
+      "type": "out_of_scope",
+      "keys": [
+        "comentário",
+        "runner",
+        "settings",
+        "fora"
+      ],
+      "text": "Os dois comentários que saem junto com o código de outra pendência: o de apps/rt/src/commands/review/qa_run/runner.rs perto da 825 (sai com a guarda do executor de provas) e o de packages/core/src/platform/project_seed/settings.rs:52 (sai com a chave de modo)."
+    },
+    {
+      "id": 75,
+      "code": "MSTD-SCOPE-0003",
+      "type": "out_of_scope",
+      "keys": [
+        "scan",
+        "fora"
+      ],
+      "text": "Repensar o scan do zero."
+    },
+    {
+      "id": 128,
+      "code": "MSTD-DEC-0006",
+      "type": "decision",
+      "keys": [
+        "volta",
+        "returned",
+        "página",
+        "cópia",
+        "never_copied",
+        "replaces"
+      ],
+      "text": "A volta da onda e a do revisor, gravadas com returned: true, nunca vão para a página: a cópia pula o evento com returned (never_copied, apps/rt/src/commands/spec_events/pages/copy.rs:460), e a página recebe só a versão oficial que a rodada ou o fechamento grava. A versão oficial aponta replaces para todas as voltas daquela onda desde o último envio, e nenhuma volta velha fica visível."
+    },
+    {
+      "id": 129,
+      "code": "MSTD-EDGE-0002",
+      "type": "edge_case",
+      "keys": [
+        "volta repetida",
+        "duas gravações",
+        "replaces"
+      ],
+      "text": "A onda grava a entrega duas vezes antes de a rodada assumir."
+    },
+    {
+      "id": 132,
+      "code": "MSTD-DEC-0007",
+      "type": "decision",
+      "keys": [
+        "conferência",
+        "recusa",
+        "gravação",
+        "volta",
+        "pedido de revisão",
+        "título",
+        "SHA"
+      ],
+      "text": "As conferências da volta que não dependem de juntar a cópia rodam na própria gravação, pelo run write delivered e pelo run write verdict, e recusam antes de gravar: o título de commit acima de 60, o resumo com cara de SHA, o veredito final sem todo o combinado e as outras que só leem a volta. O agente vê a recusa e grava de novo antes de terminar. Só a conferência que depende da junção, como o commit que falta com a cópia mudada, fica na rodada, que então responde pedindo que o agente grave de novo. O pedido de revisão só fecha com o veredito assumido pela rodada ou pelo fechamento; vale a última volta."
+    },
+    {
+      "id": 133,
+      "code": "MSTD-EDGE-0008",
+      "type": "edge_case",
+      "keys": [
+        "volta recusada",
+        "gravação",
+        "conferência"
+      ],
+      "text": "A gravação da volta é recusada por uma conferência, como um título de commit acima de 60."
+    },
+    {
+      "id": 135,
+      "code": "MSTD-ERR-0002",
+      "type": "error",
+      "keys": [
+        "veredito",
+        "sem revisão pedida",
+        "recusa"
+      ],
+      "text": "O revisor grava o veredito sem pedido de revisão aberto."
+    },
+    {
+      "id": 136,
+      "code": "MSTD-CONTR-0003",
+      "type": "contract",
+      "keys": [
+        "rodada",
+        "assumir",
+        "report",
+        "USAGE",
+        "PAUSED",
+        "ANALYSIS",
+        "commit"
+      ],
+      "text": "A rodada e o fechamento assumem a volta: gravam a entrega oficial e o veredito oficial com replaces apontando para as voltas, sem returned e com os arquivos reais, e fazem o commit pelo commit_message de hoje. O relatório que o orquestrador passa em `--report` leva só as linhas <USAGE>, <PAUSED> e <ANALYSIS>."
+    },
+    {
+      "id": 138,
+      "code": "MSTD-ERR-0004",
+      "type": "error",
+      "keys": [
+        "relatório",
+        "DELIVERED",
+        "VERDICT",
+        "linha colada",
+        "recusa"
+      ],
+      "text": "O relatório da rodada ou do fechamento traz uma linha <DELIVERED> ou <VERDICT>."
+    },
+    {
+      "id": 139,
+      "code": "MSTD-DEC-0001",
+      "type": "decision",
+      "keys": [
+        "entrega",
+        "delivered",
+        "veredito",
+        "verdict",
+        "run write",
+        "linha colada",
+        "rodada",
+        "round report",
+        "volta do agente"
+      ],
+      "text": "A entrega de cada onda e o veredito do revisor passam a ser gravados na spec pelo próprio agente, com `mustard-rt run write delivered` e `mustard-rt run write verdict`, como uma volta escondida que a rodada assume. Hoje o agente devolve a linha <DELIVERED> ou <VERDICT>, o orquestrador a cola em `mustard-rt run round --report`, e a rodada a lê (parse_report, apps/rt/src/commands/flow/round/report.rs:421) e grava. A rodada continua a única que grava a entrega oficial e faz o commit; o orquestrador passa só as linhas <USAGE>, <PAUSED> e <ANALYSIS>. Isso revoga, na spec mustard-enxuto, o contrato dos campos (MSTD-CONTR-0003, linhas do entregou e do veredito: gravados pelo binário, no round, a partir do relatório) e a recusa do `run write` ao delivered (MSTD-DEC-0052 e MSTD-TASK-0118, commit 22f26555, de 17/09). A garantia daquela recusa fica: só a rodada grava a entrega oficial. Os textos que ainda dizem que só a rodada grava, ou que descrevem as linhas coladas, entram na mesma mudança: packages/core/src/platform/i18n/events.rs:370-381, apps/rt/src/commands/spec_events/write.rs:88-93, plugin/commands/pr.md:21 e MUSTARD-COMMANDS.md:21, 23, 24 e 28."
+    },
+    {
+      "id": 140,
+      "code": "MSTD-EDGE-0009",
+      "type": "edge_case",
+      "keys": [
+        "revisor",
+        "levantamento",
+        "pull request",
+        "sem pedido de revisão"
+      ],
+      "text": "O molde do revisor é usado na revisão de um levantamento ou no pull request de um colega, onde não há pedido de revisão aberto."
+    },
+    {
+      "id": 141,
+      "code": "MSTD-LIMIT-0004",
+      "type": "limit",
+      "keys": [
+        "moldes",
+        "teto de texto",
+        "idioma",
+        "template_budget"
+      ],
+      "text": "Soma dos moldes e textos de cada idioma, conferida por apps/cli/tests/template_budget.rs:21 e decidida em cesta-de-tarefas MSTD-DEC-0012. Hoje sobram 157 bytes em pt-BR e 169 em en-US. O texto novo dos moldes substitui o formato antigo da linha de entrega e do veredito; o teto não sobe."
+    },
+    {
+      "id": 143,
+      "code": "MSTD-DEC-0008",
+      "type": "decision",
+      "keys": [
+        "relatório sem marca",
+        "JSON solto",
+        "onda cortada",
+        "backlog",
+        "Claude Code fechado"
+      ],
+      "text": "Com a linha colada fora, saem os dois caminhos sem marca do relatório: o JSON solto que vira entrega (apps/rt/src/commands/flow/round/report.rs:429-437) e o relatório sem marca como gatilho da onda de lote cortada (136-150). A onda de lote cortada passa a ser reconhecida pelo estado: envio aberto, nenhuma volta gravada e o Claude Code dela fechado. As tarefas dela voltam ao backlog na rodada seguinte, sem entrega nem commit."
+    },
+    {
+      "id": 144,
+      "code": "MSTD-EDGE-0001",
+      "type": "edge_case",
+      "keys": [
+        "agente não grava",
+        "sem volta",
+        "USAGE sozinha",
+        "onda cortada"
+      ],
+      "text": "O agente termina e não grava a entrega; o relatório só traz a linha USAGE dele."
+    }
+  ],
+  "waves": [
+    {
+      "n": 1,
+      "send": "MSTD-SEND-0001",
+      "files": [
+        "apps/rt/src/commands/spec_events/write.rs",
+        "apps/rt/src/commands/spec_events/pages/copy.rs",
+        "apps/rt/src/commands/spec_events/pages.rs",
+        "apps/rt/src/commands/flow/round/answer.rs",
+        "apps/rt/src/commands/flow/plan.rs",
+        "packages/core/src/platform/i18n/page.rs",
+        "packages/core/src/platform/i18n/flow.rs",
+        "apps/rt/tests/plan_write_prepares_copy.rs",
+        "apps/rt/src/commands/spec_events/cli.rs"
+      ],
+      "text": "MSTD-CTX-0003 inteiro e MSTD-DEC-0002: a gravação de item do assistente não prepara cópia (apps/rt/src/commands/spec_events/write.rs:330-371); Moment sai; prepare e prepare_milestone viram uma função só; a cópia por agente sai com Target.first, o campo first, o ramo de order, agent_order, o texto page.copy.agent e o marcador de packages/core/src/platform/i18n/flow.rs:1229. A cópia depois do pedido do usuário: run write ganha a opção --copy, e só a gravação com ela prepara a cópia do pedido, com o lote calculado na hora. A resposta do write request manda gravar o que o pedido gerou, com as tarefas, e passar --copy na última gravação; se o pedido não gerar outra gravação, a do próprio pedido leva --copy. Linhas que mudaram desde a pendência: a chamada de prepare_milestone em apps/rt/src/commands/flow/plan.rs está na 288, o teste the_first_copy_goes_to_an_agent_at_the_approval_of_a_new_spec na 1343, e o doc citado de answer.rs em 775-782. Os três testes novos nomeados na pendência substituem os três antigos; o teste novo a_ultima_gravacao_do_pedido_prepara_uma_copia_com_as_tarefas fica em apps/rt/tests/plan_write_prepares_copy.rs. Nos mesmos arquivos, os comentários com código de spec entre crases de MSTD-DEC-0003: apps/rt/src/commands/flow/round/answer.rs:976, 1084, 1090, 1199 e 1560 e packages/core/src/platform/i18n/flow.rs:1369 passam a dizer em palavras o que o código faz.",
+      "judged": [
+        52,
+        56,
+        57,
+        58,
+        62,
+        64,
+        68,
+        69,
+        70,
+        72,
+        73,
+        74,
+        75,
+        128,
+        129,
+        132,
+        133,
+        135,
+        136,
+        138,
+        139,
+        140,
+        141,
+        143,
+        144
+      ],
+      "added": []
+    },
+    {
+      "n": 2,
+      "send": "MSTD-SEND-0002",
+      "files": [
+        "packages/core/src/domain/lessons.rs",
+        "packages/core/src/io/wave_prompt.rs",
+        "packages/core/src/domain/wave_prompt.rs",
+        "packages/core/tests/fixtures/licoes-por-onda.json"
+      ],
+      "text": "MSTD-CTX-0007 inteiro, com a onda só de texto de MSTD-DEC-0005: a lição que cita arquivo só vai à onda que mexe nele; a onda cujos arquivos são todos markdown (.md), texto (.txt) ou arquivo de ignorar (como .gitignore) não recebe lição do projeto inteiro nem do subprojeto, nem item do projeto inteiro. Não use languages_of_paths para isso: ela não conhece .html, .cshtml, .razor, .sql, .sh nem .css. As duas regras numa função só em lessons.rs. Os cinco testes nomeados na pendência, com a amostra nova packages/core/tests/fixtures/licoes-por-onda.json, montada dos envios da obra validar-a-busca (.claude/spec/.descartadas/validar-a-busca/spec.ndjson). O teste onda_sem_arquivo_de_codigo passa a se chamar onda_so_de_texto e confere também que a onda só em .cshtml ou só em .html recebe a lição. No mesmo arquivo packages/core/src/domain/wave_prompt.rs, as linhas 1443-1444 citam código de spec entre crases (MSTD-DEC-0003): passam a dizer em palavras o que o código faz. Os comentários de wave_prompt.rs:481-488 sobre a sugestão de arquivos parecidos estão certos e ficam (MSTD-DEC-0004).",
+      "judged": [
+        52,
+        56,
+        57,
+        58,
+        62,
+        64,
+        68,
+        69,
+        70,
+        72,
+        73,
+        74,
+        75,
+        128,
+        129,
+        132,
+        133,
+        135,
+        136,
+        138,
+        139,
+        140,
+        141,
+        143,
+        144
+      ],
+      "added": []
+    },
+    {
+      "n": 3,
+      "send": "MSTD-SEND-0003",
+      "files": [
+        "packages/core/src/domain/spec_events/types.rs",
+        "packages/core/src/domain/spec_events/check.rs",
+        "packages/core/src/domain/spec_events/read.rs",
+        "packages/core/src/io/spec_events.rs"
+      ],
+      "text": "Itens (1) e (2) de MSTD-CTX-0004 e item (1) de MSTD-CTX-0005: delivered ganha commit, proofs (cada prova com criterion e proof), fixes, leftovers (cada sobra com title e detail) e returned; verdict ganha returned; check.rs confere título e detalhe de cada sobra; hidden() esconde o evento com returned: true por um motivo novo em Hidden; um leitor novo, ao lado de delivered_waves, devolve a última volta ainda não assumida de cada onda e a do veredito final, que vem sem onda. Nenhum leitor de delivered muda. Testes novos a_volta_da_onda_fica_fora_da_leitura_ate_a_rodada_assumir e o_veredito_final_sem_onda_e_lido_como_volta, nos testes de packages/core/src/io/spec_events.rs.",
+      "judged": [
+        52,
+        56,
+        57,
+        58,
+        62,
+        64,
+        68,
+        69,
+        70,
+        72,
+        73,
+        74,
+        75,
+        128,
+        129,
+        132,
+        133,
+        135,
+        136,
+        138,
+        139,
+        140,
+        141,
+        143,
+        144
+      ],
+      "added": [
+        128,
+        136,
+        129,
+        64,
+        57,
+        58
+      ]
+    },
+    {
+      "n": 4,
+      "send": "MSTD-SEND-0004",
+      "files": [
+        "apps/rt/src/commands/event/work_branch.rs",
+        "apps/rt/src/commands/git_delete.rs",
+        "apps/scan/README.md"
+      ],
+      "text": "Itens (1), (2), (3) e (9) de MSTD-CTX-0008: apps/rt/src/commands/event/work_branch.rs:854 e 1930, apps/rt/src/commands/git_delete.rs:50-52 e apps/scan/README.md:73-76 e 87-88. Os itens (6) a (8) ficam como estão, porque a sugestão de arquivos parecidos continua viva (MSTD-DEC-0004). No fim, git grep -nE 'pruned by .?git-settle|same way .git-settle|playbook|comando `qa-run` saiu' -- apps/rt/src packages/core/src apps/scan/README.md sai vazio.",
+      "judged": [
+        52,
+        56,
+        57,
+        58,
+        62,
+        64,
+        68,
+        69,
+        70,
+        72,
+        73,
+        74,
+        75,
+        128,
+        129,
+        132,
+        133,
+        135,
+        136,
+        138,
+        139,
+        140,
+        141,
+        143,
+        144
+      ],
+      "added": []
+    }
+  ]
+}

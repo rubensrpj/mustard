@@ -1,7 +1,8 @@
-//! `mustard-rt run pr-list` / `pr-review` / `pr-merge` — the engine of the
-//! `/mustard:pr` door.
+//! `mustard-rt run pr-review` / `pr-merge` — the engine of the `/mustard:pr`
+//! door.
 //!
-//! ONE module for three commands, because they are one ritual over one seam:
+//! ONE module for the list, the review and the merge, because they are one
+//! ritual over one seam:
 //! the link between a pull request and the work unit behind it. A PR's head
 //! branch is `{kind}/{slug}` (or the older `{base}_{slug}`, still recognised)
 //! and that slug IS the spec — `pr-review` prints the brief of the unit under
@@ -10,7 +11,8 @@
 //!
 //! ## What each command answers
 //!
-//! - **`pr-list`** — the base gate first: it refuses from INSIDE a work unit,
+//! - **The list** (`pr-review` with no number, [`list_at`]) — the base gate
+//!   first: it refuses from INSIDE a work unit,
 //!   because "which PRs are open" is a question about the BASE, not about one
 //!   unit. The test is the unit, never a declared list: a branch that is
 //!   somebody's unit and is not a base by the project's one base reading
@@ -70,7 +72,8 @@
 //! A merge requested without an `approved` verdict answers `action:"confirm"`
 //! with `ok:true` and touches NOTHING: not a refusal (the operator decides case
 //! by case) and not a silent merge. `--confirm` is that answer coming back —
-//! the same hand-back shape `git-settle` uses for `exit-and-rerun`. The rule is
+//! the same hand-back shape the exit ritual ([`settle_at`]) uses for
+//! `exit-and-rerun`. The rule is
 //! deliberately one rule, not two: an absent verdict and a recorded rejection
 //! are both "not approved", and both are ASKED about rather than forked into
 //! separate behaviours.
@@ -141,9 +144,8 @@ fn detect_subproject(files: &[String], repo_root: &Path) -> Option<PathBuf> {
 /// Run `gh` in `root` and return its trimmed stdout, or the reason it did not
 /// answer.
 ///
-/// Same shape the antigo review-prefetch usava (the `cmd /C`
-/// hop is how a `gh.cmd` shim is found on Windows) plus one addition that
-/// matters here: the working directory. `gh` resolves the repository from the
+/// On Windows the call goes through `cmd /C`, which is how a `gh.cmd` shim is
+/// found, and it always runs in `root`: `gh` resolves the repository from the
 /// cwd, and every command in this module asks about THIS project's pull
 /// requests — inheriting the process cwd would ask about whichever repository
 /// the session happens to sit in.
@@ -203,7 +205,7 @@ fn bases_and_branch(root: &Path) -> (BaseFlow, String) {
 }
 
 /// The spec slug a work branch names — [`BaseFlow::slug_of`], the crate's ONE
-/// spelling of the question, shared with the per-branch notebook.
+/// spelling of the question.
 ///
 /// `None` when the branch is nobody's work unit — a PR opened by hand or a
 /// base→base promotion has no unit, and therefore no spec to review against or
@@ -297,7 +299,7 @@ fn spec_subproject(spec_text: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// `pr-list`
+// The list of open pull requests (`pr-review` with no number)
 // ---------------------------------------------------------------------------
 
 /// One open pull request, as the door lists it.
@@ -317,7 +319,7 @@ pub(crate) struct PrEntry {
     pub head: String,
 }
 
-/// The `pr-list` document.
+/// The document of the list of open pull requests.
 #[derive(Debug, Serialize)]
 pub(crate) struct PrListReport {
     /// False only when the base gate refused. An unreachable provider is
@@ -384,7 +386,7 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
     let unit = flow.base_of(&branch);
     // The project's own RECORD of the unit, not the name's shape: an undeclared
     // base like `release/2026-Q3` splits into a kind and a slug exactly like a
-    // unit branch does, and `pr list` was measured refusing to run from it.
+    // unit branch does, and this list was measured refusing to run from it.
     // A pergunta "esta branch é base de integração" tem uma resposta só, a
     // mesma que as outras portas fazem: o que o projeto declarou MAIS o que o
     // próprio remoto chama de padrão. Sem a segunda metade, um projeto
@@ -411,13 +413,15 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
             .or_else(|| mustard_core::default_branch(&repo));
         let hint = match &target {
             Some(base) => format!(
-                "`pr list` asks about a BASE, not about one unit — switch to `{base}` \
-                 (`git checkout {base}`) and run it again"
+                "the list of open pull requests is asked from a BASE, not from inside one \
+                 unit — switch to `{base}` (`git checkout {base}`) and run \
+                 `mustard-rt run pr-review` again"
             ),
             // Nothing recorded the base and git named no default: say what to
             // do without inventing a branch nobody measured.
-            None => "`pr list` asks about a BASE, not about one unit — switch to the branch \
-                     this unit integrates into and run it again"
+            None => "the list of open pull requests is asked from a BASE, not from inside one \
+                     unit — switch to the branch this unit integrates into and run \
+                     `mustard-rt run pr-review` again"
                 .to_string(),
         };
         return PrListReport {
@@ -662,7 +666,7 @@ fn recorded_verdict(root: &Path, spec: &str) -> Option<String> {
 #[derive(Debug, Serialize)]
 pub(crate) struct PrMergeReport {
     /// True for `merged` (as far as the exit ritual got) AND for `confirm` —
-    /// an ASK is an instruction, not a failure, exactly like `git-settle`'s
+    /// an ASK is an instruction, not a failure, exactly like the exit ritual's
     /// `exit-and-rerun`. Downgrading it would teach the caller to stop where it
     /// must continue.
     pub ok: bool,
@@ -685,15 +689,16 @@ pub(crate) struct PrMergeReport {
     pub checks: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
-    /// The `git-settle` report, folded verbatim — the pruning half of this
-    /// command IS that ritual, so its answer is not re-spelled here.
+    /// The exit ritual's report ([`settle_at`]), folded verbatim — the pruning
+    /// half of this command IS that ritual, so its answer is not re-spelled
+    /// here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settle: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
     /// The pending item THIS merge closed — the one carrying in the list the
     /// note "became the spec X" of this spec, recorded at the opening
-    /// (`emit-pipeline --pending`). Absent when there was no link.
+    /// (`open --pending`). Absent when there was no link.
     #[serde(rename = "pendingClosed", skip_serializing_if = "Option::is_none")]
     pub pending_closed: Option<String>,
     /// The pending items born in the merge's spec that stay open: the delivery
@@ -1011,10 +1016,10 @@ struct Landed {
 /// ask.
 ///
 /// The rest — back to the base, pull it, remove the worktree, delete the local
-/// branch, and the remote one only with `git.deleteRemoteBranch` — IS
-/// `git-settle`, called rather than rewritten: it already verifies the merge
-/// landed, already advances every base and already handles the in-place unit
-/// that has no worktree to leave.
+/// branch, and the remote one only with `git.deleteRemoteBranch` — IS the
+/// exit ritual ([`settle_at`]), called rather than rewritten: it already
+/// verifies the merge landed, already advances every base and already handles
+/// the in-place unit that has no worktree to leave.
 fn land(
     root: &Path,
     facts: &PrFacts,
@@ -1275,8 +1280,10 @@ mod tests {
         dir
     }
 
-    /// `pr list` from a work branch REFUSES and names the base to switch
-    /// to; from the base it does not refuse (whatever the provider answers).
+    /// The list of open pull requests — `pr-review` with no number — REFUSES
+    /// from a work branch, names the base to switch to and the command to run
+    /// there again; from the base it does not refuse (whatever the provider
+    /// answers).
     #[test]
     fn pr_list_refuses_off_an_integration_base_and_names_it() {
         let dir = repo();
@@ -1305,7 +1312,13 @@ mod tests {
         assert_eq!(off_base.branch, "dev_some-unit");
         assert!(off_base.prs.is_empty(), "a refusal lists nothing");
         let hint = off_base.hint.unwrap_or_default();
-        assert!(hint.contains("dev"), "the refusal must name the base: {hint}");
+        assert!(hint.contains("`git checkout dev`"), "the refusal must name the base: {hint}");
+        // O que rodar de novo, lá na base, é o comando que existe: o mesmo
+        // `pr-review` sem número que pediu a lista.
+        assert!(
+            hint.contains("run `mustard-rt run pr-review` again"),
+            "the refusal must name the command to run again from the base: {hint}"
+        );
 
         // A branch that is NOBODY's unit is not refused any more. It used to
         // be, for the sole reason that `git.flow` does not list it — and the

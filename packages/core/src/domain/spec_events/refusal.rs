@@ -116,6 +116,12 @@ pub enum Refusal {
     /// O texto do entregou de uma onda passa do teto de caracteres: ele volta
     /// para a janela principal e precisa caber nela.
     DeliveredTooLong { chars: usize, max: usize },
+    /// A volta de uma onda gravada sem envio aberto para ela: a rodada já a
+    /// assumiu, ou a onda nunca foi despachada. Nada é gravado.
+    NoOpenSend { wave: u64 },
+    /// Uma sobra da entrega sem título ou sem detalhe: `field` é o campo que
+    /// falta na primeira sobra incompleta. Nada é gravado.
+    LeftoverFieldMissing { field: String },
     /// Um item combinado novo, gravado depois da aprovação, que não tem dono:
     /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
     /// todo.
@@ -230,6 +236,8 @@ impl Refusal {
             Self::PurgeExcerptNotFound { .. } => "purge-excerpt-not-found",
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
             Self::DeliveredTooLong { .. } => "delivered-too-long",
+            Self::NoOpenSend { .. } => "no-open-send",
+            Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
@@ -420,6 +428,10 @@ impl Refusal {
                 "spec_events.delivered_too_long",
                 &[("{chars}", chars.to_string()), ("{max}", max.to_string())],
             ),
+            Self::NoOpenSend { wave } => fill("spec_events.no_open_send", &[("{wave}", wave.to_string())]),
+            Self::LeftoverFieldMissing { field } => {
+                fill("spec_events.leftover_field_missing", &[("{field}", field.clone())])
+            }
             Self::OwnerMissing { event_type } => {
                 fill("plan.owner_missing", &[("{type}", event_type.clone())])
             }

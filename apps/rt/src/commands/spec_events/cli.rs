@@ -35,7 +35,7 @@ pub enum SpecEventsCmd {
         spec: Option<String>,
         /// Keep only the events whose words or item code match this term —
         /// the conversation searched for a subject, or an item found by the
-        /// code the page shows, like `MSTD-CRIT-0016`.
+        /// code the page shows, like `MSTD-CRIT-NNNN`.
         #[arg(long)]
         term: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
@@ -49,10 +49,17 @@ pub enum SpecEventsCmd {
     /// a source or citing a file that does not exist. `remove`,
     /// `purge` and a new version (`replaces`) are events like any other; they
     /// point at an item by its event number or by the code the page shows,
-    /// like `MSTD-RULE-0002`. With the `lesson` type it writes one lesson to
+    /// like `MSTD-RULE-NNNN`. A `remove` by the code takes out the whole
+    /// item, every version of it; by the number, only that version, and the
+    /// version it replaced comes back. With the `lesson` type it writes one lesson to
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
-    /// `{"class":"defect","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
+    /// `{"class":"environment_trap","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
     /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`. A
+    /// `defect` or `project_rule` lesson is refused, alone or merging others:
+    /// the bank never goes to git, so a defect that can happen again becomes a
+    /// fix in the code, with the test that fails if it comes back, and a
+    /// project rule becomes a test that fails if the rule is broken; with a
+    /// spec open, the refusal names the `task` to write in it. A
     /// lesson is the assistant's summary, written the project's way: its text
     /// goes through the writing check that ends a response, and a text that
     /// repeats a lesson already in the bank (spaces, case and accents aside)
@@ -78,6 +85,14 @@ pub enum SpecEventsCmd {
         /// refused.
         #[arg(long, default_value = "{}")]
         json: String,
+        /// After the write, prepare the copy of the spec page for its
+        /// database, with the batches computed now, and answer the order to
+        /// copy them. Pass it only on the last write a user's request
+        /// generates (the request itself when it generates no other), so the
+        /// page gets one copy with everything the request changed. Without
+        /// it, no write prepares a copy: the milestones copy on their own.
+        #[arg(long)]
+        copy: bool,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -128,8 +143,8 @@ pub fn dispatch(cmd: SpecEventsCmd) {
         SpecEventsCmd::Read { block, spec, term, root } => {
             spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term });
         }
-        SpecEventsCmd::Write { event_type, spec, json, root } => {
-            spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json });
+        SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
+            spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
         }
         SpecEventsCmd::Index { root } => {
             spec_events::index::run(&spec_events::index::IndexOpts { root });
@@ -183,7 +198,7 @@ mod tests {
         let fields = json!({"text": "Gravar tudo.", "origin": 1}).to_string();
         let root_arg = root.to_string_lossy().into_owned();
         let args = ["x", "write", "decision", "--spec", "teste", "--json", &fields, "--root", &root_arg];
-        let Harness { cmd: SpecEventsCmd::Write { event_type, spec, json, root } } =
+        let Harness { cmd: SpecEventsCmd::Write { event_type, spec, json, root, .. } } =
             Harness::try_parse_from(args).expect("the write parses")
         else {
             panic!("not the write command");

@@ -25,8 +25,8 @@
 //! Deleting the branch you are standing on is not an operation — git refuses it,
 //! and the ritual would leave the session on a ref that no longer exists.
 //! "Which unit do I give up on" is a question asked from the BASE, exactly like
-//! `pr-list`, so a checkout that IS somebody's unit REFUSES and names the base
-//! to switch to, touching nothing.
+//! the list of open pull requests, so a checkout that IS somebody's unit
+//! REFUSES and names the base to switch to, touching nothing.
 //!
 //! Both refusals are measured, never read off a declared list. The old test was
 //! membership in `git.flow`'s bases, which refused every real base the install
@@ -47,9 +47,9 @@
 //! with a cheerful "deleted" over a typo.
 //!
 //! Fail-open around the provider (an absent `gh` is an honest `ghError` field
-//! and exit 0) and around the remote delete, which is best-effort in the same
-//! way `git-settle`'s is. The three refusals above never degrade: they are the
-//! whole guard.
+//! and exit 0) and around the remote delete, which is best-effort: a push that
+//! fails leaves `remoteDeleted: false` in the report. The three refusals above
+//! never degrade: they are the whole guard.
 
 use std::path::Path;
 
@@ -135,10 +135,11 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     if flow.has_unit_record(&branch) && !on_integration_base(&main, &branch, &cfg) {
         // The unit's OWN record answers where to go back to; `origin/HEAD` is
         // the last resort, so nothing here spells a branch name of its own.
-        // Same three sources, same order, as `pr list`: the unit's own record,
-        // then the DECLARED primary base when the project states one — naming
-        // `origin/HEAD` there sends a unit that integrates into `dev` off to
-        // `main` — and only then the remote's own default.
+        // Same three sources, same order, as the refusal of the pull request
+        // list: the unit's own record, then the DECLARED primary base when the
+        // project states one — naming `origin/HEAD` there sends a unit that
+        // integrates into `dev` off to `main` — and only then the remote's own
+        // default.
         let target = standing_on
             .known()
             .map(str::to_string)
@@ -199,7 +200,7 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // like `fix/aba` and read as somebody's unit; and with no `git.flow` written
     // — the shape `mustard init` produces today — the declared set degrades to
     // the hardcoded `{main, master}`, so it protected two literals and nothing
-    // else. Measured against that shape: `git-delete --unit release/2026-Q3`
+    // else. Measured against that shape: deleting the unit `release/2026-Q3`
     // answered `remoteDeleted: true` and the release line was gone FROM THE
     // REMOTE. Absence of evidence refuses here — this is the one door where
     // being wrong cannot be undone.
@@ -207,7 +208,7 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // Two places the record can live, and this door must ask BOTH: the working
     // tree (projects that leave `.claude/spec/` untracked) and the unit's own
     // branch (projects that commit it — which is where the flow authors it, so
-    // from the base the directory is simply not on disk). `git delete` retires a
+    // from the base the directory is simply not on disk). This door retires a
     // unit from OUTSIDE it, so reading only the working tree refuses every
     // legitimate delete — measured, before the second leg existed.
     // The SAME reading the standing-on guard above uses. It was briefly spelled
@@ -234,12 +235,9 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     let (pr, pr_closed, gh_error) = close_open_pr(&main, unit);
 
     // Then the git side. The work-branch gate cuts every unit IN PLACE — no
-    // worktree of its own — so there is no separate floor to free here: the
-    // worktree table this door used to consult served `work-unit-open`, which
-    // opened a unit into its own worktree and no longer exists as a command
-    // (`apps/rt/src/commands/mod.rs`). `worktreeRemoved` stays in the report,
-    // permanently `false`, so a caller reading the old field shape keeps
-    // reading valid JSON.
+    // worktree of its own — so there is no separate floor to free here.
+    // `worktreeRemoved` stays in the report, permanently `false`, so a caller
+    // reading the field keeps reading valid JSON.
     //
     // `-D`, never `-d`: an abandoned unit is unmerged BY DEFINITION, and `-d`
     // would refuse exactly the branches this command exists to remove.
@@ -316,7 +314,7 @@ mod tests {
         git_ok(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
     }
 
-    /// Invoked from a work branch, `git delete` REFUSES, names the base
+    /// Invoked from a work branch, the delete REFUSES, names the base
     /// to switch to and touches nothing.
     #[test]
     fn git_delete_refuses_off_an_integration_base_and_touches_nothing() {
@@ -347,8 +345,8 @@ mod tests {
     /// (`release/2026-Q3`) parses into a first segment that reads as a kind and
     /// a second that reads as a slug, exactly like `feature/aba` does. So the
     /// project's own release line answered "somebody's work unit", and both
-    /// doors acted on that answer: this one OFFERED to delete it, and `pr list`
-    /// REFUSED to run from it.
+    /// doors acted on that answer: this one OFFERED to delete it, and the list
+    /// of open pull requests REFUSED to run from it.
     ///
     /// Behaviour, not source text: every assertion below is a command's own
     /// report plus what the repository looks like afterwards.
@@ -380,7 +378,7 @@ mod tests {
         let listed = crate::commands::review::pr_door::list_at(root);
         assert!(
             listed.ok,
-            "`pr list` refused from the project's own base: {:?} / {:?}",
+            "the pull request list refused from the project's own base: {:?} / {:?}",
             listed.reason, listed.hint
         );
         assert_eq!(listed.branch, "release/2026-Q3");
@@ -413,7 +411,7 @@ mod tests {
         // fix rounds: `mustard init` writes no flow, so the declared set falls
         // back to the hardcoded `{main, master}` and protects two literals and
         // nothing else. Measured against this shape before the record test
-        // existed, `git delete` answered `remoteDeleted: true` and the release
+        // existed, the delete answered `remoteDeleted: true` and the release
         // line was gone.
         let bare = tempdir().expect("tempdir");
         let bare_root = bare.path();
@@ -455,8 +453,8 @@ mod tests {
     /// apelido como o de uma unidade.
     ///
     /// Sem essa leitura única, a declaração vazia fazia a branch padrão do
-    /// servidor contar como unidade de alguém: `pr list` recusava rodar de cima
-    /// dela e `git delete` aceitava apagá-la.
+    /// servidor contar como unidade de alguém: a lista dos pull requests
+    /// recusava rodar de cima dela e a exclusão aceitava apagá-la.
     #[test]
     fn a_branch_padrao_do_servidor_e_base_para_todas_as_portas() {
         let dir = tempdir().expect("tempdir");
@@ -489,7 +487,8 @@ mod tests {
         let listed = crate::commands::review::pr_door::list_at(root);
         assert!(
             listed.ok,
-            "`pr list` recusou da branch que o próprio remoto chama de padrão: {:?} / {:?}",
+            "a lista dos pull requests recusou da branch que o próprio remoto chama de padrão: \
+             {:?} / {:?}",
             listed.reason, listed.hint
         );
 

@@ -127,13 +127,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.outside_review_step", Locale::PtBr) => {
             "Depois, antes do fim, rode o revisor de fora: despache ao agente `mustard-review` a \
              conferência do levantamento inteiro da spec {spec}, que aponta o que ficou de fora ou se \
-             contradiz. Grave cada achado dele como ponto aberto, com `block` e `from` \
+             contradiz e devolve o texto a você, sem gravar veredito. Grave cada achado dele como ponto aberto, com `block` e `from` \
              outside_review, e apresente-o como os outros; sem achado, siga."
         }
         ("survey.outside_review_step", Locale::EnUs) => {
             "Then, before the end, run the outside reviewer: dispatch to the `mustard-review` agent \
              the check of the whole survey of spec {spec}, which points out what was left out or \
-             contradicts itself. Record each of its findings as an open point, with `block` and \
+             contradicts itself and returns its text to you, recording no verdict. Record each of its findings as an open point, with `block` and \
              `from` outside_review, and present it like the others; with no finding, go on."
         }
         ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
@@ -198,7 +198,7 @@ mod tests {
             include_str!("survey.rs"),
             super::PREFIXES,
             36,
-            0xb59b_8a6e_0552_cdbc,
+            0x77f0_30d9_a96c_af01,
         );
     }
 

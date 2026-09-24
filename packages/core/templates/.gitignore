@@ -59,21 +59,19 @@ spec/*/.blobs/
 # `spec/*/qa/report.md` is deliberately NOT here: the QA transcript is the
 # unit's own record of which criteria passed, the peer of `review/verdict.md`,
 # and the close commits it. Only the machine renders of it are regenerable.
-# The two GATE MARKERS, and they are ignored for a reason no other line here
-# shares. Everything above is ignored because it is regenerable; these two are
-# ignored because versioning them would DEFEAT the gate they stand for.
+# The GATE MARKER, and it is ignored for a reason no other line here shares.
+# Everything above is ignored because it is regenerable; this one is ignored
+# because versioning it would DEFEAT the gate it stands for.
 #
 # `.approved-by-user` is minted only from an act a model cannot author — the
 # user accepting a plan, answering the approval question, or typing the picker
 # form — and the gate decides on the file's PRESENCE, not its contents.
-# `.clarified` is the same shape for the clarify gate. Committed, they would
-# travel: a fresh clone would arrive with the approval already given, and the
-# one signal the gate rests on being unforgeable would be forgeable by
-# `git clone`. Measured on this repository, 24/08/2026: with the harness's
-# clone-local exclude lifted, 9 `.approved-by-user` and 13 `.clarified` were
-# staged for commit.
+# Committed, it would travel: a fresh clone would arrive with the approval
+# already given, and the one signal the gate rests on being unforgeable would
+# be forgeable by `git clone`. Measured on this repository, 24/08/2026: with
+# the harness's clone-local exclude lifted, 9 `.approved-by-user` were staged
+# for commit.
 spec/*/.approved-by-user
-spec/*/.clarified
 
 # The VERBATIM operator prompts. `change-log.md` and `change-requests.ndjson`
 # record what the person typed, word for word, as they typed it — including the

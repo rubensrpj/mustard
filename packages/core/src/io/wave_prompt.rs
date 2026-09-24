@@ -21,10 +21,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::domain::lessons::{in_scope, related_to_tasks, Scope};
+use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
 use crate::domain::project_map::{check_skill, file_history, has_rust_part, tests_for, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
-use crate::domain::wave_prompt::{self, wave_files, Choice, Execution, Material, Skill, WaveCopy};
+use crate::domain::wave_prompt::{self, tasks_text, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
 
 /// O pedido de uma onda, como o disco o entrega.
@@ -32,13 +32,9 @@ use crate::platform::i18n::Locale;
 pub struct WavePrompt {
     /// O número da onda.
     pub wave: u64,
-    /// O texto do molde do agente, como o instalador o gravou no projeto —
-    /// o primeiro dos dois textos que o agente recebe. Vazio quando o
-    /// projeto ainda não tem o arquivo do molde.
-    pub template: String,
     /// O nome do agente escolhido para este lote, pelo número de tarefas
     /// ([`wave_prompt::agent_role`]): `"wave-solo"` numa tarefa só, `"wave"`
-    /// em várias. É o arquivo lido para `template`, sem a extensão.
+    /// em várias — o molde que o projeto instalou com esse nome.
     pub agent: String,
     /// O modelo pedido para a onda: fixo, pelo papel `wave`
     /// ([`wave_prompt::requested_model`]).
@@ -98,13 +94,17 @@ pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
 /// arquivos das tarefas dela ou para as skills que elas nomeiam e, de cada
 /// classe, só as mais ligadas ao texto das tarefas. Uma pasta com centenas
 /// delas passaria do teto de tokens do pedido, e a lição sem palavra em comum
-/// com a tarefa só ocupa o agente. São as que a rodada mostra ao orquestrador
-/// antes do envio, e as que o pedido leva, menos as que a escolha dele tirou.
+/// com a tarefa só ocupa o agente. Delas, ficam só as que servem à onda: a
+/// que cita um arquivo vai só à onda que mexe nele, e a onda só de texto não
+/// recebe lição do projeto todo nem do subprojeto ([`serving_wave`]). São as
+/// que a rodada mostra ao orquestrador antes do envio, e as que o pedido
+/// leva, menos as que a escolha dele tirou.
 #[must_use]
 pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a SpecEvent> {
     let files = wave_files(log, wave);
+    let skills = skills_named(log, wave);
     let mut found: Vec<&SpecEvent> = Vec::new();
-    for skill in std::iter::once(None).chain(skills_named(log, wave).into_iter().map(Some)) {
+    for skill in std::iter::once(None).chain(skills.iter().cloned().map(Some)) {
         let scope = Scope { files: files.clone(), subproject: None, skill };
         for lesson in in_scope(bank, &scope) {
             if !found.iter().any(|seen| seen.id == lesson.id) {
@@ -112,7 +112,7 @@ pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a 
             }
         }
     }
-    related_to_tasks(found, &tasks_text(log, wave))
+    serving_wave(related_to_tasks(found, &tasks_text(log, wave)), &files, &skills)
 }
 
 /// A pasta da cópia separada da onda `wave` da spec `spec`, dentro das cópias
@@ -244,16 +244,6 @@ pub fn recorded_copy(log: &SpecLog, wave: u64) -> Option<WaveCopy> {
 #[must_use]
 pub fn shown(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
-}
-
-/// O texto do molde do agente instalado no projeto `root`, para o papel
-/// `role` (`wave`, `wave-solo`, `review` ou `skill`) — o arquivo que o
-/// instalador grava em `.claude/agents/mustard/<role>.md`. Vazio quando o
-/// projeto ainda não o tem.
-#[must_use]
-pub fn agent_template(root: &Path, role: &str) -> String {
-    std::fs::read_to_string(root.join(".claude").join("agents").join("mustard").join(format!("{role}.md")))
-        .unwrap_or_default()
 }
 
 /// O que é igual para o pedido de todas as ondas de uma montagem.
@@ -410,13 +400,11 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
-    // O nome do agente, pelo número de tarefas do lote, escolhe o arquivo:
-    // nenhum dos dois limita as idas e voltas do agente, então não há mais o
-    // que escrever em memória — só ler o molde certo.
+    // O nome do agente, pelo número de tarefas do lote: o molde com esse
+    // nome mora no projeto, e o envio grava só o nome.
     let agent = wave_prompt::agent_role(of_type("task").len()).to_string();
-    let template = agent_template(root, &agent);
     let model = wave_prompt::requested_model(&agent).to_string();
-    WavePrompt { wave, template, agent, model, text, lines, bad_skills, stale_skills }
+    WavePrompt { wave, agent, model, text, lines, bad_skills, stale_skills }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -448,17 +436,6 @@ fn execution(context: &Context, wave: u64) -> Execution {
         build_dir: recorded.and_then(|copy| copy.build_dir),
     };
     Execution { running, commit, copy, review, ..context.base.clone() }
-}
-
-/// O texto das tarefas de uma onda, uma por linha: a consulta que escolhe as
-/// lições que o pedido da onda e o da revisão levam.
-fn tasks_text(log: &SpecLog, wave: u64) -> String {
-    log.block(BlockQuery::Wave(wave))
-        .iter()
-        .filter(|e| e.event_type == "task")
-        .filter_map(|task| task.str_field("text"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.
@@ -642,29 +619,6 @@ mod tests {
         ])
     }
 
-    /// Uma onda `n` com `tasks` tarefas, para testar o molde de agente que
-    /// o número delas escolhe.
-    fn plan_log_with_tasks(tasks: usize) -> SpecLog {
-        let mut events: Vec<(&str, Value)> =
-            vec![("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))];
-        for _ in 0..tasks {
-            events.push(("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}]})));
-        }
-        log_of(&events)
-    }
-
-    /// Os moldes de agente de verdade, os que o Mustard instala no projeto,
-    /// gravados em `root` como o instalador os grava. É o molde do produto,
-    /// e não uma cópia de mentira escrita aqui, que o teste lê: assim um
-    /// teto de idas e voltas que voltasse ao cabeçalho derrubaria o teste.
-    fn write_agent_template(root: &Path) {
-        let dir = root.join(".claude").join("agents").join("mustard");
-        std::fs::create_dir_all(&dir).unwrap();
-        for (name, body) in crate::platform::seeds::agent_texts(Locale::PtBr) {
-            std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
-        }
-    }
-
     fn write_skill(root: &Path, subproject: &str, name: &str, text: &str) {
         let dir = root.join(subproject).join(".claude").join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -676,29 +630,6 @@ mod tests {
     fn write_map(root: &Path, model: &Value) {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         std::fs::write(crate::io::project_map::model_path(root), model.to_string()).unwrap();
-    }
-
-    /// O molde que o pedido da onda leva não traz teto de idas e voltas,
-    /// nem o de tarefa única (`wave-solo.md`) nem o de várias (`wave.md`).
-    /// A medição de treze agentes de onda deste projeto deu de 36 a 315
-    /// idas e voltas, e a onda mais curta gastou 36: qualquer teto cortava
-    /// a onda no meio e a fazia recomeçar do zero, gastando mais do que se
-    /// não houvesse teto. O binário só escolhe qual dos dois moldes ler.
-    #[test]
-    fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        write_agent_template(root);
-
-        let solo = prompts(root, "teste", &plan_log_with_tasks(1), Locale::PtBr, &Flight::default());
-        assert_eq!(solo.len(), 1);
-        assert_eq!(solo[0].agent, "wave-solo", "{}", solo[0].agent);
-        assert!(!solo[0].template.contains("maxTurns"), "{}", solo[0].template);
-
-        let several = prompts(root, "teste", &plan_log_with_tasks(2), Locale::PtBr, &Flight::default());
-        assert_eq!(several.len(), 1);
-        assert_eq!(several[0].agent, "wave", "{}", several[0].agent);
-        assert!(!several[0].template.contains("maxTurns"), "{}", several[0].template);
     }
 
     /// A skill que a tarefa nomeia entra no pedido pelo caminho do arquivo e
@@ -1172,6 +1103,75 @@ mod tests {
         for out in [DISPATCH_LESSON, "Subagente nunca roda", "Quem tira uma proteção", "O teste tem de falhar"] {
             assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
         }
+    }
+
+    /// Os envios reais das treze ondas de uma obra deste projeto, com as
+    /// lições do banco que chegaram a cada uma, as que o orquestrador tirou
+    /// à mão (53) e as que ele manteve. Cada onda é remontada com os arquivos
+    /// e o texto reais das tarefas dela e um banco só com as lições que
+    /// chegaram a ela, e passa pela mesma leitura da rodada e do pedido. As
+    /// lições que servem à onda evitam 18 das tiradas — 11 nas duas ondas só
+    /// de markdown, 7 pelo arquivo citado que a onda não toca — e nenhuma das
+    /// mantidas se perde.
+    #[test]
+    fn as_licoes_que_o_orquestrador_tirou_nao_chegam_e_as_mantidas_continuam() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/licoes-por-onda.json"
+        )))
+        .unwrap();
+        let ids = |value: &Value| -> BTreeSet<u64> {
+            value.as_array().unwrap().iter().map(|id| id.as_u64().unwrap()).collect()
+        };
+        let lessons: BTreeMap<u64, &Value> =
+            fixture["lessons"].as_array().unwrap().iter().map(|l| (l["id"].as_u64().unwrap(), l)).collect();
+        let expected: BTreeMap<u64, BTreeSet<u64>> = [
+            (2, vec![52]),
+            (3, vec![98]),
+            (4, vec![52]),
+            (6, vec![3, 11, 12, 13, 14, 80, 101]),
+            (7, vec![52]),
+            (8, vec![52, 95]),
+            (9, vec![96, 101, 102, 110]),
+            (10, vec![98]),
+        ]
+        .into_iter()
+        .map(|(n, avoided)| (n, avoided.into_iter().collect()))
+        .collect();
+
+        let mut removed_total = 0;
+        let mut avoided_total = 0;
+        for wave in fixture["waves"].as_array().unwrap() {
+            let n = wave["n"].as_u64().unwrap();
+            let (arrived, removed, kept) = (ids(&wave["arrived"]), ids(&wave["removed"]), ids(&wave["kept"]));
+            assert_eq!(arrived, removed.union(&kept).copied().collect(), "onda {n}: chegaram as tiradas e as mantidas");
+            removed_total += removed.len();
+
+            let bank_text: String = arrived
+                .iter()
+                .map(|id| {
+                    let l = lessons[id];
+                    let keys: Vec<&str> = l["keys"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+                    keyed_line(*id, l["class"].as_str().unwrap(), l["text"].as_str().unwrap(), &keys, l["applies_to"].clone(), json!({"spec": "obra-real"}))
+                })
+                .collect();
+            let bank = crate::domain::spec_events::parse_log(&bank_text);
+            let paths: Vec<Value> = wave["files"].as_array().unwrap().iter().map(|path| json!({"path": path})).collect();
+            let log = log_of(&[
+                ("wave", json!({"n": n, "text": "A onda", "criteria": [], "done_when": "passa"})),
+                ("task", json!({"wave": n, "text": wave["text"], "files": paths})),
+            ]);
+
+            let got: BTreeSet<u64> = wave_lessons(&bank, &log, n).iter().map(|l| l.id).collect();
+            let avoided: BTreeSet<u64> = arrived.difference(&got).copied().collect();
+            assert!(got.is_subset(&arrived), "onda {n}: {got:?} fora de {arrived:?}");
+            let lost: Vec<&u64> = kept.difference(&got).collect();
+            assert!(lost.is_empty(), "onda {n}: perdeu as mantidas {lost:?}");
+            assert_eq!(avoided, expected.get(&n).cloned().unwrap_or_default(), "onda {n}");
+            avoided_total += avoided.len();
+        }
+        assert_eq!(removed_total, 53);
+        assert_eq!(avoided_total, 18);
     }
 
     /// A lição real sobre o envio do pedido de uma onda, do banco deste

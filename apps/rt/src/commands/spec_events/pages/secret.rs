@@ -95,7 +95,7 @@ fn valued() -> &'static [(Regex, bool)] {
 }
 
 /// Os valores que têm letra e número sem serem segredo: o código de um item
-/// (`MSTD-TASK-0101`), a data com hora e o caminho de arquivo, com ou sem a
+/// (`MSTD-TASK-NNNN`), a data com hora e o caminho de arquivo, com ou sem a
 /// linha (`apps/rt/src/shared/rtk_gain.rs:120`).
 fn not_secret() -> Option<&'static Regex> {
     static NOT_SECRET_RE: OnceLock<Option<Regex>> = OnceLock::new();

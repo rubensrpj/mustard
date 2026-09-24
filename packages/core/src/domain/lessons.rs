@@ -4,7 +4,16 @@
 //! pode se repetir (`defect`), uma regra do projeto (`project_rule`), uma
 //! armadilha do ambiente (`environment_trap`) ou uma preferência do usuário
 //! (`user_preference`). O banco fica fora das pastas das specs e é escrito só
-//! pelo binário, pelo `write lesson`. Cada linha tem o mesmo envelope dos
+//! pelo binário, pelo `write lesson`. Ele mora só na máquina de quem programa
+//! e não vai ao git: numa cópia do projeto em outra máquina, ele não existe.
+//! Por isso o `write lesson` recusa as duas classes que valem para o projeto
+//! ([`for_the_code`]): a de defeito e a de regra do projeto. As duas viram
+//! ajuste no próprio código, com o teste que falha se o erro voltar ou se a
+//! regra for quebrada, e esse teste vai ao git com a obra. O banco guarda só o
+//! que é pessoal de quem programa: a armadilha do ambiente e a preferência do
+//! usuário. As lições de defeito e de regra do projeto já guardadas seguem na
+//! leitura, e a retirada as tira como qualquer outra.
+//! Cada linha tem o mesmo envelope dos
 //! eventos da spec (`v`, `id`, `at`, `type`, `author`), sem código de item e
 //! sem `origin`: o `type` guarda a classe da lição, e a lição é apontada pelo
 //! número dela no banco.
@@ -22,7 +31,12 @@
 //! tarefas ([`related_to_tasks`]), porque uma pasta pode ter
 //! centenas delas: a mesma busca, mas sobre as palavras-chave de cada lição,
 //! e não sobre o texto inteiro, em que quase toda lição longa divide alguma
-//! palavra comum com qualquer tarefa.
+//! palavra comum com qualquer tarefa. Delas, ficam só as que servem à onda
+//! ([`serving_wave`]): a que cita um arquivo vai só à onda que mexe nele, e a
+//! onda só de texto ([`text_only`]) não recebe lição do projeto todo nem do
+//! subprojeto. O item combinado sem dono é escolhido para a onda pelas mesmas
+//! duas leituras ([`tied_to_wave`]): as palavras-chave dele ligadas às
+//! tarefas, ou o arquivo que ele cita e a onda mexe.
 //! Quem mostra uma lição mostra o texto original ([`shown`]), nunca o
 //! `search`.
 //!
@@ -54,7 +68,7 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::config::glob_matches;
-use crate::domain::project_map::cited_paths;
+use crate::domain::project_map::{cited_paths, written_paths};
 use crate::domain::search::{self, Hit, SearchIndex};
 use crate::domain::text::fold;
 use crate::domain::spec_events::{
@@ -65,8 +79,25 @@ use crate::domain::spec_events::{
 /// O tipo com que o `write` recebe uma lição.
 pub const LESSON: &str = "lesson";
 
-/// As classes de lição, gravadas no `type` da linha.
-pub const CLASSES: &[&str] = &["defect", "project_rule", "environment_trap", "user_preference"];
+/// As classes de lição, gravadas no `type` da linha. A de defeito ([`DEFECT`])
+/// e a de regra do projeto ([`PROJECT_RULE`]) continuam na lista porque as
+/// linhas antigas delas seguem válidas na leitura; quem as recusa na gravação
+/// é o `write lesson`.
+pub const CLASSES: &[&str] = &[DEFECT, PROJECT_RULE, "environment_trap", "user_preference"];
+
+/// A classe do defeito que pode se repetir.
+pub const DEFECT: &str = "defect";
+
+/// A classe do rascunho que o `write lesson` recusa porque vale para o
+/// projeto, sozinho ou juntando outras lições em `replaces`: [`DEFECT`] ou
+/// [`PROJECT_RULE`]. As duas viram ajuste no código, com um teste, e não
+/// lição no banco, que não vai ao git. A retirada, que não traz classe, e as
+/// classes pessoais dão `None`.
+#[must_use]
+pub fn for_the_code(draft: &Map<String, Value>) -> Option<&'static str> {
+    let class = draft.get("class").and_then(Value::as_str).map(str::trim)?;
+    [DEFECT, PROJECT_RULE].into_iter().find(|refused| *refused == class)
+}
 
 /// O tipo da linha que retira lições do banco: o mesmo `remove` da spec, com
 /// as lições em `targets` e o motivo em `reason`. Quem grava pelo `write
@@ -332,7 +363,8 @@ pub fn in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
 }
 
 /// A classe da lição que guarda uma regra do projeto: vale sempre, então
-/// não vira pergunta no levantamento.
+/// não vira pergunta no levantamento. A gravação nova a recusa
+/// ([`for_the_code`]); as linhas antigas dela seguem na leitura.
 pub const PROJECT_RULE: &str = "project_rule";
 
 /// O "onde vale" de um evento casa com `scope`? A mesma leitura serve à lição
@@ -348,12 +380,8 @@ fn applies(lesson: &SpecEvent, scope: &Scope) -> bool {
     let Some(at) = lesson.fields.get("applies_to").and_then(Value::as_object) else {
         return false;
     };
-    let patterns: Vec<String> = at
-        .get("files")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(clean_path).collect())
-        .unwrap_or_default();
-    if patterns.iter().any(|p| !p.is_empty() && p.chars().all(|c| c == '*')) {
+    let patterns = file_patterns(at);
+    if patterns.iter().any(|p| whole_project(p)) {
         return true;
     }
     let files: Vec<String> = scope.files.iter().map(|f| clean_path(f)).filter(|f| !f.is_empty()).collect();
@@ -370,6 +398,19 @@ fn applies(lesson: &SpecEvent, scope: &Scope) -> bool {
     }
     let skill = at.get("skill").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
     skill.is_some_and(|skill| scope.skill.as_deref().map(str::trim) == Some(skill))
+}
+
+/// Os padrões de arquivo de um `applies_to`, já com barras normais.
+fn file_patterns(at: &Map<String, Value>) -> Vec<String> {
+    at.get("files")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(clean_path).collect())
+        .unwrap_or_default()
+}
+
+/// O padrão que vale no projeto todo: só curingas, como `**`.
+fn whole_project(pattern: &str) -> bool {
+    !pattern.is_empty() && pattern.chars().all(|c| c == '*')
 }
 
 /// O caminho com barras normais, sem `./` no começo e sem barra no fim.
@@ -410,7 +451,9 @@ pub fn matching_among(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
 /// tarefas (`words`), pela busca de [`matching`] feita sobre as palavras-chave
 /// de cada lição ([`by_keys`]), e não sobre o texto dela. A lição sem
 /// palavra-chave em comum com as tarefas fica fora, seja qual for a classe,
-/// mesmo que o texto dela divida palavras com elas. Em ordem de número.
+/// mesmo que o texto dela divida palavras com elas. Em ordem de número. A
+/// mesma escolha serve ao item combinado sem dono ([`tied_to_wave`]), que diz
+/// as palavras-chave do mesmo jeito; a classe dele é o tipo do item.
 #[must_use]
 pub fn related_to_tasks<'a>(found: Vec<&'a SpecEvent>, words: &str) -> Vec<&'a SpecEvent> {
     let mut by_class: BTreeMap<&str, Vec<&SpecEvent>> = BTreeMap::new();
@@ -424,6 +467,110 @@ pub fn related_to_tasks<'a>(found: Vec<&'a SpecEvent>, words: &str) -> Vec<&'a S
     }
     taken.sort_by_key(|lesson| lesson.id);
     taken
+}
+
+/// As lições de `lessons` que servem à onda que mexe em `files`, com as
+/// skills `skills`, na mesma ordem. Duas regras tiram lição:
+///
+/// - a lição cujo texto cita arquivo — caminho com extensão, pela leitura de
+///   [`cited_paths`] — só fica se a onda mexe num desses arquivos
+///   ([`same_file`]); a pasta citada não conta, porque uma pasta casaria com
+///   quase toda onda do lugar dela;
+/// - a onda só de texto ([`text_only`]) não recebe a lição do projeto todo
+///   nem a do subprojeto: fica só a que casa um arquivo dela por um padrão
+///   que não é o do projeto todo, ou a da skill que as tarefas nomeiam.
+///
+/// É o que o pedido de uma onda leva, depois da escolha por palavras-chave
+/// ([`related_to_tasks`]).
+#[must_use]
+pub fn serving_wave<'a>(lessons: Vec<&'a SpecEvent>, files: &[String], skills: &[String]) -> Vec<&'a SpecEvent> {
+    let files: Vec<String> = files.iter().map(|f| clean_path(f)).filter(|f| !f.is_empty()).collect();
+    let text = text_only(&files);
+    lessons
+        .into_iter()
+        .filter(|lesson| touches_cited_file(lesson, &files))
+        .filter(|lesson| !text || by_pattern_or_skill(lesson, &files, skills))
+        .collect()
+}
+
+/// A onda só de texto: todos os arquivos dela são markdown (`.md`), texto
+/// (`.txt`) ou arquivo de ignorar (`.gitignore`, `.dockerignore`). A lista
+/// é fechada de propósito: a view, a página, o SQL, o script e o estilo
+/// ficam fora dela e recebem lição como código. A onda sem arquivo nenhum
+/// não é só de texto: sem saber o que ela toca, ela recebe o que casar.
+#[must_use]
+pub fn text_only(files: &[String]) -> bool {
+    !files.is_empty() && files.iter().all(|file| text_file(file))
+}
+
+/// O arquivo é markdown, texto ou arquivo de ignorar, pelo nome.
+fn text_file(path: &str) -> bool {
+    let path = clean_path(path);
+    let name = path.rsplit('/').next().unwrap_or_default().to_lowercase();
+    name.ends_with(".md") || name.ends_with(".txt") || (name.starts_with('.') && name.ends_with("ignore"))
+}
+
+/// `true` quando o arquivo que um texto cita é `file`: o mesmo caminho ou o
+/// fim dele (`spec_events/mod.rs`), porque o texto pode citar o caminho a
+/// partir do subprojeto.
+#[must_use]
+pub fn same_file(cited: &str, file: &str) -> bool {
+    file == cited || file.ends_with(&format!("/{cited}"))
+}
+
+/// A lição não cita arquivo, ou a onda mexe num dos que ela cita. A lição
+/// cita o arquivo entre crases ([`cited_paths`]).
+fn touches_cited_file(lesson: &SpecEvent, files: &[String]) -> bool {
+    let cited = files_only(cited_paths(lesson.str_field("text").unwrap_or_default()));
+    cited.is_empty() || cites_one_of(&cited, files)
+}
+
+/// Dos caminhos citados, só os de arquivo, com barras normais. A pasta
+/// citada não conta, porque casaria com quase toda onda do lugar dela.
+fn files_only(paths: Vec<String>) -> Vec<String> {
+    paths.into_iter().filter(|path| !path.ends_with('/')).map(|path| clean_path(&path)).collect()
+}
+
+/// Algum dos arquivos citados em `cited` é um dos `files` ([`same_file`]).
+fn cites_one_of(cited: &[String], files: &[String]) -> bool {
+    cited.iter().any(|path| files.iter().any(|file| same_file(path, file)))
+}
+
+/// Os eventos de `found` que servem à onda pelo que dizem, na mesma ordem:
+/// os que as palavras-chave ligam ao texto das tarefas (`words`), pela
+/// escolha de [`related_to_tasks`], e os que citam no texto um arquivo que a
+/// onda mexe (`files`), pela mesma comparação com que [`serving_wave`]
+/// segura a lição que cita arquivo. Basta uma das duas ligações. O item cita
+/// o arquivo entre crases ou solto no texto, com a linha
+/// ([`written_paths`]). É a escolha do item
+/// combinado sem dono que uma onda julga antes do envio: o item diz as
+/// palavras-chave e o texto como a lição, e o que não se liga à onda por
+/// nenhuma das duas não é candidato dela.
+#[must_use]
+pub fn tied_to_wave<'a>(found: Vec<&'a SpecEvent>, words: &str, files: &[String]) -> Vec<&'a SpecEvent> {
+    let files: Vec<String> = files.iter().map(|f| clean_path(f)).filter(|f| !f.is_empty()).collect();
+    let related: BTreeSet<u64> = related_to_tasks(found.clone(), words).into_iter().map(|event| event.id).collect();
+    found
+        .into_iter()
+        .filter(|event| {
+            related.contains(&event.id)
+                || cites_one_of(&files_only(written_paths(event.str_field("text").unwrap_or_default())), &files)
+        })
+        .collect()
+}
+
+/// A lição casa um arquivo de `files` por um padrão dos arquivos dela que
+/// não é o do projeto todo, ou vale para uma das `skills`.
+fn by_pattern_or_skill(lesson: &SpecEvent, files: &[String], skills: &[String]) -> bool {
+    let Some(at) = lesson.fields.get("applies_to").and_then(Value::as_object) else {
+        return false;
+    };
+    let by_pattern = file_patterns(at)
+        .iter()
+        .filter(|p| !whole_project(p))
+        .any(|p| files.iter().any(|file| path_matches(p, file)));
+    let skill = at.get("skill").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    by_pattern || skill.is_some_and(|skill| skills.iter().any(|named| named.trim() == skill))
 }
 
 /// Cada palavra-chave de uma lição como um termo só da busca: as raízes de
@@ -782,6 +929,105 @@ mod tests {
         assert_eq!(ids(task), [2], "só a lição com palavra-chave na tarefa entra");
         assert!(matching(&bank, task).iter().any(|hit| hit.id == 1), "pelo texto, a lição 1 entraria");
         assert_eq!(ids(&format!("{task} As duas gravam ao mesmo tempo.")), [2, 3], "a palavra-chave inteira entra");
+    }
+
+    /// Uma lição com o texto `text`, que vale em `applies_to` e tem a
+    /// palavra-chave "gravar", que a tarefa de [`sent`] diz.
+    fn placed(id: u64, class: &str, text: &str, applies_to: Value) -> String {
+        lesson(id, json!({"class": class, "text": text, "keys": ["gravar"], "applies_to": applies_to, "found_in": {"spec": "s"}}))
+    }
+
+    /// As lições que o pedido de uma onda leva, pelo mesmo caminho da rodada
+    /// e do pedido: a onda tem uma tarefa que mexe em `files`, nomeia a skill
+    /// `skill` e diz "gravar", a palavra-chave de toda lição destes testes.
+    fn sent(bank: &SpecLog, files: &[&str], skill: Option<&str>) -> Vec<u64> {
+        let paths: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
+        let mut task = json!({"wave": 1, "text": "Gravar o arquivo.", "files": paths});
+        if let Some(skill) = skill {
+            task["skill"] = json!(skill);
+        }
+        let events = [("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})), ("task", task)];
+        let mut content = String::new();
+        for (i, (event_type, body)) in events.iter().enumerate() {
+            let mut map =
+                crate::domain::spec_events::normalize(body.as_object().cloned().unwrap_or_default(), event_type);
+            map.insert("type".into(), json!(event_type));
+            content.push_str(&render_line(&stamp(map, i as u64 + 1, None, "2026-09-23T10:00:00-03:00")));
+            content.push('\n');
+        }
+        let log = parse_log(&content);
+        crate::io::wave_prompt::wave_lessons(bank, &log, 1).iter().map(|l| l.id).collect()
+    }
+
+    /// A lição que cita arquivo vai só à onda que mexe num dos arquivos
+    /// citados, com o caminho inteiro ou o fim dele, e o `:linha` no fim da
+    /// citação não atrapalha. Na divisa, o arquivo de nome parecido
+    /// (`xdomain/config.rs`, `config.rs.bak`) não é o citado. A lição sem
+    /// arquivo citado continua indo a toda onda do lugar dela.
+    #[test]
+    fn licao_que_cita_arquivo_so_vai_a_onda_que_mexe_nele() {
+        let core = json!({"subproject": "packages/core"});
+        let bank = parse_log(
+            &[
+                placed(1, "project_rule", "`ProjectConfig` (`domain/config.rs`) é o dono único do schema de `mustard.json`.", core.clone()),
+                placed(2, "project_rule", "O retrato da lista fica em `apps/rt/tests/fixtures/run-surface.txt`, conferido por `apps/rt/tests/run_command_surface.rs:12`.", json!({"files": ["**"]})),
+                placed(3, "project_rule", "Trate ausência de arquivo como `Error::NotFound`.", core),
+            ]
+            .concat(),
+        );
+        assert_eq!(sent(&bank, &["packages/core/src/domain/config.rs"], None), [1, 3]);
+        assert_eq!(sent(&bank, &["packages/core/src/platform/code_tools.rs"], None), [3], "a onda que não mexe no arquivo citado não recebe a lição");
+        assert_eq!(sent(&bank, &["packages/core/src/xdomain/config.rs"], None), [3]);
+        assert_eq!(sent(&bank, &["packages/core/src/domain/config.rs.bak"], None), [3]);
+        assert_eq!(sent(&bank, &["apps/rt/tests/run_command_surface.rs"], None), [2], "o `:linha` sai da citação");
+        assert_eq!(sent(&bank, &["apps/rt/tests/fixtures/run-surface.txt", "apps/rt/src/a.rs"], None), [2]);
+        assert!(sent(&bank, &["apps/rt/src/commands/maint/upsert.rs"], None).is_empty());
+    }
+
+    /// A pasta citada não conta como arquivo citado: a regra do núcleo que
+    /// cita só a pasta `vocabulary/` continua indo à onda de código do
+    /// núcleo que não mexe nela, e a que cita um arquivo de dentro da mesma
+    /// pasta não vai.
+    #[test]
+    fn licao_que_cita_so_pasta_continua_indo_a_onda_do_subprojeto() {
+        let core = json!({"subproject": "packages/core"});
+        let bank = parse_log(
+            &[
+                placed(1, "project_rule", "`unwrap()`/`expect()` são `deny` no workspace fora de teste; propague `Result`. O automaton Aho-Corasick (`vocabulary/`) é único — reúse `KeyedAutomaton`, não instancie outro.", core.clone()),
+                placed(2, "project_rule", "`KeyedAutomaton` (`domain/vocabulary/aho.rs`) usa `MatchKind::LeftmostFirst` com case-sensitive.", core),
+            ]
+            .concat(),
+        );
+        assert_eq!(sent(&bank, &["packages/core/src/platform/code_tools.rs"], None), [1]);
+        assert_eq!(sent(&bank, &["packages/core/src/domain/vocabulary/aho.rs"], None), [1, 2]);
+    }
+
+    /// A onda só de texto — markdown, texto ou arquivo de ignorar — não
+    /// recebe a lição do projeto todo nem a do subprojeto; recebe a que casa
+    /// um arquivo dela por padrão e a da skill que a tarefa nomeia. Na
+    /// divisa, um arquivo de código entre os de texto devolve tudo. A onda só
+    /// em views Razor ou só na página HTML não é só de texto e recebe as
+    /// lições como qualquer onda de código.
+    #[test]
+    fn onda_so_de_texto_nao_recebe_licao_do_projeto_nem_do_subprojeto() {
+        let bank = parse_log(
+            &[
+                placed(1, "defect", "O teste tem de falhar quando o código está errado.", json!({"files": [WHOLE_PROJECT]})),
+                placed(2, "project_rule", "Escreva arquivos sempre pela escrita atômica.", json!({"subproject": "packages/core"})),
+                placed(3, "project_rule", "O molde diz o passo inteiro.", json!({"files": ["packages/core/templates/**"]})),
+                placed(4, "project_rule", "O molde tem as quatro seções.", json!({"skill": "moldes"})),
+            ]
+            .concat(),
+        );
+        let template = "packages/core/templates/agents/pt-BR/wave.md";
+        assert_eq!(sent(&bank, &[template], Some("moldes")), [3, 4]);
+        assert_eq!(sent(&bank, &[template], None), [3]);
+        assert_eq!(sent(&bank, &["docs/guia.md", "LEIA.TXT", ".gitignore", "packages/core/templates/.dockerignore"], None), [3]);
+        assert!(sent(&bank, &["packages/core/README.md"], None).is_empty(), "nem a do subprojeto");
+        assert_eq!(sent(&bank, &[template, "packages/core/src/lib.rs"], None), [1, 2, 3], "um arquivo de código devolve tudo");
+        assert_eq!(sent(&bank, &["packages/core/Views/Home/Index.cshtml"], None), [1, 2], "a onda só em views Razor recebe");
+        assert_eq!(sent(&bank, &["packages/core/templates/pages/spec.html"], None), [1, 2, 3], "a onda só na página HTML recebe");
+        assert!(!text_only(&[]), "a onda sem arquivo não é só de texto");
     }
 
     /// Uma lição como o importador das instruções deixa no banco, com o

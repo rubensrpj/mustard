@@ -1,5 +1,5 @@
-//! The criteria runner. The `qa-run` command is gone; what stays alive here is
-//! [`run_proof`], which runs one criterion's proof, [`run_criteria_proofs`],
+//! The criteria runner: [`run_proof`], which runs one criterion's proof,
+//! [`run_criteria_proofs`],
 //! the loop that the close and the round both call to run a list of
 //! criteria in order and stop at the first that does not pass,
 //! [`run_command`], which runs a flow command that is not a proof,
@@ -147,8 +147,8 @@ fn graded(out: AcResult, is_proof: bool) -> ProofRun {
 /// Extract the `## Acceptance Criteria` section body (heading line stripped),
 /// recognizing the EN and PT headings via [`crate::commands::spec::spec_sections`].
 ///
-/// `pub(crate)`: shared with `analyze_validation` so section detection and AC
-/// parsing cannot drift from what qa-run actually executes.
+/// `pub(crate)`: the spec page (`spec_events::pages`) reads the section
+/// through here.
 pub(crate) fn extract_ac_section(markdown: &str) -> Option<String> {
     // Reuse the shared, i18n-aware section extractor so this QA reader and the
     // rewave producer (which carries this section verbatim into `wave-plan.md`)
@@ -159,7 +159,7 @@ pub(crate) fn extract_ac_section(markdown: &str) -> Option<String> {
     Some(block.split_once('\n').map_or("", |(_, body)| body).to_string())
 }
 
-/// Options for one qa-run, carried on the thread-local the executor reads.
+/// Options for one run of the executor, carried on the thread-local it reads.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QaRunOptions {
     /// `true` when invoked from a process that **could be** the binary some AC
@@ -175,8 +175,8 @@ pub struct QaRunOptions {
     /// workspace `target/` — nothing is rewritten and nothing is refused. See
     /// [`targets_running_binary`].
     ///
-    /// `complete_spec::run_qa_fail_open` sets this. External callers
-    /// (`mustard-rt run qa-run --spec X` from a CI shell) leave it `false`.
+    /// No production path sets this: the close and the round run their proofs
+    /// with the default `false`, and only the executor's own tests turn it on.
     pub self_invoked: bool,
 }
 

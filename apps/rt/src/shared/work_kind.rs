@@ -164,7 +164,8 @@ pub(crate) fn forget_remote_names(root: &Path) {
 /// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
 /// catalogue and `base-candidates` reports as `measured: false`.
 /// **Local heads count too, and leaving them out re-created the defect.** The
-/// door that accepts the pick ([`crate::commands::work_unit_open`]) validates it
+/// cut that accepts the pick
+/// ([`crate::commands::event::work_branch::checkout_work_branch`]) reads it
 /// as `refs/heads/<b>` OR `refs/remotes/origin/<b>` — a base that was never
 /// pushed is a real branch someone can cut from. This probe read only the
 /// remote-tracking side, so such a pick was accepted, written into the unit's
@@ -535,10 +536,10 @@ impl BaseFlow {
     /// The kind vocabulary is open, so `{kind}/{slug}` is a shape and not a
     /// list: `release/2026-Q3` splits into a first segment that parses as a kind
     /// and a second that parses as a slug, exactly like `feature/aba` does.
-    /// Reading names alone therefore made a project's own release line answer
-    /// "somebody's unit" — and the two doors that ask this question acted on it:
-    /// `git delete` offered to REMOVE the release line, and `pr list` refused to
-    /// run from it.
+    /// Reading names alone therefore makes a project's own release line answer
+    /// "somebody's unit" — and the two doors that ask this question act on it:
+    /// the discard of an abandoned unit would offer to REMOVE the release line,
+    /// and the pull-request list would refuse to run from it.
     ///
     /// This is the one reading of the declared set that is not a permission.
     /// It refuses the operator nothing — a base is still cut from freely, and a
@@ -558,9 +559,10 @@ impl BaseFlow {
     /// 1. The DECLARED set cannot land on one answer (`bases().len() != 1`) —
     ///    so [`base_of`](Self::base_of)'s derivation would come back
     ///    [`Ambiguous`](UnitBase::Ambiguous) and the answer has nowhere else to
-    ///    live. Unchanged, and it must stay: this is the leg `settle`'s
-    ///    `ambiguous-base` hint depends on when it sends the operator to
-    ///    `work-unit-open --base …` to write exactly this down.
+    ///    live. Unchanged, and it must stay: without the answer recorded at
+    ///    the cut, the exit ritual (`crate::commands::git_settle`) can only
+    ///    measure the base by containment, and refuses with `ambiguous-base`
+    ///    when that does not land on exactly one branch.
     /// 2. The CATALOGUE really offered more than one branch
     ///    ([`catalogue_offers_a_choice`]) — which the first leg cannot see. The
     ///    picker offers every branch `origin` has, declared or not, so in a
@@ -690,9 +692,10 @@ impl BaseFlow {
     /// holds no unit for. Branch names carry no mark separating a base from a
     /// unit, so a project whose integration line is spelled `hml_prod` —
     /// undeclared, like every branch of a project the current installer touched
-    /// — matches `hml` on the catalogue and read as "the unit `prod`":
-    /// `git delete` offered to remove the integration line, and `pr list`
-    /// refused to run from it. The two facts together are what tell them apart.
+    /// — matches `hml` on the catalogue and reads as "the unit `prod`": the
+    /// discard would offer to remove the integration line, and the pull-request
+    /// list would refuse to run from it. The two facts together are what tell
+    /// them apart.
     /// A branch that is already ON the remote is one of the project's own; a
     /// unit of THIS harness has a directory under `.claude/spec/` naming it, and
     /// a name the remote has never seen cannot be a branch of the project at all
@@ -758,9 +761,9 @@ impl BaseFlow {
     /// therefore read as somebody's disposable unit. The DECLARED set cannot
     /// answer it either: `mustard init` no longer writes `git.flow`, so the
     /// declared set is EMPTY for the projects the installer produces — a guard
-    /// built on it guards nothing, and `git delete` was measured removing a
-    /// real release line from the remote in a project shaped exactly that
-    /// way.
+    /// built on it guards nothing, and the discard of an abandoned unit would
+    /// remove a real release line from the remote in a project shaped exactly
+    /// that way.
     ///
     /// A branch this harness CUT has a directory; a branch the project has
     /// always had does not. That is evidence the project itself recorded, and it
@@ -793,9 +796,10 @@ impl BaseFlow {
         // checked out, or from a linked worktree, whose checkout IS the unit
         // while `project` points at the main one. Both answered `false` for a
         // real unit, and both then did the opposite of what they promise —
-        // `git delete` destroyed the worktree the caller was standing in
-        // instead of refusing, and `git settle` refused the very position its
-        // own hint prescribes.
+        // the cancel path of an abandoned unit (`crate::commands::git_delete`)
+        // destroyed the worktree the caller was standing in instead of
+        // refusing, and the exit ritual (`crate::commands::git_settle`) refused
+        // the very position its own hint prescribes.
         //
         // So the question is asked of git too, in the two refs that can carry
         // it. This is ONE reading shared by all three doors on purpose: a weak
@@ -1036,10 +1040,10 @@ mod tests {
     ///
     /// `hml_prod` in a project that declares no flow — every project the current
     /// installer touches — matches `hml` on the catalogue, so reading the name
-    /// alone answered "the unit `prod`": `git delete` would have offered to
-    /// remove the integration line and `pr list` would have refused to run from
-    /// it, which is exactly the damage `is_declared_base` was added to prevent,
-    /// arriving through the other door. Both kinds of real unit still resolve —
+    /// alone answers "the unit `prod`": the discard would offer to remove the
+    /// integration line and the pull-request list would refuse to run from it,
+    /// which is exactly the damage `is_declared_base` prevents, arriving
+    /// through the other door. Both kinds of real unit still resolve —
     /// the one this harness already cut and drafted, and the one that does not
     /// exist on the remote yet because it is about to be cut.
     #[test]

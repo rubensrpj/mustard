@@ -28,8 +28,8 @@
 //! ## O que faz
 //!
 //! Mede o texto com o medidor do núcleo (`domain::clarity`): frase longa,
-//! sigla sem as palavras por extenso, código do Mustard ("MSTD-RULE-0005"),
-//! tamanho, a nota de Flesch em português e o idioma.
+//! sigla sem as palavras por extenso, código de item da spec
+//! (`MSTD-RULE-NNNN`), tamanho, a nota de Flesch em português e o idioma.
 //!
 //! - Nunca barra a resposta, e nada aparece na tela. A barragem aparecia duas
 //!   vezes no terminal e custava outra rodada; na Suzano foram 22.
@@ -525,13 +525,11 @@ mod tests {
     }
 
     /// As palavras que o estilo de resposta antigo listava como nomes
-    /// inventados não são mais cobradas: "slug" e "gate" passam, mesmo num
-    /// projeto com glossário.
+    /// inventados não são mais cobradas: "slug" e "gate" passam.
     #[test]
     fn a_reply_that_says_slug_or_gate_keeps_no_error() {
         let dir = project();
         let root = dir.path();
-        std::fs::write(root.join("CONTEXT.md"), "# Glossário\n\n**Slug**: o nome curto da spec.\n").unwrap();
         for reply in ["Troquei o slug da spec.", "O gate da onda passou."] {
             assert_eq!(check(root, &stop("s1", reply)), Verdict::Allow, "{reply}");
             assert_eq!(kept_errors(root, "s1"), Vec::<String>::new(), "{reply}");

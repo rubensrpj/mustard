@@ -67,17 +67,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
              binário a partir da spec. Nenhum texto vem copiado: cada parte traz só os códigos dos \
              itens, em sequência, numa linha por bloco da spec.\n\n\
-             **O que devolver.** A linha `<DELIVERED>` desta onda. Devolva só ela e a de gasto: nada \
-             de texto solto ao redor, e o que houver a contar do trabalho mora dentro do campo de \
-             texto dela."
+             **O que devolver.** A entrega desta onda, pela ferramenta: `mustard-rt run write \
+             delivered`, com o que houver a contar do trabalho dentro do campo de texto dela. Fora \
+             dela, nada de texto solto."
         }
         ("prompt.fixed", Locale::EnUs) => {
             "**What this is.** The list of this wave's items, in execution order, assembled by the \
              binary from the spec. No text is copied in: each part carries only the items' codes, in \
              sequence, one line per spec block.\n\n\
-             **What to return.** This wave's `<DELIVERED>` line. Return only that and the spend one: \
-             no loose text around it, and whatever there is to tell about the work lives inside its \
-             text field."
+             **What to return.** This wave's delivery, through the tool: `mustard-rt run write \
+             delivered`, with whatever there is to tell about the work inside its text field. \
+             Outside it, no loose text."
         }
         // O agente de teste dedicado, que o fechamento pede a toda obra —
         // mesmo a de uma onda só —, no lugar da revisão de cada onda.
@@ -91,7 +91,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              entre as ondas e o que cada onda deixou aberto — como as ondas se encaixam, código \
              repetido entre ondas, decisão de uma que contradiz a de outra, verificação que uma apagou da \
              outra. Aponte só; não conserte.\n\n\
-             **O que devolver.** A linha `<VERDICT>` com `\"final\":true`. O pedido traz os requisitos \
+             **O que devolver.** O veredito com `\"final\":true`, gravado por `mustard-rt run write \
+             verdict`. O pedido traz os requisitos \
              acordados inteiros da spec, dono ou não de onda: responda por cada item em `agreed`, com o código \
              em `item` e `met` dizendo se está atendido; quando não estiver, `text` diz o que falta \
              e `files` os arquivos, e viram uma tarefa nova. Faltar algum requisito acordado na lista \
@@ -105,7 +106,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              recorded between waves and what each wave left open — how the waves fit together, code \
              repeated across them, a decision of one that contradicts another's, a verification one erased \
              from another. Point it out only; do not fix it.\n\n\
-             **What to return.** The `<VERDICT>` line with `\"final\":true`. The request carries \
+             **What to return.** The verdict with `\"final\":true`, recorded through `mustard-rt run \
+             write verdict`. The request carries \
              the spec's whole agreed requirements, owned by a wave or not: answer for each item in `agreed`, \
              with the code in `item` and `met` saying whether it is satisfied; when it is not, \
              `text` says what is missing and `files` the files, and they become a new task. Missing \
@@ -222,24 +224,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the round is the one that merges the copies into the main repository and commits."
         }
         ("prompt.execution.commit_field", Locale::PtBr) => {
-            "No relatório de entrega, o campo `commit` é o título da mensagem, em palavras e curto \
-             — nunca o código do commit."
+            "Na entrega gravada, o campo `commit` é o título da mensagem, em palavras e curto — \
+             nunca o código do commit."
         }
         ("prompt.execution.commit_field", Locale::EnUs) => {
-            "In the delivery report, the `commit` field is the message's title, in words and short \
+            "In the recorded delivery, the `commit` field is the message's title, in words and short \
              — never the commit's code."
         }
-        // A última mensagem, ao lado da regra de não comitar: quem despacha
-        // exige de novo quando ela faltar ou sair do padrão, em vez de montar
-        // as linhas a partir de uma prosa que não fica registrada em lugar
-        // nenhum.
+        // A entrega, ao lado da regra de não comitar: ela vai para a spec pela
+        // ferramenta, e quem despacha manda gravar de novo quando ela faltar,
+        // em vez de montá-la a partir de uma prosa que não fica registrada em
+        // lugar nenhum.
         ("prompt.execution.report_lines", Locale::PtBr) => {
-            "A última mensagem tem só a linha `<DELIVERED>` e a de gasto: nenhuma prosa em volta, e \
-             o relato do trabalho vai dentro do campo de texto da entrega."
+            "A entrega vai para a spec por `mustard-rt run write delivered`: a rodada não lê a \
+             última mensagem, e o relato do trabalho mora no campo de texto da entrega."
         }
         ("prompt.execution.report_lines", Locale::EnUs) => {
-            "The last message has only the `<DELIVERED>` line and the spend one: no prose around \
-             them, and the account of the work goes inside the delivery's text field."
+            "The delivery goes into the spec through `mustard-rt run write delivered`: the round \
+             does not read the last message, and the account of the work lives in the delivery's \
+             text field."
         }
         // A pasta de compilação da cópia. A frase cita o Cargo, então só vai
         // ao pedido quando o mapa do projeto tem uma parte `cargo`; a pasta é
@@ -269,11 +272,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              time as you."
         }
         ("prompt.review.cleanup", Locale::PtBr) => {
-            "Desfaça cada corte antes de devolver a linha: o fechamento seguinte recusa começar sobre \
+            "Desfaça cada corte antes de gravar o veredito: o fechamento seguinte recusa começar sobre \
              `{copy}` com mudança, e apaga a cópia sozinho quando a obra fecha."
         }
         ("prompt.review.cleanup", Locale::EnUs) => {
-            "Undo every cut before returning your line: the next close refuses to start on `{copy}` \
+            "Undo every cut before recording your verdict: the next close refuses to start on `{copy}` \
              with changes, and deletes the copy itself when the work closes."
         }
         _ => return None,
@@ -291,7 +294,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             40,
-            0x6c7c_6913_ff1a_f330,
+            0x84c2_0646_3408_560e,
         );
     }
 }

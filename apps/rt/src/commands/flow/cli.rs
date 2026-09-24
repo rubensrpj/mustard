@@ -94,8 +94,8 @@ pub enum FlowCmd {
     /// Uma rodada de ondas, que é uma chamada só. Sem o relatório, despacha:
     /// escolhe as ondas que podem sair juntas, monta o pedido de cada uma,
     /// grava o envio com o pedido exato e marca a spec como em execução na
-    /// primeira rodada. Com o relatório da rodada anterior, primeiro grava o
-    /// que cada onda entregou e o veredito da revisão, formata só os arquivos
+    /// primeira rodada. Com a entrega que uma onda gravou na spec, primeiro
+    /// assume a volta e grava o veredito da revisão, formata só os arquivos
     /// da rodada e faz o commit, e só então despacha a rodada seguinte. A
     /// resposta manda copiar para o banco de dados das páginas o que entrou na
     /// spec desde a última cópia.
@@ -104,13 +104,15 @@ pub enum FlowCmd {
         /// A spec cuja rodada corre. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
-        /// O relatório da rodada anterior: a linha do fim de cada agente,
-        /// como ela veio — `<DELIVERED>{…}</DELIVERED>` do agente de onda e
-        /// `<VERDICT>{…}</VERDICT>` do revisor, uma por linha. Junto delas,
-        /// quem despacha acrescenta, para cada onda que voltou, a linha
-        /// `<USAGE>{…}</USAGE>` com o consumo que a plataforma entregou —
-        /// nunca digitado pelo agente: `wave`, `model`, `steps`, `tokens`,
-        /// `caller_steps` e `caller_tokens`.
+        /// O relatório da rodada anterior, uma linha por marca. A entrega da
+        /// onda e o veredito não vêm aqui: o agente de onda grava a entrega
+        /// com `run write delivered`, o revisor grava o veredito com `run
+        /// write verdict`, e a linha `<DELIVERED>` ou `<VERDICT>` no relatório
+        /// é recusada. Quem despacha escreve, para cada onda que voltou, a
+        /// linha `<USAGE>{…}</USAGE>` com o consumo que a plataforma entregou
+        /// — nunca digitado pelo agente: `wave`, `model`, `steps`, `tokens`,
+        /// `caller_steps` e `caller_tokens` —, a `<PAUSED>` e a
+        /// `<ANALYSIS>{…}</ANALYSIS>` da escolha antes do envio.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
@@ -131,8 +133,9 @@ pub enum FlowCmd {
         /// A spec que fecha. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
-        /// O relatório da última rodada, no mesmo formato da rodada, e também
-        /// a linha do agente de teste dedicado.
+        /// O relatório da última rodada, no mesmo formato da rodada. O
+        /// veredito do agente de teste dedicado não vem aqui: ele o grava com
+        /// `run write verdict`.
         #[arg(long)]
         report: Option<String>,
         /// A resposta "fica para depois" do usuário a uma pendência desta
