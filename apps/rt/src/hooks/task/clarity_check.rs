@@ -28,8 +28,8 @@
 //! ## O que faz
 //!
 //! Mede o texto com o medidor do núcleo (`domain::clarity`): frase longa,
-//! sigla sem as palavras por extenso, código do Mustard ("MSTD-RULE-0005"),
-//! tamanho, a nota de Flesch em português e o idioma.
+//! sigla sem as palavras por extenso, código de item da spec
+//! (`MSTD-RULE-NNNN`), tamanho, a nota de Flesch em português e o idioma.
 //!
 //! - Nunca barra a resposta, e nada aparece na tela. A barragem aparecia duas
 //!   vezes no terminal e custava outra rodada; na Suzano foram 22.

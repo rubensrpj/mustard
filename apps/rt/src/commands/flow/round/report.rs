@@ -555,8 +555,21 @@ fn wave_report_of(root: &Path, spec: &str, fields: &Map<String, Value>) -> Resul
 /// os arquivos ficam relativos ao repositório. A conferência que depende de
 /// juntar a cópia fica na rodada. Sem o número da onda, nada aqui é
 /// conferido: a gravação recusa pelo campo que falta.
-pub(crate) fn check_return(start: &Path, spec: &str, draft: &mut Map<String, Value>) -> Result<(), RoundRefusal> {
-    let Some(wave) = draft.get("wave").and_then(Value::as_u64) else { return Ok(()) };
+///
+/// Devolve a trava do passo do git, a mesma que a rodada segura da leitura
+/// das voltas até a entrega oficial, presa antes de ler a spec: quem grava a
+/// segura até a volta estar no arquivo. A volta que chega enquanto a rodada
+/// assume a mesma onda espera por ela e é conferida depois, com o envio já
+/// fechado pela entrega oficial, e é recusada; a que entra antes a rodada lê
+/// e assume. Nenhuma fica depois da entrega oficial para a rodada seguinte
+/// assumir de novo.
+pub(crate) fn check_return(
+    start: &Path,
+    spec: &str,
+    draft: &mut Map<String, Value>,
+) -> Result<LockedFile, RoundRefusal> {
+    let held = git_lock(&crate::commands::spec_events::project(start).root)?;
+    let Some(wave) = draft.get("wave").and_then(Value::as_u64) else { return Ok(held) };
     let (project, log) = spec_log(start, spec)?;
     if !open_sends(&log).contains_key(&wave) {
         return Err(RoundRefusal::Refused(Refusal::NoOpenSend { wave }));
@@ -583,7 +596,7 @@ pub(crate) fn check_return(start: &Path, spec: &str, draft: &mut Map<String, Val
     }
     draft.insert("returned".into(), json!(true));
     draft.insert("author".into(), json!("wave"));
-    Ok(())
+    Ok(held)
 }
 
 /// As conferências do veredito que o revisor grava (`run write verdict`),
@@ -2675,6 +2688,73 @@ mod tests {
         let again = returned(root, json!({"wave": 1, "text": "De novo.", "files": ["src/a.rs"], "commit": "a soma sai"}));
         assert_eq!(again["reason"], json!("no-open-send"), "o envio fechou com a entrega oficial: {again}");
         assert_eq!(spec_lines(root), after, "{again}");
+    }
+
+    /// A volta que a onda grava enquanto a rodada assume a mesma onda — com
+    /// as voltas já lidas e a entrega oficial ainda por gravar — espera a
+    /// trava do passo do git, que a rodada segura, e é conferida depois: o
+    /// envio já fechou com a entrega oficial, e a gravação é recusada sem
+    /// escrever nada. Nenhuma volta fica esperando, e a rodada seguinte não
+    /// grava uma segunda entrega da onda.
+    #[cfg(unix)]
+    #[test]
+    fn a_volta_gravada_durante_a_rodada_nao_gera_segunda_entrega() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let first = id_of(&returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a soma sai"})));
+        // O gancho do commit da rodada marca que começou e espera a soltura:
+        // é o trecho entre a leitura das voltas e a entrega oficial.
+        let hooks = root.join("ganchos");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let (started, release) = (hooks.join("comecou"), hooks.join("solta"));
+        let hook = hooks.join("pre-commit");
+        let script = format!(
+            "#!/bin/sh\ntouch '{}'\nn=0\nwhile [ ! -f '{}' ] && [ $n -lt 600 ]; do sleep 0.05; n=$((n+1)); done\n",
+            started.display(),
+            release.display()
+        );
+        std::fs::write(&hook, script).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
+
+        let (out, late, written_while_held) = std::thread::scope(|scope| {
+            let going = scope.spawn(|| round(root, "x", None));
+            for _ in 0..3000 {
+                if started.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(started.exists(), "o gancho do commit não começou");
+            let (wrote_tx, wrote_rx) = mpsc::channel();
+            let late = scope.spawn(move || {
+                let wrote = returned(root, json!({"wave": 1, "text": "Conferi de novo.", "commit": "a soma sai"}));
+                let _ = wrote_tx.send(());
+                wrote
+            });
+            let written_while_held = wrote_rx.recv_timeout(Duration::from_millis(1500)).is_ok();
+            std::fs::write(&release, b"").unwrap();
+            (going.join().unwrap(), late.join().unwrap(), written_while_held)
+        });
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let head = git_text(root, &["rev-parse", "HEAD"]);
+        let next = round(root, "x", None);
+        assert_eq!(delivered_count(root), 1, "a rodada seguinte não grava outra entrega da onda: {next}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nem comita de novo: {next}");
+        assert_eq!(late["reason"], json!("no-open-send"), "a volta é conferida depois da entrega oficial: {late}");
+        assert!(!written_while_held, "a volta espera a rodada soltar a trava: {late}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(log.unassumed_returns().is_empty(), "nenhuma volta espera outra rodada");
+        let official = log.visible().into_iter().find(|e| e.event_type == "delivered").expect("a entrega oficial");
+        assert_eq!(official.replaced(), vec![first], "{:?}", official.fields);
     }
 
     /// O título do commit que a rodada montará da volta é conferido na

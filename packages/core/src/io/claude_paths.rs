@@ -176,8 +176,8 @@ const DOCUMENTED_DIRS: &[&str] = &[
     "capabilities",
     // Plan-mode plan files — `settings.json#plansDirectory` points here.
     "plans",
-    // Isolated checkouts of work units, created by the entry ritual
-    // (`work-unit-open`) and retired by `git-settle`.
+    // The separate copies of each wave and of its reviewer, which the round
+    // and the close create and remove.
     "worktrees",
     // Sanctioned scratch evidence — the throwaway a diagnosis RUNS to decide
     // between two hypotheses. Carved out of branch protection by the write

@@ -9,7 +9,7 @@
 //! afetados:
 //!
 //! ```text
-//! {"ok": true, "spec": "teste", "id": 41, "type": "remove", "code": "MSTD-RMV-0002", "removed": [12, 13]}
+//! {"ok": true, "spec": "teste", "id": 41, "type": "remove", "code": "MSTD-RMV-NNNN", "removed": [12, 13]}
 //! ```
 //!
 //! A linha da spec no índice das specs é refeita a cada gravação, ainda com a
@@ -331,12 +331,17 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     }
     // A volta da onda só entra com envio aberto para ela, e passa antes pelas
     // conferências que só leem a volta: a recusa vem antes de gravar, e o
-    // agente grava de novo.
-    if event_type == "delivered"
-        && let Err(refusal) = crate::commands::flow::round::check_return(&opts.root, spec, &mut draft)
-    {
-        return refusal.to_value(lang);
-    }
+    // agente grava de novo. A trava do passo do git que a conferência prende
+    // fica presa até a volta estar no arquivo: a rodada que assume a mesma
+    // onda nunca grava a entrega oficial entre a conferência e a gravação.
+    let held = if event_type == "delivered" {
+        match crate::commands::flow::round::check_return(&opts.root, spec, &mut draft) {
+            Ok(held) => Some(held),
+            Err(refusal) => return refusal.to_value(lang),
+        }
+    } else {
+        None
+    };
     // A volta do revisor só entra com pedido de revisão aberto, e o veredito
     // final que não responde por todo o combinado recusa antes de gravar.
     if event_type == "verdict"
@@ -349,7 +354,9 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     let next = (event_type == "request")
         .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
         .flatten();
-    match record_in(&project, &opts.root, spec, event_type, draft, None) {
+    let recorded = record_in(&project, &opts.root, spec, event_type, draft, None);
+    drop(held);
+    match recorded {
         Ok(Recorded { written, survey }) => {
             let mut report = json!({
                 "ok": true,

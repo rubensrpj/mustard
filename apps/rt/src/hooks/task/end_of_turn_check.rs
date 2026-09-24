@@ -271,10 +271,11 @@ mod tests {
     }
 
     /// A resposta final com uma frase de 40 palavras, uma sigla sem explicação
-    /// e um código como "MSTD-RULE-0008" não é barrada, e nada volta para a
-    /// tela: nem bloqueio, nem aviso. A mensagem seguinte leva os três erros
-    /// numa frase curta. Tudo pelo `Stop` de verdade (registro, `fold` e a
-    /// resposta JSON), bem dentro dos 30 segundos que o `hooks.json` dá.
+    /// e um código de item da spec (`MSTD-RULE-NNNN`) não é barrada, e nada
+    /// volta para a tela: nem bloqueio, nem aviso. A mensagem seguinte leva os
+    /// três erros numa frase curta. Tudo pelo `Stop` de verdade (registro,
+    /// `fold` e a resposta JSON), bem dentro dos 30 segundos que o
+    /// `hooks.json` dá.
     #[test]
     fn a_reply_that_misses_the_writing_rule_is_not_blocked() {
         assert_eq!(FORTY_WORDS.split_whitespace().count(), 40);

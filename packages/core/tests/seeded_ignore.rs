@@ -7,8 +7,8 @@
 //! sidecars, rendered dispatch prompts, compaction memory, the knowledge store.
 //! None of it is code and none of it is user state — it is regenerable output.
 //! But the seeded ignore list did not cover it, so the more the harness worked,
-//! the dirtier its own tree became, and the exit ritual
-//! (`git-settle`) kept tripping over files the harness itself had just written.
+//! the dirtier its own tree became, and the exit ritual that prunes a merged
+//! unit kept tripping over files the harness itself had just written.
 //! In the field the sole dirt blocking a `pr close` was
 //! `.claude/feature-digest.json`, with a spec's `qa-report.json` and
 //! `qa-report.html` queued to do it again on the next close.

@@ -164,7 +164,8 @@ pub(crate) fn forget_remote_names(root: &Path) {
 /// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
 /// catalogue and `base-candidates` reports as `measured: false`.
 /// **Local heads count too, and leaving them out re-created the defect.** The
-/// door that accepts the pick ([`crate::commands::work_unit_open`]) validates it
+/// cut that accepts the pick
+/// ([`crate::commands::event::work_branch::checkout_work_branch`]) reads it
 /// as `refs/heads/<b>` OR `refs/remotes/origin/<b>` — a base that was never
 /// pushed is a real branch someone can cut from. This probe read only the
 /// remote-tracking side, so such a pick was accepted, written into the unit's
@@ -558,9 +559,10 @@ impl BaseFlow {
     /// 1. The DECLARED set cannot land on one answer (`bases().len() != 1`) —
     ///    so [`base_of`](Self::base_of)'s derivation would come back
     ///    [`Ambiguous`](UnitBase::Ambiguous) and the answer has nowhere else to
-    ///    live. Unchanged, and it must stay: this is the leg `settle`'s
-    ///    `ambiguous-base` hint depends on when it sends the operator to
-    ///    `work-unit-open --base …` to write exactly this down.
+    ///    live. Unchanged, and it must stay: without the answer recorded at
+    ///    the cut, the exit ritual (`crate::commands::git_settle`) can only
+    ///    measure the base by containment, and refuses with `ambiguous-base`
+    ///    when that does not land on exactly one branch.
     /// 2. The CATALOGUE really offered more than one branch
     ///    ([`catalogue_offers_a_choice`]) — which the first leg cannot see. The
     ///    picker offers every branch `origin` has, declared or not, so in a
@@ -793,9 +795,10 @@ impl BaseFlow {
         // checked out, or from a linked worktree, whose checkout IS the unit
         // while `project` points at the main one. Both answered `false` for a
         // real unit, and both then did the opposite of what they promise —
-        // `git delete` destroyed the worktree the caller was standing in
-        // instead of refusing, and `git settle` refused the very position its
-        // own hint prescribes.
+        // the cancel path of an abandoned unit (`crate::commands::git_delete`)
+        // destroyed the worktree the caller was standing in instead of
+        // refusing, and the exit ritual (`crate::commands::git_settle`) refused
+        // the very position its own hint prescribes.
         //
         // So the question is asked of git too, in the two refs that can carry
         // it. This is ONE reading shared by all three doors on purpose: a weak
