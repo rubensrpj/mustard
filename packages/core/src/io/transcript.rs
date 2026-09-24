@@ -12,8 +12,9 @@
 //! de cache e saída —, contando cada resposta uma vez; passos é o número de usos
 //! de ferramenta.
 //!
-//! A parte pura, [`usage_of`], não toca o disco; as outras acham os arquivos e
-//! entregam as linhas a ela. Linha que não é JSON, ou sem `usage`, é pulada: o
+//! As partes puras, [`usage_of`] e a escolha do agente da onda entre os
+//! achados, não tocam o disco; as outras acham os arquivos e entregam a elas
+//! as linhas e os começos de cada agente. Linha que não é JSON, ou sem `usage`, é pulada: o
 //! arquivo é da plataforma, e uma linha que este leitor não entende não pode
 //! derrubar a medida inteira.
 
@@ -223,29 +224,68 @@ pub fn session_dir(config_dir: &Path, session: &str) -> Option<PathBuf> {
     projects.into_iter().next().map(|project| project.join(session))
 }
 
-/// O arquivo do agente que recebeu o pedido da onda: em
-/// `<session_dir>/subagents/`, o `agent-*.jsonl` cuja primeira mensagem abre
-/// com `title` — a primeira linha do pedido, `# ` e o título da onda — e cujo
-/// primeiro carimbo não vem antes de `sent`, o `at` do envio.
+/// O arquivo do agente que recebeu o pedido da onda: o `agent-*.jsonl` cuja
+/// primeira mensagem abre com `title` — a primeira linha do pedido, `# ` e o
+/// título da onda — e cujo primeiro carimbo não vem antes de `sent`, o `at`
+/// do envio.
 ///
-/// Quando mais de um agente serve, vale o que começou mais perto do envio.
-/// `None` quando nenhum serve, quando a pasta não existe ou quando `sent` não
-/// é um instante.
+/// Procura primeiro em `<session_dir>/subagents/`, a sessão de quem chama.
+/// Quando ela não tem o agente, procura nas pastas de todas as outras sessões
+/// da mesma pasta do projeto, a que fica acima de `session_dir`: o `/clear`
+/// abre uma sessão nova, e o agente despachado antes dele mora na pasta da
+/// sessão antiga. A pasta de outro projeto nunca entra.
+///
+/// `None` quando nenhum agente serve ou quando `sent` não é um instante.
 #[must_use]
 pub fn wave_agent_file(session_dir: &Path, title: &str, sent: &str) -> Option<PathBuf> {
     let sent = utc(sent)?;
     let title = title.trim_end();
+    closest_agent(agent_openings(session_dir, sent), title, sent).or_else(|| {
+        let others = std::fs::read_dir(session_dir.parent()?)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|dir| dir.as_path() != session_dir);
+        closest_agent(others.flat_map(|dir| agent_openings(&dir, sent)), title, sent)
+    })
+}
+
+/// Entre os agentes `openings` — cada um com o caminho do arquivo, a primeira
+/// linha do pedido e o primeiro instante —, o que recebeu o pedido `title`
+/// enviado em `sent`: a primeira linha igual ao título e o começo não antes do
+/// envio. Quando mais de um serve, vale o que começou mais perto do envio; no
+/// mesmo instante, o de caminho menor. Não toca o disco.
+fn closest_agent<I>(openings: I, title: &str, sent: DateTime<Utc>) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = (PathBuf, String, DateTime<Utc>)>,
+{
+    openings
+        .into_iter()
+        .filter(|(_, heading, started)| heading == title && *started >= sent)
+        .min_by(|(pa, _, a), (pb, _, b)| a.cmp(b).then_with(|| pa.cmp(pb)))
+        .map(|(path, _, _)| path)
+}
+
+/// Os agentes da pasta de sessão `session_dir`, cada um com o que [`opening`]
+/// lê dele; nenhum quando a pasta não tem `subagents/`. O arquivo que não
+/// mudou desde `sent` fica de fora sem ser aberto: ele não tem linha depois do
+/// envio.
+fn agent_openings(
+    session_dir: &Path,
+    sent: DateTime<Utc>,
+) -> impl Iterator<Item = (PathBuf, String, DateTime<Utc>)> + use<> {
+    let floor = SystemTime::from(sent);
     std::fs::read_dir(session_dir.join("subagents"))
-        .ok()?
+        .into_iter()
+        .flatten()
         .filter_map(Result::ok)
+        .filter(move |entry| entry.metadata().and_then(|meta| meta.modified()).ok().is_none_or(|at| at >= floor))
         .map(|entry| entry.path())
         .filter(|path| is_agent_file(path))
         .filter_map(|path| {
             let (heading, started) = opening(&path)?;
-            (heading == title && started >= sent).then_some((started, path))
+            Some((path, heading, started))
         })
-        .min_by(|(a, pa), (b, pb)| a.cmp(b).then_with(|| pa.cmp(pb)))
-        .map(|(_, path)| path)
 }
 
 /// `agent-<id>.jsonl`: o `.meta.json` ao lado não é conversa.

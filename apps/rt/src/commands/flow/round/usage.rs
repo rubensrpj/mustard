@@ -87,10 +87,12 @@ pub(super) fn measure_usage<'u>(
     }
 }
 
-/// O consumo do agente que recebeu o pedido da onda `wave`, no arquivo dele
-/// dentro da pasta da sessão (`session`): o agente cujo pedido abre com a
-/// primeira linha do texto do envio que despachou a onda e que começou
-/// depois dele. `None` quando o arquivo não é achado ou não se lê.
+/// O consumo do agente que recebeu o pedido da onda `wave`, no arquivo dele:
+/// o agente cujo pedido abre com a primeira linha do texto do envio que
+/// despachou a onda e que começou depois dele, procurado na pasta da sessão
+/// (`session`) e, quando ela não o tem — a onda saiu antes de um `/clear` —,
+/// nas das outras sessões do mesmo projeto. `None` quando o arquivo não é
+/// achado ou não se lê.
 fn wave_usage(log: &SpecLog, session: &Path, wave: u64) -> Option<transcript::Usage> {
     let sent = log.get(dispatched_at(log, wave)?)?;
     let title = sent.str_field("text")?.lines().next()?;
@@ -107,4 +109,111 @@ fn main_usage(log: &SpecLog, session: &Path) -> Option<transcript::Usage> {
     let branch = State::from_log(log).branch?;
     let since = log.events.first()?.at();
     transcript::orchestrator_usage(session.parent()?, &branch, since)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use mustard_core::io::spec_events as store;
+    use serde_json::{json, Value};
+    use tempfile::tempdir;
+
+    use super::Caller;
+    use crate::commands::flow::round::tests::{approved, line, returned, round};
+    use crate::commands::flow::round::{round_in, RoundOpts};
+
+    /// O modelo que a plataforma grava nas respostas de um agente.
+    const MODEL: &str = "claude-opus-5-5";
+
+    /// O instante `at` da spec deslocado de `millis`, como a plataforma grava
+    /// o carimbo: em UTC, com os milésimos.
+    fn instant(at: &str, millis: i64) -> String {
+        let at = chrono::DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&chrono::Utc);
+        (at + chrono::Duration::milliseconds(millis)).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+    }
+
+    /// Um arquivo de conversa em `<config>/projects/<project>/<relative>`, no
+    /// lugar em que a plataforma o grava.
+    fn platform_file(config: &Path, project: &str, relative: &str, lines: &[Value]) {
+        let path = config.join("projects").join(project).join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+        std::fs::write(path, text.join("\n") + "\n").unwrap();
+    }
+
+    /// A conversa principal de uma sessão, só com a mensagem de quem a abriu.
+    fn session(config: &Path, project: &str, name: &str, at: &str) {
+        let opened = json!({"type": "user", "isSidechain": false, "gitBranch": "feature/x", "timestamp": at,
+            "message": {"role": "user", "content": "siga a obra"}});
+        platform_file(config, project, &format!("{name}.jsonl"), &[opened]);
+    }
+
+    /// O arquivo de um agente: o pedido `request` que ele recebeu em `start` e
+    /// uma resposta `id`, com um uso de ferramenta e os quatro números —
+    /// entrada, criação de cache, leitura de cache e saída.
+    fn agent(config: &Path, project: &str, relative: &str, start: &str, request: &str, id: &str, usage: [u64; 4]) {
+        let asked = json!({"type": "user", "isSidechain": true, "gitBranch": "feature/x", "timestamp": start,
+            "message": {"role": "user", "content": request}});
+        let answered = json!({"type": "assistant", "isSidechain": true, "gitBranch": "feature/x", "timestamp": start,
+            "message": {"id": id, "model": MODEL, "role": "assistant",
+                "content": [{"type": "tool_use", "id": format!("{id}-uso"), "name": "Bash", "input": {}}],
+                "usage": {"input_tokens": usage[0], "cache_creation_input_tokens": usage[1],
+                    "cache_read_input_tokens": usage[2], "output_tokens": usage[3]}}});
+        platform_file(config, project, relative, &[asked, answered]);
+    }
+
+    /// A onda saiu na sessão antiga, e um `/clear` abriu a sessão nova, de
+    /// onde a rodada assume a volta: a pasta da sessão nova não tem o agente
+    /// da onda, só o de outra, e a rodada o acha na pasta da sessão antiga do
+    /// mesmo projeto, pelo título do pedido e pela hora do envio. Lá, o mesmo
+    /// pedido começado um milésimo antes do envio é de um envio anterior, e o
+    /// começado um milésimo depois do agente da onda perde para ele, o mais
+    /// perto do envio. O mesmo pedido na pasta de outro projeto, começado
+    /// ainda mais perto do envio, não conta.
+    #[test]
+    fn the_round_finds_the_wave_agent_dispatched_before_a_clear() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let out = round(root, "x", None);
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(prompt.starts_with("# "), "o pedido abre com o título da onda: {out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap().clone();
+        let sent = send.at();
+
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        session(config, "-tmp-obra", "antiga", &instant(sent, -1_000));
+        agent(config, "-tmp-obra", "antiga/subagents/agent-onda.jsonl", &instant(sent, 200), &prompt, "r1", [2, 100, 1_000, 40]);
+        agent(config, "-tmp-obra", "antiga/subagents/agent-antes.jsonl", &instant(sent, -1), &prompt, "a1", [9_000, 0, 0, 0]);
+        agent(config, "-tmp-obra", "antiga/subagents/agent-depois.jsonl", &instant(sent, 201), &prompt, "d1", [7_000, 0, 0, 0]);
+        session(config, "-tmp-obra", "nova", &instant(sent, 50));
+        let other_wave = "# x — onda 2\n\nOutro pedido.\n";
+        agent(config, "-tmp-obra", "nova/subagents/agent-outra.jsonl", &instant(sent, 100), other_wave, "b1", [8_000, 0, 0, 0]);
+        session(config, "-tmp-outro", "alheia", &instant(sent, -1_000));
+        agent(config, "-tmp-outro", "alheia/subagents/agent-onda.jsonl", &instant(sent, 100), &prompt, "o1", [6_000, 0, 0, 0]);
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
+        assert_eq!(returned(root, delivery)["ok"], json!(true));
+        let opts = RoundOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".to_string()),
+            report: Some(line("USAGE", json!({"wave": 1}))),
+        };
+        let out = round_in(&opts, Caller { session: Some("nova"), config_dir: Some(config) });
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().all(|w| w["reason"] != json!("usage-missing")), "o arquivo foi achado: {out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert_eq!(revised.replaced(), vec![send.id], "a versão nova aponta o envio original");
+        // 2 + 100 + 1000 + 40: o agente da onda na sessão antiga, e nenhum outro.
+        assert_eq!(revised.int("tokens"), Some(1_142), "{revised:?}");
+        assert_eq!(revised.int("steps"), Some(1), "{revised:?}");
+        assert_eq!(revised.str_field("model_used"), Some(MODEL), "{revised:?}");
+    }
 }
