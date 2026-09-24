@@ -2471,6 +2471,7 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 reason: "Mais trabalho na mesma obra.".into(),
+                fix: false,
             },
             None,
         );

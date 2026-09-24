@@ -1,45 +1,62 @@
-//! `mustard-rt run reopen --reason <motivo> [--spec <nome>]` — leva a spec de
-//! volta ao levantamento.
+//! `mustard-rt run reopen --reason <motivo> [--fix] [--spec <nome>]` — leva a
+//! spec de volta para receber um pedido novo, ou abre a porta de conserto do
+//! pull request que o servidor reprovou.
 //!
-//! O caminho de volta. Uma spec já em plano, aprovada ou em execução volta à
-//! fase de levantamento por este comando, e daí o `grill` roda de novo: os
-//! pontos novos convivem com o que já foi decidido. Nada do que está gravado é
-//! apagado — a volta é mais um evento no arquivo, um `state` com a fase
-//! `survey`, e ele guarda quem pediu, quando e por quê.
+//! São duas portas separadas, e quem escolhe é quem chama, pelo que o usuário
+//! disse: ajuste novo vai à reabertura, sem opção; servidor reprovou vai ao
+//! `--fix`. O pull request vermelho não escolhe sozinho: um ajuste novo pedido
+//! com ele vermelho continua sendo reabertura, e não vira onda de conserto
+//! presa aos critérios antigos.
 //!
-//! O motivo é obrigatório: é ele que explica, daqui a um mês, por que o
-//! levantamento recomeçou — e é ele que vira a consulta. O levantamento
-//! seguinte traz os itens que o motivo toca, para o usuário dizer se cada um
-//! fica, muda ou sai; o que o motivo não toca fica como está, e nada é
-//! perguntado de novo. Um `--reason` em branco é recusado.
+//! ## A reabertura, sem opção
 //!
-//! A spec fechada, com o pull request aberto, entregue ou descartada não
-//! volta: o que ela decidiu já saiu, e o caminho é uma spec nova pelo `open`.
+//! A volta segue a fase em que a spec está. Nada do que está gravado é
+//! apagado — a volta é mais um evento no arquivo, um `state` com a fase nova,
+//! e ele guarda quem pediu, quando e por quê.
+//!
+//! - **Antes do fechamento** (em plano, aprovada ou em execução), a spec volta
+//!   ao levantamento, e daí o `grill` roda de novo: os pontos novos convivem
+//!   com o que já foi decidido. O levantamento seguinte traz os itens que o
+//!   motivo toca, para o usuário dizer se cada um fica, muda ou sai; o que o
+//!   motivo não toca fica como está.
+//! - **Fechada ou com o pull request aberto**, a spec volta à execução, já
+//!   aprovada, na mesma branch e na mesma base: nada do que foi decidido e
+//!   aprovado é perguntado de novo. O pedido novo entra pelo `write request`,
+//!   como tarefas novas, e as ondas delas saem pela rodada, cada uma na sua
+//!   cópia. Depois vem o fechamento de novo, com o revisor final chamado de
+//!   novo, e o pull request continua o mesmo.
+//! - **Entregue na base, descartada ou sem fase gravada**, não volta por
+//!   caminho nenhum: pedido novo sobre ela é obra nova, pelo `open`.
+//!
 //! A spec que já está em levantamento não grava nada e responde o mesmo passo.
+//!
+//! O motivo é obrigatório: é ele que explica, daqui a um mês, por que a spec
+//! voltou — e, no levantamento, é ele que vira a consulta. Um `--reason` em
+//! branco é recusado.
 //!
 //! ```text
 //! {"ok": true, "spec": "x", "phase": "survey", "from": "running", "id": 42,
 //!  "reason": "O pedido mudou de alvo.", "next": "A spec x voltou ao levantamento…"}
+//! {"ok": true, "spec": "x", "phase": "running", "from": "pr_open", "id": 57,
+//!  "reason": "Ajustar o pedido.", "next": "A spec x voltou à execução…"}
 //! ```
 //!
 //! Recusa sai com exit 1 e `ok: false`, com a razão curta em `reason` e a
 //! mensagem no idioma do projeto em `hint`.
 //!
-//! ## A porta de conserto do pull request reprovado
+//! ## A porta de conserto, com `--fix`
 //!
 //! Uma obra fechada abriu o pull request, e o servidor de integração rodou os
-//! testes de novo e reprovou. A obra não volta ao levantamento — o que ela
-//! decidiu está certo, o que está errado é o que o servidor achou — e uma spec
-//! nova para um conserto de minutos é mentira. Sem caminho de volta, quem usa
-//! editava arquivo na branch por fora, e o conserto não existia em lugar
-//! nenhum.
+//! testes de novo e reprovou. A obra não é reaberta — o que ela decidiu está
+//! certo, o que está errado é o que o servidor achou — e uma spec nova para
+//! um conserto de minutos é mentira.
 //!
-//! Este mesmo comando é a porta. Numa spec com o pull request aberto, ele
-//! pergunta ao provedor as verificações daquele pull request
+//! A porta só abre quando pedida pelo nome. Numa spec com o pull request
+//! aberto, ela pergunta ao provedor as verificações daquele pull request
 //! ([`crate::commands::review::pr_door::red_reported`], a mesma leitura do
-//! portão do merge). Só o vermelho abre a porta: verde, em andamento, ausente
-//! ou ilegível caem na recusa de sempre, porque sem reprovação não há o que
-//! consertar.
+//! portão do merge). Só o vermelho abre a porta: verde, em andamento, ausente,
+//! ilegível ou a spec fora do pull request aberto recusam com `fix-not-red`,
+//! e nada é gravado.
 //!
 //! Com o vermelho, a porta anda em dois momentos, e a fase nunca muda — a obra
 //! não é reaberta e nenhuma spec nova nasce:
@@ -53,8 +70,9 @@
 //!    da spec para o servidor, para ele rodar os testes de novo, e grava na
 //!    spec o que foi consertado.
 //!
-//! A onda de conserto é reconhecida pelo lugar dela no arquivo: é onda gravada
-//! depois do fechamento. Nenhuma marca nova, nenhuma segunda lista.
+//! A onda de conserto traz as chaves do conserto, as mesmas da nota do
+//! empurrão, e só conta numa spec fechada ou com o pull request aberto: a onda
+//! nova de uma spec reaberta, em execução, é onda comum.
 //!
 //! ```text
 //! {"ok": true, "spec": "x", "action": "fix", "phase": "pr_open", "pr": 12,
@@ -64,7 +82,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
-use mustard_core::domain::spec_state::{reopenable, PhaseWriter, SpecState, State};
+use mustard_core::domain::spec_state::{reopenable, returns_to_running, PhaseWriter, SpecState, State};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
@@ -83,27 +101,34 @@ type Checks<'a> = &'a dyn Fn(&Path, u64) -> Result<PrChecks, String>;
 /// motivo, e para o teste provar em que branch o conserto foi empurrado.
 type Push<'a> = &'a dyn Fn(&Path, &str) -> Result<(), String>;
 
-/// As chaves de busca da nota do conserto. Fixas nos dois idiomas: é por elas
-/// que a porta sabe, na chamada seguinte, que aquele conserto já foi
-/// empurrado.
-const FIX_KEYS: &[&str] = &["conserto", "pull-request", "servidor"];
+/// As chaves de busca da onda de conserto e da nota do empurrão. Fixas nos
+/// dois idiomas: é por elas que a porta reconhece a onda de conserto e sabe,
+/// na chamada seguinte, que aquele conserto já foi empurrado.
+pub(crate) const FIX_KEYS: &[&str] = &["conserto", "pull-request", "servidor"];
 
 /// Options for `mustard-rt run reopen`.
 pub struct ReopenOpts {
     /// Qualquer pasta dentro do repositório.
     pub root: PathBuf,
-    /// A spec que volta ao levantamento; sem ela, a spec atual.
+    /// A spec que volta; sem ela, a spec atual.
     pub spec: Option<String>,
     /// Por que a spec volta, palavra por palavra de quem pediu.
     pub reason: String,
+    /// A porta de conserto do pull request reprovado, pedida pelo nome. Sem
+    /// ela, o passo é a reabertura.
+    pub fix: bool,
 }
 
 /// Por que a volta não aconteceu.
 enum ReopenRefusal {
     /// O `--reason` veio em branco.
     ReasonMissing,
-    /// A spec já fechou, foi para o pull request, foi entregue ou descartada.
+    /// A spec foi entregue na base, descartada ou não tem fase gravada: não
+    /// volta por caminho nenhum.
     Settled { spec: String, phase: String },
+    /// O `--fix` veio sem o vermelho do servidor relatado, ou fora do pull
+    /// request aberto.
+    FixNotRed { spec: String, phase: String },
     /// O git recusou empurrar o conserto para o servidor.
     PushFailed { branch: String, error: String },
     /// Uma recusa da leitura ou da gravação do arquivo de eventos.
@@ -116,6 +141,7 @@ impl ReopenRefusal {
         match self {
             Self::ReasonMissing => "reason-missing",
             Self::Settled { .. } => "spec-settled",
+            Self::FixNotRed { .. } => "fix-not-red",
             Self::PushFailed { .. } => "push-failed",
             Self::Spec(refusal) => refusal.reason(),
         }
@@ -129,6 +155,7 @@ impl ReopenRefusal {
         match self {
             Self::ReasonMissing => fill("reopen.reason_missing", &[]),
             Self::Settled { spec, phase } => fill("reopen.settled", &[("{spec}", spec), ("{phase}", phase)]),
+            Self::FixNotRed { spec, phase } => fill("reopen.fix_not_red", &[("{spec}", spec), ("{phase}", phase)]),
             Self::PushFailed { branch, error } => {
                 fill("reopen.fix_push_failed", &[("{branch}", branch), ("{error}", error)])
             }
@@ -191,33 +218,42 @@ pub(crate) fn reopen_with(opts: &ReopenOpts, session: Option<&str>, checks: Chec
         Err(refusal) => return refuse(ReopenRefusal::Spec(refusal)),
     };
     let from = State::from_log(&log).phase.unwrap_or("-");
+    // A porta de conserto só abre pedida pelo nome, e só com o vermelho que
+    // o provedor relata para o pull request aberto: sem ele, nada é gravado.
+    if opts.fix {
+        return match (from == "pr_open").then(|| red_reported(&checkout(&opts.root), &spec, checks)) {
+            Some(Ok(pr)) => fix_door(opts, &spec, &log, FixRed { pr, reason }, push, lang),
+            _ => refuse(ReopenRefusal::FixNotRed { spec, phase: from.to_string() }),
+        };
+    }
     if from == "survey" {
         return json!({
             "ok": true, "spec": spec, "phase": "survey", "from": from, "recorded": false,
             "next": say("reopen.already", lang, &spec),
         });
     }
-    // A porta de conserto: a obra fechada cujo pull request o servidor
-    // reprovou. Só o vermelho relatado a abre; qualquer outra resposta do
-    // provedor cai na recusa de sempre, logo abaixo.
-    if from == "pr_open"
-        && let Ok(pr) = red_reported(&checkout(&opts.root), &spec, checks)
-    {
-        return fix_door(opts, &spec, &log, FixRed { pr, reason }, push, lang);
-    }
-    if !reopenable(from) {
+    // A volta segue a fase: a spec que ainda não fechou volta ao
+    // levantamento; a fechada e a com o pull request aberto voltam à
+    // execução, já aprovadas, na mesma branch; o resto não volta.
+    let (to, next) = if returns_to_running(from) {
+        ("running", "reopen.reopened")
+    } else if reopenable(from) {
+        ("survey", "reopen.next")
+    } else {
         return refuse(ReopenRefusal::Settled { spec, phase: from.to_string() });
-    }
+    };
 
+    // Só a fase e o motivo: a branch e a base ficam as que a spec já tinha,
+    // herdadas pela dobra dos estados.
     let mut draft = Map::new();
-    draft.insert("phase".to_string(), json!("survey"));
+    draft.insert("phase".to_string(), json!(to));
     draft.insert("author".to_string(), json!("binary"));
     draft.insert("reason".to_string(), json!(reason));
     match record(&opts.root, &spec, "state", draft, PhaseWriter::Binary) {
         Ok(recorded) => json!({
-            "ok": true, "spec": spec, "phase": "survey", "from": from, "recorded": true,
+            "ok": true, "spec": spec, "phase": to, "from": from, "recorded": true,
             "id": recorded.written.id, "reason": reason,
-            "next": say("reopen.next", lang, &spec),
+            "next": say(next, lang, &spec),
         }),
         Err(refusal) => refuse(ReopenRefusal::Spec(refusal)),
     }
@@ -251,20 +287,33 @@ struct FixWave {
 }
 
 /// A onda de conserto mais nova da spec: a última onda gravada depois do
-/// fechamento.
+/// fechamento que traz as chaves do conserto, numa spec fechada ou com o pull
+/// request aberto.
 ///
-/// O lugar no arquivo é a marca, e é marca suficiente: numa spec fechada,
-/// onda gravada depois do fechamento só nasce por esta porta. Uma marca nova
-/// no evento seria uma segunda lista para o resto do binário aprender a ler.
+/// O lugar no arquivo não basta: a spec reaberta volta à execução, e a rodada
+/// grava nela ondas novas depois do fechamento, que são ondas comuns. As
+/// chaves são as que esta porta grava na onda que ela abre, as mesmas da nota
+/// do empurrão.
 fn fix_wave(log: &SpecLog) -> Option<FixWave> {
-    let closed = State::from_log(log).last_closing?;
+    let state = State::from_log(log);
+    if !state.phase.is_some_and(returns_to_running) {
+        return None;
+    }
+    let closed = state.last_closing?;
     let n = log
         .block(BlockQuery::Block(Block::Waves))
         .into_iter()
-        .filter(|event| event.event_type == "wave" && event.id > closed)
+        .filter(|event| event.event_type == "wave" && event.id > closed && carries_fix_keys(event))
         .max_by_key(|event| event.id)?
         .wave()?;
     Some(FixWave { n, delivered: log.last_by_wave("delivered").get(&n).copied() })
+}
+
+/// O evento traz as chaves do conserto: a onda que a porta abriu, ou a nota
+/// que ela grava ao empurrar.
+fn carries_fix_keys(event: &mustard_core::domain::spec_events::SpecEvent) -> bool {
+    let keys = event.fields.get("keys").and_then(Value::as_array);
+    FIX_KEYS.iter().all(|fix| keys.is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(fix))))
 }
 
 /// Os critérios vigentes da obra, pelo número de cada um.
@@ -292,15 +341,9 @@ pub(crate) fn open_fix_wave_of(log: &SpecLog) -> Option<u64> {
 /// O conserto entregue em `delivered` já foi empurrado: existe, depois dele, a
 /// nota que esta porta grava ao empurrar.
 fn fix_pushed_after(log: &SpecLog, delivered: u64) -> bool {
-    log.block(BlockQuery::Block(Block::Notes)).into_iter().any(|event| {
-        event.event_type == "note"
-            && event.id > delivered
-            && event
-                .fields
-                .get("keys")
-                .and_then(Value::as_array)
-                .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(FIX_KEYS[0])))
-    })
+    log.block(BlockQuery::Block(Block::Notes))
+        .into_iter()
+        .any(|event| event.event_type == "note" && event.id > delivered && carries_fix_keys(event))
 }
 
 /// A porta de conserto do pull request que o servidor reprovou, numa spec que
@@ -314,9 +357,9 @@ fn fix_door(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: FixRed, push: Pus
     let refuse = |refusal: ReopenRefusal| refusal.report(lang);
     let pr = red.pr.to_string();
     // Sem branch gravada não há para onde empurrar o conserto, e a porta de
-    // conserto não tem o que fazer: fica a recusa de sempre.
+    // conserto não abre.
     let Some(branch) = State::from_log(log).branch.map(|b| b.trim().to_string()).filter(|b| !b.is_empty()) else {
-        return refuse(ReopenRefusal::Settled { spec: spec.to_string(), phase: "pr_open".to_string() });
+        return refuse(ReopenRefusal::FixNotRed { spec: spec.to_string(), phase: "pr_open".to_string() });
     };
 
     match fix_wave(log) {
@@ -375,6 +418,9 @@ fn open_fix_wave(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: &FixRed, lan
     wave.insert("author".to_string(), json!("binary"));
     wave.insert("n".to_string(), json!(n));
     wave.insert("text".to_string(), json!(what));
+    // As chaves do conserto são a marca da onda: é por elas que esta porta e
+    // a rodada a reconhecem.
+    wave.insert("keys".to_string(), json!(FIX_KEYS));
     // Os critérios da onda de conserto são os da obra: o servidor reprovando
     // diz que o que a obra prometeu não está provado lá, então é por eles que
     // o conserto responde. Critério novo não nasce aqui — a obra já decidiu o
@@ -442,22 +488,27 @@ mod tests {
         panic!("{phase} is not a phase of the flow");
     }
 
-    /// A volta ao levantamento com um provedor que não responde — nenhum
-    /// vermelho relatado, então a porta de conserto não abre — e um git que
-    /// não deixa empurrar nada sem alguém pedir.
+    /// A reabertura, sem opção, com um provedor que não responde e um git
+    /// que não deixa empurrar nada sem alguém pedir.
     fn reopen(root: &Path, spec: &str, reason: &str) -> Value {
-        reopen_checked(root, spec, reason, &|_, _| Err("no-provider".to_string()))
+        reopen_checked(root, spec, reason, false, &|_, _| Err("no-provider".to_string()))
     }
 
-    /// A volta ao levantamento com as verificações do provedor escolhidas: é
-    /// o vermelho delas que abre a porta de conserto.
-    fn reopen_checked(root: &Path, spec: &str, reason: &str, checks: Checks) -> Value {
+    /// O reopen com a opção `--fix` quando `fix`, e com as verificações do
+    /// provedor escolhidas: é o vermelho delas que abre a porta de conserto.
+    fn reopen_checked(root: &Path, spec: &str, reason: &str, fix: bool, checks: Checks) -> Value {
         reopen_with(
-            &ReopenOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), reason: reason.to_string() },
+            &ReopenOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), reason: reason.to_string(), fix },
             None,
             checks,
             &|_, branch| panic!("nada empurra a branch {branch} neste teste"),
         )
+    }
+
+    /// Os bytes do arquivo de eventos da spec, para provar que a recusa não
+    /// gravou nada.
+    fn bytes_of(root: &Path, spec: &str) -> Vec<u8> {
+        std::fs::read(store::spec_file(root, spec).expect("spec file")).expect("the event file")
     }
 
     fn phase_of(root: &Path, spec: &str) -> Option<&'static str> {
@@ -504,23 +555,198 @@ mod tests {
         assert!(!state.approved, "the spec is under survey again");
     }
 
-    /// Uma spec fechada, com o pull request aberto ou entregue não volta, e a
-    /// recusa diz a fase em que ela está; nada é gravado.
+    /// O `--fix` sem o vermelho relatado não reabre nada: a spec fechada, a
+    /// com o pull request aberto e a entregue, com o provedor sem resposta,
+    /// são recusadas dizendo a fase em que estão, e nada é gravado.
     #[test]
     fn a_settled_spec_is_refused_and_nothing_is_written() {
         for phase in ["closed", "pr_open", "delivered"] {
             let dir = tempdir().unwrap();
             let root = dir.path();
             spec_in(root, "epico", phase);
-            let before = std::fs::read(store::spec_file(root, "epico").unwrap()).unwrap();
+            let before = bytes_of(root, "epico");
 
-            let out = reopen(root, "epico", "Quero levantar de novo.");
-            assert_eq!(out["reason"], json!("spec-settled"), "{phase}: {out}");
+            let out = reopen_checked(root, "epico", "Quero consertar.", true, &|_, _| Err("no-provider".into()));
+            assert_eq!(out["reason"], json!("fix-not-red"), "{phase}: {out}");
             let hint = out["hint"].as_str().unwrap();
             assert!(hint.contains("epico") && hint.contains(phase), "{hint}");
-            assert_eq!(std::fs::read(store::spec_file(root, "epico").unwrap()).unwrap(), before);
+            assert_eq!(bytes_of(root, "epico"), before);
             assert_eq!(phase_of(root, "epico"), Some(phase));
         }
+    }
+
+    /// A spec fechada e a com o pull request aberto voltam à execução pelo
+    /// reopen sem opção, com o provedor sem resposta: um `state` com a fase
+    /// de execução e o motivo, já aprovada, na mesma branch e na mesma base,
+    /// e a resposta manda gravar o pedido novo pelo `write request`. A spec
+    /// em execução continua voltando ao levantamento.
+    #[test]
+    fn a_closed_or_pr_open_spec_reopens_to_running_on_the_same_branch() {
+        for phase in ["closed", "pr_open"] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            spec_in(root, "epico", phase);
+            let before = DiskSpecState::new(root).log("epico").expect("the event file").events.len();
+
+            let out = reopen(root, "epico", "  Ajustar o pedido ao otimizador.  ");
+            assert_eq!(out["ok"], json!(true), "{phase}: {out}");
+            assert_eq!(out["phase"], json!("running"), "{phase}: {out}");
+            assert_eq!(out["from"], json!(phase), "{out}");
+            assert_eq!(out["recorded"], json!(true), "{out}");
+            assert_eq!(out["reason"], json!("Ajustar o pedido ao otimizador."), "{out}");
+            assert!(out["action"].is_null(), "no fix door without the option: {out}");
+            let next = out["next"].as_str().unwrap_or_default();
+            assert!(next.contains("mustard-rt run write request --spec epico"), "{next}");
+
+            let log = DiskSpecState::new(root).log("epico").expect("the event file");
+            assert_eq!(log.events.len(), before + 1, "{phase}: one state more, and nothing else");
+            let back = log.get(out["id"].as_u64().unwrap_or_else(|| panic!("{out}"))).expect("the return");
+            assert_eq!(back.event_type, "state");
+            assert_eq!(back.str_field("phase"), Some("running"));
+            assert_eq!(back.str_field("reason").map(str::trim), Some("Ajustar o pedido ao otimizador."));
+            let state = State::from_log(&log);
+            assert_eq!(state.phase, Some("running"), "{phase}");
+            assert!(state.approved, "{phase}: back to running already approved");
+            assert!(mustard_core::domain::spec_state::approval_event(&log).is_some(), "{phase}: the approval holds");
+            assert_eq!(state.branch.as_deref(), Some("feature/epico"), "{phase}: the same branch");
+            assert_eq!(state.base.as_deref(), Some("dev"), "{phase}: the same base");
+        }
+
+        // Antes do fechamento, a volta continua sendo ao levantamento.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "running");
+        let out = reopen(root, "epico", "O pedido mudou de alvo.");
+        assert_eq!((out["from"].clone(), out["phase"].clone()), (json!("running"), json!("survey")), "{out}");
+        assert_eq!(phase_of(root, "epico"), Some("survey"));
+    }
+
+    /// A spec entregue na base, a descartada e a sem fase gravada não voltam
+    /// por caminho nenhum: o reopen recusa e nada é gravado. A frase da
+    /// recusa fala só da entregue e da descartada, e aponta uma spec nova,
+    /// nos dois idiomas.
+    #[test]
+    fn delivered_discarded_or_phaseless_specs_still_refuse_the_reopen() {
+        let languages = [
+            ("pt-BR", ["entregue", "descartada", "mustard-rt run open"], ["fechada", "pull request", "levantamento"]),
+            ("en-US", ["delivered", "discarded", "mustard-rt run open"], ["closed", "pull request", "survey"]),
+        ];
+        for (language, says, never) in languages {
+            for phase in ["delivered", "discarded", "-"] {
+                let dir = tempdir().unwrap();
+                let root = dir.path();
+                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
+                    .unwrap();
+                let path = store::spec_file(root, "epico").expect("spec file");
+                match phase {
+                    "-" => {
+                        std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
+                        let said = json!({"author": "user", "text": "Travar o merge."});
+                        store::write(&path, "message", said.as_object().cloned().expect("an object"), &[])
+                            .expect("a message");
+                    }
+                    "discarded" => {
+                        spec_in(root, "epico", "running");
+                        let gone = json!({"phase": "discarded", "author": "binary", "reason": "Descartada."});
+                        store::write(&path, "state", gone.as_object().cloned().expect("an object"), &[])
+                            .expect("the discard");
+                    }
+                    settled => spec_in(root, "epico", settled),
+                }
+                let before = bytes_of(root, "epico");
+
+                let out = reopen(root, "epico", "Pedido novo sobre ela.");
+                assert_eq!(out["ok"], json!(false), "{language} {phase}: {out}");
+                assert_eq!(out["reason"], json!("spec-settled"), "{language} {phase}: {out}");
+                assert_eq!(bytes_of(root, "epico"), before, "{language} {phase}: nothing was written");
+                let hint = out["hint"].as_str().unwrap_or_default();
+                for word in says {
+                    assert!(hint.contains(word), "{language} {phase}: no {word:?} in {hint}");
+                }
+                for word in never {
+                    assert!(!hint.contains(word), "{language} {phase}: {word:?} in {hint}");
+                }
+            }
+        }
+    }
+
+    /// O pull request vermelho não escolhe a porta: sem `--fix`, a spec volta
+    /// à execução sem perguntar as verificações, e nenhuma onda de conserto
+    /// nasce. Com `--fix` e o vermelho, a onda de conserto nasce, com as
+    /// chaves do conserto, e a fase continua no pull request aberto. Com
+    /// `--fix` sem o vermelho — verde, em andamento, sem verificação, sem
+    /// resposta ou fora do pull request aberto —, recusa, e nada é gravado.
+    #[test]
+    fn a_red_pull_request_opens_the_fix_wave_only_with_fix() {
+        let red: Checks = &|_, _| Ok(PrChecks::Failed);
+        let waves = |root: &Path| {
+            DiskSpecState::new(root)
+                .log("epico")
+                .expect("the event file")
+                .events
+                .iter()
+                .filter(|e| e.event_type == "wave")
+                .count()
+        };
+
+        // Sem `--fix`: a reabertura, e o provedor nem é perguntado.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        criterion_of_the_work(root, "epico");
+        let out = reopen_checked(root, "epico", "Ajuste novo no pedido.", false, &|_, _| {
+            panic!("the reopen without --fix never asks the provider")
+        });
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("running"), "{out}");
+        assert!(out["action"].is_null(), "{out}");
+        assert_eq!(phase_of(root, "epico"), Some("running"));
+        assert_eq!(waves(root), 0, "no fix wave was born");
+
+        // Com `--fix` e o vermelho: a onda de conserto, e a fase não muda.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        criterion_of_the_work(root, "epico");
+        let opened = reopen_checked(root, "epico", "O servidor reprovou dois testes.", true, red);
+        assert_eq!(opened["action"], json!("fix"), "{opened}");
+        assert_eq!(opened["phase"], json!("pr_open"), "{opened}");
+        let wave = opened["wave"].as_u64().unwrap_or_else(|| panic!("{opened}"));
+        assert_eq!(phase_of(root, "epico"), Some("pr_open"));
+        assert_eq!(waves(root), 1, "the fix wave was born");
+        let log = DiskSpecState::new(root).log("epico").expect("the event file");
+        let recorded = log.get(opened["id"].as_u64().unwrap_or_else(|| panic!("{opened}"))).expect("the fix wave");
+        let keys: Vec<&str> =
+            recorded.fields.get("keys").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+        assert_eq!(keys, FIX_KEYS, "the fix wave carries the fix keys");
+        assert_eq!(open_fix_wave_of(&log), Some(wave));
+
+        // Com `--fix` sem o vermelho: recusa, e nada é gravado.
+        let not_red: [(&str, Checks); 4] = [
+            ("passed", &|_, _| Ok(PrChecks::Passed)),
+            ("running", &|_, _| Ok(PrChecks::Running)),
+            ("absent", &|_, _| Ok(PrChecks::Absent)),
+            ("no answer", &|_, _| Err("no-provider".to_string())),
+        ];
+        for (said, checks) in not_red {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            spec_in(root, "epico", "pr_open");
+            criterion_of_the_work(root, "epico");
+            let before = bytes_of(root, "epico");
+            let out = reopen_checked(root, "epico", "Quero consertar.", true, checks);
+            assert_eq!(out["ok"], json!(false), "{said}: {out}");
+            assert_eq!(out["reason"], json!("fix-not-red"), "{said}: {out}");
+            assert_eq!(bytes_of(root, "epico"), before, "{said}: nothing was written");
+        }
+        // Fora do pull request aberto, nem o vermelho abre a porta.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "closed");
+        let before = bytes_of(root, "epico");
+        let out = reopen_checked(root, "epico", "Quero consertar.", true, red);
+        assert_eq!(out["reason"], json!("fix-not-red"), "{out}");
+        assert_eq!(bytes_of(root, "epico"), before, "closed: nothing was written");
     }
 
     /// O motivo é obrigatório: em branco, a volta é recusada e nada é
@@ -593,12 +819,13 @@ mod tests {
     }
 
     /// O pull request de uma obra já fechada volta reprovado pelo servidor, e
-    /// há porta de conserto: o vermelho relatado é aceito, a onda de conserto
-    /// abre dentro da spec fechada, a rodada a comita na mesma branch e este
-    /// mesmo passo empurra o commit — sem reabrir a obra e sem spec nova.
+    /// há porta de conserto pelo `--fix`: o vermelho relatado é aceito, a onda
+    /// de conserto abre dentro da spec fechada, a rodada a comita na mesma
+    /// branch e este mesmo passo empurra o commit — sem reabrir a obra e sem
+    /// spec nova.
     ///
-    /// Sem o vermelho não há porta: com as verificações verdes a spec fechada
-    /// é recusada como sempre foi, e nada é gravado nem empurrado.
+    /// Sem o vermelho não há porta: com as verificações verdes o `--fix` é
+    /// recusado, e nada é gravado nem empurrado.
     #[test]
     fn o_pull_request_reprovado_tem_porta_de_conserto() {
         let dir = tempdir().unwrap();
@@ -627,8 +854,8 @@ mod tests {
 
         // Sem vermelho não há porta: o verde do servidor deixa a spec fechada
         // como ela estava, e nada é empurrado (o `push` deste ajudante grita).
-        let green = reopen_checked(root, "epico", "Quero consertar.", &|_, _| Ok(PrChecks::Passed));
-        assert_eq!(green["reason"], json!("spec-settled"), "{green}");
+        let green = reopen_checked(root, "epico", "Quero consertar.", true, &|_, _| Ok(PrChecks::Passed));
+        assert_eq!(green["reason"], json!("fix-not-red"), "{green}");
         assert_eq!(states(root), before_states, "nothing was written: {green}");
 
         // O vermelho relatado abre a onda de conserto dentro da spec fechada.
@@ -636,7 +863,7 @@ mod tests {
             assert_eq!(number, 1, "the pull request the spec recorded");
             Ok(PrChecks::Failed)
         };
-        let opened = reopen_checked(root, "epico", "O servidor reprovou dois testes.", red);
+        let opened = reopen_checked(root, "epico", "O servidor reprovou dois testes.", true, red);
         assert_eq!(opened["ok"], json!(true), "{opened}");
         assert_eq!(opened["action"], json!("fix"), "{opened}");
         assert_eq!(opened["phase"], json!("pr_open"), "the work was not reopened: {opened}");
@@ -665,7 +892,7 @@ mod tests {
 
         // Chamada de novo antes da entrega: nada é gravado e o passo é o mesmo.
         let before = std::fs::read(&spec_file).unwrap();
-        let again = reopen_checked(root, "epico", "O servidor reprovou dois testes.", red);
+        let again = reopen_checked(root, "epico", "O servidor reprovou dois testes.", true, red);
         assert_eq!(again["recorded"], json!(false), "{again}");
         assert_eq!(again["wave"], json!(wave), "{again}");
         assert_eq!(std::fs::read(&spec_file).unwrap(), before, "nothing was written twice");
@@ -679,6 +906,7 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("epico".into()),
                 reason: "O servidor reprovou dois testes.".into(),
+                fix: true,
             },
             None,
             red,
@@ -708,7 +936,7 @@ mod tests {
 
         // Um vermelho novo depois do empurrão abre outra onda de conserto: a
         // porta não fica presa na anterior.
-        let next = reopen_checked(root, "epico", "O servidor reprovou de novo.", red);
+        let next = reopen_checked(root, "epico", "O servidor reprovou de novo.", true, red);
         assert_eq!(next["recorded"], json!(true), "{next}");
         assert_eq!(next["wave"], json!(wave + 1), "{next}");
     }

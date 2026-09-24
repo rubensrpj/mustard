@@ -184,23 +184,31 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Leva a spec de volta ao levantamento, com o motivo gravado no evento
-    /// da volta: a fase volta a ser a de levantamento, o `grill` roda de
-    /// novo, e os pontos novos convivem com o que já foi decidido. Nada do
-    /// que está gravado é apagado. Uma spec fechada, com o pull request
-    /// aberto, entregue ou descartada é recusada, dizendo a fase em que está.
+    /// Reabre a spec para um pedido novo, com o motivo gravado no evento da
+    /// volta. Nada do que está gravado é apagado. A spec que ainda não fechou
+    /// volta ao levantamento: o `grill` roda de novo, e os pontos novos
+    /// convivem com o que já foi decidido. A fechada ou com o pull request
+    /// aberto volta à execução, já aprovada, na mesma branch: o pedido novo
+    /// entra pelo `write request`, como tarefas novas. A entregue na base, a
+    /// descartada e a sem fase gravada são recusadas.
     ///
-    /// A exceção é a obra fechada cujo pull request o servidor reprovou:
-    /// aí este passo é a porta de conserto. Ele abre a onda de conserto
-    /// dentro da mesma spec, com o vermelho relatado, e, depois que a rodada
-    /// a entrega e comita na mesma branch, empurra a branch para o servidor
-    /// rodar de novo — sem reabrir a obra e sem spec nova.
+    /// Com `--fix`, este passo é a porta de conserto do pull request que o
+    /// servidor reprovou: só com o vermelho relatado pelo provedor, abre a
+    /// onda de conserto dentro da mesma spec e, depois que a rodada a entrega
+    /// e comita na mesma branch, empurra a branch para o servidor rodar de
+    /// novo — sem reabrir a obra e sem spec nova. Sem o vermelho, recusa, e
+    /// nada é gravado.
     #[command(display_order = 11)]
     Reopen {
-        /// Por que a spec volta ao levantamento, numa frase. Obrigatório: é
-        /// ele que explica depois por que o levantamento recomeçou.
+        /// Por que a spec volta, numa frase; com `--fix`, o que o servidor
+        /// reprovou. Obrigatório: é ele que explica depois por que a spec
+        /// voltou.
         #[arg(long)]
         reason: String,
+        /// A porta de conserto do pull request que o servidor reprovou, em
+        /// vez da reabertura.
+        #[arg(long)]
+        fix: bool,
         /// A spec que volta. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
@@ -244,8 +252,8 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::discard::DiscardOpts { root, spec, remote, delete, confirm };
             flow::answer("discard", &opts.root, opts.spec.as_deref(), started, &flow::discard::discard_at(&opts));
         }
-        FlowCmd::Reopen { reason, spec, root } => {
-            let opts = flow::reopen::ReopenOpts { root, spec, reason };
+        FlowCmd::Reopen { reason, fix, spec, root } => {
+            let opts = flow::reopen::ReopenOpts { root, spec, reason, fix };
             flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts));
         }
     }

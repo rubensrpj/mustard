@@ -419,6 +419,7 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 reason: "O formatador da rodada mudou de lugar.".into(),
+                fix: false,
             },
             None,
         );

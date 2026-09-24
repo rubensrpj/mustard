@@ -526,6 +526,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.not_approved", Locale::EnUs) => {
             "The spec is in the {phase} phase and is not approved yet: no wave goes out before the user says yes."
         }
+        ("round.closed", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela já fechou, e a rodada não despacha onda nova \
+             numa spec fechada. Para um pedido novo nela, rode `mustard-rt run reopen --spec {spec} \
+             --reason \"<motivo>\"`: ela volta à execução, já aprovada, na mesma branch. Se o \
+             servidor reprovou o pull request, o conserto vai pelo mesmo comando com `--fix`."
+        }
+        ("round.closed", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it has already closed, and the round sends no \
+             new wave on a closed spec. For a new request on it, run `mustard-rt run reopen --spec \
+             {spec} --reason \"<reason>\"`: it goes back to running, already approved, on the same \
+             branch. If the server failed the pull request, the repair goes through the same \
+             command with `--fix`."
+        }
         ("round.commit_too_long", Locale::PtBr) => {
             "O {part} da mensagem do commit tem {chars} caracteres e o teto é {max}."
         }
@@ -1044,13 +1057,40 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the spec goes back. The reason is written into the event. Nothing was written."
         }
         ("reopen.settled", Locale::PtBr) => {
-            "A spec {spec} está na fase {phase} e não volta ao levantamento: o que ela decidiu já \
-             saiu. Abra uma spec nova com `mustard-rt run open`. Nada foi gravado."
+            "A spec {spec} está na fase {phase}: a spec entregue na base, com o merge feito, e a \
+             descartada não voltam, porque o que elas decidiram já saiu. Abra uma spec nova com \
+             `mustard-rt run open`. Nada foi gravado."
         }
         ("reopen.settled", Locale::EnUs) => {
-            "The spec {spec} is in the phase {phase} and does not go back to the survey: what it \
-             decided is already out. Open a new spec with `mustard-rt run open`. Nothing was \
-             written."
+            "The spec {spec} is in the phase {phase}: a spec delivered to the base, already merged, \
+             and a discarded one do not come back, because what they decided is already out. Open \
+             a new spec with `mustard-rt run open`. Nothing was written."
+        }
+        ("reopen.reopened", Locale::PtBr) => {
+            "A spec {spec} voltou à execução, já aprovada, na mesma branch, e o motivo ficou \
+             gravado: nada do que foi decidido é perguntado de novo. Grave o pedido novo com \
+             `mustard-rt run write request --spec {spec}` e, dele, as tarefas novas; as ondas \
+             delas saem pela rodada depois que o usuário aprovar a mudança. Depois vem o \
+             fechamento de novo, e o pull request continua o mesmo."
+        }
+        ("reopen.reopened", Locale::EnUs) => {
+            "The spec {spec} is back to running, already approved, on the same branch, and the \
+             reason is on the record: nothing already decided is asked again. Write the new \
+             request with `mustard-rt run write request --spec {spec}` and, from it, the new \
+             tasks; their waves go out through the round after the user approves the change. \
+             Then comes the close again, and the pull request stays the same."
+        }
+        ("reopen.fix_not_red", Locale::PtBr) => {
+            "A porta de conserto da spec {spec} não abriu: ela pede a spec com o pull request \
+             aberto, na branch dela, e o vermelho do servidor relatado pelo provedor; a spec está \
+             na fase {phase} sem isso. Para um pedido novo, rode o `mustard-rt run reopen` sem \
+             `--fix`. Nada foi gravado."
+        }
+        ("reopen.fix_not_red", Locale::EnUs) => {
+            "The fix door of the spec {spec} did not open: it needs the spec with its pull request \
+             open, on its branch, and the server's red reported by the provider; the spec is in \
+             the phase {phase} without that. For a new request, run `mustard-rt run reopen` \
+             without `--fix`. Nothing was written."
         }
         ("reopen.next", Locale::PtBr) => {
             "A spec {spec} voltou ao levantamento, e o motivo ficou gravado. Rode `mustard-rt run \
@@ -1181,8 +1221,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            152,
-            0xc7a6_7773_5fdb_5227,
+            155,
+            0x5ef0_50da_ed09_fd98,
         );
     }
 
@@ -1343,6 +1383,7 @@ mod tests {
             ("round.commit.line", &["{wave}", "{summary}"][..]),
             ("round.commit.fixes", &["{waves}"][..]),
             ("round.not_approved", &["{phase}"][..]),
+            ("round.closed", &["{spec}", "{phase}"][..]),
             ("round.commit_too_long", &["{part}", "{chars}", "{max}"][..]),
             ("round.commit_forbidden", &["{found}"][..]),
             ("round.commit_looks_like_sha", &["{found}"][..]),

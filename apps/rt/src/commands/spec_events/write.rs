@@ -196,7 +196,7 @@ use mustard_core::domain::spec_events::{
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, reopenable, reply_rule, survey_rule, PhaseWriter,
+    birth_event, goal_rule, not_closed_yet, phase_write_allowed, reply_rule, survey_rule, PhaseWriter,
     SpecState, State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
@@ -1248,7 +1248,7 @@ fn open_spec_for_the_fix(root: &Path, spec: Option<&str>) -> Option<String> {
         None => disk.active(session_from_env().as_deref())?,
     };
     let state = disk.state(&spec)?;
-    state.phase.is_none_or(reopenable).then_some(spec)
+    state.phase.is_none_or(not_closed_yet).then_some(spec)
 }
 
 /// Run `write` and print the JSON report; with `copy`, the write also
