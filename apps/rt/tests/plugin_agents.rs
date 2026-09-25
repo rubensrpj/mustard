@@ -890,8 +890,9 @@ fn o_pedido_manda_gravar_a_entrega_pela_ferramenta() {
 
 /// A parte fixa de cada pedido que o binário monta: o da onda e o da revisão
 /// final do conjunto, com o que olhar da primeira revisão e o da revisão de
-/// volta.
-const FIXED_PARTS: [&str; 4] = ["prompt.fixed", "prompt.final.fixed", "prompt.final.look", "prompt.final.look_again"];
+/// volta, e a linha dos idiomas do projeto, que abre todo pedido a um agente.
+const FIXED_PARTS: [&str; 5] =
+    ["prompt.fixed", "prompt.final.fixed", "prompt.final.look", "prompt.final.look_again", "prompt.languages"];
 
 /// Quantas palavras seguidas fazem uma frase repetida.
 const REPEATED_RUN: usize = 6;

@@ -7,6 +7,9 @@
 //! a rodada escolhe —; esta função só os escreve, sempre na mesma ordem, então
 //! o mesmo material dá sempre os mesmos bytes.
 //!
+//! Todo pedido diz no cabeçalho os dois idiomas do projeto: o do texto e o
+//! dos nomes no código.
+//!
 //! O pedido de uma onda leva, de cada item, o código e o título; de cada
 //! tarefa, também a parte do agente — arquivos, comandos e o que testar —,
 //! porque é ela que abre o trabalho. O porquê de cada item fica na spec: o
@@ -30,6 +33,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
+use crate::domain::config::Language;
 use crate::domain::lessons::{applies_to, same_file, text_only, tied_to_wave, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
@@ -46,6 +50,19 @@ use crate::platform::i18n::{translate, Locale};
 #[must_use]
 pub fn requested_model(_role: &str) -> &'static str {
     "Opus"
+}
+
+/// A linha dos dois idiomas do projeto, no topo de todo pedido a um agente:
+/// o dos textos que a pessoa lê e o dos nomes no código. Sai no idioma do
+/// texto; o projeto que não declara o do código escreve os nomes em inglês.
+/// Só ela monta a linha: o pedido da onda, o da revisão final e o gancho do
+/// despacho a chamam, e a linha nunca diz um idioma que a configuração não
+/// deu.
+#[must_use]
+pub fn language_line(language: &Language) -> String {
+    translate("prompt.languages", language.text_or_default())
+        .replace("{text}", language.text_or_default().as_str())
+        .replace("{code}", language.code_or_default().as_str())
 }
 
 /// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
@@ -119,6 +136,9 @@ pub struct Execution {
     /// a onda, ou a do revisor final, que o fechamento cria. Sem ela, o
     /// pedido da onda não fala de cópia.
     pub copy: Option<WaveCopy>,
+    /// Os idiomas que o projeto declara, lidos do `mustard.json`: o pedido
+    /// abre com eles ([`language_line`]).
+    pub language: Language,
 }
 
 /// Os blocos já lidos de que o pedido de uma onda é feito.
@@ -1207,6 +1227,7 @@ impl Writer<'_> {
             self.t("prompt.title").replace("{spec}", &m.spec).replace("{n}", &m.wave.to_string())
         );
         let _ = writeln!(out, "{}\n", self.t("prompt.model.wave"));
+        let _ = writeln!(out, "{}\n", language_line(&m.execution.language));
         out.push_str(self.t("prompt.fixed"));
         out.push_str("\n\n");
         self.read_example(&mut out, "prompt.read.wave", m.execution.copy.is_some());
@@ -1233,6 +1254,7 @@ impl Writer<'_> {
         let m = self.material;
         let mut out = String::new();
         let _ = writeln!(out, "# {}\n", self.t("prompt.final.title").replace("{spec}", &m.spec));
+        let _ = writeln!(out, "{}\n", language_line(&m.execution.language));
         out.push_str(self.t("prompt.final.fixed"));
         out.push_str("\n\n");
         let look = if m.since_verdict.is_empty() { "prompt.final.look" } else { "prompt.final.look_again" };

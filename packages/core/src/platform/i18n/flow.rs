@@ -1624,6 +1624,7 @@ mod tests {
             ("round.resume.silent", &["{wave}"][..]),
             ("page.findings.heading", &[][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
+            ("prompt.languages", &["{text}", "{code}"][..]),
             ("prompt.fixed", &[][..]),
             ("prompt.final.title", &["{spec}"][..]),
             ("prompt.final.fixed", &[][..]),

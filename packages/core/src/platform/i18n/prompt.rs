@@ -52,6 +52,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // modelo da sessão.
         ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: Opus.",
         ("prompt.model.wave", Locale::EnUs) => "This wave's model: Opus.",
+        // Os dois idiomas do projeto, lidos do `mustard.json`, no topo de todo
+        // pedido a um agente: o dos textos que a pessoa lê e o dos nomes no
+        // código. Sem ela, o agente só adivinhava o idioma dos nomes.
+        ("prompt.languages", Locale::PtBr) => {
+            "Idiomas deste projeto. O texto sai em {text}: comentários, entregas e commits. O código \
+             sai em {code}: nomes de variáveis, funções, arquivos, comandos e tabelas do banco."
+        }
+        ("prompt.languages", Locale::EnUs) => {
+            "This project's languages. Text is written in {text}: comments, deliveries and commits. \
+             Code is written in {code}: names of variables, functions, files, commands and database \
+             tables."
+        }
         ("prompt.part.items", Locale::PtBr) => "Itens da onda",
         ("prompt.part.items", Locale::EnUs) => "Wave items",
         ("prompt.part.tasks", Locale::PtBr) => "Tarefas, na ordem em que se faz",
@@ -395,8 +407,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            48,
-            0xe658_c2ef_753f_3268,
+            49,
+            0xf67b_7d1b_0bdf_aae8,
         );
     }
 }

@@ -12,18 +12,26 @@
 //! lê, o despacho é barrado, e o motivo diz o que falta. O gancho
 //! nunca manda o agente ler um arquivo no lugar do pedido.
 //!
-//! Um despacho sem bilhete é uma tarefa qualquer e passa como veio: o gancho
-//! não escolhe skill, não injeta memória e não avalia a volta do agente.
+//! Um despacho sem bilhete a um agente do Mustard (`mustard-wave`,
+//! `mustard-review` ou `mustard-skill`), num projeto com `mustard.json`, ganha
+//! no topo a linha dos dois idiomas do projeto, lida da configuração: é assim
+//! que a skill e as revisões cujo texto o orquestrador escreve recebem o
+//! idioma dos nomes. O texto que já traz a linha, como o pedido da rodada,
+//! passa como veio. Qualquer outro despacho sem bilhete é uma tarefa
+//! qualquer e também passa como veio: o gancho não escolhe skill, não injeta
+//! memória e não avalia a volta do agente.
 
 use std::path::Path;
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::State;
+use mustard_core::domain::wave_prompt::language_line;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, Flight};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
+use mustard_core::{ProjectConfig, AGENT_NAMES};
 use serde_json::Value;
 
 use crate::hooks::write::write_gate::say;
@@ -90,13 +98,53 @@ fn dispatch_prompt(input: &HookInput) -> &str {
     input.tool_input.get("prompt").and_then(Value::as_str).unwrap_or_default()
 }
 
+/// Se o despacho vai a um agente do Mustard: o `subagent_type` é `mustard-`
+/// seguido do nome de um dos agentes que o instalador grava.
+fn to_mustard_agent(input: &HookInput) -> bool {
+    input
+        .tool_input
+        .get("subagent_type")
+        .and_then(Value::as_str)
+        .and_then(|kind| kind.strip_prefix("mustard-"))
+        .is_some_and(|name| AGENT_NAMES.contains(&name))
+}
+
+/// O despacho com `text` no lugar do texto da tarefa e os outros campos como
+/// vieram.
+fn with_prompt(input: &HookInput, text: String) -> Verdict {
+    let mut tool_input = input.tool_input.clone();
+    match tool_input.as_object_mut() {
+        Some(fields) => {
+            fields.insert("prompt".to_string(), Value::String(text));
+            Verdict::Rewrite { tool_input, note: None }
+        }
+        None => Verdict::Allow,
+    }
+}
+
+/// O despacho sem bilhete: a um agente do Mustard, num projeto com
+/// `mustard.json`, o texto ganha no topo a linha dos idiomas, salvo quando já
+/// a traz; o resto passa como veio.
+fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
+    let root = ctx.project_dir_or_cwd(input);
+    if !to_mustard_agent(input) || !ProjectConfig::exists(Path::new(&root)) {
+        return Verdict::Allow;
+    }
+    let line = language_line(&ctx.config.language());
+    let prompt = dispatch_prompt(input);
+    if prompt.contains(&line) {
+        return Verdict::Allow;
+    }
+    with_prompt(input, format!("{line}\n\n{prompt}"))
+}
+
 impl Check for SubagentInject {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::PreToolUse) {
             return Ok(Verdict::Allow);
         }
         let (spec, wave) = match ticket_of(dispatch_prompt(input)) {
-            Ticket::Absent => return Ok(Verdict::Allow),
+            Ticket::Absent => return Ok(without_ticket(input, ctx)),
             Ticket::Wave { spec, wave } => (spec, wave),
             Ticket::Unreadable(found) => {
                 let lang: Locale = ctx.config.language().text_or_default();
@@ -106,16 +154,7 @@ impl Check for SubagentInject {
         };
         let root = ctx.project_dir_or_cwd(input);
         Ok(match assemble(Path::new(&root), &spec, wave) {
-            Ok(text) => {
-                let mut tool_input = input.tool_input.clone();
-                match tool_input.as_object_mut() {
-                    Some(fields) => {
-                        fields.insert("prompt".to_string(), Value::String(text));
-                        Verdict::Rewrite { tool_input, note: None }
-                    }
-                    None => Verdict::Allow,
-                }
-            }
+            Ok(text) => with_prompt(input, text),
             Err(reason) => Verdict::Deny { reason },
         })
     }
@@ -125,6 +164,7 @@ impl Check for SubagentInject {
 mod tests {
     use super::*;
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
+    use mustard_core::platform::i18n::translate;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -135,13 +175,26 @@ mod tests {
     }
 
     fn dispatch(root: &Path, prompt: &str) -> Verdict {
+        dispatch_to(root, "general-purpose", prompt)
+    }
+
+    /// O despacho de `prompt` ao agente `agent`, como o Claude Code o manda.
+    fn dispatch_to(root: &Path, agent: &str, prompt: &str) -> Verdict {
         let input = HookInput {
             hook_event_name: Some("PreToolUse".to_string()),
             tool_name: Some("Task".to_string()),
-            tool_input: json!({ "prompt": prompt, "subagent_type": "general-purpose", "description": "onda" }),
+            tool_input: json!({ "prompt": prompt, "subagent_type": agent, "description": "onda" }),
             ..HookInput::default()
         };
         SubagentInject.evaluate(&input, &ctx(root)).expect("never errors")
+    }
+
+    /// O texto que o despacho reescrito leva ao agente.
+    fn rewritten(verdict: Verdict) -> String {
+        match verdict {
+            Verdict::Rewrite { tool_input, .. } => tool_input["prompt"].as_str().unwrap_or_default().to_string(),
+            other => panic!("the dispatch is rewritten, got {other:?}"),
+        }
     }
 
     fn write(root: &Path, event_type: &str, body: Value) -> u64 {
@@ -307,13 +360,43 @@ mod tests {
         }
     }
 
+    /// Num projeto que declara o código em português, o despacho sem bilhete
+    /// a um agente do Mustard abre com a linha dos dois idiomas lida da
+    /// configuração, e o resto do texto segue como veio. O texto que já traz
+    /// a linha, como o pedido da rodada, passa sem repeti-la; o despacho sem
+    /// bilhete a outro agente passa como veio; e o bilhete da onda vira o
+    /// pedido, que traz a linha uma vez.
+    #[test]
+    fn a_mustard_agent_dispatch_opens_with_the_project_languages() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        planned(root, 1);
+        approve(root);
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
+        let line = translate("prompt.languages", Locale::PtBr).replace("{text}", "pt-BR").replace("{code}", "pt-BR");
+
+        let skill = rewritten(dispatch_to(root, "mustard-skill", "Escreva a skill de testes."));
+        assert_eq!(skill, format!("{line}\n\nEscreva a skill de testes."));
+
+        let round = assembled(root);
+        assert_eq!(round.matches(&line).count(), 1, "{round}");
+        assert_eq!(dispatch_to(root, "mustard-wave", &round), Verdict::Allow);
+
+        assert_eq!(dispatch_to(root, "general-purpose", "Investigue o gancho."), Verdict::Allow);
+
+        let ticket = rewritten(dispatch_to(root, "mustard-wave", "MUSTARD-WAVE: x 1"));
+        assert_eq!(ticket, round);
+    }
+
     /// Uma tarefa sem bilhete passa como veio, e o gancho não age fora do
-    /// despacho.
+    /// despacho. Fora de um projeto com `mustard.json`, nem o despacho a um
+    /// agente do Mustard ganha a linha dos idiomas.
     #[test]
     fn a_task_without_a_ticket_passes_untouched() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         assert_eq!(dispatch(root, "Investigue o gancho.\nSKILL: foo"), Verdict::Allow);
+        assert_eq!(dispatch_to(root, "mustard-skill", "Escreva a skill de testes."), Verdict::Allow);
         let input = HookInput {
             tool_name: Some("Task".to_string()),
             tool_input: json!({ "prompt": "MUSTARD-WAVE: x 1" }),

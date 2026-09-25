@@ -75,8 +75,8 @@ pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Fl
 }
 
 /// O que os dois pedidos leem do `mustard.json` do projeto `root`: os
-/// comandos de compilar e de testar, o de preparo e os arquivos locais, com
-/// o repositório principal.
+/// comandos de compilar e de testar, o de preparo, os arquivos locais e os
+/// idiomas, com o repositório principal.
 fn project_execution(root: &Path) -> Execution {
     let config = crate::ProjectConfig::load(root);
     let commands = config.commands();
@@ -86,6 +86,7 @@ fn project_execution(root: &Path) -> Execution {
         prepare: commands.prepare,
         local_files: local_files(&config),
         root: shown(root),
+        language: config.language(),
         ..Execution::default()
     }
 }
@@ -1061,6 +1062,42 @@ mod tests {
             assert!(last.contains(&line), "{lang:?}: {line}\n{last}");
             assert!(!last.contains("dispatch-"), "the final review keeps reading item by item: {last}");
         }
+    }
+
+    /// O pedido da onda e o da revisão final dizem no cabeçalho os dois
+    /// idiomas lidos do `mustard.json`: o do texto e o dos nomes no código.
+    /// O projeto que declara o código em português recebe os nomes em
+    /// português, mesmo com o texto em inglês; o que não declara o do código
+    /// recebe os nomes em inglês. A linha sai uma vez só em cada pedido.
+    #[test]
+    fn every_request_opens_with_the_languages_the_project_declares() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let log = plan_log();
+        let line = |code: &str| {
+            crate::platform::i18n::translate("prompt.languages", Locale::EnUs)
+                .replace("{text}", "en-US")
+                .replace("{code}", code)
+        };
+        let mut missing = Vec::new();
+        for (config, code) in [
+            (r#"{"language":{"text":"en-US","code":"pt-BR"}}"#, "pt-BR"),
+            (r#"{"language":{"text":"en-US"}}"#, "en-US"),
+        ] {
+            std::fs::write(root.join("mustard.json"), config).unwrap();
+            let expected = line(code);
+            assert!(expected.contains(&format!("in {code}: names")), "{expected}");
+            let built = prompts(root, "teste", &log, Locale::EnUs, &Flight::default());
+            let wave = built.first().expect("the first wave's request").text.clone();
+            let last = final_review(root, "teste", &log, Locale::EnUs);
+            for (name, text) in [("wave", wave), ("final review", last)] {
+                let header = text.split("\n\n").take(3).collect::<Vec<_>>();
+                if text.matches(&expected).count() != 1 || !header.contains(&expected.as_str()) {
+                    missing.push(format!("{config}: the {name} request\n{text}"));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "requests without the languages line in the header:\n{}", missing.join("\n\n"));
     }
 
     /// O pedido de uma onda, montado como a rodada o monta — com a cópia que
