@@ -576,6 +576,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.proof.none", Locale::EnUs) => "no proof",
         ("page.point.answer", Locale::PtBr) => "Resposta",
         ("page.point.answer", Locale::EnUs) => "Answer",
+        ("page.item.agent", Locale::PtBr) => "Para o agente",
+        ("page.item.agent", Locale::EnUs) => "For the agent",
         ("page.finding", Locale::PtBr) => "achado do plano",
         ("page.finding", Locale::EnUs) => "plan finding",
         ("page.md.status", Locale::PtBr) => "Situação",
@@ -984,8 +986,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            385,
-            0x57c0_a867_d1ce_d5eb,
+            386,
+            0x6789_c7e8_bd3c_e714,
         );
     }
 

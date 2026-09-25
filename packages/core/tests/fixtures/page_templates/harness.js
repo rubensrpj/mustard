@@ -2,8 +2,9 @@
 // e diz em JSON o que a página mostra. É o apoio do teste dos templates
 // (`platform::page_templates`): o teste escreve na entrada padrão o HTML
 // preenchido, o banco de dados da página e os passos (ler a tela, buscar,
-// trocar de aba, abrir uma onda pelo gráfico ou pelo endereço, baixar o .md,
-// receber uma cópia nova), e lê a resposta na saída.
+// trocar de aba, abrir uma onda pelo gráfico ou pelo endereço, abrir ou
+// fechar um cartão, baixar o .md, receber uma cópia nova), e lê a resposta na
+// saída.
 //
 // A página roda com uma imitação pequena do DOM (só o que os templates usam)
 // e das capacidades do claude.ai: o banco de dados (`db`), com a leitura em
@@ -262,6 +263,11 @@ function ownFields(el) {
   }
   return out;
 }
+// A parte do agente de um cartão: o nome dela, o texto, o HTML e se está
+// aberta.
+function scrapeAgent(d) {
+  return d ? { summary: text(d.firstChild), text: text(d.lastChild), html: d.lastChild.innerHTML, open: d.open } : null;
+}
 // Um cartão: no alto (`top`, os nomes de classe na ordem) o código, o selo
 // do tipo, as marcas, o selo da prova e a data; embaixo o título.
 function scrapeItem(el) {
@@ -269,6 +275,7 @@ function scrapeItem(el) {
   const top = byClass(summary, 'top');
   const bodyEl = el.childNodes[1];
   const prose = bodyEl ? ownOne(bodyEl, (e) => has(e, 'prose')) : null;
+  const agent = bodyEl ? ownOne(bodyEl, (e) => e.tagName === 'DETAILS' && has(e, 'agent')) : null;
   const runs = bodyEl ? ownOne(bodyEl, (e) => has(e, 'runs')) : null;
   const answer = bodyEl ? ownOne(bodyEl, (e) => has(e, 'answer')) : null;
   const typeTag = top ? top.childNodes.find((c) => has(c, 'tag') && !has(c, 'mark') && !has(c, 'extra')) : null;
@@ -283,6 +290,7 @@ function scrapeItem(el) {
     status: pill ? pill.textContent : null, statusClass: pill ? pill.className : null,
     date: text(byClass(summary, 'when')), text: prose ? prose.textContent : '',
     html: prose ? prose.innerHTML : '', fields: bodyEl ? ownFields(bodyEl) : [], hidden: el.hidden, open: el.open,
+    agent: scrapeAgent(agent),
     runs: runs ? runs.childNodes.filter((c) => c.tagName === 'DETAILS').map(scrapeItem) : [],
     answer: answer ? scrapeItem(answer.childNodes.find((c) => c.tagName === 'DETAILS')) : null,
   };
@@ -429,6 +437,14 @@ async function until(check) {
     } else if (step.do === 'hash') {
       location.hash = '#' + step.value;
       (windowListeners.hashchange || []).forEach((fn) => fn({ type: 'hashchange' }));
+    } else if (step.do === 'click') {
+      // Um clique no nome de um cartão (`part` vazio) ou da parte do agente
+      // dele (`part: "agent"`), que abre o que está fechado e fecha o que
+      // está aberto, como o navegador faz com um <details>.
+      const card = one(appEl, (e) => e.tagName === 'DETAILS' && has(e, 'item') && e.getAttribute('id') === step.value);
+      const target = card && step.part === 'agent' ? ownOne(card.childNodes[1], (e) => e.tagName === 'DETAILS' && has(e, 'agent')) : card;
+      if (!target) errors.push('nothing to click in ' + step.value);
+      else target.open = !target.open;
     } else if (step.do === 'more') {
       const panel = document.getElementById(step.value);
       const more = panel && panel.childNodes.find((c) => has(c, 'more'));

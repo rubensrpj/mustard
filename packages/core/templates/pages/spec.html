@@ -171,6 +171,12 @@ h3.t{margin:0;font-weight:500;font-size:15px;line-height:1.4;overflow-wrap:anywh
 details.item.old .t{color:var(--muted)}
 .body{padding:10px 16px 14px;border-top:1px solid var(--rule-soft);font-size:14px;display:flex;flex-direction:column;gap:10px;min-width:0;overflow-wrap:anywhere}
 .body>.prose p:last-child{margin-bottom:0}
+/* A parte do agente de um item: os arquivos, os comandos e o que testar,
+   fechada dentro do cartão aberto, abre com um clique */
+details.agent{border:1px solid var(--rule-soft);border-radius:8px;background:var(--paper);min-width:0}
+details.agent>summary{cursor:pointer;padding:6px 12px;font-size:13px;color:var(--muted)}
+details.agent>.md{padding:0 12px 8px;font-size:13.5px;min-width:0;overflow-wrap:anywhere}
+details.agent>.md p:last-child{margin-bottom:0}
 .runs,.answer{display:flex;flex-direction:column;gap:6px}
 .more{margin:4px 0 0;font-size:13px}
 .more button,.link{background:none;border:0;color:var(--mustard-text);cursor:pointer;padding:0;text-decoration:underline;text-decoration-color:var(--mustard-line);text-underline-offset:2px}
@@ -260,7 +266,7 @@ details.item.old .t{color:var(--muted)}
     var line = oneLine(text.trim().split('\n\n')[0] || '').replace(/^#+/, '').replace(/^\s+/, '');
     return line.indexOf('- ') === 0 || line.indexOf('* ') === 0 ? line.slice(2) : line;
   }
-  // O título de uma tarefa: o campo title, quando ela o tem; sem ele, a
+  // O título de um item: o campo title, quando ele o tem; sem ele, a
   // primeira frase do texto, cortada em TITLE_CUT caracteres.
   var TITLE_CUT = 90;
   function taskTitle(e) {
@@ -280,6 +286,14 @@ details.item.old .t{color:var(--muted)}
     return null;
   }
   function blockOf(e) { return TYPES[e.type] ? TYPES[e.type].block : null; }
+  // O tipo de item de três partes traz no catálogo o campo do título e o da
+  // parte do agente. No envio, o campo agent guarda o nome do agente chamado,
+  // e não é parte do agente nenhuma.
+  function threeParts(type) {
+    var ty = TYPES[type];
+    return !!ty && ['title', 'agent'].every(function (n) { return ty.fields.some(function (f) { return f.name === n; }); });
+  }
+  function agentPart(e) { return threeParts(e.type) ? (str(e.agent) || '').trim() : ''; }
   function replacedBy(e) { return isInt(e.replaces) ? [e.replaces] : ints(e.replaces); }
   function seconds(from, to) {
     var a = Date.parse(from), b = Date.parse(to);
@@ -542,9 +556,11 @@ details.item.old .t{color:var(--muted)}
       }
       return plain(v);
     }
+    // O título vira o nome do cartão, e a parte do agente abre dentro dele:
+    // nenhum dos dois se repete na tabela do item aberto.
     function inHeading(type, field) {
       return (type === 'wave' && field === 'n') || (['task', 'send', 'delivered'].indexOf(type) >= 0 && field === 'wave') ||
-        (type === 'task' && field === 'title');
+        field === 'title' || (field === 'agent' && threeParts(type));
     }
     function fieldsOf(e) {
       var ty = TYPES[e.type], out = [];
@@ -583,17 +599,24 @@ details.item.old .t{color:var(--muted)}
       // Os campos que formam o título de um item sem texto corrido: sem eles,
       // o mesmo dado não aparece de novo na tabela do item aberto.
       var core = all.filter(function (f) { return f[0] !== origin && f[0] !== label; });
-      // A tarefa com título curto mostra o título no lugar da primeira frase,
-      // e o corpo aberto traz o texto inteiro.
-      var titled = e.type === 'task' && oneLine(str(e.title) || '') !== '';
+      // O item com título próprio mostra o título no lugar da primeira frase,
+      // e o corpo aberto traz o texto inteiro; os campos que formariam o
+      // título de um item sem texto vão para a tabela.
+      var titled = oneLine(str(e.title) || '') !== '';
       var title = titled ? taskTitle(e) : text ? firstParagraph(text) : core.map(function (f) { return f[0] + ': ' + f[1]; }).join(' · ');
-      var fields = text ? all : all.filter(function (f) { return f[0] === origin || f[0] === label; });
+      var fields = text || titled ? all : all.filter(function (f) { return f[0] === origin || f[0] === label; });
       // O corpo aberto mostra só o que vem depois do primeiro parágrafo: ele
       // já virou o título, e não precisa aparecer de novo.
       var paras = text ? text.split('\n\n') : [];
       var body = titled ? text : paras.length > 1 ? paras.slice(1).join('\n\n') : '';
+      // O item de três partes nasce aberto, com o porquê à vista e a parte do
+      // agente fechada dentro; a versão antiga, na conversa, nasce fechada.
+      // A tarefa de antes da forma fixa já tinha título: sem a parte do
+      // agente, o .md dela segue abrindo pelo texto.
+      var agent = agentPart(e);
       return { kind: 'item', id: e.id, type: e.type, code: code(e.id), anchored: anchored, title: title, status: statusOf(e),
-        who: null, mark: afterApproval(e), date: when(e), text: text, body: body, fields: fields };
+        who: null, mark: afterApproval(e), date: when(e), text: text, body: body, fields: fields, agent: agent,
+        open: anchored && agent !== '', titleFirst: titled && (agent !== '' || e.type !== 'task') };
     }
     function card(e) { var it = item(e, true); it.extra = []; return it; }
     function isDone(n) { return DONE.indexOf(waveState(n)) >= 0; }
@@ -727,18 +750,51 @@ details.item.old .t{color:var(--muted)}
       var m = /^`([^`]*)`: (.*)$/.exec(line);
       return m && BLOCKS.indexOf(m[1]) >= 0 ? m[2].split(', ').length : 1;
     }
-    function itemText(e) { var it = item(e, true); return it.text || it.title; }
+    // O texto de um item no pedido completo, linha a linha: o item de três
+    // partes abre pelo título, com o porquê embaixo e a parte do agente por
+    // último; o item antigo, pelo texto, como sempre.
+    function itemLines(e) {
+      var it = item(e, true);
+      if (!it.titleFirst) return (it.text || it.title).split('\n');
+      var out = [it.title];
+      if (it.text) out = out.concat([''], it.text.split('\n'));
+      if (it.agent) out = out.concat(['', '**' + t('page.item.agent') + '**', ''], it.agent.split('\n'));
+      return out;
+    }
+    function indented(lines, pad) { return lines.map(function (l) { return l.trim() ? pad + l : ''; }); }
+    // O pedido lê a linha de cada item em dois formatos. O de hoje traz um
+    // item por linha, com o bloco, o código e o título; a tarefa traz o
+    // código, o título e os arquivos, com a parte do agente embaixo. O
+    // antigo traz os códigos de um bloco inteiro numa linha só.
+    var ITEM_LINE = /^- `([a-z_-]+)` (MSTD-[A-Z]+-\d{4,}): (.*)$/;
+    var TASK_LINE = /^- `(MSTD-[A-Z]+-\d{4,})` (.+)$/;
+    var CODES_LINE = /^- `([a-z_-]+)`: (.+)$/;
     function fullPrompt(prompt) {
       var out = [];
-      prompt.split('\n').forEach(function (line) {
-        var m = /^- `([a-z_-]+)`: (.+)$/.exec(line.replace(/\r$/, ''));
+      prompt.split('\n').forEach(function (raw) {
+        var line = raw.replace(/\r$/, ''), m, e;
+        if ((m = ITEM_LINE.exec(line)) && BLOCKS.indexOf(m[1]) >= 0 && (e = byCode.get(m[2]))) {
+          var lines = itemLines(e);
+          out.push('- `' + m[1] + '` **' + m[2] + '**' + (lines[0] ? ' — ' + lines[0] : ''));
+          out = out.concat(indented(lines.slice(1), '  '));
+          return;
+        }
+        // A tarefa já traz o título e a parte do agente: o pedido completo
+        // põe o porquê dela logo abaixo da linha.
+        if ((m = TASK_LINE.exec(line)) && (e = byCode.get(m[1]))) {
+          out.push('- **' + m[1] + '** ' + m[2]);
+          var why = agentPart(e) ? (str(e.text) || '').trim() : '';
+          if (why) out = out.concat([''], indented(why.split('\n'), '  '), ['']);
+          return;
+        }
+        m = CODES_LINE.exec(line);
         var listedCodes = m && BLOCKS.indexOf(m[1]) >= 0 ? m[2].split(', ').map(function (c) { return c.trim(); }) : null;
-        if (!listedCodes || !listedCodes.every(function (c) { return /^MSTD-[A-Z]+-\d{4,}$/.test(c); })) { out.push(line); return; }
+        if (!listedCodes || !listedCodes.every(function (c) { return /^MSTD-[A-Z]+-\d{4,}$/.test(c); })) { out.push(raw); return; }
         out.push('- `' + m[1] + '`:');
         listedCodes.forEach(function (c) {
-          var e = byCode.get(c), lines = e ? itemText(e).split('\n') : [];
+          var known = byCode.get(c), lines = known ? itemLines(known) : [];
           out.push('  - **' + c + '**' + (lines.length && lines[0] ? ' — ' + lines[0] : ''));
-          lines.slice(1).forEach(function (l) { out.push(l.trim() ? '    ' + l : ''); });
+          out = out.concat(indented(lines.slice(1), '    '));
         });
       });
       return out.join('\n');
@@ -982,11 +1038,14 @@ details.item.old .t{color:var(--muted)}
     function removedItem(id, taken) {
       var e = byId.get(id), by = taken.by, purged = taken.purged;
       var it = e ? item(e, false) : { kind: 'item', id: id, type: '', code: code(id), anchored: false, title: '',
-        status: null, who: null, mark: null, date: null, text: '', body: '', fields: [] };
+        status: null, who: null, mark: null, date: null, text: '', body: '', fields: [], agent: '', open: false, titleFirst: false };
       it.extra = [];
       if (e) it.who = kindAnd(e, null);
       it.mark = t(purged ? 'page.removed.purged' : 'page.removed.removed');
-      if (purged) { it.title = MARK; it.text = MARK; it.body = ''; } else if (!it.text) { it.text = it.title; it.body = ''; }
+      // Do item expurgado fica só a marca: nem o título nem a parte do
+      // agente dele aparecem.
+      if (purged) { it.title = MARK; it.text = MARK; it.body = ''; it.agent = ''; it.titleFirst = false; }
+      else if (!it.text && !it.titleFirst) { it.text = it.title; it.body = ''; }
       it.fields = [];
       if (!by) return it;
       if (str(by.author) !== null) {
@@ -1144,11 +1203,18 @@ details.item.old .t{color:var(--muted)}
     } else if (node.kind === 'item') {
       var note = node.who || node.mark ? ' · ' + [node.who, node.mark, node.date].filter(Boolean).join(' · ') : '';
       var head = '- **' + node.code + '**' + note;
-      if (node.text && node.text.indexOf('\n') < 0) out.push(head + ' — ' + node.text);
+      var indent = function (text) { out.push(''); text.split('\n').forEach(function (l) { out.push(l ? '  ' + l : ''); }); };
+      // O item de três partes abre pelo título, com o porquê embaixo; a
+      // parte do agente vem depois, com o nome dela.
+      if (node.titleFirst) {
+        out.push(head + ' — ' + node.title);
+        if (node.text) indent(node.text);
+      } else if (node.text && node.text.indexOf('\n') < 0) out.push(head + ' — ' + node.text);
       else {
         out.push(head);
-        if (node.text) { out.push(''); node.text.split('\n').forEach(function (l) { out.push(l ? '  ' + l : ''); }); }
+        if (node.text) indent(node.text);
       }
+      if (node.agent) { out.push('', '  **' + t('page.item.agent') + '**'); indent(node.agent); }
       var fields = node.fields.concat(node.status ? [[t('page.md.status'), node.status.label]] : [])
         .concat(node.extra && node.extra.length ? [[t('page.md.marks'), node.extra.join(' · ')]] : []);
       if (fields.length) {
@@ -1289,8 +1355,10 @@ details.item.old .t{color:var(--muted)}
   }
   // Um item num cartão: no alto o código, o tipo num selo e a data (ou o
   // selo da prova, nos critérios); embaixo o título. O cartão abre e mostra
-  // o texto e os campos.
-  function renderCard(it, words) {
+  // o texto e os campos. O item de três partes nasce aberto, com o porquê à
+  // vista e a parte do agente fechada, que abre com um clique; `parts`, de
+  // quem pede, recebe essa parte, para a página guardar se ela está aberta.
+  function renderCard(it, words, parts) {
     var top = h('div', { class: 'top' }, [
       h('span', { class: 'c', text: it.code }),
       h('span', { class: it.who ? 'tag who' : 'tag', text: it.who || t('page.type.' + it.type) }),
@@ -1299,12 +1367,16 @@ details.item.old .t{color:var(--muted)}
       [it.status ? pillOf(it.status) : null, it.date ? h('span', { class: 'when', text: it.date }) : null]));
     var inner = (it.runs || []).map(function (r) { return renderCard(r, words); });
     var answer = it.answer ? renderCard(it.answer, words) : null;
-    var el = h('details', { class: 'item' + (it.anchored ? '' : ' old'), id: it.anchored ? it.code : null, 'data-code': it.code, 'data-type': it.type }, [
+    var agent = it.agent ? h('details', { class: 'agent' }, [h('summary', { text: t('page.item.agent') }),
+      h('div', { class: 'md', html: markdown(it.agent) })]) : null;
+    if (parts) parts.agent = agent;
+    var el = h('details', { class: 'item' + (it.anchored ? '' : ' old'), id: it.anchored ? it.code : null, 'data-code': it.code, 'data-type': it.type,
+      open: it.open === true }, [
       h('summary', null, [top, h('h3', { class: 't', html: inline(it.title) })]),
-      h('div', { class: 'body' }, [it.body ? prose(it.body) : null, kv(it.fields),
+      h('div', { class: 'body' }, [it.body ? prose(it.body) : null, agent, kv(it.fields),
         inner.length ? h('div', { class: 'runs' }, inner) : null,
         answer ? h('div', { class: 'answer' }, [h('span', { class: 'lbl', text: t('page.point.answer') }), answer]) : null])]);
-    words.push(it.code, it.title, it.text, it.who || '', it.mark || '');
+    words.push(it.code, it.title, it.text, it.agent || '', it.who || '', it.mark || '');
     it.fields.forEach(function (f) { words.push(f[0], f[1]); });
     return el;
   }
@@ -1473,8 +1545,8 @@ details.item.old .t{color:var(--muted)}
       var cards = [];
       tab.body.forEach(function (node) {
         if (node.kind === 'table') { panel.appendChild(renderTable(node)); return; }
-        var words = [], el = renderCard(node, words);
-        var entry = { el: el, code: fold(node.code), text: fold(words.join(' ')), tab: tab.anchor };
+        var words = [], parts = {}, el = renderCard(node, words, parts);
+        var entry = { el: el, agent: parts.agent || null, code: fold(node.code), text: fold(words.join(' ')), tab: tab.anchor };
         (node.runs || []).concat(node.answer ? [node.answer] : []).forEach(function (x) { LOC.set(x.code, { kind: 'card', entry: entry, inner: true }); });
         if (node.anchored) LOC.set(node.code, { kind: 'card', entry: entry });
         cards.push(entry);
@@ -1559,8 +1631,10 @@ details.item.old .t{color:var(--muted)}
   if (W.addEventListener) W.addEventListener('hashchange', function () { go(hash()); });
 
   function render(model) {
-    var open = new Set();
-    CARDS.forEach(function (x) { if (x.el.open && x.el.getAttribute('id')) open.add(x.el.getAttribute('id')); });
+    // Uma cópia nova monta a página de novo: cada cartão volta como estava,
+    // aberto ou fechado, e com a parte do agente aberta ou fechada.
+    var open = new Set(), was = new Map();
+    CARDS.forEach(function (x) { if (x.el.getAttribute('id')) was.set(x.el.getAttribute('id'), [x.el.open, !!x.agent && x.agent.open]); });
     Array.prototype.forEach.call(board.childNodes || [], function (c) {
       if (c.getAttribute && c.getAttribute('id') === 'now') {
         (c.childNodes[1] ? c.childNodes[1].childNodes : []).forEach(function (r) { if (r.open && r.getAttribute('id')) open.add(r.getAttribute('id')); });
@@ -1587,6 +1661,12 @@ details.item.old .t{color:var(--muted)}
     renderTabs(model).forEach(function (el) { board.appendChild(el); });
     choose(CUR_TAB);
     apply();
+    CARDS.forEach(function (x) {
+      var before = was.get(x.el.getAttribute('id'));
+      if (!before) return;
+      x.el.open = before[0];
+      if (x.agent) x.agent.open = before[1];
+    });
     open.forEach(function (id) { var el = D.getElementById(id); if (el && el.tagName === 'DETAILS') el.open = true; });
     var keep = CUR_WAVE !== null && model.chart.some(function (w) { return w.n === CUR_WAVE; }) ? CUR_WAVE : firstWave(model);
     if (keep !== null) pick(keep);

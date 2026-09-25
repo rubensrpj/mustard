@@ -848,6 +848,265 @@ mod tests {
         assert!(md.contains(line), "{md}");
     }
 
+    /// O cartão de código `code` na aba `anchor`.
+    fn card_of<'a>(seen: &'a Value, anchor: &str, code: &str) -> &'a Value {
+        cards(seen, anchor).iter().find(|i| i["code"] == json!(code)).unwrap_or_else(|| panic!("no {code} in {anchor}"))
+    }
+
+    /// Os rótulos da tabela de um cartão, na ordem.
+    fn field_labels(card: &Value) -> Vec<String> {
+        card["fields"].as_array().expect("fields").iter().map(|f| f[0].as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    /// Cada pedaço aparece em `text`, na ordem dada.
+    fn assert_in_order(text: &str, pieces: &[&str]) {
+        let mut from = 0;
+        for piece in pieces {
+            let at = text[from..].find(piece).unwrap_or_else(|| panic!("{piece:?} is missing, or out of order, in:\n{text}"));
+            from += at + piece.len();
+        }
+    }
+
+    /// Uma decisão gravada na forma de três partes: título, porquê com
+    /// parágrafos e lista, e a parte do agente.
+    fn three_part_decision(id: u64) -> Value {
+        json!({"v":1,"id":id,"code":"MSTD-DEC-0001","at":"2026-09-25T09:01:00-03:00","type":"decision","author":"assistant",
+            "title":"Item antigo aparece como hoje",
+            "text":"O item gravado antes desta obra não é reescrito.\n\nNa página:\n\n- a primeira frase vira o título;\n- o porquê não se separa.",
+            "agent":"- página: `e.title` ou `firstParagraph`\n- conferir pelo harness",
+            "why":"Separar o bloco antigo seria adivinhar.","keys":["item antigo"],"origin":1})
+    }
+
+    /// O item de três partes abre na página com o título no nome do cartão,
+    /// o porquê à vista, com parágrafos e listas, e a parte do agente
+    /// fechada dentro dele. Um clique abre a parte do agente, e ela continua
+    /// aberta quando uma cópia nova chega; o cartão que o usuário fechou
+    /// também continua fechado. O título e a parte do agente não se repetem
+    /// na tabela, a busca acha o item pela parte do agente, e o `.md` traz o
+    /// título, o porquê e a parte do agente. O critério com título mostra o
+    /// título, e o quando e o então vão para a tabela.
+    #[test]
+    fn a_new_item_shows_its_title_and_why_open_and_its_agent_part_folded() {
+        let context = json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant","text":"A página lê o banco."});
+        let criterion = json!({"v":1,"id":3,"code":"MSTD-CRIT-0001","at":"2026-09-25T09:02:00-03:00","type":"criterion","author":"assistant",
+            "title":"O cartão novo nasce aberto","when":"A página mostra um item novo.","then":"O porquê fica à vista.",
+            "proof":"cargo test -p mustard-core -- page_templates","origin":1});
+        let lines = vec![context, three_part_decision(2), criterion];
+        let note = |id: u64| json!({"v":1,"id":id,"at":"2026-09-25T10:00:00-03:00","type":"note","author":"assistant","text":format!("Nota {id}."),"keys":["nota"],"origin":1});
+        let copy = |extra: Vec<Value>| {
+            let items = [lines.clone(), extra].concat();
+            json!({"do": "copy", "set": {"ranges": [{"id": "0", "data": {"seq": 0, "items": items}}]}})
+        };
+        let steps = json!([
+            {"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"},
+            {"do": "search", "value": "harness"}, {"do": "scrape", "as": "search"}, {"do": "search", "value": ""},
+            {"do": "click", "value": "MSTD-DEC-0001", "part": "agent"}, copy(vec![note(4)]), {"do": "scrape", "as": "clicked"},
+            {"do": "click", "value": "MSTD-DEC-0001"}, copy(vec![note(4), note(5)]), {"do": "scrape", "as": "closed"},
+        ]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let page = &got["page"];
+
+        let decision = card_of(page, "agreed", "MSTD-DEC-0001");
+        assert_eq!(decision["title"], json!("Item antigo aparece como hoje"), "{decision}");
+        assert_eq!(decision["open"], json!(true), "the new item opens with its why in view: {decision}");
+        assert_in_order(
+            decision["html"].as_str().unwrap_or_default(),
+            &[
+                "<p>O item gravado antes desta obra não é reescrito.</p>",
+                "<p>Na página:</p>",
+                "<ul><li>a primeira frase vira o título;</li><li>o porquê não se separa.</li></ul>",
+            ],
+        );
+        let agent = &decision["agent"];
+        assert_eq!((&agent["summary"], &agent["open"]), (&json!("Para o agente"), &json!(false)), "{decision}");
+        assert_eq!(
+            agent["html"],
+            json!("<ul><li>página: <code>e.title</code> ou <code>firstParagraph</code></li><li>conferir pelo harness</li></ul>")
+        );
+        assert_eq!(
+            field_labels(decision),
+            [translate("page.field.why", Locale::PtBr), translate("page.field.origin", Locale::PtBr)],
+            "neither the title nor the agent part repeats in the table"
+        );
+
+        let crit = card_of(page, "criteria", "MSTD-CRIT-0001");
+        assert_eq!((&crit["title"], &crit["open"], &crit["agent"]), (&json!("O cartão novo nasce aberto"), &json!(false), &Value::Null));
+        let labels = field_labels(crit);
+        for key in ["page.field.when", "page.field.then", "page.field.proof"] {
+            assert!(labels.contains(&translate(key, Locale::PtBr).to_string()), "{key} is not in {labels:?}");
+        }
+
+        assert_eq!(visible_codes(&got["search"]), ["MSTD-DEC-0001"], "the search reads the agent part");
+
+        let clicked = card_of(&got["clicked"], "agreed", "MSTD-DEC-0001");
+        assert_eq!((&clicked["open"], &clicked["agent"]["open"]), (&json!(true), &json!(true)), "a new copy keeps the opened agent part");
+        let closed = card_of(&got["closed"], "agreed", "MSTD-DEC-0001");
+        assert_eq!(closed["open"], json!(false), "a new copy keeps the card the user closed");
+
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        assert_in_order(
+            md,
+            &[
+                "\n- **MSTD-DEC-0001** — Item antigo aparece como hoje\n",
+                "\n  O item gravado antes desta obra não é reescrito.\n",
+                "\n  - a primeira frase vira o título;\n",
+                "\n  **Para o agente**\n",
+                "\n  - página: `e.title` ou `firstParagraph`\n",
+                "\n  - Por quê: Separar o bloco antigo seria adivinhar.\n",
+            ],
+        );
+        assert!(md.contains("\n- **MSTD-CRIT-0001** — O cartão novo nasce aberto\n"), "{md}");
+    }
+
+    /// O item gravado antes da forma de três partes aparece como antes: a
+    /// primeira frase é o título, o cartão nasce fechado e o resto do texto
+    /// abre dentro dele, sem parte do agente; o critério sem título junta os
+    /// campos no nome do cartão. A tarefa que já tinha título segue com ele
+    /// na lista Agora, e o `.md` dela continua abrindo pelo texto.
+    #[test]
+    fn an_old_item_shows_as_before() {
+        let lines = vec![
+            json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant","text":"A página lê o banco."}),
+            json!({"v":1,"id":2,"code":"MSTD-RULE-0001","at":"2026-09-25T09:01:00-03:00","type":"rule","author":"assistant",
+                "text":"A trava confere o programa.\n\nVale para o Bash e o PowerShell.","example":"`rm -rf pasta` é barrado.","keys":["trava"],"origin":1}),
+            json!({"v":1,"id":3,"code":"MSTD-CRIT-0001","at":"2026-09-25T09:02:00-03:00","type":"criterion","author":"assistant",
+                "when":"A página abre.","then":"O cartão fecha.","proof":"cargo test","origin":1}),
+            board_task(4, "MSTD-TASK-0001", None, Some("Título curto do backlog"), "A tarefa com título. Segunda frase.", json!([])),
+        ];
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)),
+            json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"}]));
+        let page = &got["page"];
+
+        let rule = card_of(page, "agreed", "MSTD-RULE-0001");
+        assert_eq!(
+            (&rule["title"], &rule["open"], &rule["agent"], &rule["text"]),
+            (&json!("A trava confere o programa."), &json!(false), &Value::Null, &json!("Vale para o Bash e o PowerShell.")),
+            "{rule}"
+        );
+        assert_eq!(field_labels(rule), [translate("page.field.example", Locale::PtBr), translate("page.field.origin", Locale::PtBr)]);
+
+        let crit = card_of(page, "criteria", "MSTD-CRIT-0001");
+        assert_eq!(
+            (&crit["title"], &crit["open"], &crit["agent"]),
+            (&json!("Quando: A página abre. · Então: O cartão fecha. · Verificação: cargo test"), &json!(false), &Value::Null),
+            "{crit}"
+        );
+        assert_eq!(field_labels(crit), [translate("page.field.origin", Locale::PtBr)]);
+
+        let backlog = now_rows(page);
+        assert!(backlog.contains(&json!(["backlog", "PRONTA", "Título curto do backlog", "0 arquivos"])), "{backlog:?}");
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        let ready = translate("page.now.ready", Locale::PtBr);
+        for line in [
+            format!("- **MSTD-TASK-0001** · {ready} · 2026-09-22 10:00 — A tarefa com título. Segunda frase."),
+            "- **MSTD-RULE-0001**".to_string(),
+            "  A trava confere o programa.".to_string(),
+            "  Vale para o Bash e o PowerShell.".to_string(),
+        ] {
+            assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
+        assert!(!md.contains("Para o agente"), "no agent part in an old item:\n{md}");
+    }
+
+    /// O pedido da onda aparece inteiro nos dois formatos da linha de item.
+    /// No de hoje, cada linha traz o bloco, o código e o título, e a página
+    /// põe o item inteiro no lugar: o título, o porquê e a parte do agente
+    /// do item novo, e o texto todo do item antigo. A linha da tarefa ganha
+    /// o porquê dela logo abaixo, antes da parte do agente que o pedido já
+    /// traz. No formato antigo, com os códigos de um bloco numa linha só, o
+    /// item novo também abre pelo título, com o porquê e a parte do agente.
+    #[test]
+    fn a_wave_request_shows_whole_in_the_new_and_the_old_item_line() {
+        let new_request = "# demo — onda 5\n\n## Itens da onda\n\n\
+            - `waves` MSTD-WAVE-0001: A onda cinco.\n\
+            - `specification` MSTD-CTX-0001: A página lê o banco.\n\
+            - `agreed` MSTD-RULE-0001: A linha de item\n\n\
+            ## Tarefas, na ordem em que se faz\n\n\
+            - `MSTD-TASK-0001` Página mostra o título: `packages/core/templates/pages/spec.html`\n\
+            \x20 - `item()` separa as partes\n\
+            \x20 - quem testa `packages/core/templates/pages/spec.html`: `apps/rt/tests/project_page_install.rs`\n";
+        let old_request = "# demo — onda 6\n\n## Requisitos acordados\n\n- `agreed`: MSTD-RULE-0001\n- `specification`: MSTD-CTX-0001\n";
+        let lines = vec![
+            json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant",
+                "text":"A página lê o banco.\n\nO banco guarda os itens."}),
+            json!({"v":1,"id":2,"code":"MSTD-RULE-0001","at":"2026-09-25T09:01:00-03:00","type":"rule","author":"assistant",
+                "title":"A linha de item","text":"O pedido e a página leem a mesma linha.","agent":"- o formato mora em `wave_prompt.rs`",
+                "example":"- `agreed` MSTD-DEC-0001: Título","keys":["linha"],"origin":1}),
+            json!({"v":1,"id":3,"code":"MSTD-WAVE-0001","at":"2026-09-25T09:02:00-03:00","type":"wave","author":"binary","n":5,
+                "text":"A onda cinco.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+            json!({"v":1,"id":4,"code":"MSTD-TASK-0001","at":"2026-09-25T09:03:00-03:00","type":"task","author":"assistant","wave":5,
+                "title":"Página mostra o título","text":"Hoje o cartão fecha. Depois ele abre.","agent":"- `item()` separa as partes",
+                "files":[{"path":"packages/core/templates/pages/spec.html"}],"depends_on":[],"origin":1}),
+            json!({"v":1,"id":5,"at":"2026-09-25T09:04:00-03:00","type":"send","author":"binary","wave":5,"role":"wave","agent":"wave",
+                "text":new_request,"lines":12,"chars":400,"items":[1,2,3,4],"mustard":"0.2.4"}),
+            json!({"v":1,"id":6,"code":"MSTD-WAVE-0002","at":"2026-09-25T09:05:00-03:00","type":"wave","author":"binary","n":6,
+                "text":"A onda seis.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+        ];
+        let mut db = spec_database(&lines);
+        db["computed"][0]["data"]["waves"] = json!({"5": "approved"});
+        db["computed"][0]["data"]["prompts"] = json!({"6": old_request});
+        let steps = json!([
+            {"do": "wait"}, {"do": "hash", "value": "waves-5"}, {"do": "scrape", "as": "new"},
+            {"do": "hash", "value": "waves-6"}, {"do": "scrape", "as": "old"}, {"do": "download", "as": "md"},
+        ]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+
+        let sent = prompt_of(&got["new"]);
+        let text = sent["text"].as_str().unwrap_or_default();
+        assert_in_order(
+            text,
+            &[
+                "MSTD-WAVE-0001 — A onda cinco.",
+                "MSTD-CTX-0001 — A página lê o banco.",
+                "O banco guarda os itens.",
+                "MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "Para o agente",
+                "o formato mora em wave_prompt.rs",
+                "MSTD-TASK-0001 Página mostra o título: packages/core/templates/pages/spec.html",
+                "Hoje o cartão fecha. Depois ele abre.",
+                "item() separa as partes",
+                "quem testa",
+            ],
+        );
+        for raw in ["MSTD-RULE-0001: ", "MSTD-CTX-0001: ", "MSTD-WAVE-0001: "] {
+            assert!(!text.contains(raw), "the line {raw:?} kept only the title:\n{text}");
+        }
+        let html = sent["html"].as_str().unwrap_or_default();
+        for piece in [
+            "<p>O pedido e a página leem a mesma linha.</p><p><strong>Para o agente</strong></p><ul><li>o formato mora em <code>wave_prompt.rs</code></li></ul>",
+            "<strong><a href=\"#MSTD-TASK-0001\">MSTD-TASK-0001</a></strong> Página mostra o título",
+            "<p>Hoje o cartão fecha. Depois ele abre.</p><ul><li><code>item()</code> separa as partes</li>",
+        ] {
+            assert!(html.contains(piece), "{piece:?} is not in the request:\n{html}");
+        }
+
+        assert_eq!(got["old"]["detail"]["wave"], json!(6), "the address opens wave 6");
+        let old = prompt_of(&got["old"])["text"].as_str().unwrap_or_default().to_string();
+        assert_in_order(
+            &old,
+            &[
+                "MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "Para o agente",
+                "o formato mora em wave_prompt.rs",
+                "MSTD-CTX-0001 — A página lê o banco.",
+                "O banco guarda os itens.",
+            ],
+        );
+        assert!(!old.contains("agreed: MSTD-RULE-0001"), "no line keeps only the codes:\n{old}");
+
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        for line in [
+            "- `agreed` **MSTD-RULE-0001** — A linha de item",
+            "- **MSTD-TASK-0001** Página mostra o título: `packages/core/templates/pages/spec.html`",
+            "  - **MSTD-RULE-0001** — A linha de item",
+            "    **Para o agente**",
+        ] {
+            assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
+    }
+
     /// O ponto do levantamento respondido ganha a marca de fechado, e a
     /// resposta vai dentro do cartão dele, junto do ponto.
     #[test]
