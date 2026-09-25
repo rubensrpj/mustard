@@ -11,7 +11,7 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["heading", "placeholder", "checklist", "ac", "context", "marker", "memory", "wave"];
+pub(super) const PREFIXES: &[&str] = &["heading", "placeholder", "checklist", "ac", "marker", "memory", "wave"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -151,23 +151,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("ac.safety.build_green", Locale::PtBr) => "o build do projeto passa verde",
         ("ac.safety.build_green", Locale::EnUs) => "the project build passes green",
 
-        // Scan-digest enrichment block injected into the Context section by
-        // `spec_draft::context_enrichment` — the anchors/precedent the digest
-        // already found, so the drafted Context is not an empty placeholder.
-        // The `_weak` variant labels the anchor list when the digest's honest
-        // match report came back `weak`/`none`: the anchors are shown for
-        // transparency but flagged so nobody plans on top of noise.
-        ("context.scan_anchors", Locale::PtBr) => "Âncoras (do scan)",
-        ("context.scan_anchors", Locale::EnUs) => "Anchors (from scan)",
-        ("context.scan_anchors_weak", Locale::PtBr) => {
-            "Âncoras (do scan — baixa confiança: casamento fraco, confirme lendo antes de usar)"
-        }
-        ("context.scan_anchors_weak", Locale::EnUs) => {
-            "Anchors (from scan — low confidence: weak match, confirm by reading before relying)"
-        }
-        ("context.scan_slices", Locale::PtBr) => "Fatias recorrentes (precedente a espelhar)",
-        ("context.scan_slices", Locale::EnUs) => "Recurring slices (precedent to mirror)",
-
         // File-operation markers accepted in a spec's `## Files` bullet lines
         // (e.g. "- `src/Payable.cs` (create)"). Synonyms for one locale are
         // `|`-separated DATA, merged across locales by
@@ -223,8 +206,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("spec_text.rs"),
             super::PREFIXES,
-            57,
-            0x0e20_9ea7_dd6e_2751,
+            54,
+            0x6426_2a56_bb24_5223,
         );
     }
 
@@ -241,25 +224,15 @@ mod tests {
         assert_eq!(translate("placeholder.see_below", Locale::PtBr), "<missing-key>");
     }
 
-    /// O aviso de baixa confiança das âncoras do scan vem em letra normal nos
-    /// dois idiomas: nenhuma palavra dele está toda em maiúsculas.
+    /// Os rótulos das âncoras e das fatias do scan no contexto da spec saíram
+    /// junto com o enriquecimento que os pedia: nos dois idiomas, cada chave
+    /// responde o texto de chave ausente.
     #[test]
-    fn the_weak_anchors_warning_is_not_shouted() {
-        assert_eq!(
-            translate("context.scan_anchors_weak", Locale::PtBr),
-            "Âncoras (do scan — baixa confiança: casamento fraco, confirme lendo antes de usar)"
-        );
-        assert_eq!(
-            translate("context.scan_anchors_weak", Locale::EnUs),
-            "Anchors (from scan — low confidence: weak match, confirm by reading before relying)"
-        );
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let text = translate("context.scan_anchors_weak", lang);
-            let shouted: Vec<&str> = text
-                .split(|c: char| !c.is_alphabetic())
-                .filter(|word| word.chars().count() > 1 && word.chars().all(char::is_uppercase))
-                .collect();
-            assert!(shouted.is_empty(), "{lang}: {shouted:?} in {text}");
+    fn the_scan_anchor_labels_are_gone() {
+        for key in ["context.scan_anchors", "context.scan_anchors_weak", "context.scan_slices"] {
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                assert_eq!(translate(key, lang), "<missing-key>", "{key} in {lang}");
+            }
         }
     }
 }

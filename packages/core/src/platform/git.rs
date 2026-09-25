@@ -143,6 +143,13 @@ impl GitRun {
 /// too. A credential that is already stored still answers; a missing one
 /// makes the call fail, and a failure is something every caller already knows
 /// how to degrade from.
+///
+/// Nothing here takes a lock it can do without, either. A plain read such as
+/// `status` otherwise grabs the index lock only to save fresher file dates,
+/// and the status line runs it on every redraw: a call cut off halfway left
+/// the lock file behind, and the next commit of the project refused to run.
+/// Optional locks are turned off, so a read never writes the index. The lock
+/// that a commit, an add or a merge needs is not optional and stays as it is.
 #[must_use]
 pub fn run(root: &Path, args: &[&str]) -> GitRun {
     let config = owner_of(root).map(|owner| ProjectConfig::load(&owner)).unwrap_or_default();
@@ -154,6 +161,7 @@ pub fn run(root: &Path, args: &[&str]) -> GitRun {
         .current_dir(root)
         .stdin(std::process::Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
     {
         Ok(out) => GitRun {
@@ -236,12 +244,13 @@ mod tests {
 
     /// Não prova comportamento nenhum: é o programa falso que os testes abaixo
     /// declaram como controle de versão. Rodado pela suíte, só passa. Chamado
-    /// pelo executor, imprime a marca e o valor que recebeu para o pedido de
-    /// credencial por terminal.
+    /// pelo executor, imprime a marca, o valor que recebeu para o pedido de
+    /// credencial por terminal e o que recebeu para as travas opcionais.
     #[test]
     fn programa_falso() {
         let prompt = std::env::var("GIT_TERMINAL_PROMPT").unwrap_or_default();
-        println!("{MARK} pedido-de-credencial={prompt}");
+        let locks = std::env::var("GIT_OPTIONAL_LOCKS").unwrap_or_default();
+        println!("{MARK} pedido-de-credencial={prompt} travas-opcionais={locks}");
     }
 
     /// Declara o próprio executável destes testes como o programa de controle
@@ -347,6 +356,59 @@ mod tests {
                 .is_some_and(|out| out.contains(&format!("{MARK} pedido-de-credencial=0"))),
             "o pedido de credencial chega desligado ao programa: {answer:?}",
         );
+    }
+
+    /// O programa chamado recebe desligadas as travas opcionais: uma leitura
+    /// não pega a trava do índice só para guardar datas de arquivo mais novas.
+    #[test]
+    fn o_programa_chamado_nao_pega_trava_opcional() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        declare_fake_program(root, true);
+
+        let answer = run_fake(root);
+        assert!(
+            answer.out().is_some_and(|out| out.contains("travas-opcionais=0")),
+            "as travas opcionais chegam desligadas ao programa: {answer:?}",
+        );
+    }
+
+    /// Com git de verdade, o `status` de uma árvore com um arquivo modificado
+    /// e outro só com a data mudada não deixa a trava do índice para trás e
+    /// nem reescreve o índice. Com a trava opcional ligada, o git pegaria a
+    /// trava para guardar a data nova do segundo arquivo, e o índice mudaria;
+    /// cortado nesse meio, o processo deixaria o arquivo de trava.
+    #[test]
+    fn ler_o_estado_nao_pega_a_trava_do_indice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        if !run(root, &["init", "-q", "."]).ok {
+            return; // sem git utilizável aqui
+        }
+        let _ = run(root, &["config", "user.email", "t@t.t"]);
+        let _ = run(root, &["config", "user.name", "t"]);
+        std::fs::write(root.join("mudado.txt"), "antes\n").unwrap();
+        std::fs::write(root.join("tocado.txt"), "igual\n").unwrap();
+        assert!(run(root, &["add", "."]).ok);
+        assert!(run(root, &["commit", "-q", "-m", "semente"]).ok);
+
+        std::fs::write(root.join("mudado.txt"), "depois\n").unwrap();
+        // Mesmo conteúdo com outra data: só o que o git guardaria ao pegar a
+        // trava muda.
+        let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(root.join("tocado.txt"))
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        let index = root.join(".git").join("index");
+        let before = std::fs::read(&index).unwrap();
+
+        let status = run(root, &["status", "--porcelain"]);
+        assert_eq!(status.out().as_deref(), Some("M mudado.txt"), "{status:?}");
+        assert!(!root.join(".git").join("index.lock").exists(), "a trava do índice não fica para trás");
+        assert_eq!(std::fs::read(&index).unwrap(), before, "a leitura não reescreve o índice");
     }
 
     /// Projeto que declarou não controlar versões não faz o executor chamar

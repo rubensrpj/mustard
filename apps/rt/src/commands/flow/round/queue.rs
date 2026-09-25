@@ -1932,11 +1932,12 @@ mod tests {
     }
 
     /// As linhas dos itens combinados que a escolha da onda 1 deixa no
-    /// pedido, cada uma com o bloco, o código e o título.
-    const CHOSEN_ITEMS: &str = "- `agreed` MSTD-RULE-0001: Vale sempre: a tabela nova tem chave.\n\
-        - `agreed` MSTD-RULE-0003: Vale sempre: a tabela nova tem índice.\n\
-        - `agreed` MSTD-DEC-0001: Sem dono: a tabela nasce vazia.\n\
-        - `agreed` MSTD-DEC-0003: Da onda um: a coluna é texto.\n";
+    /// pedido, cada uma com o bloco, o código e o título, e embaixo dela,
+    /// recuada, a parte do agente do item.
+    const CHOSEN_ITEMS: &str = "- `agreed` MSTD-RULE-0001: Vale sempre: a tabela nova tem chave.\n  - conferir pelo teste\n\
+        - `agreed` MSTD-RULE-0003: Vale sempre: a tabela nova tem índice.\n  - conferir pelo teste\n\
+        - `agreed` MSTD-DEC-0001: Sem dono: a tabela nasce vazia.\n  - conferir pelo teste\n\
+        - `agreed` MSTD-DEC-0003: Da onda um: a coluna é texto.\n  - conferir pelo teste\n";
 
     /// A spec aprovada da análise antes do envio: uma onda, com a tarefa que
     /// faz uma das regras do projeto todo, duas regras do projeto todo que
