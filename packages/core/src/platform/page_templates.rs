@@ -958,6 +958,61 @@ mod tests {
         assert!(md.contains("\n- **MSTD-CRIT-0001** — O cartão novo nasce aberto\n"), "{md}");
     }
 
+    /// A tabela de medidas da onda mostra o agente chamado, gravado no envio,
+    /// sob o rótulo do catálogo nos dois idiomas, nunca pela chave crua. O
+    /// objetivo feito de um contexto de três partes abre pelo título, com o
+    /// porquê à vista e a parte do agente fechada, como nos cartões; o
+    /// contexto antigo, só com texto, segue mostrando o texto inteiro, sem
+    /// título à parte.
+    #[test]
+    fn the_called_agent_has_a_label_and_the_goal_opens_by_the_context_title() {
+        let context = json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant",
+            "title":"O painel diz cada coisa uma vez",
+            "text":"Hoje o painel repete o estado.\n\nDepois, cada dado aparece num lugar só.",
+            "agent":"- página: `renderGoal`\n- conferir pelo harness"});
+        let wave = json!({"v":1,"id":2,"at":"2026-09-25T09:01:00-03:00","type":"wave","author":"assistant",
+            "n":9,"text":"A onda nove.","criteria":[],"done_when":"A suíte passa.","origin":1});
+        let send = json!({"v":1,"id":3,"at":"2026-09-25T09:02:00-03:00","type":"send","author":"binary","wave":9,
+            "role":"wave","agent":"wave","text":"# pedido\n\nTexto do pedido.","lines":2,"chars":24,"items":[1],
+            "mustard":"0.2.1","origin":1});
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let lines = vec![context.clone(), wave.clone(), send.clone()];
+            let mut db = spec_database(&lines);
+            db["computed"][0]["data"]["waves"] = json!({"9": "running"});
+            db["computed"][0]["data"]["prompts"] = json!({});
+            let got = run("spec", &spec_page_template(lang), Some(db), steps.clone());
+            let page = &got["page"];
+
+            let measures = page["detail"]["measures"].as_array().expect("measures");
+            let label = translate("page.field.agent", lang);
+            assert_ne!(label, "<missing-key>", "{lang}");
+            assert!(measures.contains(&json!([label, "wave"])), "{lang}: the called agent under its label: {measures:?}");
+            assert!(
+                measures.iter().all(|f| !f[0].as_str().unwrap_or_default().starts_with("page.")),
+                "{lang}: no raw key among the measures: {measures:?}"
+            );
+
+            let goal = &page["goal"];
+            assert_eq!(goal["title"], json!("O painel diz cada coisa uma vez"), "{lang}: {goal}");
+            assert_eq!(
+                goal["html"],
+                json!("<p>Hoje o painel repete o estado.</p><p>Depois, cada dado aparece num lugar só.</p>"),
+                "{lang}: the whole why stays in view under the title"
+            );
+            let agent = &goal["agent"];
+            assert_eq!((&agent["summary"], &agent["open"]), (&json!(translate("page.item.agent", lang)), &json!(false)), "{lang}: {goal}");
+            assert_eq!(agent["html"], json!("<ul><li>página: <code>renderGoal</code></li><li>conferir pelo harness</li></ul>"), "{lang}");
+        }
+
+        let old = json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant",
+            "text":"O painel antigo abre pelo texto.\n\nO segundo parágrafo fica junto."});
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&[old])), steps);
+        let goal = &got["page"]["goal"];
+        assert_eq!((&goal["title"], &goal["agent"]), (&Value::Null, &Value::Null), "the old context has no title of its own: {goal}");
+        assert_eq!(goal["html"], json!("<p>O painel antigo abre pelo texto.</p><p>O segundo parágrafo fica junto.</p>"), "{goal}");
+    }
+
     /// O item gravado antes da forma de três partes aparece como antes: a
     /// primeira frase é o título, o cartão nasce fechado e o resto do texto
     /// abre dentro dele, sem parte do agente; o critério sem título junta os
@@ -1905,7 +1960,7 @@ mod tests {
             now_rows(page),
             vec![
                 json!(["group", "Rodando"]),
-                json!(["wave", "ONDA 3", "3 tarefas", "0 arquivos · em andamento"]),
+                json!(["wave", "Onda 3", "3 tarefas", "0 arquivos · em andamento"]),
                 json!(["group", "Backlog · tarefas que ainda não viraram onda"]),
                 json!(["backlog", "ESPERA", "Título curto do backlog", "0 arquivos · espera 1 tarefa do backlog"]),
                 json!(["backlog", "PRONTA", "A tarefa sem título espera nada.", "0 arquivos"]),
@@ -1982,9 +2037,9 @@ mod tests {
         assert_eq!(
             pills(&page),
             vec![
-                json!(["ONDA 2", "pill running", "O lote que roda", "0 arquivos · em andamento", []]),
-                json!(["ONDA 3", "pill wait", "2 tarefas", "0 arquivos · espera sair", ["O scan lê tudo", "O mapa mostra o uso"]]),
-                json!(["ONDA 4", "pill fail", "O conserto do quadro", "0 arquivos · volta para conserto", []]),
+                json!(["Onda 2", "pill running", "O lote que roda", "0 arquivos · em andamento", []]),
+                json!(["Onda 3", "pill wait", "2 tarefas", "0 arquivos · espera sair", ["O scan lê tudo", "O mapa mostra o uso"]]),
+                json!(["Onda 4", "pill fail", "O conserto do quadro", "0 arquivos · volta para conserto", []]),
             ],
             "{}",
             page["now"]
@@ -1994,9 +2049,9 @@ mod tests {
         assert_eq!(
             pills(&page),
             vec![
-                json!(["WAVE 2", "pill running", "O lote que roda", "0 files · in progress", []]),
-                json!(["WAVE 3", "pill wait", "2 tasks", "0 files · waiting to go out", ["O scan lê tudo", "O mapa mostra o uso"]]),
-                json!(["WAVE 4", "pill fail", "O conserto do quadro", "0 files · back for a fix", []]),
+                json!(["Wave 2", "pill running", "O lote que roda", "0 files · in progress", []]),
+                json!(["Wave 3", "pill wait", "2 tasks", "0 files · waiting to go out", ["O scan lê tudo", "O mapa mostra o uso"]]),
+                json!(["Wave 4", "pill fail", "O conserto do quadro", "0 files · back for a fix", []]),
             ],
             "{}",
             page["now"]
@@ -2010,7 +2065,7 @@ mod tests {
 
         // Só a onda reprovada, do mesmo jeito.
         let page = open([vec![state], delivered, rejected].concat(), json!({"1": "approved", "4": "rejected"}), Locale::PtBr);
-        assert_eq!(pills(&page)[0][0], json!("ONDA 4"));
+        assert_eq!(pills(&page)[0][0], json!("Onda 4"));
         assert_eq!(tail(&page), json!(["after", "Depois vêm a revisão final e o fechamento."]));
     }
 
@@ -2121,8 +2176,8 @@ mod tests {
             ],
             now: [
                 json!(["group", "Rodando"]),
-                json!(["wave", "ONDA 2", "A lista do meio", "1 arquivo · em andamento"]),
-                json!(["wave", "ONDA 3", "3 tarefas", "3 arquivos · em andamento"]),
+                json!(["wave", "Onda 2", "A lista do meio", "1 arquivo · em andamento"]),
+                json!(["wave", "Onda 3", "3 tarefas", "3 arquivos · em andamento"]),
                 json!(["group", "Backlog · tarefas que ainda não viraram onda"]),
                 json!(["backlog", "ESPERA", "A troca de tema", "1 arquivo · espera a onda 2"]),
                 json!(["backlog", "PRONTA", "A busca por código", "1 arquivo"]),
@@ -2144,8 +2199,8 @@ mod tests {
             ],
             now: [
                 json!(["group", "Running"]),
-                json!(["wave", "WAVE 2", "A lista do meio", "1 file · in progress"]),
-                json!(["wave", "WAVE 3", "3 tasks", "3 files · in progress"]),
+                json!(["wave", "Wave 2", "A lista do meio", "1 file · in progress"]),
+                json!(["wave", "Wave 3", "3 tasks", "3 files · in progress"]),
                 json!(["group", "Backlog · tasks not yet in a wave"]),
                 json!(["backlog", "WAITS", "A troca de tema", "1 file · waits for wave 2"]),
                 json!(["backlog", "READY", "A busca por código", "1 file"]),

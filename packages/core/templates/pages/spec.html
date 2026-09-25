@@ -63,6 +63,8 @@ button,input{font:inherit;color:inherit}
 .btn:hover{border-color:var(--mustard-line)}
 .goal{padding:12px 16px;border-left:3px solid var(--mustard);background:var(--surface);border-radius:0 10px 10px 0;min-width:0;overflow-wrap:anywhere}
 .goal .prose p:last-child{margin-bottom:0}
+.goal>h3.t{margin:4px 0 6px}
+.goal>details.agent{margin-top:10px}
 .lbl{font:600 11px/1.6 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:2px}
 
 /* Números: quatro quadros, cada número dito uma vez */
@@ -90,6 +92,7 @@ h2{margin:0;font-size:16px;letter-spacing:-.01em}
 .work summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:92px minmax(0,1fr) auto;gap:4px 14px;align-items:center;padding:11px 16px}
 .work summary::-webkit-details-marker{display:none}
 .work summary:hover{background:var(--paper)}
+.work summary .pill{text-transform:uppercase}
 .pill{font:600 11px/1 var(--mono);letter-spacing:.04em;padding:5px 8px;border-radius:6px;white-space:nowrap;text-align:center;justify-self:start}
 .pill.running{background:var(--mustard-soft);color:var(--mustard-text)}
 .pill.wait{background:var(--rule-soft);color:var(--muted)}
@@ -746,10 +749,6 @@ details.agent>.md p:last-child{margin-bottom:0}
 
     // As ondas: o pedido de cada uma aparece completo, com o texto de cada
     // item no lugar do código.
-    function listed(line) {
-      var m = /^`([^`]*)`: (.*)$/.exec(line);
-      return m && BLOCKS.indexOf(m[1]) >= 0 ? m[2].split(', ').length : 1;
-    }
     // O texto de um item no pedido completo, linha a linha: o item de três
     // partes abre pelo título, com o porquê embaixo e a parte do agente por
     // último; o item antigo, pelo texto, como sempre.
@@ -1367,8 +1366,7 @@ details.agent>.md p:last-child{margin-bottom:0}
       [it.status ? pillOf(it.status) : null, it.date ? h('span', { class: 'when', text: it.date }) : null]));
     var inner = (it.runs || []).map(function (r) { return renderCard(r, words); });
     var answer = it.answer ? renderCard(it.answer, words) : null;
-    var agent = it.agent ? h('details', { class: 'agent' }, [h('summary', { text: t('page.item.agent') }),
-      h('div', { class: 'md', html: markdown(it.agent) })]) : null;
+    var agent = agentBlock(it.agent);
     if (parts) parts.agent = agent;
     var el = h('details', { class: 'item' + (it.anchored ? '' : ' old'), id: it.anchored ? it.code : null, 'data-code': it.code, 'data-type': it.type,
       open: it.open === true }, [
@@ -1381,9 +1379,19 @@ details.agent>.md p:last-child{margin-bottom:0}
     return el;
   }
 
+  // A parte do agente de um item, fechada, que abre com um clique.
+  function agentBlock(agent) {
+    return agent ? h('details', { class: 'agent' }, [h('summary', { text: t('page.item.agent') }),
+      h('div', { class: 'md', html: markdown(agent) })]) : null;
+  }
+  // O objetivo: o contexto de três partes abre pelo título, com o porquê
+  // embaixo e a parte do agente fechada, como nos cartões; o contexto antigo
+  // mostra o texto inteiro.
   function renderGoal(goal) {
-    var el = h('section', { class: 'goal', id: 'goal', 'aria-label': t('page.goal') }, [h('span', { class: 'lbl', text: t('page.goal') }),
-      prose(goal.text || goal.title)]);
+    var kids = goal.titleFirst
+      ? [h('h3', { class: 't', html: inline(goal.title) }), goal.text ? prose(goal.text) : null, agentBlock(goal.agent)]
+      : [prose(goal.text || goal.title)];
+    var el = h('section', { class: 'goal', id: 'goal', 'aria-label': t('page.goal') }, [h('span', { class: 'lbl', text: t('page.goal') })].concat(kids));
     LOC.set(goal.code, { kind: 'goal', el: el });
     return el;
   }

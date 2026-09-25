@@ -239,7 +239,7 @@ mod tests {
     const PT_LINE: &str =
         "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
     /// A linha escondida de um projeto que declarou en-US.
-    const EN_LINE: &str = "Answer in US English, in plain text: short sentences and no internal codes.";
+    const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
 
     /// Uma frase de 25 palavras, o limite: o último tamanho que passa.
     const TWENTY_FIVE_WORDS: &str = "Eu li os arquivos do projeto e conferi cada teste que ainda falhava \

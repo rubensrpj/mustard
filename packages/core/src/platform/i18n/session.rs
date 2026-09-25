@@ -67,7 +67,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // `{capabilities}` a declaração do banco de dados da página.
         ("session.project_page", Locale::PtBr) => {
             "[Mustard] A página do projeto ainda não foi publicada. Ela é a página do claude.ai que \
-             lista as specs deste projeto, com a fase e o link de cada uma, e o link dela fica na \
+             lista as specs deste projeto, com a fase e o link de cada uma. O link dela fica na \
              barra de status. Publique agora o template dela, o arquivo `{template}`, lido uma vez só \
              e publicado como está, declarando o banco de dados da página: `{capabilities}`. Depois \
              grave o endereço com `mustard-rt run write publish --json \
@@ -76,7 +76,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("session.project_page", Locale::EnUs) => {
             "[Mustard] The project page has not been published yet. It is the claude.ai page that \
-             lists this project's specs, with the phase and the link of each one, and its link lives \
+             lists this project's specs, with the phase and the link of each one. Its link lives \
              in the status line. Publish its template now, the file `{template}`, read only once and \
              published as it is, declaring the page's database: `{capabilities}`. Then record the \
              address with `mustard-rt run write publish --json \
@@ -106,12 +106,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Tidying up the branch {branch} did not finish ({reason}), and it stayed on this machine."
         }
         ("session.landed.pending", Locale::PtBr) => {
-            "Pergunte ao usuário o que fazer com cada pendência nascida nela — virar spec, ficar na \
-             lista ou sair com motivo —, pelo título: {items}."
+            "Pergunte ao usuário, pelo título, o que fazer com cada pendência nascida nela: {items}. \
+             Cada uma pode virar spec, ficar na lista ou sair com motivo."
         }
         ("session.landed.pending", Locale::EnUs) => {
-            "Ask the user what to do with each pending item born in it — turn it into a spec, keep \
-             it on the list, or drop it with a reason —, by title: {items}."
+            "Ask the user, by title, what to do with each pending item born in it: {items}. Each \
+             one can become a spec, stay on the list, or leave with a reason."
         }
         ("session.provider_silent", Locale::PtBr) => {
             "[Mustard] A spec {spec} está com o pull request aberto, e o provedor não respondeu se \
@@ -170,7 +170,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno."
         }
         ("prompt_entry.line", Locale::EnUs) => {
-            "Answer in US English, in plain text: short sentences and no internal codes."
+            "Answer in American English, in plain text: short sentences and no internal codes."
         }
         ("prompt_entry.line.undeclared", Locale::PtBr) => {
             "Responda no idioma de quem escreve, em texto simples: frases curtas e nenhum código interno."
@@ -196,7 +196,7 @@ mod tests {
             include_str!("session.rs"),
             super::PREFIXES,
             21,
-            0x3135_b272_fd04_2958,
+            0xcca5_2d1f_b442_8d4e,
         );
     }
 

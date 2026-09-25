@@ -326,7 +326,11 @@ function scrapeSpec() {
     title: text(one(appEl, (e) => e.tagName === 'H1')),
     phase: phase && !phase.hidden ? phase.textContent : null,
     branch: branch && !branch.hidden ? branch.textContent : null,
-    goal: byId('goal') ? { label: text(byClass(byId('goal'), 'lbl')), text: text(byClass(byId('goal'), 'prose')), html: byClass(byId('goal'), 'prose').innerHTML } : null,
+    // O objetivo: o rótulo, o título do contexto de três partes, o texto e a
+    // parte do agente, fechada como nos cartões.
+    goal: byId('goal') ? { label: text(byClass(byId('goal'), 'lbl')), title: text(byClass(byId('goal'), 't')),
+      text: text(byClass(byId('goal'), 'prose')), html: byClass(byId('goal'), 'prose').innerHTML,
+      agent: scrapeAgent(ownOne(byId('goal'), (e) => e.tagName === 'DETAILS' && has(e, 'agent'))) } : null,
     tiles: tiles ? tiles.childNodes.map((x) => ({
       id: x.getAttribute('data-tile'), tag: x.tagName, href: x.getAttribute('href'), key: text(byClass(x, 'k')),
       value: text(byClass(x, 'v')), meter: byClass(x, 'meter') !== null,

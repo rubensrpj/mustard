@@ -159,7 +159,7 @@ mod tests {
         "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
 
     /// A linha de um projeto que declarou en-US.
-    const EN_LINE: &str = "Answer in US English, in plain text: short sentences and no internal codes.";
+    const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
 
     /// A linha de um projeto que não declarou idioma, no idioma padrão das
     /// mensagens do Mustard.

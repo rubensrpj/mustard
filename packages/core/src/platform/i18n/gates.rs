@@ -160,15 +160,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // says to nobody (it exits 0). `{target}`/`{candidates}` are
         // interpolated by the `spec-draft` cut.
         ("workbranch.base.unknown", Locale::PtBr) => {
-            "Não dá para saber de qual base '{target}' deve sair: este projeto declara várias \
-             candidatas ({candidates}) e nada registrou a escolha, então a branch NÃO foi criada. \
-             Reabra a unidade com a base explícita (--base) — chutar aqui aponta o trabalho para \
+            "Não dá para saber de qual base '{target}' deve sair. Este projeto declara várias \
+             candidatas ({candidates}), e nada registrou a escolha, então a branch não foi criada. \
+             Reabra a unidade com a base explícita (`--base`). Chutar aqui aponta o trabalho para \
              uma base que ninguém escolheu."
         }
         ("workbranch.base.unknown", Locale::EnUs) => {
-            "There is no telling which base '{target}' should be cut from: this project declares \
-             several candidates ({candidates}) and nothing recorded the choice, so the branch was \
-             NOT created. Re-open the unit with an explicit base (--base) — guessing here aims the \
+            "There is no telling which base '{target}' should be cut from. This project declares \
+             several candidates ({candidates}), and nothing recorded the choice, so the branch was \
+             not created. Re-open the unit with an explicit base (`--base`). Guessing here aims the \
              work at a base nobody chose."
         }
 
@@ -293,13 +293,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // opções e o que a testemunha diz depois do clique.
         ("change.question", Locale::PtBr) => {
             "A onda {wave} diz que o plano dela não funciona e propõe esta mudança: {change} \
-             Aceitar? Aceitando, a rodada grava o que a onda entregou e segue com o plano mudado; \
-             recusando, nada é gravado e a onda fica parada até você dizer o que fazer com ela."
+             Aceitar? Se aceitar, a rodada grava o que a onda entregou e segue com o plano mudado. \
+             Se recusar, nada é gravado, e a onda fica parada até você dizer o que fazer com ela."
         }
         ("change.question", Locale::EnUs) => {
             "Wave {wave} says its plan does not work and proposes this change: {change} \
              Accept it? If you accept, the round records what the wave delivered and goes on with \
-             the changed plan; if you decline, nothing is recorded and the wave stays put until \
+             the changed plan. If you decline, nothing is recorded, and the wave stays put until \
              you say what to do with it."
         }
         ("change.accept", Locale::PtBr) => "Aceitar",
@@ -382,11 +382,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.delete_base", Locale::EnUs) => "deleting the integration branch `{branch}`",
         ("command_guard.windows_path_rewritten", Locale::PtBr) => {
             "O destino `{original}` é um caminho do Windows, e o terminal do Bash não entende esse \
-             formato; o comando segue com `{posix}`, a forma que o shell entende."
+             formato. O comando segue com `{posix}`, a forma que o shell entende."
         }
         ("command_guard.windows_path_rewritten", Locale::EnUs) => {
             "The target `{original}` is a Windows path, and the Bash terminal does not understand \
-             that form; the command continues with `{posix}`, the form the shell understands."
+             that form. The command continues with `{posix}`, the form the shell understands."
         }
         ("command_guard.waiting_loop", Locale::PtBr) => {
             "Comando barrado: espera outro processo num laço, checando com `pgrep`, `pidof` ou `ps`. \
@@ -413,16 +413,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `/mustard:upsert` to install it; everything else stays off until then."
         }
         ("base.unmeasured", Locale::PtBr) => {
-            "Não dá para saber de qual branch cortar: este projeto não declara base nenhuma em \
-             `mustard.json#git.flow`, o remoto não respondeu qual é a branch padrão dele e o \
-             checkout não está em branch nenhuma. Diga a base com `--base <branch>` ou declare o \
-             `git.flow`. Nada foi cortado."
+            "Não dá para saber de qual branch cortar. Este projeto não declara base nenhuma em \
+             `mustard.json#git.flow`. O remoto não disse qual é a branch padrão dele, e o checkout \
+             não está em branch nenhuma. Diga a base com `--base <branch>` ou declare o `git.flow`. \
+             Nada foi cortado."
         }
         ("base.unmeasured", Locale::EnUs) => {
-            "There is no branch to cut from: this project declares no base in \
-             `mustard.json#git.flow`, the remote did not answer which its default branch is, and \
-             the checkout is on no branch. Name the base with `--base <branch>` or declare \
-             `git.flow`. Nothing was cut."
+            "There is no branch to cut from. This project declares no base in \
+             `mustard.json#git.flow`. The remote did not say which its default branch is, and the \
+             checkout is on no branch. Name the base with `--base <branch>` or declare `git.flow`. \
+             Nothing was cut."
         }
 
         // Defeitos de clareza de um texto (`domain::clarity`) — cada um é uma
@@ -496,8 +496,27 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             65,
-            0x7493_731b_a127_4131,
+            0xeffc_a23a_c327_4d0f,
         );
+    }
+
+    /// A recusa de base desconhecida explica sem gritar: nenhuma palavra
+    /// inteira em maiúsculas fora do código, e a primeira frase, com as vagas
+    /// preenchidas, cabe em 25 palavras, nos dois idiomas.
+    #[test]
+    fn the_unknown_base_refusal_explains_without_shouting() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text =
+                translate("workbranch.base.unknown", lang).replace("{target}", "feature/x").replace("{candidates}", "main, dev");
+            let prose: String = text.split('`').step_by(2).collect();
+            let shouted: Vec<&str> = prose
+                .split(|c: char| !c.is_alphabetic())
+                .filter(|w| w.chars().count() >= 2 && w.chars().all(char::is_uppercase))
+                .collect();
+            assert!(shouted.is_empty(), "{lang}: {shouted:?} in {text}");
+            let first = text.split(". ").next().unwrap_or_default();
+            assert!(first.split_whitespace().count() <= 25, "{lang}: {first}");
+        }
     }
 
     /// The messages of the write gate and of the approval witness come from

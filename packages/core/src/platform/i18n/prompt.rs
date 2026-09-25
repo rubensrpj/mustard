@@ -88,30 +88,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              montado pelo binário a partir dela. Nenhum texto vem copiado: cada parte traz só os \
              códigos dos itens, em sequência, numa linha por bloco da spec.\n\n\
              **O que olhar.** As entregas, os critérios, as mudanças da branch, as emendas gravadas \
-             entre as ondas e o que cada onda deixou aberto — como as ondas se encaixam, código \
-             repetido entre ondas, decisão de uma que contradiz a de outra, verificação que uma apagou da \
-             outra. Aponte só; não conserte.\n\n\
+             entre as ondas e o que cada onda deixou aberto. Olhe como as ondas se encaixam: código \
+             repetido entre ondas, decisão de uma que contradiz a de outra, verificação que uma \
+             apagou da outra. Aponte só; não conserte.\n\n\
              **O que devolver.** O veredito com `\"final\":true`, gravado por `mustard-rt run write \
-             verdict`. O pedido traz os requisitos \
-             acordados inteiros da spec, dono ou não de onda: responda por cada item em `agreed`, com o código \
-             em `item` e `met` dizendo se está atendido; quando não estiver, `text` diz o que falta \
-             e `files` os arquivos, e viram uma tarefa nova. Faltar algum requisito acordado na lista \
-             é veredito malformado: nada é gravado."
+             verdict`. O pedido traz os requisitos acordados inteiros da spec, dono ou não de onda. \
+             Responda por cada item em `agreed`, com o código em `item` e `met` dizendo se está \
+             atendido. Quando não estiver, `text` diz o que falta e `files` os arquivos, e eles viram \
+             uma tarefa nova. Faltar algum requisito acordado na lista é veredito malformado: nada é \
+             gravado."
         }
         ("prompt.final.fixed", Locale::EnUs) => {
             "**What this is.** The dedicated test agent's request for this spec, with the whole \
              work, assembled by the binary from it. No text is copied in: each part carries only \
              the items' codes, in sequence, one line per spec block.\n\n\
              **What to look at.** The deliveries, the criteria, the branch changes, the amendments \
-             recorded between waves and what each wave left open — how the waves fit together, code \
-             repeated across them, a decision of one that contradicts another's, a verification one erased \
-             from another. Point it out only; do not fix it.\n\n\
+             recorded between waves and what each wave left open. Look at how the waves fit \
+             together: code repeated across them, a decision of one that contradicts another's, a \
+             verification one erased from another. Point it out only; do not fix it.\n\n\
              **What to return.** The verdict with `\"final\":true`, recorded through `mustard-rt run \
-             write verdict`. The request carries \
-             the spec's whole agreed requirements, owned by a wave or not: answer for each item in `agreed`, \
-             with the code in `item` and `met` saying whether it is satisfied; when it is not, \
-             `text` says what is missing and `files` the files, and they become a new task. Missing \
-             any agreed requirement from the list is a malformed verdict: nothing gets recorded."
+             write verdict`. The request carries the spec's whole agreed requirements, owned by a \
+             wave or not. Answer for each item in `agreed`, with the code in `item` and `met` \
+             saying whether it is satisfied. When it is not, `text` says what is missing and `files` \
+             the files, and they become a new task. Missing any agreed requirement from the list is \
+             a malformed verdict: nothing gets recorded."
         }
         // Como ler, logo depois da parte fixa. `{root}` é `--root <caminho> `
         // quando o agente trabalha numa cópia, e nada quando não trabalha.
@@ -168,13 +168,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the verdict points out, in light of those items: do not redo the wave."
         }
         ("prompt.fix.final", Locale::PtBr) => {
-            "Esta é a volta do conserto. A linha abaixo é o veredito que reprovou; as ondas, as \
+            "Esta é a volta do conserto. A linha abaixo é o veredito que reprovou. As ondas, as \
              emendas e as entregas que o resto do pedido traz já estão restritas a quem foi \
              reprovado. Confira só o conserto — o que o veredito apontou —, não a obra inteira de \
              novo."
         }
         ("prompt.fix.final", Locale::EnUs) => {
-            "This is the fix round. The line below is the verdict that rejected it; the waves, the \
+            "This is the fix round. The line below is the verdict that rejected it. The waves, the \
              amendments and the deliveries the rest of the request carries are already restricted to \
              whoever was rejected. Check only the fix — what the verdict pointed out —, not the \
              whole work again."
@@ -187,12 +187,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.execution.test", Locale::PtBr) => "Teste com `{command}`.",
         ("prompt.execution.test", Locale::EnUs) => "Test with `{command}`.",
         ("prompt.execution.running", Locale::PtBr) => {
-            "Ondas em andamento, cada uma na sua cópia: o arquivo que você dividir com elas é juntado \
-             na volta, e o trecho que conflitar para a rodada até ser resolvido."
+            "Ondas em andamento, cada uma na sua cópia. O arquivo que você dividir com elas é \
+             juntado na volta; o trecho que conflitar para a rodada até ser resolvido."
         }
         ("prompt.execution.running", Locale::EnUs) => {
-            "Waves in flight, each in its own copy: a file you share with them is merged on the way \
-             back, and a conflicting hunk stops the round until it is resolved."
+            "Waves in flight, each in its own copy. A file you share with them is merged on the way \
+             back; a conflicting hunk stops the round until it is resolved."
         }
         ("prompt.execution.wave", Locale::PtBr) => "Onda {n}",
         ("prompt.execution.wave", Locale::EnUs) => "Wave {n}",
@@ -214,14 +214,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.execution.copy", Locale::PtBr) => {
             "Trabalhe só na cópia separada `{copy}`, que a rodada criou no commit atual, e rode cada \
              comando de dentro dela; nunca crie outra. Nada se edita no repositório principal \
-             `{root}`, e a cópia fica onde está: na volta, a rodada junta os arquivos entregues, novos \
-             e apagados inclusive, e depois do commit a apaga."
+             `{root}`, e a cópia fica onde está. Na volta, a rodada junta os arquivos entregues, \
+             novos e apagados inclusive, e depois do commit a apaga."
         }
         ("prompt.execution.copy", Locale::EnUs) => {
             "Work only in the separate copy `{copy}`, which the round created at the current commit, \
              and run every command from inside it; never create another. Nothing is edited in the \
-             main repository `{root}`, and the copy stays where it is: on the way back, the round \
-             merges the delivered files, new and deleted ones included, and deletes it after the commit."
+             main repository `{root}`, and the copy stays where it is. On the way back, the round \
+             merges the delivered files, new and deleted ones included, and deletes the copy after \
+             the commit."
         }
         // O preparo que o projeto declara traz à cópia as dependências que o
         // git não leva. Ele pode mexer num arquivo comitado, como o lockfile,
@@ -243,12 +244,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // devolveram o código do commit no campo do título, e a rodada
         // recusou dizendo que não havia nada para comitar.
         ("prompt.execution.no_commit", Locale::PtBr) => {
-            "O trabalho fica mudado só na cópia, sem `git add` e sem `git commit`: quem junta as \
+            "O trabalho fica mudado só na cópia, sem `git add` e sem `git commit`. Quem junta as \
              cópias no repositório principal e comita é a rodada."
         }
         ("prompt.execution.no_commit", Locale::EnUs) => {
-            "The work stays changed only in the copy, without `git add` and without `git commit`: \
-             the round is the one that merges the copies into the main repository and commits."
+            "The work stays changed only in the copy, without `git add` and without `git commit`. \
+             The round merges the copies into the main repository and commits."
         }
         ("prompt.execution.commit_field", Locale::PtBr) => {
             "Na entrega gravada, o campo `commit` é o título da mensagem, em palavras e curto — \
@@ -263,11 +264,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // em vez de montá-la a partir de uma prosa que não fica registrada em
         // lugar nenhum.
         ("prompt.execution.report_lines", Locale::PtBr) => {
-            "A entrega vai para a spec por `mustard-rt run write delivered`: a rodada não lê a \
+            "A entrega vai para a spec por `mustard-rt run write delivered`. A rodada não lê a \
              última mensagem, e o relato do trabalho mora no campo de texto da entrega."
         }
         ("prompt.execution.report_lines", Locale::EnUs) => {
-            "The delivery goes into the spec through `mustard-rt run write delivered`: the round \
+            "The delivery goes into the spec through `mustard-rt run write delivered`. The round \
              does not read the last message, and the account of the work lives in the delivery's \
              text field."
         }
@@ -295,12 +296,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // conteúdo, o que faltar — nunca por link, que deixaria a cópia
         // escrever no repositório principal.
         ("prompt.review.local_files", Locale::PtBr) => {
-            "Os arquivos locais que o git ignora e a cópia precisa são {files}: o que faltar nela, \
+            "Os arquivos locais que o git ignora e a cópia precisa são {files}. O que faltar nela, \
              copie do repositório principal `{root}` pelo conteúdo, nunca por link ou atalho."
         }
         ("prompt.review.local_files", Locale::EnUs) => {
-            "The local files git ignores and the copy needs are {files}: whatever is missing from it, \
-             copy from the main repository `{root}` by content, never by link or shortcut."
+            "The local files git ignores and the copy needs are {files}. Whatever is missing from \
+             it, copy from the main repository `{root}` by content, never by link or shortcut."
         }
         ("prompt.review.jobs", Locale::PtBr) => {
             "Compile e teste com menos processos em paralelo que o normal: as ondas compilam ao mesmo \
@@ -333,7 +334,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             43,
-            0xc778_3191_938c_88f1,
+            0x7f7f_fee9_2f7c_368d,
         );
     }
 }

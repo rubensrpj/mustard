@@ -87,26 +87,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("survey.record_points", Locale::PtBr) => {
             "Grave cada ponto de `points` que ainda não tem `id` com `mustard-rt run write point \
-             --spec {spec}`, na ordem: copie os campos como vieram, com `status` open, e ponha em \
-             `facts` o que você conferiu no código ou na conversa, cada fato com a fonte (arquivo e \
-             linha, comando ou número da mensagem); os fatos que já vêm no ponto ficam. A gravação \
+             --spec {spec}`, na ordem. Copie os campos como vieram, com `status` open. Em `facts`, \
+             ponha o que você conferiu no código ou na conversa. Cada fato leva a fonte: arquivo e \
+             linha, comando ou número da mensagem. Os fatos que já vêm no ponto ficam. A gravação \
              do último ponto já devolve o primeiro, para mostrar ao usuário."
         }
         ("survey.record_points", Locale::EnUs) => {
             "Record each point in `points` that has no `id` yet with `mustard-rt run write point \
-             --spec {spec}`, in order: copy its fields as they came, with `status` open, and put in \
-             `facts` what you checked in the code or in the conversation, each fact with its source \
-             (file and line, command or message number); the facts the point already brings stay. \
+             --spec {spec}`, in order. Copy its fields as they came, with `status` open. In `facts`, \
+             put what you checked in the code or in the conversation. Each fact carries its source: \
+             file and line, command or message number. The facts the point already brings stay. \
              Recording the last point already returns the first one, to show the user."
         }
         ("survey.done", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
-             nenhum registro aponta, e pergunte o que fazer com cada uma; depois grave a \
+             nenhum registro aponta, e pergunte o que fazer com cada uma. Depois grave a \
              especificação e as tarefas."
         }
         ("survey.done", Locale::EnUs) => {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
-             points to, and ask what to do with each one; then record the specification and the \
+             points to, and ask what to do with each one. Then record the specification and the \
              tasks."
         }
         ("survey.review_step", Locale::PtBr) => {
@@ -125,16 +125,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.continue_option", Locale::PtBr) => "Seguir",
         ("survey.continue_option", Locale::EnUs) => "Continue",
         ("survey.outside_review_step", Locale::PtBr) => {
-            "Depois, antes do fim, rode o revisor de fora: despache ao agente `mustard-review` a \
-             conferência do levantamento inteiro da spec {spec}, que aponta o que ficou de fora ou se \
-             contradiz e devolve o texto a você, sem gravar veredito. Grave cada achado dele como ponto aberto, com `block` e `from` \
-             outside_review, e apresente-o como os outros; sem achado, siga."
+            "Depois, antes do fim, rode o revisor de fora. Despache ao agente `mustard-review` a \
+             conferência do levantamento inteiro da spec {spec}. Ele aponta o que ficou de fora ou \
+             se contradiz e devolve o texto a você, sem gravar veredito. Grave cada achado dele como \
+             ponto aberto, com `block` e `from` outside_review, e apresente-o como os outros. Sem \
+             achado, siga."
         }
         ("survey.outside_review_step", Locale::EnUs) => {
-            "Then, before the end, run the outside reviewer: dispatch to the `mustard-review` agent \
-             the check of the whole survey of spec {spec}, which points out what was left out or \
-             contradicts itself and returns its text to you, recording no verdict. Record each of its findings as an open point, with `block` and \
-             `from` outside_review, and present it like the others; with no finding, go on."
+            "Then, before the end, run the outside reviewer. Dispatch to the `mustard-review` agent \
+             the check of the whole survey of spec {spec}. It points out what was left out or \
+             contradicts itself and returns its text to you, recording no verdict. Record each of \
+             its findings as an open point, with `block` and `from` outside_review, and present it \
+             like the others. With no finding, go on."
         }
         ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
         ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
@@ -198,7 +200,7 @@ mod tests {
             include_str!("survey.rs"),
             super::PREFIXES,
             36,
-            0x77f0_30d9_a96c_af01,
+            0x16bb_40ca_9e79_7a06,
         );
     }
 

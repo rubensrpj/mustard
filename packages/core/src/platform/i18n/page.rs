@@ -36,18 +36,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // é publicada de novo no mesmo endereço, antes do lote de cópia: o
         // banco dela continua lá, e a cópia segue de onde parou.
         ("page.copy.republish", Locale::PtBr) => {
-            "A {page} foi publicada com um molde diferente do que esta versão do Mustard monta: \
-             publique de novo o template `{template}` com a ferramenta `Artifact` no mesmo endereço, \
-             {url}, passando em `capabilities` o valor `{capabilities}`, antes de copiar os lotes, e \
-             grave a publicação com \
+            "A {page} foi publicada com um molde diferente do que esta versão do Mustard monta. Antes de \
+             copiar os lotes, publique de novo o template `{template}` com a ferramenta `Artifact` no mesmo \
+             endereço, {url}, passando em `capabilities` o valor `{capabilities}`. Grave a publicação com \
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              com `\"ok\":false` e `\"reason\"` quando falhar."
         }
         ("page.copy.republish", Locale::EnUs) => {
-            "The {page} was published with a template other than the one this Mustard version builds: \
-             publish the template `{template}` again with the `Artifact` tool at the same address, \
-             {url}, passing `{capabilities}` as `capabilities`, before copying the batches, and record \
-             the publication with \
+            "The {page} was published with a template other than the one this Mustard version builds. \
+             Before copying the batches, publish the template `{template}` again with the `Artifact` tool \
+             at the same address, {url}, passing `{capabilities}` as `capabilities`. Record the publication \
+             with \
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
@@ -55,50 +54,50 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // inteira ganha o template num link novo; a antiga fica parada.
         // `{page}` é o nome da página (`page.name.*`).
         ("page.copy.old_page", Locale::PtBr) => {
-            "A {page} que uma versão antiga do Mustard publicou fica parada como está, como um \
-             retrato: publique o template como página nova, com link novo, sem mexer na antiga e sem \
-             copiar nada para ela, e a barra de status passa a mostrar o link novo."
+            "A {page} que uma versão antiga do Mustard publicou fica parada como está, como um retrato. \
+             Publique o template como página nova, com link novo. Não mexa na antiga nem copie nada para \
+             ela. A barra de status passa a mostrar o link novo."
         }
         ("page.copy.old_page", Locale::EnUs) => {
-            "The {page} an older Mustard version published stays still as it is, like a snapshot: \
-             publish the template as a new page, with a new link, without touching the old one or \
-             copying anything into it, and the status line starts showing the new link."
+            "The {page} an older Mustard version published stays still as it is, like a snapshot. Publish \
+             the template as a new page, with a new link. Leave the old one alone and copy nothing into it. \
+             The status line starts showing the new link."
         }
         // A migração de uma spec antiga: as notas de trabalho das tarefas das
         // ondas que ainda não saíram.
         ("page.migration.unrated", Locale::PtBr) => {
-            "Esta spec veio de uma versão do Mustard sem a nota de trabalho das tarefas: grave uma \
-             versão nova de cada tarefa das ondas que ainda não saíram, {tasks}, com a nota dela. \
-             {scale} Depois some as notas de cada onda: a que passar de {cap} pontos volta para o \
-             usuário aprovar a divisão dela antes de sair."
+            "Esta spec veio de uma versão do Mustard sem a nota de trabalho das tarefas. Grave uma versão \
+             nova de cada tarefa das ondas que ainda não saíram, {tasks}, com a nota dela. {scale} Depois \
+             some as notas de cada onda. A que passar de {cap} pontos volta para o usuário aprovar a \
+             divisão dela antes de sair."
         }
         ("page.migration.unrated", Locale::EnUs) => {
-            "This spec came from a Mustard version without the tasks' points: record a new version of \
-             each task of the waves that have not gone out yet, {tasks}, with its points. {scale} \
-             Then add up the points of each wave: the one over {cap} points goes back to the user to \
-             approve its split before it goes out."
+            "This spec came from a Mustard version without the tasks' points. Record a new version of each \
+             task of the waves that have not gone out yet, {tasks}, with its points. {scale} Then add up \
+             the points of each wave. The one over {cap} points goes back to the user to approve its split \
+             before it goes out."
         }
         ("page.migration.over_cap", Locale::PtBr) => {
-            "A onda {wave} ainda não saiu e soma {points} pontos, acima do teto de {cap}: ela volta \
-             para o usuário aprovar a divisão dela antes de sair."
+            "A onda {wave} ainda não saiu e soma {points} pontos, acima do teto de {cap}. Ela volta para o \
+             usuário aprovar a divisão dela antes de sair."
         }
         ("page.migration.over_cap", Locale::EnUs) => {
-            "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}: \
-             it goes back to the user to approve its split before it goes out."
+            "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}. It \
+             goes back to the user to approve its split before it goes out."
         }
         // Quem copia é o orquestrador, na própria conversa, também na
         // primeira cópia, que leva a spec inteira.
         ("page.copy.batches", Locale::PtBr) => {
-            "Copie você mesmo, nesta conversa e sem agente, para o banco de dados da {page}, no \
-             endereço {url}, os lotes {files}, nessa ordem: cada arquivo é a lista `writes` de uma \
-             chamada da ferramenta `ArtifactData` com `action` `batch`, e cada documento vai pelo \
-             `file_path` dele, sem você ler os itens."
+            "Copie você mesmo, nesta conversa e sem agente, para o banco de dados da {page}, no endereço \
+             {url}, os lotes {files}, nessa ordem. Cada arquivo é a lista `writes` de uma chamada da \
+             ferramenta `ArtifactData` com `action` `batch`. Cada documento vai pelo `file_path` dele, \
+             sem você ler os itens."
         }
         ("page.copy.batches", Locale::EnUs) => {
-            "Copy it yourself, in this conversation and without an agent, into the {page}'s database, \
-             at {url}, the batches {files}, in this order: each file is the `writes` list of one \
-             `ArtifactData` call with `action` `batch`, and each document goes by its `file_path`, \
-             without reading the items."
+            "Copy it yourself, in this conversation and without an agent, into the {page}'s database at \
+             {url}: the batches {files}, in this order. Each file is the `writes` list of one \
+             `ArtifactData` call with `action` `batch`. Each document goes by its `file_path`, without \
+             reading the items."
         }
         // Só entra depois de `page.copy.batches`, quando algum documento do
         // lote já existe no banco sem versão guardada, de uma cópia gravada
@@ -106,18 +105,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // documento assim sem a versão dele. O que tem versão guardada já vai
         // com ela no lote.
         ("page.copy.existing", Locale::PtBr) => {
-            "Os documentos {docs} já existem no banco sem versão guardada: leia a versão de cada um com \
-             a ação `get` da ferramenta `ArtifactData` e ponha cada uma em `if_version` na escrita dele \
-             antes de mandar o lote; as escritas que já trazem `if_version` vão como estão, e as outras \
-             vão sem versão. Se o banco recusar uma versão, leia aquele documento com `get`, ponha a \
-             versão dele na escrita e mande o lote de novo."
+            "Os documentos {docs} já existem no banco sem versão guardada. Leia a versão de cada um com a \
+             ação `get` da ferramenta `ArtifactData` e ponha essa versão em `if_version` na escrita dele, \
+             antes de mandar o lote. As escritas que já trazem `if_version` vão como estão, e as outras vão \
+             sem versão. Se o banco recusar uma versão, leia aquele documento com `get`, ponha a versão \
+             dele na escrita e mande o lote de novo."
         }
         ("page.copy.existing", Locale::EnUs) => {
-            "The documents {docs} already exist in the database without a stored version: read each \
-             one's version with the `get` action of the `ArtifactData` tool and put it in `if_version` on \
-             that write before sending the batch; the writes that already carry `if_version` go as they \
-             are, and the others go without a version. If the database refuses a version, read that \
-             document with `get`, put its version on the write and send the batch again."
+            "The documents {docs} already exist in the database without a stored version. Read each one's \
+             version with the `get` action of the `ArtifactData` tool and put it in `if_version` on that \
+             write, before sending the batch. The writes that already carry `if_version` go as they are, and \
+             the others go without a version. If the database refuses a version, read that document with \
+             `get`, put its version on the write and send the batch again."
         }
         // Só entra depois de `page.copy.batches`, e só fora do descarte: a
         // spec descartada é terminal, sem cópia seguinte para continuar dela.
@@ -146,20 +145,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("page.copy.failed", Locale::PtBr) => {
             "A cópia para o banco de dados das páginas não pôde ser preparada, e o motivo está em \
-             `warnings`: não copie nada agora, porque a próxima cópia leva os mesmos itens."
+             `warnings`. Não copie nada agora: a próxima cópia leva os mesmos itens."
         }
         ("page.copy.failed", Locale::EnUs) => {
-            "The copy into the pages' database could not be prepared, and the reason is in `warnings`: \
-             copy nothing now, since the next copy carries the same items."
+            "The copy into the pages' database could not be prepared, and the reason is in `warnings`. \
+             Copy nothing now: the next copy carries the same items."
         }
         ("page.purge_pending", Locale::PtBr) => {
-            "Os itens {codes} guardam no arquivo um trecho com cara de segredo e ficam fora da cópia \
-             para o banco de dados da página até serem expurgados: expurgue cada um com \
+            "Os itens {codes} guardam no arquivo um trecho com cara de segredo. Eles ficam fora da cópia \
+             para o banco de dados da página até serem expurgados. Expurgue cada um com \
              `mustard-rt run write purge --spec {spec} --json '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
         }
         ("page.purge_pending", Locale::EnUs) => {
-            "Items {codes} keep in the file an excerpt that looks like a secret and stay out of the \
-             copy into the page's database until they are purged: purge each one with \
+            "Items {codes} keep in the file an excerpt that looks like a secret. They stay out of the copy \
+             into the page's database until they are purged. Purge each one with \
              `mustard-rt run write purge --spec {spec} --json '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
         }
         ("page.name.spec", Locale::PtBr) => "página da spec",
@@ -264,8 +263,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.block.backlog", _) => "Backlog",
         ("page.block.waves", Locale::PtBr) => "Ondas",
         ("page.block.waves", Locale::EnUs) => "Waves",
-        ("page.block.review", Locale::PtBr) => "Revisão e QA",
-        ("page.block.review", Locale::EnUs) => "Review and QA",
+        ("page.block.review", Locale::PtBr) => "Revisão e testes",
+        ("page.block.review", Locale::EnUs) => "Review and tests",
         ("page.review.final", Locale::PtBr) => "Veredito final",
         ("page.review.final", Locale::EnUs) => "Final verdict",
         ("page.group.tracking", Locale::PtBr) => "Matriz de rastreabilidade",
@@ -487,8 +486,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.now.running", Locale::EnUs) => "Running",
         ("page.now.backlog", Locale::PtBr) => "Backlog · tarefas que ainda não viraram onda",
         ("page.now.backlog", Locale::EnUs) => "Backlog · tasks not yet in a wave",
-        ("page.now.pill.wave", Locale::PtBr) => "ONDA {n}",
-        ("page.now.pill.wave", Locale::EnUs) => "WAVE {n}",
+        ("page.now.pill.wave", Locale::PtBr) => "Onda {n}",
+        ("page.now.pill.wave", Locale::EnUs) => "Wave {n}",
         ("page.now.pill.waits", Locale::PtBr) => "ESPERA",
         ("page.now.pill.waits", Locale::EnUs) => "WAITS",
         ("page.now.pill.ready", Locale::PtBr) => "PRONTA",
@@ -713,6 +712,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.model", Locale::EnUs) => "Requested model",
         ("page.field.model_used", Locale::PtBr) => "Modelo usado",
         ("page.field.model_used", Locale::EnUs) => "Model used",
+        // O nome do agente chamado, gravado no envio da onda.
+        ("page.field.agent", Locale::PtBr) => "Agente chamado",
+        ("page.field.agent", Locale::EnUs) => "Agent called",
         ("page.field.steps", Locale::PtBr) => "Passos",
         ("page.field.steps", Locale::EnUs) => "Steps",
         ("page.field.tokens", Locale::PtBr) => "Tokens",
@@ -986,8 +988,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            386,
-            0x6789_c7e8_bd3c_e714,
+            387,
+            0x7ae6_9218_2713_a275,
         );
     }
 

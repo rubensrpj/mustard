@@ -454,16 +454,7 @@ mod tests {
     /// são os que a parte gravou. Uma chave que sai, que vai para a parte
     /// errada ou que muda de texto derruba a conferência.
     pub(super) fn assert_part_unchanged(source: &str, prefixes: &[&str], keys: usize, fingerprint: u64) {
-        let arms = source.split("#[cfg(test)]").next().unwrap_or(source);
-        let mut found = BTreeSet::new();
-        for line in arms.lines().map(str::trim_start).filter(|line| line.starts_with("(\"")) {
-            let (key, pattern) = line[2..].split_once('"').expect("the key closes its quotes");
-            assert!(
-                [", Locale::PtBr) =>", ", Locale::EnUs) =>", ", _) =>"].iter().any(|shape| pattern.starts_with(shape)),
-                "each arm is written (\"key\", Locale::PtBr) =>, (\"key\", Locale::EnUs) => or (\"key\", _) =>: {line}"
-            );
-            found.insert(key);
-        }
+        let found = part_keys(source);
         // A impressão é o FNV-1a de 64 bits sobre chave, idioma e texto, na
         // ordem das chaves: estável entre versões do Rust, ao contrário do
         // hasher da biblioteca padrão.
@@ -492,6 +483,107 @@ mod tests {
              write these two numbers in the part's test",
             found.len()
         );
+    }
+
+    /// As chaves de uma parte, lidas do texto do arquivo dela: cada braço do
+    /// `match` antes dos testes, no formato `("chave", Locale::PtBr) =>`,
+    /// `("chave", Locale::EnUs) =>` ou `("chave", _) =>`.
+    fn part_keys(source: &str) -> BTreeSet<&str> {
+        let arms = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let mut found = BTreeSet::new();
+        for line in arms.lines().map(str::trim_start).filter(|line| line.starts_with("(\"")) {
+            let (key, pattern) = line[2..].split_once('"').expect("the key closes its quotes");
+            assert!(
+                [", Locale::PtBr) =>", ", Locale::EnUs) =>", ", _) =>"].iter().any(|shape| pattern.starts_with(shape)),
+                "each arm is written (\"key\", Locale::PtBr) =>, (\"key\", Locale::EnUs) => or (\"key\", _) =>: {line}"
+            );
+            found.insert(key);
+        }
+        found
+    }
+
+    /// O texto de cada parte do catálogo, na mesma ordem de `PARTS`. O tamanho
+    /// vem de `PARTS`: uma parte nova não compila sem o texto dela aqui.
+    const PART_SOURCES: [&str; PARTS.len()] = [
+        include_str!("i18n/flow.rs"),
+        include_str!("i18n/survey.rs"),
+        include_str!("i18n/prompt.rs"),
+        include_str!("i18n/gates.rs"),
+        include_str!("i18n/pending.rs"),
+        include_str!("i18n/session.rs"),
+        include_str!("i18n/map.rs"),
+        include_str!("i18n/events.rs"),
+        include_str!("i18n/page.rs"),
+        include_str!("i18n/install.rs"),
+        include_str!("i18n/spec_text.rs"),
+    ];
+
+    /// O texto com cada marcador (`{spec}`, `{count}`…) trocado por uma
+    /// palavra, como ele chega a quem lê. Chave com outra coisa dentro, como o
+    /// JSON de um exemplo, fica como está.
+    fn with_markers_filled(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            match after.find('}') {
+                Some(close) if close > 0 && after[..close].chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+                    out.push_str("item");
+                    rest = &after[close + 1..];
+                }
+                _ => {
+                    out.push('{');
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Toda frase do catálogo, nos dois idiomas, passa na mesma conferência de
+    /// escrita das respostas: frase de até 25 palavras, sigla explicada, nenhum
+    /// código interno, leitura fácil e o idioma certo. Cada texto é medido
+    /// sozinho, com os marcadores já trocados por uma palavra, porque é assim
+    /// que ele chega a quem lê. A falha lista cada chave, o idioma e o defeito.
+    #[test]
+    fn every_catalog_text_reads_clearly() {
+        let mut failures = Vec::new();
+        let mut measured = 0;
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for lang in [Locale::PtBr, Locale::EnUs] {
+                    let text = with_markers_filled(translate(key, lang));
+                    let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+                    measured += 1;
+                    for defect in report.defects(lang) {
+                        failures.push(format!("{key} ({lang}): {defect}"));
+                    }
+                }
+            }
+        }
+        assert!(measured > 1_000, "the measure reached every part, in both languages: {measured} texts");
+        assert!(
+            failures.is_empty(),
+            "{} catalog texts fail the writing check:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// A conferência do catálogo mede o texto como ele chega a quem lê: o
+    /// marcador vira uma palavra, e a frase que passa de 25 palavras só com
+    /// ele cai.
+    #[test]
+    fn a_marker_counts_as_one_word_in_the_catalog_measure() {
+        assert_eq!(with_markers_filled("A spec {spec} tem {count} itens."), "A spec item tem item itens.");
+        assert_eq!(with_markers_filled("O exemplo {\"class\":\"x\"} fica."), "O exemplo {\"class\":\"x\"} fica.");
+        assert_eq!(with_markers_filled("Sem par { aqui."), "Sem par { aqui.");
+        let words = |n: usize| vec!["palavra"; n].join(" ");
+        let measure = |text: &str| crate::domain::clarity::measure(&with_markers_filled(text), &[], None);
+        assert!(measure(&format!("{} {{spec}}.", words(24))).long_sentences.is_empty(), "25 words pass");
+        assert_eq!(measure(&format!("{} {{spec}}.", words(25))).long_sentences.len(), 1, "26 words fail");
     }
 
     /// Cada começo de chave é respondido por uma parte só do catálogo.
@@ -550,8 +642,6 @@ mod tests {
         );
         assert_eq!(translate("wave.label", Locale::PtBr), "Onda");
         assert_eq!(translate("wave.label", Locale::EnUs), "W");
-        assert_eq!(translate("ac.label", Locale::PtBr), "CA");
-        assert_eq!(translate("ac.label", Locale::EnUs), "AC");
     }
 
     #[test]

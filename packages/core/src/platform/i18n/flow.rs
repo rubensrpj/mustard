@@ -30,13 +30,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("plan.next", Locale::PtBr) => {
             "Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
-             texto exato \"{question}\" e as opções \"{option}\" e \"Ajustar\": com outro texto, a \
-             aprovação não vale."
+             texto exato \"{question}\". As opções são \"{option}\" e \"Ajustar\", e com outro texto \
+             a aprovação não vale."
         }
         ("plan.next", Locale::EnUs) => {
             "Then ask the approval question in the order of explaining from the response style, with \
-             the exact text \"{question}\" and the options \"{option}\" and \"Adjust\": with another \
-             text, the approval does not count."
+             the exact text \"{question}\". The options are \"{option}\" and \"Adjust\", and with \
+             another text the approval does not count."
         }
         ("plan.wave_loop", Locale::PtBr) => {
             "As ondas {waves} dependem umas das outras em círculo, e nenhuma pode começar. Corte uma \
@@ -63,16 +63,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O dono de cada item combinado: o item novo depois da aprovação nasce
         // com dono.
         ("plan.owner_missing", Locale::PtBr) => {
-            "O item novo do tipo {type} não tem dono, e a spec já foi aprovada: todo requisito acordado tem \
-             dono, e nada foi gravado. Dê o dono pelos arquivos: grave-o com `applies_to` e os arquivos \
-             das tarefas que o cobrem ou vão cobrir, como `\"applies_to\":{\"files\":[\"src/a.rs\"]}`, \
-             ou, quando ele vale para todas as tarefas, com `\"applies_to\":{\"files\":[\"**\"]}`."
+            "O item novo do tipo {type} não tem dono, e a spec já foi aprovada. Todo requisito \
+             acordado tem dono, e nada foi gravado. Dê o dono pelos arquivos, com `applies_to` e os \
+             arquivos das tarefas que o cobrem ou vão cobrir, como \
+             `\"applies_to\":{\"files\":[\"src/a.rs\"]}`. Quando ele vale para todas as tarefas, use \
+             `\"applies_to\":{\"files\":[\"**\"]}`."
         }
         ("plan.owner_missing", Locale::EnUs) => {
-            "The new {type} item has no owner, and the spec is already approved: every agreed requirement has \
-             an owner, and nothing was written. Give the owner by the files: record it with `applies_to` \
-             and the files of the tasks that cover it or will cover it, as in \
-             `\"applies_to\":{\"files\":[\"src/a.rs\"]}`, or, when it holds for every task, with \
+            "The new {type} item has no owner, and the spec is already approved. Every agreed \
+             requirement has an owner, and nothing was written. Give the owner by the files, with \
+             `applies_to` and the files of the tasks that cover it or will cover it, as in \
+             `\"applies_to\":{\"files\":[\"src/a.rs\"]}`. When it holds for every task, use \
              `\"applies_to\":{\"files\":[\"**\"]}`."
         }
         ("plan.contract_without_criterion", Locale::PtBr) => {
@@ -171,14 +172,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The spec is in the survey: run the survey and record the answer to each point."
         }
         ("resume.next.plan", Locale::PtBr) => {
-            "O plano está gravado: confira o plano, publique a página da spec e faça a pergunta de \
-             aprovação na ordem de explicar do estilo de resposta, com o texto exato \"{question}\" e \
-             as opções \"{option}\" e \"Ajustar\": com outro texto, a aprovação não vale."
+            "O plano está gravado: confira o plano e publique a página da spec. Depois, faça a \
+             pergunta de aprovação na ordem de explicar do estilo de resposta, com o texto exato \
+             \"{question}\". As opções são \"{option}\" e \"Ajustar\", e com outro texto a aprovação \
+             não vale."
         }
         ("resume.next.plan", Locale::EnUs) => {
-            "The plan is recorded: check the plan, publish the spec page and ask the approval \
+            "The plan is recorded: check the plan and publish the spec page. Then ask the approval \
              question in the order of explaining from the response style, with the exact text \
-             \"{question}\" and the options \"{option}\" and \"Adjust\": with another text, the \
+             \"{question}\". The options are \"{option}\" and \"Adjust\", and with another text the \
              approval does not count."
         }
         ("resume.next.running", Locale::PtBr) => {
@@ -226,11 +228,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              take it into a wave before closing."
         }
         ("close.backlog_not_empty", Locale::PtBr) => {
-            "O backlog ainda tem as tarefas {tasks}, que nenhuma onda entregou: rode a rodada de novo \
+            "O backlog ainda tem as tarefas {tasks}, que nenhuma onda entregou. Rode a rodada de novo \
              para formar o lote delas antes de fechar, ou retire da spec a que não vai mais ser feita."
         }
         ("close.backlog_not_empty", Locale::EnUs) => {
-            "The backlog still holds tasks {tasks}, which no wave delivered: run the round again to \
+            "The backlog still holds tasks {tasks}, which no wave delivered. Run the round again to \
              form their batch before closing, or remove from the spec the one that will no longer be done."
         }
         ("close.criterion_failed", Locale::PtBr) => {
@@ -298,7 +300,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A máquina passou: antes do pull request, despache ao agente de teste dedicado o pedido \
              em `review.prompt`; ele grava o veredito na spec com `mustard-rt run write verdict`. \
              Quando ele voltar, feche de novo: `mustard-rt run close --spec {spec}`. \
-             Rode-o em segundo plano e espere o aviso de fim: a suíte inteira pode passar dos 10 \
+             Rode-o em segundo plano e espere o aviso de fim. A suíte inteira pode passar dos 10 \
              minutos que o terminal espera por um comando. Se o veredito não estiver na spec, mande o \
              agente gravá-lo de novo pela ferramenta."
         }
@@ -307,7 +309,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the dedicated test agent; it records its verdict in the spec with \
              `mustard-rt run write verdict`. When it comes back, close again: \
              `mustard-rt run close --spec {spec}`. Run it in the background and wait for the notice \
-             that it ended: the whole suite can take longer than the 10 minutes the terminal waits \
+             that it ended. The whole suite can take longer than the 10 minutes the terminal waits \
              for a command. If the verdict is not in the spec, have the agent record it again \
              through the tool."
         }
@@ -361,13 +363,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A entrega da onda {wave} conflita com o repositório principal nestes trechos: {conflicts}. \
              Nada dela foi gravado. Resolva na cópia {copy}: leve-a ao commit atual com \
              `git -C {copy} checkout --merge --detach {head}`, acerte os trechos marcados e rode a \
-             rodada de novo: a entrega que a onda {wave} gravou segue na spec, e a rodada a assume."
+             rodada de novo. A entrega que a onda {wave} gravou segue na spec, e a rodada a assume."
         }
         ("round.merge_conflict", Locale::EnUs) => {
             "Wave {wave}'s delivery conflicts with the main repository in these hunks: {conflicts}. \
              Nothing of it was recorded. Resolve it in the copy {copy}: bring it to the current commit \
              with `git -C {copy} checkout --merge --detach {head}`, fix the marked hunks and run the \
-             round again: the delivery wave {wave} recorded stays in the spec, and the round takes it over."
+             round again. The delivery wave {wave} recorded stays in the spec, and the round takes it over."
         }
         ("round.copy_failed", Locale::PtBr) => {
             "A cópia da onda {wave} não pôde ser criada: {detail}. A onda não saiu nesta rodada; \
@@ -382,30 +384,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // principal, e o aviso diz qual.
         ("round.local_file_missing", Locale::PtBr) => {
             "O arquivo local `{file}`, da lista `localFiles` do `mustard.json`, não foi copiado para a \
-             cópia `{copy}`: não existe no repositório principal, não é um caminho relativo dentro do \
-             projeto, não é ignorado pelo git — o que o git não ignora chega à cópia pelo próprio git, \
-             na versão do commit — ou o disco recusou a cópia. A cópia saiu sem a versão dele da pasta \
-             principal."
+             cópia `{copy}`. Ou ele não existe no repositório principal, ou não é um caminho relativo \
+             dentro do projeto. Ou o git não o ignora, ou o disco recusou a cópia. O que o git não \
+             ignora chega à cópia pelo próprio git, na versão do commit. A cópia saiu sem a versão \
+             dele da pasta principal."
         }
         ("round.local_file_missing", Locale::EnUs) => {
             "The local file `{file}`, from the `localFiles` list in `mustard.json`, was not copied into \
-             the copy `{copy}`: it does not exist in the main repository, is not a relative path inside \
-             the project, is not ignored by git — a file git does not ignore reaches the copy through \
-             git itself, in the commit's version — or the disk refused the copy. The copy went out \
-             without the main folder's version of it."
+             the copy `{copy}`. Either it is missing from the main repository, or it is not a relative \
+             path inside the project. Or git does not ignore it, or the disk refused the copy. A file \
+             git does not ignore reaches the copy through git itself, in the commit's version. The \
+             copy went out without the main folder's version of it."
         }
         // A recusa do upsert a um item de `--local-files` que o git não
         // ignora: nada é gravado.
         ("round.local_file_tracked", Locale::PtBr) => {
             "O arquivo `{file}` não entra em `localFiles`: o git não o ignora. A cópia de cada onda já \
-             recebe pelo git, na versão do commit, todo arquivo que ele não ignora, e copiá-lo da pasta \
+             recebe pelo git, na versão do commit, todo arquivo que ele não ignora. Copiá-lo da pasta \
              principal por cima trocaria essa versão pela de lá. Só vai à lista o arquivo que o git \
              ignora, como o `.env`. Nada foi gravado."
         }
         ("round.local_file_tracked", Locale::EnUs) => {
             "The file `{file}` does not go into `localFiles`: git does not ignore it. Each wave's copy \
-             already gets every file git does not ignore through git, in the commit's version, and \
-             copying it over from the main folder would swap that version for the one there. Only a \
+             already gets every file git does not ignore through git, in the commit's version. \
+             Copying it over from the main folder would swap that version for the one there. Only a \
              file git ignores, like `.env`, goes into the list. Nothing was written."
         }
         ("round.copy_kept", Locale::PtBr) => {
@@ -497,12 +499,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.usage_missing", Locale::PtBr) => {
             "O arquivo de conversa do agente da onda {wave} não foi achado entre os que a \
-             plataforma grava para esta sessão, e o consumo dela não entrou na página: a entrega \
+             plataforma grava para esta sessão. O consumo dela não entrou na página, mas a entrega \
              ficou gravada assim mesmo."
         }
         ("round.usage_missing", Locale::EnUs) => {
             "The conversation file of wave {wave}'s agent was not found among the ones the \
-             platform records for this session, and its usage did not reach the page: the delivery \
+             platform records for this session. Its usage did not reach the page, but the delivery \
              was written anyway."
         }
         ("round.build_failed", Locale::PtBr) => {
@@ -574,12 +576,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.finished", Locale::PtBr) => {
             "A spec {spec} está na fase {phase}: ela já foi entregue na base, com o merge feito, \
-             ou descartada, e a rodada não despacha onda nela. Ela não volta: o pedido novo sobre \
+             ou descartada. A rodada não despacha onda nela. Ela não volta: o pedido novo sobre \
              ela abre uma spec nova com `mustard-rt run open`. Nada foi gravado."
         }
         ("round.finished", Locale::EnUs) => {
             "The spec {spec} is in the {phase} phase: it has already been delivered to the base, \
-             already merged, or discarded, and the round sends no wave on it. It does not come \
+             already merged, or discarded. The round sends no wave on it. It does not come \
              back: a new request on it opens a new spec with `mustard-rt run open`. Nothing was \
              written."
         }
@@ -612,14 +614,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.replan", Locale::PtBr) => {
             "A onda {wave} diz que o plano dela não funciona. Mudança proposta: {change}. \
              Faça ao usuário a pergunta com opções, com \"{yes}\" e \"{no}\", e ponha {code} \
-             no cabeçalho dela: é o cabeçalho que diz qual mudança o clique decide, e o enunciado \
+             no cabeçalho dela. É o cabeçalho que diz qual mudança o clique decide; o enunciado \
              você escreve com as palavras que o usuário entender. Pergunta pronta: \"{question}\". \
              O sim é o clique em \"{yes}\": depois dele, repita a rodada com o mesmo relatório."
         }
         ("round.replan", Locale::EnUs) => {
             "Wave {wave} says its plan does not work. Proposed change: {change}. \
              Ask the user a question with options, with \"{yes}\" and \"{no}\", and put {code} \
-             in its header: the header is what says which change the click decides, and the \
+             in its header. The header is what says which change the click decides; the \
              question itself you write in words the user understands. Ready question: \
              \"{question}\". The yes is the click on \"{yes}\": after it, run the round again \
              with the same report."
@@ -656,27 +658,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.next.copy_file", Locale::PtBr) => "Leia `{path}` e siga as instruções de lá.",
         ("round.next.copy_file", Locale::EnUs) => "Read `{path}` and follow the instructions there.",
         ("round.report", Locale::PtBr) => {
-            "Quando voltarem, cada agente já terá gravado a própria volta na spec — o de onda com \
-             `mustard-rt run write delivered`, o revisor com `mustard-rt run write verdict` —, e a \
-             rodada a assume. Quando cada agente de onda terminar, rode a rodada de novo com uma \
-             linha por onda, todas no mesmo `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, só com o \
-             número da onda. O consumo de cada onda e o seu a rodada mede nos arquivos de conversa \
-             que a plataforma grava, nunca num número digitado. A rodada monta o commit do \
-             `commit` de cada entrega. Quando a volta de um agente não estiver na \
-             spec, mande o agente gravá-la de novo pela ferramenta: nunca a monte a partir da prosa \
-             dele."
+            "Quando voltarem, cada agente já terá gravado a própria volta na spec, e a rodada a \
+             assume. O de onda grava com `mustard-rt run write delivered`, o revisor com \
+             `mustard-rt run write verdict`. Quando cada agente de onda terminar, rode a rodada de \
+             novo com uma linha por onda, todas no mesmo `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, \
+             só com o número da onda. O consumo de cada onda e o seu a rodada mede nos arquivos de \
+             conversa que a plataforma grava, nunca num número digitado. A rodada monta o commit do \
+             `commit` de cada entrega. Quando a volta de um agente não estiver na spec, mande o \
+             agente gravá-la de novo pela ferramenta. Nunca a monte a partir da prosa dele."
         }
         ("round.report", Locale::EnUs) => {
-            "When they come back, each agent has already recorded its own return in the spec — the \
-             wave agent with `mustard-rt run write delivered`, the reviewer with \
-             `mustard-rt run write verdict` —, and the round takes it over. When each wave agent \
-             finishes, run the round again with one line per wave, all in the same \
-             `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. The round \
-             measures each wave's usage and yours from the conversation files the platform \
-             records, never from a typed number. The round builds the commit from each delivery's \
-             `commit`. When an \
-             agent's return is not in the spec, have the agent record it again through the tool: \
-             never assemble it from its prose."
+            "When they come back, each agent has already recorded its own return in the spec, and \
+             the round takes it over. The wave agent records with `mustard-rt run write delivered`, \
+             the reviewer with `mustard-rt run write verdict`. When each wave agent finishes, run \
+             the round again with one line per wave, all in the same `--report '…'`: \
+             `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. The round measures each \
+             wave's usage and yours from the conversation files the platform records, never from a \
+             typed number. The round builds the commit from each delivery's `commit`. When an \
+             agent's return is not in the spec, have the agent record it again through the tool. \
+             Never assemble it from its prose."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -694,11 +694,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.backlog_left", Locale::PtBr) => {
             "Toda onda planejada terminou, mas o backlog ainda tem as tarefas {tasks}, prontas para \
-             virar lote: a obra não fecha com tarefa no backlog. Rode a rodada de novo com `{command}`."
+             virar lote. A obra não fecha com tarefa no backlog. Rode a rodada de novo com `{command}`."
         }
         ("round.backlog_left", Locale::EnUs) => {
             "Every planned wave is done, but the backlog still holds tasks {tasks}, ready to become a \
-             batch: the work does not close with a task in the backlog. Run the round again with `{command}`."
+             batch. The work does not close with a task in the backlog. Run the round again with `{command}`."
         }
         ("round.backlog_stuck", Locale::PtBr) => {
             "Nada a despachar e nada em andamento, mas o backlog ainda tem as tarefas {tasks}, presas: \
@@ -719,26 +719,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.fix_reason", Locale::PtBr) => "o servidor reprovou os testes do pull request",
         ("round.fix_reason", Locale::EnUs) => "the server failed the pull request's tests",
         ("round.missing", Locale::PtBr) => {
-            "Nada a despachar nem a revisar, e a onda {wave} ainda não está entregue e aprovada: \
-             mostre ao usuário o que a segura antes de fechar."
+            "Nada a despachar nem a revisar, e a onda {wave} ainda não está entregue e aprovada. \
+             Mostre ao usuário o que a segura antes de fechar."
         }
         ("round.missing", Locale::EnUs) => {
-            "Nothing to dispatch or review, and wave {wave} is not delivered and approved yet: \
-             show the user what holds it before closing."
+            "Nothing to dispatch or review, and wave {wave} is not delivered and approved yet. \
+             Show the user what holds it before closing."
         }
         ("round.fix_limit", Locale::PtBr) => {
             "A onda {wave} foi reprovada {count} vezes seguidas, e o limite é de {max} rodadas de \
-             conserto: a rodada não a manda de novo, nem as ondas que dependem dela, e o resto \
+             conserto. A rodada não a manda de novo, nem as ondas que dependem dela, e o resto \
              segue. Mostre ao usuário os vereditos {verdicts} e faça a pergunta desta onda em \
-             `stopped`. As saídas são duas: revisar o plano dela, e a versão nova zera a conta; ou \
-             tirá-la do plano, com a onda e as tarefas dela, e os vereditos dela deixam de contar."
+             `stopped`. As saídas são duas. Uma é revisar o plano dela, e a versão nova zera a \
+             conta. A outra é tirá-la do plano, com a onda e as tarefas dela, e os vereditos dela \
+             deixam de contar."
         }
         ("round.fix_limit", Locale::EnUs) => {
-            "Wave {wave} was rejected {count} times in a row, and the limit is {max} fix rounds: \
-             the round does not send it again, nor the waves that depend on it, and the rest goes \
+            "Wave {wave} was rejected {count} times in a row, and the limit is {max} fix rounds. \
+             The round does not send it again, nor the waves that depend on it, and the rest goes \
              on. Show the user the verdicts {verdicts} and ask this wave's question in `stopped`. \
-             There are two ways out: revise its plan, and the new version resets the count; or take \
-             it out of the plan, with its wave and tasks, and its verdicts stop counting."
+             There are two ways out. One is to revise its plan, and the new version resets the \
+             count. The other is to take it out of the plan, with its wave and tasks, and its \
+             verdicts stop counting."
         }
         ("round.fix_limit.question", Locale::PtBr) => {
             "A onda {wave} foi reprovada de novo depois de {max} rodadas de conserto. Revisar o plano dela ou tirá-la do plano?"
@@ -751,58 +753,58 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.analysis", Locale::PtBr) => {
             "Antes de soltar as ondas {waves}, escolha os itens do pedido de cada uma. O pedido é a \
              lista dos itens da spec que o agente da onda lê; os itens que as tarefas da onda fazem \
-             vão sempre. Em `analysis`, cada onda traz os candidatos, cada um com o título: as \
-             regras do projeto todo (`project`) e as lições (`lessons`) vão, a menos que você tire; \
-             os itens sem dono (`unowned`) ficam fora, a menos que você ponha. Tire o que não ajuda \
-             a onda, como uma regra da entrega numa onda que só cria uma tabela, e ponha o item sem \
+             vão sempre. Em `analysis`, cada onda traz os candidatos, cada um com o título. As \
+             regras do projeto todo (`project`) e as lições (`lessons`) vão, a menos que você tire. \
+             Os itens sem dono (`unowned`) ficam fora, a menos que você ponha. Tire o que não ajuda \
+             a onda, como uma regra da entrega numa onda que só cria uma tabela. Ponha o item sem \
              dono que ajuda. Rode a rodada de novo com uma linha por onda no `--report '…'`, só com \
              o que muda e o motivo de cada um numa frase: \
-             <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
+             `<ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
              motivo>\"},{\"lesson\":<número>,\"why\":\"<o motivo>\"}],\"added\":[{\"item\":\"<código>\
-             \",\"why\":\"<o motivo>\"}]}</ANALYSIS>. Sem mudança, as duas listas vão vazias. Sem \
+             \",\"why\":\"<o motivo>\"}]}</ANALYSIS>`. Sem mudança, as duas listas vão vazias. Sem \
              essa linha, a onda não sai."
         }
         ("round.analysis", Locale::EnUs) => {
             "Before sending out waves {waves}, choose the items of each one's request. The request \
              is the list of spec items the wave agent reads; the items the wave's tasks do always \
-             go. In `analysis`, each wave brings its candidates, each with its title: the \
+             go. In `analysis`, each wave brings its candidates, each with its title. The \
              whole-project rules (`project`) and the lessons (`lessons`) go unless you take them \
-             out; the items without an owner (`unowned`) stay out unless you put them in. Take out \
+             out. The items without an owner (`unowned`) stay out unless you put them in. Take out \
              what does not help the wave, such as a rule about the delivery in a wave that only \
-             creates a table, and put in the item without an owner that helps. Run the round again \
+             creates a table. Put in the item without an owner that helps. Run the round again \
              with one line per wave in the `--report '…'`, with only what changes and each one's \
              reason in one sentence: \
-             <ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<item code>\",\"why\":\"<the \
+             `<ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<item code>\",\"why\":\"<the \
              reason>\"},{\"lesson\":<number>,\"why\":\"<the reason>\"}],\"added\":[{\"item\":\"<item \
-             code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>. With no change, both lists go empty. \
+             code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>`. With no change, both lists go empty. \
              Without that line, the wave does not go out."
         }
         ("round.analysis_check", Locale::PtBr) => {
-            "Um commit mudou arquivo das tarefas {tasks} depois que o texto delas foi escrito. A \
-             conferência delas no código — achar se o que cada uma pede já está feito ou ainda \
-             falta — vai a um agente separado, que devolve só a tarefa ajustada para ser gravada: \
-             você não lê arquivo inteiro nem saída longa para isso."
+            "Um commit mudou arquivo das tarefas {tasks} depois que o texto delas foi escrito. Mande \
+             a conferência delas no código a um agente separado. Ele acha se o que cada uma pede já \
+             está feito ou ainda falta, e devolve só a tarefa ajustada para ser gravada. Você não lê \
+             arquivo inteiro nem saída longa para isso."
         }
         ("round.analysis_check", Locale::EnUs) => {
-            "A commit changed a file of tasks {tasks} after their text was written. Checking them \
-             against the code — finding whether what each one asks is already done or still \
-             missing — goes to a separate agent, which returns only the adjusted task to record: \
-             you do not read a whole file nor long output for this."
+            "A commit changed a file of tasks {tasks} after their text was written. Hand the check \
+             of them against the code to a separate agent. It finds whether what each one asks is \
+             already done or still missing, and returns only the adjusted task to record. You do \
+             not read a whole file nor long output for this."
         }
         ("round.analysis_ignored", Locale::PtBr) => {
-            "Na escolha da onda {wave}, o item {item} ficou como estava: ele não está entre os \
+            "Na escolha da onda {wave}, o item {item} ficou como estava. Ele não está entre os \
              candidatos dela, a lição só sai e não entra, ou ele veio sem motivo."
         }
         ("round.analysis_ignored", Locale::EnUs) => {
-            "In the choice for wave {wave}, item {item} stayed as it was: it is not among the \
+            "In the choice for wave {wave}, item {item} stayed as it was. It is not among the \
              wave's candidates, a lesson can only go out and not in, or it came without a reason."
         }
         ("round.analysis_ignored_lesson", Locale::PtBr) => {
-            "Na escolha da onda {wave}, a lição {item} ficou como estava: ela não está entre as \
+            "Na escolha da onda {wave}, a lição {item} ficou como estava. Ela não está entre as \
              lições dela, a lição só sai e não entra, ou ela veio sem motivo."
         }
         ("round.analysis_ignored_lesson", Locale::EnUs) => {
-            "In the choice for wave {wave}, lesson {item} stayed as it was: it is not among the \
+            "In the choice for wave {wave}, lesson {item} stayed as it was. It is not among the \
              wave's lessons, a lesson can only go out and not in, or it came without a reason."
         }
         ("round.analysis_unreadable", Locale::PtBr) => {
@@ -875,15 +877,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("open.next_goal", Locale::PtBr) => {
             "A spec {spec} nasceu na branch {branch}. Faça ao usuário a pergunta de `question` e \
-             espere a resposta. O objetivo da spec é uma frase que diz o que ele pediu, a dele ou a \
-             que você sugeriu e ele aprovou; grave-o como o primeiro `context`, com `origin` na \
+             espere a resposta. O objetivo da spec é uma frase que diz o que ele pediu: a dele, ou a \
+             que você sugeriu e ele aprovou. Grave-o como o primeiro `context`, com `origin` na \
              mensagem dele. O card, os critérios de aceite e os documentos antigos que vierem junto \
              vão logo depois, como `context`, com o mesmo `origin`."
         }
         ("open.next_goal", Locale::EnUs) => {
             "Spec {spec} was born on branch {branch}. Ask the user the question in `question` and \
-             wait for the answer. The spec's goal is one sentence saying what they asked for, theirs \
-             or the one you suggested and they approved; record it as the first `context`, with \
+             wait for the answer. The spec's goal is one sentence saying what they asked for: theirs, \
+             or the one you suggested and they approved. Record it as the first `context`, with \
              `origin` on their message. The card, the acceptance criteria and the old documents that \
              come along go right after it, as `context`, with the same `origin`."
         }
@@ -1034,12 +1036,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("pr.qa_pending", Locale::PtBr) => {
             "Nem todo critério de `{spec}` tem uma execução aprovada: {passed} de {criteria} \
-             passaram. A ordem do fluxo roda os critérios ANTES da integração, e integrar agora \
+             passaram. A ordem do fluxo roda os critérios antes da integração, e integrar agora \
              integra trabalho que ninguém conferiu."
         }
         ("pr.qa_pending", Locale::EnUs) => {
             "Not every criterion of `{spec}` has a passing run: {passed} of {criteria} passed. The \
-             flow runs the criteria BEFORE integration, and integrating now integrates work \
+             flow runs the criteria before integration, and integrating now integrates work \
              nobody checked."
         }
         // Os pull requests de uma spec que mexe em submódulo: o principal fica
@@ -1073,17 +1075,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // fechamento: o pull request dela leva a versão sem o ajuste até a
         // spec fechar de novo.
         ("pr.merge_reopened", Locale::PtBr) => {
-            "A spec {spec} está na fase {phase}: ela foi reaberta e ainda não fechou de novo, e o \
+            "A spec {spec} está na fase {phase}: ela foi reaberta e ainda não fechou de novo. O \
              pull request #{pr} leva a versão sem o ajuste. Nada foi juntado, e o provedor nem foi \
              perguntado. Termine o ajuste e feche a spec pela rodada (`mustard-rt run round --spec \
-             {spec}`); depois do fechamento, o `pr-open` que ele aponta atualiza o mesmo pull \
+             {spec}`). Depois do fechamento, o `pr-open` que ele aponta atualiza o mesmo pull \
              request, e o merge segue."
         }
         ("pr.merge_reopened", Locale::EnUs) => {
-            "The spec {spec} is in the {phase} phase: it was reopened and has not closed again, and \
-             pull request #{pr} carries the version without the change. Nothing was merged, and \
+            "The spec {spec} is in the {phase} phase: it was reopened and has not closed again. \
+             Pull request #{pr} carries the version without the change. Nothing was merged, and \
              the provider was not even asked. Finish the change and close the spec through the \
-             round (`mustard-rt run round --spec {spec}`); after the close, the `pr-open` it points \
+             round (`mustard-rt run round --spec {spec}`). After the close, the `pr-open` it points \
              to updates the same pull request, and the merge goes on."
         }
         // A recusa do merge de uma spec que ainda não fechou e nunca voltou do
@@ -1103,13 +1105,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A recusa do merge de uma spec entregue ou descartada: ela saiu do
         // fluxo, e nenhum passo dela leva o pull request à base.
         ("pr.merge_settled", Locale::PtBr) => {
-            "A spec {spec} está na fase {phase}: ela já saiu do fluxo, entregue na base ou descartada, \
-             e nenhum passo dela leva o pull request #{pr} à base. Nada foi juntado, e o provedor nem \
+            "A spec {spec} está na fase {phase}: ela já saiu do fluxo, entregue na base ou descartada. \
+             Nenhum passo dela leva o pull request #{pr} à base. Nada foi juntado, e o provedor nem \
              foi perguntado. Pedido novo sobre ela é obra nova, pelo `mustard-rt run open`."
         }
         ("pr.merge_settled", Locale::EnUs) => {
             "The spec {spec} is in the {phase} phase: it has already left the flow, delivered to the \
-             base or discarded, and no step of it takes pull request #{pr} into the base. Nothing was \
+             base or discarded. No step of it takes pull request #{pr} into the base. Nothing was \
              merged, and the provider was not even asked. A new request about it is new work, through \
              `mustard-rt run open`."
         }
@@ -1146,26 +1148,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the spec goes back. The reason is written into the event. Nothing was written."
         }
         ("reopen.settled", Locale::PtBr) => {
-            "A spec {spec} está na fase {phase}: a spec entregue na base, com o merge feito, e a \
+            "A spec {spec} está na fase {phase}. A spec entregue na base, com o merge feito, e a \
              descartada não voltam, porque o que elas decidiram já saiu. Abra uma spec nova com \
              `mustard-rt run open`. Nada foi gravado."
         }
         ("reopen.settled", Locale::EnUs) => {
-            "The spec {spec} is in the phase {phase}: a spec delivered to the base, already merged, \
+            "The spec {spec} is in the phase {phase}. A spec delivered to the base, already merged, \
              and a discarded one do not come back, because what they decided is already out. Open \
              a new spec with `mustard-rt run open`. Nothing was written."
         }
         ("reopen.reopened", Locale::PtBr) => {
-            "A spec {spec} voltou à execução, já aprovada, na mesma branch, e o motivo ficou \
-             gravado: nada do que foi decidido é perguntado de novo. Grave o pedido novo com \
-             `mustard-rt run write request --spec {spec}` e, dele, as tarefas novas; as ondas \
-             delas saem pela rodada depois que o usuário aprovar a mudança."
+            "A spec {spec} voltou à execução, já aprovada, na mesma branch. O motivo ficou gravado, \
+             e nada do que foi decidido é perguntado de novo. Grave o pedido novo com \
+             `mustard-rt run write request --spec {spec}` e, dele, as tarefas novas. As ondas delas \
+             saem pela rodada depois que o usuário aprovar a mudança."
         }
         ("reopen.reopened", Locale::EnUs) => {
-            "The spec {spec} is back to running, already approved, on the same branch, and the \
-             reason is on the record: nothing already decided is asked again. Write the new \
-             request with `mustard-rt run write request --spec {spec}` and, from it, the new \
-             tasks; their waves go out through the round after the user approves the change."
+            "The spec {spec} is back to running, already approved, on the same branch. The reason \
+             is on the record, and nothing already decided is asked again. Write the new request \
+             with `mustard-rt run write request --spec {spec}` and, from it, the new tasks. Their \
+             waves go out through the round after the user approves the change."
         }
         // O fim do passo da reabertura, pelo pull request da spec: o mesmo, ou
         // o fechado sem merge, que não vai para rascunho e dá lugar a outro.
@@ -1181,14 +1183,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              close again, and the `pr-open` it points to opens another pull request, on the same branch."
         }
         ("reopen.fix_not_red", Locale::PtBr) => {
-            "A porta de conserto da spec {spec} não abriu: ela pede a spec com o pull request \
-             aberto, na branch dela, e o vermelho do servidor relatado pelo provedor; a spec está \
+            "A porta de conserto da spec {spec} não abriu. Ela pede a spec com o pull request \
+             aberto, na branch dela, e o vermelho do servidor relatado pelo provedor. A spec está \
              na fase {phase} sem isso. Para um pedido novo, rode o `mustard-rt run reopen` sem \
              `--fix`. Nada foi gravado."
         }
         ("reopen.fix_not_red", Locale::EnUs) => {
-            "The fix door of the spec {spec} did not open: it needs the spec with its pull request \
-             open, on its branch, and the server's red reported by the provider; the spec is in \
+            "The fix door of the spec {spec} did not open. It needs the spec with its pull request \
+             open, on its branch, and the server's red reported by the provider. The spec is in \
              the phase {phase} without that. For a new request, run `mustard-rt run reopen` \
              without `--fix`. Nothing was written."
         }
@@ -1196,23 +1198,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // merge que não deu para conferir e o rascunho que o provedor recusou.
         ("reopen.merge_unchecked", Locale::PtBr) => {
             "Não deu para conferir no provedor se o pull request da spec {spec} já entrou na base \
-             ({reason}), e a spec voltou à execução mesmo assim. Se alguém já fez o merge, o \
-             ajuste novo iria para uma branch já juntada: confira no provedor antes de seguir."
+             ({reason}). A spec voltou à execução mesmo assim. Se alguém já fez o merge, o ajuste \
+             novo iria para uma branch já juntada: confira no provedor antes de seguir."
         }
         ("reopen.merge_unchecked", Locale::EnUs) => {
             "The provider could not be asked whether the pull request of the spec {spec} is already \
-             merged ({reason}), and the spec went back to running anyway. If someone already merged \
-             it, the new change would go to a branch already merged: check on the provider before \
+             merged ({reason}). The spec went back to running anyway. If someone already merged it, \
+             the new change would go to a branch already merged: check on the provider before \
              going on."
         }
         ("reopen.draft_failed", Locale::PtBr) => {
-            "O pull request da spec {spec} não foi posto em rascunho ({reason}) e ficou liberado: um \
+            "O pull request da spec {spec} não foi posto em rascunho ({reason}) e ficou liberado. Um \
              merge pelo botão do provedor agora juntaria na base a versão sem o ajuste. Ponha-o em \
              rascunho pelo provedor, se puder; o merge do Mustard recusa até a spec fechar de novo."
         }
         ("reopen.draft_failed", Locale::EnUs) => {
             "The pull request of the spec {spec} was not put in draft ({reason}) and stays open to \
-             merging: a merge through the provider's button now would take the version without the \
+             merging. A merge through the provider's button now would take the version without the \
              change into the base. Put it in draft on the provider if you can; Mustard's merge \
              refuses until the spec closes again."
         }
@@ -1301,7 +1303,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("request.new_waves", Locale::PtBr) => {
             "Pedido gravado. Grave o que ele gerou, as tarefas novas, sem `wave`: elas entram no \
              backlog, e o programa as junta em ondas na hora de despachar. Passe `--copy` só na última \
-             dessas gravações: ela prepara uma cópia da página, já com tudo o que o pedido gerou; o \
+             dessas gravações: ela prepara uma cópia da página, já com tudo o que o pedido gerou. O \
              pedido que não gera outra gravação leva `--copy` na própria gravação. A spec e a branch \
              continuam as mesmas, e não há nova aprovação."
         }
@@ -1309,22 +1311,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Request recorded. Record what it generated, the new tasks, without `wave`: they go into \
              the backlog, and the program groups them into waves when it dispatches. Pass `--copy` \
              only on the last of those writes: it prepares one copy of the page, already with \
-             everything the request generated; a request that generates no other write takes \
+             everything the request generated. A request that generates no other write takes \
              `--copy` on its own write. The spec and the branch stay the same, and there is no new \
              approval."
         }
         ("request.adjust_waves", Locale::PtBr) => {
-            "Pedido gravado. Grave o que ele gerou, as versões novas das tarefas que mudam, com \
-             `replaces`, repetindo o `wave` da versão antiga quando ela já está numa onda. Passe \
+            "Pedido gravado. Grave o que ele gerou: as versões novas das tarefas que mudam, com \
+             `replaces`. Repita o `wave` da versão antiga quando ela já está numa onda. Passe \
              `--copy` só na última dessas gravações: ela prepara uma cópia da página, já com tudo o \
-             que o pedido gerou; o pedido que não gera outra gravação leva `--copy` na própria \
+             que o pedido gerou. O pedido que não gera outra gravação leva `--copy` na própria \
              gravação. A spec e a branch continuam as mesmas, e não há nova aprovação."
         }
         ("request.adjust_waves", Locale::EnUs) => {
-            "Request recorded. Record what it generated, the new versions of the tasks that change, \
-             with `replaces`, repeating the `wave` of the old version when it is already in a wave. \
+            "Request recorded. Record what it generated: the new versions of the tasks that change, \
+             with `replaces`. Repeat the `wave` of the old version when it is already in a wave. \
              Pass `--copy` only on the last of those writes: it prepares one copy of the page, \
-             already with everything the request generated; a request that generates no other write \
+             already with everything the request generated. A request that generates no other write \
              takes `--copy` on its own write. The spec and the branch stay the same, and there is no \
              new approval."
         }
@@ -1346,7 +1348,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             166,
-            0x4395_e3e0_41cc_5b21,
+            0x1d75_b3ec_635d_ccd0,
         );
     }
 

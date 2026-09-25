@@ -364,7 +364,7 @@ mod tests {
         let asked = stopped["question"].as_str().unwrap_or_default().to_string();
         assert!(asked.contains(change), "a pergunta diz o que a onda propõe: {asked}");
         assert!(asked.contains('1'), "a pergunta diz de que onda se trata: {asked}");
-        assert!(asked.contains("Aceitando") && asked.contains("recusando"), "as duas saídas: {asked}");
+        assert!(asked.contains("Se aceitar") && asked.contains("Se recusar"), "as duas saídas: {asked}");
         assert!(!asked.contains(&code), "o código nunca vai no enunciado: {asked}");
         assert_eq!(stopped["header"], json!(code), "o código vai no cabeçalho: {stopped}");
         assert_eq!(stopped["options"], json!(["Aceitar", "Recusar"]), "{stopped}");

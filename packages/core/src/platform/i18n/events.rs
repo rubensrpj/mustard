@@ -51,12 +51,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.task_declaration_depends_on", Locale::PtBr) => "de quais tarefas depende",
         ("spec_events.task_declaration_depends_on", Locale::EnUs) => "which tasks it depends on",
         ("spec_events.task_declaration_title", Locale::PtBr) => {
-            "um título curto, de até 70 caracteres, que diga o que ela entrega, e não o que a coisa \
-             é (exemplo: \"Fechamento confere cada critério contra o código\")"
+            "um título curto, de até 70 caracteres, com o que ela entrega (como \"Fechamento \
+             confere cada critério contra o código\")"
         }
         ("spec_events.task_declaration_title", Locale::EnUs) => {
-            "a short title, of up to 70 characters, saying what it delivers, not what the thing is \
-             (example: \"Closing checks each criterion against the code\")"
+            "a short title, of up to 70 characters, saying what it delivers (like \"Closing checks \
+             each criterion against the code\")"
         }
         // A forma fixa de um item que descreve o trabalho: título, parte do
         // usuário e parte do agente, e a conferência de escrita das duas
@@ -123,15 +123,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Nothing was written."
         }
         ("spec_events.criterion_form_missing", Locale::PtBr) => {
-            "O critério precisa declarar a forma dele, uma das cinco do padrão: a que vale sempre, a \
-             disparada por um acontecimento, a que só vale enquanto um estado durar, a que só vale se \
-             um recurso existir, ou a que trata um acontecimento indesejado. Nada foi gravado."
+            "O critério precisa declarar a forma dele, uma das cinco do padrão. São elas: a que vale \
+             sempre, a disparada por um acontecimento e a que só vale enquanto um estado durar. As \
+             outras duas são a que só vale se um recurso existir e a que trata um acontecimento \
+             indesejado. Nada foi gravado."
         }
         ("spec_events.criterion_form_missing", Locale::EnUs) => {
-            "The criterion must declare its form, one of the pattern's five: the kind that always \
-             holds, the kind triggered by an event, the kind that only holds while a state lasts, the \
-             kind that only holds if a resource exists, or the kind that handles an unwanted event. \
-             Nothing was written."
+            "The criterion must declare its form, one of the pattern's five. They are: the kind that \
+             always holds, the kind triggered by an event, and the kind that only holds while a \
+             state lasts. The other two are the kind that only holds if a resource exists and the \
+             kind that handles an unwanted event. Nothing was written."
         }
         ("spec_events.proof_not_a_command", Locale::PtBr) => {
             "A prova do critério {criterion} precisa ser uma linha de comando, a que demonstra o \
@@ -336,13 +337,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "There is no open review request in this spec. Nothing was written."
         }
         ("spec_events.verdict_missing", Locale::PtBr) => {
-            "O pedido de revisão segue aberto, e o revisor ainda não gravou o veredito: peça a ele \
+            "O pedido de revisão segue aberto, e o revisor ainda não gravou o veredito. Peça a ele \
              que o grave com `mustard-rt run write verdict` e rode o fechamento de novo. Nenhum \
              pedido de revisão novo foi aberto."
         }
         ("spec_events.verdict_missing", Locale::EnUs) => {
-            "The review request is still open, and the reviewer has not written the verdict yet: \
-             ask them to write it with `mustard-rt run write verdict` and run the close again. No \
+            "The review request is still open, and the reviewer has not written the verdict yet. \
+             Ask them to write it with `mustard-rt run write verdict` and run the close again. No \
              new review request was opened."
         }
         ("spec_events.leftover_field_missing", Locale::PtBr) => {
@@ -370,13 +371,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.return_needs_commit", Locale::PtBr) => {
             "A cópia da onda {wave} mudou arquivo, e a entrega que ela gravou não traz o resumo do \
-             commit (`commit`): peça ao agente que grave a entrega de novo, com o campo, e rode a \
+             commit (`commit`). Peça ao agente que grave a entrega de novo, com o campo, e rode a \
              rodada de novo. Nada foi gravado."
         }
         ("spec_events.return_needs_commit", Locale::EnUs) => {
             "The copy of wave {wave} changed files, and the delivery it wrote lacks the commit \
-             summary (`commit`): ask the agent to write the delivery again, with the field, and run \
-             the round again. Nothing was written."
+             summary (`commit`). Ask the agent to write the delivery again, with the field, and \
+             run the round again. Nothing was written."
         }
         ("spec_events.unknown_target", Locale::PtBr) => {
             "O evento {id} não existe nesta spec. Nada foi gravado."
@@ -446,54 +447,55 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.phase_change_refused", Locale::PtBr) => {
             "Esta gravação na spec {spec}, da fase {from} para {to}, não passa por esta porta, e \
              nada foi gravado. A aprovação nasce só quando o usuário escolhe \"Aprovar\" na \
-             pergunta \"Aprovar esta spec?\", pela testemunha; as fases depois dela, e a branch \
-             e a base, só pelo binário."
+             pergunta \"Aprovar esta spec?\", pela testemunha. As fases depois dela, e a branch e \
+             a base, só pelo binário."
         }
         ("spec_events.phase_change_refused", Locale::EnUs) => {
             "This write to the spec {spec}, from the phase {from} to {to}, does not go through \
              this door, and nothing was written. The approval is born only when the user chooses \
-             \"Approve\" in the question \"Approve this spec?\", through the witness; the phases \
-             after it, and the branch and the base, only through the binary."
+             \"Approve\" in the question \"Approve this spec?\", through the witness. The phases \
+             after it, and the branch and the base, go only through the binary."
         }
         ("spec_events.state_by_flow_only", Locale::PtBr) => {
-            "O estado da spec {spec} não é gravado pelo `run write`, e nada foi gravado: ele é \
+            "O estado da spec {spec} não é gravado pelo `run write`, e nada foi gravado. Ele é \
              gravado pelos comandos do fluxo e pela testemunha da aprovação, quando o usuário \
              escolhe \"Aprovar\" na pergunta \"Aprovar esta spec?\"."
         }
         ("spec_events.state_by_flow_only", Locale::EnUs) => {
-            "The state of the spec {spec} is not written by `run write`, and nothing was \
-             written: the flow's commands write it, and so does the approval witness, when the \
-             user chooses \"Approve\" in the question \"Approve this spec?\"."
+            "The state of the spec {spec} is not written by `run write`, and nothing was written. \
+             The flow's commands write it, and so does the approval witness, when the user \
+             chooses \"Approve\" in the question \"Approve this spec?\"."
         }
         ("spec_events.binary_only_type", Locale::PtBr) => {
             "O tipo {type} da spec {spec} não é gravado pelo `run write`, nem tirado ou revisto por \
-             ele, e nada foi gravado: o binário grava a execução dos critérios no fechamento, o \
-             veredito oficial, o envio, a entrega oficial de cada onda e o commit pela rodada, e a \
-             resposta do assistente no fim de cada resposta. A onda grava só a própria volta, com \
-             `run write delivered` enquanto o envio dela está aberto, e o revisor só o próprio \
-             veredito, com `run write verdict` enquanto o pedido de revisão está aberto; a rodada \
-             ou o fechamento assume a volta."
+             ele. Nada foi gravado. O binário grava a execução dos critérios no fechamento, o \
+             veredito oficial, o envio, a entrega oficial de cada onda e o commit pela rodada. Ele \
+             grava também a resposta do assistente, no fim de cada resposta. A onda grava só a \
+             própria volta, com `run write delivered`, enquanto o envio dela está aberto. O revisor \
+             grava só o próprio veredito, com `run write verdict`, enquanto o pedido de revisão \
+             está aberto. Fora disso, a rodada ou o fechamento assume a volta."
         }
         ("spec_events.binary_only_type", Locale::EnUs) => {
-            "The type {type} of the spec {spec} is not written, removed or revised by `run write`, \
-             and nothing was written: the binary writes the criteria runs at the close, the \
-             official verdict, the send, the official delivery of each wave and the commit through \
-             the round, and the assistant's response at the end of each answer. A wave writes only \
-             its own return, with `run write delivered` while its send is open, and the reviewer \
-             only its own verdict, with `run write verdict` while the review request is open; the \
-             round or the close takes the return over."
+            "The type {type} of the spec {spec} is not written, removed or revised by `run write`. \
+             Nothing was written. The binary writes the criteria runs at the close, the official \
+             verdict, the send, each wave's official delivery and the commit through the round. It \
+             also writes the assistant's response at the end of each answer. A wave writes only \
+             its own return, with `run write delivered`, while its send is open. The reviewer \
+             writes only its own verdict, with `run write verdict`, while the review request is \
+             open. Otherwise, the round or the close takes the return over."
         }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
-            "Na spec {spec}, a resposta a uma pergunta com opções (a mensagem com `witness`, de \
-             qualquer autor) e a fala do usuário que só o gancho grava não são gravadas, tiradas \
-             ou revistas pelo `run write`, e nada foi gravado: a resposta chega pela testemunha, e \
-             a fala, pelo gancho da entrada."
+            "Na spec {spec}, o `run write` não grava, não tira e não revê dois tipos de mensagem. Um \
+             é a resposta a uma pergunta com opções: a mensagem com `witness`, de qualquer autor. O \
+             outro é a fala do usuário, que só o gancho grava. Nada foi gravado: a resposta chega \
+             pela testemunha, e a fala, pelo gancho da entrada."
         }
         ("spec_events.user_message_by_hook", Locale::EnUs) => {
-            "In the spec {spec}, the answer to a question with options (the message with \
-             `witness`, from any author) and the user's speech that only the hook records are not \
-             written, removed or revised by `run write`, and nothing was written: the answer \
-             arrives through the witness, and the speech, through the entry hook."
+            "In the spec {spec}, `run write` does not write, remove or revise two kinds of message. \
+             One is the answer to a question with options: the message with `witness`, from any \
+             author. The other is the user's speech, which only the hook records. Nothing was \
+             written: the answer arrives through the witness, and the speech, through the entry \
+             hook."
         }
         ("spec_events.binary_author", Locale::PtBr) => {
             "O autor `binary` fica para as gravações de dentro do binário, e nada foi gravado: o \
@@ -504,14 +506,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              written: `run write` records the author who writes, `assistant` (the default) or `user`."
         }
         ("spec_events.wave_by_backlog", Locale::PtBr) => {
-            "A onda não é gravada pelo `run write`, e nada foi gravado: a onda nasce do backlog, e é \
+            "A onda não é gravada pelo `run write`, e nada foi gravado. A onda nasce do backlog, e é \
              o programa que monta o lote na hora de despachar. Grave só a tarefa, sem `wave`, com o \
              que ela faz (`text`), os arquivos (`files`) e as tarefas de que depende \
              (`depends_on`). Na versão nova de uma tarefa que já está numa onda, repita o `wave` da \
              versão que ela substitui."
         }
         ("spec_events.wave_by_backlog", Locale::EnUs) => {
-            "A wave is not written by `run write`, and nothing was written: the wave is born from \
+            "A wave is not written by `run write`, and nothing was written. The wave is born from \
              the backlog, and the program puts the batch together when it dispatches. Write only \
              the task, without `wave`, with what it does (`text`), the files (`files`) and the \
              tasks it depends on (`depends_on`). In the new version of a task that is already in a \
@@ -530,26 +532,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the same pull request; then write the request again. Nothing was written."
         }
         ("spec_events.work_on_finished_spec", Locale::PtBr) => {
-            "A spec {spec} está na fase {phase}: a spec entregue na base, com o merge feito, e a \
-             descartada não voltam, e o `run write {type}` não grava nela. Pedido novo sobre ela é \
-             obra nova: abra uma spec nova com `mustard-rt run open` e grave nela. Nada foi \
+            "A spec {spec} está na fase {phase}, e o `run write {type}` não grava nela. A spec \
+             entregue na base, com o merge feito, e a descartada não voltam. Pedido novo sobre ela \
+             é obra nova: abra uma spec nova com `mustard-rt run open` e grave nela. Nada foi \
              gravado."
         }
         ("spec_events.work_on_finished_spec", Locale::EnUs) => {
-            "The spec {spec} is in the {phase} phase: a spec delivered to the base, already merged, \
-             and a discarded one do not come back, and `run write {type}` does not write to it. A \
+            "The spec {spec} is in the {phase} phase, and `run write {type}` does not write to it. \
+             A spec delivered to the base, already merged, and a discarded one do not come back. A \
              new request on it is new work: open a new spec with `mustard-rt run open` and write \
              there. Nothing was written."
         }
         ("spec_events.old_format_spec", Locale::PtBr) => {
-            "A spec {spec} está no formato antigo (o `spec.md` dela traz a seção \"Critérios de \
-             Aceitação\", ou a pasta tem `meta.json` e nenhum `spec.ndjson`), e o binário não grava \
+            "A spec {spec} está no formato antigo: o `spec.md` dela traz a seção \"Critérios de \
+             Aceitação\", ou a pasta tem `meta.json` e nenhum `spec.ndjson`. O binário não grava \
              nela. Abra uma spec nova com `mustard-rt run open`. Nada foi gravado."
         }
         ("spec_events.old_format_spec", Locale::EnUs) => {
-            "Spec {spec} is in the old format (its `spec.md` carries the \"Acceptance Criteria\" \
-             section, or the folder has a `meta.json` and no `spec.ndjson`), and the binary does \
-             not write to it. Open a new spec with `mustard-rt run open`. Nothing was written."
+            "Spec {spec} is in the old format: its `spec.md` carries the \"Acceptance Criteria\" \
+             section, or the folder has a `meta.json` and no `spec.ndjson`. The binary does not \
+             write to it. Open a new spec with `mustard-rt run open`. Nothing was written."
         }
         ("spec_events.io_failed", Locale::PtBr) => "Não consegui usar o arquivo da spec: {detail}.",
         ("spec_events.io_failed", Locale::EnUs) => "Could not use the spec file: {detail}.",
@@ -594,14 +596,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.kind.time", Locale::PtBr) => "uma data e hora como 2026-09-11T21:03",
         ("spec_events.kind.time", Locale::EnUs) => "a date and time like 2026-09-11T21:03",
         ("spec_events.kind.ref", Locale::PtBr) => {
-            "o número de um evento ou o código de um item, como MSTD-RULE-0002"
+            "o número de um evento ou o código de um item, como `MSTD-RULE-0002`"
         }
-        ("spec_events.kind.ref", Locale::EnUs) => "an event number or an item code, like MSTD-RULE-0002",
+        ("spec_events.kind.ref", Locale::EnUs) => "an event number or an item code, like `MSTD-RULE-0002`",
         ("spec_events.kind.refs", Locale::PtBr) => {
-            "uma lista de números de evento ou de códigos de item, como MSTD-RULE-0002"
+            "uma lista de números de evento ou de códigos de item, como `MSTD-RULE-0002`"
         }
         ("spec_events.kind.refs", Locale::EnUs) => {
-            "a list of event numbers or item codes, like MSTD-RULE-0002"
+            "a list of event numbers or item codes, like `MSTD-RULE-0002`"
         }
 
         // O índice das specs (`io::spec_index`, o comando `run index` e a
@@ -705,50 +707,50 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("lessons.defect_by_task", Locale::PtBr) => {
             "O defeito que pode se repetir não entra no banco de lições, que fica só nesta máquina \
              e não vai ao git. Ele vira conserto no código, com o teste que falha se o defeito \
-             voltar, e o teste vai ao git no commit da obra: grave a tarefa desse conserto com \
+             voltar. O teste vai ao git no commit da obra. Grave a tarefa desse conserto com \
              `mustard-rt run write task`, na spec {spec}. Nada foi gravado."
         }
         ("lessons.defect_by_task", Locale::EnUs) => {
             "A defect that can happen again does not go in the lesson bank, which stays on this \
              machine only and never goes to git. It becomes a fix in the code, with the test that \
-             fails if the defect comes back, and the test goes to git in the commit of the work: \
-             write the task of that fix with `mustard-rt run write task`, in the spec {spec}. \
-             Nothing was written."
+             fails if the defect comes back. The test goes to git in the commit of the work. Write \
+             the task of that fix with `mustard-rt run write task`, in the spec {spec}. Nothing \
+             was written."
         }
         ("lessons.defect_in_code", Locale::PtBr) => {
             "O defeito que pode se repetir não entra no banco de lições, que fica só nesta máquina \
              e não vai ao git. Ele vira conserto no código, com o teste que falha se o defeito \
-             voltar, e o teste vai ao git no commit. Nada foi gravado."
+             voltar. O teste vai ao git no commit. Nada foi gravado."
         }
         ("lessons.defect_in_code", Locale::EnUs) => {
             "A defect that can happen again does not go in the lesson bank, which stays on this \
              machine only and never goes to git. It becomes a fix in the code, with the test that \
-             fails if the defect comes back, and the test goes to git in the commit. Nothing was \
+             fails if the defect comes back. The test goes to git in the commit. Nothing was \
              written."
         }
         ("lessons.rule_by_task", Locale::PtBr) => {
             "A regra do projeto não entra no banco de lições, que fica só nesta máquina e não vai \
-             ao git: em outra máquina, ela some. Ela vira teste no código da obra, que falha se a \
-             regra for quebrada, e o teste vai ao git no commit da obra: grave a tarefa desse \
-             teste com `mustard-rt run write task`, na spec {spec}. Nada foi gravado."
+             ao git. Em outra máquina, ela some. Ela vira teste no código da obra, que falha se a \
+             regra for quebrada. O teste vai ao git no commit da obra. Grave a tarefa desse teste \
+             com `mustard-rt run write task`, na spec {spec}. Nada foi gravado."
         }
         ("lessons.rule_by_task", Locale::EnUs) => {
             "A project rule does not go in the lesson bank, which stays on this machine only and \
-             never goes to git: on another machine, it is gone. It becomes a test in the code of \
-             the work, one that fails if the rule is broken, and the test goes to git in the \
-             commit of the work: write the task of that test with `mustard-rt run write task`, \
-             in the spec {spec}. Nothing was written."
+             never goes to git. On another machine, it is gone. It becomes a test in the code of \
+             the work, one that fails if the rule is broken. The test goes to git in the commit of \
+             the work. Write the task of that test with `mustard-rt run write task`, in the spec \
+             {spec}. Nothing was written."
         }
         ("lessons.rule_in_code", Locale::PtBr) => {
             "A regra do projeto não entra no banco de lições, que fica só nesta máquina e não vai \
-             ao git: em outra máquina, ela some. Ela vira teste no código, que falha se a regra \
-             for quebrada, e o teste vai ao git no commit. Nada foi gravado."
+             ao git. Em outra máquina, ela some. Ela vira teste no código, que falha se a regra \
+             for quebrada. O teste vai ao git no commit. Nada foi gravado."
         }
         ("lessons.rule_in_code", Locale::EnUs) => {
             "A project rule does not go in the lesson bank, which stays on this machine only and \
-             never goes to git: on another machine, it is gone. It becomes a test in the code, \
-             one that fails if the rule is broken, and the test goes to git in the commit. \
-             Nothing was written."
+             never goes to git. On another machine, it is gone. It becomes a test in the code, one \
+             that fails if the rule is broken. The test goes to git in the commit. Nothing was \
+             written."
         }
         // As regras que a limpeza da instalação tira dos arquivos de instrução
         // viram um item só da lista de pendências, com o texto de cada uma e o
@@ -778,12 +780,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O que o scan aponta para enxugar o banco de lições (`run scan`).
         ("lessons.scan_merge", Locale::PtBr) => {
             "Junte cada grupo de lições parecidas numa lição só, resumida no jeito de escrever do \
-             projeto, gravada com `mustard-rt run write lesson` e com `\"replaces\"` apontando as \
+             projeto. Grave-a com `mustard-rt run write lesson`, com `\"replaces\"` apontando as \
              lições do grupo: {groups}."
         }
         ("lessons.scan_merge", Locale::EnUs) => {
-            "Merge each group of similar lessons into one lesson, summarized the project's way, \
-             written with `mustard-rt run write lesson` and `\"replaces\"` naming the group's \
+            "Merge each group of similar lessons into one lesson, summarized the project's way. \
+             Write it with `mustard-rt run write lesson`, with `\"replaces\"` naming the group's \
              lessons: {groups}."
         }
         ("lessons.scan_retire", Locale::PtBr) => {
@@ -820,7 +822,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             108,
-            0xf918_b9e9_abfe_d257,
+            0xdc62_0f42_f812_e2b7,
         );
     }
 

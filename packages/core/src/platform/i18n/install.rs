@@ -17,12 +17,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
         ("doctor.protection.flow_missing", Locale::PtBr) => {
             "Este projeto não declara base nenhuma em `mustard.json#git.flow`, então nenhuma \
-             branch fica protegida: nem aqui, nem no servidor, e não há o que perguntar ao \
-             provedor."
+             branch fica protegida, nem aqui nem no servidor. Não há o que perguntar ao provedor."
         }
         ("doctor.protection.flow_missing", Locale::EnUs) => {
-            "This project declares no base in `mustard.json#git.flow`, so no branch is protected \
-             — not here, not on the server — and there is nothing to ask the provider about."
+            "This project declares no base in `mustard.json#git.flow`, so no branch is protected, \
+             here or on the server. There is nothing to ask the provider about."
         }
         ("doctor.protection.protected", Locale::PtBr) => {
             "`{base}`: protegida no {provider}."
@@ -124,7 +123,7 @@ mod tests {
             include_str!("install.rs"),
             super::PREFIXES,
             11,
-            0xb79b_cf24_c042_b5a1,
+            0xc8ab_1272_692c_7b70,
         );
     }
 

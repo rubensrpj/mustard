@@ -11,7 +11,7 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["heading", "placeholder", "checklist", "ac", "context", "marker", "memory", "scope", "wave"];
+pub(super) const PREFIXES: &[&str] = &["heading", "placeholder", "checklist", "ac", "context", "marker", "memory", "wave"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -29,10 +29,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("wave.hand_drawn_removed", Locale::EnUs) => {
             "Drawn by hand before the backlog and never sent; its tasks went back to the backlog."
         }
-
-        // Acceptance-criterion label (used as a prefix before the AC id).
-        ("ac.label", Locale::PtBr) => "CA",
-        ("ac.label", Locale::EnUs) => "AC",
 
         // Spec narrative headings — canonical translation table mirrors
         // `refs/feature/spec-language.md § Header Translation Table` and the
@@ -210,37 +206,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("heading.context.position", Locale::EnUs) => "Position in map",
         ("heading.context.next_steps_suggestion", Locale::PtBr) => "Sugestão de próximos passos",
         ("heading.context.next_steps_suggestion", Locale::EnUs) => "Next-steps suggestion",
-
-        // Scope-classify `## Files` diagnostics — the three ZERO-PATH shapes,
-        // each named for what was actually measured (a diagnostic must never
-        // assert "empty" about a section that has content). Config-language:
-        // the warning is user-facing feedback in the spec's own language.
-        ("scope.files.absent", Locale::PtBr) => {
-            "## Arquivos ausente — fileCount=0; scope=abstain até autorar o censo \
-             (adicione ## Arquivos e re-rode)"
-        }
-        ("scope.files.absent", Locale::EnUs) => {
-            "## Files section absent — fileCount=0; scope=abstain until the census is \
-             authored (add ## Files and re-run)"
-        }
-        ("scope.files.empty", Locale::PtBr) => {
-            "## Arquivos vazio/placeholder — fileCount=0; scope=abstain até autorar o \
-             censo (preencha ## Arquivos e re-rode)"
-        }
-        ("scope.files.empty", Locale::EnUs) => {
-            "## Files section empty/placeholder — fileCount=0; scope=abstain until the \
-             census is authored (fill ## Files and re-run)"
-        }
-        ("scope.files.unrecognised", Locale::PtBr) => {
-            "## Arquivos tem conteúdo, mas nenhum caminho foi reconhecido — fileCount=0; \
-             scope=abstain; declare cada arquivo como bullet `- caminho` ou linha de \
-             tabela com coluna de caminho, e re-rode"
-        }
-        ("scope.files.unrecognised", Locale::EnUs) => {
-            "## Files has content, but no path was recognised — fileCount=0; \
-             scope=abstain; declare each file as a `- path` bullet or a table row with \
-             a path column, then re-run"
-        }
         _ => return None,
     })
 }
@@ -258,8 +223,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("spec_text.rs"),
             super::PREFIXES,
-            61,
-            0xdf26_c3bc_0154_7c23,
+            57,
+            0x1629_ee59_5995_d271,
         );
     }
 

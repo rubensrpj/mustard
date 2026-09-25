@@ -38,10 +38,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\"` para conceito; depois leia os arquivos apontados — o mapa acha onde olhar, não substitui ler."
+            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\"` para conceito. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\"` for a concept; then read the files it points to — the map finds where to look, it does not replace reading."
+            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\"` for a concept. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
         // The project map (`run map`): refusals, reasons of the examples and
         // the session-start summary.
@@ -157,7 +157,7 @@ mod tests {
             include_str!("map.rs"),
             super::PREFIXES,
             31,
-            0xa3f6_7039_3459_5433,
+            0x8b60_ba6e_40bd_3cf5,
         );
     }
 

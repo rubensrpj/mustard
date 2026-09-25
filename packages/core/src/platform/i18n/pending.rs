@@ -87,10 +87,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Say what to remove: `--id`, `--term` or `--before`. Nothing was removed."
         }
         ("pending.bad_date", Locale::PtBr) => {
-            "A data {date} não se lê: use o formato AAAA-MM-DD, como 2026-08-01. Nada foi removido."
+            "A data {date} não se lê: use o formato `AAAA-MM-DD`, como 2026-08-01. Nada foi removido."
         }
         ("pending.bad_date", Locale::EnUs) => {
-            "The date {date} does not parse: use the YYYY-MM-DD form, like 2026-08-01. Nothing \
+            "The date {date} does not parse: use the `YYYY-MM-DD` form, like 2026-08-01. Nothing \
              was removed."
         }
         ("pending.not_dropped", Locale::PtBr) => {
@@ -108,15 +108,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // conversation.
         ("pending.gate.block", Locale::PtBr) => {
             "[Mustard] A spec {spec} fechou neste turno, e a mensagem final não cita {count} das \
-             pendências abertas que nasceram nela: {items}. Os requisitos acordados sobrevivem à spec \
-             que fechou: reescreva a mensagem de fechamento citando cada uma pelo título, sem o \
+             pendências abertas que nasceram nela: {items}. As pendências sobrevivem à spec que \
+             fechou: reescreva a mensagem de fechamento citando cada uma pelo título, sem o \
              número. Uma pendência que não vale mais só sai da lista com um motivo: \
              `mustard-rt run pending --close <id> --reason \"…\"` quando foi entregue, ou \
              `mustard-rt run pending --drop <id> --reason \"…\"` quando o usuário desistiu."
         }
         ("pending.gate.block", Locale::EnUs) => {
             "[Mustard] The spec {spec} closed in this turn, and the final message does not name \
-             {count} of the open pending items born in it: {items}. The agreed requirements outlive the spec \
+             {count} of the open pending items born in it: {items}. Pending items outlive the spec \
              that closed: rewrite the closing message naming each one by title, without the \
              number. An item that no longer stands leaves the list only with a reason: \
              `mustard-rt run pending --close <id> --reason \"…\"` when it was delivered, or \
@@ -126,12 +126,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // o título repetido, sem ligar para maiúscula nem acento.
         ("pending.duplicate", Locale::PtBr) => {
             "Já existe uma pendência aberta com esse título: {id} \"{title}\". Nada foi gravado. \
-             Para mudar os requisitos acordados, feche a antiga com `mustard-rt run pending --close {id} \
+             Para substituí-la, feche a antiga com `mustard-rt run pending --close {id} \
              --reason \"…\"` ou use outro título."
         }
         ("pending.duplicate", Locale::EnUs) => {
             "An open pending item already has this title: {id} \"{title}\". Nothing was written. \
-             To change the agreed requirements, close the old one with `mustard-rt run pending --close \
+             To replace it, close the old one with `mustard-rt run pending --close \
              {id} --reason \"…\"` or pick another title."
         }
         _ => return None,
@@ -152,7 +152,7 @@ mod tests {
             include_str!("pending.rs"),
             super::PREFIXES,
             14,
-            0xd0a5_d238_e308_6818,
+            0x567e_81ef_8270_4202,
         );
     }
 
