@@ -31,6 +31,7 @@ use super::leftovers::{leftover_task, leftovers_of, open_leftovers, Leftover, Le
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{change_accepted, replan_code};
 use super::usage::{measure_usage, Caller, Usage};
+use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::{record, RecordCheck};
 
 /// A linha da entrega que o agente de onda devolvia colada no relatório: a
@@ -403,15 +404,22 @@ fn take_returns(
             }));
         }
     }
-    // A prova nova roda uma vez: a que sai verde sem rodar teste nenhum é
-    // avisada agora, antes de o fechamento recusá-la.
+    // A prova nova roda uma vez: a que sai verde sem rodar teste nenhum, e a
+    // que sai verde citando um teste que não existe, são avisadas agora,
+    // antes de o fechamento recusá-las. O motivo é o mesmo que a recusa do
+    // fechamento e a da rodada leem.
     for (code, proof) in proofs {
-        if crate::commands::review::qa_run::run_proof(&proof, root).ran_no_test.is_some() {
-            warnings.push(json!({
-                "reason": "proof-ran-no-test",
-                "hint": translate("round.proof_ran_no_test", lang).replace("{code}", &code),
-            }));
-        }
+        let (reason, hint) = match crate::commands::review::qa_run::run_proof(&proof, root).fault() {
+            Some(ProofFault::RanNoTest(_)) => {
+                ("proof-ran-no-test", translate("round.proof_ran_no_test", lang).replace("{code}", &code))
+            }
+            Some(ProofFault::MissingTest(name)) => (
+                "proof-missing-test",
+                translate("round.proof_missing_test", lang).replace("{code}", &code).replace("{name}", &name),
+            ),
+            Some(ProofFault::Failed(_)) | None => continue,
+        };
+        warnings.push(json!({ "reason": reason, "hint": hint }));
     }
     Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit, paused: report.paused })
 }
@@ -2362,6 +2370,47 @@ mod tests {
         assert_eq!(json!(rest), json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
     }
 
+    /// A rodada avisa a prova nova que sai verde citando um teste que não
+    /// existe em arquivo nenhum do projeto, com o critério e o nome que
+    /// faltou; a prova nova que cita um teste presente não avisa nada. A
+    /// segunda prova vem da onda seguinte, que mexe no mesmo arquivo.
+    #[test]
+    fn a_rodada_avisa_a_prova_nova_que_cita_um_teste_ausente() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/lib.rs"], &[]), (2, &["src/lib.rs"], &[1])]);
+        round(root, "x", None);
+
+        let report = |wave: u64, proof: &str, summary: &str| {
+            std::fs::write(root.join("src/lib.rs"), format!("// onda {wave}\nfn soma_presente_aqui() {{}}\n")).unwrap();
+            let body = json!({"wave": wave, "text": "A prova muda.", "files": ["src/lib.rs"],
+                "commit": summary, "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": proof}]});
+            assert_eq!(returned(root, body)["ok"], json!(true));
+        };
+        let rest = |out: &Value| -> Vec<Value> {
+            out["warnings"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|w| w["reason"] != json!("usage-missing"))
+                .collect()
+        };
+
+        report(1, "echo running 1 test soma_presente_aqui", "a prova cita teste presente");
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(rest(&out), Vec::<Value>::new(), "a prova que cita um teste presente não avisa: {out}");
+
+        report(2, "echo running 1 test soma_ausente_aqui", "a prova cita teste ausente");
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let expected = translate("round.proof_missing_test", Locale::PtBr)
+            .replace("{code}", "MSTD-CRIT-0001")
+            .replace("{name}", "soma_ausente_aqui");
+        assert_eq!(json!(rest(&out)), json!([{"reason": "proof-missing-test", "hint": expected}]), "{out}");
+    }
+
     /// A conferência antes do git é a da gravação inteira, contra a spec de
     /// agora, e não só a que a volta passou ao ser gravada: o veredito final
     /// gravado antes de uma regra nova do projeto todo não responde mais por
@@ -2998,6 +3047,45 @@ mod tests {
         assert!(hint.contains("git --nao-existe-esta-opcao"), "a recusa nomeia o comando: {hint}");
         assert!(hint.contains("nao-existe-esta-opcao"), "a recusa traz a saída de erro: {hint}");
 
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
+        assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
+    }
+
+    /// A prova verde que não prova nada recusa a volta da onda pelo motivo
+    /// certo, e não pela recusa de saída vazia. A que cita um teste que não
+    /// existe em arquivo nenhum do projeto diz o critério e o nome que
+    /// faltou; a que não roda teste nenhum diz o critério e o comando. Nas
+    /// duas, nada é comitado nem gravado.
+    #[test]
+    fn a_rodada_recusa_a_prova_verde_pelo_nome_que_falta_e_pelo_teste_que_nao_rodou() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
+
+        let absent = "echo running 1 test teste_que_nao_existe_aqui";
+        let code = reprove_wave_criterion(root, 1, absent);
+        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("round-criterion-missing-test"), "{out}");
+        let expected = translate("round.criterion_missing_test", Locale::PtBr)
+            .replace("{code}", &code)
+            .replace("{name}", "teste_que_nao_existe_aqui");
+        assert_eq!(out["hint"], json!(expected), "a recusa diz o critério e o nome que faltou: {out}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
+        assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
+
+        let zero = "echo running 0 tests";
+        let code = reprove_wave_criterion(root, 1, zero);
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("round-criterion-ran-no-test"), "{out}");
+        let expected = translate("round.criterion_ran_no_test", Locale::PtBr)
+            .replace("{code}", &code)
+            .replace("{command}", zero)
+            .replace("{count}", "0");
+        assert_eq!(out["hint"], json!(expected), "a recusa diz o critério e o comando: {out}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
         assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
     }

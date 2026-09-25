@@ -20,6 +20,7 @@ use serde_json::{json, Map, Value};
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
+use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::record;
 
 /// A entrega pede commit? Só quando mudou arquivo: a onda que volta sem
@@ -771,9 +772,11 @@ pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
 /// vez e na ordem do código, antes do commit da rodada — o mesmo laço que o
 /// fechamento roda para os critérios da spec inteira
 /// ([`crate::commands::review::qa_run::run_criteria_proofs`]), aqui só com
-/// os critérios que estas ondas apontam. A que não executa ou não passa
-/// recusa com o código do critério, o comando inteiro e a saída de erro, e a
-/// rodada não comita nada.
+/// os critérios que estas ondas apontam. A que não passa recusa pelo motivo
+/// que o laço leu, com o código do critério: a que não executa ou sai com
+/// erro traz o comando inteiro e a saída de erro, a que sai verde sem rodar
+/// teste traz o comando, e a que cita um teste inexistente traz o nome que
+/// faltou. A rodada não comita nada.
 pub(super) fn ensure_criteria_proofs(root: &Path, log: &SpecLog, waves: &[u64]) -> Result<(), RoundRefusal> {
     let codes = log.codes();
     let criteria: Vec<(u64, String, String)> = log
@@ -785,12 +788,16 @@ pub(super) fn ensure_criteria_proofs(root: &Path, log: &SpecLog, waves: &[u64]) 
         })
         .collect();
     let (_, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
-    match failed {
-        Some(failed) => {
-            Err(RoundRefusal::CriterionProofFailed { code: failed.code, command: failed.command, output: failed.output })
+    let Some(failed) = failed else { return Ok(()) };
+    Err(match failed.fault {
+        ProofFault::RanNoTest(tests) => {
+            RoundRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests }
         }
-        None => Ok(()),
-    }
+        ProofFault::MissingTest(name) => RoundRefusal::CriterionMissingTest { code: failed.code, name },
+        ProofFault::Failed(output) => {
+            RoundRefusal::CriterionProofFailed { code: failed.code, command: failed.command, output }
+        }
+    })
 }
 
 /// O comando que reinstala o binário do próprio Mustard, depois que a suíte

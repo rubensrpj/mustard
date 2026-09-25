@@ -92,19 +92,44 @@ pub(crate) fn run_server_command(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_server_command(command, cwd), None)
 }
 
+/// Por que a prova de um critério não passou. A escolha entre os três
+/// motivos é feita aqui, uma vez, em [`ProofRun::fault`]: o fechamento, a
+/// rodada e o aviso da entrega leem o mesmo motivo, e cada um só escolhe a
+/// própria frase.
+#[derive(Debug)]
+pub(crate) enum ProofFault {
+    /// Saiu verde sem rodar teste nenhum, com o número que a saída disse.
+    RanNoTest(u64),
+    /// Saiu verde citando um nome de teste que não aparece em arquivo nenhum
+    /// do projeto: o primeiro nome que faltou.
+    MissingTest(String),
+    /// Não executou ou não passou, com a saída de erro do comando.
+    Failed(String),
+}
+
+impl ProofRun {
+    /// O motivo de a prova não ter passado, ou `None` quando ela passou. A
+    /// contagem de zero teste vem antes do nome ausente, porque só a prova
+    /// que rodou teste tem o nome conferido ([`graded`]).
+    pub(crate) fn fault(&self) -> Option<ProofFault> {
+        if self.result == "pass" {
+            return None;
+        }
+        Some(match (self.ran_no_test, &self.missing_test) {
+            (Some(tests), _) => ProofFault::RanNoTest(tests),
+            (None, Some(name)) => ProofFault::MissingTest(name.clone()),
+            (None, None) => ProofFault::Failed(self.output.clone()),
+        })
+    }
+}
+
 /// A prova de um critério que não passou: o código dele, o comando inteiro
-/// que tentou rodar e a saída de erro — o que a recusa do fechamento e da
-/// rodada nomeiam.
+/// que tentou rodar e o motivo — o que a recusa do fechamento e da rodada
+/// nomeiam.
 pub(crate) struct FailedProof {
     pub code: String,
     pub command: String,
-    pub output: String,
-    /// A saída disse zero teste rodado, com o número que ela leu — só quando
-    /// foi esse o motivo da falha.
-    pub ran_no_test: Option<u64>,
-    /// O nome de teste citado que não existe no projeto — só quando foi esse
-    /// o motivo da falha.
-    pub missing_test: Option<String>,
+    pub fault: ProofFault,
 }
 
 /// Roda a prova de cada critério de `criteria` (id, código, comando), na
@@ -122,14 +147,10 @@ pub(crate) fn run_criteria_proofs(
     let mut failed = None;
     for (id, code, proof) in criteria {
         let out = run_proof(proof, root);
-        if out.result != "pass" && failed.is_none() {
-            failed = Some(FailedProof {
-                code: code.clone(),
-                command: proof.clone(),
-                output: out.output.clone(),
-                ran_no_test: out.ran_no_test,
-                missing_test: out.missing_test.clone(),
-            });
+        if failed.is_none()
+            && let Some(fault) = out.fault()
+        {
+            failed = Some(FailedProof { code: code.clone(), command: proof.clone(), fault });
         }
         runs.push((*id, code.clone(), out));
     }
@@ -147,7 +168,8 @@ pub(crate) fn run_criteria_proofs(
 /// O que a execução leva é sempre o que o comando escreveu, e nunca uma frase
 /// montada aqui: quem lê o evento gravado precisa ver a saída do executor. O
 /// número lido vai pelo `ran_no_test`, e o nome que faltou pelo
-/// `missing_test`: é deles que a recusa tira o que mostra.
+/// `missing_test`: é deles que [`ProofRun::fault`] tira o motivo que cada
+/// recusa e cada aviso mostram.
 fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
     let green = out.status == "pass";
     let ran_no_test = out.tests_run.filter(|count| *count == 0 && proof.is_some() && green);

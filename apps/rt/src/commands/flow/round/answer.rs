@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 use super::commit::git_lock;
 use super::queue::{
     analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, emptied_backlog_waves, first_unfinished, max_parallel, next_waves,
-    open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, Analysed,
+    open_review, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, Analysed,
 };
 use super::report::Taken;
 use super::slots::open_copies;
@@ -92,6 +92,14 @@ pub(crate) enum RoundRefusal {
     /// A prova de um critério que as ondas deste relatório cobrem não
     /// executou ou não passou: nada foi comitado.
     CriterionProofFailed { code: String, command: String, output: String },
+    /// A prova de um critério que as ondas deste relatório cobrem saiu verde
+    /// sem rodar teste nenhum, com o número que a saída disse: nada foi
+    /// comitado.
+    CriterionRanNoTest { code: String, command: String, tests: u64 },
+    /// A prova de um critério que as ondas deste relatório cobrem saiu verde
+    /// citando um teste que não existe no projeto, com o nome que faltou:
+    /// nada foi comitado.
+    CriterionMissingTest { code: String, name: String },
     /// O pedido de uma onda passa do teto de tokens: a rodada recusa antes de
     /// gravar o envio, com o tamanho medido e o teto.
     TokenCap { wave: u64, tokens: u64 },
@@ -121,6 +129,8 @@ impl RoundRefusal {
             Self::Git { .. } => "git-refused".into(),
             Self::BuildFailed { .. } => "round-build-failed".into(),
             Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
+            Self::CriterionRanNoTest { .. } => "round-criterion-ran-no-test".into(),
+            Self::CriterionMissingTest { .. } => "round-criterion-missing-test".into(),
             Self::TokenCap { .. } => "wave-token-cap".into(),
         }
     }
@@ -195,6 +205,13 @@ impl RoundRefusal {
                 "round.criterion_proof_failed",
                 &[("{code}", code.clone()), ("{command}", command.clone()), ("{output}", output.clone())],
             ),
+            Self::CriterionRanNoTest { code, command, tests } => fill(
+                "round.criterion_ran_no_test",
+                &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
+            ),
+            Self::CriterionMissingTest { code, name } => {
+                fill("round.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())])
+            }
             Self::TokenCap { wave, tokens } => {
                 token_cap_message(*wave, *tokens, lang).unwrap_or_default()
             }
@@ -778,8 +795,9 @@ pub(super) fn run_entered_round(
 
     // O próximo passo: despachar o que saiu agora; esperar as que estão em
     // andamento; dizer qual onda falta, quando nada se move; rodar de novo,
-    // ou nomear as tarefas presas, quando o backlog ainda tem tarefa; ou
-    // fechar, com tudo entregue e aprovado e o backlog vazio. A rodada não pede revisão de onda nenhuma:
+    // ou nomear as tarefas presas, quando o backlog ainda tem tarefa;
+    // esperar o veredito, quando a revisão final segue aberta; ou fechar,
+    // com tudo entregue e aprovado e o backlog vazio. A rodada não pede revisão de onda nenhuma:
     // quem confere o trabalho é o agente de teste dedicado que o fechamento
     // pede, uma vez por obra.
     let report_back = translate("round.report", lang);
@@ -816,6 +834,12 @@ pub(super) fn run_entered_round(
             command = step;
             text
         }
+    } else if open_review(&log).is_some() {
+        // Toda onda está entregue, mas a revisão final segue aberta, sem o
+        // veredito do revisor: a obra ainda não está aprovada, e o fechamento
+        // recusaria. A resposta manda esperar o veredito, sem o comando de
+        // fechar.
+        translate("round.review_open", lang).to_string()
     } else {
         let state = State::from_log(&log);
         // A obra já fechada não fecha de novo: a rodada acabou de receber o
@@ -1887,6 +1911,31 @@ mod tests {
         crate::commands::flow::resume::assert_parses(command);
         let close = translate("round.close", Locale::PtBr).replace("{command}", command);
         assert!(done["next"].as_str().unwrap_or_default().ends_with(&close), "{done}");
+    }
+
+    /// Com a revisão final aberta e ainda sem o veredito do revisor, a
+    /// rodada que comita a última onda não manda fechar: a resposta manda
+    /// esperar o veredito, sem o comando de fechar. Só depois de o veredito
+    /// aprovado ser gravado e assumido a rodada manda fechar.
+    #[test]
+    fn a_rodada_espera_o_veredito_quando_a_revisao_final_esta_aberta() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        seed_review(root);
+
+        let done = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(done["ok"], json!(true), "{done}");
+        assert!(done["commit"]["sha"].is_string(), "a última onda foi comitada: {done}");
+        assert!(done.get("command").is_none(), "sem o comando de fechar: {done}");
+        let next = done["next"].as_str().unwrap_or_default();
+        assert!(next.ends_with(translate("round.review_open", Locale::PtBr)), "{done}");
+        assert!(!next.contains("run close"), "a resposta não manda fechar: {done}");
+
+        let approved_now = round(root, "x", Some(&verdict(root, 1, "approved", "Tudo certo.")));
+        assert_eq!(approved_now["ok"], json!(true), "{approved_now}");
+        assert_eq!(approved_now["command"], json!("mustard-rt run close --spec x"), "{approved_now}");
     }
 
     /// A última onda em andamento entrega e sobra tarefa no backlog: a rodada

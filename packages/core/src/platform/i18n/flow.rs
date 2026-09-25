@@ -552,6 +552,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Criterion {code}'s verification did not run or did not pass, and the round committed nothing: \
              `{command}` — {output}"
         }
+        ("round.criterion_ran_no_test", Locale::PtBr) => {
+            "A verificação do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
+             {count} testes. A rodada não comitou nada. Grave a versão nova do critério com a verificação \
+             certa e rode a rodada de novo."
+        }
+        ("round.criterion_ran_no_test", Locale::EnUs) => {
+            "The verification of criterion {code} came out green without running any test: `{command}` says \
+             it ran {count} tests. The round committed nothing. Record the criterion's new version with the \
+             right verification and run the round again."
+        }
+        ("round.criterion_missing_test", Locale::PtBr) => {
+            "A verificação do critério {code} cita o teste {name}, que não aparece em nenhum arquivo do \
+             projeto. A rodada não comitou nada. Escreva esse teste ou grave a versão nova do critério com o \
+             nome certo, e rode a rodada de novo."
+        }
+        ("round.criterion_missing_test", Locale::EnUs) => {
+            "The verification of criterion {code} names the test {name}, which appears in no file of the \
+             project. The round committed nothing. Write that test or record the criterion's new version with \
+             the right name, and run the round again."
+        }
         ("round.binary_not_reinstalled", Locale::PtBr) => {
             "O binário do Mustard não foi reinstalado — `{command}` não passou, e o binário instalado \
              continua o de antes: {output}"
@@ -577,6 +597,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.proof_ran_no_test", Locale::EnUs) => {
             "The new verification of criterion {code} came out green without running any test: the test name \
              does not match. Ask for the right verification before closing."
+        }
+        ("round.proof_missing_test", Locale::PtBr) => {
+            "A verificação nova do critério {code} cita o teste {name}, que não aparece em nenhum arquivo do \
+             projeto. Peça esse teste ou a verificação certa antes de fechar."
+        }
+        ("round.proof_missing_test", Locale::EnUs) => {
+            "The new verification of criterion {code} names the test {name}, which appears in no file of the \
+             project. Ask for that test or the right verification before closing."
         }
         ("round.commit.scope.one", Locale::PtBr) => "onda-{waves}",
         ("round.commit.scope.one", Locale::EnUs) => "wave-{waves}",
@@ -722,6 +750,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.close", Locale::EnUs) => {
             "Every wave is delivered and approved: close the spec with `{command}`."
+        }
+        ("round.review_open", Locale::PtBr) => {
+            "Todas as ondas estão entregues, mas a revisão final segue aberta, sem o veredito do revisor. \
+             Espere o revisor gravar o veredito e rode a rodada de novo, que o assume."
+        }
+        ("round.review_open", Locale::EnUs) => {
+            "Every wave is delivered, but the final review is still open, without the reviewer's verdict. \
+             Wait for the reviewer to record the verdict, then run the round again to take it over."
         }
         ("round.backlog_left", Locale::PtBr) => {
             "Toda onda planejada terminou, mas o backlog ainda tem as tarefas {tasks}, prontas para \
@@ -1378,8 +1414,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            171,
-            0xee63_411b_18bb_5404,
+            175,
+            0x5d76_517e_8847_e98f,
         );
     }
 
@@ -1547,8 +1583,11 @@ mod tests {
             ("round.usage_missing", &["{wave}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
+            ("round.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
+            ("round.criterion_missing_test", &["{code}", "{name}"][..]),
             ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
+            ("round.proof_missing_test", &["{code}", "{name}"][..]),
             ("round.leftover_cosmetic", &["{wave}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
             ("round.commit.scope.many", &["{waves}"][..]),
@@ -1569,6 +1608,7 @@ mod tests {
             ("round.report", &[][..]),
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
+            ("round.review_open", &[][..]),
             ("round.missing", &["{wave}"][..]),
             ("round.backlog_left", &["{tasks}", "{command}"][..]),
             ("round.backlog_stuck", &["{tasks}"][..]),

@@ -70,6 +70,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use crate::commands::flow::round::Caller;
+use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::{self, read::checkout, write::record};
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
@@ -574,12 +575,12 @@ fn machine(
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms }));
     }
     match failed {
-        Some(failed) => Err(match (failed.ran_no_test, failed.missing_test) {
-            (Some(tests), _) => {
+        Some(failed) => Err(match failed.fault {
+            ProofFault::RanNoTest(tests) => {
                 CloseRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests }
             }
-            (None, Some(name)) => CloseRefusal::CriterionMissingTest { code: failed.code, name },
-            (None, None) => CloseRefusal::CriterionFailed { code: failed.code, output: failed.output },
+            ProofFault::MissingTest(name) => CloseRefusal::CriterionMissingTest { code: failed.code, name },
+            ProofFault::Failed(output) => CloseRefusal::CriterionFailed { code: failed.code, output },
         }),
         None => Ok((runs, undeclared)),
     }
