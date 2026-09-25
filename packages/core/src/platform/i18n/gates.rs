@@ -510,25 +510,6 @@ mod tests {
         );
     }
 
-    /// A recusa de base desconhecida explica sem gritar: nenhuma palavra
-    /// inteira em maiúsculas fora do código, e a primeira frase, com as vagas
-    /// preenchidas, cabe em 25 palavras, nos dois idiomas.
-    #[test]
-    fn the_unknown_base_refusal_explains_without_shouting() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let text =
-                translate("workbranch.base.unknown", lang).replace("{target}", "feature/x").replace("{candidates}", "main, dev");
-            let prose: String = text.split('`').step_by(2).collect();
-            let shouted: Vec<&str> = prose
-                .split(|c: char| !c.is_alphabetic())
-                .filter(|w| w.chars().count() >= 2 && w.chars().all(char::is_uppercase))
-                .collect();
-            assert!(shouted.is_empty(), "{lang}: {shouted:?} in {text}");
-            let first = text.split(". ").next().unwrap_or_default();
-            assert!(first.split_whitespace().count() <= 25, "{lang}: {first}");
-        }
-    }
-
     /// The messages of the write gate and of the approval witness come from
     /// the catalog in both languages, each with the slots the hook fills.
     #[test]

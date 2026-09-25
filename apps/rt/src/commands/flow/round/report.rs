@@ -3539,7 +3539,7 @@ mod tests {
         assert_eq!(
             refused["hint"],
             json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O relatório \
-                   leva só as linhas USAGE, PAUSED e ANALYSIS."),
+                   leva só as linhas `USAGE`, `PAUSED` e `ANALYSIS`."),
             "{refused}"
         );
         assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
@@ -3562,7 +3562,7 @@ mod tests {
         let pasted = line("VERDICT", json!({"final": true, "result": "approved", "text": "Sem achados."}));
         let usage = line("USAGE", json!({"wave": 1}));
         let expected = json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
-                              relatório leva só as linhas USAGE, PAUSED e ANALYSIS.");
+                              relatório leva só as linhas `USAGE`, `PAUSED` e `ANALYSIS`.");
         let refused = round(root, "x", Some(&format!("{pasted}\n{usage}")));
         assert_eq!(refused["reason"], json!("round-return-line"), "{refused}");
         assert_eq!(refused["hint"], expected, "{refused}");

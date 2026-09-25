@@ -506,12 +506,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // informado.
         ("conversation_size.autocompact", Locale::PtBr) => {
             "Valor de compactação: esta máquina não escolheu um, e o Mustard recomenda {installed}. \
-             Para usá-lo, ponha CLAUDE_AUTOCOMPACT_PCT_OVERRIDE em ~/.claude/settings.json com \
+             Para usá-lo, ponha `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` em ~/.claude/settings.json com \
              {installed} e recarregue a sessão."
         }
         ("conversation_size.autocompact", Locale::EnUs) => {
             "Compaction value: this machine has not chosen one, and Mustard recommends {installed}. \
-             To use it, set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in ~/.claude/settings.json to \
+             To use it, set `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` in ~/.claude/settings.json to \
              {installed} and reload the session."
         }
         ("conversation_size.autocompact_set", Locale::PtBr) => {
@@ -1415,7 +1415,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             175,
-            0x5d76_517e_8847_e98f,
+            0xbb26_2736_47f0_a603,
         );
     }
 

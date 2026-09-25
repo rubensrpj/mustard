@@ -209,8 +209,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.open_all", Locale::EnUs) => "Open all",
         ("page.close_all", Locale::PtBr) => "Fechar tudo",
         ("page.close_all", Locale::EnUs) => "Close all",
-        ("page.not_found", Locale::PtBr) => "Nada encontrado. Tente outra palavra ou o código do item, como DEC-0142.",
-        ("page.not_found", Locale::EnUs) => "Nothing found. Try another word or an item's code, like DEC-0142.",
+        ("page.not_found", Locale::PtBr) => "Nada encontrado. Tente outra palavra ou o código do item, como `DEC-0142`.",
+        ("page.not_found", Locale::EnUs) => "Nothing found. Try another word or an item's code, like `DEC-0142`.",
         ("page.of", Locale::PtBr) => "{n} de {total}",
         ("page.of", Locale::EnUs) => "{n} of {total}",
         ("page.count.one", _) => "{n} item",
@@ -1019,7 +1019,7 @@ mod tests {
             include_str!("page.rs"),
             super::PREFIXES,
             389,
-            0xd33c_c547_0683_6e1a,
+            0xf3d5_8469_3247_6e02,
         );
     }
 

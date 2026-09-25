@@ -542,11 +542,51 @@ mod tests {
         out
     }
 
+    /// As palavras em maiúsculas que podem ficar fora de crase no catálogo.
+    /// Uma sigla nova só passa se alguém a puser aqui de propósito.
+    const CAPS_ALLOWED: [&str; 3] = ["JSON", "UTF", "MB"];
+
+    /// Cada palavra de duas letras ou mais, toda em maiúsculas e fora de
+    /// crase, uma vez só, na ordem em que aparece, salvo as de
+    /// [`CAPS_ALLOWED`]. As frases do catálogo são fixas e escritas por nós:
+    /// o teste não adivinha se a palavra é grito ou sigla, e o nome de código
+    /// vai entre crases.
+    fn uppercase_words(text: &str) -> Vec<&str> {
+        let mut found = Vec::new();
+        for outside in text.split('`').step_by(2) {
+            for word in outside.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                let letters = word.chars().filter(|c| c.is_alphabetic()).count();
+                let upper = letters >= 2 && !word.chars().any(char::is_lowercase);
+                if upper && !CAPS_ALLOWED.contains(&word) && !found.contains(&word) {
+                    found.push(word);
+                }
+            }
+        }
+        found
+    }
+
+    /// Os defeitos de escrita de um texto do catálogo, cada um com a chave e o
+    /// idioma: os da conferência das respostas e, além deles, cada palavra
+    /// toda em maiúsculas fora de crase. O texto é medido com as lacunas já
+    /// preenchidas.
+    fn catalog_text_defects(key: &str, lang: Locale, raw: &str) -> Vec<String> {
+        let text = with_markers_filled(raw);
+        let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+        let mut defects: Vec<String> =
+            report.defects(lang).into_iter().map(|defect| format!("{key} ({lang}): {defect}")).collect();
+        for word in uppercase_words(&text) {
+            defects.push(format!("{key} ({lang}): uppercase word {word} outside backticks"));
+        }
+        defects
+    }
+
     /// Toda frase do catálogo, nos dois idiomas, passa na mesma conferência de
     /// escrita das respostas: frase de até 25 palavras, sigla explicada, nenhum
-    /// código interno, leitura fácil e o idioma certo. Cada texto é medido
-    /// sozinho, com os marcadores já trocados por uma palavra, porque é assim
-    /// que ele chega a quem lê. A falha lista cada chave, o idioma e o defeito.
+    /// código interno, leitura fácil e o idioma certo. Além dela, nenhuma
+    /// palavra toda em maiúsculas fora de crase, salvo a lista curta de
+    /// exceções. Cada texto é medido sozinho, com os
+    /// marcadores já trocados por uma palavra, porque é assim que ele chega a
+    /// quem lê. A falha lista cada chave, o idioma e o defeito.
     #[test]
     fn every_catalog_text_reads_clearly() {
         let mut failures = Vec::new();
@@ -554,12 +594,8 @@ mod tests {
         for source in PART_SOURCES {
             for key in part_keys(source) {
                 for lang in [Locale::PtBr, Locale::EnUs] {
-                    let text = with_markers_filled(translate(key, lang));
-                    let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                     measured += 1;
-                    for defect in report.defects(lang) {
-                        failures.push(format!("{key} ({lang}): {defect}"));
-                    }
+                    failures.extend(catalog_text_defects(key, lang, translate(key, lang)));
                 }
             }
         }
@@ -584,6 +620,32 @@ mod tests {
         let measure = |text: &str| crate::domain::clarity::measure(&with_markers_filled(text), &[], None);
         assert!(measure(&format!("{} {{spec}}.", words(24))).long_sentences.is_empty(), "25 words pass");
         assert_eq!(measure(&format!("{} {{spec}}.", words(25))).long_sentences.len(), 1, "26 words fail");
+    }
+
+    /// Palavra toda em maiúsculas fora de crase derruba o texto do catálogo,
+    /// com a chave, o idioma e a palavra: o "NÃO" solto, o nome de código e a
+    /// sigla fora da lista, mesmo explicada. Entre crases ela passa, e as
+    /// exceções da lista também.
+    #[test]
+    fn an_uppercase_word_outside_backticks_fails_the_catalog_measure() {
+        let key = "spec_events.report_carries_return_line";
+        let defect = |word: &str| format!("{key} (pt-BR): uppercase word {word} outside backticks");
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "Isso NÃO apaga nada."), vec![defect("NÃO")]);
+        assert_eq!(
+            catalog_text_defects(key, Locale::PtBr, "O relatório leva as linhas USAGE, PAUSED e USAGE de novo."),
+            vec![defect("USAGE"), defect("PAUSED")]
+        );
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "Busque pelo código, como DEC-0142."), vec![defect("DEC")]);
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "O PR (pull request) de {spec} saiu."), vec![defect("PR")]);
+        for calm in [
+            "Isso `NÃO` apaga nada.",
+            "O relatório leva as linhas `USAGE` e `PAUSED`.",
+            "Busque pelo código, como `DEC-0142`.",
+            "O JSON em UTF-8 passa de 2 MB.",
+            "O item A de {spec} saiu.",
+        ] {
+            assert_eq!(catalog_text_defects(key, Locale::PtBr, calm), Vec::<String>::new(), "{calm}");
+        }
     }
 
     /// Cada começo de chave é respondido por uma parte só do catálogo.
