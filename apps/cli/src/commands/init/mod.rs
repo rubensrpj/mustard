@@ -33,7 +33,11 @@
 //!    only when the user has none). It comes first because its language
 //!    decides which texts are seeded;
 //! 5. seed the `.github/` scaffolding, skipped by the private install;
-//! 6. list what an older Mustard left in files that are not its own — the
+//! 6. recompute, once, the search of every spec and of the lesson bank that an
+//!    older Mustard wrote under another rule ([`refresh_search`]): the
+//!    ordinary write to a spec only appends, so this is where an old line is
+//!    brought up to date. A failure is a warning, never an abort;
+//! 7. list what an older Mustard left in files that are not its own — the
 //!    marks in the `CLAUDE.md` files, the seed's lines in the team's
 //!    `.claude/settings.json`, a planted `.claude/CLAUDE.md` — and say how to
 //!    take it out. Nothing of it is removed here: that happens through
@@ -66,6 +70,7 @@
 //! - [`tools`] — the rtk gate, the ripgrep installer and the call into the
 //!   code-tool step.
 
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -265,6 +270,10 @@ pub fn init_with_templates(
         }
     }
 
+    // A busca das specs e do banco de lições, acertada uma vez, depois de
+    // tudo semeado: a gravação comum só acrescenta no fim do arquivo.
+    refresh_search(&project_path, &mut std::io::stdout());
+
     // What an older Mustard left in files that are not its own: listed, never
     // taken out from here.
     seeding::report_cleanup(
@@ -274,6 +283,39 @@ pub fn init_with_templates(
 
     print_next_steps();
     Ok(InitOutcome::Installed)
+}
+
+/// Refaz o índice das specs de `project` e recalcula o `search` das linhas
+/// que uma versão anterior do Mustard gravou com outra regra, nas specs e no
+/// banco de lições ([`mustard_core::io::spec_index::rebuild`]), e diz em `out`
+/// quantas linhas acertou. É a única hora em que a busca velha se acerta: a
+/// gravação comum numa spec só acrescenta a linha nova.
+///
+/// Um projeto sem a pasta das specs não tem o que acertar, e nada é criado
+/// nele. A falha vira um aviso com o comando que refaz a busca depois, e a
+/// instalação segue: a busca velha só deixa de achar a linha antiga pela
+/// palavra nova. Uma escrita em `out` que falha é descartada.
+fn refresh_search(project: &Path, out: &mut impl Write) {
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(project) else { return };
+    if !paths.spec_dir().is_dir() {
+        return;
+    }
+    match mustard_core::io::spec_index::rebuild(project) {
+        Ok(rebuilt) => {
+            let lines = rebuilt.search_updated + rebuilt.lessons_search_updated;
+            if lines > 0 {
+                let noun = if lines == 1 { "line" } else { "lines" };
+                let _ = writeln!(out, "  recomputed the search of {lines} {noun} an older Mustard wrote");
+            }
+        }
+        Err(refusal) => {
+            let _ = writeln!(
+                out,
+                "  warning: the search of the specs was not recomputed ({}); run `mustard-rt run index` in the project",
+                refusal.message(mustard_core::platform::i18n::Locale::EnUs)
+            );
+        }
+    }
 }
 
 /// Run `mustard init` against `project_path`.
@@ -375,6 +417,8 @@ mod tests {
             "init must NOT plant .claude/CLAUDE.md — the orchestrator is injected now"
         );
         assert!(claude.join(".gitignore").exists(), ".claude/.gitignore seeded");
+        // Sem specs, a busca não tem o que acertar e a pasta delas não nasce.
+        assert!(!claude.join("spec").exists(), "a fresh install must not plant the specs folder");
 
         // The content payload is the plugin's now — init must NOT copy it.
         assert!(
@@ -607,6 +651,89 @@ mod tests {
                 .is_none(),
             "merge must not plant plugin enablement"
         );
+    }
+
+    /// Uma versão anterior gravou uma decisão numa spec e uma lição no banco
+    /// com a busca de outra regra. A instalação recalcula as duas: só o
+    /// `search` delas muda, a palavra do título passa a entrar na busca, e a
+    /// instalação seguinte não tem mais o que acertar.
+    #[test]
+    fn an_install_recomputes_the_stale_search_of_the_specs_and_the_lessons_once() {
+        use mustard_core::domain::spec_events::{refresh_search_lines, search_terms};
+        use serde_json::{json, Map, Value};
+
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        let paths = mustard_core::ClaudePaths::for_project(&project).unwrap();
+        let object = |value: Value| -> Map<String, Value> { value.as_object().cloned().unwrap() };
+        let at = "2026-09-11T10:00:00-03:00";
+        let events = paths.spec_dir().join("teste").join("spec.ndjson");
+        mustard_core::io::spec_events::write_at(
+            &events,
+            "message",
+            object(json!({"author": "user", "text": "combine"})),
+            &[],
+            at,
+        )
+        .unwrap();
+        let mut spec = fs::read_to_string(&events).unwrap();
+        spec.push_str(
+            "{\"v\":1,\"id\":2,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1,\
+             \"search\":\"fatur som centav\"}\n",
+        );
+        fs::write(&events, &spec).unwrap();
+        let bank = paths.lessons_path();
+        let lesson = json!({"class": "defect", "text": "Apagar a pasta.", "keys": ["apagar"],
+            "applies_to": {"subproject": "apps/rt"}, "found_in": {"spec": "teste"}});
+        mustard_core::io::lessons::write_at(&bank, object(lesson), None, at).unwrap();
+        let lessons = fs::read_to_string(&bank).unwrap();
+        let (head, _) = lessons.trim_end().rsplit_once(",\"search\":").unwrap();
+        fs::write(&bank, format!("{head},\"search\":\"velho\"}}\n")).unwrap();
+        let stale = |text: &str| refresh_search_lines(text).1;
+        assert_eq!((stale(&spec), stale(&fs::read_to_string(&bank).unwrap())), (1, 1), "the fixture carries stale lines");
+
+        let opts = InitOptions { yes: true, ..InitOptions::default() };
+        assert_eq!(init_with_templates(&project, &templates, &opts).unwrap(), InitOutcome::Installed);
+
+        let fixed = fs::read_to_string(&events).unwrap();
+        assert_eq!(stale(&fixed), 0, "the install left a stale search in the spec:\n{fixed}");
+        let (before, after): (Vec<&str>, Vec<&str>) = (spec.lines().collect(), fixed.lines().collect());
+        assert_eq!(after.len(), before.len(), "{fixed}");
+        assert_eq!(after[0], before[0], "the line with today's search stays byte for byte");
+        let parse = |line: &str| object(serde_json::from_str(line).unwrap());
+        let (mut old, mut new) = (parse(before[1]), parse(after[1]));
+        let search = new.remove("search").unwrap();
+        let words: Vec<&str> = search.as_str().unwrap().split(' ').collect();
+        assert!(search_terms("arredondar").iter().all(|root| words.contains(&root.as_str())), "{search}");
+        old.remove("search");
+        assert_eq!(old, new, "only the search field of the old line changed");
+        assert_eq!(fs::read_to_string(&bank).unwrap(), lessons, "the lesson's search is today's again");
+
+        assert_eq!(init_with_templates(&project, &templates, &opts).unwrap(), InitOutcome::Installed);
+        assert_eq!(fs::read_to_string(&events).unwrap(), fixed, "a second install has nothing left to fix");
+    }
+
+    /// Quando a busca não pode ser refeita — aqui, o índice das specs é uma
+    /// pasta —, a instalação termina assim mesmo, e a saída traz um aviso com
+    /// o comando que refaz a busca depois.
+    #[test]
+    fn an_install_whose_search_cannot_be_recomputed_warns_and_finishes() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        let paths = mustard_core::ClaudePaths::for_project(&project).unwrap();
+        fs::create_dir_all(paths.spec_index_path()).unwrap();
+
+        let outcome = init_with_templates(&project, &templates, &InitOptions { yes: true, ..InitOptions::default() });
+        assert_eq!(outcome.unwrap(), InitOutcome::Installed, "a failed search must not abort the install");
+        assert!(project.join(".claude").join("settings.local.json").exists(), "the seeding happened");
+
+        let mut out = Vec::new();
+        refresh_search(&project, &mut out);
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.starts_with("  warning: ") && out.contains("mustard-rt run index"), "{out}");
     }
 
     /// A instalação sobre um projeto de uma versão antiga, que ainda tem o

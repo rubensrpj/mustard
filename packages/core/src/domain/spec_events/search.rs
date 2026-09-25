@@ -183,7 +183,7 @@ fn search_of_with(event: &Map<String, Value>, roots: &mut Roots) -> Option<Strin
 /// quantas linhas mudaram. Só é reescrita a linha que tem texto ou chaves e
 /// cujo `search` faltava ou era outro; as outras, inclusive as que não se
 /// entendem, ficam byte a byte como estavam. É o que o índice das specs roda
-/// quando o redutor muda, e o que cada gravação na spec roda antes de gravar.
+/// quando o redutor muda, e a instalação roda uma vez em cada projeto.
 #[must_use]
 pub fn refresh_search_lines(content: &str) -> (String, usize) {
     let mut roots = Roots::new();

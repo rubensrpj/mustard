@@ -2955,47 +2955,6 @@ mod tests {
         }
     }
 
-    /// A regra gravada antes de a busca levar o título fica com a busca velha:
-    /// a palavra do título não a acha, e o índice das specs aponta a linha
-    /// desatualizada. A gravação seguinte pelo comando de gravar acerta a
-    /// busca dela sozinha, sem o comando do índice: a palavra do título passa
-    /// a achá-la, e nada fica desatualizado.
-    #[test]
-    fn item_form_a_write_brings_the_search_of_an_older_item_up_to_date() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = message(root, "user", "combine a trava");
-        let path = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
-        let id = store::read(&path).unwrap().unwrap().max_id() + 1;
-        let line = json!({"v": 1, "id": id, "code": "MSTD-RULE-0001", "at": "2026-01-01T10:00:00-03:00", "type": "rule",
-            "author": "assistant", "title": "Proteger o diretório de cache", "text": "A pasta de cache nunca é apagada.",
-            "keys": ["cache"], "example": "e", "origin": said, "agent": "- conferir a sentinela",
-            "search": "past cach nunc apag"});
-        let mut content = std::fs::read_to_string(&path).unwrap();
-        content.push_str(&format!("{line}\n"));
-        std::fs::write(&path, content).unwrap();
-        let finds = |term: &str| -> bool {
-            let read = super::super::read::read_at(&super::super::read::ReadOpts {
-                root: root.to_path_buf(),
-                spec: Some("teste".into()),
-                block: "agreed".into(),
-                term: Some(term.into()),
-            })
-            .expect("the agreed block reads");
-            let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
-            read["events"].as_array().expect("events").iter().any(|e| e["id"] == json!(id))
-        };
-        assert!(!finds("diretório") && !finds("sentinela"), "the old search lacks the title and the agent's part");
-        let stale = || mustard_core::io::spec_index::divergence(root).unwrap().stale_search;
-        assert_eq!(stale(), 1);
-
-        let other = json!({"title": "Relatório em português", "text": "O relatório sai em português.", "keys": ["idioma"],
-            "example": "e", "origin": said, "agent": "- conferir o idioma"});
-        assert_eq!(by_model(root, "rule", &other)["ok"], json!(true));
-        assert!(finds("diretório") && finds("sentinela"), "the write brought the old item's search up to date");
-        assert_eq!(stale(), 0, "nothing is left for the index command to fix");
-    }
-
     /// O `search` é gravado no arquivo de eventos para a busca no banco da
     /// página, mas `shown()` — o que qualquer leitura do evento mostra —
     /// nunca o traz: é um campo binário (`BINARY_FIELDS`), fora do tipo do
