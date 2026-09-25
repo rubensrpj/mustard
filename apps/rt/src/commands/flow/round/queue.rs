@@ -574,11 +574,12 @@ pub(crate) fn silent_minutes(root: &Path, spec: &str, wave: u64, log: &SpecLog, 
 }
 
 /// As ondas do plano com o conserto pendente: a última revisão delas
-/// reprovou, e nenhuma entrega chegou depois dessa reprovação — a entrega é
-/// o que resolve o conserto, com veredito novo ou sem ele, porque a
-/// aprovação final do agente de teste dedicado, quando não aponta onda, fica
-/// gravada na última onda do plano, e não solta as outras por um veredito
-/// novo delas. É a leitura única de "onda com conserto pendente", que
+/// reprovou, e nenhuma entrega chegou depois dessa reprovação. Só a entrega
+/// resolve o conserto, com veredito novo ou sem ele: a aprovação final do
+/// agente de teste dedicado responde pelo combinado inteiro e, quando não
+/// aponta onda, é gravada sem onda nenhuma — não entra na revisão de onda
+/// alguma e, por isso, não solta a onda reprovada. É a leitura única de
+/// "onda com conserto pendente", que
 /// `finished` (o fechamento), `waves_done` (a fila) e `wave_states` (o
 /// estado da página) compartilham, para as três não discordarem de quando o
 /// ciclo de conserto termina.

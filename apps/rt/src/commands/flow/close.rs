@@ -2656,8 +2656,8 @@ exit "${2:-0}"
     }
 
     /// O conserto de uma onda que não é a última do plano: o agente de teste
-    /// dedicado reprova a onda 1 de duas, e a aprovação final, sem onda, fica
-    /// gravada na onda 2, a última — nunca ganha um veredito próprio a onda 1.
+    /// dedicado reprova a onda 1 de duas, e a aprovação final, sem onda, é
+    /// gravada sem onda nenhuma — nunca ganha um veredito próprio a onda 1.
     /// Três coisas têm de continuar certas mesmo assim: (1) o fechamento
     /// recusa enquanto o conserto está só despachado, sem entrega ainda; (2)
     /// entregue o conserto, a rodada solta a onda e manda fechar; e (3) depois
@@ -2702,8 +2702,8 @@ exit "${2:-0}"
         assert_eq!(released["command"], json!("mustard-rt run close --spec x"), "{released}");
 
         // O agente de teste dedicado confere só o conserto, e aprova a obra
-        // inteira: a aprovação sem onda fica gravada na última onda do plano
-        // (a 2), não na 1, que foi a reprovada.
+        // inteira: a aprovação sem onda é gravada sem onda nenhuma — nem na 1,
+        // que foi a reprovada, nem na 2, a última do plano.
         let fix_prompt = close(None)["review"]["prompt"].as_str().unwrap_or_default().to_string();
         assert!(fix_prompt.contains("MSTD-WAVE-0001") && !fix_prompt.contains("MSTD-WAVE-0002"), "{fix_prompt}");
         let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
