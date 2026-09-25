@@ -92,16 +92,16 @@ pub struct Execution {
     /// As outras ondas em andamento, cada uma com os arquivos das tarefas
     /// dela: o arquivo dividido com elas é juntado na volta.
     pub running: Vec<(u64, Vec<String>)>,
-    /// O commit da onda, em que a revisão cria a cópia separada; sem ele, a
-    /// cópia sai do commit atual.
+    /// O commit em que o fechamento cria a cópia do revisor final; sem ele, o
+    /// pedido do revisor diz que ela sai do commit atual. O pedido da onda
+    /// não o cita.
     pub commit: Option<String>,
     /// O repositório principal: onde a spec mora e onde nada é editado.
     pub root: String,
-    /// A cópia que a rodada criou para a onda; sem ela, o pedido não fala de
-    /// cópia.
+    /// A cópia separada em que o agente trabalha: a que a rodada criou para
+    /// a onda, ou a do revisor final, que o fechamento cria. Sem ela, o
+    /// pedido da onda não fala de cópia.
     pub copy: Option<WaveCopy>,
-    /// A cópia em que o revisor da onda trabalha.
-    pub review: WaveCopy,
     /// O mapa do projeto marca alguma parte dele como `cargo`. Só então o
     /// pedido traz a frase que manda compilar na pasta de compilação da cópia
     /// e cita o Cargo: num projeto Node, por exemplo, ela não serve.
@@ -1357,12 +1357,12 @@ impl Writer<'_> {
     /// spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;
-        let (copy, root) = (&execution.review, &execution.root);
+        let (copy, root) = (execution.copy.clone().unwrap_or_default(), &execution.root);
         let commit = execution.commit.as_deref().unwrap_or("HEAD");
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.execution"));
         let line = self.t("prompt.review.copy").replace("{copy}", &copy.path).replace("{root}", root);
         let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
-        self.build_dir(out, copy);
+        self.build_dir(out, &copy);
         self.prepare(out);
         if !execution.local_files.is_empty() {
             let files: Vec<String> = execution.local_files.iter().map(|file| format!("`{file}`")).collect();
@@ -2488,12 +2488,20 @@ mod tests {
             build: Some("make".into()),
             test: Some("make test".into()),
             running: vec![(2, vec!["src/b.rs".into(), "src/c.rs".into()]), (3, Vec::new())],
-            commit: Some("abc1234".into()),
             root: "/repo".into(),
             copy: Some(WaveCopy { path: "/repo/copia-1".into(), build_dir: Some("/repo/target/copias/a".into()) }),
-            review: WaveCopy { path: "/repo/revisao-1".into(), build_dir: Some("/repo/target/copias/b".into()) },
             rust: true,
             ..Execution::default()
+        }
+    }
+
+    /// A mesma execução no pedido do revisor final: a cópia que o fechamento
+    /// criou para ele, no commit mais novo da obra.
+    fn with_final_copy() -> Execution {
+        Execution {
+            commit: Some("abc1234".into()),
+            copy: Some(WaveCopy { path: "/repo/revisao-1".into(), build_dir: Some("/repo/target/copias/b".into()) }),
+            ..with_copy()
         }
     }
 
@@ -2510,6 +2518,7 @@ mod tests {
             for rust in [false, true] {
                 m.execution = Execution { rust, ..with_copy() };
                 let wave = section(&write(&m, lang), rules).to_string();
+                m.execution = Execution { rust, ..with_final_copy() };
                 let last = section(&write_final_review(&m, lang), rules).to_string();
                 for (text, folder) in [(&wave, "/repo/target/copias/a"), (&last, "/repo/target/copias/b")] {
                     let sentence = translate("prompt.execution.build_dir", lang).replace("{dir}", folder);
@@ -2552,7 +2561,7 @@ mod tests {
         ] {
             assert!(rules.contains(&line), "{line}: {rules}");
         }
-        assert!(!rules.contains("worktree") && !rules.contains("revisao-1"), "{rules}");
+        assert!(!rules.contains("worktree"), "{rules}");
         // De onde ler a spec, só a linha de como ler diz, uma vez, nos dois
         // comandos dela.
         let wave_example =
@@ -2561,6 +2570,7 @@ mod tests {
         assert_eq!(wave.matches("--root").count(), 2, "{wave}");
 
         let example = t("prompt.read").replace("{root}", "--root /repo ").replace("{spec}", "teste");
+        m.execution = with_final_copy();
         let last = write_final_review(&m, Locale::PtBr);
         assert!(last.contains(&example), "{last}");
         assert_eq!(last.matches("--root").count(), 1, "{last}");
@@ -2574,7 +2584,7 @@ mod tests {
         ] {
             assert!(rules.contains(line), "{line}: {rules}");
         }
-        assert!(!rules.contains("Onda 2") && !rules.contains("copia-1"), "a revisão roda na cópia dela: {rules}");
+        assert!(!rules.contains("Onda 2"), "a revisão roda na cópia dela: {rules}");
         assert!(
             !rules.contains(t("prompt.execution.no_commit"))
                 && !rules.contains(t("prompt.execution.commit_field"))

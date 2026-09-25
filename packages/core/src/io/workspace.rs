@@ -34,15 +34,17 @@
 //!
 //! ## Worktree redirect
 //!
-//! When the resolved anchor sits inside a LINKED git worktree — `git rev-parse
-//! --git-dir` differs from `--git-common-dir` — the root is remapped to the
-//! MAIN checkout (the parent of the shared `…/.git` common dir). All Mustard
-//! state (specs, events, active-spec markers, telemetry) then lands under the
-//! primary checkout's `.claude/`, never the worktree's: the worktree carries
-//! only code. The redirect is SURGICAL and fail-open — the main checkout,
-//! every non-git tree, and any git failure keep the un-redirected walk result,
-//! so only a proven linked worktree changes. It applies to the ancestor-walk
-//! path only; the `MUSTARD_WORKSPACE_ROOT` override is honoured verbatim.
+//! When the resolved anchor sits inside a LINKED git worktree — its `.git` file
+//! points at an admin folder that carries a `commondir` — the root is remapped
+//! to the MAIN checkout ([`linked_worktree_main`]). All Mustard state (specs,
+//! events, active-spec markers, telemetry) then lands under the primary
+//! checkout's `.claude/`, never the worktree's: the worktree carries only code.
+//! The redirect reads the files git leaves behind and never runs git, so a
+//! harness event spawns no process for it. It is SURGICAL and fail-open — the
+//! main checkout, every non-git tree, and any file that does not read keep the
+//! un-redirected walk result, so only a proven linked worktree changes. It
+//! applies to the ancestor-walk path only; the `MUSTARD_WORKSPACE_ROOT`
+//! override is honoured verbatim.
 //!
 //! A linked worktree that lives OUTSIDE the project — the separate copy of a
 //! wave, in the user's cache folder — has no anchor anywhere above it. When
@@ -79,8 +81,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
-use crate::platform::git;
 use std::sync::OnceLock;
 
 /// Errors returned by [`workspace_root`].
@@ -222,7 +222,7 @@ fn resolve_uncached(
     // project, provided it is a genuine anchor.
     let resolved = match walk_ancestors(start_dir) {
         Ok(found) => found,
-        Err(missing) => return outside_worktree_main(start_dir).ok_or(missing),
+        Err(missing) => return main_checkout_if_linked(start_dir).ok_or(missing),
     };
     // Worktree redirect (the ONE behavioural change): a resolved anchor sitting
     // inside a LINKED git worktree is remapped to its MAIN checkout so specs,
@@ -285,21 +285,16 @@ fn walk_ancestors(start_dir: &Path) -> Result<PathBuf, WorkspaceError> {
 }
 
 /// The project whose directory `start_dir` sits in, by the ancestor walk ALONE
-/// — no git, no memoisation, no worktree redirect — or `None` when no ancestor
-/// is an anchor.
+/// — no memoisation, no worktree redirect — or `None` when no ancestor is an
+/// anchor.
 ///
 /// The walk is [`walk_ancestors`], the very one [`workspace_root`] takes, so
 /// this is not a second answer to "which project is this": it is the same walk,
 /// stopped one step earlier. What it deliberately leaves out is the linked-
-/// worktree redirect, and that omission is the reason this face exists at all:
-/// the redirect asks git, and the one caller here — the git executor
-/// ([`crate::platform::git::run`], resolving which program controls versions)
-/// — would then be asking git in order to decide how to ask git.
-///
-/// Leaving the redirect out is also the right answer, not just the possible
-/// one: the redirect exists so specs, events and telemetry land under the ONE
-/// `.claude/`, which is a question about where STATE is written. Which binary
-/// runs a command is not that question.
+/// worktree redirect: the redirect exists so specs, events and telemetry land
+/// under the ONE `.claude/`, which is a question about where STATE is written.
+/// Which binary runs a command — the question of the one caller here, the git
+/// executor ([`crate::platform::git::run`]) — is not that question.
 #[must_use]
 pub fn anchor_of(start_dir: &Path) -> Option<PathBuf> {
     walk_ancestors(start_dir).ok()
@@ -323,32 +318,14 @@ pub fn is_git_repo_root(dir: &Path) -> bool {
     dot_git.is_dir() || dot_git.is_file()
 }
 
-/// Canonicalise `p`, falling back to the path as-given on error — so a relative
-/// and an absolute reading of the same directory compare equal without panicking.
-fn canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
-}
-
-/// Run `git rev-parse <args>` in `dir`, returning the trimmed stdout as a
-/// [`PathBuf`] on success. `None` on any failure — git absent, not a repo, a
-/// non-zero exit, or empty output. Never panics: this is the fail-open seam of
-/// the worktree redirect.
-fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<PathBuf> {
-    let mut full: Vec<&str> = vec!["rev-parse"];
-    full.extend(args);
-    git::run(dir, &full).out().filter(|s| !s.is_empty()).map(PathBuf::from)
-}
-
 /// When `dir` is inside a LINKED git worktree, return the MAIN checkout root;
 /// otherwise `None` (⇒ the caller keeps today's walk result unchanged).
 ///
-/// Detection: a linked worktree
-/// reports a per-worktree `--git-dir` distinct from the shared `--git-common-dir`,
-/// while the MAIN checkout reports the same path for both. Derivation mirrors
-/// `git_settle::main_checkout_root`: the parent of the absolute `…/.git` common
-/// dir IS the main checkout. Fully fail-open — git absent, not a repo, the main
-/// checkout (dirs equal), or a derived root that is not a valid Mustard anchor
-/// all yield `None`, so only a proven linked worktree is ever redirected.
+/// The main checkout is [`linked_worktree_main`]'s; only a genuine,
+/// uncontaminated Mustard anchor is accepted, so only a proven linked worktree
+/// is ever redirected. It serves both faces of the resolver: the anchor the
+/// walk found, and a start the walk placed in no project — the separate copy
+/// of a wave, in the user's cache folder, which carries no Mustard file.
 fn main_checkout_if_linked(dir: &Path) -> Option<PathBuf> {
     let main = linked_worktree_main(dir)?;
     // Redirect only to a genuine, uncontaminated Mustard anchor — otherwise keep
@@ -360,54 +337,21 @@ fn main_checkout_if_linked(dir: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The main checkout of the linked worktree `start_dir` sits in, for a start
-/// the ancestor walk placed in no project; `None` when that checkout is not a
-/// genuine Mustard anchor either. Asking git costs two processes on the hot
-/// path of every harness event, so git is asked only from the nearest
-/// ancestor carrying the `.git` FILE a linked worktree has — a folder outside
-/// any git checkout, or inside a plain one, never spawns git.
-fn outside_worktree_main(start_dir: &Path) -> Option<PathBuf> {
-    main_checkout_if_linked(linked_top(start_dir)?)
-}
-
-/// The nearest ancestor of `start_dir` (itself included) whose `.git` is a
-/// FILE — the `gitdir:` pointer a linked worktree, or a submodule, carries.
-fn linked_top(start_dir: &Path) -> Option<&Path> {
-    start_dir.ancestors().find(|dir| dir.join(".git").is_file())
-}
-
-/// The main checkout of the linked worktree `start_dir` sits in, read from the
-/// files git leaves behind and WITHOUT running git — for the one caller that
-/// cannot ask git: the git executor ([`crate::platform::git::run`]), deciding
-/// which program answers for a wave copy that lives outside its project.
-///
-/// The worktree's `.git` file names its admin folder (`gitdir:
-/// <main>/.git/worktrees/<name>`, absolute or relative to the worktree); the
-/// `commondir` file there leads to the shared `<main>/.git`; the folder above
-/// it is the main checkout. `None` for anything else — no `.git` file above, a
-/// submodule (its admin folder has no `commondir`), a shared folder not named
-/// `.git` (a bare repository has no checkout) or a pointer to nowhere.
-#[must_use]
-pub fn worktree_main_from_files(start_dir: &Path) -> Option<PathBuf> {
-    let top = linked_top(start_dir)?;
-    let pointer = std::fs::read_to_string(top.join(".git")).ok()?;
-    let admin = pointer.lines().find_map(|line| line.strip_prefix("gitdir:"))?.trim();
-    let admin = top.join(admin);
-    let common = std::fs::read_to_string(admin.join("commondir")).ok()?;
-    let common = std::fs::canonicalize(admin.join(common.trim())).ok()?;
-    if common.file_name().and_then(|name| name.to_str()) != Some(".git") {
-        return None;
-    }
-    common.parent().map(Path::to_path_buf)
-}
-
 /// The MAIN checkout when `dir` is inside a LINKED git worktree; `None` in the
-/// main checkout itself, outside git, or when git fails.
+/// main checkout itself, outside git, or when the files do not lead there.
 ///
-/// A linked worktree reports a per-worktree `--git-dir` distinct from the
-/// shared `--git-common-dir`; the main checkout reports the same path for both.
-/// The parent of the absolute `…/.git` common dir is the main checkout, and
-/// `--show-toplevel` answers for an unusual common dir.
+/// Read from the files git leaves behind, and never by running git: it sits on
+/// the path of every harness event, and the git executor
+/// ([`crate::platform::git::run`]) asks it which project owns a wave copy that
+/// lives outside its project — asking git there would be asking git how to ask
+/// git. Like git, the reading stops at the nearest `.git` above `dir`. A
+/// folder there is a main checkout. A file names the admin folder (`gitdir:
+/// <path>`, absolute or relative to the worktree), and only a linked
+/// worktree's admin folder carries the `commondir` that leads to the shared
+/// folder; a submodule's has none. The folder above a shared `…/.git` is the
+/// main checkout. A shared folder with another name — a submodule's, under the
+/// outer project's `.git/modules` — names its checkout in `core.worktree`; a
+/// bare repository names none, for it has no checkout.
 ///
 /// Unlike the walk's redirect, it does not ask the main checkout to be a
 /// Mustard anchor as seen from the worktree: once Mustard stays out of git, a
@@ -415,17 +359,64 @@ pub fn worktree_main_from_files(start_dir: &Path) -> Option<PathBuf> {
 /// to reach the main checkout's file.
 #[must_use]
 pub fn linked_worktree_main(dir: &Path) -> Option<PathBuf> {
-    let git_dir = git_rev_parse(dir, &["--path-format=absolute", "--git-dir"])?;
-    let common = git_rev_parse(dir, &["--path-format=absolute", "--git-common-dir"])?;
-    // Main checkout ⇒ identical dirs ⇒ nothing to redirect.
-    if canonical(&git_dir) == canonical(&common) {
-        return None;
+    // A relative `.` only climbs to the folders above once it is absolute.
+    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let top = dir.ancestors().find(|folder| is_git_repo_root(folder))?;
+    let pointer = std::fs::read_to_string(top.join(".git")).ok()?;
+    let admin = pointer.lines().find_map(|line| line.strip_prefix("gitdir:"))?.trim();
+    let admin = top.join(admin);
+    let common = std::fs::read_to_string(admin.join("commondir")).ok()?;
+    let common = std::fs::canonicalize(admin.join(common.trim())).ok()?;
+    if common.file_name().and_then(|name| name.to_str()) == Some(".git") {
+        return common.parent().map(Path::to_path_buf);
     }
-    if common.file_name().and_then(|n| n.to_str()) == Some(".git") {
-        common.parent().map(Path::to_path_buf)
-    } else {
-        git_rev_parse(dir, &["--path-format=absolute", "--show-toplevel"])
+    std::fs::canonicalize(common.join(configured_worktree(&common)?)).ok()
+}
+
+/// The checkout the shared git folder `common` names in `core.worktree`,
+/// relative to that folder or absolute. Git reads its `config` and then its
+/// `config.worktree`, so the second one wins. `None` when neither names one.
+fn configured_worktree(common: &Path) -> Option<String> {
+    ["config.worktree", "config"]
+        .into_iter()
+        .filter_map(|name| std::fs::read_to_string(common.join(name)).ok())
+        .find_map(|text| core_worktree(&text))
+}
+
+/// The last `worktree` of the `[core]` section in the git configuration
+/// `text` — section and key in any case, as git reads them.
+fn core_worktree(text: &str) -> Option<String> {
+    let mut in_core = false;
+    let mut found = None;
+    for line in text.lines().map(str::trim) {
+        if let Some(header) = line.strip_prefix('[') {
+            in_core = header.split(']').next().is_some_and(|name| name.trim().eq_ignore_ascii_case("core"));
+        } else if in_core
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim().eq_ignore_ascii_case("worktree")
+        {
+            found = Some(config_value(value));
+        }
     }
+    found.filter(|value| !value.is_empty())
+}
+
+/// A git configuration value as git writes it: quotes are dropped, a
+/// backslash keeps the character after it, and a `#` or `;` outside quotes
+/// starts a comment.
+fn config_value(raw: &str) -> String {
+    let mut value = String::new();
+    let mut quoted = false;
+    let mut chars = raw.trim().chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            '\\' => value.extend(chars.next()),
+            '#' | ';' if !quoted => break,
+            _ => value.push(c),
+        }
+    }
+    value.trim_end().to_string()
 }
 
 /// The `.claude/.claude/` guard mirrored from [`crate::io::claude_paths`] — kept private so the two
@@ -742,7 +733,7 @@ mod tests {
         let start = copy.join("src");
 
         let resolved = resolve_with_override(&start, None).expect("the outside copy resolves to its main checkout");
-        assert_eq!(canonical(&resolved), canonical(&main));
+        assert_eq!(std::fs::canonicalize(&resolved).unwrap(), std::fs::canonicalize(&main).unwrap());
 
         let file = crate::io::spec_events::spec_file(&resolved, "x").unwrap();
         let said = serde_json::json!({"author": "user", "text": "da cópia"});
@@ -761,5 +752,20 @@ mod tests {
             matches!(resolve_with_override(&loose, None), Err(WorkspaceError::AnchorNotFound { .. })),
             "a folder outside any project still resolves nothing",
         );
+    }
+
+    /// The checkout a shared git folder names is read as git reads its
+    /// configuration: only the `[core]` section, section and key in any case,
+    /// the last one standing, quotes dropped, a backslash keeping the
+    /// character after it and a comment cut off; a folder that names none —
+    /// a bare repository's — gives none.
+    #[test]
+    fn the_configured_checkout_is_read_as_git_reads_it() {
+        let text = "[core]\n\tbare = false\n\tworktree = ../../../velho\n[remote \"origin\"]\n\tworktree = errado\n\
+                    [CORE]\n\tWorkTree = \"../../../meu #mod\" ; o módulo\n[core \"sub\"]\n\tworktree = errado\n";
+        assert_eq!(core_worktree(text).as_deref(), Some("../../../meu #mod"));
+        assert_eq!(core_worktree("[core]\n\tworktree = a\\\"b # nota\n").as_deref(), Some("a\"b"));
+        assert_eq!(core_worktree("[core]\n\tbare = true\n"), None);
+        assert_eq!(core_worktree("[remote \"x\"]\n\tworktree = fora\n"), None);
     }
 }

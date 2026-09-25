@@ -228,17 +228,25 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
+/// A pasta pessoal do usuário: `HOME`, ou `USERPROFILE` no Windows, lida sem
+/// dependência. A variável vazia vale como ausente: `None`, e quem chama cai
+/// no próprio plano B em vez de montar um caminho relativo à pasta em que o
+/// comando roda. A pasta de configuração do Claude Code, a pasta das cópias
+/// das ondas e o binário `mustard-rt` leem a pasta pessoal por aqui.
+#[must_use]
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|dir| !dir.is_empty()).map(std::path::PathBuf::from)
+}
+
 /// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when the operator moved
-/// it, `~/.claude` otherwise (`HOME`, or `USERPROFILE` on Windows). `None` when
-/// neither resolves — this crate reads no home directory through a dependency.
+/// it, `.claude` under [`home_dir`] otherwise. `None` when neither resolves —
+/// this crate reads no home directory through a dependency.
 pub fn claude_config_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(std::path::PathBuf::from(dir));
     }
-    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(home)
-        .filter(|h| !h.is_empty())
-        .map(|h| std::path::PathBuf::from(h).join(".claude"))
+    home_dir().map(|home| home.join(".claude"))
 }
 
 #[cfg(test)]
@@ -450,5 +458,74 @@ mod tests {
         .unwrap();
 
         assert_eq!(installed_plugin_rt_in(home.path()), None);
+    }
+
+    /// A marca das linhas que o [`home_readers`] imprime.
+    const HOME_MARK: &str = "leitura-da-pasta-pessoal";
+
+    /// Não prova comportamento nenhum: é o programa que o teste abaixo roda
+    /// com a pasta pessoal que ele escolhe. Rodado pela suíte, só passa.
+    /// Imprime o que cada leitora da pasta pessoal respondeu — o ajudante, a
+    /// pasta de configuração do Claude Code e a pasta das cópias das ondas —,
+    /// com `-` no lugar da resposta vazia.
+    #[test]
+    fn home_readers() {
+        let shown = |path: Option<std::path::PathBuf>| path.map_or_else(|| "-".to_string(), |p| p.display().to_string());
+        let root = tempfile::tempdir().unwrap();
+        println!("{HOME_MARK} home={}", shown(home_dir()));
+        println!("{HOME_MARK} config={}", shown(claude_config_dir()));
+        println!("{HOME_MARK} copies={}", shown(Some(crate::io::wave_prompt::copies_dir(root.path()))));
+    }
+
+    /// Roda o [`home_readers`] num processo próprio, com `HOME` e
+    /// `USERPROFILE` valendo `home` e sem as duas variáveis que passam na
+    /// frente da pasta pessoal, e devolve cada resposta pelo nome dela.
+    fn read_homes(home: &str) -> std::collections::BTreeMap<String, String> {
+        let module = module_path!();
+        let module = module.split_once("::").map_or(module, |(_, rest)| rest);
+        let out = std::process::Command::new(std::env::current_exe().expect("o executável dos testes"))
+            .args([&format!("{module}::home_readers"), "--exact", "--nocapture"])
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("MUSTARD_COPIES_DIR")
+            .output()
+            .expect("o executável dos testes roda");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix(&format!("{HOME_MARK} ")))
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    /// A pasta pessoal vazia vale como ausente nas três leitoras: o ajudante
+    /// não responde nada, a pasta de configuração do Claude Code também não,
+    /// e a pasta das cópias cai na pasta temporária do sistema — nenhuma
+    /// monta um caminho relativo à pasta em que o comando roda. Com a pasta
+    /// pessoal preenchida, as três partem dela.
+    #[test]
+    fn an_empty_home_counts_as_absent_for_every_reader() {
+        let temp = std::env::temp_dir().join("mustard").join("copias");
+        let empty = read_homes("");
+        let casa = tempfile::tempdir().unwrap();
+        let home = casa.path().display().to_string();
+        let filled = read_homes(&home);
+        let mut wrong: Vec<String> = Vec::new();
+        let mut expect = |case: &str, answers: &std::collections::BTreeMap<String, String>, name: &str, ok: &dyn Fn(&str) -> bool| {
+            let answer = answers.get(name).map_or("(sem resposta)", String::as_str);
+            if !ok(answer) {
+                wrong.push(format!("{case}: {name}={answer}"));
+            }
+        };
+        expect("vazia", &empty, "home", &|answer| answer == "-");
+        expect("vazia", &empty, "config", &|answer| answer == "-");
+        expect("vazia", &empty, "copies", &|answer| std::path::Path::new(answer).starts_with(&temp));
+        expect("preenchida", &filled, "home", &|answer| answer == home);
+        let config = casa.path().join(".claude");
+        expect("preenchida", &filled, "config", &|answer| std::path::Path::new(answer) == config);
+        let copies = casa.path().join(".cache").join("mustard").join("copias");
+        expect("preenchida", &filled, "copies", &|answer| std::path::Path::new(answer).starts_with(&copies));
+        assert!(wrong.is_empty(), "cada leitora responde pela mesma pasta pessoal: {wrong:?}");
     }
 }

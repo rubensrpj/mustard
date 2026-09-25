@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::io::fs;
 
-use crate::util::home_dir;
+use mustard_core::platform::harness::home_dir;
 
 /// One thing the bootstrap check found, with the command that resolves it.
 ///

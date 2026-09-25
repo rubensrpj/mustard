@@ -687,9 +687,25 @@ fn settle_agreed(
 /// combinado que o veredito final também responde — regra, limite, contrato,
 /// erro, caso de borda, fora do escopo e decisão. A entrega da onda responde
 /// por cada um deles.
+///
+/// A lista é a do envio que despachou a onda ([`dispatched_at`]), não a de
+/// agora: a leitura é feita sobre a spec como estava nele, só com os eventos
+/// de número até o dele — os números da spec só crescem. O item combinado
+/// gravado entre o envio e a volta não é cobrado, porque o pedido não o
+/// levou. O que o pedido levou e ganhou versão nova depois é cobrado pela
+/// versão de agora, pelo mesmo código; o que saiu da spec depois, não.
 pub(super) fn request_agreed(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
-    let agreed: BTreeSet<u64> = agreed_prompt::all_agreed(log).iter().map(|item| item.id).collect();
-    agreed_prompt::dispatch_items(log, wave, None).into_iter().filter(|item| agreed.contains(&item.id)).collect()
+    let sent = dispatched_at(log, wave).unwrap_or(u64::MAX);
+    let then = SpecLog { events: log.events.iter().filter(|e| e.id <= sent).cloned().collect(), ..SpecLog::default() };
+    let then_codes = then.codes();
+    let carried: Vec<&String> =
+        agreed_prompt::dispatch_items(&then, wave, None).iter().filter_map(|item| then_codes.get(&item.id)).collect();
+    let codes = log.codes();
+    let agreed = agreed_prompt::all_agreed(log);
+    carried
+        .into_iter()
+        .filter_map(|code| agreed.iter().copied().find(|item| codes.get(&item.id) == Some(code)))
+        .collect()
 }
 
 /// O `replaces` do evento oficial que assume as voltas `returns`: o número
@@ -1150,6 +1166,7 @@ mod tests {
 
     use crate::commands::event::pending::{pending_at, PendingOpts};
     use crate::commands::flow::round::queue::{dispatch_backlog, waves_to_redo};
+    use crate::commands::flow::round::usage::tests::{answer_line, instant, platform_file, request_line, MODEL};
 
     use super::*;
     use crate::commands::flow::round::tests::*;
@@ -1198,7 +1215,7 @@ mod tests {
 
         // Caminho absoluto dentro da própria cópia da onda: vira caminho
         // relativo ao repositório, e o conteúdo dela entra no principal.
-        let copy = wave_prompt::copy_path(root, "x", 2, false);
+        let copy = wave_prompt::copy_path(root, "x", 2);
         std::fs::write(copy.join("src/b.rs"), "fn dois() {}\n// A dobra saiu.\n").unwrap();
         let abs = copy.join("src/b.rs").to_string_lossy().replace('\\', "/");
         let two = json!({"wave": 2, "text": "A dobra saiu.", "files": [abs], "commit": "a onda 2 saiu"});
@@ -1292,7 +1309,7 @@ mod tests {
 
         // A cópia que mudou arquivo de verdade continua pedindo o título do
         // commit, mesmo sem citar arquivo nenhum na entrega.
-        let copy = wave_prompt::copy_path(root, "x", 2, false);
+        let copy = wave_prompt::copy_path(root, "x", 2);
         std::fs::write(copy.join("src/b.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
         let hidden = json!({"wave": 2, "text": "Mexi no arquivo e não contei."});
         assert_eq!(returned(root, hidden)["ok"], json!(true));
@@ -1695,7 +1712,7 @@ mod tests {
         mapped(root, "cargo");
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "a onda 2 divide arquivo com a 1 e espera: {out}");
-        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave);
         let shown = |wave: u64| mustard_core::io::wave_prompt::shown(&copy(wave));
         let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains(&format!("`{}`", shown(1))), "{prompt}");
@@ -1850,7 +1867,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "a onda 2 espera a vaga do arquivo");
-        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave);
         let seed = git_text(root, &["rev-parse", "HEAD"]);
         git_at(root, &["worktree", "add", "--detach", &copy(2).to_string_lossy(), &seed]);
         let folder2 = format!("{}/b", mustard_core::io::wave_prompt::shown(&root.join("target").join("copias")));
@@ -1915,7 +1932,7 @@ mod tests {
         approved(root, "x", &[(1, &["libs/sub/lib.txt"], &[]), (2, &["libs/sub/lib.txt"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "a onda 2 espera a vaga do arquivo");
-        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave);
         git_at(root, &["worktree", "add", "--detach", &copy(2).to_string_lossy(), &git_text(root, &["rev-parse", "HEAD"])]);
         let unit = {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1968,7 +1985,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/c.rs", "src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
-        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave);
         let read = |path: &Path| std::fs::read_to_string(path).unwrap();
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// principal\n").unwrap();
         git_at(root, &["commit", "-q", "-am", "outra mudança"]);
@@ -2035,7 +2052,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
-        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1, false);
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1);
         std::fs::write(root.join("src/a.rs"), "// principal\nfn um() {}\n").unwrap();
         git_at(root, &["commit", "-q", "-am", "outra mudança"]);
         std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
@@ -2077,7 +2094,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
-        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave);
         std::fs::write(copy(1).join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
         std::fs::write(copy(1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
         std::fs::write(copy(2).join("src/b.rs"), "fn um() {}\n// onda 2\n").unwrap();
@@ -2433,6 +2450,97 @@ mod tests {
         assert_eq!(backlog().len(), 1, "{:?}", backlog());
     }
 
+    /// A spec aprovada com a onda 1 sobre `src/a.rs` e a primeira decisão
+    /// combinada, dona da onda, e a onda já enviada. Devolve o número da
+    /// mensagem de origem, para o teste gravar mais itens com ela.
+    fn sent_with_a_decision(root: &Path) -> u64 {
+        let origin = std::cell::Cell::new(0);
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            origin.set(said);
+            let body = json!({"text": "A soma arredonda para baixo.", "why": "w", "waves": [1], "keys": ["k"],
+                "origin": said});
+            assert_eq!(write(root, "x", "decision", body)["ok"], json!(true));
+        });
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+        let prompt = sent["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains("MSTD-DEC-0001"), "the request carries the decision: {prompt}");
+        origin.get()
+    }
+
+    /// A volta cobra os itens combinados que o envio da onda levou, não os de
+    /// agora. Gravados depois do envio um caso de borda novo da onda e uma
+    /// versão nova da decisão que o pedido levou, a entrega sem resposta é
+    /// recusada citando só a decisão; o caso de borda, que o pedido não
+    /// levou, não é cobrado, e a entrega que responde só pela decisão grava.
+    #[test]
+    fn an_agreed_item_recorded_after_the_send_is_not_charged_on_the_return() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = sent_with_a_decision(root);
+        let edge = json!({"text": "A lista vazia soma zero.", "expected": "0", "waves": [1], "keys": ["k"],
+            "origin": said});
+        assert_eq!(write(root, "x", "edge_case", edge)["ok"], json!(true));
+        let newer = json!({"text": "A soma arredonda para cima.", "why": "w", "waves": [1], "keys": ["k"],
+            "origin": said, "replaces": "MSTD-DEC-0001"});
+        assert_eq!(write(root, "x", "decision", newer)["ok"], json!(true));
+
+        let refused = returned(root, json!({"wave": 1, "text": "A onda 1 saiu."}));
+        assert_eq!(refused["reason"], json!("delivery-agreed-missing"), "{refused}");
+        let expected = translate("spec_events.delivery_agreed_missing", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{missing}", "MSTD-DEC-0001");
+        assert_eq!(refused["hint"], json!(expected), "only what the request carried is charged: {refused}");
+
+        let answered = json!([{"item": "MSTD-DEC-0001", "met": true}]);
+        let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": answered}));
+        assert_eq!(wrote["ok"], json!(true), "the item recorded after the send is not charged: {wrote}");
+    }
+
+    /// O item combinado que a entrega marca `met:false` sem dizer o que falta
+    /// vira a tarefa do backlog com o texto do próprio item, o de reserva.
+    #[test]
+    fn an_unmet_agreed_item_without_text_becomes_a_task_with_the_items_own_text() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_a_decision(root);
+        let answered = json!([{"item": "MSTD-DEC-0001", "met": false}]);
+        let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": answered}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let tasks: Vec<&SpecEvent> =
+            log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).collect();
+        assert_eq!(tasks.len(), 1, "one task, for the item not met: {tasks:?}");
+        assert_eq!(tasks[0].str_field("text"), Some("A soma arredonda para baixo."), "{tasks:?}");
+    }
+
+    /// A volta da onda 1 que cita um caminho dentro da cópia da onda 10 —
+    /// cujo nome só começa igual ao da cópia da onda 1 — não é lida como da
+    /// própria cópia: o caminho fica como veio, sem virar um caminho relativo
+    /// ao repositório, e a gravação o recusa inteiro, por não estar no disco
+    /// nem no git.
+    #[test]
+    fn a_neighbour_copy_whose_name_only_starts_like_the_waves_is_not_its_copy() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let own = wave_prompt::recorded_copy(&log, 1).expect("the send records the copy").path;
+        let neighbour = wave_prompt::shown(&wave_prompt::copy_path(root, "x", 10));
+        assert_eq!(neighbour, format!("{own}0"), "the neighbour's name only starts like the wave's");
+
+        let cited = format!("{neighbour}/src/a.rs");
+        let refused = returned(root, json!({"wave": 1, "text": "Saiu.", "files": [cited], "commit": "a onda 1 saiu"}));
+        assert_eq!(refused["reason"], json!("round-file-unknown"), "{refused}");
+        let expected =
+            translate("round.file_unknown", Locale::PtBr).replace("{file}", &cited).replace("{wave}", "1");
+        assert_eq!(refused["hint"], json!(expected), "the path stays as it came: {refused}");
+    }
+
     /// Todo agente do Mustard sai em Opus: a onda de várias tarefas e a de
     /// uma só saem com o modelo pedido no campo `model` do envio gravado, e o
     /// pedido que o agente recebe diz o mesmo na linha do modelo, nos dois
@@ -2477,49 +2585,6 @@ mod tests {
         }
     }
 
-    /// O modelo que a plataforma grava nas respostas de um agente.
-    const PLATFORM_MODEL: &str = "claude-opus-5-5";
-
-    /// O instante `at` da spec deslocado de `millis`, como a plataforma grava
-    /// o carimbo: em UTC, com os milésimos.
-    fn platform_instant(at: &str, millis: i64) -> String {
-        let at = chrono::DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&chrono::Utc);
-        (at + chrono::Duration::milliseconds(millis)).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
-    }
-
-    /// Uma linha de resposta do modelo como a plataforma grava: o carimbo, o
-    /// ramo, se é de agente, o id da resposta, os quatro números — entrada,
-    /// criação de cache, leitura de cache e saída — e os usos de ferramenta.
-    fn platform_answer(at: &str, branch: &str, sidechain: bool, id: &str, usage: [u64; 4], tools: &[&str]) -> String {
-        let content: Vec<Value> = if tools.is_empty() {
-            vec![json!({"type": "text", "text": "pronto"})]
-        } else {
-            tools.iter().map(|tool| json!({"type": "tool_use", "id": tool, "name": "Bash", "input": {}})).collect()
-        };
-        json!({"type": "assistant", "isSidechain": sidechain, "gitBranch": branch, "timestamp": at,
-            "message": {"id": id, "model": PLATFORM_MODEL, "role": "assistant", "content": content,
-                "usage": {"input_tokens": usage[0], "cache_creation_input_tokens": usage[1],
-                    "cache_read_input_tokens": usage[2], "output_tokens": usage[3]}}})
-        .to_string()
-    }
-
-    /// A primeira linha do arquivo de um agente: o pedido que ele recebeu.
-    fn platform_request(at: &str, text: &str) -> String {
-        json!({"type": "user", "isSidechain": true, "gitBranch": "feature/x", "timestamp": at,
-            "message": {"role": "user", "content": text}})
-        .to_string()
-    }
-
-    /// Um arquivo de conversa na pasta de configuração `config`, no lugar em
-    /// que a plataforma o grava: `relative` é o caminho dentro da pasta do
-    /// projeto, `sessao.jsonl` para a conversa principal e
-    /// `sessao/subagents/agent-<nome>.jsonl` para um agente dela.
-    fn platform_file(config: &Path, relative: &str, lines: &[String]) {
-        let path = config.join("projects").join("-tmp-obra").join(relative);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, lines.join("\n") + "\n").unwrap();
-    }
-
     /// O começo da spec `x` e o envio mais novo da onda 1, como estão gravados.
     fn begun_and_sent(root: &Path) -> (String, SpecEvent) {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -2545,15 +2610,15 @@ mod tests {
     /// spec começou conta, e a de um milésimo antes não; a de outro ramo e a
     /// de agente também não; a resposta gravada em duas linhas conta uma vez,
     /// pela última. Tokens 100 + 15 e passos t1, t3 e t4.
-    fn orchestrator_lines(begun: &str, sent: &str) -> Vec<String> {
+    fn orchestrator_lines(begun: &str, sent: &str) -> Vec<Value> {
         let branch = "feature/x";
         vec![
-            platform_answer(&platform_instant(begun, -1), branch, false, "o0", [1_000, 0, 0, 0], &["t0"]),
-            platform_answer(&platform_instant(begun, 0), branch, false, "o1", [10, 20, 30, 40], &["t1"]),
-            platform_answer(&platform_instant(sent, 500), "main", false, "o2", [2_000, 0, 0, 0], &["t2"]),
-            platform_answer(&platform_instant(sent, 600), branch, true, "o5", [4_000, 0, 0, 0], &["t5"]),
-            platform_answer(&platform_instant(sent, 700), branch, false, "o3", [1, 2, 3, 4], &["t3"]),
-            platform_answer(&platform_instant(sent, 701), branch, false, "o3", [1, 2, 3, 9], &["t4"]),
+            answer_line(&instant(begun, -1), branch, false, "o0", [1_000, 0, 0, 0], &["t0"]),
+            answer_line(&instant(begun, 0), branch, false, "o1", [10, 20, 30, 40], &["t1"]),
+            answer_line(&instant(sent, 500), "main", false, "o2", [2_000, 0, 0, 0], &["t2"]),
+            answer_line(&instant(sent, 600), branch, true, "o5", [4_000, 0, 0, 0], &["t5"]),
+            answer_line(&instant(sent, 700), branch, false, "o3", [1, 2, 3, 4], &["t3"]),
+            answer_line(&instant(sent, 701), branch, false, "o3", [1, 2, 3, 9], &["t4"]),
         ]
     }
 
@@ -2578,41 +2643,44 @@ mod tests {
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
         let (begun, sent) = begun_and_sent(root);
-        assert!(platform_instant(&begun, 0) < platform_instant(sent.at(), 0), "{begun} {}", sent.at());
+        assert!(instant(&begun, 0) < instant(sent.at(), 0), "{begun} {}", sent.at());
 
         let platform = tempdir().unwrap();
         let config = platform.path();
         // Outro projeto, sem a sessão.
         std::fs::create_dir_all(config.join("projects").join("-tmp-outro")).unwrap();
-        platform_file(config, "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
+        platform_file(config, "-tmp-obra", "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
         // O agente que recebeu o pedido da onda depois do envio: r1 com um uso
         // de ferramenta, 2 + 100 + 1000 + 40 = 1142, e r2, 3 + 0 + 1142 + 7 =
         // 1152.
         platform_file(
             config,
+            "-tmp-obra",
             "sessao/subagents/agent-onda.jsonl",
             &[
-                platform_request(&platform_instant(sent.at(), 200), &prompt),
-                platform_answer(&platform_instant(sent.at(), 300), "feature/x", true, "r1", [2, 100, 1_000, 40], &["w1"]),
-                platform_answer(&platform_instant(sent.at(), 400), "feature/x", true, "r2", [3, 0, 1_142, 7], &[]),
+                request_line(&instant(sent.at(), 200), &prompt),
+                answer_line(&instant(sent.at(), 300), "feature/x", true, "r1", [2, 100, 1_000, 40], &["w1"]),
+                answer_line(&instant(sent.at(), 400), "feature/x", true, "r2", [3, 0, 1_142, 7], &[]),
             ],
         );
         // O mesmo pedido, um milésimo antes do envio: é de um envio anterior.
         platform_file(
             config,
+            "-tmp-obra",
             "sessao/subagents/agent-antes.jsonl",
             &[
-                platform_request(&platform_instant(sent.at(), -1), &prompt),
-                platform_answer(&platform_instant(sent.at(), 100), "feature/x", true, "a1", [9_000, 0, 0, 0], &["a"]),
+                request_line(&instant(sent.at(), -1), &prompt),
+                answer_line(&instant(sent.at(), 100), "feature/x", true, "a1", [9_000, 0, 0, 0], &["a"]),
             ],
         );
         // Outra onda, que começou antes do agente desta.
         platform_file(
             config,
+            "-tmp-obra",
             "sessao/subagents/agent-outra.jsonl",
             &[
-                platform_request(&platform_instant(sent.at(), 100), "# x — onda 2\n\nOutro pedido.\n"),
-                platform_answer(&platform_instant(sent.at(), 150), "feature/x", true, "b1", [8_000, 0, 0, 0], &["b"]),
+                request_line(&instant(sent.at(), 100), "# x — onda 2\n\nOutro pedido.\n"),
+                answer_line(&instant(sent.at(), 150), "feature/x", true, "b1", [8_000, 0, 0, 0], &["b"]),
             ],
         );
         std::fs::write(config.join("projects/-tmp-obra/sessao/subagents/agent-onda.meta.json"), "{}").unwrap();
@@ -2628,7 +2696,7 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
         assert_eq!(revised.replaced(), vec![sent.id], "a versão nova aponta o envio original");
-        assert_eq!(revised.str_field("model_used"), Some(PLATFORM_MODEL), "{revised:?}");
+        assert_eq!(revised.str_field("model_used"), Some(MODEL), "{revised:?}");
         assert_eq!(revised.int("steps"), Some(1), "{revised:?}");
         assert_eq!(revised.int("tokens"), Some(1_142 + 1_152), "{revised:?}");
         assert_eq!(revised.int("caller_steps"), Some(3), "{revised:?}");
@@ -2646,7 +2714,7 @@ mod tests {
         let (begun, sent) = begun_and_sent(root);
         let platform = tempdir().unwrap();
         let config = platform.path();
-        platform_file(config, "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
+        platform_file(config, "-tmp-obra", "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
         let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
@@ -3120,13 +3188,14 @@ mod tests {
 
         let platform = tempdir().unwrap();
         let config = platform.path();
-        platform_file(config, "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
+        platform_file(config, "-tmp-obra", "sessao.jsonl", &orchestrator_lines(&begun, sent.at()));
         platform_file(
             config,
+            "-tmp-obra",
             "sessao/subagents/agent-onda.jsonl",
             &[
-                platform_request(&platform_instant(sent.at(), 200), &prompt),
-                platform_answer(&platform_instant(sent.at(), 300), "feature/x", true, "r1", [5, 0, 1_000, 195], &["w1", "w2"]),
+                request_line(&instant(sent.at(), 200), &prompt),
+                answer_line(&instant(sent.at(), 300), "feature/x", true, "r1", [5, 0, 1_000, 195], &["w1", "w2"]),
             ],
         );
         let usage = line("USAGE", json!({"wave": 1, "steps": 5, "tokens": 999}));
@@ -3137,7 +3206,7 @@ mod tests {
         assert_eq!(delivered_count(root), 1, "nenhuma entrega nova: {completed}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
-        assert_eq!(revised.str_field("model_used"), Some(PLATFORM_MODEL), "{:?}", revised.fields);
+        assert_eq!(revised.str_field("model_used"), Some(MODEL), "{:?}", revised.fields);
         assert_eq!((revised.int("steps"), revised.int("tokens")), (Some(2), Some(1_200)), "{:?}", revised.fields);
         assert_eq!((revised.int("caller_steps"), revised.int("caller_tokens")), (Some(3), Some(115)), "{:?}", revised.fields);
         assert_eq!(revised.replaced(), vec![sent.id], "a versão nova aponta o envio anterior: {:?}", revised.fields);

@@ -13,24 +13,11 @@ pub mod platform;
 pub mod sha256;
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
-
-/// Resolve the user's home directory cross-platform without a `dirs` crate
-/// dependency: `HOME` on Unix, `USERPROFILE` on Windows.
-///
-/// Single copy shared by the modules that resolve paths under the global
-/// `~/.claude/` tree (e.g. the OTEL collector attribution resolver).
-#[must_use]
-pub fn home_dir() -> Option<PathBuf> {
-    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(var)
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-}
-
 
 // Timestamp helpers (`now_iso8601`, `now_unix_millis`) live in the single
-// canonical home `mustard_core::time` — call them directly, no rt-side alias.
+// canonical home `mustard_core::time`, and the user's home folder in
+// `mustard_core::platform::harness::home_dir` — call them directly, no
+// rt-side alias.
 
 /// Assemble a gate message in the `formatGateMessage` shape:
 /// `[gate] what. why. Saída: exit.`

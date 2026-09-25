@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 /// toolchain the operator deliberately put on `PATH` always wins. Mustard
 /// supplements the environment; it never overrides it.
 fn toolchain_bin_dirs() -> Vec<PathBuf> {
-    let Some(home) = crate::util::home_dir() else {
+    let Some(home) = mustard_core::platform::harness::home_dir() else {
         return Vec::new();
     };
     // Each entry is the location that toolchain's own installer documents.

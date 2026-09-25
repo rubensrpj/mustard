@@ -32,12 +32,11 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
 ///
 /// Reads `.git/HEAD` directly rather than spawning `git`: this runs inside a
 /// PreToolUse hook, once per Write/Edit, and a subprocess per file edit is a
-/// cost the answer does not justify. In the main checkout no `git` runs at
-/// all. In a linked worktree, where `.git` is a file, the HEAD is still read
-/// through its `gitdir`, but the main checkout — where the `mustard.json` and
-/// the spec folders live — is asked of `git` through
-/// `workspace::linked_worktree_main`, two or three `git rev-parse` calls per
-/// edit there. Fail-open at every step.
+/// cost the answer does not justify. No `git` runs at all: in a linked
+/// worktree, where `.git` is a file, the HEAD is read through its `gitdir`,
+/// and the main checkout — where the `mustard.json` and the spec folders
+/// live — is read from the worktree's files by
+/// `workspace::linked_worktree_main`. Fail-open at every step.
 #[must_use]
 pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
     let project = Path::new(project_dir_path);
@@ -49,7 +48,7 @@ pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
     }
     // In a linked worktree, the Mustard lives in the main checkout: the
     // `mustard.json` and the spec folders stay outside git. Only a `.git` that
-    // is a file can be a worktree, and only then is git asked.
+    // is a file can be a worktree, and only then are its files read.
     let home = (git_dir != project.join(".git"))
         .then(|| mustard_core::io::workspace::linked_worktree_main(project))
         .flatten()

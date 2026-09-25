@@ -492,7 +492,7 @@ pub(super) fn open_copies(
         if free.is_empty() {
             break;
         }
-        let path = copy_path(root, spec, wave, false);
+        let path = copy_path(root, spec, wave);
         let touched: BTreeSet<&str> = files
             .get(&wave)
             .into_iter()
@@ -1218,7 +1218,7 @@ mod tests {
             let mut folders = Vec::new();
             for (at, wave) in [1_u64, 2].iter().enumerate() {
                 let (copy, build) = sent_copy(root, *wave);
-                let expected = mustard_core::io::wave_prompt::copy_path(root, "x", *wave, false);
+                let expected = mustard_core::io::wave_prompt::copy_path(root, "x", *wave);
                 assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "{out}");
                 assert!(expected.join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
                 assert_eq!(std::fs::read_to_string(expected.join("src/a.rs")).unwrap(), "fn um() {}\n");
@@ -1245,8 +1245,8 @@ mod tests {
 
     /// A rodada abre a cópia da onda fora da pasta do projeto, na pasta das
     /// cópias dele — o nome do projeto e um código curto que não muda —, e o
-    /// envio grava esse caminho, que o pedido cita. A cópia do revisor da
-    /// onda e a do revisor final moram ao lado; nada nasce em
+    /// envio grava esse caminho, que o pedido cita. A cópia do revisor final
+    /// mora ao lado; nada nasce em
     /// `.claude/worktrees`. A entrega que cita o arquivo pelo caminho absoluto
     /// da cópia gravada no envio volta relativa ao repositório, mesmo quando
     /// essa cópia não é a que a pasta das cópias daria hoje, como a da onda
@@ -1275,7 +1275,6 @@ mod tests {
         assert!(Path::new(&copy).join(".git").is_file(), "the copy is a linked checkout");
         let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
-        assert_eq!(copy_path(root, "x", 1, true), copies.join("x-1-review"));
         assert_eq!(final_copy_path(root, "x"), copies.join("x-final-review"));
         assert!(!root.join(".claude").join("worktrees").exists(), "nothing is born inside the project");
 
@@ -1941,7 +1940,7 @@ mod tests {
             assert_eq!(asked["ok"], json!(true), "{asked}");
             assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
             assert!(sends().is_empty(), "no send before the analysis: {asked}");
-            assert!(!copy_path(root, "x", 1, false).exists(), "no copy before the analysis");
+            assert!(!copy_path(root, "x", 1).exists(), "no copy before the analysis");
             let request = &asked["analysis"][0];
             assert_eq!(request["wave"], json!(1), "{asked}");
             assert_eq!(codes_in(request, "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002"], "the rule the task does is not judged");

@@ -511,7 +511,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
     assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
 
-    let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "teste", wave, false);
+    let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "teste", wave);
 
     // Onda 1: muda o arquivo declarado e um outro que a entrega não cita; o
     // repositório continua compilando com o Makefile que já está lá.

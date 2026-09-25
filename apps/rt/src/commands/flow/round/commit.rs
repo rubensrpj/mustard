@@ -1173,7 +1173,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[]), (2, &["src/c.rs"], &[])]);
         round(root, "x", None);
-        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave);
         std::fs::remove_file(copy(1).join("src/a.rs")).unwrap();
         std::fs::write(copy(1).join("src/b.rs"), "fn um() {}\nfn b() {}\n").unwrap();
         std::fs::write(copy(2).join("src/c.rs"), "fn um() {}\nfn c() {}\n").unwrap();
@@ -1315,7 +1315,7 @@ mod tests {
         with_submodule(root, dir.path());
         approved(root, "x", &[(1, &["src/a.rs", "libs/sub/lib.txt"], &[])]);
         round(root, "x", None);
-        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1, false);
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1);
         assert!(copy.join("libs/sub/.git").is_file(), "the copy brings the submodule");
         std::fs::write(copy.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
         std::fs::write(copy.join("libs/sub/lib.txt"), "fn um() {}\nfn sub() {}\n").unwrap();

@@ -127,3 +127,65 @@ fn main_checkout_resolution_is_unchanged() {
         "the main checkout resolves to itself, unchanged",
     );
 }
+
+/// A Mustard project that is a git SUBMODULE keeps its shared git folder under
+/// the outer project's `.git/modules/<name>`, a folder not named `.git`. The
+/// separate copy of a wave — a linked worktree of the submodule, in the user's
+/// cache — still finds the submodule's checkout, the one its shared folder
+/// names, both in a hook resolving the project and in a command run with the
+/// copy as its root; it neither stops at the copy nor climbs to the outer
+/// project, which is a Mustard project too.
+#[test]
+fn a_copy_of_a_submodule_project_finds_the_submodule_checkout() {
+    if !has_git() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let origin = tmp.path().join("origem");
+    std::fs::create_dir_all(origin.join("src")).unwrap();
+    std::fs::write(origin.join("src").join("lib.rs"), b"fn um() {}\n").unwrap();
+    git(&origin, &["init", "-q"]);
+    git(&origin, &["config", "user.email", "t@t"]);
+    git(&origin, &["config", "user.name", "t"]);
+    git(&origin, &["add", "-A"]);
+    git(&origin, &["commit", "-q", "-m", "seed"]);
+    let outer = tmp.path().join("externo");
+    std::fs::create_dir_all(&outer).unwrap();
+    git(&outer, &["init", "-q"]);
+    git(&outer, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &origin.to_string_lossy(), "modulo"]);
+    let main = outer.join("modulo");
+    // The Mustard stays out of git, in both projects.
+    for project in [&outer, &main] {
+        std::fs::write(project.join("mustard.json"), b"{}").unwrap();
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+    }
+    let copy = tmp.path().join("cache").join("copias").join("modulo-1");
+    git(&main, &["worktree", "add", "-q", "--detach", &copy.to_string_lossy(), "HEAD"]);
+    let common = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(&copy)
+        .output()
+        .unwrap();
+    let common = PathBuf::from(String::from_utf8_lossy(&common.stdout).trim());
+    assert_ne!(common.file_name().and_then(|n| n.to_str()), Some(".git"), "the shared folder is {common:?}");
+    assert!(!copy.join("mustard.json").exists(), "the copy carries no Mustard file");
+
+    let start = copy.join("src");
+    let resolved = resolve_with_override(&start, None).expect("a hook in the copy resolves a project");
+    assert_eq!(canon(&resolved), canon(&main), "the submodule's checkout, not the copy nor the outer project");
+
+    let file = mustard_core::io::spec_events::spec_file(&main, "teste").unwrap();
+    let said = serde_json::json!({"author": "user", "text": "no módulo"});
+    mustard_core::io::spec_events::write(&file, "message", said.as_object().cloned().unwrap(), &[]).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "read", "conversation", "--spec", "teste", "--root"])
+        .arg(&copy)
+        .current_dir(&copy)
+        .output()
+        .unwrap();
+    let read: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)));
+    assert_eq!(read["ok"], true, "the command in the copy reads the submodule's spec: {read}");
+    assert_eq!(read["count"], 1, "{read}");
+    assert!(!copy.join(".claude").exists(), "nothing is written inside the copy");
+}

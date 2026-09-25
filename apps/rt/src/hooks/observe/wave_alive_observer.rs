@@ -24,7 +24,7 @@ pub struct WaveAliveObserver;
 
 /// A onda dona da pasta `folder` (só o nome dela, sem o caminho em volta),
 /// pelo nome que a rodada dá à cópia de uma onda: `<spec>-<onda>`. A cópia
-/// do revisor (`<spec>-<onda>-review`) e a do revisor final não são de onda.
+/// do revisor final (`<spec>-final-review`) não é de onda.
 fn parse_wave_folder(folder: &str) -> Option<(String, u64)> {
     let (spec, wave) = folder.rsplit_once('-').filter(|(spec, _)| !spec.is_empty())?;
     Some((spec.to_string(), wave.parse().ok()?))
@@ -130,7 +130,7 @@ mod tests {
     fn a_tool_call_inside_a_wave_copy_records_the_time_there() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let copy = copy_path(root, "x", 3, false).join("src");
+        let copy = copy_path(root, "x", 3).join("src");
 
         WaveAliveObserver.observe(&input_with_cwd(&copy), &ctx(root.to_str().unwrap(), Trigger::PostToolUse));
 
@@ -161,7 +161,7 @@ mod tests {
     fn the_wave_is_found_by_the_paths_of_the_call() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let copy = copy_path(root, "x", 3, false);
+        let copy = copy_path(root, "x", 3);
 
         let by_file = input_with_file(root, &copy.join("src").join("lib.rs"));
         WaveAliveObserver.observe(&by_file, &ctx(root.to_str().unwrap(), Trigger::PostToolUse));
@@ -185,15 +185,15 @@ mod tests {
     /// A cópia da onda mora fora da pasta do projeto, na pasta das cópias
     /// dele, e o sinal de vida a acha ali — pela pasta de trabalho, pelo
     /// arquivo e pelo comando. O antigo lugar dentro do projeto
-    /// (`.claude/worktrees/mustard-<spec>-<onda>`), a pasta de mesmo nome na
-    /// cópia de outro projeto e a cópia do revisor não contam como a cópia
-    /// de uma onda deste projeto.
+    /// (`.claude/worktrees/mustard-<spec>-<onda>`) e a pasta de mesmo nome na
+    /// cópia de outro projeto não contam como a cópia de uma onda deste
+    /// projeto.
     #[test]
     fn the_alive_signal_finds_a_copy_outside_the_project() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let other = tempdir().unwrap();
-        let copy = copy_path(root, "x", 3, false);
+        let copy = copy_path(root, "x", 3);
         let project = std::fs::canonicalize(root).unwrap();
         assert!(!copy.starts_with(root) && !copy.starts_with(&project), "the copy lives outside the project: {copy:?}");
         let observe = |input: &HookInput| {
@@ -223,10 +223,38 @@ mod tests {
         });
         assert!(!alive(4), "the old place inside the project is not a wave copy");
 
-        observe(&input_with_file(root, &copy_path(other.path(), "x", 5, false).join("lib.rs")));
+        observe(&input_with_file(root, &copy_path(other.path(), "x", 5).join("lib.rs")));
         assert!(!alive(5), "the same folder name under another project's copies is not this project's wave");
-        observe(&input_with_file(root, &copy_path(root, "x", 6, true).join("lib.rs")));
-        assert!(!alive(6), "the reviewer's copy is not a wave copy");
+    }
+
+    /// No Windows, o comando do Bash escreve o caminho da cópia com barras
+    /// invertidas; o sinal de vida acha a onda nele do mesmo jeito, no `cd` e,
+    /// entre aspas, no caminho do manifesto. O mesmo nome de pasta, com as
+    /// mesmas barras, sob as cópias de outro projeto não conta.
+    #[test]
+    fn a_command_with_the_copy_written_in_backslashes_records_the_time() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let other = tempdir().unwrap();
+        let backslashed = |path: &Path| shown(path).replace('/', "\\");
+        let command = |text: String| HookInput {
+            cwd: Some(root.to_string_lossy().into_owned()),
+            tool_name: Some("Bash".to_string()),
+            tool_input: serde_json::json!({ "command": text }),
+            ..HookInput::default()
+        };
+        let observe = |input: &HookInput| {
+            WaveAliveObserver.observe(input, &ctx(root.to_str().unwrap(), Trigger::PostToolUse));
+        };
+
+        observe(&command(format!("cd {} && cargo test", backslashed(&copy_path(root, "x", 3, false)))));
+        assert!(alive_path(root, "x", 3).exists(), "found by the copy written in backslashes");
+        let manifest = copy_path(root, "x", 7, false).join("Cargo.toml");
+        observe(&command(format!("cargo test --manifest-path \"{}\"", backslashed(&manifest))));
+        assert!(alive_path(root, "x", 7).exists(), "found by the quoted copy written in backslashes");
+
+        observe(&command(format!("cd {} && cargo test", backslashed(&copy_path(other.path(), "x", 5, false)))));
+        assert!(!alive_path(root, "x", 5).exists(), "another project's copy is not this project's wave");
     }
 
     /// Um evento que não é `PostToolUse` — mesmo com a pasta de trabalho na
@@ -235,7 +263,7 @@ mod tests {
     fn a_non_post_tool_use_trigger_writes_nothing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let copy = copy_path(root, "x", 3, false);
+        let copy = copy_path(root, "x", 3);
 
         WaveAliveObserver.observe(&input_with_cwd(&copy), &ctx(root.to_str().unwrap(), Trigger::PreToolUse));
 

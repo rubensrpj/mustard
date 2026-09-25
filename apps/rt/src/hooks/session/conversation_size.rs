@@ -139,7 +139,7 @@ mod tests {
 
     /// A pasta da cópia da onda `wave`, como a rodada a grava no envio.
     fn copy_of(root: &Path, wave: u64) -> String {
-        mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copy_path(root, "x", wave, false))
+        mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copy_path(root, "x", wave))
     }
 
     /// A chamada de ferramenta de quem conduz, com a transcrição `transcript`.

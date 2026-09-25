@@ -1681,7 +1681,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        let blocked = mustard_core::io::wave_prompt::copy_path(root, "x", 1, false);
+        let blocked = mustard_core::io::wave_prompt::copy_path(root, "x", 1);
         std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
         std::fs::write(&blocked, b"no caminho da copia").unwrap();
         let held = round(root, "x", None);
@@ -1912,7 +1912,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 99, false);
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 99);
         std::fs::create_dir_all(&copy).unwrap();
         let mut orphaned = Command::new("sleep")
             .arg("30")

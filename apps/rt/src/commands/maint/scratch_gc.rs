@@ -199,7 +199,7 @@ impl ScratchRoots {
             cap_bytes: cap_bytes_from_env(),
             current_session: session_id(),
             current_dir: std::env::current_dir().ok(),
-            home: crate::util::home_dir(),
+            home: mustard_core::platform::harness::home_dir(),
             clock: AgeClock::Changed,
             owner_uid: current_uid(),
             now: SystemTime::now(),
@@ -281,7 +281,7 @@ pub(crate) fn current_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self")
         .ok()
-        .or_else(|| crate::util::home_dir().and_then(|h| std::fs::metadata(h).ok()))
+        .or_else(|| mustard_core::platform::harness::home_dir().and_then(|h| std::fs::metadata(h).ok()))
         .map(|m| m.uid())
 }
 
@@ -315,7 +315,7 @@ fn is_real_dir(path: &Path) -> bool {
 
 /// `~/.cache/mustard/scratch-target` — onde as cópias descartáveis compilam.
 pub fn shared_target_dir() -> Option<PathBuf> {
-    crate::util::home_dir().map(|h| h.join(".cache").join("mustard").join("scratch-target"))
+    mustard_core::platform::harness::home_dir().map(|h| h.join(".cache").join("mustard").join("scratch-target"))
 }
 
 /// O teto em bytes: `MUSTARD_SCRATCH_TARGET_CAP_BYTES` quando é um número,

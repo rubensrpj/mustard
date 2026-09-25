@@ -38,7 +38,7 @@
 //! `mustard.json`, so the walk from inside it finds nothing. It is a linked
 //! worktree, though, and its `.git` file points back at the main checkout:
 //! when the walk finds no project, the owner is looked for there
-//! ([`crate::io::workspace::worktree_main_from_files`]), by reading files and
+//! ([`crate::io::workspace::linked_worktree_main`]), by reading files and
 //! never by running git — this function cannot call itself to find out how to
 //! call itself. When neither finds a project, nobody declared anything, and the
 //! program is the default one. A `mustard.json` lying beside the directory
@@ -170,7 +170,7 @@ pub fn run(root: &Path, args: &[&str]) -> GitRun {
 /// Both by reading files — asking git here would be asking git how to ask git.
 fn owner_of(root: &Path) -> Option<std::path::PathBuf> {
     crate::io::workspace::anchor_of(root).or_else(|| {
-        crate::io::workspace::worktree_main_from_files(root)
+        crate::io::workspace::linked_worktree_main(root)
             .and_then(|main| crate::io::workspace::anchor_of(&main))
     })
 }

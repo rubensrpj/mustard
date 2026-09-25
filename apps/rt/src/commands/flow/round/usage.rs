@@ -111,8 +111,10 @@ fn main_usage(log: &SpecLog, session: &Path) -> Option<transcript::Usage> {
     transcript::orchestrator_usage(session.parent()?, &branch, since)
 }
 
+/// Os arquivos de conversa da plataforma, montados como ela os grava: os
+/// ajudantes daqui servem também aos testes da volta, em `report`.
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::path::Path;
 
     use mustard_core::io::spec_events as store;
@@ -124,22 +126,47 @@ mod tests {
     use crate::commands::flow::round::{round_in, RoundOpts};
 
     /// O modelo que a plataforma grava nas respostas de um agente.
-    const MODEL: &str = "claude-opus-5-5";
+    pub(crate) const MODEL: &str = "claude-opus-5-5";
 
     /// O instante `at` da spec deslocado de `millis`, como a plataforma grava
     /// o carimbo: em UTC, com os milésimos.
-    fn instant(at: &str, millis: i64) -> String {
+    pub(crate) fn instant(at: &str, millis: i64) -> String {
         let at = chrono::DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&chrono::Utc);
         (at + chrono::Duration::milliseconds(millis)).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
     }
 
     /// Um arquivo de conversa em `<config>/projects/<project>/<relative>`, no
-    /// lugar em que a plataforma o grava.
-    fn platform_file(config: &Path, project: &str, relative: &str, lines: &[Value]) {
+    /// lugar em que a plataforma o grava: `<sessão>.jsonl` para a conversa
+    /// principal e `<sessão>/subagents/agent-<nome>.jsonl` para um agente
+    /// dela.
+    pub(crate) fn platform_file(config: &Path, project: &str, relative: &str, lines: &[Value]) {
         let path = config.join("projects").join(project).join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let text: Vec<String> = lines.iter().map(Value::to_string).collect();
         std::fs::write(path, text.join("\n") + "\n").unwrap();
+    }
+
+    /// A primeira linha do arquivo de um agente: o pedido `request` que ele
+    /// recebeu em `at`.
+    pub(crate) fn request_line(at: &str, request: &str) -> Value {
+        json!({"type": "user", "isSidechain": true, "gitBranch": "feature/x", "timestamp": at,
+            "message": {"role": "user", "content": request}})
+    }
+
+    /// Uma linha de resposta do modelo como a plataforma grava: o carimbo, o
+    /// ramo, se é de agente, o id da resposta, os quatro números — entrada,
+    /// criação de cache, leitura de cache e saída — e os usos de ferramenta;
+    /// sem nenhum, a resposta é só texto.
+    pub(crate) fn answer_line(at: &str, branch: &str, sidechain: bool, id: &str, usage: [u64; 4], tools: &[&str]) -> Value {
+        let content: Vec<Value> = if tools.is_empty() {
+            vec![json!({"type": "text", "text": "pronto"})]
+        } else {
+            tools.iter().map(|tool| json!({"type": "tool_use", "id": tool, "name": "Bash", "input": {}})).collect()
+        };
+        json!({"type": "assistant", "isSidechain": sidechain, "gitBranch": branch, "timestamp": at,
+            "message": {"id": id, "model": MODEL, "role": "assistant", "content": content,
+                "usage": {"input_tokens": usage[0], "cache_creation_input_tokens": usage[1],
+                    "cache_read_input_tokens": usage[2], "output_tokens": usage[3]}}})
     }
 
     /// A conversa principal de uma sessão, só com a mensagem de quem a abriu.
@@ -150,17 +177,12 @@ mod tests {
     }
 
     /// O arquivo de um agente: o pedido `request` que ele recebeu em `start` e
-    /// uma resposta `id`, com um uso de ferramenta e os quatro números —
-    /// entrada, criação de cache, leitura de cache e saída.
+    /// uma resposta `id`, no mesmo instante, com um uso de ferramenta e os
+    /// quatro números.
     fn agent(config: &Path, project: &str, relative: &str, start: &str, request: &str, id: &str, usage: [u64; 4]) {
-        let asked = json!({"type": "user", "isSidechain": true, "gitBranch": "feature/x", "timestamp": start,
-            "message": {"role": "user", "content": request}});
-        let answered = json!({"type": "assistant", "isSidechain": true, "gitBranch": "feature/x", "timestamp": start,
-            "message": {"id": id, "model": MODEL, "role": "assistant",
-                "content": [{"type": "tool_use", "id": format!("{id}-uso"), "name": "Bash", "input": {}}],
-                "usage": {"input_tokens": usage[0], "cache_creation_input_tokens": usage[1],
-                    "cache_read_input_tokens": usage[2], "output_tokens": usage[3]}}});
-        platform_file(config, project, relative, &[asked, answered]);
+        let tool = format!("{id}-uso");
+        let answered = answer_line(start, "feature/x", true, id, usage, &[&tool]);
+        platform_file(config, project, relative, &[request_line(start, request), answered]);
     }
 
     /// A onda saiu na sessão antiga, e um `/clear` abriu a sessão nova, de

@@ -288,7 +288,7 @@ mod tests {
     fn the_stuck_processes_are_ended_and_reported() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
-        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1, false);
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1);
         std::fs::create_dir_all(&copy).expect("copy dir");
         let outside = tempdir().expect("tempdir for the other project");
 
@@ -357,9 +357,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         let other = tempdir().expect("tempdir for the other project");
-        let copy = copy_path(root, "x", 1, false);
-        let live = copy_path(root, "x", 2, false);
-        let foreign = copy_path(other.path(), "x", 1, false);
+        let copy = copy_path(root, "x", 1);
+        let live = copy_path(root, "x", 2);
+        let foreign = copy_path(other.path(), "x", 1);
         let project = std::fs::canonicalize(root).expect("the project folder");
         assert!(!copy.starts_with(root) && !copy.starts_with(&project), "the copy lives outside the project: {copy:?}");
         for folder in [&copy, &live, &foreign] {

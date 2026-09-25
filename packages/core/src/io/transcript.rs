@@ -516,6 +516,36 @@ mod tests {
         assert_eq!(main.model.as_deref(), Some(MODEL));
     }
 
+    /// A sessão é só o nome de um arquivo: o nome que sobe de pasta, desce
+    /// para uma subpasta, é um caminho inteiro, é vazio ou é `.` ou `..` não
+    /// acha pasta nenhuma, mesmo com um `.jsonl` no lugar para onde ele
+    /// levaria. Ao lado, o nome simples de uma conversa que existe continua
+    /// achado.
+    #[test]
+    fn a_session_that_is_not_a_plain_file_name_finds_no_folder() {
+        let config = tempfile::tempdir().unwrap();
+        let projects = config.path().join("projects");
+        let project = projects.join("-home-alguem-obra");
+        let elsewhere = config.path().join("fora");
+        for file in [
+            project.join("sessao.jsonl"),
+            projects.join("vizinho").join("sessao.jsonl"),
+            project.join("sub").join("sessao.jsonl"),
+            elsewhere.join("sessao.jsonl"),
+            project.join(".jsonl"),
+            project.join("..jsonl"),
+            project.join("...jsonl"),
+        ] {
+            write(&file, &[String::new()]);
+        }
+
+        assert_eq!(session_dir(config.path(), "sessao"), Some(project.join("sessao")));
+        let absolute = elsewhere.join("sessao").to_string_lossy().into_owned();
+        for name in ["../vizinho/sessao", "sub/sessao", absolute.as_str(), "", ".", ".."] {
+            assert_eq!(session_dir(config.path(), name), None, "a sessão `{name}` saiu da pasta do projeto");
+        }
+    }
+
     /// Nenhuma linha que se entenda não é consumo zero de um modelo qualquer:
     /// é consumo nenhum, sem modelo.
     #[test]

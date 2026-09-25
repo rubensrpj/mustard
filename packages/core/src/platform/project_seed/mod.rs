@@ -365,6 +365,11 @@ pub fn upsert_project_with(
     Ok(report)
 }
 
+/// A medida do texto que o modelo lê, a mesma do teste do limite.
+#[cfg(test)]
+#[path = "../../../tests/support/prose_budget.rs"]
+mod prose_budget;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,7 +479,9 @@ mod tests {
     /// de tarefa única, perde esse arquivo na atualização, que diz o que
     /// tirou; o agente do projeto com o mesmo nome, fora da pasta do Mustard,
     /// fica como está; e a atualização seguinte não tem mais nada a tirar. O
-    /// produto não traz mais o molde dele em idioma nenhum.
+    /// produto não traz mais o molde dele em idioma nenhum, e o texto que o
+    /// modelo lê fica abaixo de 25.600 bytes em cada idioma, pela mesma medida
+    /// do teste do limite.
     #[test]
     fn an_update_removes_the_retired_single_task_wave_agent() {
         let today = ["review.md", "skill.md", "wave.md"];
@@ -527,6 +534,7 @@ mod tests {
             let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/agents").join(lang);
             assert_eq!(files_in(&shipped), today, "the product still ships another {lang} agent template");
         }
+        prose_budget::assert_each_language_under_budget();
     }
 
     // --- upsert_project: merge over user files -------------------------------

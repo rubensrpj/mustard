@@ -152,29 +152,24 @@ pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a 
 }
 
 /// A pasta das cópias separadas do projeto do checkout principal `root`,
-/// fora da pasta dele: é o único lugar onde nascem a cópia de cada onda, a
-/// do revisor dela e a do revisor final. Dentro do projeto, as ferramentas
-/// dele — o lint do gancho de commit, o editor — enxergariam a cópia como
-/// parte do projeto.
+/// fora da pasta dele: é o único lugar onde nascem a cópia de cada onda e a
+/// do revisor final. Dentro do projeto, as ferramentas dele — o lint do
+/// gancho de commit, o editor — enxergariam a cópia como parte do projeto.
 ///
-/// A base é a pasta de cache do usuário, `.cache/mustard/copias` sob `HOME`
-/// (no Windows, `USERPROFILE`), ou a pasta que `MUSTARD_COPIES_DIR` indicar;
-/// sem nenhuma das duas, a pasta temporária do sistema. Dentro dela, uma
+/// A base é a pasta que `MUSTARD_COPIES_DIR` indicar, ou a pasta de cache do
+/// usuário, `.cache/mustard/copias` sob a pasta pessoal
+/// ([`crate::platform::harness::home_dir`]); sem nenhuma das duas, a pasta
+/// temporária do sistema. Dentro dela, uma
 /// pasta por projeto: o nome da pasta do checkout e um código curto do
 /// caminho dele, que separa dois projetos de mesmo nome e não muda de uma
 /// chamada para outra — o caminho é lido já resolvido, então o atalho e a
 /// barra invertida não mudam o código.
 #[must_use]
 pub fn copies_dir(root: &Path) -> PathBuf {
-    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     let base = std::env::var_os("MUSTARD_COPIES_DIR")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os(home)
-                .filter(|dir| !dir.is_empty())
-                .map(|dir| PathBuf::from(dir).join(".cache").join("mustard").join("copias"))
-        })
+        .or_else(|| crate::platform::harness::home_dir().map(|home| home.join(".cache").join("mustard").join("copias")))
         .unwrap_or_else(|| std::env::temp_dir().join("mustard").join("copias"));
     let main = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let name = main.file_name().map_or_else(|| String::from("projeto"), |name| name.to_string_lossy().into_owned());
@@ -182,14 +177,11 @@ pub fn copies_dir(root: &Path) -> PathBuf {
     base.join(format!("{name}-{code:08x}"))
 }
 
-/// A pasta da cópia separada da onda `wave` da spec `spec`, na pasta das
-/// cópias do projeto ([`copies_dir`]): a do agente da onda, ou a do revisor
-/// dela (`review`). A rodada cria a primeira; o pedido da revisão manda criar
-/// a segunda.
+/// A pasta da cópia separada do agente da onda `wave` da spec `spec`, na
+/// pasta das cópias do projeto ([`copies_dir`]). Quem a cria é a rodada.
 #[must_use]
-pub fn copy_path(root: &Path, spec: &str, wave: u64, review: bool) -> PathBuf {
-    let name = if review { format!("{spec}-{wave}-review") } else { format!("{spec}-{wave}") };
-    copies_dir(root).join(name)
+pub fn copy_path(root: &Path, spec: &str, wave: u64) -> PathBuf {
+    copies_dir(root).join(format!("{spec}-{wave}"))
 }
 
 /// A pasta da cópia separada do revisor final da spec `spec`, ao lado das
@@ -266,10 +258,10 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
     let last_sent = log.last_by_wave("send").into_iter().max_by_key(|(_, id)| *id).map(|(n, _)| n);
     let execution = Execution {
         commit,
-        review: WaveCopy {
+        copy: Some(WaveCopy {
             path: shown(&final_copy_path(root, spec)),
             build_dir: last_sent.and_then(|n| recorded_copy(log, n)).and_then(|copy| copy.build_dir),
-        },
+        }),
         rust: has_rust_part(crate::io::project_map::read(root).ok().as_ref()),
         ..project_execution(root)
     };
@@ -502,10 +494,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
-/// ondas em andamento com os arquivos delas, a cópia da onda — a que sai agora
-/// ou a gravada no envio da que está em andamento — e a cópia do revisor, no
-/// commit mais novo que leva a onda e na pasta de compilação que a cópia da
-/// onda usou.
+/// ondas em andamento com os arquivos delas e a cópia da onda — a que sai
+/// agora ou a gravada no envio da que está em andamento.
 fn execution(context: &Context, wave: u64) -> Execution {
     let (log, flight) = (context.log, context.flight);
     let running = flight
@@ -514,22 +504,11 @@ fn execution(context: &Context, wave: u64) -> Execution {
         .filter(|n| **n != wave)
         .map(|n| (*n, wave_files(log, *n)))
         .collect();
-    let commit = log
-        .block(BlockQuery::Block(Block::Progress))
-        .into_iter()
-        .rev()
-        .filter(|e| e.event_type == "commit" && e.ints("waves").contains(&wave))
-        .find_map(|e| e.str_field("sha").map(str::to_string));
-    let recorded = recorded_copy(log, wave);
     let copy = match flight.copies.get(&wave) {
         Some(copy) => Some(copy.clone()),
-        None => recorded.clone().filter(|_| flight.running.contains(&wave)),
+        None => recorded_copy(log, wave).filter(|_| flight.running.contains(&wave)),
     };
-    let review = WaveCopy {
-        path: shown(&copy_path(context.root, context.spec, wave, true)),
-        build_dir: recorded.and_then(|copy| copy.build_dir),
-    };
-    Execution { running, commit, copy, review, ..context.base.clone() }
+    Execution { running, copy, ..context.base.clone() }
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.
@@ -1486,7 +1465,7 @@ mod tests {
                 write_map(root, &json!({"projects": projects}));
             }
             let folder = shown(&root.join("target").join("copias").join("a"));
-            let copy = shown(&copy_path(root, "teste", 1, false));
+            let copy = shown(&copy_path(root, "teste", 1));
             let log = log_of(&[
                 ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
                 ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
