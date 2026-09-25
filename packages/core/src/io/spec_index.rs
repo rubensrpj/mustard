@@ -4,7 +4,8 @@
 //! spec no índice dentro da mesma gravação (`io::spec_events`), sem custo de
 //! tokens. O [`rebuild`] refaz o índice inteiro a partir dos arquivos de
 //! eventos, quando ele falta ou diverge, e recalcula o campo `search` das
-//! linhas dos arquivos de eventos e do banco de lições. O [`divergence`] só lê
+//! linhas dos arquivos de eventos e do banco de lições; as duas portas de
+//! instalação o chamam por [`refresh_search`]. O [`divergence`] só lê
 //! e diz onde o índice difere do que os arquivos de eventos dariam.
 //!
 //! As travas são pegas sempre na mesma ordem: primeiro a da spec, depois a do
@@ -207,6 +208,48 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
     out.skipped.sort();
     out.skipped.dedup();
     Ok(out)
+}
+
+/// A busca velha que [`refresh_search`] não conseguiu refazer. O texto diz o
+/// motivo e o comando que refaz a busca depois.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchNotRefreshed {
+    /// Por que o [`rebuild`] recusou, em inglês.
+    reason: String,
+}
+
+impl std::fmt::Display for SearchNotRefreshed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the search of the specs was not recomputed ({}); run `mustard-rt run index` in the project", self.reason)
+    }
+}
+
+/// Acerta, uma vez, a busca que uma versão anterior do Mustard gravou com
+/// outra regra, nas specs e no banco de lições de `root` ([`rebuild`]), e
+/// devolve quantas linhas acertou. As duas portas de instalação chamam esta
+/// função depois de semear o projeto: `mustard init`, pelo terminal, e
+/// `mustard-rt run upsert`, pelo plugin. É a única hora em que a busca velha
+/// se acerta, porque a gravação comum numa spec só acrescenta a linha nova.
+///
+/// Um projeto sem a pasta das specs não tem o que acertar: nada é criado nele
+/// e a resposta é zero.
+///
+/// # Errors
+///
+/// [`SearchNotRefreshed`] quando o [`rebuild`] recusa. Quem instala mostra o
+/// aviso e segue: a busca velha só deixa de achar a linha antiga pela palavra
+/// nova.
+pub fn refresh_search(root: &Path) -> Result<usize, SearchNotRefreshed> {
+    let Ok(paths) = ClaudePaths::for_project(root) else { return Ok(0) };
+    if !paths.spec_dir().is_dir() {
+        return Ok(0);
+    }
+    match rebuild(root) {
+        Ok(rebuilt) => Ok(rebuilt.search_updated + rebuilt.lessons_search_updated),
+        Err(refusal) => {
+            Err(SearchNotRefreshed { reason: refusal.message(crate::platform::i18n::Locale::EnUs) })
+        }
+    }
 }
 
 /// `a` é uma hora depois de `b`. As duas vêm das gravações, com o fuso; a que

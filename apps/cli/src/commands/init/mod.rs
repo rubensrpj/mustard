@@ -285,35 +285,20 @@ pub fn init_with_templates(
     Ok(InitOutcome::Installed)
 }
 
-/// Refaz o índice das specs de `project` e recalcula o `search` das linhas
-/// que uma versão anterior do Mustard gravou com outra regra, nas specs e no
-/// banco de lições ([`mustard_core::io::spec_index::rebuild`]), e diz em `out`
-/// quantas linhas acertou. É a única hora em que a busca velha se acerta: a
-/// gravação comum numa spec só acrescenta a linha nova.
-///
-/// Um projeto sem a pasta das specs não tem o que acertar, e nada é criado
-/// nele. A falha vira um aviso com o comando que refaz a busca depois, e a
-/// instalação segue: a busca velha só deixa de achar a linha antiga pela
-/// palavra nova. Uma escrita em `out` que falha é descartada.
+/// Acerta a busca velha das specs e do banco de lições de `project`, pela
+/// mesma função da atualização pelo plugin
+/// ([`mustard_core::io::spec_index::refresh_search`]), e diz em `out` quantas
+/// linhas acertou. A falha vira um aviso com o comando que refaz a busca
+/// depois, e a instalação segue. Uma escrita em `out` que falha é descartada.
 fn refresh_search(project: &Path, out: &mut impl Write) {
-    let Ok(paths) = mustard_core::ClaudePaths::for_project(project) else { return };
-    if !paths.spec_dir().is_dir() {
-        return;
-    }
-    match mustard_core::io::spec_index::rebuild(project) {
-        Ok(rebuilt) => {
-            let lines = rebuilt.search_updated + rebuilt.lessons_search_updated;
-            if lines > 0 {
-                let noun = if lines == 1 { "line" } else { "lines" };
-                let _ = writeln!(out, "  recomputed the search of {lines} {noun} an older Mustard wrote");
-            }
+    match mustard_core::io::spec_index::refresh_search(project) {
+        Ok(0) => {}
+        Ok(lines) => {
+            let noun = if lines == 1 { "line" } else { "lines" };
+            let _ = writeln!(out, "  recomputed the search of {lines} {noun} an older Mustard wrote");
         }
-        Err(refusal) => {
-            let _ = writeln!(
-                out,
-                "  warning: the search of the specs was not recomputed ({}); run `mustard-rt run index` in the project",
-                refusal.message(mustard_core::platform::i18n::Locale::EnUs)
-            );
+        Err(failed) => {
+            let _ = writeln!(out, "  warning: {failed}");
         }
     }
 }

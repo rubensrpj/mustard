@@ -58,9 +58,18 @@
 //! version for the main folder's — with the same check the copy runs
 //! ([`crate::commands::flow::round::local_file_ignored`]).
 //!
+//! Once the files are written, the search an older Mustard wrote under
+//! another rule, in the specs and in the lesson bank, is recomputed once, by
+//! the same core function `mustard init` calls
+//! (`mustard_core::io::spec_index::refresh_search`); a project without the
+//! specs folder gets nothing created. A failure is a warning in the report,
+//! `searchWarning`, naming the command that recomputes it later; it never
+//! stops the upsert.
+//!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
-//! `UpsertReport` flattened, with `pluginRefresh`, `codeToolWarnings` and,
-//! while unasked, `localFilesFound` appended — deterministic
+//! `UpsertReport` flattened, with `pluginRefresh`, `codeToolWarnings`, on a
+//! failed search `searchWarning` and, while unasked, `localFilesFound`
+//! appended — deterministic
 //! (fixed field order, no timestamps, project-root-relative names only), per
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
 //! reported as a JSON `{"error": …}` object and the process still exits 0.
@@ -191,7 +200,8 @@ struct PluginRefresh {
 ///
 /// The engine's report is flattened, so every key callers already read
 /// (`installedBefore`, `created`, `private`, …) keeps its name and its place;
-/// `pluginRefresh` and `codeToolWarnings` are appended after them.
+/// `pluginRefresh`, `codeToolWarnings` and `searchWarning` are appended after
+/// them.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Report {
@@ -204,6 +214,11 @@ struct Report {
     /// the project involves has its program and its plugin, or that it
     /// involves none.
     code_tool_warnings: Vec<String>,
+    /// O aviso de que a busca velha das specs não foi refeita, com o comando
+    /// que a refaz depois ([`mustard_core::io::spec_index::refresh_search`]).
+    /// Presente só quando a busca falhou.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_warning: Option<String>,
     /// Os arquivos que o git ignora fora de uma pasta ignorada, para a pessoa
     /// confirmar uma vez ([`ignored_files`]). Presente só enquanto o
     /// `mustard.json` não tem `localFiles`; vazia quando não há nenhum.
@@ -272,8 +287,8 @@ pub fn run(opts: &UpsertOpts) {
 }
 
 /// The whole door, short of printing: seed the project, record the person's
-/// answers, set up the code tools of every language it involves, refresh the
-/// plugin.
+/// answers, recompute the stale search of the specs, set up the code tools of
+/// every language it involves, refresh the plugin.
 ///
 /// `runner` runs the code-tool commands and `refresh` performs the plugin
 /// refresh. [`run`] hands both to the machine; the tests hand a fake runner and
@@ -310,6 +325,11 @@ fn upsert(
     }
     let local_files_found = ProjectConfig::load(root).local_files.is_none().then(|| ignored_files(root));
 
+    // A busca que uma versão anterior deixou nas specs e no banco de lições
+    // se acerta aqui, uma vez, como na instalação pelo terminal: a gravação
+    // comum só acrescenta a linha nova. A falha vira aviso, nunca aborta.
+    let search_warning = mustard_core::io::spec_index::refresh_search(root).err().map(|failed| failed.to_string());
+
     // Both steps below run only on the path where the project was really
     // seeded: a run that wrote nothing has no installation to finish. The
     // code tools come after the files, so a step that fails or stalls leaves
@@ -322,7 +342,7 @@ fn upsert(
             .collect();
 
     // The refresh is the LAST step.
-    Ok(Report { project, plugin_refresh: refresh(root), code_tool_warnings, local_files_found })
+    Ok(Report { project, plugin_refresh: refresh(root), code_tool_warnings, search_warning, local_files_found })
 }
 
 /// Grava no `mustard.json` as respostas que vieram em `opts`: o comando de
@@ -899,6 +919,7 @@ mod tests {
             },
             plugin_refresh: skipped(None, "no install".to_string()),
             code_tool_warnings: Vec::new(),
+            search_warning: None,
             local_files_found: None,
         };
         let first = serde_json::to_string_pretty(&outcome).expect("serialize");
@@ -1278,6 +1299,91 @@ mod tests {
         upsert_json(other.path(), &UpsertOpts { local_files: None, prepare: Some(String::new()) });
         assert_eq!(mustard_json(other.path())["prepareCommand"], serde_json::json!(""), "no prepare is an answer too");
         assert_eq!(ProjectConfig::load(other.path()).commands().prepare, None, "and runs nothing");
+    }
+
+    /// Uma versão anterior gravou numa spec uma decisão com a busca de outra
+    /// regra. A atualização pelo plugin a recalcula, como a instalação pelo
+    /// terminal: só o `search` da linha velha muda, a resposta não traz aviso
+    /// e a atualização seguinte não tem mais o que acertar. O `.git/config`
+    /// fica byte a byte como estava.
+    #[test]
+    fn the_upsert_recomputes_the_stale_search_of_the_specs_once() {
+        use mustard_core::domain::spec_events::refresh_search_lines;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        git_repo(root);
+        let git_config = std::fs::read(root.join(".git").join("config")).expect("the git config");
+        let paths = mustard_core::ClaudePaths::for_project(root).expect("the project paths");
+        let events = paths.spec_dir().join("teste").join("spec.ndjson");
+        let message = serde_json::json!({"author": "user", "text": "combine"}).as_object().cloned().expect("an object");
+        mustard_core::io::spec_events::write_at(&events, "message", message, &[], "2026-09-11T10:00:00-03:00")
+            .expect("the spec is written");
+        let mut spec = std::fs::read_to_string(&events).expect("the spec");
+        spec.push_str(
+            "{\"v\":1,\"id\":2,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1,\
+             \"search\":\"fatur som centav\"}\n",
+        );
+        std::fs::write(&events, &spec).expect("the stale line");
+        let stale = |text: &str| refresh_search_lines(text).1;
+        assert_eq!(stale(&spec), 1, "the fixture carries one stale line");
+
+        let report = upsert_json(root, &UpsertOpts::default());
+        assert!(report.get("searchWarning").is_none(), "{report:#}");
+        let fixed = std::fs::read_to_string(&events).expect("the spec");
+        assert_eq!(stale(&fixed), 0, "the upsert left a stale search:\n{fixed}");
+        let (before, after): (Vec<&str>, Vec<&str>) = (spec.lines().collect(), fixed.lines().collect());
+        assert_eq!(after.len(), before.len(), "{fixed}");
+        assert_eq!(after[0], before[0], "the line with today's search stays byte for byte");
+        let parse = |line: &str| -> serde_json::Map<String, serde_json::Value> {
+            serde_json::from_str(line).expect("a JSON line")
+        };
+        let (mut old, mut new) = (parse(before[1]), parse(after[1]));
+        assert_ne!(new.remove("search"), old.remove("search"), "the old line got today's search");
+        assert_eq!(old, new, "only the search field of the old line changed");
+
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(std::fs::read_to_string(&events).expect("the spec"), fixed, "a second upsert has nothing to fix");
+        assert_eq!(
+            std::fs::read(root.join(".git").join("config")).expect("the git config"),
+            git_config,
+            "the upsert never writes the git config",
+        );
+    }
+
+    /// Num projeto sem a pasta das specs não há busca a acertar: a
+    /// atualização não cria a pasta nem o índice, e a resposta não traz aviso.
+    #[test]
+    fn the_upsert_without_the_specs_folder_creates_nothing_for_the_search() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+
+        let report = upsert_json(root, &UpsertOpts::default());
+
+        assert!(report.get("searchWarning").is_none(), "{report:#}");
+        let paths = mustard_core::ClaudePaths::for_project(root).expect("the project paths");
+        assert!(!paths.spec_dir().exists(), "the specs folder is not created");
+        assert!(root.join(".claude").join("settings.local.json").is_file(), "the seeding happened");
+    }
+
+    /// Quando a busca não pode ser refeita — aqui, o índice das specs é uma
+    /// pasta —, a atualização termina assim mesmo, e a resposta traz o aviso
+    /// com o motivo e o comando que refaz a busca depois.
+    #[test]
+    fn an_upsert_whose_search_cannot_be_recomputed_warns_and_finishes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let paths = mustard_core::ClaudePaths::for_project(root).expect("the project paths");
+        std::fs::create_dir_all(paths.spec_index_path()).expect("the index is a folder");
+
+        let report = upsert_json(root, &UpsertOpts::default());
+
+        let warning = report["searchWarning"].as_str().unwrap_or_else(|| panic!("a warning: {report:#}"));
+        assert!(warning.starts_with("the search of the specs was not recomputed ("), "{warning}");
+        assert!(warning.ends_with("; run `mustard-rt run index` in the project"), "{warning}");
+        assert!(root.join(".claude").join("settings.local.json").is_file(), "the seeding happened");
+        assert!(report["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")), "{report:#}");
     }
 
     /// A failed step's output becomes one bounded line — the report stays a

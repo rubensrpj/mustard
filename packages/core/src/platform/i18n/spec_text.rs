@@ -160,10 +160,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("context.scan_anchors", Locale::PtBr) => "Âncoras (do scan)",
         ("context.scan_anchors", Locale::EnUs) => "Anchors (from scan)",
         ("context.scan_anchors_weak", Locale::PtBr) => {
-            "Âncoras (do scan — BAIXA CONFIANÇA: casamento fraco, confirme lendo antes de usar)"
+            "Âncoras (do scan — baixa confiança: casamento fraco, confirme lendo antes de usar)"
         }
         ("context.scan_anchors_weak", Locale::EnUs) => {
-            "Anchors (from scan — LOW CONFIDENCE: weak match, confirm by reading before relying)"
+            "Anchors (from scan — low confidence: weak match, confirm by reading before relying)"
         }
         ("context.scan_slices", Locale::PtBr) => "Fatias recorrentes (precedente a espelhar)",
         ("context.scan_slices", Locale::EnUs) => "Recurring slices (precedent to mirror)",
@@ -224,7 +224,7 @@ mod tests {
             include_str!("spec_text.rs"),
             super::PREFIXES,
             57,
-            0x1629_ee59_5995_d271,
+            0x0e20_9ea7_dd6e_2751,
         );
     }
 
@@ -239,5 +239,27 @@ mod tests {
         assert_eq!(translate("heading.spec.ac_list", Locale::EnUs), "<missing-key>");
         // `placeholder.see_below` retired with the same fix (dead copy).
         assert_eq!(translate("placeholder.see_below", Locale::PtBr), "<missing-key>");
+    }
+
+    /// O aviso de baixa confiança das âncoras do scan vem em letra normal nos
+    /// dois idiomas: nenhuma palavra dele está toda em maiúsculas.
+    #[test]
+    fn the_weak_anchors_warning_is_not_shouted() {
+        assert_eq!(
+            translate("context.scan_anchors_weak", Locale::PtBr),
+            "Âncoras (do scan — baixa confiança: casamento fraco, confirme lendo antes de usar)"
+        );
+        assert_eq!(
+            translate("context.scan_anchors_weak", Locale::EnUs),
+            "Anchors (from scan — low confidence: weak match, confirm by reading before relying)"
+        );
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("context.scan_anchors_weak", lang);
+            let shouted: Vec<&str> = text
+                .split(|c: char| !c.is_alphabetic())
+                .filter(|word| word.chars().count() > 1 && word.chars().all(char::is_uppercase))
+                .collect();
+            assert!(shouted.is_empty(), "{lang}: {shouted:?} in {text}");
+        }
     }
 }

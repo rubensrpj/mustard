@@ -616,6 +616,17 @@ fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<
     missing
 }
 
+/// Recusa a tarefa com declaração faltando ([`task_declarations_missing`]);
+/// os outros tipos passam. É a mesma conferência para a gravação ([`record`])
+/// e para a conferência antes dela ([`RecordCheck`]).
+fn task_declared(event_type: &str, draft: &Map<String, Value>, by_model: bool) -> Result<(), Refusal> {
+    if event_type != "task" {
+        return Ok(());
+    }
+    let missing = task_declarations_missing(draft, by_model);
+    if missing.is_empty() { Ok(()) } else { Err(Refusal::TaskDeclarationMissing { missing }) }
+}
+
 /// As partes da forma fixa que um tipo de item exige além do título: a parte
 /// do usuário (`text`) e a parte do agente (`agent`). `None` para o tipo que
 /// não descreve o trabalho — a conversa, o estado, os relatos dos agentes e a
@@ -758,12 +769,7 @@ fn record_in(
     if super::pages::old_format_spec(&project.root, spec) {
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
-    if event_type == "task" {
-        let missing = task_declarations_missing(&draft, by.is_none());
-        if !missing.is_empty() {
-            return Err(Refusal::TaskDeclarationMissing { missing });
-        }
-    }
+    task_declared(event_type, &draft, by.is_none())?;
     let mut draft = draft;
     let path = store::spec_file(&project.root, spec)?;
     // O item que descreve o trabalho, gravado pelo modelo, entra com as
@@ -999,8 +1005,9 @@ fn task_dependency_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal
 }
 
 /// Gravações do binário na spec conferidas antes, sem gravar nada: cada uma
-/// passa pela mesma conferência de [`record`] — a do evento, a do arquivo e as
-/// regras da spec —, sobre o arquivo como as anteriores o deixariam. É assim
+/// passa pela mesma conferência de [`record`] — as declarações da tarefa, a
+/// do evento, a do arquivo e as regras da spec —, sobre o arquivo como as
+/// anteriores o deixariam. É assim
 /// que a rodada sabe, antes do commit, que nenhuma gravação depois dele será
 /// recusada.
 pub(crate) struct RecordCheck {
@@ -1038,6 +1045,7 @@ impl RecordCheck {
     ///
     /// A recusa que a gravação daria.
     pub(crate) fn record(&mut self, event_type: &str, draft: Map<String, Value>) -> Result<(), Refusal> {
+        task_declared(event_type, &draft, false)?;
         let (carried, replaces) = phase_carried(event_type, &draft);
         let (name, by) = (&self.name, self.by);
         self.dry.write(event_type, draft, |before, after| {

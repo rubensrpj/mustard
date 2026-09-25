@@ -22,7 +22,7 @@ use super::report::tagged;
 use super::stops::waves_replanned;
 use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
-use crate::commands::spec_events::write::record;
+use crate::commands::spec_events::write::{record, RecordCheck};
 use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
 use crate::shared::dag::{sets_cross, touches_whole_tree};
 
@@ -1075,10 +1075,16 @@ pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
 /// onda pelo `n`/`wave` gravado em cada evento. A onda já entregue ou
 /// aprovada fica como história, e a tarefa dela nunca volta para cá.
 ///
-/// Na mesma chamada, [`refresh_stale_batches`] atualiza o lote já formado
+/// Na mesma chamada, [`stale_batch_revisions`] atualiza o lote já formado
 /// que perdeu alguma tarefa para um evento de remoção depois de gravado —
 /// sem isso o pedido dele abriria pelo `done_when` congelado na formação,
 /// citando texto de tarefa que já não existe.
+///
+/// Grava tudo junto ou nada: as versões dos lotes já formados, cada onda
+/// nova e a versão de cada tarefa dela são montadas primeiro e conferidas em
+/// sequência pela mesma conferência da gravação ([`RecordCheck`]), sobre o
+/// arquivo como as anteriores o deixariam; só então vão ao arquivo. Uma
+/// recusa na conferência não deixa onda gravada sem as tarefas dela.
 ///
 /// A prontidão e o empacotamento são o mesmo motor de [`crate::shared::dag`]
 /// que já prova, sozinho, o desempate e a régua de arquivos: esta função só
@@ -1096,7 +1102,8 @@ pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
 ///
 /// # Errors
 ///
-/// A recusa da primeira gravação que falhar.
+/// A recusa da conferência, antes de qualquer gravação, ou a da primeira
+/// gravação que falhar.
 pub(crate) fn dispatch_backlog(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
     use crate::shared::dag::{pack_batches, BACKLOG_CAPACITY};
 
@@ -1106,14 +1113,12 @@ pub(crate) fn dispatch_backlog(start: &Path, spec: &str, log: &SpecLog) -> Resul
         log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
     let population = backlog_population(log, &done_waves);
     let order = backlog_ready(log);
-    refresh_stale_batches(start, spec, log)?;
-    if order.is_empty() {
-        return Ok(Vec::new());
-    }
-    let batches = pack_batches(&population, &order, BACKLOG_CAPACITY);
+    let mut writes: Vec<(&str, Map<String, Value>)> =
+        stale_batch_revisions(log).into_iter().map(|revised| ("wave", revised)).collect();
+    let batches = if order.is_empty() { Vec::new() } else { pack_batches(&population, &order, BACKLOG_CAPACITY) };
 
     let mut next_n = log.planned_waves().into_iter().max().unwrap_or(0);
-    let mut written = Vec::new();
+    let mut formed = Vec::new();
     for batch in &batches {
         next_n += 1;
         let tasks: Vec<&SpecEvent> = batch.tasks.iter().filter_map(|id| by_id.get(id).copied()).collect();
@@ -1131,43 +1136,50 @@ pub(crate) fn dispatch_backlog(start: &Path, spec: &str, log: &SpecLog) -> Resul
             "author": "binary",
         });
         let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
-        record(start, spec, "wave", draft, PhaseWriter::Binary)?;
+        writes.push(("wave", draft));
         for id in &batch.tasks {
             if let Some(revised) = task_revision(log, *id, Map::from_iter([("wave".to_string(), json!(next_n))])) {
-                record(start, spec, "task", revised, PhaseWriter::Binary)?;
+                writes.push(("task", revised));
             }
         }
-        written.push(next_n);
+        formed.push(next_n);
     }
-    Ok(written)
+    if writes.is_empty() {
+        return Ok(formed);
+    }
+    let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
+    for (event_type, draft) in &writes {
+        check.record(event_type, draft.clone())?;
+    }
+    for (event_type, draft) in writes {
+        record(start, spec, event_type, draft, PhaseWriter::Binary)?;
+    }
+    Ok(formed)
 }
 
-/// Atualiza o registro de uma onda de lote (autor `binary`) que ainda não
-/// foi enviada, quando uma tarefa dela saiu do backlog por evento de remoção
+/// A versão nova do registro de cada onda de lote (autor `binary`) que ainda
+/// não foi enviada, quando uma tarefa dela saiu do backlog por evento de remoção
 /// depois de o lote ter sido formado: sem isso o pedido abriria pelo
 /// `done_when` congelado na formação, que pode citar o texto de uma tarefa
 /// que não existe mais, mesmo com a lista de tarefas do pedido já saindo
 /// certa. Recalcula critério, texto e pronto-quando
 /// ([`mustard_core::domain::wave_prompt::backlog_fields`]) a partir das
 /// tarefas que a leitura de agora mostra visíveis naquela onda — o mesmo
-/// conjunto que alimenta a lista de tarefas do pedido — e grava uma versão
-/// nova só quando a ordem gravada perdeu alguma tarefa. A onda já enviada
+/// conjunto que alimenta a lista de tarefas do pedido — e monta uma versão
+/// nova só quando a ordem gravada perdeu alguma tarefa; quem grava é
+/// [`dispatch_backlog`], junto dos lotes novos. A onda já enviada
 /// fica intocada: o pedido dela já foi montado, e mudar o registro não muda
 /// o que o agente já recebeu. A onda que perdeu todas as tarefas fica de
 /// fora: sem tarefa nenhuma ela não é mais candidata a sair
 /// ([`emptied_backlog_waves`]), e não há o que recalcular.
-///
-/// # Errors
-///
-/// A recusa da primeira gravação que falhar.
-fn refresh_stale_batches(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
+fn stale_batch_revisions(log: &SpecLog) -> Vec<Map<String, Value>> {
     let sent: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))
         .into_iter()
         .filter(|e| e.event_type == "send")
         .filter_map(SpecEvent::wave)
         .collect();
-    let mut updated = Vec::new();
+    let mut revisions = Vec::new();
     for n in log.planned_waves() {
         if sent.contains(&n) || !backlog_wave(log, n) {
             continue;
@@ -1196,12 +1208,9 @@ fn refresh_stale_batches(start: &Path, spec: &str, log: &SpecLog) -> Result<Vec<
             ("done_when".to_string(), json!(fields.done_when)),
             ("order".to_string(), json!(live_order)),
         ]);
-        if let Some(revised) = task_revision(log, wave_event.id, extra) {
-            record(start, spec, "wave", revised, PhaseWriter::Binary)?;
-        }
-        updated.push(n);
+        revisions.extend(task_revision(log, wave_event.id, extra));
     }
-    Ok(updated)
+    revisions
 }
 
 /// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
@@ -2923,5 +2932,53 @@ mod tests {
         assert_eq!(report["blocking"], Value::Null, "o plano não trava: {report}");
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(wave_drawing_said(&report, &notes), Vec::<String>::new(), "{report}");
+    }
+
+    /// Duas tarefas soltas do backlog formariam um lote só, e a versão nova da
+    /// segunda, com o número da onda, seria recusada: num caso ela traz um
+    /// campo que esta versão não conhece, gravado por um Mustard mais novo; no
+    /// outro, não declara as dependências, como uma tarefa de antes da regra.
+    /// A rodada responde a recusa da gravação e não grava nada: nem a onda do
+    /// lote, nem a versão da primeira tarefa. A spec fica igual byte a byte.
+    /// A prova atravessa `round`, o comando de verdade.
+    #[test]
+    fn a_rodada_recusada_nao_deixa_onda_gravada() {
+        let cases: [(&str, &str, &str); 2] = [
+            ("campo novo", ",\"text\":", "unknown-field"),
+            ("sem dependências", ",\"depends_on\":[]", "task-declaration-missing"),
+        ];
+        for (case, cut, reason) in cases {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let (said, crit) = backlog_project(root);
+            backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+            let bad = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
+            // A spec já está em execução: a rodada não tem fase a gravar antes
+            // de formar o lote.
+            assert!(crate::commands::spec_events::write::record_phase(root, "x", "running", None), "{case}");
+
+            let path = store::spec_file(root, "x").unwrap();
+            let mark = format!("\"id\":{bad},");
+            let original = std::fs::read_to_string(&path).unwrap();
+            let edited: String = original
+                .lines()
+                .map(|line| match (line.contains(&mark), reason) {
+                    (true, "unknown-field") => line.replacen(cut, ",\"futuro\":1,\"text\":", 1),
+                    (true, _) => line.replacen(cut, "", 1),
+                    (false, _) => line.to_string(),
+                })
+                .map(|line| line + "\n")
+                .collect();
+            assert_ne!(edited, original, "{case}: a linha da segunda tarefa mudou");
+            std::fs::write(&path, &edited).unwrap();
+
+            let out = round(root, "x", None);
+
+            assert_eq!(out["ok"], json!(false), "{case}: {out}");
+            assert_eq!(out["reason"], json!(reason), "{case}: {out}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), edited, "{case}: a spec fica igual byte a byte");
+            let log = store::read(&path).unwrap().unwrap();
+            assert!(log.visible().iter().all(|e| e.event_type != "wave"), "{case}: nenhuma onda gravada");
+        }
     }
 }
