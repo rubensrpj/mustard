@@ -7,22 +7,23 @@
 //! a rodada escolhe —; esta função só os escreve, sempre na mesma ordem, então
 //! o mesmo material dá sempre os mesmos bytes.
 //!
-//! O pedido leva a lista, não o texto. Só duas exceções copiam texto de item:
-//! a frase do `done_when` da própria onda, que abre o pedido porque é o que
-//! ela entrega, e o `<bloco>` de cada arquivo de leitura por tarefa. Fora
-//! disso, cada parte traz, numa linha por bloco da spec, os códigos dos itens
-//! em sequência, e o pedido diz uma vez só como ler pelo binário, com o
-//! caminho do repositório principal quando o agente trabalha numa cópia: o
-//! pedido de uma onda, com o comando que lê de uma vez tudo o que ele lista,
-//! antes de começar, e o que lê pelo código o item que um texto cita e não
-//! veio; o da revisão final, com o que lê cada código na ordem. As tarefas
-//! saem na ordem de execução que a onda declara, cada uma com o arquivo dela
-//! e o que precisa ler antes; sem essa ordem, na ordem do arquivo. A lista
-//! inteira fica no pedido, porque é ela que mostra o escopo todo de uma vez.
-//! As lições entram pelo número delas no banco, como todo o resto — `run read
-//! lessons --term <número>` devolve o texto — e cada skill entra como
-//! recomendação de uma linha. O pedido não tem teto de linhas: o que cresce é
-//! sempre lista, nunca texto de item.
+//! O pedido de uma onda leva, de cada item, o código e o título; de cada
+//! tarefa, também a parte do agente — arquivos, comandos e o que testar —,
+//! porque é ela que abre o trabalho. O porquê de cada item fica na spec: o
+//! pedido diz uma vez só como ler, com o caminho do repositório principal
+//! quando o agente trabalha numa cópia — em caso de dúvida, o comando que lê
+//! o pedido inteiro, com o texto completo de cada item, e o que lê um item
+//! pelo código. Abre pela frase do `done_when` da própria onda, que é o que
+//! ela entrega. O item gravado antes de o título existir sai com a primeira
+//! frase do texto no lugar dele, e a tarefa sem a parte do agente, com o
+//! texto dela. As tarefas saem na ordem de execução que a onda declara, cada
+//! uma com os arquivos dela e o que precisa ler antes; sem essa ordem, na
+//! ordem do arquivo. A lista inteira fica no pedido, porque é ela que mostra
+//! o escopo todo de uma vez. As lições entram pelo número delas no banco —
+//! `run read lessons --term <número>` devolve o texto — e cada skill entra
+//! como recomendação de uma linha. O pedido da revisão final continua só com
+//! os códigos, numa linha por bloco da spec, e manda ler cada um na ordem. O
+//! pedido não tem teto de linhas.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -32,7 +33,8 @@ use serde_json::Value;
 use crate::domain::lessons::{applies_to, same_file, text_only, tied_to_wave, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
-use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
+use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
+use crate::domain::spec_index::{cut, title_of};
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
@@ -228,13 +230,37 @@ pub fn write_final_review(material: &Material, lang: Locale) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Os códigos de cada bloco
+// As linhas de item
 // ---------------------------------------------------------------------------
+
+/// O título de um item no pedido: o `title` gravado ou, no item gravado antes
+/// de o título existir, o que a leitura da spec já tira dele — o trecho em
+/// negrito do começo ou a primeira frase do texto —, cortado em
+/// [`TASK_TITLE_MAX`] caracteres. `None` sem título nem texto, como o
+/// critério antigo, que só tem `when` e `then`.
+fn item_title(item: &SpecEvent) -> Option<String> {
+    let own = item.str_field("title").map(str::trim).filter(|title| !title.is_empty());
+    let title = own.map(str::to_string).or_else(|| title_of(item))?;
+    Some(cut(title.trim(), TASK_TITLE_MAX))
+}
+
+/// A linha de um item do pedido da onda, a mesma que a página da spec lê:
+/// o bloco — o que o comando de leitura pede —, o código e o título; sem
+/// título, só o bloco e o código.
+fn item_line(material: &Material, item: &SpecEvent) -> String {
+    let code = material.codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string());
+    let block = item.block().map_or("waves", Block::name);
+    match item_title(item) {
+        Some(title) => format!("- `{block}` {code}: {title}"),
+        None => format!("- `{block}` {code}"),
+    }
+}
 
 /// As linhas de uma lista de itens: uma por bloco da spec, na ordem em que o
 /// primeiro item de cada bloco aparece, com o nome do bloco — o que o comando
-/// de leitura pede — e os códigos dos itens dele, em sequência. Nem o texto
-/// do item nem o comando entram aqui: o comando está uma vez só no pedido.
+/// de leitura pede — e os códigos dos itens dele, em sequência. É a forma do
+/// pedido da revisão final e da entrega das ondas anteriores; nem o texto do
+/// item nem o comando entram aqui.
 fn codes_by_block(material: &Material, items: &[&SpecEvent]) -> Vec<String> {
     let mut blocks: Vec<(&str, Vec<String>)> = Vec::new();
     for item in items {
@@ -630,13 +656,15 @@ pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -
 }
 
 /// Os campos que o registro de um lote deriva das tarefas que o compõem
-/// agora: os critérios que elas cobrem (`covers`, sem repetir), o texto
-/// delas juntado por espaço e o pronto-quando — a prova de cada critério
-/// coberto, ligada por " && ", ou, sem prova nenhuma (o caso do item
-/// combinado sem dono, que não tem prova), o próprio texto das tarefas. A
-/// formação do lote e a atualização dele depois de uma tarefa sair pelo
-/// backlog usam esta mesma conta, sobre as tarefas que a leitura de agora
-/// mostra, para as duas nunca discordarem.
+/// agora: os critérios que elas cobrem (`covers`, sem repetir), os títulos
+/// delas juntados por ponto e vírgula e o pronto-quando — a prova de cada
+/// critério coberto, ligada por " && ", ou, sem prova nenhuma (o caso do
+/// item combinado sem dono, que não tem prova), os mesmos títulos. O texto
+/// inteiro das tarefas não entra: o pronto-quando abre o pedido da onda, e as
+/// tarefas já saem nele com o título e a parte do agente. A formação do lote
+/// e a atualização dele depois de uma tarefa sair pelo backlog usam esta
+/// mesma conta, sobre as tarefas que a leitura de agora mostra, para as duas
+/// nunca discordarem.
 pub struct BacklogFields {
     pub criteria: Vec<u64>,
     pub text: String,
@@ -648,18 +676,17 @@ pub struct BacklogFields {
 #[must_use]
 pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
     let mut criteria: BTreeSet<u64> = BTreeSet::new();
-    let mut text_parts: Vec<String> = Vec::new();
+    let mut titles: Vec<String> = Vec::new();
     for task in tasks {
         criteria.extend(task.ints("covers"));
-        if let Some(text) = task.str_field("text") {
-            text_parts.push(text.to_string());
-        }
+        titles.extend(item_title(task));
     }
     let criteria: Vec<u64> = criteria.into_iter().collect();
     let proof =
         criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof")).collect::<Vec<_>>().join(" && ");
-    let done_when = if proof.is_empty() { text_parts.join(" ") } else { proof };
-    BacklogFields { criteria, text: text_parts.join(" "), done_when }
+    let text = titles.join("; ");
+    let done_when = if proof.is_empty() { text.clone() } else { proof };
+    BacklogFields { criteria, text, done_when }
 }
 
 /// Os executores que o binário reconhece abrindo a prova de um critério,
@@ -1148,10 +1175,11 @@ impl Writer<'_> {
         self.material.block.iter().copied().filter(|e| e.event_type == "wave").take(1).collect()
     }
 
-    /// O que a onda entrega: a frase do `done_when` do evento da onda, texto
-    /// original — é o único texto de item que este pedido copia, porque é
-    /// justamente o que abre o trabalho. Vem como parágrafo de abertura, sem
-    /// título próprio, antes dos itens da onda. Sem onda no material, nada.
+    /// O que a onda entrega: a frase do `done_when` do evento da onda, como
+    /// foi gravada — a prova dos critérios ou, sem prova, os títulos das
+    /// tarefas ([`backlog_fields`]) —, porque é o que abre o trabalho. Vem
+    /// como parágrafo de abertura, sem título próprio, antes dos itens da
+    /// onda. Sem onda no material, nada.
     fn delivers(&self, out: &mut String) {
         let Some(wave) = self.material.block.iter().copied().find(|e| e.event_type == "wave") else { return };
         let done_when = wave.str_field("done_when").unwrap_or_default().trim();
@@ -1164,10 +1192,9 @@ impl Writer<'_> {
     /// Os itens da onda, todos sob um único título: o conserto pendente
     /// (quando a onda volta reprovada), a própria onda, os critérios, a
     /// especificação, o combinado, as lições e as skills que as tarefas
-    /// nomeiam. Cada bloco da spec sai em sua própria linha de códigos, como
-    /// [`codes_by_block`] os agrupa; lições e skills mantêm a listagem
-    /// própria, uma linha por item, porque carregam mais que um código. Nem
-    /// o texto do item nem o comando de leitura entram aqui — a leitura
+    /// nomeiam. Cada item sai numa linha, com o bloco, o código e o título
+    /// ([`item_line`]); lições e skills mantêm a listagem própria. O texto
+    /// completo do item não entra, nem o comando de leitura — a leitura
     /// aparece uma vez só no pedido, em [`Self::read_example`].
     fn items(&self, out: &mut String) {
         let m = self.material;
@@ -1185,21 +1212,11 @@ impl Writer<'_> {
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.items"));
         if !m.fix.is_empty() {
             let _ = writeln!(out, "{}\n", self.t("prompt.fix.wave"));
-            for line in codes_by_block(m, &m.fix) {
-                let _ = writeln!(out, "{line}");
+        }
+        for group in [&m.fix, &wave_only, &m.criteria, &m.specification, &m.agreed] {
+            for item in group {
+                let _ = writeln!(out, "{}", item_line(m, item));
             }
-        }
-        for line in codes_by_block(m, &wave_only) {
-            let _ = writeln!(out, "{line}");
-        }
-        for line in codes_by_block(m, &m.criteria) {
-            let _ = writeln!(out, "{line}");
-        }
-        for line in codes_by_block(m, &m.specification) {
-            let _ = writeln!(out, "{line}");
-        }
-        for line in codes_by_block(m, &m.agreed) {
-            let _ = writeln!(out, "{line}");
         }
         for lesson in &m.lessons {
             let _ = writeln!(out, "- `lessons`: {}", lesson.id);
@@ -1221,11 +1238,14 @@ impl Writer<'_> {
     }
 
     /// As tarefas da onda, na ordem de execução dela ([`Self::wave_items`]):
-    /// uma linha por tarefa, com o código, os arquivos que ela cita e — para
-    /// a que ganhou leitura obrigatória ou escolhida pelo orquestrador — o
-    /// que precisa ler antes, pelo mesmo trecho que [`Self::task_reads`]
-    /// calcula. Abaixo da linha, um arquivo que o mapa do projeto conhece os
-    /// testes ([`Material::file_tests`]) ganha uma linha própria com eles.
+    /// uma linha por tarefa, com o código, o título ([`item_title`]), os
+    /// arquivos que ela cita e — para a que ganhou leitura obrigatória ou
+    /// escolhida pelo orquestrador — o que precisa ler antes, pelo mesmo
+    /// trecho que [`Self::read_hint`] calcula. Abaixo da linha, recuada dois
+    /// espaços, vem a parte do agente (`agent`) ou, na tarefa gravada antes
+    /// dela existir, o texto; o porquê fica na spec. Depois, um arquivo que o
+    /// mapa do projeto conhece os testes ([`Material::file_tests`]) ganha uma
+    /// linha própria com eles.
     fn tasks(&self, out: &mut String) {
         let tasks: Vec<&SpecEvent> = self.wave_items().into_iter().filter(|e| e.event_type == "task").collect();
         if tasks.is_empty() {
@@ -1245,6 +1265,9 @@ impl Writer<'_> {
                 .collect();
             let files: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
             let _ = write!(out, "- `{code}`");
+            if let Some(title) = item_title(task) {
+                let _ = write!(out, " {title}");
+            }
             if !files.is_empty() {
                 let _ = write!(out, ": {}", files.join(", "));
             }
@@ -1253,6 +1276,11 @@ impl Writer<'_> {
                 let _ = write!(out, " — {}: {}", self.t("prompt.task.read_before"), parts.join(", "));
             }
             let _ = writeln!(out);
+            let own = task.str_field("agent").filter(|agent| !agent.trim().is_empty());
+            let body = own.or_else(|| task.str_field("text")).unwrap_or_default();
+            for line in body.lines().filter(|line| !line.trim().is_empty()) {
+                let _ = writeln!(out, "  {}", line.trim_end());
+            }
             for path in paths {
                 let Some(tests) = self.material.file_tests.get(path) else { continue };
                 let list = tests.iter().map(|test| format!("`{test}`")).collect::<Vec<_>>().join(", ");
@@ -1264,8 +1292,9 @@ impl Writer<'_> {
     }
 
     /// Como ler, pela chave `key`, com o nome da spec e o número da onda: o
-    /// pedido de uma onda manda ler tudo o que ele lista num comando só, e o
-    /// da revisão final, cada item pelo código. Leva o caminho do repositório
+    /// pedido de uma onda diz que, em caso de dúvida, um comando só lê o
+    /// texto completo de tudo o que ele lista, e dá o que lê um item pelo
+    /// código; o da revisão final lê cada item pelo código. Leva o caminho do repositório
     /// principal quando o agente trabalha numa cópia (`in_copy`): de dentro
     /// dela, a spec só se lê por lá. Sem cópia, o agente roda no próprio
     /// repositório principal, e o caminho sobra.
@@ -1490,42 +1519,58 @@ mod tests {
         assert!(choice.tasks.is_empty(), "{choice:?}");
     }
 
-    /// O pedido leva a lista, não o texto: cada parte traz uma linha por
-    /// bloco da spec, com o nome do bloco e os códigos dos itens em
-    /// sequência, e o comando de leitura aparece uma vez só, no exemplo. As
-    /// duas exceções que copiam texto são a frase do `done_when`, que abre o
-    /// pedido, e o arquivo de cada tarefa; o resto — o texto da onda, o da
-    /// tarefa e o do critério — não é copiado, e nenhum código aparece duas
-    /// vezes.
+    /// O pedido leva, de cada item, o código e o título, numa linha com o
+    /// bloco dele; de cada tarefa, também a parte do agente, embaixo da linha
+    /// dela e recuada dois espaços. O porquê da tarefa, o resto do texto da
+    /// onda e o `when`, o `then` e a prova do critério não são copiados; o
+    /// comando de leitura aparece uma vez só, no exemplo, e nenhum código
+    /// aparece duas vezes.
     #[test]
-    fn a_request_lists_only_the_codes_of_each_block_and_one_reading_example() {
+    fn a_request_lists_each_item_by_code_and_title_and_each_task_with_its_agent_part() {
         let log = log(&[
             (
                 "criterion",
-                json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test"}),
+                json!({"title": "A suíte roda inteira", "when": "a onda roda", "then": "a suíte passa",
+                       "proof": "cargo test -p suite"}),
             ),
             (
                 "wave",
-                json!({"n": 1, "text": "Primeira onda", "criteria": [1], "done_when": "a onda termina"}),
+                json!({"n": 1, "text": "Primeira onda. Ela abre o motor e a página.", "criteria": [1],
+                       "done_when": "a onda termina"}),
             ),
-            ("task", json!({"wave": 1, "text": "Escrever o motor", "files": [{"path": "src/a.rs"}]})),
-            ("task", json!({"wave": 1, "text": "Escrever a página", "files": [{"path": "src/b.rs"}]})),
+            (
+                "task",
+                json!({"wave": 1, "title": "Escrever o motor", "text": "Hoje não há motor. Depois, ele soma.",
+                       "agent": "- src/a.rs: `soma`\n  - teste: `cargo test -p motor`", "files": [{"path": "src/a.rs"}]}),
+            ),
+            ("task", json!({"wave": 1, "text": "Escrever a página. Ela mostra a soma.", "files": [{"path": "src/b.rs"}]})),
         ]);
         for lang in [Locale::PtBr, Locale::EnUs] {
             let prompt = build(&material(&log, 1), lang);
-            for text in ["Primeira onda", "Escrever o motor", "Escrever a página", "a suíte passa", "cargo test"] {
+            for text in ["Ela abre o motor", "Hoje não há motor", "Depois, ele soma", "a suíte passa", "-p suite"] {
                 assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
             }
             assert!(prompt.text.contains("a onda termina"), "o done_when abre o pedido: {}", prompt.text);
             assert_eq!(
                 listed(&prompt.text, translate("prompt.part.items", lang)),
-                ["- `waves`: MSTD-WAVE-0001", "- `criteria`: MSTD-CRIT-0001"],
+                ["- `waves` MSTD-WAVE-0001: Primeira onda.", "- `criteria` MSTD-CRIT-0001: A suíte roda inteira"],
                 "{}",
                 prompt.text
             );
-            let tasks = section(&prompt.text, translate("prompt.part.tasks", lang));
-            assert!(tasks.contains("MSTD-TASK-0001") && tasks.contains("`src/a.rs`"), "{tasks}");
-            assert!(tasks.contains("MSTD-TASK-0002") && tasks.contains("`src/b.rs`"), "{tasks}");
+            let tasks: Vec<&str> = section(&prompt.text, translate("prompt.part.tasks", lang)).lines().collect();
+            assert_eq!(
+                tasks,
+                [
+                    "",
+                    "- `MSTD-TASK-0001` Escrever o motor: `src/a.rs`",
+                    "  - src/a.rs: `soma`",
+                    "    - teste: `cargo test -p motor`",
+                    "- `MSTD-TASK-0002` Escrever a página.: `src/b.rs`",
+                    "  Escrever a página. Ela mostra a soma.",
+                ],
+                "{}",
+                prompt.text
+            );
             let example =
                 translate("prompt.read.wave", lang).replace("{root}", "").replace("{spec}", "teste").replace("{n}", "1");
             assert!(prompt.text.contains(&example), "{}", prompt.text);
@@ -1537,6 +1582,41 @@ mod tests {
                 assert_eq!(prompt.text.matches(code).count(), 1, "{code}: {}", prompt.text);
             }
             assert!(prompt.lines > 0 && prompt.lines == prompt.text.lines().count());
+        }
+    }
+
+    /// O registro de um lote tira das tarefas o título, nunca o texto
+    /// inteiro. Sem prova nos critérios cobertos, o pronto-quando — que abre
+    /// o pedido da onda — são os títulos, os mesmos do texto do lote; a
+    /// tarefa gravada antes do título entra pela primeira frase. Com prova, o
+    /// pronto-quando é a prova, e o texto continua sendo os títulos.
+    #[test]
+    fn a_backlog_lot_takes_the_task_titles_never_their_whole_text() {
+        let log = log(&[
+            ("criterion", json!({"title": "A soma passa", "when": "a soma roda", "then": "passa", "proof": "cargo test -p soma"})),
+            ("task", json!({"title": "Somar o total", "text": "Hoje o total não soma. Depois, soma.", "agent": "- src/a.rs",
+                            "files": [{"path": "src/a.rs"}]})),
+            ("task", json!({"text": "Mostrar o total na página. Ela lê a soma.", "files": [{"path": "src/b.rs"}]})),
+            ("task", json!({"title": "Conferir a soma", "text": "A soma precisa de teste.", "agent": "- src/c.rs",
+                            "files": [{"path": "src/c.rs"}], "covers": [1]})),
+        ]);
+        let visible = log.visible();
+        let (titled, old, covering) = (visible[1], visible[2], visible[3]);
+
+        let unproven = backlog_fields(&log, &[titled, old]);
+        assert!(unproven.criteria.is_empty());
+        assert_eq!(unproven.text, "Somar o total; Mostrar o total na página.");
+        assert_eq!(unproven.done_when, unproven.text, "sem prova, o pronto-quando são os títulos");
+
+        let proven = backlog_fields(&log, &[covering]);
+        assert_eq!(proven.criteria, [1]);
+        assert_eq!(proven.text, "Conferir a soma");
+        assert_eq!(proven.done_when, "cargo test -p soma");
+
+        for fields in [&unproven, &proven] {
+            for whole in ["Hoje o total", "Ela lê a soma", "precisa de teste"] {
+                assert!(!fields.text.contains(whole) && !fields.done_when.contains(whole), "{whole}");
+            }
         }
     }
 
@@ -2205,21 +2285,38 @@ mod tests {
         m
     }
 
-    /// O item combinado escolhido para a onda entra pelo código, na linha do
-    /// bloco dele; o texto e o exemplo dele nunca entram.
+    /// O item combinado escolhido para a onda entra numa linha, com o bloco,
+    /// o código e o título — no item gravado antes do título, a primeira
+    /// frase do texto —; o resto do texto e o exemplo dele nunca entram.
     #[test]
-    fn every_agreed_item_comes_as_a_line_and_never_as_text() {
-        let plan = plan();
-        let prompt = build(&with_agreed(&plan, 1), Locale::PtBr);
-        for text in ["A barra de status mostra o link", "duas linhas", "A página do relatório", "um motor só"] {
+    fn every_agreed_item_comes_as_a_line_with_its_title_and_never_its_whole_text() {
+        let everywhere = json!({"files": ["**"]});
+        let log = log(&[
+            (
+                "rule",
+                json!({"text": "A barra de status mostra o link. Ela cabe em duas linhas.", "keys": ["barra"],
+                       "example": "um link só", "applies_to": everywhere}),
+            ),
+            (
+                "rule",
+                json!({"title": "O pedido cabe numa leitura", "text": "O agente lê o pedido inteiro. Depois ele começa.",
+                       "agent": "- conferir no teste", "keys": ["pedido"], "example": "um pedido curto",
+                       "applies_to": everywhere}),
+            ),
+            ("wave", json!({"n": 1, "text": "Leitura", "criteria": [], "done_when": "lê"})),
+            ("task", json!({"wave": 1, "text": "Escrever o leitor", "files": [{"path": "src/a.rs"}]})),
+        ]);
+        let prompt = build(&with_agreed(&log, 1), Locale::PtBr);
+        for text in ["duas linhas", "um link só", "O agente lê o pedido", "Depois ele começa", "conferir no teste", "um pedido curto"] {
             assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
         }
-        assert!(
-            listed(&prompt.text, translate("prompt.part.items", Locale::PtBr))
-                .contains(&"- `agreed`: MSTD-RULE-0003, MSTD-RULE-0005"),
-            "{}",
-            prompt.text
-        );
+        let items = listed(&prompt.text, translate("prompt.part.items", Locale::PtBr));
+        for line in [
+            "- `agreed` MSTD-RULE-0001: A barra de status mostra o link.",
+            "- `agreed` MSTD-RULE-0002: O pedido cabe numa leitura",
+        ] {
+            assert!(items.contains(&line), "{line}: {}", prompt.text);
+        }
     }
 
     /// O item marcado como válido para todas as ondas entra na lista de cada
@@ -2229,8 +2326,9 @@ mod tests {
         let log = log(&[
             (
                 "rule",
-                json!({"text": "Nenhuma onda fecha com a suíte vermelha", "keys": ["suíte"],
-                       "example": "a onda para", "applies_to": {"files": ["**"]}}),
+                json!({"title": "Suíte verde para fechar", "text": "Nenhuma onda fecha com a suíte vermelha.",
+                       "agent": "- rodar a suíte", "keys": ["suíte"], "example": "a onda para",
+                       "applies_to": {"files": ["**"]}}),
             ),
             ("wave", json!({"n": 1, "text": "Leitura", "criteria": [], "done_when": "lê"})),
             ("task", json!({"wave": 1, "text": "Escrever o leitor", "files": [{"path": "src/a.rs"}]})),
@@ -2240,7 +2338,7 @@ mod tests {
         for wave in [1, 2] {
             let prompt = build(&with_agreed(&log, wave), Locale::PtBr);
             let agreed = listed(&prompt.text, translate("prompt.part.items", Locale::PtBr));
-            assert!(agreed.contains(&"- `agreed`: MSTD-RULE-0001"), "onda {wave}: {}", prompt.text);
+            assert!(agreed.contains(&"- `agreed` MSTD-RULE-0001: Suíte verde para fechar"), "onda {wave}: {}", prompt.text);
             assert!(!prompt.text.contains("suíte vermelha"), "onda {wave}: {}", prompt.text);
         }
     }
@@ -2307,20 +2405,32 @@ mod tests {
         }
     }
 
-    /// Rodar, antes de começar, o comando que lê o pedido inteiro é parte do
-    /// trabalho, e quem diz isso é o texto do agente da onda, que ele carrega
-    /// uma vez; a parte fixa do pedido não repete a instrução nem traz a
-    /// proibição antiga de procurar o resto em outro arquivo.
+    /// O texto do agente da onda, que ele carrega uma vez, diz que o pedido
+    /// traz o título de cada item e a parte do agente de cada tarefa, que o
+    /// texto completo se lê só em caso de dúvida e que o item novo que ele
+    /// gravar leva as três partes; a ordem antiga de ler tudo antes de começar
+    /// saiu, e a parte fixa do pedido não repete nada disso.
     #[test]
-    fn the_wave_agent_says_that_reading_the_whole_request_before_starting_is_part_of_the_work() {
-        for (lang, reading, forbidden) in [
-            (Locale::PtBr, "rodá-lo antes de começar é parte do trabalho", "nunca vá procurar o resto em outro arquivo"),
-            (Locale::EnUs, "running it before you start is part of the work", "never go looking for the rest in another file"),
+    fn the_wave_agent_reads_the_whole_text_only_in_case_of_doubt() {
+        for (lang, said, gone) in [
+            (
+                Locale::PtBr,
+                ["o código e o título de cada item", "na dúvida, o comando que ele dá lê o texto completo", "leva `title`, `text` e `agent`"],
+                "rodá-lo antes de começar",
+            ),
+            (
+                Locale::EnUs,
+                ["each item's code and title", "when in doubt, the command it gives reads the whole text", "takes `title`, `text` and `agent`"],
+                "running it before you start",
+            ),
         ] {
             let (_, agent) = crate::platform::seeds::agent_texts(lang)[0];
-            assert!(agent.contains(reading), "{agent}");
             let fixed = translate("prompt.fixed", lang);
-            assert!(!fixed.contains(reading) && !fixed.contains(forbidden), "{fixed}");
+            for sentence in said {
+                assert!(agent.contains(sentence), "{sentence}: {agent}");
+                assert!(!fixed.contains(sentence), "{sentence}: {fixed}");
+            }
+            assert!(!agent.contains(gone), "{agent}");
         }
     }
 
@@ -2459,10 +2569,14 @@ mod tests {
             let last = write_final_review(&m, lang);
             let items = section(&wave, items_heading);
             assert!(items.contains(fix_intro), "{wave}");
-            for code in ["MSTD-VERD-0001", "MSTD-DELIV-0001", "MSTD-DEC-0003", "MSTD-RULE-0001"] {
-                assert!(items.contains(code), "{code}: {wave}");
+            for line in [
+                "- `review` MSTD-VERD-0001: Falta o teste",
+                "- `waves` MSTD-DELIV-0001: Feito",
+                "- `agreed` MSTD-DEC-0003: Depois da reprovação",
+                "- `agreed` MSTD-RULE-0001: Do projeto",
+            ] {
+                assert!(items.lines().any(|l| l == line), "{line}: {wave}");
             }
-            assert!(!items.contains("Falta o teste"), "nenhum texto é copiado: {items}");
             assert!(section(&last, fix_heading).contains(translate("prompt.fix.final", lang)), "{last}");
             let fix = section(&last, fix_heading);
             assert_eq!(

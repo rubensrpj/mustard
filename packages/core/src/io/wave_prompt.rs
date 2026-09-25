@@ -782,8 +782,9 @@ mod tests {
         assert!(!built[0].text.contains("MOLDS FOR THIS WAVE"), "{}", built[0].text);
     }
 
-    /// Um item revisto entra na lista do pedido só na versão nova; a linha da
-    /// antiga fica fora, e o número dela não aparece.
+    /// Um item revisto entra na lista do pedido só na versão nova, com o
+    /// título dela; a linha da antiga fica fora, e nem o número nem o texto
+    /// dela aparecem.
     #[test]
     fn a_revised_item_reaches_the_request_only_in_its_new_version() {
         let dir = tempdir().unwrap();
@@ -801,9 +802,9 @@ mod tests {
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
-        assert!(items.contains(&"`agreed`: MSTD-LIMIT-0001"), "{}", built[0].text);
+        assert!(items.contains(&"`agreed` MSTD-LIMIT-0001: O pedido cabe em 500 linhas."), "{}", built[0].text);
         assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 1, "{}", built[0].text);
-        assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
+        assert!(!built[0].text.contains("400 linhas"), "a versão antiga não entra: {}", built[0].text);
     }
 
     /// O arquivo que uma tarefa cita, e cujos testes o mapa do projeto
@@ -968,15 +969,16 @@ mod tests {
     }
 
     /// A linha de como ler, no pedido de uma onda montado como a rodada e o
-    /// despacho o montam: antes de começar, um comando só lê tudo o que o
-    /// pedido lista — a leitura do pedido da onda pelo número dela, com a
-    /// spec e, quando a onda tem cópia, o caminho do repositório principal —,
-    /// e o item que um texto cita e não veio se lê pelo código. Sem cópia, o
-    /// agente roda no repositório principal, e o caminho sai dos dois
+    /// despacho o montam: em caso de dúvida, um comando só lê o texto
+    /// completo de tudo o que o pedido lista — a leitura do pedido da onda
+    /// pelo número dela, com a spec e, quando a onda tem cópia, o caminho do
+    /// repositório principal —, e a mesma linha dá o comando que lê um item
+    /// pelo código. A ordem antiga de ler tudo antes de começar saiu. Sem
+    /// cópia, o agente roda no repositório principal, e o caminho sai dos dois
     /// comandos. O pedido da revisão final continua com a leitura item por
     /// item, sem o comando do pedido inteiro.
     #[test]
-    fn the_wave_request_points_to_one_command_that_reads_the_whole_request() {
+    fn the_wave_request_points_to_the_whole_request_in_case_of_doubt() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let main = shown(root);
@@ -988,22 +990,24 @@ mod tests {
         let log = log_of(&events);
         let copy = WaveCopy { path: "/c/tres".into(), build_dir: None };
         let in_copy = Flight { running: [3].into(), copies: [(3, copy)].into(), ..Flight::default() };
-        for (lang, items, wave_line, final_line) in [
+        for (lang, items, wave_line, before_starting, final_line) in [
             (
                 Locale::PtBr,
                 "## Itens da onda",
-                "**Como ler.** Antes de começar, leia o pedido inteiro com `mustard-rt run read dispatch-3 \
-                 {root}--spec teste`. O item que um texto cita e não veio, leia com `mustard-rt run read \
-                 <bloco> {root}--spec teste --term <código>`.",
+                "**Como ler.** Em caso de dúvida, leia o texto completo com `mustard-rt run read dispatch-3 \
+                 {root}--spec teste`. Para ler um item só, use `mustard-rt run read <bloco> {root}--spec \
+                 teste --term <código>`.",
+                "Antes de começar",
                 "**Como ler.** Leia cada código na ordem com `mustard-rt run read <bloco> {root}--spec teste \
                  --term <código>`, trocando `<bloco>` pelo bloco que abre a linha do código.",
             ),
             (
                 Locale::EnUs,
                 "## Wave items",
-                "**How to read.** Before you start, read the whole request with `mustard-rt run read \
-                 dispatch-3 {root}--spec teste`. For an item a text cites that did not come, read it with \
-                 `mustard-rt run read <block> {root}--spec teste --term <item-code>`.",
+                "**How to read.** In case of doubt, read the whole text with `mustard-rt run read \
+                 dispatch-3 {root}--spec teste`. To read a single item, use `mustard-rt run read <block> \
+                 {root}--spec teste --term <item-code>`.",
+                "Before you start",
                 "**How to read.** Read each code in order with `mustard-rt run read <block> {root}--spec \
                  teste --term <item-code>`, replacing `<block>` with the block that opens the code's line.",
             ),
@@ -1016,7 +1020,9 @@ mod tests {
                 let listed = wave.find(items).unwrap_or_else(|| panic!("{lang:?}: {wave}"));
                 assert!(at < listed, "the reading line comes before the items: {wave}");
                 assert_eq!(wave.matches("dispatch-").count(), 1, "{wave}");
+                assert_eq!(wave.matches("--term <").count(), 1, "one command reads a single item: {wave}");
                 assert_eq!(wave.matches("--root").count(), if flag.is_empty() { 0 } else { 2 }, "{wave}");
+                assert!(!wave.contains(before_starting), "reading everything first is gone: {wave}");
             }
             let last = final_review(root, "teste", &log, lang);
             let line = final_line.replace("{root}", &format!("--root {main} "));
@@ -1026,26 +1032,34 @@ mod tests {
     }
 
     /// O pedido de uma onda, montado como a rodada o monta — com a cópia que
-    /// ela criou para ela —, lista só os códigos: cada parte traz uma linha
-    /// por bloco da spec, com os códigos em sequência, e as tarefas ganham
-    /// linha própria, na ordem de execução que a onda declara. Os comandos
-    /// de leitura aparecem uma vez só, na linha de como ler, com o caminho
-    /// do repositório principal, e nenhum item repete comando nem código.
+    /// ela criou para ela —, traz cada item numa linha, com o bloco, o código
+    /// e o título; o item gravado antes do título sai com a primeira frase do
+    /// texto. Cada tarefa ganha linha própria, na ordem de execução que a
+    /// onda declara, com o título e os arquivos, e embaixo, recuada, a parte
+    /// do agente — ou o texto, na tarefa que não a tem. O porquê dos itens e
+    /// o resto do texto não entram; os comandos de leitura aparecem uma vez
+    /// só, na linha de como ler, com o caminho do repositório principal.
     #[test]
-    fn the_wave_request_lists_only_the_codes_per_block_with_one_example() {
+    fn the_wave_request_lists_titles_and_the_agent_part_never_the_whole_text() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let everywhere = json!({"files": ["**"]});
         let log = log_of(&[
-            ("context", json!({"text": "O objetivo da obra.", "keys": ["objetivo"], "label": "objetivo"})),
-            ("context", json!({"text": "Como reproduzir.", "keys": ["reproduzir"], "label": "reproduzir"})),
-            ("decision", json!({"text": "Os códigos em sequência.", "keys": ["códigos"], "why": "menos linhas",
+            ("context", json!({"title": "O objetivo", "text": "A obra encurta o pedido. Ele cabe numa leitura.",
+                               "agent": "- medir o pedido", "keys": ["objetivo"], "label": "objetivo"})),
+            ("context", json!({"text": "Como reproduzir. Rode a rodada duas vezes.", "keys": ["reproduzir"],
+                               "label": "reproduzir"})),
+            ("decision", json!({"title": "Título no lugar do texto", "text": "O agente lê menos. O porquê fica na spec.",
+                                "agent": "- `item_line`", "keys": ["títulos"], "why": "menos leitura",
                                 "applies_to": everywhere})),
-            ("rule", json!({"text": "Um exemplo só.", "keys": ["exemplo"], "example": "e", "applies_to": everywhere})),
-            ("criterion", json!({"when": "a rodada monta", "then": "a lista sai curta", "proof": "cargo test"})),
+            ("rule", json!({"title": "Um exemplo só", "text": "A linha de leitura aparece uma vez.",
+                            "agent": "- contar os comandos", "keys": ["exemplo"], "example": "e", "applies_to": everywhere})),
+            ("criterion", json!({"title": "A lista sai curta", "when": "a rodada monta", "then": "cada item tem uma linha",
+                                 "proof": "cargo test"})),
             ("wave", json!({"n": 1, "text": "A onda", "criteria": [5], "done_when": "passa", "order": [8, 7]})),
-            ("task", json!({"wave": 1, "text": "Montar a lista", "files": [{"path": "src/a.rs"}]})),
-            ("task", json!({"wave": 1, "text": "Trocar o texto", "files": [{"path": "src/b.rs"}]})),
+            ("task", json!({"wave": 1, "title": "Montar a lista", "text": "Hoje a lista só tem códigos.",
+                            "agent": "- src/a.rs: `items`\n  - teste: `cargo test -p lista`", "files": [{"path": "src/a.rs"}]})),
+            ("task", json!({"wave": 1, "text": "Trocar o texto. Ele diz como ler.", "files": [{"path": "src/b.rs"}]})),
             ("delivered", json!({"wave": 1, "text": "A lista saiu.", "files": ["src/a.rs"]})),
         ]);
         let copy = WaveCopy { path: "/c/um".into(), build_dir: Some("/t/a".into()) };
@@ -1060,20 +1074,34 @@ mod tests {
         assert!(example.contains(&command), "{example}");
         let wave = &built[0].text;
 
-        // A onda tem `order: [8, 7]`: a tarefa 2 (id 8) vem antes da 1 (id 7).
-        let tasks = ["`MSTD-TASK-0002`: `src/b.rs`", "`MSTD-TASK-0001`: `src/a.rs`"];
         // Onda, critérios, especificação e combinado saem juntos, sob um
-        // título só: "Itens da onda".
+        // título só: "Itens da onda", cada item numa linha.
         let items = section_lines(wave, part("prompt.part.items"));
-        for code in [
-            "`waves`: MSTD-WAVE-0001",
-            "`criteria`: MSTD-CRIT-0001",
-            "`specification`: MSTD-CTX-0001, MSTD-CTX-0002",
-            "`agreed`: MSTD-DEC-0001, MSTD-RULE-0001",
+        for line in [
+            "`waves` MSTD-WAVE-0001: A onda",
+            "`criteria` MSTD-CRIT-0001: A lista sai curta",
+            "`specification` MSTD-CTX-0001: O objetivo",
+            "`specification` MSTD-CTX-0002: Como reproduzir.",
+            "`agreed` MSTD-DEC-0001: Título no lugar do texto",
+            "`agreed` MSTD-RULE-0001: Um exemplo só",
         ] {
-            assert!(items.contains(&code), "{code}: {wave}");
+            assert!(items.contains(&line), "{line}: {wave}");
         }
-        assert_eq!(section_lines(wave, part("prompt.part.tasks")), tasks, "{wave}");
+        // A onda tem `order: [8, 7]`: a tarefa 2 (id 8) vem antes da 1 (id 7),
+        // a antiga com o texto embaixo e a nova com a parte do agente.
+        let tasks = wave.split_once(&format!("## {}\n\n", part("prompt.part.tasks"))).map(|(_, rest)| rest).unwrap_or_default();
+        let tasks: Vec<&str> = tasks.split("\n\n").next().unwrap_or_default().lines().collect();
+        assert_eq!(
+            tasks,
+            [
+                "- `MSTD-TASK-0002` Trocar o texto.: `src/b.rs`",
+                "  Trocar o texto. Ele diz como ler.",
+                "- `MSTD-TASK-0001` Montar a lista: `src/a.rs`",
+                "  - src/a.rs: `items`",
+                "    - teste: `cargo test -p lista`",
+            ],
+            "{wave}"
+        );
 
         assert!(wave.contains(&example), "{wave}");
         // Os dois comandos — o que lê o pedido inteiro e o que lê um item
@@ -1084,7 +1112,16 @@ mod tests {
         for once in ["--term", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
             assert_eq!(wave.matches(once).count(), 1, "{once}: {wave}");
         }
-        for copied in ["O objetivo da obra.", "Montar a lista", "a lista sai curta", "A lista saiu."] {
+        for copied in [
+            "A obra encurta o pedido",
+            "medir o pedido",
+            "Rode a rodada duas vezes",
+            "O agente lê menos",
+            "contar os comandos",
+            "cada item tem uma linha",
+            "Hoje a lista só tem códigos",
+            "A lista saiu.",
+        ] {
             assert!(!wave.contains(copied), "{copied} foi copiado: {wave}");
         }
     }

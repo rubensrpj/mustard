@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Objetivo
 
-Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista os itens pelo código e traz o comando que lê todos os itens de uma vez; rodá-lo antes de começar é parte do trabalho, e o item que um texto citar se lê pelo código. Não procure a spec em outro lugar.
+Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido traz o código e o título de cada item e, das tarefas, a parte do agente; na dúvida, o comando que ele dá lê o texto completo, e o item que um texto citar se lê pelo código. Item novo que você gravar leva `title`, `text` e `agent`; o critério, só `title`. Não procure a spec em outro lugar.
 
 ## Orientação sobre ferramentas
 

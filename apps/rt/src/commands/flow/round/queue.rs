@@ -1922,6 +1922,13 @@ mod tests {
         assert_eq!(waves_in(&out, "running"), vec![2], "a 3 ainda espera a 2 aprovada: {out}");
     }
 
+    /// As linhas dos itens combinados que a escolha da onda 1 deixa no
+    /// pedido, cada uma com o bloco, o código e o título.
+    const CHOSEN_ITEMS: &str = "- `agreed` MSTD-RULE-0001: Vale sempre: a tabela nova tem chave.\n\
+        - `agreed` MSTD-RULE-0003: Vale sempre: a tabela nova tem índice.\n\
+        - `agreed` MSTD-DEC-0001: Sem dono: a tabela nasce vazia.\n\
+        - `agreed` MSTD-DEC-0003: Da onda um: a coluna é texto.\n";
+
     /// A spec aprovada da análise antes do envio: uma onda, com a tarefa que
     /// faz uma das regras do projeto todo, duas regras do projeto todo que
     /// ela não faz, dois itens sem dono, que a palavra-chave liga à tarefa, e
@@ -1930,7 +1937,7 @@ mod tests {
     fn with_items_to_judge(root: &Path) -> BTreeMap<String, u64> {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             let rule = |text: &str| {
-                id_of(&write(root, "x", "rule", json!({"text": text, "example": "e", "keys": ["k"],
+                id_of(&write(root, "x", "rule", json!({"title": text, "text": text, "example": "e", "keys": ["k"],
                     "applies_to": {"files": ["**"]}, "origin": said})))
             };
             rule("Vale sempre: a tabela nova tem chave.");
@@ -1939,7 +1946,7 @@ mod tests {
             for (text, extra) in [("Sem dono: a tabela nasce vazia.", json!({"keys": ["tabela"]})),
                 ("Sem dono: o download não muda.", json!({"keys": ["índice"]})),
                 ("Da onda um: a coluna é texto.", json!({"waves": [1]}))] {
-                let mut body = json!({"text": text, "keys": ["k"], "why": "w", "origin": said});
+                let mut body = json!({"title": text, "text": text, "keys": ["k"], "why": "w", "origin": said});
                 body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
                 id_of(&write(root, "x", "decision", body));
             }
@@ -2045,7 +2052,7 @@ mod tests {
         for out_of_it in ["A tabela nova precisa de migração.", "O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
             assert!(!prompt.contains(out_of_it), "{out_of_it}: {prompt}");
         }
-        assert!(prompt.contains("- `agreed`: MSTD-RULE-0001, MSTD-RULE-0003, MSTD-DEC-0001, MSTD-DEC-0003\n"), "{prompt}");
+        assert!(prompt.contains(CHOSEN_ITEMS), "{prompt}");
     }
 
     /// A rodada que vai soltar uma onda com itens do projeto todo e itens sem
@@ -2096,7 +2103,7 @@ mod tests {
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         assert!(out.get("analysis").is_none(), "{out}");
         let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
-        assert!(prompt.contains("- `agreed`: MSTD-RULE-0001, MSTD-RULE-0003, MSTD-DEC-0001, MSTD-DEC-0003\n"), "{prompt}");
+        assert!(prompt.contains(CHOSEN_ITEMS), "{prompt}");
         let ignored: Vec<&str> = out["warnings"]
             .as_array()
             .map(Vec::as_slice)
@@ -2717,21 +2724,20 @@ mod tests {
         ));
 
         // Duas tarefas soltas, sem arquivo em comum, cada uma cobrindo um
-        // item sem prova: o pronto-quando do lote cai no texto delas, unido
-        // por espaço — o mesmo caminho que vazou o texto da tarefa retirada
-        // na onda 21.
+        // item sem prova: o pronto-quando do lote cai nos títulos delas — o
+        // mesmo caminho que vazou o texto da tarefa retirada na onda 21.
         let t1 = id_of(&write(
             root,
             "x",
             "task",
-            json!({"text": "Gravar a versao nova de uma decisao ja feita fora da onda.",
+            json!({"title": "Gravar a versao nova de uma decisao", "text": "A decisao ja foi feita fora da onda.",
                 "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item1], "origin": said}),
         ));
         id_of(&write(
             root,
             "x",
             "task",
-            json!({"text": "Trocar a mensagem de erro do campo vazio.",
+            json!({"title": "Trocar a mensagem de erro do campo vazio", "text": "Hoje a mensagem nao diz o campo.",
                 "files": [{"path": "src/c.rs"}], "depends_on": [], "covers": [item2], "origin": said}),
         ));
 
@@ -2758,9 +2764,12 @@ mod tests {
             "o texto da tarefa retirada nao pode aparecer no pedido: {prompt}"
         );
         assert!(
-            prompt.contains("Trocar a mensagem de erro do campo vazio"),
+            prompt.contains("Trocar a mensagem de erro do campo vazio\n"),
             "o pronto-quando nasce das tarefas visiveis agora: {prompt}"
         );
+        for whole in ["A decisao ja foi feita", "Hoje a mensagem nao diz"] {
+            assert!(!prompt.contains(whole), "o texto inteiro da tarefa nao entra no pedido: {prompt}");
+        }
     }
 
     /// Os motivos dos avisos do plano que conferiam onda como desenho: ondas

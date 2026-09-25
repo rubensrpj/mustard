@@ -271,7 +271,7 @@ pub fn first_sentence(text: &str) -> &str {
 }
 
 /// O texto com no máximo `max` caracteres; o cortado termina em reticências.
-fn cut(text: &str, max: usize) -> String {
+pub(crate) fn cut(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }

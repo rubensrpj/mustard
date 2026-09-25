@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Goal
 
-You implement the tasks of one wave of a spec, and only those. The request lists the items by code and gives the command that reads all the items at once; running it before you start is part of the work, and any item a text cites is read by its code. Do not look for the spec anywhere else.
+You implement the tasks of one wave of a spec, and only those. The request gives each item's code and title and, for tasks, the agent part; when in doubt, the command it gives reads the whole text, and any item a text cites is read by its code. A new item you record takes `title`, `text` and `agent`; a criterion, only `title`. Do not look for the spec anywhere else.
 
 ## Tool guidance
 

@@ -1605,7 +1605,7 @@ mod tests {
         assert!(!first.contains(translate("prompt.fix.wave", Locale::PtBr)), "{first}");
 
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
-        write(root, "x", "decision", json!({"author": "user", "text": "A soma aceita negativos.", "keys": ["soma"],
+        write(root, "x", "decision", json!({"author": "user", "title": "A soma aceita negativos", "text": "A soma aceita negativos.", "keys": ["soma"],
             "why": "o usuário pediu", "waves": [1]}));
         // O veredito final, com o item combinado vigente atendido: sem a
         // lista `agreed`, a revisão final seria recusada por faltar item,
@@ -1624,8 +1624,8 @@ mod tests {
             part.lines().filter(|l| l.starts_with("- ")).map(str::to_string).collect()
         };
         let lines = fix_lines(&fix);
-        assert_eq!(lines[..2], ["- `review`: MSTD-VERD-0001", "- `waves`: MSTD-DELIV-0001"], "{fix}");
-        assert!(lines[2].starts_with("- `agreed`: ") && lines[2].contains("MSTD-DEC-0001"), "{fix}");
+        assert_eq!(lines[..2], ["- `review` MSTD-VERD-0001: faltou o teste", "- `waves` MSTD-DELIV-0001: A soma saiu."], "{fix}");
+        assert_eq!(lines[2], "- `agreed` MSTD-DEC-0001: A soma aceita negativos", "{fix}");
 
         let back = round(root, "x", Some(&delivered(root, 1, "Teste acrescentado.", &["src/a.rs"])));
         assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");
