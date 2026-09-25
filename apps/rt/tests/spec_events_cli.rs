@@ -283,7 +283,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     // A onda nasce do backlog: as duas ondas e a tarefa da onda 2 entram como o
     // programa as grava ao montar os lotes, e a tarefa sem onda, pelo `write`.
     seed_binary(root, "wave", &json!({"author": "binary", "n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
-    write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
+    write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "covers": [c1], "origin": msg}));
     seed_binary(root, "wave", &json!({"author": "binary", "n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": msg}));
     seed_binary(root, "task", &json!({"author": "binary", "wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": msg}));
     seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
@@ -692,7 +692,7 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
 
     // A tarefa com um número de onda que nenhuma versão dela tinha: recusada.
     let (code, out) = write_out(root, "task",
-        &json!({"agent": "- conferir pelo teste", "wave": 1, "title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
+        &json!({"agent": "- conferir pelo teste", "wave": 1, "title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "covers": [crit], "origin": msg}));
     assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-backlog")), "{out}");
     assert_eq!(event_lines(root), before, "nada foi gravado");
 
@@ -708,7 +708,7 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
         "depends_on": [], "covers": [crit], "origin": msg, "replaces": task}));
     let before = event_lines(root);
     let (code, out) = write_out(root, "task", &json!({"agent": "- conferir pelo teste", "wave": 2, "title": "Entregar o T1", "text": "T1, noutra onda.",
-        "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg, "replaces": revised}));
+        "files": [{"path": "a.rs"}], "depends_on": [], "covers": [crit], "origin": msg, "replaces": revised}));
     assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-backlog")), "{out}");
     assert_eq!(event_lines(root), before, "nada foi gravado");
 
@@ -751,9 +751,11 @@ fn tarefa_sem_titulo_e_recusada_e_com_titulo_e_gravada() {
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = write(root, "criterion",
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
     let task = |title: Option<&str>, extra: Value| {
         let mut body = json!({"text": "Conferir cada critério no fechamento.", "files": [{"path": "a.rs"}],
-            "depends_on": [], "origin": msg, "agent": "- conferir cada critério"});
+            "depends_on": [], "covers": [crit], "origin": msg, "agent": "- conferir cada critério"});
         if let Some(title) = title {
             body["title"] = json!(title);
         }

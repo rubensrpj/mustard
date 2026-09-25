@@ -591,12 +591,21 @@ pub fn record(
 
 /// As declarações que faltam num rascunho de tarefa: o que ela faz, os
 /// arquivos que toca, de quais tarefas depende e, na tarefa gravada pelo
-/// modelo (`by_model`), o título curto que diz o que ela entrega. `files` e
-/// `depends_on` contam como declarados só pela chave estar presente, mesmo
-/// com a lista vazia — uma tarefa sem dependência declara `"depends_on": []`.
-/// O título vazio ou com mais de [`TASK_TITLE_MAX`] caracteres conta como
-/// faltando. A versão que o programa grava não precisa dele: herda o da
-/// versão que substitui ([`inherit_task_title`]).
+/// modelo (`by_model`), o título curto que diz o que ela entrega e os itens
+/// que ela cobre. `files` e `depends_on` contam como declarados só pela chave
+/// estar presente, mesmo com a lista vazia — uma tarefa sem dependência
+/// declara `"depends_on": []`. O título vazio ou com mais de
+/// [`TASK_TITLE_MAX`] caracteres conta como faltando. A versão que o programa
+/// grava não precisa dele: herda o da versão que substitui
+/// ([`inherit_task_title`]).
+///
+/// Os itens cobertos (`covers`) faltam também com a lista vazia: a onda leva
+/// como critérios os itens que as tarefas dela cobrem, e a tarefa que não
+/// cobre nenhum só seria recusada depois, quando a rodada formasse a onda. A
+/// tarefa que o programa grava fica de fora: a do item combinado não cumprido
+/// cobre o item, a da sobra que quebra cobre os critérios da onda que a
+/// apontou, e a da onda de conserto nasce com a onda já gravada, com os
+/// critérios da obra.
 fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<TaskDeclaration> {
     let mut missing = Vec::new();
     let what = draft.get("text").and_then(Value::as_str).is_none_or(|text| text.trim().is_empty());
@@ -613,6 +622,10 @@ fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<
     if by_model && (title.is_empty() || title.chars().count() > TASK_TITLE_MAX) {
         missing.push(TaskDeclaration::Title);
     }
+    let covers = draft.get("covers").and_then(Value::as_array).is_some_and(|items| !items.is_empty());
+    if by_model && !covers {
+        missing.push(TaskDeclaration::Covers);
+    }
     missing
 }
 
@@ -624,7 +637,47 @@ fn task_declared(event_type: &str, draft: &Map<String, Value>, by_model: bool) -
         return Ok(());
     }
     let missing = task_declarations_missing(draft, by_model);
-    if missing.is_empty() { Ok(()) } else { Err(Refusal::TaskDeclarationMissing { missing }) }
+    if missing.is_empty() { Ok(()) } else { Err(Refusal::TaskDeclarationMissing { missing, uncovered: Vec::new() }) }
+}
+
+/// Na recusa da tarefa sem os itens que ela cobre, a dica de qual cobrir: os
+/// itens da spec `spec` que nenhuma tarefa cobre ainda ([`uncovered_items`]).
+/// A leitura do arquivo só serve à mensagem: nada é gravado.
+fn with_uncovered_items(root: &Path, spec: &str, refusal: Refusal) -> Refusal {
+    match refusal {
+        Refusal::TaskDeclarationMissing { missing, .. } if missing.contains(&TaskDeclaration::Covers) => {
+            let log = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten());
+            let uncovered = log.as_ref().map(uncovered_items).unwrap_or_default();
+            Refusal::TaskDeclarationMissing { missing, uncovered }
+        }
+        other => other,
+    }
+}
+
+/// Os itens que uma tarefa pode cobrir e que nenhuma tarefa cobre ainda, na
+/// versão vigente e na ordem do arquivo, cada um pelo número, que é o que
+/// `covers` leva, e pelo código: os critérios e os itens combinados. Ficam de
+/// fora o item que vale no projeto todo, que nenhuma tarefa implementa, e o
+/// marcado como "não vira código".
+fn uncovered_items(log: &SpecLog) -> Vec<String> {
+    const COVERABLE: [&str; 8] =
+        ["criterion", "rule", "limit", "contract", "error", "edge_case", "out_of_scope", "decision"];
+    let covered: BTreeSet<u64> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .flat_map(|task| task.ints("covers"))
+        .filter_map(|id| log.current(id).map(|e| e.id))
+        .collect();
+    let owners = mustard_core::domain::wave_prompt::owners(log);
+    let codes = log.codes();
+    log.visible()
+        .into_iter()
+        .filter(|e| COVERABLE.contains(&e.event_type.as_str()))
+        .filter(|e| !covered.contains(&e.id) && e.str_field("no_code").is_none())
+        .filter(|e| !matches!(owners.get(&e.id), Some(mustard_core::domain::wave_prompt::Owner::Project)))
+        .map(|e| codes.get(&e.id).map_or_else(|| e.id.to_string(), |code| format!("{} ({code})", e.id)))
+        .collect()
 }
 
 /// As partes da forma fixa que um tipo de item exige além do título: a parte
@@ -769,7 +822,7 @@ fn record_in(
     if super::pages::old_format_spec(&project.root, spec) {
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
-    task_declared(event_type, &draft, by.is_none())?;
+    task_declared(event_type, &draft, by.is_none()).map_err(|refusal| with_uncovered_items(&project.root, spec, refusal))?;
     let mut draft = draft;
     let path = store::spec_file(&project.root, spec)?;
     // O item que descreve o trabalho, gravado pelo modelo, entra com as
@@ -3164,12 +3217,14 @@ mod tests {
             for phase in ["delivered", "discarded"] {
                 let spec = format!("saiu-{phase}-{tag}");
                 let said = spec_in_phase(root, &spec, phase);
+                let crit = crate::shared::spec_state::seed_event(root, &spec, "criterion", json!({"when": "a obra roda",
+                    "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous"}));
                 let drafts = [
                     ("request", json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "keys": ["otimizador"],
                     "effect": "new_waves",
                         "origin": said})),
                     ("task", json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "agent": "- otimizador", "files": [],
-                        "depends_on": [], "origin": said})),
+                        "depends_on": [], "covers": [crit], "origin": said})),
                 ];
                 for (event_type, draft) in &drafts {
                     let (out, before, after) = by_assistant(root, &spec, event_type, draft);
@@ -3185,8 +3240,10 @@ mod tests {
             }
             let open_pr = format!("pr-aberto-{tag}");
             let said = spec_in_phase(root, &open_pr, "pr_open");
+            let crit = crate::shared::spec_state::seed_event(root, &open_pr, "criterion", json!({"when": "a obra roda",
+                "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous"}));
             let task = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "agent": "- otimizador", "files": [],
-                "depends_on": [], "origin": said});
+                "depends_on": [], "covers": [crit], "origin": said});
             let (out, before, after) = by_assistant(root, &open_pr, "task", &task);
             assert_eq!(out["ok"], json!(true), "{language}: the task on the open pull request is written: {out}");
             assert!(after.len() > before.len(), "{language}: the task was written");
@@ -4888,14 +4945,17 @@ mod tests {
                 json: body.to_string(),
             })
         };
+        let crit = crate::shared::spec_state::seed_event(root, "teste", "criterion", json!({"when": "a obra fecha",
+            "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}));
         let first = by_model(json!({"title": "Fechamento confere cada critério", "text": "Conferir.",
-            "agent": "- conferir cada critério", "files": [], "depends_on": [], "origin": said}));
+            "agent": "- conferir cada critério", "files": [], "depends_on": [], "covers": [crit], "origin": said}));
         let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa com título grava: {first}"));
 
-        let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "origin": said,
-            "replaces": first});
+        let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "covers": [crit],
+            "origin": said, "replaces": first});
         let refused = by_model(version.clone());
         assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+        assert!(!refused["hint"].as_str().unwrap_or_default().contains("covers"), "só falta o título: {refused}");
 
         let draft = version.as_object().cloned().unwrap();
         let recorded = record(root, "teste", "task", draft, PhaseWriter::Binary).expect("o programa grava");

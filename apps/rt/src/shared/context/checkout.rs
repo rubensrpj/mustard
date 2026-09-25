@@ -3,7 +3,7 @@
 
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Resolve the name of the current spec for a caller with no session in hand,
 /// fail-open `None`: the `MUSTARD_ACTIVE_SPEC` override, then the spec of the
@@ -34,13 +34,14 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
 /// PreToolUse hook, once per Write/Edit, and a subprocess per file edit is a
 /// cost the answer does not justify. No `git` runs at all: in a linked
 /// worktree, where `.git` is a file, the HEAD is read through its `gitdir`,
+/// by the same reading `workspace::checkout_git_dir` gives every caller,
 /// and the main checkout — where the `mustard.json` and the spec folders
 /// live — is read from the worktree's files by
 /// `workspace::linked_worktree_main`. Fail-open at every step.
 #[must_use]
 pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
     let project = Path::new(project_dir_path);
-    let git_dir = checkout_git_dir(project)?;
+    let git_dir = mustard_core::io::workspace::checkout_git_dir(project)?;
     let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let branch = head.trim().strip_prefix("ref: refs/heads/")?.trim();
     if branch.is_empty() {
@@ -64,19 +65,6 @@ pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
                 .is_ok_and(|sp| sp.dir().exists())
         })
         .then_some(slug)
-}
-
-/// The git folder of the checkout in `project`, reading files only: `.git` is
-/// the folder itself, or, in a linked worktree, a `gitdir: <path>` file.
-fn checkout_git_dir(project: &Path) -> Option<PathBuf> {
-    let dot_git = project.join(".git");
-    if dot_git.is_dir() {
-        return Some(dot_git);
-    }
-    let text = fs::read_to_string(&dot_git).ok()?;
-    let target = text.lines().find_map(|line| line.trim().strip_prefix("gitdir:"))?.trim();
-    let target = Path::new(target);
-    Some(if target.is_absolute() { target.to_path_buf() } else { project.join(target) })
 }
 
 #[cfg(test)]
@@ -113,5 +101,38 @@ mod tests {
         // The branch the checkout stands on still does.
         crate::shared::spec_state::stand_on_spec_branch(dir.path(), "on-the-branch");
         assert_eq!(current_spec(root).as_deref(), Some("on-the-branch"));
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = mustard_core::platform::git::run(dir, args);
+        assert!(out.ok, "git {args:?}: {}", out.stderr);
+    }
+
+    /// The separate copy of a wave is a linked worktree in a folder outside
+    /// the project, whose `.git` file points to its own git folder: the spec
+    /// it stands on is the one of the copy's branch, read through that
+    /// pointer, with the spec folder in the main checkout. The main checkout,
+    /// on the integration base, stands on none.
+    #[test]
+    fn a_separate_copy_names_the_spec_of_its_own_branch() {
+        let dir = tempdir().unwrap();
+        let main = dir.path().join("projeto");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["config", "user.email", "t@example.com"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-q", "-b", "dev"]);
+        std::fs::write(main.join("README.md"), "oi\n").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-q", "-m", "init"]);
+        std::fs::write(main.join("mustard.json"), "{}").unwrap();
+        std::fs::create_dir_all(main.join(".claude").join("spec").join("da-copia")).unwrap();
+        let copy = dir.path().join("cache").join("copias").join("projeto-0123abcd").join("da-copia").join("a");
+        git(&main, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "feature/da-copia"]);
+        assert!(copy.join(".git").is_file(), "the copy is a real linked worktree");
+        assert!(!copy.join(".claude").exists(), "the copy carries no spec folder");
+
+        assert_eq!(spec_of_checkout_branch(&copy.to_string_lossy()).as_deref(), Some("da-copia"));
+        assert_eq!(spec_of_checkout_branch(&main.to_string_lossy()), None, "the base names no spec");
     }
 }

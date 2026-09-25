@@ -345,8 +345,8 @@ fn main_checkout_if_linked(dir: &Path) -> Option<PathBuf> {
 /// ([`crate::platform::git::run`]) asks it which project owns a wave copy that
 /// lives outside its project — asking git there would be asking git how to ask
 /// git. Like git, the reading stops at the nearest `.git` above `dir`. A
-/// folder there is a main checkout. A file names the admin folder (`gitdir:
-/// <path>`, absolute or relative to the worktree), and only a linked
+/// folder there is a main checkout. A file names the admin folder, read as
+/// [`checkout_git_dir`] reads it, and only a linked
 /// worktree's admin folder carries the `commondir` that leads to the shared
 /// folder; a submodule's has none. The folder above a shared `…/.git` is the
 /// main checkout. A shared folder with another name — a submodule's, under the
@@ -362,15 +362,39 @@ pub fn linked_worktree_main(dir: &Path) -> Option<PathBuf> {
     // A relative `.` only climbs to the folders above once it is absolute.
     let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     let top = dir.ancestors().find(|folder| is_git_repo_root(folder))?;
-    let pointer = std::fs::read_to_string(top.join(".git")).ok()?;
-    let admin = pointer.lines().find_map(|line| line.strip_prefix("gitdir:"))?.trim();
-    let admin = top.join(admin);
+    // The `.git` folder of a main checkout is its own git folder, never an
+    // admin folder that leads elsewhere.
+    let admin = checkout_git_dir(top).filter(|admin| *admin != top.join(".git"))?;
     let common = std::fs::read_to_string(admin.join("commondir")).ok()?;
     let common = std::fs::canonicalize(admin.join(common.trim())).ok()?;
     if common.file_name().and_then(|name| name.to_str()) == Some(".git") {
         return common.parent().map(Path::to_path_buf);
     }
     std::fs::canonicalize(common.join(configured_worktree(&common)?)).ok()
+}
+
+/// The git folder of the checkout rooted at `checkout`, read from files only:
+/// a `.git` folder is that folder; a `.git` file — a linked worktree's or a
+/// submodule's — names it on its `gitdir: <path>` line, absolute or relative
+/// to the checkout, with the spaces around the line and the path ignored.
+/// `None` when there is no `.git`, or the file names no folder.
+///
+/// It is the one reading of that pointer: the branch a checkout stands on is
+/// read through it, and so is the way from a linked worktree to its main
+/// checkout ([`linked_worktree_main`]).
+#[must_use]
+pub fn checkout_git_dir(checkout: &Path) -> Option<PathBuf> {
+    let dot_git = checkout.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let pointer = std::fs::read_to_string(&dot_git).ok()?;
+    let target = pointer.lines().find_map(|line| line.trim().strip_prefix("gitdir:"))?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let target = Path::new(target);
+    Some(if target.is_absolute() { target.to_path_buf() } else { checkout.join(target) })
 }
 
 /// The checkout the shared git folder `common` names in `core.worktree`,
@@ -752,6 +776,44 @@ mod tests {
             matches!(resolve_with_override(&loose, None), Err(WorkspaceError::AnchorNotFound { .. })),
             "a folder outside any project still resolves nothing",
         );
+    }
+
+    /// The git folder of a checkout is its `.git` folder, or the folder a
+    /// `.git` file names on its `gitdir:` line: relative to the checkout or
+    /// absolute, with spaces before the line or around the path ignored. A
+    /// checkout with no `.git`, or a file that names nothing, has none.
+    #[test]
+    fn the_git_folder_of_a_checkout_is_its_folder_or_the_one_its_pointer_names() {
+        let dir = tempdir().unwrap();
+        let main = dir.path().join("principal");
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        assert_eq!(checkout_git_dir(&main), Some(main.join(".git")), "a .git folder is the git folder");
+
+        let relative = dir.path().join("relativa");
+        std::fs::create_dir_all(&relative).unwrap();
+        std::fs::write(relative.join(".git"), "gitdir: ../principal/.git/worktrees/relativa\n").unwrap();
+        assert_eq!(
+            checkout_git_dir(&relative),
+            Some(relative.join("../principal/.git/worktrees/relativa")),
+            "a relative pointer is read from the checkout",
+        );
+
+        let absolute = dir.path().join("absoluta");
+        std::fs::create_dir_all(&absolute).unwrap();
+        let admin = main.join(".git").join("worktrees").join("absoluta");
+        std::fs::write(absolute.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        assert_eq!(checkout_git_dir(&absolute), Some(admin.clone()), "an absolute pointer is taken as it is");
+
+        let spaced = dir.path().join("com-espaco");
+        std::fs::create_dir_all(&spaced).unwrap();
+        std::fs::write(spaced.join(".git"), format!("  gitdir:   {}  \r\n", admin.display())).unwrap();
+        assert_eq!(checkout_git_dir(&spaced), Some(admin), "spaces around the line and the path are ignored");
+
+        let none = dir.path().join("sem-git");
+        std::fs::create_dir_all(&none).unwrap();
+        assert_eq!(checkout_git_dir(&none), None, "no .git, no git folder");
+        std::fs::write(none.join(".git"), "gitdir:\n").unwrap();
+        assert_eq!(checkout_git_dir(&none), None, "a pointer that names nothing gives nothing");
     }
 
     /// The checkout a shared git folder names is read as git reads its

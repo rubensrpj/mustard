@@ -58,6 +58,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "a short title, of up to 70 characters, saying what it delivers (like \"Closing checks \
              each criterion against the code\")"
         }
+        ("spec_events.task_declaration_covers", Locale::PtBr) => {
+            "os itens que ela cobre, em `covers`, pelo número (a onda leva esses itens como critérios)"
+        }
+        ("spec_events.task_declaration_covers", Locale::EnUs) => {
+            "the items it covers, in `covers`, by number (the wave takes them as its criteria)"
+        }
+        ("spec_events.task_uncovered_items", Locale::PtBr) => "Itens que nenhuma tarefa cobre ainda: {items}.",
+        ("spec_events.task_uncovered_items", Locale::EnUs) => "Items no task covers yet: {items}.",
+        ("spec_events.task_uncovered_more", Locale::PtBr) => "e mais {n}",
+        ("spec_events.task_uncovered_more", Locale::EnUs) => "and {n} more",
         // A forma fixa de um item que descreve o trabalho: título, parte do
         // usuário e parte do agente, e a conferência de escrita das duas
         // primeiras.
@@ -831,8 +841,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            109,
-            0xecb2_fe12_d607_f15c,
+            112,
+            0x07f4_33b9_db2f_1fd8,
         );
     }
 
@@ -849,6 +859,9 @@ mod tests {
             ("spec_events.task_declaration_files", &[][..]),
             ("spec_events.task_declaration_depends_on", &[][..]),
             ("spec_events.task_declaration_title", &[][..]),
+            ("spec_events.task_declaration_covers", &[][..]),
+            ("spec_events.task_uncovered_items", &["{items}"][..]),
+            ("spec_events.task_uncovered_more", &["{n}"][..]),
             ("spec_events.item_form_missing", &["{missing}"][..]),
             ("spec_events.item_part_title", &[][..]),
             ("spec_events.item_part_user", &[][..]),

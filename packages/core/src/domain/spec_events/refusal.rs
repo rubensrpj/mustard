@@ -129,10 +129,13 @@ pub enum Refusal {
     /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
     /// todo.
     OwnerMissing { event_type: String },
-    /// Uma tarefa gravada sem uma das três declarações obrigatórias: o que
-    /// ela faz, os arquivos que toca e de quais tarefas depende. Nada é
-    /// gravado, e a mensagem nomeia exatamente qual (ou quais) faltou.
-    TaskDeclarationMissing { missing: Vec<TaskDeclaration> },
+    /// Uma tarefa gravada sem uma das declarações obrigatórias: o que ela
+    /// faz, os arquivos que toca, de quais tarefas depende e, na do modelo,
+    /// o título e os itens que ela cobre. Nada é gravado, e a mensagem nomeia
+    /// exatamente qual (ou quais) faltou. Quando faltam os itens cobertos,
+    /// `uncovered` traz os que nenhuma tarefa da spec cobre ainda, cada um
+    /// pelo número e pelo código, como dica de qual cobrir.
+    TaskDeclarationMissing { missing: Vec<TaskDeclaration>, uncovered: Vec<String> },
     /// Um item que descreve o trabalho, gravado pelo modelo, sem uma das
     /// partes da forma fixa: o título curto, a parte do usuário e a parte do
     /// agente; ou com a parte do usuário citando o que é do agente. Nada é
@@ -195,7 +198,15 @@ pub enum TaskDeclaration {
     /// diz o que a tarefa entrega. Falta tanto quando não vem quanto quando
     /// passa do tamanho.
     Title,
+    /// Os itens da spec que a tarefa entrega (`covers`), pelo número: a onda
+    /// leva como critérios os itens que as tarefas dela cobrem, e a onda sem
+    /// critério não se forma. Falta quando não vem ou vem vazio.
+    Covers,
 }
+
+/// Quantos itens sem tarefa a recusa da tarefa sem `covers` mostra; os
+/// outros saem contados.
+const UNCOVERED_SHOWN: usize = 10;
 
 /// O tamanho máximo do título de uma tarefa, em caracteres.
 pub const TASK_TITLE_MAX: usize = 70;
@@ -236,6 +247,7 @@ impl TaskDeclaration {
             Self::Files => translate("spec_events.task_declaration_files", lang),
             Self::DependsOn => translate("spec_events.task_declaration_depends_on", lang),
             Self::Title => translate("spec_events.task_declaration_title", lang),
+            Self::Covers => translate("spec_events.task_declaration_covers", lang),
         }
     }
 }
@@ -506,13 +518,26 @@ impl Refusal {
             Self::OwnerMissing { event_type } => {
                 fill("plan.owner_missing", &[("{type}", event_type.clone())])
             }
-            Self::TaskDeclarationMissing { missing } => fill(
-                "spec_events.task_declaration_missing",
-                &[(
-                    "{missing}",
-                    missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
-                )],
-            ),
+            Self::TaskDeclarationMissing { missing, uncovered } => {
+                let mut text = fill(
+                    "spec_events.task_declaration_missing",
+                    &[(
+                        "{missing}",
+                        missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
+                    )],
+                );
+                if !uncovered.is_empty() {
+                    let mut items = uncovered.iter().take(UNCOVERED_SHOWN).cloned().collect::<Vec<_>>().join(", ");
+                    if uncovered.len() > UNCOVERED_SHOWN {
+                        items.push(' ');
+                        let more = (uncovered.len() - UNCOVERED_SHOWN).to_string();
+                        items.push_str(&fill("spec_events.task_uncovered_more", &[("{n}", more)]));
+                    }
+                    text.push(' ');
+                    text.push_str(&fill("spec_events.task_uncovered_items", &[("{items}", items)]));
+                }
+                text
+            }
             Self::ItemFormMissing { missing } => fill(
                 "spec_events.item_form_missing",
                 &[("{missing}", missing.iter().map(|part| part.label(lang)).collect::<Vec<_>>().join("; "))],
@@ -571,4 +596,32 @@ fn opening(text: &str, max: usize) -> String {
     let mut cut: String = text.chars().take(max).collect();
     cut.push('…');
     cut
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A recusa da tarefa sem os itens que ela cobre mostra até dez dos itens
+    /// que nenhuma tarefa cobre, na ordem em que vieram, e conta os outros;
+    /// sem item nenhum, fica só a declaração que falta.
+    #[test]
+    fn the_refusal_of_a_task_without_covers_shows_ten_uncovered_items_and_counts_the_rest() {
+        let uncovered: Vec<String> = (1..=12).map(|n| format!("{n} (MSTD-CRIT-{n:04})")).collect();
+        let refusal = Refusal::TaskDeclarationMissing { missing: vec![TaskDeclaration::Covers], uncovered };
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.contains("10 (MSTD-CRIT-0010) e mais 2."), "{pt}");
+        assert!(!pt.contains("MSTD-CRIT-0011"), "{pt}");
+        let en = refusal.message(Locale::EnUs);
+        assert!(en.contains("1 (MSTD-CRIT-0001), 2 (MSTD-CRIT-0002)") && en.contains("and 2 more."), "{en}");
+
+        let ten: Vec<String> = (1..=10).map(|n| n.to_string()).collect();
+        let refusal = Refusal::TaskDeclarationMissing { missing: vec![TaskDeclaration::Covers], uncovered: ten };
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.ends_with("9, 10."), "ten items are all shown, with no count: {pt}");
+
+        let refusal = Refusal::TaskDeclarationMissing { missing: vec![TaskDeclaration::Covers], uncovered: Vec::new() };
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.contains("`covers`") && !pt.contains("Itens que nenhuma tarefa cobre"), "{pt}");
+    }
 }

@@ -3094,8 +3094,10 @@ exit "${2:-0}"
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "mais uma"})));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério").id;
         let task = id_of(&write(root, "x", "task", json!({"text": "Tarefa que ficou no backlog.",
-            "files": [{"path": "src/w1.rs"}], "depends_on": [], "origin": said})));
+            "files": [{"path": "src/w1.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let code = log.codes().get(&task).cloned().expect("a tarefa tem código");
 

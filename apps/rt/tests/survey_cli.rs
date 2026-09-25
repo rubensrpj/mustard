@@ -93,6 +93,17 @@ fn id(report: &Value) -> u64 {
     report["id"].as_u64().unwrap_or_else(|| panic!("no id: {report}"))
 }
 
+/// Um critério gravado pelo `run write`, para as tarefas cobrirem: a tarefa
+/// do modelo diz os itens que ela entrega.
+fn criterion(root: &Path, said: u64) -> u64 {
+    id(&write(
+        root,
+        "criterion",
+        &json!({"title": "Somar dois números", "when": "a soma roda", "then": "o total sai certo",
+            "proof": "git --version", "form": "ubiquitous", "origin": said}),
+    ))
+}
+
 /// A fase da spec, lida do arquivo de eventos.
 fn phase(root: &Path) -> Option<&'static str> {
     let path = store::spec_file(root, SPEC).expect("the spec's file");
@@ -210,6 +221,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
     let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = user_says(root, GOAL);
+    let crit = criterion(root, said);
 
     let path = store::spec_file(root, SPEC).expect("the spec's file");
     let lines_before = std::fs::read_to_string(&path).expect("the spec file").lines().count();
@@ -223,7 +235,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
             "--spec",
             SPEC,
             "--json",
-            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "origin": said}).to_string(),
+            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "covers": [crit], "origin": said}).to_string(),
         ],
     );
     let refused = report(&out);
@@ -246,7 +258,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
             "--spec",
             SPEC,
             "--json",
-            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "origin": said}).to_string(),
+            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "covers": [crit], "origin": said}).to_string(),
         ],
     );
     let refused = report(&out);
@@ -264,7 +276,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
     let written = write(
         root,
         "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "covers": [crit], "origin": said}),
     );
     assert!(written.get("id").is_some(), "{written}");
     assert_eq!(std::fs::read_to_string(&path).expect("the spec file").lines().count(), lines_before + 1);
@@ -278,11 +290,12 @@ fn uma_tarefa_sem_numero_de_onda_e_gravada() {
     let root = dir.path();
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = user_says(root, GOAL);
+    let crit = criterion(root, said);
 
     let written = write(
         root,
         "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "covers": [crit], "origin": said}),
     );
     assert_eq!(written["ok"], json!(true), "{written}");
     assert!(written.get("id").is_some(), "{written}");
@@ -297,15 +310,16 @@ fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
     let root = dir.path();
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = user_says(root, GOAL);
+    let crit = criterion(root, said);
 
-    let a = write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
+    let a = write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "covers": [crit], "origin": said}));
     let a_id = id(&a);
     let a_code = a["code"].as_str().unwrap().to_string();
 
     let b = write(
         root,
         "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa B.", "files": [], "depends_on": [a_code.clone()], "origin": said}),
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa B.", "files": [], "depends_on": [a_code.clone()], "covers": [crit], "origin": said}),
     );
     let b_code = b["code"].as_str().unwrap().to_string();
 
@@ -322,7 +336,7 @@ fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
             SPEC,
             "--json",
             &json!({"agent": "- conferir pelo teste",
-                "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [b_code.clone()],
+                "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [b_code.clone()], "covers": [crit],
                 "replaces": a_id, "origin": said,
             })
             .to_string(),
@@ -345,7 +359,7 @@ fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
     let revised = write(
         root,
         "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [], "replaces": a_id, "origin": said}),
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [], "covers": [crit], "replaces": a_id, "origin": said}),
     );
     assert_eq!(revised["code"], json!(a_code), "{revised}");
 }
@@ -361,8 +375,9 @@ fn a_dependencia_de_tarefa_inexistente_e_recusada() {
     let root = dir.path();
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = user_says(root, GOAL);
+    let crit = criterion(root, said);
 
-    let a = write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
+    let a = write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "covers": [crit], "origin": said}));
     let a_id = a["id"].as_u64().unwrap();
     let a_code = a["code"].as_str().unwrap().to_string();
 
@@ -378,7 +393,7 @@ fn a_dependencia_de_tarefa_inexistente_e_recusada() {
             SPEC,
             "--json",
             &json!({"agent": "- conferir pelo teste",
-                "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": ["MSTD-TASK-0099"],
+                "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": ["MSTD-TASK-0099"], "covers": [crit],
                 "replaces": a_id, "origin": said,
             })
             .to_string(),
@@ -394,4 +409,78 @@ fn a_dependencia_de_tarefa_inexistente_e_recusada() {
         lines_before,
         "nothing was written"
     );
+}
+
+/// A tarefa que o modelo grava sem dizer os itens que ela cobre, sem a chave
+/// ou com a lista vazia, é recusada, e nada entra no arquivo da spec: a onda
+/// leva como critérios os itens que as tarefas cobrem, e sem eles a rodada
+/// só recusaria a onda depois. A recusa dá a dica de qual item cobrir, pelo
+/// número e pelo código: os que nenhuma tarefa cobre ainda. Com o item, a
+/// tarefa grava, e o item coberto sai da dica da próxima recusa. O item que
+/// vale no projeto todo e o que não vira código nunca entram na dica.
+#[test]
+fn a_task_without_the_items_it_covers_is_refused_naming_the_items_no_task_covers() {
+    let dir = repo();
+    let root = dir.path();
+    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = user_says(root, GOAL);
+    let criterion = |title: &str| {
+        let written = write(
+            root,
+            "criterion",
+            &json!({"title": title, "when": "a soma roda", "then": "o total sai certo",
+                "proof": "git --version", "form": "ubiquitous", "origin": said}),
+        );
+        (id(&written), written["code"].as_str().unwrap_or_else(|| panic!("no code: {written}")).to_string())
+    };
+    let (one, one_code) = criterion("Somar dois números");
+    let (two, two_code) = criterion("Somar três números");
+    let task = |covers: Option<Value>| {
+        let mut body = json!({"agent": "- conferir pelo teste", "title": "Entregar a soma", "text": "Somar os números.",
+            "files": [], "depends_on": [], "origin": said});
+        if let Some(covers) = covers {
+            body["covers"] = covers;
+        }
+        body
+    };
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    // O item que vale no projeto todo e o que não vira código não pedem
+    // tarefa: ficam fora da dica.
+    let rule = |extra: Value| {
+        let mut draft = json!({"text": "A soma usa inteiros.", "keys": ["soma"], "example": "1 + 2 = 3", "origin": said});
+        draft.as_object_mut().expect("object").extend(extra.as_object().cloned().unwrap_or_default());
+        let written = store::write(&path, "rule", draft.as_object().cloned().unwrap_or_default(), &[]).expect("the rule");
+        written.code.expect("the rule's code")
+    };
+    let everywhere = rule(json!({"applies_to": {"files": ["**"]}}));
+    let no_code = rule(json!({"no_code": "É uma convenção de escrita."}));
+    let lines = || std::fs::read_to_string(&path).expect("the spec file").lines().count();
+    let refused = |body: &Value, case: &str| -> String {
+        let before = lines();
+        let out = rt(root, &["write", "task", "--spec", SPEC, "--json", &body.to_string()]);
+        let refused = report(&out);
+        assert!(!out.status.success(), "{case}: {refused}");
+        assert_eq!(refused["reason"], json!("task-declaration-missing"), "{case}: {refused}");
+        assert_eq!(lines(), before, "{case}: nothing was written");
+        refused["hint"].as_str().unwrap_or_default().to_string()
+    };
+
+    for (covers, case) in [(None, "no covers"), (Some(json!([])), "empty covers")] {
+        let hint = refused(&task(covers), case);
+        assert!(hint.contains("`covers`"), "{case}: the refusal names the field: {hint}");
+        assert!(!hint.contains("de quais tarefas depende") && !hint.contains("os arquivos que toca"), "{case}: {hint}");
+        let (first, second) = (format!("{one} ({one_code})"), format!("{two} ({two_code})"));
+        assert!(hint.contains(&first) && hint.contains(&second), "{case}: the hint names both items: {hint}");
+        assert!(!hint.contains(&everywhere) && !hint.contains(&no_code), "{case}: no task owes these: {hint}");
+    }
+
+    let before = lines();
+    let written = write(root, "task", &task(Some(json!([one]))));
+    assert_eq!(written["ok"], json!(true), "{written}");
+    assert_eq!(lines(), before + 1, "the task that covers an item is written");
+
+    let hint = refused(&task(None), "after one is covered");
+    assert!(hint.contains(&format!("{two} ({two_code})")), "the item no task covers stays: {hint}");
+    assert!(!hint.contains(&one_code), "the covered item leaves the hint: {hint}");
 }
