@@ -130,6 +130,16 @@ pub enum Refusal {
     /// ela faz, os arquivos que toca e de quais tarefas depende. Nada é
     /// gravado, e a mensagem nomeia exatamente qual (ou quais) faltou.
     TaskDeclarationMissing { missing: Vec<TaskDeclaration> },
+    /// Um item que descreve o trabalho, gravado pelo modelo, sem uma das
+    /// partes da forma fixa: o título curto, a parte do usuário e a parte do
+    /// agente; ou com a parte do usuário citando o que é do agente. Nada é
+    /// gravado, e a mensagem nomeia tudo o que faltou de uma vez.
+    ItemFormMissing { missing: Vec<ItemPart> },
+    /// O título ou a parte do usuário de um item não passou na conferência
+    /// de escrita das respostas. `fields` traz cada campo com defeito e a
+    /// medição dele; a mensagem diz todos os defeitos de uma vez, cada um com
+    /// o campo em que apareceu. Nada é gravado.
+    ItemUnclear { fields: Vec<(String, ClarityReport)> },
     /// Uma tarefa cujo `depends_on` aponta uma tarefa que não existe nesta
     /// spec. Nada é gravado, e a mensagem nomeia as duas.
     TaskDependsOnUnknown { task: String, depends_on: String },
@@ -186,6 +196,35 @@ pub enum TaskDeclaration {
 
 /// O tamanho máximo do título de uma tarefa, em caracteres.
 pub const TASK_TITLE_MAX: usize = 70;
+
+/// Uma das partes da forma fixa de um item que descreve o trabalho.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemPart {
+    /// O título curto (`title`), de até [`TASK_TITLE_MAX`] caracteres. Falta
+    /// tanto quando não vem quanto quando passa do tamanho.
+    Title,
+    /// A parte do usuário (`text`), com o porquê.
+    UserPart,
+    /// A parte do agente (`agent`), com arquivos, linhas, comandos e o que
+    /// testar.
+    AgentPart,
+    /// A parte do usuário cita o que é do agente: `found` é o trecho, uma
+    /// crase, um caminho de arquivo ou o código de outro item.
+    UserPartCites { found: String },
+}
+
+impl ItemPart {
+    fn label(&self, lang: Locale) -> String {
+        match self {
+            Self::Title => translate("spec_events.item_part_title", lang).to_string(),
+            Self::UserPart => translate("spec_events.item_part_user", lang).to_string(),
+            Self::AgentPart => translate("spec_events.item_part_agent", lang).to_string(),
+            Self::UserPartCites { found } => {
+                translate("spec_events.item_part_user_cites", lang).replace("{found}", found)
+            }
+        }
+    }
+}
 
 impl TaskDeclaration {
     fn label(self, lang: Locale) -> &'static str {
@@ -253,6 +292,8 @@ impl Refusal {
             Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
+            Self::ItemFormMissing { .. } => "item-form-missing",
+            Self::ItemUnclear { .. } => "item-unclear",
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
@@ -458,6 +499,17 @@ impl Refusal {
                     missing.iter().map(|d| d.label(lang)).collect::<Vec<_>>().join(", "),
                 )],
             ),
+            Self::ItemFormMissing { missing } => fill(
+                "spec_events.item_form_missing",
+                &[("{missing}", missing.iter().map(|part| part.label(lang)).collect::<Vec<_>>().join("; "))],
+            ),
+            Self::ItemUnclear { fields } => {
+                let defects: Vec<String> = fields
+                    .iter()
+                    .flat_map(|(field, report)| report.defects(lang).into_iter().map(move |d| format!("{field}: {d}")))
+                    .collect();
+                fill("spec_events.item_unclear", &[("{defects}", defects.join("; "))])
+            }
             Self::TaskDependsOnUnknown { task, depends_on } => fill(
                 "spec_events.task_depends_on_unknown",
                 &[("{task}", task.clone()), ("{depends_on}", depends_on.clone())],

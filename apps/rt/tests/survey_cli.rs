@@ -118,7 +118,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     assert_eq!(report(&opened)["step"], "ask_goal");
 
     let said = user_says(root, GOAL);
-    write(root, "context", &json!({"text": GOAL, "origin": said}));
+    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
 
     let grilled = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]);
     assert_eq!(grilled.status.code(), Some(0), "{}", String::from_utf8_lossy(&grilled.stdout));
@@ -147,7 +147,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
         let answer = write(
             root,
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"], "why": "o usuário respondeu",
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"], "why": "o usuário respondeu",
                 "origin": said}),
         );
         assert_eq!(answer["point"]["id"], json!(point), "an answer returns the same point: {answer}");
@@ -223,7 +223,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
             "--spec",
             SPEC,
             "--json",
-            &json!({"title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "origin": said}).to_string(),
+            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "origin": said}).to_string(),
         ],
     );
     let refused = report(&out);
@@ -246,7 +246,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
             "--spec",
             SPEC,
             "--json",
-            &json!({"title": "Entregar a tarefa", "text": "Somar dois números.", "origin": said}).to_string(),
+            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "origin": said}).to_string(),
         ],
     );
     let refused = report(&out);
@@ -264,7 +264,7 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
     let written = write(
         root,
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
     );
     assert!(written.get("id").is_some(), "{written}");
     assert_eq!(std::fs::read_to_string(&path).expect("the spec file").lines().count(), lines_before + 1);
@@ -282,7 +282,7 @@ fn uma_tarefa_sem_numero_de_onda_e_gravada() {
     let written = write(
         root,
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "origin": said}),
     );
     assert_eq!(written["ok"], json!(true), "{written}");
     assert!(written.get("id").is_some(), "{written}");
@@ -298,14 +298,14 @@ fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = user_says(root, GOAL);
 
-    let a = write(root, "task", &json!({"title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
+    let a = write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
     let a_id = id(&a);
     let a_code = a["code"].as_str().unwrap().to_string();
 
     let b = write(
         root,
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Tarefa B.", "files": [], "depends_on": [a_code.clone()], "origin": said}),
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa B.", "files": [], "depends_on": [a_code.clone()], "origin": said}),
     );
     let b_code = b["code"].as_str().unwrap().to_string();
 
@@ -321,7 +321,7 @@ fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
             "--spec",
             SPEC,
             "--json",
-            &json!({
+            &json!({"agent": "- conferir pelo teste",
                 "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [b_code.clone()],
                 "replaces": a_id, "origin": said,
             })
@@ -345,7 +345,7 @@ fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
     let revised = write(
         root,
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [], "replaces": a_id, "origin": said}),
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": [], "replaces": a_id, "origin": said}),
     );
     assert_eq!(revised["code"], json!(a_code), "{revised}");
 }
@@ -362,7 +362,7 @@ fn a_dependencia_de_tarefa_inexistente_e_recusada() {
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = user_says(root, GOAL);
 
-    let a = write(root, "task", &json!({"title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
+    let a = write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa A.", "files": [], "depends_on": [], "origin": said}));
     let a_id = a["id"].as_u64().unwrap();
     let a_code = a["code"].as_str().unwrap().to_string();
 
@@ -377,7 +377,7 @@ fn a_dependencia_de_tarefa_inexistente_e_recusada() {
             "--spec",
             SPEC,
             "--json",
-            &json!({
+            &json!({"agent": "- conferir pelo teste",
                 "title": "Entregar a tarefa", "text": "Tarefa A, revista.", "files": [], "depends_on": ["MSTD-TASK-0099"],
                 "replaces": a_id, "origin": said,
             })

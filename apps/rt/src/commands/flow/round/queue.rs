@@ -2905,7 +2905,7 @@ mod tests {
             spec: Some("x".into()),
             event_type: "task".into(),
             json: json!({"replaces": current.id, "wave": 1, "title": "Somar", "text": "Somar dois números inteiros.",
-                "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said})
+                "agent": "- somar", "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said})
             .to_string(),
         });
         assert_eq!(revised["ok"], json!(true), "{revised}");

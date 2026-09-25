@@ -275,15 +275,15 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
-    write(root, "context", &json!({"text": "Revise tudo", "origin": msg}));
+    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "Revise tudo", "origin": msg}));
     let c1 = write(root, "criterion",
-        &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
     let c2 = write(root, "criterion",
-        &json!({"when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
+        &json!({"title": "Combinar o item", "when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
     // A onda nasce do backlog: as duas ondas e a tarefa da onda 2 entram como o
     // programa as grava ao montar os lotes, e a tarefa sem onda, pelo `write`.
     seed_binary(root, "wave", &json!({"author": "binary", "n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
-    write(root, "task", &json!({"title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
+    write(root, "task", &json!({"agent": "- conferir pelo teste", "title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
     seed_binary(root, "wave", &json!({"author": "binary", "n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": msg}));
     seed_binary(root, "task", &json!({"author": "binary", "wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": msg}));
     seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
@@ -335,7 +335,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
         assert_eq!(stdout_json(&typed)["reason"], json!("user-message-by-hook"), "{body}");
     }
     assert_eq!(read(root, "conversation")["count"], json!(1));
-    let fields = json!({"text": "t", "keys": ["k"], "origin": msg}).to_string();
+    let fields = json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "t", "keys": ["k"], "origin": msg}).to_string();
     let missing = rt(root, &["write", "rule", "--spec", "teste", "--json", &fields]).output().expect("run");
     assert_eq!(missing.status.code(), Some(1));
     let refusal = stdout_json(&missing);
@@ -409,12 +409,12 @@ fn the_dispatch_reading_returns_every_item_the_wave_request_lists() {
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Somar a fatura"}));
-    let context = write(root, "context", &json!({"text": "A fatura soma centavos.", "origin": msg}));
-    let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
-    let c2 = write(root, "criterion", &json!({"when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
-    let mine = write(root, "decision", &json!({"text": "A soma arredonda no fim.", "why": "Centavos.", "keys": ["soma"],
+    let context = write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "A fatura soma centavos.", "origin": msg}));
+    let c1 = write(root, "criterion", &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
+    let c2 = write(root, "criterion", &json!({"title": "Combinar o item", "when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
+    let mine = write(root, "decision", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "A soma arredonda no fim.", "why": "Centavos.", "keys": ["soma"],
         "applies_to": {"files": ["src/soma.rs"]}, "origin": msg}));
-    let other = write(root, "decision", &json!({"text": "O outro arquivo guarda o histórico.", "why": "Auditoria.", "keys": ["outro"],
+    let other = write(root, "decision", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "O outro arquivo guarda o histórico.", "why": "Auditoria.", "keys": ["outro"],
         "applies_to": {"files": ["src/outro.rs"]}, "origin": msg}));
     let w1 = seed_binary(root, "wave", &json!({"author": "binary", "n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
     seed_binary(root, "task", &json!({"author": "binary", "wave": 1, "text": "Guardar o histórico.",
@@ -613,8 +613,8 @@ fn the_index_command_rebuilds_the_same_bytes_after_the_file_is_deleted() {
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Deixar o índice certo. Depois o resto."}));
-    write(root, "context", &json!({"text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
-    write(root, "rule", &json!({"text": "**Uma linha por spec.** Com o objetivo.", "keys": ["índice"], "example": "e", "origin": msg}));
+    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
+    write(root, "rule", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "**Uma linha por spec.** Com o objetivo.", "keys": ["índice"], "example": "e", "origin": msg}));
     let written = std::fs::read(index_file(root)).expect("the write left the index");
     let text = String::from_utf8_lossy(&written);
     assert!(text.contains("\"name\":\"teste\"") && text.contains("\"goal\":\"Deixar o índice certo.\""), "{text}");
@@ -676,7 +676,7 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
     let crit = write(root, "criterion",
-        &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
     let refusal_text = [Locale::PtBr, Locale::EnUs].map(|lang| translate("spec_events.wave_by_backlog", lang));
 
     // A onda gravada pelo modelo: recusada, e nada foi gravado.
@@ -692,7 +692,7 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
 
     // A tarefa com um número de onda que nenhuma versão dela tinha: recusada.
     let (code, out) = write_out(root, "task",
-        &json!({"wave": 1, "title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
+        &json!({"agent": "- conferir pelo teste", "wave": 1, "title": "Entregar o T1", "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg}));
     assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-backlog")), "{out}");
     assert_eq!(event_lines(root), before, "nada foi gravado");
 
@@ -704,10 +704,10 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
 
     // A versão nova da tarefa que repete a onda da versão revista passa; a
     // que troca a onda é recusada.
-    let revised = write(root, "task", &json!({"wave": 1, "title": "Entregar o T1", "text": "T1, revista.", "files": [{"path": "a.rs"}],
+    let revised = write(root, "task", &json!({"agent": "- conferir pelo teste", "wave": 1, "title": "Entregar o T1", "text": "T1, revista.", "files": [{"path": "a.rs"}],
         "depends_on": [], "covers": [crit], "origin": msg, "replaces": task}));
     let before = event_lines(root);
-    let (code, out) = write_out(root, "task", &json!({"wave": 2, "title": "Entregar o T1", "text": "T1, noutra onda.",
+    let (code, out) = write_out(root, "task", &json!({"agent": "- conferir pelo teste", "wave": 2, "title": "Entregar o T1", "text": "T1, noutra onda.",
         "files": [{"path": "a.rs"}], "depends_on": [], "origin": msg, "replaces": revised}));
     assert_eq!((code, &out["reason"]), (Some(1), &json!("wave-by-backlog")), "{out}");
     assert_eq!(event_lines(root), before, "nada foi gravado");
@@ -721,7 +721,7 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
         body.as_object_mut().expect("object").extend(extra.as_object().cloned().unwrap_or_default());
         body
     };
-    let (code, out) = write_out(root, "decision", &decision(json!({})));
+    let (code, out) = write_out(root, "decision", &decision(json!({"title": "Combinar o item", "agent": "- conferir pelo teste"})));
     assert_eq!((code, &out["reason"]), (Some(1), &json!("owner-missing")), "{out}");
     let hint = out["hint"].as_str().unwrap_or_default();
     assert!(!hint.contains("waves"), "{hint}");
@@ -729,7 +729,7 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
         let text = translate("plan.owner_missing", lang);
         assert!(!text.contains("waves") && text.contains("applies_to"), "{text}");
     }
-    let (code, out) = write_out(root, "decision", &decision(json!({"applies_to": {"files": ["a.rs"]}})));
+    let (code, out) = write_out(root, "decision", &decision(json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "applies_to": {"files": ["a.rs"]}})));
     assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "o dono pelos arquivos da tarefa passa: {out}");
 
     // A remoção da onda continua valendo.
@@ -753,7 +753,7 @@ fn tarefa_sem_titulo_e_recusada_e_com_titulo_e_gravada() {
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
     let task = |title: Option<&str>, extra: Value| {
         let mut body = json!({"text": "Conferir cada critério no fechamento.", "files": [{"path": "a.rs"}],
-            "depends_on": [], "origin": msg});
+            "depends_on": [], "origin": msg, "agent": "- conferir cada critério"});
         if let Some(title) = title {
             body["title"] = json!(title);
         }
@@ -802,7 +802,7 @@ fn o_item_com_dono_pelos_arquivos_vai_no_pedido_da_onda_que_toca_neles() {
     let root = dir.path();
     approved_with_waves(root, 2);
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "e mais isto"}));
-    let (code, out) = write_out(root, "decision", &json!({"text": "O arquivo a1 guarda só a conta.", "keys": ["conta"],
+    let (code, out) = write_out(root, "decision", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "O arquivo a1 guarda só a conta.", "keys": ["conta"],
         "why": "o usuário disse", "origin": msg, "applies_to": {"files": ["a1.rs"]}}));
     assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "{out}");
     let decision = out["code"].as_str().expect("o código da decisão").to_string();

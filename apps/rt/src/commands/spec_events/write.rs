@@ -195,9 +195,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::clarity::ClarityReport;
 use mustard_core::domain::lessons::{for_the_code, DEFECT, LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
-    type_spec, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+    type_spec, EventRef, Hidden, ItemPart, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
     TASK_TITLE_MAX,
 };
 use mustard_core::domain::spec_index;
@@ -471,10 +472,17 @@ pub(crate) fn seed_at(opts: &WriteOpts) -> Value {
     let by_hooks = matches!(event_type, "delivered" | "commit") || (event_type == "message" && by_user(&draft));
     let by_program = event_type == "wave" || (event_type == "task" && draft.contains_key("wave"));
     if !(by_hooks || by_program) || spec_was_opened(&project.root, spec).is_err() {
-        // A tarefa do backlog vai pela porta do modelo, que exige o título: o
-        // ajudante manda um quando o teste não deu o seu.
-        if event_type == "task" && !draft.contains_key("title") {
-            draft.insert("title".to_string(), json!("Entregar a tarefa"));
+        // O item que descreve o trabalho vai pela porta do modelo, que exige
+        // as partes da forma fixa: o ajudante manda o título e a parte do
+        // agente quando o teste não deu os seus.
+        if let Some((_, agent)) = item_form(event_type)
+            .filter(|(_, agent)| !draft.contains_key("title") || (*agent && !draft.contains_key("agent")))
+        {
+            let title = if event_type == "task" { "Entregar a tarefa" } else { "Combinar o item" };
+            draft.entry("title").or_insert_with(|| json!(title));
+            if agent {
+                draft.entry("agent").or_insert_with(|| json!("- conferir pelo teste"));
+            }
             return write_at(&WriteOpts {
                 root: opts.root.clone(),
                 spec: opts.spec.clone(),
@@ -600,6 +608,143 @@ fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<
     missing
 }
 
+/// As partes da forma fixa que um tipo de item exige além do título: a parte
+/// do usuário (`text`) e a parte do agente (`agent`). `None` para o tipo que
+/// não descreve o trabalho — a conversa, o estado, os relatos dos agentes e a
+/// lista de pendências seguem como são. O critério exige só o título: `when`
+/// e `then` já são do usuário, e `proof` é do agente. O pedido e a anotação
+/// exigem título e parte do usuário, e a parte do agente fica opcional.
+fn item_form(event_type: &str) -> Option<(bool, bool)> {
+    match event_type {
+        "rule" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "decision" | "context"
+        | "concern" | "task" => Some((true, true)),
+        "request" | "note" => Some((true, false)),
+        "criterion" => Some((false, false)),
+        _ => None,
+    }
+}
+
+/// O texto não vazio do campo `field`.
+fn filled<'a>(fields: &'a Map<String, Value>, field: &str) -> Option<&'a str> {
+    fields.get(field).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty())
+}
+
+/// As partes da forma fixa que faltam num rascunho do tipo `event_type`: o
+/// título curto, de até [`TASK_TITLE_MAX`] caracteres, a parte do usuário e a
+/// parte do agente, conforme o tipo ([`item_form`]); e a parte do usuário que
+/// cita o que é do agente ([`agent_detail_in`]). Vale só para o item que o
+/// modelo grava (`by_model`): o programa grava as próprias versões.
+fn item_form_missing(draft: &Map<String, Value>, event_type: &str, by_model: bool) -> Vec<ItemPart> {
+    let Some((user, agent)) = item_form(event_type).filter(|_| by_model) else { return Vec::new() };
+    let mut missing = Vec::new();
+    if filled(draft, "title").is_none_or(|title| title.chars().count() > TASK_TITLE_MAX) {
+        missing.push(ItemPart::Title);
+    }
+    if user {
+        match filled(draft, "text") {
+            None => missing.push(ItemPart::UserPart),
+            Some(text) => {
+                if let Some(found) = agent_detail_in(text) {
+                    missing.push(ItemPart::UserPartCites { found });
+                }
+            }
+        }
+    }
+    if agent && filled(draft, "agent").is_none() {
+        missing.push(ItemPart::AgentPart);
+    }
+    missing
+}
+
+/// O item gravado antes da forma fixa não é reescrito: a versão nova dele só
+/// segue a forma quando a versão que ela substitui já seguia. `true` quando o
+/// rascunho substitui um item do tipo `event_type` sem todas as partes que o
+/// tipo exige. O código do item vira o número da versão mais nova dele, como
+/// a gravação faz; o evento gravado não muda mais, então ler antes da trava
+/// não perde nada. O item que não se acha fica para a conferência da
+/// gravação, que o recusa.
+fn revises_an_item_without_the_form(path: &Path, draft: &Map<String, Value>, event_type: &str) -> Result<bool, Refusal> {
+    let Some((user, agent)) = item_form(event_type) else { return Ok(false) };
+    let Some(replaces) = draft.get("replaces").filter(|value| !value.is_array()) else { return Ok(false) };
+    let Some(log) = store::read(path)? else { return Ok(false) };
+    let mut probe = Map::new();
+    probe.insert("replaces".into(), replaces.clone());
+    if mustard_core::domain::spec_events::resolve_codes(&log, &mut probe).is_err() {
+        return Ok(false);
+    }
+    let Some(old) = probe.get("replaces").and_then(Value::as_u64).and_then(|id| log.get(id)) else {
+        return Ok(false);
+    };
+    let had = filled(&old.fields, "title").is_some()
+        && (!user || filled(&old.fields, "text").is_some())
+        && (!agent || filled(&old.fields, "agent").is_some());
+    Ok(!had)
+}
+
+/// O primeiro trecho da parte do usuário que é do agente: uma crase, o
+/// código de outro item ou um caminho de arquivo com extensão, com ou sem a
+/// linha (`write.rs:635`). `None` quando ela fala só pelo efeito.
+fn agent_detail_in(text: &str) -> Option<String> {
+    if let Some(open) = text.find('`') {
+        let rest = &text[open + 1..];
+        let quoted = rest.find('`').map_or(rest, |close| &rest[..close]);
+        return Some(format!("`{}`", quoted.chars().take(60).collect::<String>()));
+    }
+    if let Some((start, end)) = mustard_core::domain::mustard_id::find(text).first().copied() {
+        return Some(text[start..end].to_string());
+    }
+    const LEADERS: &[char] = &['(', '[', '"', '\'', '«', '“', '*', '_'];
+    const TRAILERS: &[char] = &[')', ']', '"', '\'', '»', '”', '*', '_', '.', ',', ';', ':', '!', '?', '…'];
+    text.split_whitespace().find_map(|token| {
+        let core = token.trim_start_matches(LEADERS).trim_end_matches(TRAILERS);
+        is_file_path(core).then(|| core.to_string())
+    })
+}
+
+/// Um caminho de arquivo ou um nome de arquivo com extensão, com a linha
+/// opcional depois de dois-pontos: `apps/rt/x.rs`, `mod.rs`, `CLAUDE.md:12`.
+/// A extensão é curta e tem ao menos uma minúscula, então "3.5" e "v0.2.0"
+/// continuam números; "e/ou" e "CI/CD" continuam texto.
+fn is_file_path(core: &str) -> bool {
+    let mut name = core;
+    while let Some((head, tail)) = name.rsplit_once(':') {
+        if tail.is_empty() || !tail.chars().all(|c| c.is_ascii_digit() || c == '-') {
+            break;
+        }
+        name = head;
+    }
+    if name.contains("://") {
+        return false;
+    }
+    let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    last.rsplit_once('.').is_some_and(|(stem, ext)| {
+        stem.chars().any(char::is_alphanumeric)
+            && (1..=5).contains(&ext.len())
+            && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            && ext.chars().any(|c| c.is_ascii_lowercase())
+    })
+}
+
+/// A conferência de escrita das respostas sobre o título e a parte do usuário
+/// de um item (`title`, `text`, `why`, `when` e `then`), com o que o projeto
+/// em `root` declara. A parte do agente, a prova, o exemplo e os outros
+/// campos do agente ficam de fora: são feitos de caminhos e comandos. A sigla
+/// explicada num campo vale nos outros, porque a página mostra o item
+/// inteiro. Os campos com defeito, na ordem, cada um com a medição dele.
+fn unclear_fields(root: &Path, draft: &Map<String, Value>, lang: Locale) -> Vec<(String, ClarityReport)> {
+    use crate::hooks::task::clarity_check::measure_in_project;
+    const MEASURED: &[&str] = &["title", "text", "why", "when", "then"];
+    let parts: Vec<(&str, &str)> =
+        MEASURED.iter().filter_map(|field| filled(draft, field).map(|text| (*field, text))).collect();
+    let explained: Vec<String> =
+        parts.iter().flat_map(|(_, text)| measure_in_project(root, text, &[]).explained).collect();
+    parts
+        .into_iter()
+        .map(|(field, text)| (field.to_string(), measure_in_project(root, text, &explained)))
+        .filter(|(_, report)| !report.defects(lang).is_empty())
+        .collect()
+}
+
 /// A versão de tarefa gravada pelo programa sem título leva o título da
 /// versão que ela substitui, quando essa tinha um. O evento gravado não muda
 /// mais, então ler a versão antiga antes da trava não perde nada.
@@ -640,6 +785,21 @@ fn record_in(
     }
     let mut draft = draft;
     let path = store::spec_file(&project.root, spec)?;
+    // O item que descreve o trabalho, gravado pelo modelo, entra com as
+    // partes da forma fixa, e o título e a parte do usuário passam pela
+    // conferência de escrita. A versão nova de um item de antes da forma
+    // segue como ele era.
+    let by_model = by.is_none() && item_form(event_type).is_some();
+    if by_model && !revises_an_item_without_the_form(&path, &draft, event_type)? {
+        let missing = item_form_missing(&draft, event_type, by_model);
+        if !missing.is_empty() {
+            return Err(Refusal::ItemFormMissing { missing });
+        }
+        let unclear = unclear_fields(&project.root, &draft, project.lang);
+        if !unclear.is_empty() {
+            return Err(Refusal::ItemUnclear { fields: unclear });
+        }
+    }
     if event_type == "task" && by.is_some() {
         inherit_task_title(&path, &mut draft)?;
     }
@@ -2508,6 +2668,245 @@ mod tests {
         assert_eq!(kept(), [4, 6]);
     }
 
+    /// Um rascunho pela porta do modelo, como o `run write` o recebe, sem o
+    /// ajudante que completa as partes da forma fixa.
+    fn by_model(root: &std::path::Path, event_type: &str, draft: &Value) -> Value {
+        open_spec(root, "teste");
+        write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            event_type: event_type.into(),
+            json: draft.to_string(),
+        })
+    }
+
+    /// Uma regra gravada direto no arquivo, num bloco só, sem título nem parte
+    /// do agente, como as specs de antes da forma fixa têm; devolve o número.
+    fn old_rule(root: &std::path::Path, origin: u64, code: &str) -> u64 {
+        let path = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let id = store::read(&path).unwrap().unwrap().max_id() + 1;
+        let line = json!({"v": 1, "id": id, "code": code, "at": "2026-01-01T10:00:00-03:00", "type": "rule",
+            "author": "assistant", "text": "A pasta de cache nunca é apagada.", "keys": ["cache"], "example": "e",
+            "origin": origin});
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(&format!("{line}\n"));
+        std::fs::write(&path, content).unwrap();
+        id
+    }
+
+    /// Uma regra nas três partes: o título, o porquê pelo efeito e o que o
+    /// agente precisa para fazer e testar.
+    fn whole_rule(origin: u64) -> Value {
+        json!({"title": "Travar o apagar da pasta", "text": "A trava barra o comando que apaga a pasta, e nada se perde.",
+            "keys": ["trava"], "example": "rm -rf pasta", "origin": origin,
+            "agent": "- o gancho fica em `apps/rt/src/hooks/gate.rs:40`\n- testar com `cargo test -- trava`"})
+    }
+
+    /// O item combinado que o modelo grava num bloco só é recusado com as
+    /// partes que faltam, e nada é gravado; o título de 71 caracteres conta
+    /// como faltando. O pedido passa sem a parte do agente, e o critério, só
+    /// com o título.
+    #[test]
+    fn item_form_refuses_an_item_in_one_block_and_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let one_block = json!({"text": "A trava barra o comando que apaga a pasta.", "keys": ["trava"],
+            "example": "rm -rf pasta", "origin": said});
+        let before = lines(root);
+        let refused = by_model(root, "rule", &one_block);
+        assert_eq!(refused["reason"], json!("item-form-missing"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        for part in ["`title`", "`agent`", "Nada foi gravado"] {
+            assert!(hint.contains(part), "{part}: {hint}");
+        }
+        assert!(!hint.contains("`text`"), "the user's part came: {hint}");
+        assert_eq!(lines(root), before, "nothing was written");
+
+        let mut long = whole_rule(said);
+        long["title"] = json!("a".repeat(71));
+        let refused = by_model(root, "rule", &long);
+        assert_eq!(refused["reason"], json!("item-form-missing"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`title`") && !hint.contains("`agent`"), "{hint}");
+        assert_eq!(lines(root), before, "nothing was written");
+
+        assert_eq!(by_model(root, "rule", &whole_rule(said))["ok"], json!(true));
+
+        let request = json!({"text": "Travar também a pasta de cache, que guarda o trabalho da semana.", "keys": ["cache"],
+            "effect": "new_waves", "origin": said});
+        assert_eq!(by_model(root, "request", &request)["reason"], json!("item-form-missing"));
+        let mut titled = request.clone();
+        titled["title"] = json!("Travar a pasta de cache");
+        let written = by_model(root, "request", &titled);
+        assert_eq!(written["ok"], json!(true), "the request needs no agent's part: {written}");
+
+        let criterion = json!({"when": "o comando apaga a pasta", "then": "a trava barra o comando",
+            "proof": "git --version", "form": "ubiquitous", "origin": said});
+        assert_eq!(by_model(root, "criterion", &criterion)["reason"], json!("item-form-missing"));
+        let mut titled = criterion.clone();
+        titled["title"] = json!("A trava barra o apagar");
+        assert_eq!(by_model(root, "criterion", &titled)["ok"], json!(true), "the criterion needs only its title");
+    }
+
+    /// A parte do usuário fala pelo efeito: o caminho de arquivo, com ou sem
+    /// a linha, a crase e o código de outro item são recusados, e a recusa
+    /// mostra o trecho. O mesmo detalhe na parte do agente passa, e número ou
+    /// versão no texto seguem texto.
+    #[test]
+    fn item_form_refuses_a_path_a_backtick_or_an_item_code_in_the_users_part() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let before = lines(root);
+        for (text, found) in [
+            ("A trava mora em apps/rt/src/hooks/gate.rs e barra o comando.", "apps/rt/src/hooks/gate.rs"),
+            ("A linha gate.rs:40 barra o comando.", "gate.rs:40"),
+            ("A trava barra o `rm -rf` na pasta.", "`rm -rf`"),
+            ("A trava segue a regra MSTD-RULE-0005.", "MSTD-RULE-0005"),
+        ] {
+            let mut draft = whole_rule(said);
+            draft["text"] = json!(text);
+            let refused = by_model(root, "rule", &draft);
+            assert_eq!(refused["reason"], json!("item-form-missing"), "{text}: {refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(found) && hint.contains("`agent`"), "{text}: {hint}");
+            assert_eq!(lines(root), before, "{text}: nothing was written");
+        }
+
+        let mut draft = whole_rule(said);
+        draft["text"] = json!("A trava barra o comando desde a versão 0.2.0, em menos de 3.5 segundos.");
+        draft["agent"] = json!("- `apps/rt/src/hooks/gate.rs:40`, pela regra MSTD-RULE-0005");
+        let written = by_model(root, "rule", &draft);
+        assert_eq!(written["ok"], json!(true), "{written}");
+    }
+
+    /// O título e a parte do usuário passam pela conferência de escrita das
+    /// respostas, e a recusa lista todos os defeitos de uma vez, cada um com o
+    /// campo; nada é gravado. A parte do agente e o exemplo ficam de fora, e a
+    /// sigla explicada num campo vale no outro.
+    #[test]
+    fn item_form_measures_the_title_and_the_users_part_listing_every_defect() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let sentence = |n: usize| format!("{}.", vec!["teste"; n].join(" "));
+        let draft = json!({"title": "O CI barra a pasta", "text": sentence(26), "why": "Vem da regra MSTD-RULE-0005.",
+            "keys": ["trava"], "origin": said, "agent": sentence(40)});
+        let before = lines(root);
+        let refused = by_model(root, "decision", &draft);
+        assert_eq!(refused["reason"], json!("item-unclear"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        for piece in ["title: ", "CI", "text: ", "26", "why: ", "MSTD-RULE-0005", "Nada foi gravado"] {
+            assert!(hint.contains(piece), "{piece}: {hint}");
+        }
+        assert!(!hint.contains("agent: "), "the agent's part is not measured: {hint}");
+        assert_eq!(lines(root), before, "nothing was written");
+
+        let mut rule = whole_rule(said);
+        rule["title"] = json!("O CI barra a pasta");
+        rule["text"] = json!("A integração contínua (CI) barra a pasta.");
+        rule["example"] = json!(sentence(30));
+        rule["agent"] = json!(sentence(40));
+        let written = by_model(root, "rule", &rule);
+        assert_eq!(written["ok"], json!(true), "{written}");
+    }
+
+    /// O programa grava os próprios itens sem a forma fixa: a mesma regra num
+    /// bloco só, que a porta do modelo recusa, entra pela gravação do programa.
+    #[test]
+    fn item_form_is_not_asked_of_what_the_program_writes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let one_block = json!({"text": "A trava barra o comando em apps/rt/src/hooks/gate.rs.", "keys": ["trava"],
+            "example": "rm -rf pasta", "origin": said});
+        assert_eq!(by_model(root, "rule", &one_block)["reason"], json!("item-form-missing"));
+        let written = record(root, "teste", "rule", one_block.as_object().cloned().unwrap(), PhaseWriter::Binary);
+        assert_eq!(written.err(), None, "the program writes the rule in one block");
+    }
+
+    /// A regra gravada antes da forma fixa, num bloco só, segue lida como era:
+    /// a leitura a traz, sem aviso e sem linha pulada.
+    #[test]
+    fn item_form_an_old_item_is_read_without_a_warning() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let old = old_rule(root, said, "MSTD-RULE-0001");
+        let read = super::super::read::read_at(&super::super::read::ReadOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            block: "agreed".into(),
+            term: None,
+        })
+        .expect("the agreed block reads");
+        let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
+        assert_eq!(read["warnings"], Value::Null, "{read}");
+        let events = read["events"].as_array().expect("events");
+        let found = events.iter().find(|e| e["id"] == json!(old)).expect("the old rule is read");
+        assert_eq!(found["text"], json!("A pasta de cache nunca é apagada."), "{read}");
+    }
+
+    /// A versão nova de um item de três partes precisa das três, pelo número
+    /// ou pelo código; a versão nova de um item de antes da forma segue como
+    /// ele era, num bloco só.
+    #[test]
+    fn item_form_a_new_version_of_a_three_part_item_needs_the_three_parts() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let first = by_model(root, "rule", &whole_rule(said));
+        assert_eq!(first["ok"], json!(true), "{first}");
+        let before = lines(root);
+        for target in [first["id"].clone(), first["code"].clone()] {
+            let bare = json!({"text": "A trava barra também a pasta de cache.", "keys": ["trava"], "example": "e",
+                "origin": said, "replaces": target});
+            let refused = by_model(root, "rule", &bare);
+            assert_eq!(refused["reason"], json!("item-form-missing"), "{target}: {refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains("`title`") && hint.contains("`agent`"), "{target}: {hint}");
+            assert_eq!(lines(root), before, "{target}: nothing was written");
+        }
+        let mut revised = whole_rule(said);
+        revised["replaces"] = first["id"].clone();
+        assert_eq!(by_model(root, "rule", &revised)["ok"], json!(true));
+
+        let old = old_rule(root, said, "MSTD-RULE-0002");
+        let bare = json!({"text": "A pasta de cache nunca é apagada, nem a de logs.", "keys": ["cache"], "example": "e",
+            "origin": said, "replaces": old});
+        let written = by_model(root, "rule", &bare);
+        assert_eq!(written["ok"], json!(true), "the old item keeps its form: {written}");
+    }
+
+    /// Procurar por uma palavra que só o título tem, ou só a parte do agente,
+    /// acha o item; o outro item não aparece.
+    #[test]
+    fn item_form_the_search_finds_an_item_by_its_title_and_by_its_agent_part() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let mut rule = whole_rule(said);
+        rule["title"] = json!("Proteger o diretório de cache");
+        rule["agent"] = json!("- o gancho fica na sentinela do comando");
+        let wanted = by_model(root, "rule", &rule)["id"].clone();
+        let other = json!({"title": "Relatório em português", "text": "O relatório sai em português.", "keys": ["idioma"],
+            "example": "e", "origin": said, "agent": "- conferir o idioma"});
+        let other = by_model(root, "rule", &other)["id"].clone();
+        for term in ["diretório", "sentinela"] {
+            let read = super::super::read::read_at(&super::super::read::ReadOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                block: "agreed".into(),
+                term: Some(term.into()),
+            })
+            .expect("the agreed block reads");
+            let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
+            let ids: Vec<Value> = read["events"].as_array().expect("events").iter().map(|e| e["id"].clone()).collect();
+            assert!(ids.contains(&wanted) && !ids.contains(&other), "{term}: {read}");
+        }
+    }
+
     /// O `search` é gravado no arquivo de eventos para a busca no banco da
     /// página, mas `shown()` — o que qualquer leitura do evento mostra —
     /// nunca o traz: é um campo binário (`BINARY_FIELDS`), fora do tipo do
@@ -2665,7 +3064,8 @@ mod tests {
             for phase in ["closed", "pr_open"] {
                 let spec = format!("fechada-{}-{tag}", phase.replace('_', "-"));
                 let said = spec_in_phase(root, &spec, phase);
-                let request = json!({"text": "Ajustar o otimizador.", "keys": ["otimizador"], "effect": "new_waves",
+                let request = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "keys": ["otimizador"],
+                    "effect": "new_waves",
                     "origin": said});
                 let (out, before, after) = by_assistant(root, &spec, "request", &request);
                 assert_eq!(out["ok"], json!(false), "{language} {phase}: {out}");
@@ -2678,7 +3078,8 @@ mod tests {
             }
             let running = format!("em-execucao-{tag}");
             let said = spec_in_phase(root, &running, "running");
-            let request = json!({"text": "Ajustar o otimizador.", "keys": ["otimizador"], "effect": "new_waves",
+            let request = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "keys": ["otimizador"],
+                    "effect": "new_waves",
                 "origin": said});
             let (out, before, after) = by_assistant(root, &running, "request", &request);
             assert_eq!(out["ok"], json!(true), "{language}: the running spec takes the request: {out}");
@@ -2703,9 +3104,10 @@ mod tests {
                 let spec = format!("saiu-{phase}-{tag}");
                 let said = spec_in_phase(root, &spec, phase);
                 let drafts = [
-                    ("request", json!({"text": "Ajustar o otimizador.", "keys": ["otimizador"], "effect": "new_waves",
+                    ("request", json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "keys": ["otimizador"],
+                    "effect": "new_waves",
                         "origin": said})),
-                    ("task", json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "files": [],
+                    ("task", json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "agent": "- otimizador", "files": [],
                         "depends_on": [], "origin": said})),
                 ];
                 for (event_type, draft) in &drafts {
@@ -2722,7 +3124,7 @@ mod tests {
             }
             let open_pr = format!("pr-aberto-{tag}");
             let said = spec_in_phase(root, &open_pr, "pr_open");
-            let task = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "files": [],
+            let task = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "agent": "- otimizador", "files": [],
                 "depends_on": [], "origin": said});
             let (out, before, after) = by_assistant(root, &open_pr, "task", &task);
             assert_eq!(out["ok"], json!(true), "{language}: the task on the open pull request is written: {out}");
@@ -2782,8 +3184,8 @@ mod tests {
 
         // A última gravação do pedido, com `--copy`: a cópia sai uma vez só,
         // com tudo o que o pedido gerou.
-        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "files": [], "depends_on": [],
-            "covers": [criterion], "origin": asked});
+        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "agent": "- dividir",
+            "files": [], "depends_on": [], "covers": [criterion], "origin": asked});
         let last = write_at_with(
             &WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(),
                 json: task.to_string() },
@@ -4379,7 +4781,7 @@ mod tests {
             })
         };
         let first = by_model(json!({"title": "Fechamento confere cada critério", "text": "Conferir.",
-            "files": [], "depends_on": [], "origin": said}));
+            "agent": "- conferir cada critério", "files": [], "depends_on": [], "origin": said}));
         let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa com título grava: {first}"));
 
         let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "origin": said,

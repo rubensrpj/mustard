@@ -69,6 +69,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::io::fs::lock::LockedFile;
+use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::platform::git;
 use mustard_core::ClaudePaths;
 
@@ -103,16 +104,18 @@ pub(crate) fn git_ok(dir: &Path, args: &[&str]) -> bool {
     git::run(dir, args).ok
 }
 
-/// Resolve the MAIN checkout root from anywhere inside the repo — including
-/// from inside a linked worktree (`--git-common-dir` names the shared `.git`).
+/// Resolve the MAIN checkout root from anywhere inside the repo, read from the
+/// files git leaves behind. From inside a linked worktree — a wave's separate
+/// copy, even of a submodule project, whose shared folder lives under the
+/// outer project's `.git/modules` — it is the checkout that worktree belongs
+/// to; elsewhere, the nearest folder above `from` that holds a `.git`. `None`
+/// when `from` does not exist or no folder above it is a checkout.
 pub(crate) fn main_checkout_root(from: &Path) -> Option<PathBuf> {
-    let common = git_out(from, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-    let common = PathBuf::from(common);
-    if common.file_name().and_then(|n| n.to_str()) == Some(".git") {
-        common.parent().map(Path::to_path_buf)
-    } else {
-        git_out(from, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
+    let from = std::fs::canonicalize(from).ok()?;
+    if let Some(main) = linked_worktree_main(&from) {
+        return Some(main);
     }
+    from.ancestors().find(|folder| is_git_repo_root(folder)).map(Path::to_path_buf)
 }
 
 /// A path as the report shows it: forward slashes, so one JSON shape reads the
@@ -1978,6 +1981,27 @@ mod tests {
         assert!(!sub.join("mustard.json").exists(), "the submodule has no config of its own");
 
         let v = settle_at(&sub, Some("dev_done"));
+        assert_eq!(v["base"], json!("dev"), "base read from the superproject's git.flow: {v}");
+        assert_eq!(v["reason"], json!("not-merged"), "recognised the unit, then gated on merge: {v}");
+    }
+
+    /// A wave's separate copy of a submodule project is a linked worktree whose
+    /// shared git folder lives under the outer project's `.git/modules`, a
+    /// folder not named `.git`. From inside that copy the settle still finds
+    /// the submodule's checkout — not the copy, not the outer project — and
+    /// reads the bases the way it does from the checkout itself.
+    #[test]
+    fn git_settle_in_a_copy_of_a_submodule_project_finds_the_submodule_checkout() {
+        let (dir, main) = fixture_with_submodule();
+        let sub = main.join("sub");
+        let copy = dir.path().join("cache").join("copias").join("sub-1");
+        git(&sub, &["worktree", "add", "-q", "--detach", copy.to_string_lossy().as_ref(), "HEAD"]);
+        let sub = std::fs::canonicalize(&sub).expect("the submodule checkout");
+
+        assert_eq!(main_checkout_root(&copy), Some(sub.clone()), "the copy leads to the submodule checkout");
+        assert_eq!(main_checkout_root(&sub), Some(sub.clone()), "the submodule checkout is its own main checkout");
+
+        let v = settle_at(&copy, Some("dev_done"));
         assert_eq!(v["base"], json!("dev"), "base read from the superproject's git.flow: {v}");
         assert_eq!(v["reason"], json!("not-merged"), "recognised the unit, then gated on merge: {v}");
     }

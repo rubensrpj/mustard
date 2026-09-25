@@ -13,6 +13,7 @@ Mustard runs every piece of work that changes a file through one flow: survey, p
 - Present one point at a time, in the order of explaining from the response style.
 - Check the code before stating a fact.
 - Record each answer right away, with `mustard-rt run write <type>`.
+- Each agreed item comes in three parts: a short title in `title`; in `text`, the why, by the effect the user sees, with no file or command; in `agent`, the files, lines, commands and what to test.
 
 ## While the spec is open
 

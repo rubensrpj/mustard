@@ -257,6 +257,14 @@ const fn ty(
 
 const TEXT: Field = req("text", Kind::Text);
 const KEYS: Field = req("keys", Kind::Texts);
+/// O nome curto do item, que o usuário lê antes de tudo. Opcional no tipo
+/// porque o item antigo não tem; o gravador o exige do item que o modelo
+/// grava (`spec_events::write::record_in`).
+const TITLE: Field = opt("title", Kind::Text);
+/// A parte do agente: os arquivos, as linhas, os comandos e o que testar, em
+/// markdown curto. O `text` fica com o porquê, para o usuário. Opcional no
+/// tipo pelo mesmo motivo do título.
+const AGENT: Field = opt("agent", Kind::Text);
 const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
 /// As ondas donas de um item combinado, além das ondas das tarefas que o
 /// cobrem. O item do projeto diz, em vez disso, que vale no projeto todo
@@ -418,16 +426,37 @@ pub const TYPES: &[TypeSpec] = &[
     // Os itens combinados. Cada um tem dono: as ondas (as das tarefas que o
     // cobrem e as que ele diz em `waves`) ou o projeto (`applies_to` no
     // projeto todo).
-    ty("rule", "RULE", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("limit", "LIMIT", Block::Agreed, true, &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("contract", "CONTR", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("error", "ERR", Block::Agreed, true, &[TEXT, KEYS, req("message", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("edge_case", "EDGE", Block::Agreed, true, &[TEXT, KEYS, req("expected", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("out_of_scope", "SCOPE", Block::Agreed, true, &[TEXT, KEYS, opt("reason", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
-    ty("decision", "DEC", Block::Agreed, true, &[TEXT, KEYS, req("why", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
+    ty(
+        "rule", "RULE", Block::Agreed, true,
+        &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "limit", "LIMIT", Block::Agreed, true,
+        &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "contract", "CONTR", Block::Agreed, true,
+        &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "error", "ERR", Block::Agreed, true,
+        &[TEXT, KEYS, req("message", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "edge_case", "EDGE", Block::Agreed, true,
+        &[TEXT, KEYS, req("expected", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "out_of_scope", "SCOPE", Block::Agreed, true,
+        &[TEXT, KEYS, opt("reason", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+    ),
+    ty(
+        "decision", "DEC", Block::Agreed, true,
+        &[TEXT, KEYS, req("why", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+    ),
     // Especificação.
-    ty("context", "CTX", Block::Specification, true, &[TEXT]),
-    ty("concern", "CONC", Block::Specification, true, &[TEXT]),
+    ty("context", "CTX", Block::Specification, true, &[TEXT, TITLE, AGENT]),
+    ty("concern", "CONC", Block::Specification, true, &[TEXT, TITLE, AGENT]),
     // Critérios.
     ty(
         "criterion",
@@ -445,6 +474,9 @@ pub const TYPES: &[TypeSpec] = &[
             // desta exigência continua sem o campo, e a leitura não recusa.
             opt("form", Kind::OneOf(CRITERION_FORMS)),
             opt("contracts", Kind::Ints),
+            // Só o título: `when` e `then` já são a parte do usuário, e
+            // `proof` é a do agente.
+            TITLE,
         ],
     ),
     ty(
@@ -488,10 +520,9 @@ pub const TYPES: &[TypeSpec] = &[
             // ganhá-lo depois, no plano.
             opt("wave", Kind::Int),
             TEXT,
-            // O nome curto da tarefa, que diz o que ela entrega. Opcional no
-            // tipo porque a tarefa antiga não tem; o gravador o exige da
-            // tarefa gravada pelo modelo (`spec_events::write::record_in`).
-            opt("title", Kind::Text),
+            // O nome curto da tarefa, que diz o que ela entrega.
+            TITLE,
+            AGENT,
             // A tarefa sem arquivo que já se sabe qual é declara a lista
             // vazia; a ausência do campo é outra coisa, e o gravador a
             // recusa (`spec_events::write::record_in`), junto da falta de
@@ -676,9 +707,15 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty("pr_summary", "PRSUM", Block::Progress, false, &[TEXT]),
     // Anotações.
-    ty("request", "REQ", Block::Notes, true, &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS))]),
+    ty(
+        "request", "REQ", Block::Notes, true,
+        &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS)), TITLE, AGENT],
+    ),
     ty("deferred", "DEFER", Block::Notes, true, &[TEXT, KEYS, req("pending", Kind::Int)]),
-    ty("note", "NOTE", Block::Notes, true, &[TEXT, KEYS]),
+    ty(
+        "note", "NOTE", Block::Notes, true,
+        &[TEXT, KEYS, TITLE, AGENT],
+    ),
     // Remoção e expurgo, na conversa.
     ty(
         "remove",

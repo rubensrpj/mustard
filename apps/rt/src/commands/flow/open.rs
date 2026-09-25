@@ -1382,14 +1382,17 @@ use crate::shared::context::pending_branch::set_pending_branch;
         let log = DiskSpecState::new(root).log("x").expect("the spec has an event file");
         let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
         let said = said.expect("the hook records the user's answer");
-        let context = |text: &str| {
+        // O card vai em duas partes: o que o usuário lê em `text`, e o
+        // caminho dos documentos antigos na parte do agente.
+        let context = |text: &str, agent: &str| {
             write_at(&WriteOpts {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 event_type: "context".into(),
-                json: json!({ "text": text, "origin": said }).to_string(),
+                json: json!({ "title": "O objetivo da obra", "agent": agent, "text": text, "origin": said }).to_string(),
             })
         };
+        let (card_text, card_agent) = card.split_once("\nDocumentos antigos: ").expect("the card cites the old documents");
         let events = || std::fs::read_to_string(spec_dir(root, "x").join("spec.ndjson")).unwrap().lines().count();
         let before = events();
         let state = log.visible().into_iter().find(|e| e.event_type == "state").map(|e| e.id);
@@ -1398,12 +1401,12 @@ use crate::shared::context::pending_branch::set_pending_branch;
             root: root.to_path_buf(),
             spec: Some("x".into()),
             event_type: "context".into(),
-            json: json!({ "text": goal, "origin": state }).to_string(),
+            json: json!({ "title": "O objetivo da obra", "agent": "- conferir o objetivo", "text": goal, "origin": state }).to_string(),
         });
         assert_eq!(refused["reason"], json!("goal-origin-not-user"), "{refused}");
         assert_eq!(events(), before, "a refusal writes nothing");
-        assert_eq!(context(goal)["ok"], json!(true));
-        assert_eq!(context(card)["ok"], json!(true));
+        assert_eq!(context(goal, "- conferir o objetivo")["ok"], json!(true));
+        assert_eq!(context(card_text, &format!("- documentos antigos: {card_agent}"))["ok"], json!(true));
 
         let log = DiskSpecState::new(root).log("x").expect("the spec has an event file");
         let recorded = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");

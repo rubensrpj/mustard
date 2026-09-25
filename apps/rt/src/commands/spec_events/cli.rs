@@ -54,7 +54,16 @@ pub enum SpecEventsCmd {
     /// point at an item by its event number or by the code the page shows,
     /// like `MSTD-RULE-NNNN`. A `remove` by the code takes out the whole
     /// item, every version of it; by the number, only that version, and the
-    /// version it replaced comes back. With the `lesson` type it writes one lesson to
+    /// version it replaced comes back. A new agreed item written here comes
+    /// in three parts: a short `title` (up to 70 characters), the user's part
+    /// in `text`, which says why by the effect the user sees and carries no
+    /// backtick, file path or item code, and the agent's part in `agent`, in
+    /// markdown, with files, lines, commands and what to test. A `request` or
+    /// `note` needs the title and the text, a `criterion` only the title. The
+    /// title and the user's part go through the writing check that ends a
+    /// response, and the refusal lists every defect at once. A new version of
+    /// an item written before this form, or a write by the program itself,
+    /// is not held to it. With the `lesson` type it writes one lesson to
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
     /// `{"class":"environment_trap","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
     /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`. A
@@ -181,7 +190,7 @@ mod tests {
         for spec in TYPES {
             assert!(help.contains(&format!("\n  {}: ", spec.name)), "the help has no line for {}:\n{help}", spec.name);
         }
-        assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, no_code)"), "{help}");
+        assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, no_code, title, agent)"), "{help}");
         assert!(help.contains("\n  message: text (witness)"), "{help}");
         assert!(
             help.contains("a `task` missing one of its three mandatory declarations"),

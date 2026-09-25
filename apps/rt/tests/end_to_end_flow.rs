@@ -315,7 +315,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// respondido e fechado.
 fn survey(project: &Project) {
     let said = user_says(project, GOAL);
-    project.write("context", &json!({"text": GOAL, "origin": said}));
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -330,7 +330,7 @@ fn survey(project: &Project) {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"],
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
                 "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
         );
         let closed = project.write(
@@ -353,13 +353,13 @@ fn plan_files(project: &Project, files: &[&str]) {
     let said = user_says(project, "O plano é uma tarefa só, que muda a saudação.");
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let files: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
     project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
             "covers": [criterion["id"]], "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
@@ -555,7 +555,7 @@ fn o_criterio_sem_forma_declarada_e_recusado() {
         "--spec",
         SPEC,
         "--json",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "origin": said})
             .to_string(),
     ]);
@@ -575,7 +575,7 @@ fn o_criterio_sem_forma_declarada_e_recusado() {
     // Com a forma declarada, a mesma gravação passa.
     let accepted = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     assert_eq!(accepted["ok"], json!(true), "{accepted}");
@@ -611,7 +611,7 @@ fn a_emenda_de_criterio_antigo_nao_exige_forma() {
     // antigo.
     let amended = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "origin": said, "replaces": old_id}),
     );
     assert_eq!(amended["ok"], json!(true), "{amended}");
@@ -619,7 +619,7 @@ fn a_emenda_de_criterio_antigo_nao_exige_forma() {
     // Um critério novo (sem `replaces`) continua exigindo a forma: a
     // exigência segue protegida para quem nasce agora.
     let new_criterion =
-        json!({"when": "outra coisa", "then": "outro efeito", "proof": "git --version", "origin": said});
+        json!({"title": "Outro efeito", "when": "outra coisa", "then": "outro efeito", "proof": "git --version", "origin": said});
     let refused_new =
         project.answer(&["write", "criterion", "--spec", SPEC, "--json", &new_criterion.to_string()]);
     assert_eq!(refused_new["ok"], json!(false), "{refused_new}");

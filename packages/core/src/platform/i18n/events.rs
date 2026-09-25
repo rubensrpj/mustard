@@ -58,6 +58,37 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "a short title, of up to 70 characters, saying what it delivers, not what the thing is \
              (example: \"Closing checks each criterion against the code\")"
         }
+        // A forma fixa de um item que descreve o trabalho: título, parte do
+        // usuário e parte do agente, e a conferência de escrita das duas
+        // primeiras.
+        ("spec_events.item_form_missing", Locale::PtBr) => {
+            "Falta ao item: {missing}. Nada foi gravado."
+        }
+        ("spec_events.item_form_missing", Locale::EnUs) => "The item is missing: {missing}. Nothing was written.",
+        ("spec_events.item_part_title", Locale::PtBr) => "o título curto em `title`, com até 70 caracteres",
+        ("spec_events.item_part_title", Locale::EnUs) => "a short title in `title`, up to 70 characters",
+        ("spec_events.item_part_user", Locale::PtBr) => "a parte do usuário em `text`, com o porquê",
+        ("spec_events.item_part_user", Locale::EnUs) => "the user's part in `text`, with the why",
+        ("spec_events.item_part_agent", Locale::PtBr) => {
+            "a parte do agente em `agent`, com arquivos, linhas, comandos e o que testar"
+        }
+        ("spec_events.item_part_agent", Locale::EnUs) => {
+            "the agent's part in `agent`, with files, lines, commands and what to test"
+        }
+        ("spec_events.item_part_user_cites", Locale::PtBr) => {
+            "a parte do usuário sem {found}, porque crase, caminho e código de item vão para `agent`"
+        }
+        ("spec_events.item_part_user_cites", Locale::EnUs) => {
+            "the user's part without {found}, because backticks, paths and item codes go in `agent`"
+        }
+        ("spec_events.item_unclear", Locale::PtBr) => {
+            "O título e a parte do usuário passam pela conferência de escrita das respostas. Ela \
+             achou: {defects}. Reescreva e grave de novo. Nada foi gravado."
+        }
+        ("spec_events.item_unclear", Locale::EnUs) => {
+            "The title and the user's part go through the writing check of responses. It found: \
+             {defects}. Rewrite them and write again. Nothing was written."
+        }
         ("spec_events.task_depends_on_unknown", Locale::PtBr) => {
             "A tarefa {task} depende de {depends_on}, que não existe nesta spec. Nada foi gravado."
         }
@@ -780,8 +811,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            101,
-            0xfcea_ff74_2471_07ba,
+            107,
+            0x959b_f143_ecf8_6f7d,
         );
     }
 
@@ -798,6 +829,12 @@ mod tests {
             ("spec_events.task_declaration_files", &[][..]),
             ("spec_events.task_declaration_depends_on", &[][..]),
             ("spec_events.task_declaration_title", &[][..]),
+            ("spec_events.item_form_missing", &["{missing}"][..]),
+            ("spec_events.item_part_title", &[][..]),
+            ("spec_events.item_part_user", &[][..]),
+            ("spec_events.item_part_agent", &[][..]),
+            ("spec_events.item_part_user_cites", &["{found}"][..]),
+            ("spec_events.item_unclear", &["{defects}"][..]),
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),

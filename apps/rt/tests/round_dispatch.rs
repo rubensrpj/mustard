@@ -161,7 +161,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// respondido e fechado.
 fn survey(project: &Project) -> u64 {
     let said = user_says(project, GOAL);
-    project.write("context", &json!({"text": GOAL, "origin": said}));
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -176,7 +176,7 @@ fn survey(project: &Project) -> u64 {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"],
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
                 "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
         );
         let closed = project.write(
@@ -218,7 +218,7 @@ fn backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str], de
     let depends_on: Vec<Value> = depends_on.iter().map(|id| json!(id)).collect();
     let written = project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
             "covers": [criterion], "origin": said}),
     );
     written["id"].as_u64().expect("the recorded task has an id")
@@ -237,7 +237,7 @@ fn o_backlog_vira_sempre_os_mesmos_lotes() {
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
@@ -296,7 +296,7 @@ fn o_binario_grava_o_evento_de_onda_do_lote() {
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
@@ -335,7 +335,7 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
@@ -350,7 +350,7 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     );
     project.seed(
         "task",
-        &json!({"author": "assistant", "wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/main.rs"}],
+        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [crit_id], "origin": said}),
     );
 
@@ -383,7 +383,7 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     // semeada crua como a spec antiga a traz.
     let old = project.seed(
         "task",
-        &json!({"author": "assistant", "wave": 7, "text": "Tarefa de spec antiga.",
+        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 7, "text": "Tarefa de spec antiga.",
             "files": [{"path": "src/b.rs", "new": true}], "depends_on": [], "covers": [crit_id], "origin": said}),
     );
 
@@ -477,7 +477,7 @@ fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
@@ -493,7 +493,7 @@ fn seed_backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str
     let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
     project.seed(
         "task",
-        &json!({"author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
+        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
             "covers": [criterion], "origin": said}),
     )
 }

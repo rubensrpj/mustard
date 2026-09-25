@@ -13,6 +13,7 @@ O Mustard conduz todo trabalho que muda arquivo por um fluxo só: levantamento, 
 - Apresente um ponto por vez, na ordem de explicar do estilo de resposta.
 - Confira no código antes de afirmar.
 - Grave cada resposta na hora, com `mustard-rt run write <tipo>`.
+- Cada item combinado vai em três partes: o título curto em `title`; em `text`, o porquê pelo efeito que o usuário vê, sem arquivo nem comando; em `agent`, os arquivos, as linhas, os comandos e o que testar.
 
 ## Durante a spec
 

@@ -143,7 +143,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// respondido e fechado, exatamente como uma sessão de verdade faz.
 fn survey(project: &Project) {
     let said = user_says(project, GOAL);
-    project.write("context", &json!({"text": GOAL, "origin": said}));
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -158,7 +158,7 @@ fn survey(project: &Project) {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"],
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
                 "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
         );
         let closed = project.write(
@@ -177,14 +177,14 @@ fn plan(project: &Project) -> (u64, u64) {
     let said = user_says(project, "O plano é uma tarefa só, que soma dois números.");
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
             "origin": said}),
     )["id"]
         .as_u64()
         .expect("the criterion id");
     project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);
@@ -296,18 +296,18 @@ fn a_ultima_gravacao_do_pedido_prepara_uma_copia_com_as_tarefas() {
     let asked = user_says(&project, "Incluir também a subtração.");
     let request = project.write(
         "request",
-        &json!({"text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves", "origin": asked}),
+        &json!({"title": "Combinar o item", "text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves", "origin": asked}),
     );
     let request_next = request["next"].as_str().unwrap_or_default();
     assert!(request_next.contains("--copy"), "the request says which write carries the copy: {request}");
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a subtração aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a subtração aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": asked}),
     );
     let rule = project.write(
         "rule",
-        &json!({"text": "A subtração usa o mesmo formato da soma.", "keys": ["subtração"],
+        &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "A subtração usa o mesmo formato da soma.", "keys": ["subtração"],
             "example": "3 - 1 imprime 2, como 1 + 1 imprime 2.", "applies_to": {"files": ["**"]},
             "origin": asked}),
     );
@@ -321,7 +321,7 @@ fn a_ultima_gravacao_do_pedido_prepara_uma_copia_com_as_tarefas() {
     // A última gravação do pedido, com `--copy`: uma cópia só, com tudo.
     let task = project.write_copying(
         "task",
-        &json!({"title": "Entregar a subtração", "text": "Subtrair dois números no programa.",
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a subtração", "text": "Subtrair dois números no programa.",
             "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion["id"]], "origin": asked}),
     );
     assert!(task["copy"].is_object(), "the last write did not prepare the copy: {task}");
@@ -438,7 +438,7 @@ fn a_copia_seguinte_leva_a_versao_guardada_sem_pedir_leitura() {
 
         // A cópia seguinte: a spec troca com a versão guardada, e só a linha
         // do projeto, sem versão guardada, é nomeada para ler.
-        let second = project.write_copying("note", &json!({"text": "Nota nova.", "keys": ["k"], "origin": said}));
+        let second = project.write_copying("note", &json!({"title": "Combinar o item", "text": "Nota nova.", "keys": ["k"], "origin": said}));
         let next = second["next"].as_str().unwrap_or_default();
         for doc in spec_docs {
             assert_eq!(if_version(&project, &second, "spec", doc), json!(1), "{lang:?}: {doc}: {second}");
@@ -459,7 +459,7 @@ fn a_copia_seguinte_leva_a_versao_guardada_sem_pedir_leitura() {
 
         // Gravadas as duas com versões, a cópia depois dela troca tudo com a
         // versão mais nova, sem leitura nenhuma.
-        let third = project.write_copying("note", &json!({"text": "Outra nota.", "keys": ["k"], "origin": said}));
+        let third = project.write_copying("note", &json!({"title": "Combinar o item", "text": "Outra nota.", "keys": ["k"], "origin": said}));
         let next = third["next"].as_str().unwrap_or_default();
         for doc in spec_docs {
             assert_eq!(if_version(&project, &third, "spec", doc), json!(2), "{lang:?}: {doc}: {third}");

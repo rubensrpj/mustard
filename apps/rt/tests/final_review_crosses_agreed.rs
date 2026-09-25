@@ -143,7 +143,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// responder.
 fn survey(project: &Project) -> Vec<Value> {
     let said = user_says(project, GOAL);
-    project.write("context", &json!({"text": GOAL, "origin": said}));
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -159,7 +159,7 @@ fn survey(project: &Project) -> Vec<Value> {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"],
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
                 "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
         );
         decisions.push(answer.clone());
@@ -179,12 +179,12 @@ fn plan(project: &Project) {
     let said = user_says(project, "O plano é uma tarefa só, que soma dois números.");
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
             "origin": said}),
     );
     project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion["id"]], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);

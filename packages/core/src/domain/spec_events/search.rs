@@ -100,21 +100,26 @@ fn cited_paths(event: &Map<String, Value>) -> Vec<&str> {
         .unwrap_or_default()
 }
 
-/// O `search` que uma linha deve ter: as raízes do texto e das palavras-chave,
-/// mais o rótulo do item, o nome do tipo em palavras nos dois idiomas, a onda
-/// a que a linha pertence e os caminhos dos arquivos que ela cita. Com isso,
-/// procurar pelo nome de um arquivo acha as tarefas que mexem nele, e procurar
-/// por "onda 13" acha o que é dela. `None` para a linha que não tem nada
-/// disso, que fica sem o campo.
+/// O `search` que uma linha deve ter: as raízes do texto, do título, da parte
+/// do agente e das palavras-chave, mais o rótulo do item, o nome do tipo em
+/// palavras nos dois idiomas, a onda a que a linha pertence e os caminhos dos
+/// arquivos que ela cita. Com isso, procurar pelo nome de um arquivo acha as
+/// tarefas que mexem nele, procurar pelo título acha o item, e procurar por
+/// "onda 13" acha o que é dela. `None` para a linha que não tem nada disso,
+/// que fica sem o campo.
 pub(super) fn search_of(event: &Map<String, Value>) -> Option<String> {
     let text = event.get("text").and_then(Value::as_str);
+    // O título e a parte do agente entram por último: a linha antiga, que não
+    // os tem, fica com o mesmo campo de antes.
+    let parts: Vec<&str> = ["title", "agent"].iter().filter_map(|f| event.get(*f).and_then(Value::as_str)).collect();
     let mut extra: Vec<String> = Vec::new();
     if let Some(keys) = event.get("keys").and_then(Value::as_array) {
         extra.extend(keys.iter().filter_map(Value::as_str).map(str::to_string));
     }
-    // A linha sem texto e sem palavras-chave — a expurgada, entre outras —
-    // fica sem o campo; o resto só enriquece quem já tem o que procurar.
-    if text.is_none() && extra.is_empty() {
+    // A linha sem texto, sem título, sem parte do agente e sem palavras-chave
+    // — a expurgada, entre outras — fica sem o campo; o resto só enriquece
+    // quem já tem o que procurar.
+    if text.is_none() && extra.is_empty() && parts.is_empty() {
         return None;
     }
     if let Some(label) = event.get("label").and_then(Value::as_str) {
@@ -134,6 +139,7 @@ pub(super) fn search_of(event: &Map<String, Value>) -> Option<String> {
         ));
     }
     extra.extend(cited_paths(event).into_iter().map(str::to_string));
+    extra.extend(parts.into_iter().map(str::to_string));
     let keys: Vec<&str> = extra.iter().map(String::as_str).collect();
     Some(search_field(text, &keys))
 }
@@ -210,6 +216,28 @@ mod tests {
             assert!(event.matches(&search_terms(term), None), "{term}: {:?}", event.str_field("search"));
         }
         assert!(!event.matches(&search_terms("onda 12"), None), "another wave does not match");
+    }
+
+    /// O título e a parte do agente entram no campo de busca: a palavra que só
+    /// o título tem, ou só a parte do agente, acha o item. Os dois vêm por
+    /// último, então o campo da linha antiga, sem eles, é o começo do campo da
+    /// linha nova, e a linha antiga não muda.
+    #[test]
+    fn the_search_finds_an_item_by_its_title_and_by_its_agent_part() {
+        let old = obj(json!({"text": "A fatura soma centavos.", "keys": ["soma"], "origin": 1}));
+        let mut new = old.clone();
+        new.insert("title".into(), json!("Arredondar a fatura"));
+        new.insert("agent".into(), json!("- conferir billing na linha 40"));
+        let fields = stamp(normalize(new.clone(), "decision"), 3, None, "t");
+        let event = SpecEvent { id: 3, event_type: "decision".into(), line: 1, fields };
+        for term in ["arredondar", "billing"] {
+            assert!(event.matches(&search_terms(term), None), "{term}: {:?}", event.str_field("search"));
+        }
+        assert!(!event.matches(&search_terms("imposto"), None), "a word the item lacks does not match");
+
+        let before = search_of(&old).expect("the old line has a search field");
+        let after = search_of(&new).expect("the new line has a search field");
+        assert!(after.starts_with(&format!("{before} ")), "{before} / {after}");
     }
 
     /// Recalcular o `search` reescreve só a linha em que ele faltava ou era

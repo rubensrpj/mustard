@@ -418,7 +418,7 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("barrada".to_string()),
                 event_type: "context".to_string(),
-                json: json!({ "text": text, "origin": origin }).to_string(),
+                json: json!({ "title": "O objetivo da obra", "agent": "- conferir o objetivo", "text": text, "origin": origin }).to_string(),
             })
         };
         let spec_file = || std::fs::read_to_string(root.join(".claude/spec/barrada/spec.ndjson")).expect("spec file");
