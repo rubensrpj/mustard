@@ -122,7 +122,9 @@ pub fn write_at(
 /// existe, versão nova de outro tipo, filtro de remoção que não pega nada e
 /// expurgo cujo trecho não aparece no alvo. O expurgo reescreve o arquivo com
 /// o trecho dos alvos trocado por "…"; as outras gravações só acrescentam uma
-/// linha. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
+/// linha, salvo quando uma linha do arquivo tem o `search` de outra regra: a
+/// gravação o recalcula ([`model::refresh_search_lines`]) e reescreve o
+/// arquivo. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
 /// [`write_guarded`] recebe também a procura de segredo. Um nome de código citado num fato que
 /// o mapa do projeto (o da última de `cite_roots`) não confirma só avisa, em
 /// [`Written::citation_warnings`]. O `last` de uma gravação `copy` que aponta
@@ -182,7 +184,12 @@ fn write_inner(
     let Prepared { mut event, asked, citation_warnings } = prepare(event_type, draft, cite_roots)?;
 
     let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
-    let content = file.read_to_string().map_err(io_refusal)?;
+    // A linha gravada antes de a busca mudar de regra — sem o título e a
+    // parte do agente, ou com outro redutor — ganha o `search` de hoje nesta
+    // gravação, que então reescreve o arquivo inteiro, como o expurgo. Só o
+    // `search` dessas linhas muda; as outras ficam byte a byte. Numa recusa,
+    // nada é escrito, e a próxima gravação tenta de novo.
+    let (content, stale) = model::refresh_search_lines(&file.read_to_string().map_err(io_refusal)?);
     let log = model::parse_log(&content);
     // O `last` de uma cópia da página da spec nunca aponta além do que o
     // arquivo tem: um número maior, de uma pasta de cópia velha ou de um
@@ -198,8 +205,8 @@ fn write_inner(
     let Staged { next, appended, after, id, code, effects } = stage(&content, &log, event, asked, at, find)?;
     guard(&log, &after)?;
     match appended {
-        Some(added) => file.append_line(&added).map_err(io_refusal)?,
-        None => file.replace(next.as_bytes()).map_err(io_refusal)?,
+        Some(added) if stale == 0 => file.append_line(&added).map_err(io_refusal)?,
+        _ => file.replace(next.as_bytes()).map_err(io_refusal)?,
     }
     let log = after;
     // Primeiro a trava da spec, depois a do índice: sempre nessa ordem. A
@@ -747,6 +754,49 @@ mod tests {
         edited.push_str("{\"v\":1,\"id\":40,\"at\":\"2026-09-11T10:02:00-03:00\",\"type\":\"message\",\"author\":\"user\",\"text\":\"à mão\"}\n");
         std::fs::write(&path, edited).unwrap();
         assert_eq!(put(&path, &[], "message", &at("10:03"), json!({"author": "user", "text": "três"})).id, 41);
+    }
+
+    /// A linha gravada antes de a busca levar o título fica com o `search`
+    /// velho até a próxima gravação, que o recalcula e reescreve o arquivo:
+    /// só o `search` dela muda, as outras linhas ficam byte a byte, e a busca
+    /// pela palavra do título passa a achá-la. A gravação recusada não
+    /// reescreve nada, e a que vem depois, sem linha velha, só acrescenta.
+    #[test]
+    fn a_write_refreshes_the_stale_search_of_an_older_line_and_keeps_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
+        put(&path, &[], "note", &at("10:00"), json!({"text": "Apagar a pasta.", "keys": ["pasta"], "origin": 1}));
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(
+            "{\"v\":1,\"id\":3,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1,\
+             \"search\":\"fatur som centav\"}\n",
+        );
+        std::fs::write(&path, &content).unwrap();
+        let title_word = model::search_terms("arredondar");
+        let found = |path: &Path| read(path).unwrap().unwrap().get(3).is_some_and(|e| e.matches(&title_word, None));
+        assert!(!found(&path), "the old search lacks the title");
+
+        let refused = write_at(&path, "licao", obj(json!({"text": "x"})), &[], &at("10:02"));
+        assert!(refused.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content, "a refused write rewrites nothing");
+
+        put(&path, &[], "message", &at("10:03"), json!({"author": "user", "text": "depois"}));
+        let after = std::fs::read_to_string(&path).unwrap();
+        let before: Vec<&str> = content.lines().collect();
+        let now: Vec<&str> = after.lines().collect();
+        assert_eq!(now.len(), before.len() + 1, "{after}");
+        assert_eq!(now[..2], before[..2], "the lines with the right search stay byte for byte");
+        let (old, new) = (model::parse_log(before[2]), model::parse_log(now[2]));
+        let (mut old, mut new) = (old.events[0].fields.clone(), new.events[0].fields.clone());
+        assert_ne!(old.remove("search"), new.remove("search"));
+        assert_eq!(old, new, "only the search field of the old line changed");
+        assert!(found(&path), "the title's word now finds the old line");
+        assert_eq!(model::refresh_search_lines(&after).1, 0, "no stale line is left");
+
+        put(&path, &[], "message", &at("10:04"), json!({"author": "user", "text": "mais"}));
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with(&after), "with nothing stale, a write only appends");
     }
 
     fn git(dir: &Path, args: &[&str]) {

@@ -752,8 +752,7 @@ fn clean_inline(line: &str) -> String {
     let without_targets = strip_link_targets(&without_code);
     let mut kept: Vec<&str> = Vec::new();
     for token in without_targets.split_whitespace() {
-        let lead = token.len() - token.trim_start_matches(LEADERS).len();
-        let core = token[lead..].trim_end_matches(TRAILERS);
+        let (lead, core) = token_core(token);
         if !core.is_empty() && is_url_or_path(core) {
             let trail = &token[lead + core.len()..];
             if !trail.is_empty() {
@@ -804,7 +803,14 @@ fn strip_link_targets(line: &str) -> String {
     out
 }
 
-/// URL, tag, caminho de arquivo ou nome de arquivo com extensão.
+/// Uma palavra sem a pontuação que a cerca: quantos bytes de abertura ela tem
+/// e o miolo, sem a pontuação do fim.
+fn token_core(token: &str) -> (usize, &str) {
+    let lead = token.len() - token.trim_start_matches(LEADERS).len();
+    (lead, token[lead..].trim_end_matches(TRAILERS))
+}
+
+/// URL, tag ou caminho de arquivo ([`is_file_path`]).
 fn is_url_or_path(core: &str) -> bool {
     let lower = core.to_ascii_lowercase();
     if lower.contains("://") || lower.starts_with("www.") || lower.starts_with("mailto:") {
@@ -813,14 +819,44 @@ fn is_url_or_path(core: &str) -> bool {
     if core.starts_with('<') {
         return true;
     }
-    if core.contains(['/', '\\']) {
-        // "e/ou" e "CI/CD" continuam texto; caminho tem raiz, duas barras ou
-        // extensão no último trecho.
-        let separators = core.matches(['/', '\\']).count();
-        let last = core.rsplit(['/', '\\']).next().unwrap_or_default();
-        return core.starts_with(['/', '.', '~']) || separators >= 2 || last.contains('.');
+    is_file_path(core)
+}
+
+/// O detector único de caminho de arquivo: a conferência de escrita tira da
+/// medição o que ele aponta, e a gravação de um item recusa o mesmo trecho na
+/// parte do usuário. Caminho é o nome de arquivo com extensão, solto ou no fim
+/// de um caminho (`apps/rt/x.rs`, `mod.rs`, `CLAUDE.md`), e o caminho que
+/// parte de uma raiz ou de uma pasta oculta (`/home/x`, `~/projetos`,
+/// `./target`, `.claude/spec`). A linha que vem
+/// depois de dois-pontos não conta (`write.rs:635`, `mod.rs:10-20`).
+///
+/// A extensão é curta e tem ao menos uma minúscula, então "3.5" e "v0.2.0"
+/// continuam números. Sem raiz e sem extensão, o trecho com barras continua
+/// texto: "e/ou", "CI/CD", "Windows/Linux/macOS" e a data "24/09/2026". URL
+/// não é caminho de arquivo.
+#[must_use]
+pub fn is_file_path(core: &str) -> bool {
+    let mut name = core;
+    while let Some((head, tail)) = name.rsplit_once(':') {
+        if tail.is_empty() || !tail.chars().all(|c| c.is_ascii_digit() || c == '-') {
+            break;
+        }
+        name = head;
     }
-    has_file_extension(core)
+    if name.contains("://") {
+        return false;
+    }
+    let root = name.starts_with(['/', '\\'])
+        || ["~/", "~\\", "./", ".\\", "../", "..\\"].iter().any(|root| name.starts_with(root))
+        || name.strip_prefix('.').is_some_and(|hidden| hidden.starts_with(char::is_alphabetic));
+    let rooted = root && name.contains(['/', '\\']) && name.chars().any(char::is_alphanumeric);
+    rooted || has_file_extension(name.rsplit(['/', '\\']).next().unwrap_or_default())
+}
+
+/// Os caminhos de arquivo de um texto ([`is_file_path`]), na ordem, cada um
+/// sem a pontuação que o cerca.
+pub fn file_paths_in(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace().map(|token| token_core(token).1).filter(|core| is_file_path(core))
 }
 
 /// `nome.ext`, com extensão curta e ao menos uma minúscula ("mod.rs",
@@ -1066,6 +1102,55 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert!(report.unexpanded_acronyms.is_empty(), "{report:?}");
         assert_eq!(report.prose_lines, 3);
         assert!(report.passed);
+    }
+
+    /// O detector único de caminho, com os casos das duas pontas: os da
+    /// gravação de um item (o caminho com a linha, a versão, o número) e os da
+    /// conferência de escrita (o caminho que parte de uma raiz, as barras de
+    /// texto, a data). O caminho que ele aponta sai da medição, com ou sem a
+    /// linha, e a URL continua fora da medição sem ser caminho de arquivo.
+    #[test]
+    fn clarity_and_the_item_write_share_one_file_path_detector() {
+        for (core, path) in [
+            ("apps/rt/src/hooks/gate.rs", true),
+            ("mod.rs", true),
+            ("CLAUDE.md", true),
+            ("CLAUDE.md:12", true),
+            ("write.rs:635", true),
+            ("mod.rs:10-20", true),
+            ("C:\\projeto\\main.rs", true),
+            ("/home/rubens/projetos", true),
+            ("~/projetos/app", true),
+            ("./target", true),
+            ("../outra", true),
+            (".claude/spec", true),
+            ("3.5", false),
+            ("v0.2.0", false),
+            ("e/ou", false),
+            ("CI/CD", false),
+            ("Windows/Linux/macOS", false),
+            ("24/09/2026", false),
+            ("apps/rt/src", false),
+            ("/", false),
+            ("~/", false),
+            ("https://docs.rs/x.rs", false),
+        ] {
+            assert_eq!(is_file_path(core), path, "{core}");
+        }
+
+        let paths: Vec<&str> =
+            file_paths_in("Veja (write.rs:635), a pasta ~/projetos, o e/ou e \"CLAUDE.md\".").collect();
+        assert_eq!(paths, ["write.rs:635", "~/projetos", "CLAUDE.md"]);
+
+        let filler = vec!["palavra"; MAX_SENTENCE_WORDS].join(" ");
+        for dropped in ["write.rs:635", "/home/rubens/projetos", "https://docs.rs/x.rs"] {
+            let report = measure(&format!("{filler} {dropped}."), &[], Some(Locale::PtBr));
+            assert!(report.long_sentences.is_empty(), "{dropped} is left out: {report:?}");
+        }
+        for kept in ["24/09/2026", "apps/rt/src"] {
+            let report = measure(&format!("{filler} {kept}."), &[], Some(Locale::PtBr));
+            assert_eq!(report.long_sentences.len(), 1, "{kept} is measured as a word: {report:?}");
+        }
     }
 
     /// A resposta não tem teto de linhas: 16 linhas curtas, a primeira

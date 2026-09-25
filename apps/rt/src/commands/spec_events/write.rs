@@ -234,6 +234,14 @@ const DEFECT_BY_TASK: &str = "defect-by-task";
 /// código, que falha se a regra for quebrada.
 const RULE_BY_TEST: &str = "rule-by-test";
 
+/// Linhas não vazias acima das quais a lição é recusada. A lição é um resumo
+/// curto, que volta ao contexto do trabalho que ela cobre; o teto é só dela,
+/// e a resposta do assistente não tem teto de linhas.
+const LESSON_MAX_LINES: usize = 15;
+
+/// A razão curta da recusa da lição acima de [`LESSON_MAX_LINES`] linhas.
+const LESSON_TOO_LONG: &str = "lesson-too-long";
+
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
     log.visible().into_iter().filter(|event| event.event_type == event_type).map(|event| event.id).collect()
@@ -682,8 +690,10 @@ fn revises_an_item_without_the_form(path: &Path, draft: &Map<String, Value>, eve
 }
 
 /// O primeiro trecho da parte do usuário que é do agente: uma crase, o
-/// código de outro item ou um caminho de arquivo com extensão, com ou sem a
-/// linha (`write.rs:635`). `None` quando ela fala só pelo efeito.
+/// código de outro item ou um caminho de arquivo, com ou sem a linha
+/// (`write.rs:635`). O caminho sai do mesmo detector da conferência de
+/// escrita, que tira da medição o trecho que esta gravação recusa. `None`
+/// quando ela fala só pelo efeito.
 fn agent_detail_in(text: &str) -> Option<String> {
     if let Some(open) = text.find('`') {
         let rest = &text[open + 1..];
@@ -693,36 +703,7 @@ fn agent_detail_in(text: &str) -> Option<String> {
     if let Some((start, end)) = mustard_core::domain::mustard_id::find(text).first().copied() {
         return Some(text[start..end].to_string());
     }
-    const LEADERS: &[char] = &['(', '[', '"', '\'', '«', '“', '*', '_'];
-    const TRAILERS: &[char] = &[')', ']', '"', '\'', '»', '”', '*', '_', '.', ',', ';', ':', '!', '?', '…'];
-    text.split_whitespace().find_map(|token| {
-        let core = token.trim_start_matches(LEADERS).trim_end_matches(TRAILERS);
-        is_file_path(core).then(|| core.to_string())
-    })
-}
-
-/// Um caminho de arquivo ou um nome de arquivo com extensão, com a linha
-/// opcional depois de dois-pontos: `apps/rt/x.rs`, `mod.rs`, `CLAUDE.md:12`.
-/// A extensão é curta e tem ao menos uma minúscula, então "3.5" e "v0.2.0"
-/// continuam números; "e/ou" e "CI/CD" continuam texto.
-fn is_file_path(core: &str) -> bool {
-    let mut name = core;
-    while let Some((head, tail)) = name.rsplit_once(':') {
-        if tail.is_empty() || !tail.chars().all(|c| c.is_ascii_digit() || c == '-') {
-            break;
-        }
-        name = head;
-    }
-    if name.contains("://") {
-        return false;
-    }
-    let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
-    last.rsplit_once('.').is_some_and(|(stem, ext)| {
-        stem.chars().any(char::is_alphanumeric)
-            && (1..=5).contains(&ext.len())
-            && ext.chars().all(|c| c.is_ascii_alphanumeric())
-            && ext.chars().any(|c| c.is_ascii_lowercase())
-    })
+    mustard_core::domain::clarity::file_paths_in(text).next().map(str::to_string)
 }
 
 /// A conferência de escrita das respostas sobre o título e a parte do usuário
@@ -1382,8 +1363,9 @@ fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> 
 }
 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
-/// que spec a lição nasceu. O texto passa antes pela medição da conferência
-/// de escrita do fim da resposta; com defeito, nada é gravado.
+/// que spec a lição nasceu. O texto tem até [`LESSON_MAX_LINES`] linhas e
+/// passa antes pela medição da conferência de escrita do fim da resposta;
+/// acima do teto ou com defeito, nada é gravado.
 ///
 /// A lição de defeito e a de regra do projeto, sozinhas ou juntando outras,
 /// são recusadas antes de tudo, sem gravar ([`fixed_in_code`]): o banco não
@@ -1395,6 +1377,13 @@ fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String,
     }
     let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
     if let Some(text) = draft.get("text").and_then(Value::as_str) {
+        let lines = text.lines().filter(|line| !line.trim().is_empty()).count();
+        if lines > LESSON_MAX_LINES {
+            let hint = translate("lessons.too_long", project.lang)
+                .replace("{lines}", &lines.to_string())
+                .replace("{max}", &LESSON_MAX_LINES.to_string());
+            return json!({ "ok": false, "reason": LESSON_TOO_LONG, "hint": hint });
+        }
         let report = crate::hooks::task::clarity_check::measure_in_project(&project.root, text, &[]);
         if !report.passed {
             return refuse(Refusal::LessonUnclear { report: Box::new(report) });
@@ -2566,6 +2555,26 @@ mod tests {
         assert_eq!(bank_lines(root), 2);
     }
 
+    /// Pelo comando de gravar, a lição de 16 linhas é recusada com o teto e o
+    /// número de linhas, e nada é gravado; a de 15 entra, e a linha em branco
+    /// não conta.
+    #[test]
+    fn a_lesson_over_fifteen_lines_is_refused_with_the_limit_and_the_count() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let lines = |n: usize| (1..=n).map(|i| format!("Passo {i} da lição.")).collect::<Vec<_>>();
+
+        let long = lesson_text(root, &lines(16).join("\n"));
+        assert_eq!(long["reason"], json!("lesson-too-long"), "{long}");
+        let hint = long["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("16 linhas") && hint.contains("teto é 15") && hint.contains("Nada foi gravado"), "{hint}");
+        assert_eq!(bank_lines(root), 0, "nothing was written");
+
+        let written = lesson_text(root, &lines(15).join("\n\n"));
+        assert_eq!(written["ok"], json!(true), "15 lines with blank lines between them pass: {written}");
+        assert_eq!(bank_lines(root), 1);
+    }
+
     /// Pelo comando de gravar, a lição com o mesmo texto de outra já guardada,
     /// com outros espaços, maiúsculas e acentos, é recusada apontando a que
     /// existe, e o banco fica como estava; a versão nova da própria lição
@@ -2781,6 +2790,45 @@ mod tests {
         assert_eq!(written["ok"], json!(true), "{written}");
     }
 
+    /// A gravação e a conferência de escrita acham o caminho de arquivo do
+    /// mesmo jeito, lado a lado: o trecho que o comando de gravar recusa na
+    /// parte do usuário é o que a conferência tira da medição, e o que ela
+    /// mede como palavra a gravação aceita. Os casos vêm das duas pontas.
+    #[test]
+    fn item_form_the_write_and_the_writing_check_agree_on_every_path() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let filler = vec!["palavra"; mustard_core::domain::clarity::MAX_SENTENCE_WORDS].join(" ");
+        for (token, path) in [
+            ("apps/rt/src/hooks/gate.rs", true),
+            ("gate.rs:40", true),
+            ("mod.rs:10-20", true),
+            ("CLAUDE.md", true),
+            ("/home/rubens/projetos", true),
+            ("~/projetos/app", true),
+            ("./target", true),
+            (".claude/spec", true),
+            ("3.5", false),
+            ("v0.2.0", false),
+            ("e/ou", false),
+            ("24/09/2026", false),
+            ("Windows/Linux/macOS", false),
+            ("apps/rt/src", false),
+        ] {
+            let mut draft = whole_rule(said);
+            draft["text"] = json!(format!("A trava vale para {token} agora."));
+            let out = by_model(root, "rule", &draft);
+            let hint = out["hint"].as_str().unwrap_or_default();
+            let refused = out["reason"] == json!("item-form-missing") && hint.contains(token);
+            assert_eq!(refused, path, "{token}: the write says {out}");
+
+            let report =
+                mustard_core::domain::clarity::measure(&format!("{filler} {token}."), &[], Some(Locale::PtBr));
+            assert_eq!(report.long_sentences.is_empty(), path, "{token}: the writing check says {report:?}");
+        }
+    }
+
     /// O título e a parte do usuário passam pela conferência de escrita das
     /// respostas, e a recusa lista todos os defeitos de uma vez, cada um com o
     /// campo; nada é gravado. A parte do agente e o exemplo ficam de fora, e a
@@ -2905,6 +2953,47 @@ mod tests {
             let ids: Vec<Value> = read["events"].as_array().expect("events").iter().map(|e| e["id"].clone()).collect();
             assert!(ids.contains(&wanted) && !ids.contains(&other), "{term}: {read}");
         }
+    }
+
+    /// A regra gravada antes de a busca levar o título fica com a busca velha:
+    /// a palavra do título não a acha, e o índice das specs aponta a linha
+    /// desatualizada. A gravação seguinte pelo comando de gravar acerta a
+    /// busca dela sozinha, sem o comando do índice: a palavra do título passa
+    /// a achá-la, e nada fica desatualizado.
+    #[test]
+    fn item_form_a_write_brings_the_search_of_an_older_item_up_to_date() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let path = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let id = store::read(&path).unwrap().unwrap().max_id() + 1;
+        let line = json!({"v": 1, "id": id, "code": "MSTD-RULE-0001", "at": "2026-01-01T10:00:00-03:00", "type": "rule",
+            "author": "assistant", "title": "Proteger o diretório de cache", "text": "A pasta de cache nunca é apagada.",
+            "keys": ["cache"], "example": "e", "origin": said, "agent": "- conferir a sentinela",
+            "search": "past cach nunc apag"});
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(&format!("{line}\n"));
+        std::fs::write(&path, content).unwrap();
+        let finds = |term: &str| -> bool {
+            let read = super::super::read::read_at(&super::super::read::ReadOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                block: "agreed".into(),
+                term: Some(term.into()),
+            })
+            .expect("the agreed block reads");
+            let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
+            read["events"].as_array().expect("events").iter().any(|e| e["id"] == json!(id))
+        };
+        assert!(!finds("diretório") && !finds("sentinela"), "the old search lacks the title and the agent's part");
+        let stale = || mustard_core::io::spec_index::divergence(root).unwrap().stale_search;
+        assert_eq!(stale(), 1);
+
+        let other = json!({"title": "Relatório em português", "text": "O relatório sai em português.", "keys": ["idioma"],
+            "example": "e", "origin": said, "agent": "- conferir o idioma"});
+        assert_eq!(by_model(root, "rule", &other)["ok"], json!(true));
+        assert!(finds("diretório") && finds("sentinela"), "the write brought the old item's search up to date");
+        assert_eq!(stale(), 0, "nothing is left for the index command to fix");
     }
 
     /// O `search` é gravado no arquivo de eventos para a busca no banco da

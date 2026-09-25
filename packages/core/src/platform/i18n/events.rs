@@ -680,6 +680,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              To change the one that exists, write its new version with `\"replaces\": {id}`. \
              Nothing was written."
         }
+        ("lessons.too_long", Locale::PtBr) => {
+            "A lição tem {lines} linhas, e o teto é {max}. Resuma o texto e grave de novo. Nada foi \
+             gravado."
+        }
+        ("lessons.too_long", Locale::EnUs) => {
+            "The lesson has {lines} lines, and the limit is {max}. Shorten the text and write it \
+             again. Nothing was written."
+        }
         ("lessons.unclear", Locale::PtBr) => {
             "A lição é um resumo do assistente no jeito de escrever do projeto, e a conferência de \
              escrita do fim da resposta achou: {defects}. Reescreva o texto e grave de novo. Nada \
@@ -811,8 +819,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            107,
-            0x959b_f143_ecf8_6f7d,
+            108,
+            0xf918_b9e9_abfe_d257,
         );
     }
 
@@ -936,6 +944,7 @@ mod tests {
             ("lessons.unknown_lesson", &["{id}"][..]),
             ("lessons.origin_missing", &[][..]),
             ("lessons.repeated", &["{id}", "{text}"][..]),
+            ("lessons.too_long", &["{lines}", "{max}"][..]),
             ("lessons.unclear", &["{defects}"][..]),
             ("lessons.defect_by_task", &["{spec}"][..]),
             ("lessons.defect_in_code", &[][..]),
@@ -955,6 +964,18 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+    }
+
+    /// A recusa da lição acima do teto de linhas passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com cada vaga trocada por uma
+    /// palavra.
+    #[test]
+    fn the_lesson_line_limit_refusal_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("lessons.too_long", lang).replace("{lines}", "16").replace("{max}", "15");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
         }
     }
 }

@@ -1,7 +1,7 @@
 //! A busca: o campo `search` de cada linha, calculado só pelo binário, as
 //! raízes de um termo e os eventos que um termo acha.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rust_stemmers::{Algorithm, Stemmer};
 use serde_json::{Map, Value};
@@ -21,29 +21,59 @@ use super::{render_line, type_spec, SpecEvent};
 /// parecida em português — a de "some" não pode ficar igual à de "somar".
 /// Sem repetição, na ordem em que aparecem.
 pub(super) fn roots<'a>(pieces: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let stemmer = Stemmer::create(Algorithm::Portuguese);
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    for piece in pieces {
-        let lower = piece.to_lowercase();
-        for word in text::words(&lower) {
-            let is_function_word =
-                text::FUNCTION_WORDS_PT.contains(&word) || text::FUNCTION_WORDS_EN.contains(&word);
-            let stemmed = if is_function_word { word.into() } else { stemmer.stem(word) };
-            let root = text::fold_accents(&stemmed);
-            if seen.insert(root.clone()) {
-                out.push(root);
+    Roots::new().of(pieces)
+}
+
+/// O redutor, com a raiz de cada palavra já reduzida guardada: num arquivo
+/// de eventos inteiro, a mesma palavra se repete muitas vezes e é reduzida
+/// uma vez só. A raiz é a mesma de [`roots`].
+struct Roots {
+    stemmer: Stemmer,
+    known: HashMap<String, String>,
+}
+
+impl Roots {
+    fn new() -> Self {
+        Self { stemmer: Stemmer::create(Algorithm::Portuguese), known: HashMap::new() }
+    }
+
+    /// As raízes das palavras de `pieces`, como [`roots`].
+    fn of<'a>(&mut self, pieces: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for piece in pieces {
+            let lower = piece.to_lowercase();
+            for word in text::words(&lower) {
+                let root = match self.known.get(word) {
+                    Some(root) => root.clone(),
+                    None => {
+                        let is_function_word =
+                            text::FUNCTION_WORDS_PT.contains(&word) || text::FUNCTION_WORDS_EN.contains(&word);
+                        let stemmed = if is_function_word { word.into() } else { self.stemmer.stem(word) };
+                        let root = text::fold_accents(&stemmed);
+                        self.known.insert(word.to_string(), root.clone());
+                        root
+                    }
+                };
+                if seen.insert(root.clone()) {
+                    out.push(root);
+                }
             }
         }
+        out
     }
-    out
+
+    /// O campo `search` de [`search_field`].
+    fn field(&mut self, text: Option<&str>, keys: &[&str]) -> String {
+        self.of(text.into_iter().chain(keys.iter().copied())).join(" ")
+    }
 }
 
 /// O campo `search`: as raízes de `text` e de `keys`, separadas por espaço.
 /// Calculado só pelo binário e nunca mostrado.
 #[must_use]
 pub fn search_field(text: Option<&str>, keys: &[&str]) -> String {
-    roots(text.into_iter().chain(keys.iter().copied())).join(" ")
+    Roots::new().field(text, keys)
 }
 
 /// As raízes de um termo de busca, para comparar com o `search` de cada
@@ -108,6 +138,11 @@ fn cited_paths(event: &Map<String, Value>) -> Vec<&str> {
 /// "onda 13" acha o que é dela. `None` para a linha que não tem nada disso,
 /// que fica sem o campo.
 pub(super) fn search_of(event: &Map<String, Value>) -> Option<String> {
+    search_of_with(event, &mut Roots::new())
+}
+
+/// O [`search_of`] com o redutor `roots`, que guarda as raízes entre linhas.
+fn search_of_with(event: &Map<String, Value>, roots: &mut Roots) -> Option<String> {
     let text = event.get("text").and_then(Value::as_str);
     // O título e a parte do agente entram por último: a linha antiga, que não
     // os tem, fica com o mesmo campo de antes.
@@ -141,23 +176,24 @@ pub(super) fn search_of(event: &Map<String, Value>) -> Option<String> {
     extra.extend(cited_paths(event).into_iter().map(str::to_string));
     extra.extend(parts.into_iter().map(str::to_string));
     let keys: Vec<&str> = extra.iter().map(String::as_str).collect();
-    Some(search_field(text, &keys))
+    Some(roots.field(text, &keys))
 }
 
-/// O arquivo com o `search` de cada linha recalculado pelo redutor de hoje,
-/// e quantas linhas mudaram. Só é reescrita a linha que tem texto ou chaves e
+/// O arquivo com o `search` de cada linha recalculado pela regra de hoje, e
+/// quantas linhas mudaram. Só é reescrita a linha que tem texto ou chaves e
 /// cujo `search` faltava ou era outro; as outras, inclusive as que não se
 /// entendem, ficam byte a byte como estavam. É o que o índice das specs roda
-/// quando o redutor muda.
+/// quando o redutor muda, e o que cada gravação na spec roda antes de gravar.
 #[must_use]
 pub fn refresh_search_lines(content: &str) -> (String, usize) {
+    let mut roots = Roots::new();
     let mut changed = 0usize;
     let body = content
         .split('\n')
         .map(|raw| {
             let line = raw.trim_end_matches('\r');
             let Some(mut map) = parse_object(line) else { return raw.to_string() };
-            let Some(search) = search_of(&map) else { return raw.to_string() };
+            let Some(search) = search_of_with(&map, &mut roots) else { return raw.to_string() };
             if map.get("search").and_then(Value::as_str) == Some(search.as_str()) {
                 return raw.to_string();
             }
