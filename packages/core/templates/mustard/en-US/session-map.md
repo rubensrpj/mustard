@@ -1,31 +1,31 @@
 # Mustard in this project
 
-Mustard runs every piece of work that changes a file through one flow: survey, plan, approval, waves, review, close and pull request. Every command answers what the next step is. Follow that answer instead of choosing the order yourself.
+All work that changes a file follows one flow: survey, plan, approval, waves, review, close and pull request. Every command says the next step: follow it, not an order of your own.
 
 ## When a request arrives
 
-- A request that changes a file opens a spec: run `mustard-rt run open`. The answer brings the question about the base, the type and the branch name.
-- A question, a read or a status check opens no spec. Answer it directly.
-- On a branch Mustard did not open, it blocks nothing.
+- A request that changes a file opens a spec: run `mustard-rt run open`. Once the goal is recorded (the first `context`), suggest clearing the conversation with `/clear`: the resume line says where the spec stands.
+- A question, a read or a status check opens no spec; answer directly.
+- On a branch Mustard did not open, nothing blocks.
 
 ## During the survey
 
 - Present one point at a time, in the order of explaining from the response style.
 - Check the code before stating a fact.
-- Record each answer right away, with `mustard-rt run write <type>`.
-- Each agreed item comes in three parts: a short title in `title`; in `text`, the why, by the effect the user sees, with no file or command; in `agent`, the files, lines, commands and what to test.
+- Record each answer at once with `mustard-rt run write <type>`.
+- Each agreed item has three parts: `title`, short; `text`, the why, by the effect the user sees, no file or command; `agent`, files, lines, commands and what to test.
 
 ## While the spec is open
 
-- A new request from the user joins the same spec, with `write request`; on a closed spec, or one with its pull request open, `mustard-rt run reopen --reason "<why>"` comes first. A pull request the server failed goes to `mustard-rt run reopen --fix --reason "<why>"`. A different subject becomes a pending item, with `mustard-rt run pending --add`.
-- A change that comes from you or from an agent only goes ahead with the user's "yes".
-- Never edit the `spec.*` files by hand. Record through `write` and read one block with `mustard-rt run read <block>`.
-- Hand to an agent any investigation that opens many files. A single check you do yourself.
+- A new request joins the same spec through `write request`; on a closed spec or one with its pull request open, `mustard-rt run reopen --reason "<why>"` comes first. A pull request the server failed goes to `mustard-rt run reopen --fix --reason "<why>"`. A different subject becomes a pending item, with `mustard-rt run pending --add`; if the user wants it done now, suggest another conversation.
+- A change from you or an agent only goes ahead with the user's "yes".
+- Never edit `spec.*` by hand: record through `write` and read one block with `mustard-rt run read <block>`.
+- Hand to an agent any investigation that opens many files; a single check is yours. Ask every agent to record in the spec through `mustard-rt run write` and come back in two lines.
 
 ## Pages
 
 - Never write HTML. A standalone page comes from `mustard-rt run page`, written in markdown.
-- Publish on claude.ai only when a command says so, and record the address the way its answer says. The link lives in the status line; do not repeat it in the conversation.
+- Publish on claude.ai only when a command says so and record the address as it says. The link lives in the status line: do not repeat it in the conversation.
 
 ## Commit and pull request
 
@@ -33,6 +33,6 @@ The binary builds the commit message and the pull request body. Never write "Cla
 
 ## Resuming
 
-"Where did I stop" and "let's continue" call for `mustard-rt run resume`. After `/clear`, the line below already says where the spec stands.
+"Where did I stop" and "let's continue" call for `mustard-rt run resume`.
 
 How to answer lives in the response style.

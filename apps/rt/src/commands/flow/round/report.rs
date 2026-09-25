@@ -883,15 +883,24 @@ fn reference_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
 }
 
 /// O número do critério `reference`, dado pelo código que a página mostra ou
-/// pelo número, na versão mais nova. Um critério que a spec não tem é
-/// recusado.
+/// pelo número, na versão mais nova. Um item que a spec não tem, ou que saiu
+/// da leitura, é recusado como desconhecido; o item vigente de outro tipo é
+/// recusado dizendo o tipo dele e o tipo que o campo pede, para quem citou
+/// não sair procurando um item que existe.
 fn criterion_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
-    let unknown = || Refusal::UnknownTarget {
-        target: mustard_core::domain::spec_events::EventRef::from_value(reference)
-            .unwrap_or(mustard_core::domain::spec_events::EventRef::Code(reference.to_string())),
+    let target = || {
+        mustard_core::domain::spec_events::EventRef::from_value(reference)
+            .unwrap_or(mustard_core::domain::spec_events::EventRef::Code(reference.to_string()))
     };
     let id = reference_id(log, reference)?;
-    let current = log.current(id).filter(|e| e.event_type == "criterion").ok_or_else(unknown)?;
+    let current = log.current(id).ok_or_else(|| Refusal::UnknownTarget { target: target() })?;
+    if current.event_type != "criterion" {
+        return Err(Refusal::TargetOtherType {
+            target: target(),
+            found: current.event_type.clone(),
+            expected: "criterion".to_string(),
+        });
+    }
     Ok(current.id)
 }
 
@@ -923,6 +932,10 @@ struct CheckedReport {
     verdicts: Vec<(Option<u64>, Map<String, Value>)>,
     deliveries: Vec<(u64, Map<String, Value>)>,
     proofs: Vec<(u64, String)>,
+    /// Cada prova como a onda a mandou, antes de juntar as do mesmo critério:
+    /// a onda, o código do critério e o comando. A resposta da rodada mostra,
+    /// na entrega de cada onda, só as provas dela.
+    sent_proofs: Vec<(u64, String, String)>,
     /// A versão nova do envio de cada onda cujo consumo a rodada mediu: o
     /// modelo usado, os passos, os tokens ou o consumo de quem despacha.
     sends: Vec<(u64, Map<String, Value>)>,
@@ -1056,11 +1069,13 @@ fn check_reports(
     // nomeando o critério, em vez de virar um comando que o shell não acha na
     // rodada seguinte.
     let mut proofs: Vec<(u64, String)> = Vec::new();
+    let mut sent_proofs: Vec<(u64, String, String)> = Vec::new();
     for wave in &report.waves {
         for (reference, proof) in &wave.proofs {
             let id = criterion_id(check.log(), reference)?;
             let code = check.log().codes().get(&id).cloned().unwrap_or_else(|| id.to_string());
             agreed_prompt::proof_rule(&code, proof)?;
+            sent_proofs.push((wave.wave, code, proof.clone()));
             match proofs.iter_mut().find(|(existing, _)| *existing == id) {
                 Some((_, joined)) if joined.split(" && ").any(|part| part == proof) => {}
                 Some((_, joined)) => {
@@ -1079,7 +1094,7 @@ fn check_reports(
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks, wave_tasks })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, wave_tasks })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -1115,9 +1130,11 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// e de cada sobra que quebra, e a versão nova de cada critério com prova
 /// nova.
 /// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
-/// comando.
+/// comando. A entrada de cada entregou leva o texto, os arquivos e as provas
+/// que a própria onda mandou: quem conduz a obra confere a entrega pela
+/// resposta da rodada, sem ir ler a spec.
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
-    let CheckedReport { verdicts, deliveries, proofs, sends, agreed_tasks, wave_tasks } = checked;
+    let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, wave_tasks } = checked;
     let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
     let mut recorded = Vec::new();
@@ -1134,8 +1151,16 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         recorded.push(json!({ "type": "task", "id": written.written.id }));
     }
     for (wave, draft) in deliveries {
+        let text = draft.get("text").cloned().unwrap_or_default();
+        let files = draft.get("files").cloned().unwrap_or_else(|| json!([]));
+        let own: Vec<Value> = sent_proofs
+            .iter()
+            .filter(|(from, _, _)| *from == wave)
+            .map(|(_, criterion, proof)| json!({ "criterion": criterion, "proof": proof }))
+            .collect();
         let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;
-        recorded.push(json!({ "wave": wave, "type": "delivered", "id": written.written.id }));
+        recorded.push(json!({ "wave": wave, "type": "delivered", "id": written.written.id, "text": text,
+            "files": files, "proofs": own }));
     }
     for (wave, draft) in wave_tasks {
         let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
@@ -1193,6 +1218,57 @@ mod tests {
         assert_eq!(judged.len(), 1);
         let criterion = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
         assert_eq!(judged[0].fields["criteria"][0]["criterion"], json!(criterion), "the code became the number");
+    }
+
+    /// As entradas de entrega que a resposta da rodada traz em `recorded`.
+    fn delivered_entries(out: &Value) -> Vec<Value> {
+        out["recorded"].as_array().into_iter().flatten().filter(|r| r["type"] == json!("delivered")).cloned().collect()
+    }
+
+    /// A resposta da rodada mostra o que cada onda que voltou entregou: o
+    /// texto, os arquivos e as provas, cada prova com o código do critério.
+    /// Com duas ondas voltando juntas, cada entrada leva só as provas que a
+    /// própria onda mandou, mesmo quando as duas provam o mesmo critério; a
+    /// rodada em que nenhuma onda volta não traz entrada de entrega.
+    #[test]
+    fn the_round_answer_shows_the_text_files_and_proofs_of_each_returned_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+        assert!(delivered_entries(&first).is_empty(), "no wave came back yet: {first}");
+
+        let copy = |wave: u64| wave_prompt::copy_path(root, "x", wave);
+        std::fs::write(copy(1).join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        std::fs::write(copy(2).join("src/b.rs"), "fn um() {}\n// A dobra saiu.\n").unwrap();
+        let one = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "git --version"}]});
+        let two = json!({"wave": 2, "text": "A dobra saiu.", "files": ["src/b.rs"], "commit": "a dobra sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "git --help"}]});
+        assert_eq!(returned(root, one)["ok"], json!(true));
+        assert_eq!(returned(root, two)["ok"], json!(true));
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let entries = delivered_entries(&out);
+        assert_eq!(entries.len(), 2, "{out}");
+        let entry = |wave: u64| entries.iter().find(|e| e["wave"] == json!(wave)).cloned().unwrap();
+        assert_eq!(entry(1)["text"], json!("A soma saiu."), "{out}");
+        assert_eq!(entry(1)["files"], json!(["src/a.rs"]), "{out}");
+        assert_eq!(entry(1)["proofs"], json!([{"criterion": "MSTD-CRIT-0001", "proof": "git --version"}]), "{out}");
+        assert_eq!(entry(2)["text"], json!("A dobra saiu."), "{out}");
+        assert_eq!(entry(2)["files"], json!(["src/b.rs"]), "{out}");
+        assert_eq!(entry(2)["proofs"], json!([{"criterion": "MSTD-CRIT-0001", "proof": "git --help"}]), "{out}");
+
+        // O critério segue com as duas provas juntas, numa versão só.
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion");
+        assert_eq!(current.str_field("proof"), Some("git --version && git --help"), "{out}");
+
+        let quiet = round(root, "x", None);
+        assert_eq!(quiet["ok"], json!(true), "{quiet}");
+        assert!(delivered_entries(&quiet).is_empty(), "nothing came back in this round: {quiet}");
     }
 
     /// A volta que o agente grava cita o caminho absoluto dentro da cópia da
@@ -2853,6 +2929,48 @@ mod tests {
             Some("cargo test -p x a_soma_sai_certa && cargo test -p x a_dobra_sai_certa"),
             "as duas provas viram um comando só"
         );
+    }
+
+    /// A entrega que cita, nas provas, o código de um item que existe mas não
+    /// é critério — um pedido do usuário — recebe a recusa que diz o tipo
+    /// achado e o tipo que o campo pede, nos dois idiomas, e nada é gravado.
+    /// O código que a spec não tem segue recusado como desconhecido.
+    #[test]
+    fn a_proof_citing_an_item_of_another_type_is_refused_with_both_types() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let request = crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "request",
+            json!({"title": "Somar", "text": "Somar dois números.", "keys": ["soma"], "effect": "new_waves"}),
+        );
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let code = log.codes().get(&request).cloned().unwrap();
+        assert!(code.starts_with("MSTD-REQ-"), "{code}");
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let body = |criterion: &str| {
+            json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai",
+                "proofs": [{"criterion": criterion, "proof": "git --version"}]})
+        };
+        for (language, exists) in [("pt-BR", "existe, mas é do tipo request"), ("en-US", "exists, but it is a request")] {
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": language}}).to_string()).unwrap();
+            let refused = returned(root, body(&code));
+            assert_eq!(refused["ok"], json!(false), "{language}: {refused}");
+            assert_eq!(refused["reason"], json!("target-other-type"), "{language}: {refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(&code), "{language}: the refusal names the item: {hint}");
+            assert!(hint.contains(exists), "{language}: the refusal says the type found: {hint}");
+            assert!(hint.contains("criterion"), "{language}: the refusal says the type the field asks: {hint}");
+            assert_eq!(written_deliveries(root), 0, "{language}: nothing was written: {refused}");
+        }
+
+        let unknown = returned(root, body("MSTD-CRIT-0099"));
+        assert_eq!(unknown["reason"], json!("unknown-target"), "{unknown}");
+        assert_eq!(written_deliveries(root), 0, "nothing was written: {unknown}");
     }
 
     /// A versão nova do critério que a onda `wave` do log em `root` cobre,

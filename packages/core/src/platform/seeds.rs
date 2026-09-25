@@ -180,4 +180,82 @@ mod tests {
             }
         }
     }
+
+    /// O pedido de outro assunto, no meio de uma spec, continua virando
+    /// pendência; na mesma linha, depois da porta da pendência, o mapa diz
+    /// que, se o usuário quiser fazer já, o assistente sugere abrir outra
+    /// conversa para esse pedido, em vez de fazê-lo na conversa da spec.
+    #[test]
+    fn the_session_map_sends_another_subject_to_its_own_conversation() {
+        for (text, now, other_conversation) in [
+            (Locale::PtBr, "quiser fazer já", "outra conversa"),
+            (Locale::EnUs, "wants it done now", "another conversation"),
+        ] {
+            let map = session_map(text);
+            let door = "`mustard-rt run pending --add`";
+            let line = map
+                .lines()
+                .find(|line| line.contains(door))
+                .unwrap_or_else(|| panic!("the {text} map no longer records a different subject as a pending item: {map}"));
+            let after = &line[line.find(door).unwrap_or_default() + door.len()..];
+            let suggestion = after
+                .find(other_conversation)
+                .unwrap_or_else(|| panic!("the {text} map does not suggest another conversation after the pending item: {line}"));
+            assert!(after[..suggestion].contains(now), "the {text} map does not tie the other conversation to doing it now: {line}");
+        }
+    }
+
+    /// Aberta a spec, o mapa manda sugerir ao usuário limpar a conversa com
+    /// `/clear` só depois de gravado o objetivo, o primeiro `context`: antes
+    /// disso a conversa ainda tem a mensagem do usuário, que o objetivo aponta
+    /// como origem. A mesma frase diz que a linha de retomada mostra onde a
+    /// spec está. A sugestão mora num lugar só: a seção da retomada não fala
+    /// mais em `/clear`, e a resposta do `run open` também não.
+    #[test]
+    fn the_session_map_suggests_a_clean_conversation_once_the_goal_is_recorded() {
+        for (text, goal, resume_line, resume_heading) in [
+            (Locale::PtBr, "objetivo", "linha de retomada", "## Retomar"),
+            (Locale::EnUs, "goal", "resume line", "## Resuming"),
+        ] {
+            let map = session_map(text);
+            assert_eq!(map.matches("/clear").count(), 1, "the {text} map should suggest `/clear` in one place only: {map}");
+            let line = map.lines().find(|line| line.contains("`/clear`")).unwrap_or_default();
+            let open = line
+                .find("`mustard-rt run open`")
+                .unwrap_or_else(|| panic!("the {text} map does not suggest `/clear` beside the spec opening: {map}"));
+            let clear = line.find("`/clear`").unwrap_or_default();
+            let before = line.get(open..clear).unwrap_or_default();
+            assert!(before.contains("`context`"), "the {text} map suggests `/clear` before the first `context` is recorded: {line}");
+            assert!(before.contains(goal), "the {text} map does not name the goal as what is recorded first: {line}");
+            assert!(line[clear..].contains(resume_line), "the {text} map does not say the resume line shows where the spec stands: {line}");
+
+            let resume = &map[map.find(resume_heading).unwrap_or_else(|| panic!("the {text} map lost its resume section: {map}"))..];
+            assert!(!resume.contains("/clear"), "the {text} resume section still speaks of `/clear`: {resume}");
+            let next_goal = crate::platform::i18n::translate("open.next_goal", text);
+            assert!(!next_goal.contains("/clear"), "the {text} answer of `run open` repeats the `/clear` suggestion: {next_goal}");
+        }
+    }
+
+    /// O mapa pede a todo agente chamado que grave o resultado na spec, pelo
+    /// `mustard-rt run write`, e volte com duas linhas, na linha que delega
+    /// ao agente a investigação que abre muitos arquivos.
+    #[test]
+    fn the_session_map_asks_every_agent_to_record_in_the_spec_and_come_back_in_two_lines() {
+        for (text, investigation, every_agent, in_the_spec, two_lines) in [
+            (Locale::PtBr, "a investigação que abre muitos arquivos", "todo agente", "na spec", "duas linhas"),
+            (Locale::EnUs, "any investigation that opens many files", "every agent", "in the spec", "two lines"),
+        ] {
+            let map = session_map(text);
+            let line = map
+                .lines()
+                .find(|line| line.contains(investigation))
+                .unwrap_or_else(|| panic!("the {text} map lost the investigation delegation: {map}"));
+            let write = line
+                .find("`mustard-rt run write`")
+                .unwrap_or_else(|| panic!("the {text} map does not ask the agent to record through `run write`: {line}"));
+            assert!(line[..write].contains(every_agent), "the {text} map does not ask it of every agent: {line}");
+            assert!(line[..write].contains(in_the_spec), "the {text} map does not say the result goes to the spec: {line}");
+            assert!(line[write..].contains(two_lines), "the {text} map does not ask the agent to come back in two lines: {line}");
+        }
+    }
 }

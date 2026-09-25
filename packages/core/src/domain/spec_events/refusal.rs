@@ -23,6 +23,9 @@ pub enum Refusal {
     /// sem ninguém ver, e nunca seria lido por nada.
     UnknownField { event_type: String, field: String, accepted: String },
     UnknownTarget { target: EventRef },
+    /// O item citado existe e segue vigente, mas é de outro tipo que o campo
+    /// pede: `found` é o tipo dele, `expected` o que o campo aceita.
+    TargetOtherType { target: EventRef, found: String, expected: String },
     ReplacesOtherType { id: u64, found: String, event_type: String },
     FilterMatchesNothing { event_type: String, from: String, to: String },
     UnknownBlock { found: String },
@@ -253,6 +256,7 @@ impl Refusal {
             Self::BinaryOnlyField { .. } => "binary-only-field",
             Self::UnknownField { .. } => "unknown-field",
             Self::UnknownTarget { .. } => "unknown-target",
+            Self::TargetOtherType { .. } => "target-other-type",
             Self::ReplacesOtherType { .. } => "replaces-other-type",
             Self::FilterMatchesNothing { .. } => "filter-matches-nothing",
             Self::UnknownBlock { .. } => "unknown-block",
@@ -376,6 +380,16 @@ impl Refusal {
             }
             Self::UnknownTarget { target: EventRef::Code(code) } => {
                 fill("spec_events.unknown_code", &[("{code}", code.clone())])
+            }
+            Self::TargetOtherType { target, found, expected } => {
+                let item = match target {
+                    EventRef::Id(id) => id.to_string(),
+                    EventRef::Code(code) => code.clone(),
+                };
+                fill(
+                    "spec_events.target_other_type",
+                    &[("{item}", item), ("{found}", found.clone()), ("{expected}", expected.clone())],
+                )
             }
             Self::ReplacesOtherType { id, found, event_type } => fill(
                 "spec_events.replaces_other_type",

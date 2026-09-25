@@ -393,6 +393,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Item {code} does not exist in this spec. Check the code on the page or in read. \
              Nothing was written."
         }
+        ("spec_events.target_other_type", Locale::PtBr) => {
+            "O item {item} existe, mas é do tipo {found}, e este campo pede um item do tipo \
+             {expected}. Use o código de um {expected}, que a página e o read mostram. Nada foi \
+             gravado."
+        }
+        ("spec_events.target_other_type", Locale::EnUs) => {
+            "Item {item} exists, but it is a {found}, and this field asks for an item of type \
+             {expected}. Use the code of a {expected}, shown on the page and in read. Nothing was \
+             written."
+        }
         ("spec_events.binary_only_field", Locale::PtBr) => {
             "O campo {field} é gravado só pelo binário e não pode vir no --json. Para apontar um \
              item pelo código, use replaces ou os alvos de remove e purge. Nada foi gravado."
@@ -821,8 +831,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            108,
-            0xdc62_0f42_f812_e2b7,
+            109,
+            0xecb2_fe12_d607_f15c,
         );
     }
 
@@ -885,6 +895,7 @@ mod tests {
             ("request.adjust_waves", &[][..]),
             ("spec_events.unknown_target", &["{id}"][..]),
             ("spec_events.unknown_code", &["{code}"][..]),
+            ("spec_events.target_other_type", &["{item}", "{found}", "{expected}"][..]),
             ("spec_events.binary_only_field", &["{field}"][..]),
             ("spec_events.unknown_field", &["{type}", "{field}", "{fields}"][..]),
             ("spec_events.replaces_other_type", &["{id}", "{found}", "{type}"][..]),

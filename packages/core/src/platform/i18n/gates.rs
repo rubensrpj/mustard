@@ -360,6 +360,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.rm_recursive_force", Locale::EnUs) => {
             "deleting a folder by force (`rm` with `-r` and `-f`)"
         }
+        // O caminho permitido, na linha seguinte à do comando: só a pasta no
+        // temporário, que o `clean --path` confere antes de apagar.
+        ("command_guard.rm_recursive_force_instead", Locale::PtBr) => {
+            "Para apagar a cópia do projeto ou a pasta de compilação no temporário, rode \
+             `mustard-rt run clean --path <pasta>`: ele confere a pasta antes de apagar."
+        }
+        ("command_guard.rm_recursive_force_instead", Locale::EnUs) => {
+            "To delete the project copy or the build folder in the temp directory, run \
+             `mustard-rt run clean --path <folder>`: it checks the folder before deleting it."
+        }
         ("command_guard.force_push", Locale::PtBr) => {
             "forçar o envio ao servidor (`git push --force`); `--force-with-lease` continua liberado"
         }
@@ -495,8 +505,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            65,
-            0xeffc_a23a_c327_4d0f,
+            66,
+            0x7202_a599_0c5d_66c0,
         );
     }
 
@@ -594,6 +604,7 @@ mod tests {
         for (key, slots) in [
             ("command_guard.deny", &["{reason}", "{command}"][..]),
             ("command_guard.rm_recursive_force", &[][..]),
+            ("command_guard.rm_recursive_force_instead", &[][..]),
             ("command_guard.force_push", &[][..]),
             ("command_guard.reset_hard", &[][..]),
             ("command_guard.clean_force", &[][..]),
