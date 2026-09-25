@@ -30,6 +30,9 @@
     )
 )]
 
+// A linha de comando que o binário lê, declarada aqui também para o teste da
+// ajuda percorrer a árvore a partir da raiz.
+pub mod cli;
 pub mod commands;
 pub mod shared;
 pub mod util;

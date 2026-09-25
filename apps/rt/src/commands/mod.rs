@@ -113,13 +113,13 @@ pub fn dispatch(cmd: RunCmd) {
 
 #[cfg(test)]
 mod tests {
-    use clap::{Command, Subcommand};
+    use clap::{Command, CommandFactory};
     use mustard_core::platform::i18n::uppercase_words;
 
-    /// A árvore de `mustard-rt run` como o clap a monta, com o nome que a
-    /// pessoa digita.
-    fn run_tree() -> Command {
-        Command::new("mustard-rt").subcommand(super::RunCmd::augment_subcommands(Command::new("run")))
+    /// A árvore inteira de `mustard-rt`, a mesma que o programa lê: o texto
+    /// do programa, a porta `on` e cada comando de `run`.
+    fn program_tree() -> Command {
+        crate::cli::Cli::command()
     }
 
     /// As palavras em maiúsculas fora de crase em `texts`, cada uma uma vez,
@@ -173,13 +173,15 @@ mod tests {
         out
     }
 
-    /// A ajuda de todo comando de `mustard-rt run` segue a regra das frases do
-    /// programa: nenhuma palavra toda em maiúsculas fora de crase, salvo a
-    /// lista curta de siglas e unidades. A falha lista o comando, o argumento
-    /// e a palavra.
+    /// A ajuda do programa inteiro, da entrada ao último comando de `run`,
+    /// segue a regra das frases do programa: nenhuma palavra toda em
+    /// maiúsculas fora de crase, salvo a lista curta de siglas e unidades. A
+    /// falha lista o comando, o argumento e a palavra.
     #[test]
     fn every_command_help_keeps_uppercase_inside_backticks() {
-        let tree = run_tree();
+        let tree = program_tree();
+        assert_eq!(tree.get_name(), "mustard-rt", "the walk starts at the program itself");
+        assert!(tree.find_subcommand("on").is_some(), "the walk reaches the hook entry");
         let commands = tree.find_subcommand("run").map_or(0, |run| run.get_subcommands().count());
         assert!(commands >= 20, "the check reached the whole run tree: {commands} commands");
         let defects = tree_defects(&tree);
@@ -187,12 +189,14 @@ mod tests {
     }
 
     /// Um "THE" solto na ajuda de um comando, ou na de um argumento dele, cai
-    /// com o comando, o argumento e a palavra; entre crases ele passa.
+    /// com o comando, o argumento e a palavra; entre crases ele passa. Vale
+    /// também para a entrada do programa: o texto dele, o de `on` e o do
+    /// argumento de `on`.
     #[test]
     fn a_loose_uppercase_word_in_a_help_fails_naming_the_command() {
         let with = |about: &str, help: &str| {
             let (about, help) = (about.to_string(), help.to_string());
-            run_tree().mut_subcommand("run", move |run| {
+            program_tree().mut_subcommand("run", move |run| {
                 run.mut_subcommand("pending", move |pending| {
                     pending.about(about).mut_arg("add", move |add| add.help(help))
                 })
@@ -207,5 +211,28 @@ mod tests {
             vec!["mustard-rt run pending --add: uppercase word THE outside backticks"]
         );
         assert_eq!(tree_defects(&with("Lists `THE` pending items.", "Writes `THE` item.")), Vec::<String>::new());
+
+        let entry = |program: &str, on: &str, event: &str| {
+            let (program, on, event) = (program.to_string(), on.to_string(), event.to_string());
+            program_tree()
+                .about(program)
+                .mut_subcommand("on", move |cmd| cmd.about(on).mut_arg("event", move |arg| arg.help(event)))
+        };
+        assert_eq!(
+            tree_defects(&entry("Mustard runtime.", "Runs THE hooks of an event.", "The event name.")),
+            vec!["mustard-rt on: uppercase word THE outside backticks"]
+        );
+        assert_eq!(
+            tree_defects(&entry("Mustard runtime.", "Runs the hooks of an event.", "THE event name.")),
+            vec!["mustard-rt on event: uppercase word THE outside backticks"]
+        );
+        assert_eq!(
+            tree_defects(&entry("Mustard RUNTIME.", "Runs the hooks of an event.", "The event name.")),
+            vec!["mustard-rt: uppercase word RUNTIME outside backticks"]
+        );
+        assert_eq!(
+            tree_defects(&entry("Mustard `RUNTIME`.", "Runs `THE` hooks.", "`THE` event name.")),
+            Vec::<String>::new()
+        );
     }
 }
