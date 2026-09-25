@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 fn main() {
@@ -71,19 +72,47 @@ fn git_describe() -> Option<(String, bool, String)> {
 /// Tell cargo to re-run this script when the checked-out commit changes, so the
 /// stamped hash/date stay current. Best-effort: a missing `.git` (no repo, or a
 /// packaged source tree) just skips the watches.
+///
+/// The watched paths are printed relative to this crate. Cargo keeps a watched
+/// path as printed, and the build folder is shared between copies of the
+/// project: an absolute path names the copy that ran this script, so the next
+/// copy sees another path — or a missing file, once that copy is gone — and
+/// recompiles this crate.
+///
+/// In a linked worktree (`git worktree add`, the kind of working copy made for
+/// each batch of work) the git folder lives outside the checkout, under a name
+/// of its own, so no path to it reads the same from two copies: there the
+/// watches are skipped. Such a copy is born at one commit and is gone before
+/// the next; the next copy brings
+/// files newer than the last build, `build.rs` among them, and that recompiles
+/// and re-runs this script, which stamps the new commit.
 fn rerun_if_git_head_changed() {
-    // `git rev-parse --git-dir` resolves the real `.git` dir even from a
-    // worktree or a nested crate. Watch HEAD and the ref it points at.
-    let Some(git_dir) = git(&["rev-parse", "--git-dir"]) else {
+    let (Some(git_dir), Some(top)) = (git(&["rev-parse", "--absolute-git-dir"]), git(&["rev-parse", "--show-toplevel"]))
+    else {
         return;
     };
-    let head = format!("{git_dir}/HEAD");
-    println!("cargo:rerun-if-changed={head}");
+    let Some(crate_root) = std::env::var_os("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let Some(git_dir) = relative_inside(Path::new(&crate_root), Path::new(&top), Path::new(&git_dir)) else {
+        return;
+    };
+    println!("cargo:rerun-if-changed={git_dir}/HEAD");
     // The packed/loose ref HEAD points at (e.g. refs/heads/<branch>) — its
     // change is what actually moves the commit on a normal `git commit`.
     if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
         println!("cargo:rerun-if-changed={git_dir}/{reference}");
     }
+}
+
+/// `target` as a path relative to `from`, when both sit inside `top`; `None`
+/// when `target` lies outside it, as the git folder of a linked worktree does.
+fn relative_inside(from: &Path, top: &Path, target: &Path) -> Option<String> {
+    let top = top.canonicalize().ok()?;
+    let up = from.canonicalize().ok()?.strip_prefix(&top).ok()?.components().count();
+    let target = target.canonicalize().ok()?;
+    let down = target.strip_prefix(&top).ok()?;
+    Some(format!("{}{}", "../".repeat(up), down.to_string_lossy().replace('\\', "/")))
 }
 
 /// Run a git command, returning trimmed stdout on a clean exit. `None` on any

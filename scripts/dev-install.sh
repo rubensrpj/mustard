@@ -476,5 +476,8 @@ done
 if [ -n "$UPDATE_PROJECT" ]; then
   [ -d "$UPDATE_PROJECT" ] || { echo "erro: projeto inexistente: $UPDATE_PROJECT" >&2; exit 1; }
   echo "==> Rodando a atualização do Mustard em $UPDATE_PROJECT (mustard init --yes)…"
-  ( cd "$UPDATE_PROJECT" && "$RELEASE_DIR/mustard" init --yes )
+  # O programa recém-compilado não tem `templates/` ao lado: os moldes do
+  # instalador vêm desta cópia do repositório, pela variável que o instalador
+  # lê antes de procurar.
+  ( cd "$UPDATE_PROJECT" && MUSTARD_TEMPLATES_DIR="$REPO_ROOT/apps/cli/templates" "$RELEASE_DIR/mustard" init --yes )
 fi

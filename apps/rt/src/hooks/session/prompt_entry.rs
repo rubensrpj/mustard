@@ -288,8 +288,10 @@ mod tests {
         }
 
         // Uma chamada só, no manifesto e no registro.
-        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../../../plugin/hooks/hooks.json"))
-            .expect("the manifest is JSON");
+        // Lido da cópia que roda o teste: o `plugin/` fica fora do pacote.
+        let hooks = crate::manifest_dir::manifest_dir().join("../../plugin/hooks/hooks.json");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks).expect("the manifest reads")).expect("the manifest is JSON");
         let commands: Vec<&str> = manifest["hooks"]["UserPromptSubmit"]
             .as_array()
             .expect("the message has a hook")

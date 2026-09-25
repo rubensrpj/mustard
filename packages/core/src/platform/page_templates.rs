@@ -450,8 +450,13 @@ mod tests {
         crate::manifest_dir::manifest_dir().join("tests/fixtures/page_templates/harness.js")
     }
 
-    /// A spec de exemplo da página de hoje, com um item de cada tipo.
-    const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/rt/tests/fixtures/spec_page/spec.ndjson"));
+    /// A spec de exemplo da página de hoje, com um item de cada tipo, lida da
+    /// cópia que roda o teste: ela mora no pacote do `rt`, e embutida na
+    /// compilação seria guardada pelo endereço da cópia que compilou.
+    fn fixture() -> String {
+        let path = crate::manifest_dir::manifest_dir().join("../../apps/rt/tests/fixtures/spec_page/spec.ndjson");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()))
+    }
 
     /// As seções, os grupos e os itens que o motor antigo (`spec_page`, saído
     /// nesta obra) montava para a spec de exemplo: gravados uma vez, à mão,
@@ -490,7 +495,7 @@ mod tests {
             // vereditos de onda mesmo apontando a mesma onda 2.
             json!({"v":1,"id":46,"at":"2026-09-12T12:05:00-03:00","type":"verdict","author":"review","wave":2,"result":"approved","final":true,"text":"As ondas se encaixam sem prova perdida."}),
         ];
-        FIXTURE
+        fixture()
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str::<Value>(line).expect("a fixture line"))

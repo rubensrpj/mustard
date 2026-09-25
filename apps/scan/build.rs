@@ -107,7 +107,7 @@ fn main() {
         );
 
         // Concatenate every .scm under queries/<dir>/, in stable filename order.
-        let query = read_queries(&queries_root, &dir);
+        let query = read_queries(Path::new(&manifest), &queries_root, &dir);
 
         let exts = extensions
             .iter()
@@ -152,7 +152,7 @@ fn str_field(tbl: &toml::value::Table, key: &str) -> String {
 
 /// Read and concatenate every `.scm` file under `queries/<dir>/`, sorted by name
 /// so `tags.scm` and `supertypes.scm` combine deterministically.
-fn read_queries(root: &Path, dir: &str) -> String {
+fn read_queries(crate_root: &Path, root: &Path, dir: &str) -> String {
     let langdir = root.join(dir);
     let mut files: Vec<_> = fs::read_dir(&langdir)
         .unwrap_or_else(|e| panic!("cannot read query dir {}: {e}", langdir.display()))
@@ -163,7 +163,7 @@ fn read_queries(root: &Path, dir: &str) -> String {
 
     let mut combined = String::new();
     for f in files {
-        println!("cargo:rerun-if-changed={}", f.display());
+        println!("cargo:rerun-if-changed={}", relative_to(crate_root, &f));
         let part = fs::read_to_string(&f)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", f.display()));
         combined.push_str(&part);
@@ -187,17 +187,12 @@ fn source_digest(crate_root: &Path) -> String {
         let is_data_toml = path.extension().and_then(|e| e.to_str()) == Some("toml")
             && path.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml");
         if is_data_toml && path.is_file() {
-            println!("cargo:rerun-if-changed={}", path.display());
+            println!("cargo:rerun-if-changed={}", relative_to(crate_root, &path));
             files.push(path);
         }
     }
-    let mut named: Vec<(String, std::path::PathBuf)> = files
-        .into_iter()
-        .map(|p| {
-            let rel = p.strip_prefix(crate_root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
-            (rel, p)
-        })
-        .collect();
+    let mut named: Vec<(String, std::path::PathBuf)> =
+        files.into_iter().map(|p| (relative_to(crate_root, &p), p)).collect();
     named.sort();
 
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -215,6 +210,18 @@ fn source_digest(crate_root: &Path) -> String {
         feed(&body);
     }
     format!("{hash:016x}")
+}
+
+/// `path` as cargo should record a watched file: relative to the crate root.
+///
+/// Cargo keeps a watched path as it is printed. An absolute one names the copy
+/// of the project that ran this script; the build folder is shared between
+/// copies, so the next copy sees another path, or a missing file once that
+/// copy is gone, and runs this script again — which recompiles the crate and
+/// everything above it. A relative path is read from the crate root of the copy
+/// being built.
+fn relative_to(crate_root: &Path, path: &Path) -> String {
+    path.strip_prefix(crate_root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
 /// Every file under `dir`, at any depth.

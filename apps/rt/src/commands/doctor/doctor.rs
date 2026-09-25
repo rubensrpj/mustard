@@ -140,7 +140,11 @@ impl CheckResult {
 /// A hand-kept copy drifted in both directions (it carried `PreCompact`, which
 /// nothing registers, and omitted `Stop` and `WorktreeCreate`, which are
 /// registered).
-const SHIPPED_HOOKS_MANIFEST: &str = include_str!("../../../../../plugin/hooks/hooks.json");
+///
+/// The build script copies it into `OUT_DIR` first: embedded from `plugin/`,
+/// outside this crate, cargo kept it by the absolute path of the copy that
+/// compiled it, and switching copies recompiled the crate.
+const SHIPPED_HOOKS_MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/hooks.json"));
 
 /// All hook event names `mustard-rt on <event>` recognizes — the keys of the
 /// shipped manifest's `hooks` object.

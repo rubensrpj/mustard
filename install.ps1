@@ -9,8 +9,8 @@
 #
 # Why MUSTARD_TEMPLATES_DIR: `cargo install` copies only the binary to
 # ~/.cargo/bin, not its templates/ payload. Without an explicit pointer the
-# installed `mustard` would fall back to the compile-time CARGO_MANIFEST_DIR
-# path, which silently breaks if this repo is ever moved. We set the env var to
+# installed `mustard` finds no payload beside it and refuses: it never falls
+# back to the folder it was compiled in. We set the env var to
 # apps/cli/templates for the init invocation so it always resolves the payload
 # that ships with the binaries we just built.
 #

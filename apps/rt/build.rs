@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 fn main() {
@@ -10,6 +11,34 @@ fn main() {
     }
 
     emit_version_full();
+    embed_shipped_hooks_manifest();
+}
+
+/// The hook manifest the plugin ships, relative to this crate: `plugin/`
+/// sits at the repository root.
+const SHIPPED_HOOKS_MANIFEST: &str = "../../plugin/hooks/hooks.json";
+
+/// Copy the plugin's hook manifest into `OUT_DIR`, where the doctor embeds it
+/// from (`include_str!` of `$OUT_DIR/hooks.json`).
+///
+/// Embedding it straight from `plugin/` made cargo record the file by its
+/// absolute path — the path of the copy of the project that compiled it. The
+/// build folder is shared between copies: the next copy saw another path, or a
+/// missing file once the old copy was gone, and recompiled the crate. A file
+/// under `OUT_DIR` is recorded relative to the build folder, and the watch
+/// printed here is relative to this crate, so both name the copy being built.
+///
+/// Outside cargo — a test compiles and runs this script alone — there is no
+/// `OUT_DIR` to fill, and the step is skipped.
+fn embed_shipped_hooks_manifest() {
+    let (Some(out_dir), Some(crate_root)) = (std::env::var_os("OUT_DIR"), std::env::var_os("CARGO_MANIFEST_DIR")) else {
+        return;
+    };
+    let source = Path::new(&crate_root).join(SHIPPED_HOOKS_MANIFEST);
+    let body = std::fs::read(&source).unwrap_or_else(|e| panic!("cannot read {}: {e}", source.display()));
+    let target = Path::new(&out_dir).join("hooks.json");
+    std::fs::write(&target, body).unwrap_or_else(|e| panic!("cannot write {}: {e}", target.display()));
+    println!("cargo:rerun-if-changed={SHIPPED_HOOKS_MANIFEST}");
 }
 
 /// Emit `MUSTARD_VERSION_FULL` — the per-build version stamp the binary's clap
@@ -75,19 +104,47 @@ fn git_describe() -> Option<(String, bool, String)> {
 /// Tell cargo to re-run this script when the checked-out commit changes, so the
 /// stamped hash/date stay current. Best-effort: a missing `.git` (no repo, or a
 /// packaged source tree) just skips the watches.
+///
+/// The watched paths are printed relative to this crate. Cargo keeps a watched
+/// path as printed, and the build folder is shared between copies of the
+/// project: an absolute path names the copy that ran this script, so the next
+/// copy sees another path — or a missing file, once that copy is gone — and
+/// recompiles this crate.
+///
+/// In a linked worktree (`git worktree add`, the kind of working copy made for
+/// each batch of work) the git folder lives outside the checkout, under a name
+/// of its own, so no path to it reads the same from two copies: there the
+/// watches are skipped. Such a copy is born at one commit and is gone before
+/// the next; the next copy brings
+/// files newer than the last build, `build.rs` among them, and that recompiles
+/// and re-runs this script, which stamps the new commit.
 fn rerun_if_git_head_changed() {
-    // `git rev-parse --git-dir` resolves the real `.git` dir even from a
-    // worktree or a nested crate. Watch HEAD and the ref it points at.
-    let Some(git_dir) = git(&["rev-parse", "--git-dir"]) else {
+    let (Some(git_dir), Some(top)) = (git(&["rev-parse", "--absolute-git-dir"]), git(&["rev-parse", "--show-toplevel"]))
+    else {
         return;
     };
-    let head = format!("{git_dir}/HEAD");
-    println!("cargo:rerun-if-changed={head}");
+    let Some(crate_root) = std::env::var_os("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let Some(git_dir) = relative_inside(Path::new(&crate_root), Path::new(&top), Path::new(&git_dir)) else {
+        return;
+    };
+    println!("cargo:rerun-if-changed={git_dir}/HEAD");
     // The packed/loose ref HEAD points at (e.g. refs/heads/<branch>) — its
     // change is what actually moves the commit on a normal `git commit`.
     if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
         println!("cargo:rerun-if-changed={git_dir}/{reference}");
     }
+}
+
+/// `target` as a path relative to `from`, when both sit inside `top`; `None`
+/// when `target` lies outside it, as the git folder of a linked worktree does.
+fn relative_inside(from: &Path, top: &Path, target: &Path) -> Option<String> {
+    let top = top.canonicalize().ok()?;
+    let up = from.canonicalize().ok()?.strip_prefix(&top).ok()?.components().count();
+    let target = target.canonicalize().ok()?;
+    let down = target.strip_prefix(&top).ok()?;
+    Some(format!("{}{}", "../".repeat(up), down.to_string_lossy().replace('\\', "/")))
 }
 
 /// Run a git command, returning trimmed stdout on a clean exit. `None` on any

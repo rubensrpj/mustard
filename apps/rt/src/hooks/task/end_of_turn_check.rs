@@ -137,12 +137,13 @@ mod tests {
     use serde_json::{json, Value};
     use std::time::{Duration, Instant};
 
-    /// O manifesto de ganchos que o plugin entrega.
-    const HOOKS_JSON: &str = include_str!("../../../../../plugin/hooks/hooks.json");
-
-    /// Os estilos de resposta que o plugin entrega, um por idioma.
-    const STYLE_PT: &str = include_str!("../../../../../plugin/output-styles/mustard-pt-BR.md");
-    const STYLE_EN: &str = include_str!("../../../../../plugin/output-styles/mustard-en-US.md");
+    /// Um arquivo do plugin, lido da cópia que roda o teste: o `plugin/`
+    /// fica fora do pacote, e embutido na compilação ele seria guardado pelo
+    /// endereço da cópia que compilou.
+    fn plugin_file(relative: &str) -> String {
+        let path = crate::manifest_dir::manifest_dir().join("../../plugin").join(relative);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()))
+    }
 
     /// O tempo que o Claude Code dá ao `Stop`, em segundos.
     const STOP_BUDGET_SECS: u64 = 30;
@@ -315,7 +316,10 @@ mod tests {
     /// avulsa e pede o contexto antes do código.
     #[test]
     fn the_answer_styles_drop_the_line_cap_and_put_context_before_code() {
-        for (style, context) in [(STYLE_PT, "Contexto antes do código"), (STYLE_EN, "Context before code")] {
+        for (style, context) in [
+            (plugin_file("output-styles/mustard-pt-BR.md"), "Contexto antes do código"),
+            (plugin_file("output-styles/mustard-en-US.md"), "Context before code"),
+        ] {
             assert!(style.contains("`mustard-rt run page`"), "the answer style names the page: {style}");
             for cap in ["15 linhas", "15 lines"] {
                 assert!(!style.contains(cap), "the answer style still caps the reply at `{cap}`: {style}");
@@ -327,7 +331,7 @@ mod tests {
     /// O `Stop` tem 30 segundos no `hooks.json`, não mais 5.
     #[test]
     fn the_stop_hook_has_thirty_seconds() {
-        let manifest: Value = serde_json::from_str(HOOKS_JSON).expect("hooks.json");
+        let manifest: Value = serde_json::from_str(&plugin_file("hooks/hooks.json")).expect("hooks.json");
         let timeouts: Vec<u64> = manifest["hooks"]["Stop"]
             .as_array()
             .expect("a Stop entry")

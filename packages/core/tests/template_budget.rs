@@ -1,9 +1,13 @@
 //! `template_budget` — o tamanho do texto do Mustard que o modelo lê.
 //!
 //! Em cada idioma, todo texto que o modelo lê soma menos de 25.600 bytes, pela
-//! medida que mora em `packages/core/tests/support/prose_budget.rs` — a mesma
-//! que o teste da instalação dos agentes confere. O mapa do início da sessão,
-//! que entra em toda sessão, continua com o teto dele de 3.072 bytes.
+//! medida que mora em `support/prose_budget.rs`, ao lado deste arquivo — a
+//! mesma que o teste da instalação dos agentes confere. O mapa do início da
+//! sessão, que entra em toda sessão, continua com o teto dele de 3.072 bytes.
+//!
+//! O teste mora no pacote da medida: trazido de outro pacote pelo caminho, o
+//! arquivo da medida ficaria fora dele, e o cargo o guardaria pelo endereço da
+//! cópia que compilou.
 //!
 //! O corte da descrição de um comando é outra conta, que o Claude Code faz: a
 //! descrição passa de 1.536 caracteres e é cortada no meio da frase na lista
@@ -11,7 +15,7 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
-#[path = "../../../packages/core/tests/support/prose_budget.rs"]
+#[path = "support/prose_budget.rs"]
 mod prose_budget;
 
 use std::path::Path;

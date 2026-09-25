@@ -215,7 +215,15 @@ fn templates_beside_exe(exe: &Path) -> Option<PathBuf> {
 ///    used by tests and by any caller that knows its own layout);
 /// 2. `<exe-dir>/templates` and `<exe-dir>/../templates` (installed layout),
 ///    resolved from the CANONICALIZED executable path;
-/// 3. `<CARGO_MANIFEST_DIR>/templates` (the in-repo layout, for `cargo run`).
+/// 3. `<CARGO_MANIFEST_DIR>/templates` (the in-repo layout), with the variable
+///    read when the program RUNS — `cargo run` and `cargo test` set it to the
+///    package folder of the copy being run — and accepted only when that
+///    folder holds the installer's own molds (see [`installer_templates_in`]).
+///
+/// Step 3 never uses the folder recorded when the binary was COMPILED. The
+/// build folder is shared between copies of the project, and cargo reuses a
+/// binary whose code did not change: the recorded folder would be the copy
+/// that compiled it — another copy, or one already deleted.
 ///
 /// Step 2 canonicalizes because `current_exe` promises nothing about symlinks:
 /// the std docs state that some platforms return the path of the symlink and
@@ -255,9 +263,9 @@ pub(super) fn resolve_templates_dir() -> Result<PathBuf> {
             }
     }
 
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
-    if manifest.is_dir() {
-        return Ok(manifest);
+    let package = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
+    if let Some(found) = package.as_deref().and_then(installer_templates_in) {
+        return Ok(found);
     }
 
     // Name what was probed: the bare "set the env var" hint left the reader with
@@ -267,14 +275,30 @@ pub(super) fn resolve_templates_dir() -> Result<PathBuf> {
         .as_deref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "<unknown>".to_string());
+    let package_display = package
+        .map(|dir| format!(" and in the package folder cargo gave ({})", dir.join("templates").display()))
+        .unwrap_or_default();
     anyhow::bail!(
         "could not locate the Mustard `templates/` directory.\n\
-         Probed next to the running binary ({exe_display}) and at the \
-         compile-time path ({}).\n\
+         Probed next to the running binary ({exe_display}){package_display}.\n\
          An installed Mustard ships the payload beside the REAL binary, not \
          beside the symlink on PATH; set MUSTARD_TEMPLATES_DIR to override.",
-        manifest.display(),
     )
+}
+
+/// The mold the installer copies from `templates/`: the one file that tells
+/// the installer's payload apart from any other `templates/` folder.
+const INSTALLER_MOLD: &str = ".github/pull_request_template.md";
+
+/// `<package>/templates` when it holds the installer's own molds, or `None`.
+///
+/// `CARGO_MANIFEST_DIR` reaches every process cargo starts, so it can name a
+/// package that is not this one — the test of another crate, or a project of
+/// the user's own with a `templates/` of its own. Only the folder that carries
+/// the installer's mold is taken.
+fn installer_templates_in(package: &Path) -> Option<PathBuf> {
+    let templates = package.join("templates");
+    templates.join(INSTALLER_MOLD).is_file().then_some(templates)
 }
 
 /// Copy `templates/.github/` → `<project>/.github/` when the project has a

@@ -8,3 +8,4 @@
 ## Revisão
 
 - Neste repositório, a prova de ponta a ponta do revisor é instalar o Mustard numa pasta temporária vazia (`mustard init`) e rodar o que o usuário rodaria. O molde do revisor vai a todo projeto e por isso não traz esse comando.
+- O `mustard init` dessa prova é o da cópia em revisão, não o do PATH. De dentro da pasta temporária: `cargo run --manifest-path <cópia>/Cargo.toml -p mustard-cli -- init --yes`. Fora do cargo, o programa compilado não acha os moldes sozinho: rode-o com `MUSTARD_TEMPLATES_DIR=<cópia>/apps/cli/templates`. Ele nunca lê os moldes da pasta onde foi compilado.
