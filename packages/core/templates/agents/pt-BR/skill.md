@@ -28,4 +28,4 @@ Não mude nenhum outro arquivo e não faça commit. A skill só vale depois do "
 
 ## O que devolver
 
-O caminho da skill e, em até 5 linhas, o que ela cobre e o que ficou de fora.
+O caminho da skill, o que ela cobre e o que ficou de fora: só o que quem despachou precisa para decidir se ela serve.

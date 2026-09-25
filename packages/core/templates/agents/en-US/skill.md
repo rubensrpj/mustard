@@ -28,4 +28,4 @@ Change no other file and do not commit. The skill only counts after the user's "
 
 ## What to return
 
-The skill's path and, in at most 5 lines, what it covers and what was left out.
+The skill's path, what it covers and what was left out: only what whoever dispatched you needs to decide whether it fits.

@@ -15,9 +15,9 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
 - Leia por trecho: ache a função com a busca e leia só ela. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
 - Trabalhe na cópia separada que o pedido indica; se ele indicar uma pasta de compilação, use-a. Nunca crie cópia por conta própria.
 - Rode cada comando de dentro da cópia: nada se edita no repositório principal; a pasta de compilação é fixa e passa de uma cópia para a seguinte.
-- Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.
+- Rode os testes que você lê e os que seus cortes derrubam. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas; na revisão final, pule-a quando o `mustard.json` declara `testCommand`: o fechamento já a rodou antes de despachar você.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
-- Além dos testes, prove de ponta a ponta: numa pasta temporária vazia (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`), instale o Mustard (`mustard init`) e rode o que o usuário rodaria.
+- Além dos testes, prove de ponta a ponta: rode o que o usuário rodaria, pelo caminho que ele usa (o comando, a tela, a chamada), numa pasta temporária vazia quando precisar de uma (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
 - Para cada critério, rode a verificação gravada, leia o teste e diga se confere a regra de verdade, com os números combinados. Leia a verificação do vermelho que a entrega relata e gaste seus cortes onde a onda não cortou, sem repetir os dela. Vários testes a provar? Corte tudo de uma vez, compile e rode uma vez, veja todos caírem, desfaça tudo; o corte que mexe no mesmo trecho de outro vai sozinho.
 - Alguma onda tirou uma proteção? Rode o caso que ela barrava, com duas voltas ao mesmo tempo, antes de aprovar.
 - Alguma onda apagou ou moveu algo no git? Confira que nada se perdeu. Critério "só depois de" tem teste do caso em que o "antes" falha.

@@ -578,18 +578,19 @@ fn o_revisor_propoe_o_conserto_com_teste_no_lugar_da_licao() {
 }
 
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
-/// reler depois de editar, rodar só os testes do que mudou, a suíte inteira
-/// uma vez no fim pelo `rtk`, nada em segundo plano, não comitar nem usar
-/// `git add`, rodar cada comando de dentro da cópia e a pasta de compilação
-/// fixa — moram só no molde do agente, escritas à mão e fora do catálogo de
-/// textos, e o molde da onda e do revisor levam as mesmas palavras, nos dois
-/// idiomas.
+/// reler depois de editar, a suíte inteira uma vez no fim pelo `rtk`, nada
+/// em segundo plano, não comitar nem usar `git add`, rodar cada comando de
+/// dentro da cópia e a pasta de compilação fixa — moram só no molde do
+/// agente, escritas à mão e fora do catálogo de textos, e o molde da onda e
+/// do revisor levam as mesmas palavras, nos dois idiomas. Rodar só os testes
+/// do que mudou é da onda; o revisor roda os testes que lê e os que seus
+/// cortes derrubam e, na revisão final, não repete a suíte que o fechamento
+/// rodou do `testCommand`.
 #[test]
 fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     let pt_br = [
         "Leia por trecho: ache a função com a busca e leia só ela",
         "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado",
-        "Durante o trabalho, rode só os testes do que mudou",
         "A suíte inteira roda uma vez no fim, em primeiro plano",
         "Nunca mande compilação ou teste para segundo plano",
         "Não comite e não use `git add`: o commit é da rodada",
@@ -600,7 +601,6 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     let en_us = [
         "Read by excerpt: find the function with search and read only it",
         "Do not reread the file after editing: the edit already shows the changed excerpt",
-        "During the work, run only the tests of what changed",
         "The whole suite runs once at the end, in the foreground",
         "Never send a build or test to the background",
         "Do not commit and do not use `git add`: the commit belongs to the round",
@@ -614,6 +614,31 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
             for phrase in phrases {
                 assert!(agent.contains(phrase), "the {lang} `{name}` agent lost the execution rule `{phrase}`");
             }
+        }
+    }
+    for (lang, wave_only, reviewer_runs, close_ran) in [
+        (
+            "pt-BR",
+            "Durante o trabalho, rode só os testes do que mudou",
+            "Rode os testes que você lê e os que seus cortes derrubam",
+            "o fechamento já a rodou",
+        ),
+        (
+            "en-US",
+            "During the work, run only the tests of what changed",
+            "Run the tests you read and the ones your cuts bring down",
+            "the close already ran it",
+        ),
+    ] {
+        assert!(template(lang, "wave").contains(wave_only), "the {lang} wave agent lost `{wave_only}`");
+        let review = template(lang, "review");
+        assert!(!review.contains(wave_only), "the {lang} reviewer still runs only the tests of what changed");
+        let suite = review
+            .lines()
+            .find(|line| line.contains("`testCommand`"))
+            .unwrap_or_else(|| panic!("the {lang} reviewer reruns the suite the close already ran"));
+        for phrase in [reviewer_runs, "`rtk`", close_ran] {
+            assert!(suite.contains(phrase), "the {lang} reviewer's suite line lost `{phrase}`: {suite}");
         }
     }
 }
@@ -649,12 +674,18 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
                 assert!(template(lang, name).contains(line), "the {lang} `{name}` agent does not say `{line}`");
             }
         }
-        // O revisor prova de ponta a ponta, numa pasta temporária com o
-        // Mustard instalado, além dos testes.
-        let end_to_end = if text == Locale::PtBr { "prove de ponta a ponta" } else { "prove it end to end" };
-        for line in [end_to_end, "mktemp -d", "`mustard init`"] {
+        // O revisor prova de ponta a ponta, pelo caminho que o usuário usa,
+        // além dos testes. O molde vai a todo projeto: instalar o Mustard é a
+        // prova deste repositório, e mora no CLAUDE.md da raiz dele.
+        let (end_to_end, user_path) = if text == Locale::PtBr {
+            ("prove de ponta a ponta", "pelo caminho que ele usa (o comando, a tela, a chamada)")
+        } else {
+            ("prove it end to end", "on the path they take (the command, the screen, the call)")
+        };
+        for line in [end_to_end, user_path, "mktemp -d"] {
             assert!(template(lang, "review").contains(line), "the {lang} reviewer does not say `{line}`");
         }
+        assert!(!template(lang, "review").contains("mustard init"), "the {lang} reviewer carries this repository's own proof");
 
         let notice = translate("scratch.residue.notice", text);
         assert!(notice.contains("mustard-rt run clean"), "the {lang} disk notice lost its cleanup command");
