@@ -777,18 +777,35 @@ pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
 /// erro traz o comando inteiro e a saída de erro, a que sai verde sem rodar
 /// teste traz o comando, e a que cita um teste inexistente traz o nome que
 /// faltou. A rodada não comita nada.
-pub(super) fn ensure_criteria_proofs(root: &Path, log: &SpecLog, waves: &[u64]) -> Result<(), RoundRefusal> {
+///
+/// O critério para o qual uma onda da rodada entregou prova nova (`delivered`,
+/// cada uma pelo número vigente do critério, já resolvida pela conferência
+/// que a grava depois do commit) roda a entregue no lugar da gravada: a onda
+/// que muda o nome de um teste entrega a prova com o nome novo, e a gravada,
+/// que cita o nome antigo, recusaria a entrega por um teste que ela mesma
+/// tirou. Os outros critérios rodam a gravada. Devolve os comandos que
+/// rodaram, todos verdes: a prova nova que já passou aqui não roda de novo
+/// depois do commit.
+pub(super) fn ensure_criteria_proofs(
+    root: &Path,
+    log: &SpecLog,
+    waves: &[u64],
+    delivered: &[(u64, String)],
+) -> Result<Vec<String>, RoundRefusal> {
     let codes = log.codes();
     let criteria: Vec<(u64, String, String)> = log
         .criteria_for_waves(waves)
         .into_iter()
         .filter_map(|e| {
-            let proof = e.str_field("proof")?.trim().to_string();
+            let proof = match delivered.iter().find(|(id, _)| *id == e.id) {
+                Some((_, proof)) => proof.clone(),
+                None => e.str_field("proof")?.trim().to_string(),
+            };
             Some((e.id, codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()), proof))
         })
         .collect();
     let (_, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
-    let Some(failed) = failed else { return Ok(()) };
+    let Some(failed) = failed else { return Ok(criteria.into_iter().map(|(_, _, proof)| proof).collect()) };
     Err(match failed.fault {
         ProofFault::RanNoTest(tests) => {
             RoundRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests }

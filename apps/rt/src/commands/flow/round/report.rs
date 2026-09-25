@@ -334,13 +334,11 @@ fn take_returns(
     // A prova de cada critério que as ondas deste relatório cobrem roda antes
     // do commit, uma de cada vez: a que não executa ou não passa recusa com o
     // código do critério, o comando inteiro e a saída de erro, e nada é
-    // comitado.
-    if message.is_some()
-        && let Err(refusal) = ensure_criteria_proofs(root, log, &waves)
-    {
-        let _ = write_joined(root, &joined, false);
-        return Err(refusal);
-    }
+    // comitado, com o disco de volta ao que era. Para o critério com prova
+    // nova na entrega, roda a entregue, pela mesma referência já resolvida
+    // que a gravação usa depois do commit.
+    let proven = message.is_some().then(|| ensure_criteria_proofs(root, log, &waves, &checked.proofs));
+    let proven = proven.transpose().inspect_err(|_| drop(write_joined(root, &joined, false)))?.unwrap_or_default();
     // A recusa do git volta o índice e o disco antes de sair, com a trava ainda
     // presa.
     let unit = State::from_log(log).branch.unwrap_or_default();
@@ -404,11 +402,12 @@ fn take_returns(
             }));
         }
     }
-    // A prova nova roda uma vez: a que sai verde sem rodar teste nenhum, e a
-    // que sai verde citando um teste que não existe, são avisadas agora,
-    // antes de o fechamento recusá-las. O motivo é o mesmo que a recusa do
-    // fechamento e a da rodada leem.
-    for (code, proof) in proofs {
+    // A prova nova roda uma vez: a que já passou antes do commit, como prova
+    // de um critério das ondas da rodada, não roda de novo. Das outras, a que
+    // sai verde sem rodar teste nenhum, e a que sai verde citando um teste que
+    // não existe, são avisadas agora, antes de o fechamento recusá-las. O
+    // motivo é o mesmo que a recusa do fechamento e a da rodada leem.
+    for (code, proof) in proofs.into_iter().filter(|(_, proof)| !proven.contains(proof)) {
         let (reason, hint) = match crate::commands::review::qa_run::run_proof(&proof, root).fault() {
             Some(ProofFault::RanNoTest(_)) => {
                 ("proof-ran-no-test", translate("round.proof_ran_no_test", lang).replace("{code}", &code))
@@ -1326,7 +1325,9 @@ mod tests {
 
     /// Quando a entrega traz mais de uma prova para o mesmo critério, elas
     /// ficam todas: um comando só, ligado por `&&`, na ordem e sem repetir, e
-    /// o critério ganha uma versão só (não uma em cadeia por prova).
+    /// o critério ganha uma versão só (não uma em cadeia por prova). Cada
+    /// prova é um comando que passa de verdade, porque o comando junto roda
+    /// antes do commit.
     #[test]
     fn several_proofs_of_one_criterion_all_stay() {
         let dir = tempdir().unwrap();
@@ -1342,10 +1343,10 @@ mod tests {
         std::fs::write(&path, format!("{file_before}// Saiu.\n")).unwrap();
         let body = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu",
             "proofs": [
-                {"criterion": "MSTD-CRIT-0001", "proof": "cargo test a"},
-                {"criterion": "MSTD-CRIT-0001", "proof": "cargo test b"},
-                {"criterion": "MSTD-CRIT-0001", "proof": "cargo test a"},
-                {"criterion": "MSTD-CRIT-0001", "proof": "cargo test c"},
+                {"criterion": "MSTD-CRIT-0001", "proof": "echo a"},
+                {"criterion": "MSTD-CRIT-0001", "proof": "echo b"},
+                {"criterion": "MSTD-CRIT-0001", "proof": "echo a"},
+                {"criterion": "MSTD-CRIT-0001", "proof": "echo c"},
             ]});
         assert_eq!(returned(root, body)["ok"], json!(true));
         let out = round(root, "x", None);
@@ -1357,7 +1358,7 @@ mod tests {
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion");
-        assert_eq!(current.str_field("proof"), Some("cargo test a && cargo test b && cargo test c"), "{raw}");
+        assert_eq!(current.str_field("proof"), Some("echo a && echo b && echo c"), "{raw}");
     }
 
     /// A onda que só foi conferir volta sem arquivo nenhum: a rodada grava a
@@ -2265,10 +2266,11 @@ mod tests {
 
     /// A prova nova de um critério cujo teste mudou de nome vira a versão nova
     /// do critério, com o mesmo resto; a prova nova que sai verde sem rodar
-    /// teste nenhum é avisada pelo código do critério. A segunda prova vem da
-    /// onda seguinte, que mexe no mesmo arquivo.
+    /// teste nenhum, com o cargo de verdade, recusa a entrega antes do commit,
+    /// pelo código do critério e pelo comando entregue. A segunda prova vem
+    /// da onda seguinte, que mexe no mesmo arquivo.
     #[test]
-    fn a_new_proof_becomes_the_criterions_new_version_and_one_that_runs_no_test_is_warned() {
+    fn a_new_proof_becomes_the_criterions_new_version_and_one_that_runs_no_test_is_refused() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/lib.rs"], &[]), (2, &["src/lib.rs"], &[1])]);
@@ -2312,36 +2314,60 @@ mod tests {
         assert_eq!(log.codes()[&criteria[0].id], "MSTD-CRIT-0001");
 
         std::fs::write(root.join("src/lib.rs"), "#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma_nova() {}\n}\n").unwrap();
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
         report(2, "soma", "a prova errada");
         let out = round(root, "x", None);
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let expected = translate("round.proof_ran_no_test", Locale::PtBr).replace("{code}", "MSTD-CRIT-0001");
-        let rest: Vec<Value> = out["warnings"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|w| w["reason"] != json!("usage-missing"))
-            .collect();
-        assert_eq!(json!(rest), json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("round-criterion-ran-no-test"), "{out}");
+        let expected = translate("round.criterion_ran_no_test", Locale::PtBr)
+            .replace("{code}", "MSTD-CRIT-0001")
+            .replace("{command}", &proof("soma"))
+            .replace("{count}", "0");
+        assert_eq!(out["hint"], json!(expected), "{out}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
+        assert_eq!(
+            current_criterion(root, "MSTD-CRIT-0001").str_field("proof"),
+            Some(proof("soma_nova").as_str()),
+            "a prova que não roda teste não fica gravada: {out}"
+        );
     }
 
-    /// A rodada avisa a prova verde que não rodou teste: a prova nova de uma
-    /// volta roda uma vez depois do commit, a que roda teste não avisa nada,
-    /// e a que sai verde sem rodar teste nenhum é avisada pelo código do
-    /// critério — sem cargo nenhum envolvido, só o shell. A segunda prova vem
-    /// da onda seguinte, que mexe no mesmo arquivo.
+    /// [`approved`] com um segundo critério, que nenhuma onda cobre, com
+    /// prova que passa. Devolve o código dele: a prova nova que uma onda
+    /// entrega para esse critério não roda antes do commit, e é o aviso de
+    /// depois do commit que a confere.
+    fn approved_with_uncovered_criterion(root: &Path, plan: &[(u64, &[&str], &[u64])]) -> String {
+        let mut id = 0;
+        approved_with(root, "x", plan, |said| {
+            id = id_of(&write(
+                root,
+                "x",
+                "criterion",
+                json!({"when": "a página abre", "then": "o total aparece", "proof": "git --version",
+                    "form": "ubiquitous", "origin": said}),
+            ));
+        });
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        log.codes().get(&id).cloned().expect("the uncovered criterion has a code")
+    }
+
+    /// A rodada avisa a prova verde que não rodou teste: a prova nova de um
+    /// critério que as ondas da rodada não cobrem roda uma vez depois do
+    /// commit, a que roda teste não avisa nada, e a que sai verde sem rodar
+    /// teste nenhum é avisada pelo código do critério — sem cargo nenhum
+    /// envolvido, só o shell. A segunda prova vem da onda seguinte, que mexe
+    /// no mesmo arquivo.
     #[test]
     fn a_rodada_avisa_a_prova_verde_que_nao_rodou_teste() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/lib.rs"], &[]), (2, &["src/lib.rs"], &[1])]);
+        let uncovered = approved_with_uncovered_criterion(root, &[(1, &["src/lib.rs"], &[]), (2, &["src/lib.rs"], &[1])]);
         round(root, "x", None);
 
         let report = |wave: u64, proof: &str, summary: &str| {
             std::fs::write(root.join("src/lib.rs"), format!("// {proof}\n")).unwrap();
             let body = json!({"wave": wave, "text": "A prova muda.", "files": ["src/lib.rs"],
-                "commit": summary, "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": proof}]});
+                "commit": summary, "proofs": [{"criterion": uncovered, "proof": proof}]});
             assert_eq!(returned(root, body)["ok"], json!(true));
         };
 
@@ -2359,7 +2385,7 @@ mod tests {
         report(2, "echo running 0 tests", "a prova não roda teste");
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
-        let expected = translate("round.proof_ran_no_test", Locale::PtBr).replace("{code}", "MSTD-CRIT-0001");
+        let expected = translate("round.proof_ran_no_test", Locale::PtBr).replace("{code}", &uncovered);
         let rest: Vec<Value> = out["warnings"]
             .as_array()
             .cloned()
@@ -2370,21 +2396,22 @@ mod tests {
         assert_eq!(json!(rest), json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
     }
 
-    /// A rodada avisa a prova nova que sai verde citando um teste que não
-    /// existe em arquivo nenhum do projeto, com o critério e o nome que
-    /// faltou; a prova nova que cita um teste presente não avisa nada. A
-    /// segunda prova vem da onda seguinte, que mexe no mesmo arquivo.
+    /// A rodada avisa a prova nova de um critério que as ondas da rodada não
+    /// cobrem quando ela sai verde citando um teste que não existe em arquivo
+    /// nenhum do projeto, com o critério e o nome que faltou; a prova nova
+    /// que cita um teste presente não avisa nada. A segunda prova vem da onda
+    /// seguinte, que mexe no mesmo arquivo.
     #[test]
     fn a_rodada_avisa_a_prova_nova_que_cita_um_teste_ausente() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/lib.rs"], &[]), (2, &["src/lib.rs"], &[1])]);
+        let uncovered = approved_with_uncovered_criterion(root, &[(1, &["src/lib.rs"], &[]), (2, &["src/lib.rs"], &[1])]);
         round(root, "x", None);
 
         let report = |wave: u64, proof: &str, summary: &str| {
             std::fs::write(root.join("src/lib.rs"), format!("// onda {wave}\nfn soma_presente_aqui() {{}}\n")).unwrap();
             let body = json!({"wave": wave, "text": "A prova muda.", "files": ["src/lib.rs"],
-                "commit": summary, "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": proof}]});
+                "commit": summary, "proofs": [{"criterion": uncovered, "proof": proof}]});
             assert_eq!(returned(root, body)["ok"], json!(true));
         };
         let rest = |out: &Value| -> Vec<Value> {
@@ -2406,7 +2433,7 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         let expected = translate("round.proof_missing_test", Locale::PtBr)
-            .replace("{code}", "MSTD-CRIT-0001")
+            .replace("{code}", &uncovered)
             .replace("{name}", "soma_ausente_aqui");
         assert_eq!(json!(rest(&out)), json!([{"reason": "proof-missing-test", "hint": expected}]), "{out}");
     }
@@ -2941,10 +2968,12 @@ mod tests {
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {refused}");
 
         // As mesmas duas provas escritas como comando passam, e o critério
-        // fica com uma linha de comando só.
+        // fica com uma linha de comando só. O comando junto roda antes do
+        // commit, e por isso cita testes que o projeto tem.
+        std::fs::write(root.join("src/a.rs"), "fn a_soma_sai_certa() {}\nfn a_dobra_sai_certa() {}\n").unwrap();
         let commands = body(json!([
-            {"criterion": "MSTD-CRIT-0001", "proof": "cargo test -p x a_soma_sai_certa"},
-            {"criterion": "MSTD-CRIT-0001", "proof": "cargo test -p x a_dobra_sai_certa"},
+            {"criterion": "MSTD-CRIT-0001", "proof": "echo running 1 test a_soma_sai_certa"},
+            {"criterion": "MSTD-CRIT-0001", "proof": "echo running 1 test a_dobra_sai_certa"},
         ]));
         assert_eq!(returned(root, commands)["ok"], json!(true));
         let out = round(root, "x", None);
@@ -2953,7 +2982,7 @@ mod tests {
         let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério");
         assert_eq!(
             current.str_field("proof"),
-            Some("cargo test -p x a_soma_sai_certa && cargo test -p x a_dobra_sai_certa"),
+            Some("echo running 1 test a_soma_sai_certa && echo running 1 test a_dobra_sai_certa"),
             "as duas provas viram um comando só"
         );
     }
@@ -3049,6 +3078,100 @@ mod tests {
 
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
         assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
+    }
+
+    /// A versão vigente do critério `code` da spec `x`.
+    fn current_criterion(root: &Path, code: &str) -> SpecEvent {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        log.visible()
+            .into_iter()
+            .find(|e| e.event_type == "criterion" && codes.get(&e.id).map(String::as_str) == Some(code))
+            .cloned()
+            .unwrap_or_else(|| panic!("no current criterion {code}"))
+    }
+
+    /// A onda que muda o nome do teste de um critério entrega a prova com o
+    /// nome novo. A rodada roda a prova entregue no lugar da gravada, que
+    /// cita o nome que a onda tirou do projeto: a entrega é comitada, e a
+    /// prova nova fica gravada como a versão nova do critério.
+    #[test]
+    fn a_wave_that_renames_a_criterion_test_is_committed_with_the_proof_it_delivered() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let code = reprove_wave_criterion(root, 1, "echo running 1 test soma_pelo_nome_antigo");
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
+
+        // O teste passa a ter o nome novo: o antigo não existe mais em
+        // arquivo nenhum do projeto.
+        std::fs::write(root.join("src/a.rs"), "fn soma_pelo_nome_novo() {}\n").unwrap();
+        let renamed = "echo running 1 test soma_pelo_nome_novo";
+        let body = json!({"wave": 1, "text": "O teste mudou de nome.", "files": ["src/a.rs"],
+            "commit": "o teste muda de nome", "proofs": [{"criterion": code, "proof": renamed}]});
+        assert_eq!(returned(root, body)["ok"], json!(true));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "a prova entregue roda no lugar da gravada: {out}");
+        assert_ne!(git_text(root, &["rev-parse", "HEAD"]), head_before, "a entrega foi comitada: {out}");
+        assert_eq!(delivered_count(root), 1, "{out}");
+        assert_eq!(current_criterion(root, &code).str_field("proof"), Some(renamed), "a prova nova fica gravada");
+    }
+
+    /// A prova nova que a onda entrega roda antes do commit, mesmo com a
+    /// gravada ainda verde: quebrada, ela recusa a entrega, nomeando o
+    /// critério e o comando entregue, e nada é comitado nem gravado — nem a
+    /// entrega, nem a versão nova do critério.
+    #[test]
+    fn a_broken_delivered_proof_refuses_the_wave_even_with_the_recorded_one_green() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let broken = "git --nao-existe-esta-opcao";
+        let body = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": broken}]});
+        assert_eq!(returned(root, body)["ok"], json!(true));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("round-criterion-proof-failed"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-CRIT-0001"), "a recusa nomeia o critério: {hint}");
+        assert!(hint.contains(broken), "a recusa nomeia o comando entregue: {hint}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
+        assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
+        assert_eq!(
+            current_criterion(root, "MSTD-CRIT-0001").str_field("proof"),
+            Some("git --version"),
+            "a prova quebrada não fica gravada: {out}"
+        );
+    }
+
+    /// A prova nova que já passou antes do commit, como prova de um critério
+    /// das ondas da rodada, não roda de novo depois dele: cada execução deixa
+    /// uma linha num arquivo, e a rodada deixa uma só.
+    #[test]
+    fn the_delivered_proof_that_passed_before_the_commit_does_not_run_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let counted = "echo rodou >> prova_rodou.txt";
+        let body = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": counted}]});
+        assert_eq!(returned(root, body)["ok"], json!(true));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let runs = std::fs::read_to_string(root.join("prova_rodou.txt")).unwrap_or_default();
+        assert_eq!(runs.lines().count(), 1, "a prova nova rodou uma vez só: {out}");
     }
 
     /// A prova verde que não prova nada recusa a volta da onda pelo motivo
