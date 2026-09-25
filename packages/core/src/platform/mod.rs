@@ -1,5 +1,6 @@
 pub mod code_tools;
 pub mod error;
+pub mod fonts;
 pub mod git;
 pub mod git_branches;
 pub mod git_exclude;

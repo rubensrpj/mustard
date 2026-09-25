@@ -30,6 +30,7 @@ use std::process::Command;
 use crate::domain::scan::read_projects;
 use crate::domain::source_lang::detected_languages;
 use crate::io::fs;
+use crate::platform::harness::home_dir;
 
 /// O programa que um plugin de linguagem chama, e o comando que instala esse
 /// programa. `plugin` é `None` para uma linguagem que o catálogo oficial
@@ -344,9 +345,15 @@ pub fn ensure_code_tools(
     warnings
 }
 
+/// As pastas de ferramenta do usuário, sob a pasta pessoal, onde o executor
+/// da máquina procura o programa que não está no `PATH`.
+const USER_TOOL_DIRS: [&str; 4] = [".cargo/bin", ".local/bin", ".dotnet/tools", "go/bin"];
+
 /// O executor da máquina: procura e roda os programas no `PATH` que recebe —
 /// o do processo, na instalação de verdade; uma pasta de programas falsos, no
-/// teste do binário. As pastas de ferramenta do usuário saem do `HOME` real.
+/// teste do binário. As pastas de ferramenta do usuário saem da pasta pessoal
+/// real, lida por [`home_dir`] como no resto do programa: `HOME`, ou
+/// `USERPROFILE` no Windows.
 pub struct MachineRunner {
     path_env: String,
     home: Option<PathBuf>,
@@ -358,8 +365,17 @@ impl MachineRunner {
     pub fn new(path_env: &str) -> Self {
         Self {
             path_env: path_env.to_string(),
-            home: std::env::var_os("HOME").map(PathBuf::from),
+            home: home_dir(),
         }
+    }
+
+    /// As pastas de ferramenta do usuário, sob a pasta pessoal; nenhuma
+    /// quando não há pasta pessoal.
+    pub(crate) fn user_tool_dirs(&self) -> Vec<PathBuf> {
+        self.home
+            .iter()
+            .flat_map(|home| USER_TOOL_DIRS.iter().map(move |dir| home.join(dir)))
+            .collect()
     }
 }
 
@@ -388,10 +404,9 @@ impl ToolRunner for MachineRunner {
     }
 
     fn found_off_path(&self, program: &str) -> Option<PathBuf> {
-        let home = self.home.as_ref()?;
-        [".cargo/bin", ".local/bin", ".dotnet/tools", "go/bin"]
-            .iter()
-            .map(|d| home.join(d).join(program))
+        self.user_tool_dirs()
+            .into_iter()
+            .map(|dir| dir.join(program))
             .find(|p| p.is_file())
     }
 }

@@ -125,7 +125,8 @@ pub fn install_nerd_font(_project_path: &Path, options: &InstallNerdFontOptions)
 
 fn is_installed(family: &str) -> bool {
     let needle = family.to_ascii_lowercase();
-    for dir in font_dirs() {
+    // A mesma lista de pastas que o diagnóstico procura.
+    for dir in mustard_core::platform::fonts::font_dirs() {
         if scan_for_nerd_font(&dir, &needle) {
             return true;
         }
@@ -142,37 +143,6 @@ fn is_installed(family: &str) -> bool {
             }
     }
     false
-}
-
-fn font_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            dirs.push(
-                std::path::PathBuf::from(local)
-                    .join("Microsoft")
-                    .join("Windows")
-                    .join("Fonts"),
-            );
-        }
-        dirs.push(std::path::PathBuf::from("C:/Windows/Fonts"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(std::path::PathBuf::from(home).join("Library").join("Fonts"));
-        }
-        dirs.push(std::path::PathBuf::from("/Library/Fonts"));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(std::path::PathBuf::from(home).join(".local/share/fonts"));
-        }
-        dirs.push(std::path::PathBuf::from("/usr/share/fonts"));
-    }
-    dirs
 }
 
 /// Look for any file under `dir` (one level deep) whose lowercased name
@@ -273,9 +243,8 @@ fn install_linux(zip_basename: &str, display: &str) -> Result<()> {
     if !which("unzip") {
         bail!("`unzip` is required for the Linux install. Install via your package manager.");
     }
-    let home = std::env::var("HOME").context("HOME env var is unset")?;
-    let target: PathBuf = PathBuf::from(home)
-        .join(".local/share/fonts")
+    let target: PathBuf = mustard_core::platform::fonts::linux_user_font_dir()
+        .context("no home folder: HOME is unset or empty")?
         .join(format!("{display}NerdFont"));
     mfs::create_dir_all(&target).context("creating ~/.local/share/fonts/<family>")?;
     let zip_path = target.join("_download.zip");

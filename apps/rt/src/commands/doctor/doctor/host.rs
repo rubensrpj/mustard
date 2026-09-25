@@ -215,7 +215,8 @@ pub(super) fn check_rtk() -> CheckResult {
 /// Fail-open: read errors degrade to "not detected" (WARN) rather than
 /// blocking the doctor run.
 pub(super) fn check_nerd_font() -> CheckResult {
-    let dirs = nerd_font_search_dirs();
+    // A mesma lista de pastas que o instalador de fonte confere.
+    let dirs = mustard_core::platform::fonts::font_dirs();
     if dirs.iter().any(|d| scan_for_any_nerd_font(d)) {
         return CheckResult::ok("nerd-font");
     }
@@ -241,37 +242,6 @@ pub(super) fn check_nerd_font() -> CheckResult {
                 .to_string(),
         ],
     )
-}
-
-fn nerd_font_search_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            dirs.push(
-                PathBuf::from(local)
-                    .join("Microsoft")
-                    .join("Windows")
-                    .join("Fonts"),
-            );
-        }
-        dirs.push(PathBuf::from("C:/Windows/Fonts"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(PathBuf::from(home).join("Library").join("Fonts"));
-        }
-        dirs.push(PathBuf::from("/Library/Fonts"));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(PathBuf::from(home).join(".local/share/fonts"));
-        }
-        dirs.push(PathBuf::from("/usr/share/fonts"));
-    }
-    dirs
 }
 
 /// One level + immediate subdirectories. Match any file whose lowercased

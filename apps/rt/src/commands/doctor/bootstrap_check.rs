@@ -43,11 +43,11 @@
 //! finding saying so, because "nobody looked" is not the same answer as "it is
 //! broken".
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mustard_core::io::fs;
 
-use mustard_core::platform::harness::home_dir;
+use mustard_core::platform::harness::installed_plugin;
 
 /// One thing the bootstrap check found, with the command that resolves it.
 ///
@@ -96,33 +96,6 @@ fn boot_name() -> &'static str {
     } else {
         "mustard-boot"
     }
-}
-
-/// Read `<home>/.claude/plugins/installed_plugins.json` and return the Mustard
-/// entry's `(installPath, version)`.
-///
-/// The registry is the harness's own record of what it installed, which is the
-/// only thing that can answer "the binary for the version that is SUPPOSED to
-/// be here". Resolving from `current_exe` instead would answer "the binary that
-/// is running", which is exactly the question that cannot detect a missing one.
-fn installed_plugin() -> Option<(PathBuf, String)> {
-    let path = home_dir()?
-        .join(".claude")
-        .join("plugins")
-        .join("installed_plugins.json");
-    let raw = fs::read_to_string(&path).ok()?;
-    let doc: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let plugins = doc.get("plugins")?.as_object()?;
-    // The key carries the marketplace suffix (`mustard@mustard-local`), which
-    // varies per install, so match on the name half rather than the whole key.
-    let entry = plugins
-        .iter()
-        .find(|(k, _)| k.split('@').next() == Some("mustard"))
-        .map(|(_, v)| v)?;
-    let first = entry.as_array()?.first()?;
-    let install_path = first.get("installPath")?.as_str()?;
-    let version = first.get("version")?.as_str()?;
-    Some((PathBuf::from(install_path), version.to_string()))
 }
 
 /// The `version` field of a plugin manifest (`.claude-plugin/plugin.json`).
@@ -246,9 +219,10 @@ fn inspect_install(
 /// exactly the state that made the field case invisible.
 #[must_use]
 pub fn harness_dormant() -> bool {
-    let Some((install_path, _)) = installed_plugin() else {
+    let Some(plugin) = installed_plugin() else {
         return false;
     };
+    let install_path = plugin.dir;
     let bin_dir = install_path.join("bin");
     if !bin_dir.join(rt_exe_name()).is_file() {
         return true;
@@ -280,21 +254,29 @@ pub fn run(project_dir: &Path) -> BootstrapReport {
     let mut findings: Vec<BootstrapFinding> = Vec::new();
     let mut failed = false;
 
+    // The registry is the harness's own record of what it installed, which is
+    // the only thing that can answer "the binary for the version that is
+    // SUPPOSED to be here". Resolving from `current_exe` instead would answer
+    // "the binary that is running", which is exactly the question that cannot
+    // detect a missing one. It is read from Claude Code's config directory —
+    // `CLAUDE_CONFIG_DIR` when the operator moved it — and the newest record
+    // wins, the same reading the statusline and the stale-copy handover make.
     let (installed_version, stamped_version) = match installed_plugin() {
         None => {
             findings.push(BootstrapFinding {
                 kind: "not-measured",
-                detail: "no plugin registry at ~/.claude/plugins/installed_plugins.json — \
-                         Mustard may be installed some other way"
+                detail: "no plugin registry at plugins/installed_plugins.json in Claude Code's \
+                         config directory (CLAUDE_CONFIG_DIR, or ~/.claude) — Mustard may be \
+                         installed some other way"
                     .to_string(),
                 remedy: "nothing to do if you did not install Mustard as a Claude Code plugin"
                     .to_string(),
             });
             (None, None)
         }
-        Some((install_path, version)) => {
-            let stamp = inspect_install(&install_path, &mut findings, &mut failed);
-            (Some(version), stamp)
+        Some(plugin) => {
+            let stamp = inspect_install(&plugin.dir, &mut findings, &mut failed);
+            (Some(plugin.version), stamp)
         }
     };
 
