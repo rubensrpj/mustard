@@ -598,7 +598,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("caller_tokens", Kind::Int),
             // A cópia separada que a rodada criou para a onda e a pasta de
             // compilação dela: a volta junta os arquivos da cópia, e a pasta
-            // fica ocupada enquanto a onda está em andamento.
+            // fica ocupada enquanto a onda está em andamento. No envio da
+            // revisão final, a vaga que o fechamento preparou para o
+            // revisor, ocupada até o veredito.
             opt("copy", Kind::Text),
             opt("build_dir", Kind::Text),
             // A escolha do orquestrador antes do envio, à parte dos itens que

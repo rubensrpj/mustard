@@ -166,8 +166,10 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
 }
 
 /// O primeiro nome de teste que `command` cita ([`cited_test_names`]) e que
-/// não aparece em arquivo nenhum do projeto em `root`, nem como palavra
-/// inteira dentro de um arquivo, nem como nome de arquivo ou pasta.
+/// não aparece em arquivo nenhum do projeto em `root`, nem como pedaço do
+/// texto de um arquivo, nem como nome de arquivo ou pasta. Basta o pedaço:
+/// o filtro do executor de testes acha o teste por um pedaço do nome, como
+/// `cargo test -- comeco_do_nome` roda `comeco_do_nome_inteiro`.
 ///
 /// A busca olha os arquivos que o git guarda e os novos que ele não ignora:
 /// a rodada roda a prova antes de comitar, quando o arquivo de teste que a
@@ -188,7 +190,7 @@ fn missing_test_name(command: &str, root: &Path) -> Option<String> {
     names.into_iter().find(|name| {
         let search = git::run(
             root,
-            &["grep", "--untracked", "-w", "-F", "-q", "-e", name, "--", ".", ":(exclude).claude/spec"],
+            &["grep", "--untracked", "-F", "-q", "-e", name, "--", ".", ":(exclude).claude/spec"],
         );
         // Achou (saída zero) ou não pôde procurar (erro escrito): não falta.
         if search.ok || !search.stderr.trim().is_empty() {
@@ -500,5 +502,22 @@ mod tests {
 
         let bare = tempfile::tempdir().unwrap();
         assert_eq!(run_proof("echo nome_ausente_aqui", bare.path()).result, "pass", "sem repositório não há recusa");
+    }
+
+    /// O nome citado vale pelo pedaço: o filtro do executor de testes acha o
+    /// teste por um pedaço do nome, e a prova que cita só o começo do nome
+    /// de um teste que existe passa. O pedaço que não está em arquivo
+    /// nenhum continua recusado.
+    #[test]
+    fn a_proof_citing_the_start_of_a_test_name_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        repo_with(root, &[("src/lib.rs", "#[test]\nfn comeco_do_nome_inteiro() {}\n")]);
+
+        assert_eq!(missing_test_name("cargo test -p x -- comeco_do_nome", root), None, "o começo do nome existe");
+        let out = run_proof("echo comeco_do_nome", root);
+        assert_eq!((out.result, out.missing_test), ("pass", None), "a prova verde que cita o começo do nome passa");
+        let absent = run_proof("echo comeco_de_outro", root);
+        assert_eq!(absent.missing_test.as_deref(), Some("comeco_de_outro"), "o pedaço ausente continua recusado");
     }
 }

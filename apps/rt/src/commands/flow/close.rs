@@ -286,8 +286,11 @@ fn run_close(
     // onda: a que chegou com mudança trava aqui, antes de gastar a suíte, e
     // a limpa vai para o commit da obra. Com a obra já aprovada, ninguém mais
     // revisa, e a cópia só espera ser apagada lá embaixo. Os arquivos locais
-    // que não chegaram a ela viram aviso no pedido do revisor.
-    let not_copied = if final_approved(&log) { Vec::new() } else { prepare_review_copy(root, &spec, &log)? };
+    // que não chegaram a ela viram aviso no pedido do revisor. A vaga é
+    // escolhida uma vez só: a mesma que é preparada vai gravada no envio da
+    // revisão, e fica presa por ele até o veredito.
+    let review_copy = mustard_core::io::wave_prompt::final_copy_path(root, &spec, &log);
+    let not_copied = if final_approved(&log) { Vec::new() } else { prepare_review_copy(root, &review_copy, &log)? };
 
     // A máquina antes do agente de teste dedicado: os dois comandos do
     // servidor e cada critério, uma vez por fechamento. A volta que só
@@ -304,11 +307,14 @@ fn run_close(
         let prompt = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
         // O pedido do agente de revisão final é gravado como evento de
         // envio antes de sair daqui, pela mesma porta que grava o pedido de
-        // cada onda: o texto inteiro, o papel de revisão e o modelo — nunca
-        // um segundo caminho de gravação. O molde do revisor não vai junto:
-        // ele mora no projeto, e o papel já diz qual é.
+        // cada onda: o texto inteiro, o papel de revisão, o modelo e a vaga
+        // em que o revisor trabalha, no mesmo formato do envio de onda —
+        // nunca um segundo caminho de gravação. O molde do revisor não vai
+        // junto: ele mora no projeto, e o papel já diz qual é.
+        let copy = mustard_core::io::wave_prompt::shown(&review_copy);
         let mut draft = Map::new();
         draft.insert("role".into(), json!("review"));
+        draft.insert("copy".into(), json!(copy));
         draft.insert("lines".into(), json!(count_lines(&prompt)));
         draft.insert("chars".into(), json!(prompt.chars().count()));
         draft.insert("text".into(), json!(prompt));
@@ -335,7 +341,6 @@ fn run_close(
         for hint in &unowned_tests {
             spec_events::pages::push_warning(&mut out, "unowned-test", hint);
         }
-        let copy = mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::final_copy_path(root, &spec, &log));
         for file in &not_copied {
             let hint = crate::commands::flow::round::local_file_missing(file, &copy, lang);
             spec_events::pages::push_warning(&mut out, "local-file-missing", &hint);
@@ -625,26 +630,26 @@ fn clean_env(command: &str) -> String {
     )
 }
 
-/// Prepara a cópia do revisor final da spec `spec` no commit da obra, com a
-/// trava do passo do git presa, como a rodada prepara as dela. A cópia é a
-/// vaga da última onda ([`final_copy_path`]), que já tem a compilação da
-/// obra. Quando um revisor já trabalhou nela depois da última onda — há envio
-/// de revisão depois do último envio de onda —, a cópia com mudança recusa,
-/// com os arquivos, e a recusa diz como descartar: é o corte que o revisor
+/// Prepara a cópia do revisor final, na vaga `path`, no commit da obra, com
+/// a trava do passo do git presa, como a rodada prepara as dela. A vaga é a
+/// da última onda ([`mustard_core::io::wave_prompt::final_copy_path`]), que
+/// já tem a compilação da obra, e o envio da revisão a grava. Quando um
+/// revisor já trabalhou nela depois da última onda — há envio de revisão
+/// depois do último envio de onda —, a cópia com mudança recusa, com os
+/// arquivos, e a recusa diz como descartar: é o corte que o revisor
 /// anterior deixou, e revisar por cima dele é ler código sabotado como se
 /// fosse o da obra; a limpa vai para o commit. Sem revisão depois da última
 /// onda, a mudança é da onda, que a rodada já comitou no principal, e a vaga
 /// é zerada no commit. Como a cópia de onda, ela recebe os arquivos locais do
 /// projeto pelo conteúdo; devolve os que não chegaram.
-fn prepare_review_copy(root: &Path, spec: &str, log: &SpecLog) -> Result<Vec<String>, CloseRefusal> {
-    use mustard_core::io::wave_prompt::{final_copy_path, final_review_commit, shown};
+fn prepare_review_copy(root: &Path, path: &Path, log: &SpecLog) -> Result<Vec<String>, CloseRefusal> {
+    use mustard_core::io::wave_prompt::{final_review_commit, shown};
     use mustard_core::platform::git;
-    let path = final_copy_path(root, spec, log);
-    let copy = shown(&path);
+    let copy = shown(path);
     let failed = |detail: String| CloseRefusal::ReviewCopyFailed { copy: copy.clone(), detail };
     let reviewed = reviewed_after_last_wave(log);
     if reviewed && path.join(".git").is_file() {
-        let status = git::run(&path, &["status", "--porcelain", "--untracked-files=all"]);
+        let status = git::run(path, &["status", "--porcelain", "--untracked-files=all"]);
         if !status.ok {
             return Err(failed(status.stderr.trim().to_string()));
         }
@@ -660,9 +665,9 @@ fn prepare_review_copy(root: &Path, spec: &str, log: &SpecLog) -> Result<Vec<Str
     };
     let _held = crate::commands::git_settle::git_step_lock(root).map_err(&failed)?;
     let prepared = if reviewed {
-        crate::commands::flow::round::ensure_copy(root, &path, &commit)
+        crate::commands::flow::round::ensure_copy(root, path, &commit)
     } else {
-        crate::commands::flow::round::reset_slot(root, &path, &commit)
+        crate::commands::flow::round::reset_slot(root, path, &commit)
     };
     prepared.map(|prepared| prepared.missing).map_err(failed)
 }
@@ -3288,6 +3293,89 @@ exit "${2:-0}"
         // verde, para a rodada não travar a entrega.
         assert_eq!(runs, vec![Some("pass"), Some("pass")], "a prova que não é teste passou: {runs:?}");
         assert_eq!(State::from_log(&log).phase, Some("closed"));
+    }
+
+    /// A revisão final aberta guarda, pelas rodadas, a vaga que o fechamento
+    /// preparou e gravou no envio dela, até o veredito: enquanto o revisor
+    /// trabalha na vaga a, com uma mudança sem comitar e um processo rodando
+    /// nela, a onda 2 sai na vaga b e é comitada. Na rodada seguinte, o
+    /// processo do revisor continua vivo, a onda 3 sai sem pegar a vaga a, e
+    /// a mudança do revisor fica.
+    #[test]
+    fn an_open_final_review_keeps_its_slot_through_the_rounds_until_the_verdict() {
+        use mustard_core::io::wave_prompt::{recorded_copy, shown, slot_path};
+        use std::process::Stdio;
+
+        /// O processo do revisor, encerrado no fim do teste, passe ele ou não.
+        struct Reviewer(std::process::Child);
+        impl Drop for Reviewer {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let path = store::spec_file(root, "x").unwrap();
+        let spec_log = || store::read(&path).unwrap().unwrap();
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let review = slot_path(root, "x", 0);
+        let log = spec_log();
+        let sent = log
+            .visible()
+            .into_iter()
+            .rev()
+            .find(|e| e.event_type == "send" && e.str_field("role") == Some("review"))
+            .expect("o envio da revisão");
+        assert_eq!(sent.str_field("copy"), Some(shown(&review).as_str()), "o envio grava a vaga que o fechamento preparou");
+
+        std::fs::write(review.join(wave_file(1)), "fn revisto() {}\n").unwrap();
+        let mut reviewer = Reviewer(
+            Command::new("sleep")
+                .arg("120")
+                .current_dir(&review)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("o processo do revisor"),
+        );
+        let alive = |reviewer: &mut Reviewer| reviewer.0.try_wait().ok().flatten().is_none();
+
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
+        let gate = log.visible().into_iter().rev().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+        let plan = |n: u64| {
+            write(root, "x", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [gate],
+                "done_when": "A suíte passa.", "origin": said}));
+            write(root, "x", "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
+                "files": [{"path": wave_file(n)}], "origin": said}));
+        };
+        let round = || round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let sent_copy = |n: u64| recorded_copy(&spec_log(), n).map(|copy| copy.path);
+
+        plan(2);
+        let out = round();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(sent_copy(2), Some(shown(&slot_path(root, "x", 1))), "a onda 2 sai na vaga b: {out}");
+        std::fs::write(slot_path(root, "x", 1).join(wave_file(2)), "fn dois() {}\n").unwrap();
+        returned(root, "x", json!({"wave": 2, "text": "Saiu.", "files": [wave_file(2)], "commit": "a onda dois sai"}));
+        let committed = round();
+        assert_eq!(committed["ok"], json!(true), "{committed}");
+        assert_eq!(std::fs::read_to_string(root.join(wave_file(2))).unwrap(), "fn dois() {}\n", "{committed}");
+        assert!(alive(&mut reviewer), "o processo do revisor fica depois do commit da onda 2: {committed}");
+
+        plan(3);
+        let out = round();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let third = sent_copy(3).expect("a onda 3 saiu numa vaga");
+        assert_ne!(third, shown(&review), "a onda 3 não pega a vaga da revisão aberta: {out}");
+        assert!(alive(&mut reviewer), "o processo do revisor continua vivo: {out}");
+        let kept = std::fs::read_to_string(review.join(wave_file(1))).unwrap();
+        assert_eq!(kept, "fn revisto() {}\n", "a mudança do revisor fica na vaga dele");
     }
 
     /// Um critério cuja prova não passa trava o fechamento, e a execução dele

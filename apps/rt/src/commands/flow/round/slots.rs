@@ -25,7 +25,10 @@ use crate::commands::wave::wave_overlap_check::wave_graph;
 /// As vagas presas da spec `spec`, lida em `log`, cada uma pelo caminho como
 /// o envio a grava: a cópia gravada em cada envio aberto de onda — a órfã
 /// inclusive, que a rodada reenvia na mesma vaga — e, com a revisão final
-/// aberta, a vaga dela ([`final_copy_path`]). É a conta única da vaga
+/// aberta, a vaga que o envio dela gravou. A vaga da revisão é a que o
+/// fechamento preparou, e continua dela até o veredito, mesmo que outra onda
+/// saia e comite depois. O envio de revisão antigo, sem a cópia gravada, cai
+/// na vaga da última onda ([`final_copy_path`]). É a conta única da vaga
 /// ocupada: o despacho não entrega nenhuma delas a outra onda, e a busca dos
 /// processos presos não encerra o que roda nelas.
 pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<String> {
@@ -35,8 +38,9 @@ pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<Str
         .map(|copy| copy.path)
         .filter(|copy| is_slot_of(root, spec, copy))
         .collect();
-    if open_review(log).is_some() {
-        held.insert(shown(&final_copy_path(root, spec, log)));
+    if let Some(review) = open_review(log) {
+        let recorded = log.get(review).and_then(|sent| sent.str_field("copy")).map(str::to_string);
+        held.insert(recorded.unwrap_or_else(|| shown(&final_copy_path(root, spec, log))));
     }
     held
 }
