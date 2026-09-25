@@ -372,6 +372,36 @@ fn section<'a>(body: &'a str, header: &str) -> &'a str {
     rest.find("\n## ").map_or(rest, |end| &rest[..end])
 }
 
+/// A orientação sobre ferramentas do molde da onda, nos dois idiomas, pede
+/// num item só que as chamadas que não dependem uma da outra — ler, buscar,
+/// listar e ler a spec pelo binário — saiam juntas numa resposta, porque
+/// cada resposta relê a conversa inteira do agente.
+#[test]
+fn the_wave_agent_asks_for_independent_reads_together_in_one_response() {
+    for (lang, header, said) in [
+        (
+            "pt-BR",
+            "## Orientação sobre ferramentas",
+            ["não dependem uma da outra", "(Read, Grep, Glob, `mustard-rt run read`)", "saem juntas numa resposta", "relê a conversa inteira"],
+        ),
+        (
+            "en-US",
+            "## Tool guidance",
+            ["do not depend on each other", "(Read, Grep, Glob, `mustard-rt run read`)", "go together in one response", "rereads the whole conversation"],
+        ),
+    ] {
+        let body = template(lang, "wave");
+        let tools = section(&body, header);
+        let item = tools
+            .lines()
+            .find(|line| line.starts_with("- ") && line.contains(said[0]))
+            .unwrap_or_else(|| panic!("the {lang} wave tool guidance does not ask for independent calls together:{tools}"));
+        for phrase in said {
+            assert!(item.contains(phrase), "the {lang} item on independent calls does not say `{phrase}`: {item}");
+        }
+    }
+}
+
 /// Os títulos da fronteira da tarefa e do formato de saída, por idioma.
 fn wave_headers(lang: &str) -> (&'static str, &'static str) {
     if lang == "pt-BR" { ("## Fronteira da tarefa", "## Formato de saída") } else { ("## Task boundary", "## Output format") }

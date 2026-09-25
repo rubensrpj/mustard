@@ -1033,30 +1033,39 @@ mod tests {
 
     /// O pedido de uma onda, montado como a rodada o monta — com a cópia que
     /// ela criou para ela —, traz cada item numa linha, com o bloco, o código
-    /// e o título; o item gravado antes do título sai com a primeira frase do
-    /// texto. Cada tarefa ganha linha própria, na ordem de execução que a
-    /// onda declara, com o título e os arquivos, e embaixo, recuada, a parte
-    /// do agente — ou o texto, na tarefa que não a tem. O porquê dos itens e
-    /// o resto do texto não entram; os comandos de leitura aparecem uma vez
-    /// só, na linha de como ler, com o caminho do repositório principal.
+    /// e o título, a mesma que a página da spec lê; o item gravado antes do
+    /// título sai com a primeira frase do texto. Logo abaixo da linha, recuada
+    /// dois espaços, vem a parte do agente do item — a do contexto, a da
+    /// decisão e a da regra —, e o item gravado antes dela traz o texto
+    /// inteiro. A onda e os critérios, o novo e o antigo, seguem numa linha
+    /// só. Cada tarefa ganha linha própria, na ordem de execução que a onda
+    /// declara, com o título e os arquivos, e embaixo a parte do agente — ou
+    /// o texto, na tarefa que não a tem. O porquê, o exemplo e o texto do
+    /// item que tem a parte do agente não entram; os comandos de leitura
+    /// aparecem uma vez só, na linha de como ler, com o caminho do
+    /// repositório principal.
     #[test]
-    fn the_wave_request_lists_titles_and_the_agent_part_never_the_whole_text() {
+    fn the_wave_request_carries_the_agent_part_of_each_item_under_its_line() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let everywhere = json!({"files": ["**"]});
         let log = log_of(&[
             ("context", json!({"title": "O objetivo", "text": "A obra encurta o pedido. Ele cabe numa leitura.",
-                               "agent": "- medir o pedido", "keys": ["objetivo"], "label": "objetivo"})),
-            ("context", json!({"text": "Como reproduzir. Rode a rodada duas vezes.", "keys": ["reproduzir"],
-                               "label": "reproduzir"})),
+                               "agent": "- medir o pedido\n\n  - contar as linhas", "keys": ["objetivo"],
+                               "label": "objetivo"})),
+            ("context", json!({"text": "Como reproduzir. Rode a rodada duas vezes.\n\nConfira o log.",
+                               "keys": ["reproduzir"], "label": "reproduzir"})),
             ("decision", json!({"title": "Título no lugar do texto", "text": "O agente lê menos. O porquê fica na spec.",
                                 "agent": "- `item_line`", "keys": ["títulos"], "why": "menos leitura",
                                 "applies_to": everywhere})),
             ("rule", json!({"title": "Um exemplo só", "text": "A linha de leitura aparece uma vez.",
-                            "agent": "- contar os comandos", "keys": ["exemplo"], "example": "e", "applies_to": everywhere})),
+                            "agent": "- contar os comandos", "keys": ["exemplo"], "example": "um pedido de exemplo",
+                            "applies_to": everywhere})),
             ("criterion", json!({"title": "A lista sai curta", "when": "a rodada monta", "then": "cada item tem uma linha",
-                                 "proof": "cargo test"})),
-            ("wave", json!({"n": 1, "text": "A onda", "criteria": [5], "done_when": "passa", "order": [8, 7]})),
+                                 "proof": "cargo test -p criterio"})),
+            ("criterion", json!({"when": "o critério é antigo", "then": "ele fica sem corpo", "proof": "cargo test -p velho"})),
+            ("wave", json!({"n": 1, "text": "A onda. Ela abre o pedido.", "criteria": [5, 6], "done_when": "passa",
+                            "order": [9, 8]})),
             ("task", json!({"wave": 1, "title": "Montar a lista", "text": "Hoje a lista só tem códigos.",
                             "agent": "- src/a.rs: `items`\n  - teste: `cargo test -p lista`", "files": [{"path": "src/a.rs"}]})),
             ("task", json!({"wave": 1, "text": "Trocar o texto. Ele diz como ler.", "files": [{"path": "src/b.rs"}]})),
@@ -1075,19 +1084,30 @@ mod tests {
         let wave = &built[0].text;
 
         // Onda, critérios, especificação e combinado saem juntos, sob um
-        // título só: "Itens da onda", cada item numa linha.
-        let items = section_lines(wave, part("prompt.part.items"));
-        for line in [
-            "`waves` MSTD-WAVE-0001: A onda",
-            "`criteria` MSTD-CRIT-0001: A lista sai curta",
-            "`specification` MSTD-CTX-0001: O objetivo",
-            "`specification` MSTD-CTX-0002: Como reproduzir.",
-            "`agreed` MSTD-DEC-0001: Título no lugar do texto",
-            "`agreed` MSTD-RULE-0001: Um exemplo só",
-        ] {
-            assert!(items.contains(&line), "{line}: {wave}");
-        }
-        // A onda tem `order: [8, 7]`: a tarefa 2 (id 8) vem antes da 1 (id 7),
+        // título só: "Itens da onda". A linha de cada um é a que a página lê;
+        // a parte do agente vem embaixo, sem as linhas em branco do corpo.
+        let (_, after) = wave.split_once(&format!("## {}\n\n", part("prompt.part.items"))).unwrap_or_default();
+        let items: Vec<&str> = after.split("\n\n").next().unwrap_or_default().lines().collect();
+        assert_eq!(
+            items,
+            [
+                "- `waves` MSTD-WAVE-0001: A onda.",
+                "- `criteria` MSTD-CRIT-0001: A lista sai curta",
+                "- `criteria` MSTD-CRIT-0002",
+                "- `specification` MSTD-CTX-0001: O objetivo",
+                "  - medir o pedido",
+                "    - contar as linhas",
+                "- `specification` MSTD-CTX-0002: Como reproduzir.",
+                "  Como reproduzir. Rode a rodada duas vezes.",
+                "  Confira o log.",
+                "- `agreed` MSTD-DEC-0001: Título no lugar do texto",
+                "  - `item_line`",
+                "- `agreed` MSTD-RULE-0001: Um exemplo só",
+                "  - contar os comandos",
+            ],
+            "{wave}"
+        );
+        // A onda tem `order: [9, 8]`: a tarefa 2 (id 9) vem antes da 1 (id 8),
         // a antiga com o texto embaixo e a nova com a parte do agente.
         let tasks = wave.split_once(&format!("## {}\n\n", part("prompt.part.tasks"))).map(|(_, rest)| rest).unwrap_or_default();
         let tasks: Vec<&str> = tasks.split("\n\n").next().unwrap_or_default().lines().collect();
@@ -1109,16 +1129,21 @@ mod tests {
         for twice in ["mustard-rt run read", "--root"] {
             assert_eq!(wave.matches(twice).count(), 2, "{twice}: {wave}");
         }
-        for once in ["--term", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-WAVE-0001", "MSTD-CRIT-0001"] {
+        for once in ["--term", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-WAVE-0001", "MSTD-CRIT-0001", "MSTD-CRIT-0002"] {
             assert_eq!(wave.matches(once).count(), 1, "{once}: {wave}");
         }
         for copied in [
             "A obra encurta o pedido",
-            "medir o pedido",
-            "Rode a rodada duas vezes",
             "O agente lê menos",
-            "contar os comandos",
+            "menos leitura",
+            "A linha de leitura aparece uma vez",
+            "um pedido de exemplo",
+            "Ela abre o pedido",
+            "a rodada monta",
             "cada item tem uma linha",
+            "cargo test -p criterio",
+            "o critério é antigo",
+            "cargo test -p velho",
             "Hoje a lista só tem códigos",
             "A lista saiu.",
         ] {

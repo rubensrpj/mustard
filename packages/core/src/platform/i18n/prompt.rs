@@ -65,16 +65,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.task.tested_by", Locale::EnUs) => "who tests `{file}`: {tests}",
         ("prompt.fixed", Locale::PtBr) => {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
-             binário a partir da spec. Cada item vem numa linha, com o código e o título. Cada tarefa \
-             traz embaixo a parte do agente: arquivos, comandos e o que testar.\n\n\
+             binário a partir da spec. Cada item vem numa linha, com o código e o título, e \
+             embaixo dela a parte do agente: arquivos, comandos e o que testar.\n\n\
              **O que devolver.** A entrega desta onda, pela ferramenta: `mustard-rt run write \
              delivered`, com o que houver a contar do trabalho dentro do campo de texto dela. Fora \
              dela, nada de texto solto."
         }
         ("prompt.fixed", Locale::EnUs) => {
             "**What this is.** The list of this wave's items, in execution order, assembled by the \
-             binary from the spec. Each item comes on one line, with its code and title. Each task \
-             carries the agent part below it: files, commands and what to test.\n\n\
+             binary from the spec. Each item opens with a line holding its code and title. Below \
+             it comes the agent part: files, commands and what to test.\n\n\
              **What to return.** This wave's delivery, through the tool: `mustard-rt run write \
              delivered`, with whatever there is to tell about the work inside its text field. \
              Outside it, no loose text."
@@ -115,10 +115,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // Como ler, logo depois da parte fixa. `{root}` é `--root <caminho> `
         // quando o agente trabalha numa cópia, e nada quando não trabalha.
-        // O pedido de uma onda já traz o título de cada item: o texto
-        // completo de tudo o que ele lista, com o número da onda em `{n}`, é
-        // para o caso de dúvida, e um item só se lê pelo código. O da revisão
-        // final lê item por item.
+        // O pedido de uma onda já traz o título e a parte do agente de cada
+        // item: o texto completo de tudo o que ele lista, com o número da
+        // onda em `{n}`, é para o caso de dúvida, e um item só se lê pelo
+        // código. O da revisão final lê item por item.
         ("prompt.read.wave", Locale::PtBr) => {
             "**Como ler.** Em caso de dúvida, leia o texto completo com `mustard-rt run read dispatch-{n} \
              {root}--spec {spec}`. Para ler um item só, use `mustard-rt run read <bloco> {root}--spec \
@@ -334,7 +334,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             43,
-            0x7f7f_fee9_2f7c_368d,
+            0x8f38_978c_26ce_2cac,
         );
     }
 }

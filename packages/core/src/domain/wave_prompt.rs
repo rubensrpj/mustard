@@ -33,7 +33,7 @@ use serde_json::Value;
 use crate::domain::lessons::{applies_to, same_file, text_only, tied_to_wave, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
-use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
+use crate::domain::spec_events::{type_spec, Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
 use crate::domain::spec_index::{cut, title_of};
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
@@ -253,6 +253,23 @@ fn item_line(material: &Material, item: &SpecEvent) -> String {
     match item_title(item) {
         Some(title) => format!("- `{block}` {code}: {title}"),
         None => format!("- `{block}` {code}"),
+    }
+}
+
+/// A parte do agente de um item, logo abaixo da linha dele e recuada dois
+/// espaços: o `agent` gravado ou, no item gravado antes dele, o texto
+/// inteiro. Só o tipo que descreve o trabalho tem essa parte na forma dele;
+/// a onda, os relatos dos agentes e o critério, que não a têm, seguem numa
+/// linha só. As linhas em branco do corpo ficam de fora.
+fn agent_part(out: &mut String, item: &SpecEvent) {
+    let has_part = type_spec(&item.event_type).is_some_and(|spec| spec.fields.iter().any(|f| f.name == "agent"));
+    if !has_part {
+        return;
+    }
+    let own = item.str_field("agent").filter(|agent| !agent.trim().is_empty());
+    let body = own.or_else(|| item.str_field("text")).unwrap_or_default();
+    for line in body.lines().filter(|line| !line.trim().is_empty()) {
+        let _ = writeln!(out, "  {}", line.trim_end());
     }
 }
 
@@ -1193,9 +1210,10 @@ impl Writer<'_> {
     /// (quando a onda volta reprovada), a própria onda, os critérios, a
     /// especificação, o combinado, as lições e as skills que as tarefas
     /// nomeiam. Cada item sai numa linha, com o bloco, o código e o título
-    /// ([`item_line`]); lições e skills mantêm a listagem própria. O texto
-    /// completo do item não entra, nem o comando de leitura — a leitura
-    /// aparece uma vez só no pedido, em [`Self::read_example`].
+    /// ([`item_line`]), e logo abaixo dela a parte do agente ([`agent_part`]);
+    /// lições e skills mantêm a listagem própria. O porquê do item fica na
+    /// spec, e o comando de leitura aparece uma vez só no pedido, em
+    /// [`Self::read_example`].
     fn items(&self, out: &mut String) {
         let m = self.material;
         let wave_only = self.wave_only();
@@ -1216,6 +1234,7 @@ impl Writer<'_> {
         for group in [&m.fix, &wave_only, &m.criteria, &m.specification, &m.agreed] {
             for item in group {
                 let _ = writeln!(out, "{}", item_line(m, item));
+                agent_part(out, item);
             }
         }
         for lesson in &m.lessons {
@@ -1241,11 +1260,10 @@ impl Writer<'_> {
     /// uma linha por tarefa, com o código, o título ([`item_title`]), os
     /// arquivos que ela cita e — para a que ganhou leitura obrigatória ou
     /// escolhida pelo orquestrador — o que precisa ler antes, pelo mesmo
-    /// trecho que [`Self::read_hint`] calcula. Abaixo da linha, recuada dois
-    /// espaços, vem a parte do agente (`agent`) ou, na tarefa gravada antes
-    /// dela existir, o texto; o porquê fica na spec. Depois, um arquivo que o
-    /// mapa do projeto conhece os testes ([`Material::file_tests`]) ganha uma
-    /// linha própria com eles.
+    /// trecho que [`Self::read_hint`] calcula. Abaixo da linha vem a parte do
+    /// agente ([`agent_part`]), como nos itens; o porquê fica na spec.
+    /// Depois, um arquivo que o mapa do projeto conhece os testes
+    /// ([`Material::file_tests`]) ganha uma linha própria com eles.
     fn tasks(&self, out: &mut String) {
         let tasks: Vec<&SpecEvent> = self.wave_items().into_iter().filter(|e| e.event_type == "task").collect();
         if tasks.is_empty() {
@@ -1276,11 +1294,7 @@ impl Writer<'_> {
                 let _ = write!(out, " — {}: {}", self.t("prompt.task.read_before"), parts.join(", "));
             }
             let _ = writeln!(out);
-            let own = task.str_field("agent").filter(|agent| !agent.trim().is_empty());
-            let body = own.or_else(|| task.str_field("text")).unwrap_or_default();
-            for line in body.lines().filter(|line| !line.trim().is_empty()) {
-                let _ = writeln!(out, "  {}", line.trim_end());
-            }
+            agent_part(out, task);
             for path in paths {
                 let Some(tests) = self.material.file_tests.get(path) else { continue };
                 let list = tests.iter().map(|test| format!("`{test}`")).collect::<Vec<_>>().join(", ");
@@ -1521,7 +1535,8 @@ mod tests {
 
     /// O pedido leva, de cada item, o código e o título, numa linha com o
     /// bloco dele; de cada tarefa, também a parte do agente, embaixo da linha
-    /// dela e recuada dois espaços. O porquê da tarefa, o resto do texto da
+    /// dela e recuada dois espaços. A onda e o critério, que não têm essa
+    /// parte, ficam numa linha só. O porquê da tarefa, o resto do texto da
     /// onda e o `when`, o `then` e a prova do critério não são copiados; o
     /// comando de leitura aparece uma vez só, no exemplo, e nenhum código
     /// aparece duas vezes.
@@ -1551,9 +1566,11 @@ mod tests {
                 assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
             }
             assert!(prompt.text.contains("a onda termina"), "o done_when abre o pedido: {}", prompt.text);
+            // A onda e o critério não têm parte do agente: cada um fica numa
+            // linha só.
             assert_eq!(
-                listed(&prompt.text, translate("prompt.part.items", lang)),
-                ["- `waves` MSTD-WAVE-0001: Primeira onda.", "- `criteria` MSTD-CRIT-0001: A suíte roda inteira"],
+                section(&prompt.text, translate("prompt.part.items", lang)).lines().collect::<Vec<_>>(),
+                ["", "- `waves` MSTD-WAVE-0001: Primeira onda.", "- `criteria` MSTD-CRIT-0001: A suíte roda inteira"],
                 "{}",
                 prompt.text
             );
@@ -2287,9 +2304,11 @@ mod tests {
 
     /// O item combinado escolhido para a onda entra numa linha, com o bloco,
     /// o código e o título — no item gravado antes do título, a primeira
-    /// frase do texto —; o resto do texto e o exemplo dele nunca entram.
+    /// frase do texto —, e logo abaixo dela, recuada, a parte do agente; o
+    /// item gravado antes dessa parte traz o texto inteiro. O exemplo nunca
+    /// entra, nem o texto do item que tem a parte do agente.
     #[test]
-    fn every_agreed_item_comes_as_a_line_with_its_title_and_never_its_whole_text() {
+    fn every_agreed_item_comes_with_its_title_and_its_agent_part_below() {
         let everywhere = json!({"files": ["**"]});
         let log = log(&[
             (
@@ -2307,16 +2326,23 @@ mod tests {
             ("task", json!({"wave": 1, "text": "Escrever o leitor", "files": [{"path": "src/a.rs"}]})),
         ]);
         let prompt = build(&with_agreed(&log, 1), Locale::PtBr);
-        for text in ["duas linhas", "um link só", "O agente lê o pedido", "Depois ele começa", "conferir no teste", "um pedido curto"] {
+        for text in ["um link só", "O agente lê o pedido", "Depois ele começa", "um pedido curto"] {
             assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
         }
-        let items = listed(&prompt.text, translate("prompt.part.items", Locale::PtBr));
-        for line in [
-            "- `agreed` MSTD-RULE-0001: A barra de status mostra o link.",
-            "- `agreed` MSTD-RULE-0002: O pedido cabe numa leitura",
-        ] {
-            assert!(items.contains(&line), "{line}: {}", prompt.text);
-        }
+        let items: Vec<&str> = section(&prompt.text, translate("prompt.part.items", Locale::PtBr)).lines().collect();
+        assert_eq!(
+            items,
+            [
+                "",
+                "- `waves` MSTD-WAVE-0001: Leitura",
+                "- `agreed` MSTD-RULE-0001: A barra de status mostra o link.",
+                "  A barra de status mostra o link. Ela cabe em duas linhas.",
+                "- `agreed` MSTD-RULE-0002: O pedido cabe numa leitura",
+                "  - conferir no teste",
+            ],
+            "{}",
+            prompt.text
+        );
     }
 
     /// O item marcado como válido para todas as ondas entra na lista de cada
@@ -2406,7 +2432,7 @@ mod tests {
     }
 
     /// O texto do agente da onda, que ele carrega uma vez, diz que o pedido
-    /// traz o título de cada item e a parte do agente de cada tarefa, que o
+    /// traz o título de cada item e, sob a linha dele, a parte do agente, que o
     /// texto completo se lê só em caso de dúvida e que o item novo que ele
     /// gravar leva as três partes; a ordem antiga de ler tudo antes de começar
     /// saiu, e a parte fixa do pedido não repete nada disso.
@@ -2415,12 +2441,22 @@ mod tests {
         for (lang, said, gone) in [
             (
                 Locale::PtBr,
-                ["o código e o título de cada item", "na dúvida, o comando que ele dá lê o texto completo", "leva `title`, `text` e `agent`"],
+                [
+                    "o código e o título de cada item",
+                    "sob a linha dele, a parte do agente",
+                    "na dúvida, o comando que ele dá lê o texto completo",
+                    "leva `title`, `text` e `agent`",
+                ],
                 "rodá-lo antes de começar",
             ),
             (
                 Locale::EnUs,
-                ["each item's code and title", "when in doubt, the command it gives reads the whole text", "takes `title`, `text` and `agent`"],
+                [
+                    "each item's code and title",
+                    "under its line, the agent part",
+                    "when in doubt, the command it gives reads the whole text",
+                    "takes `title`, `text` and `agent`",
+                ],
                 "running it before you start",
             ),
         ] {
