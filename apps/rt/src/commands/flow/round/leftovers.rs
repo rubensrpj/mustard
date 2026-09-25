@@ -66,7 +66,9 @@ pub(super) fn leftovers_of(items: &[Value]) -> Result<Vec<Leftover>, Refusal> {
 /// dependência, com o autor da onda, e os arquivos que o detalhe cita entre
 /// crases e que existem no repositório ou na cópia da onda — o caminho de
 /// dentro da cópia vira o relativo ao repositório, e o de fora dos dois não
-/// entra.
+/// entra. A tarefa cobre os critérios da onda que a apontou, na versão atual
+/// dela: é por eles que a onda do conserto, formada do backlog, ganha a prova
+/// que diz quando está pronta. Onda sem critério deixa a tarefa sem `covers`.
 pub(super) fn leftover_task(root: &Path, log: &SpecLog, wave: u64, leftover: &Leftover) -> Map<String, Value> {
     let copy = wave_prompt::recorded_copy(log, wave).map(|copy| Path::new(&copy.path).to_path_buf());
     let mut files: Vec<String> = Vec::new();
@@ -85,7 +87,17 @@ pub(super) fn leftover_task(root: &Path, log: &SpecLog, wave: u64, leftover: &Le
         "depends_on": [],
         "author": "wave",
     });
-    task.as_object().cloned().unwrap_or_default()
+    let mut task = task.as_object().cloned().unwrap_or_default();
+    let criteria = log
+        .visible()
+        .into_iter()
+        .find(|e| e.event_type == "wave" && e.wave() == Some(wave))
+        .map(|e| e.ints("criteria"))
+        .unwrap_or_default();
+    if !criteria.is_empty() {
+        task.insert("covers".into(), json!(criteria));
+    }
+    task
 }
 
 /// Cada sobra das voltas assumidas que não quebra nada vira pendência, pela

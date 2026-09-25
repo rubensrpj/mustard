@@ -2498,6 +2498,72 @@ mod tests {
         assert_eq!(witnessed(root).len(), 1);
     }
 
+    /// O resultado do lote como a ferramenta do banco o entrega, em objeto:
+    /// `db_write.committed` e a versão `version` de cada documento gravado
+    /// em `db_write.results`, com o valor `committed` dado.
+    fn written(batch: &Value, version: u64, committed: bool) -> Value {
+        let results: Vec<Value> = batch
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|w| {
+                let mut result = json!({"op": w["op"], "collection": w["collection"], "doc_id": w["doc_id"]});
+                if w["op"] == json!("set") {
+                    result["version"] = json!(version);
+                }
+                result
+            })
+            .collect();
+        json!({"written": {"url": SPEC_URL}, "db_write": {"op": "batch", "committed": committed, "results": results}})
+    }
+
+    /// O resultado do lote na forma de objeto, a que a ferramenta entrega,
+    /// grava a cópia com o número até onde ela foi e a versão de cada
+    /// documento, e a conversa ouve que não precisa gravar.
+    #[test]
+    fn the_batch_result_as_an_object_records_the_copy_with_its_versions() {
+        let dir = approved_project();
+        let root = dir.path();
+        let first = published_round(root);
+        let batch = first["copy"]["spec"]["writes"][0].clone();
+
+        let outcome = batch_sent(root, SPEC_URL, &batch, written(&batch, 5, true));
+        assert_eq!(outcome.verdict, Verdict::Inject { context: recorded_line() }, "{outcome:?}");
+        let copies = witnessed(root);
+        assert_eq!(copies.len(), 1, "one copy recorded");
+        assert_eq!(copies[0].int("last"), first["copy"]["spec"]["record"]["last"].as_u64(), "{:?}", copies[0]);
+        let versions = versions_of(&copies[0]);
+        assert_eq!(versions.get("ranges/0"), Some(&json!(5)), "{versions:?}");
+        assert_eq!(versions.get(COMPUTED), Some(&json!(5)), "{versions:?}");
+    }
+
+    /// O objeto com `committed` falso, ou sem a versão de um documento
+    /// mandado, não grava nada; o resultado em texto, depois, continua
+    /// gravando a cópia.
+    #[test]
+    fn an_uncommitted_or_incomplete_object_records_nothing_and_the_text_still_records() {
+        let dir = approved_project();
+        let root = dir.path();
+        let first = published_round(root);
+        let batch = first["copy"]["spec"]["writes"][0].clone();
+
+        let refused = batch_sent(root, SPEC_URL, &batch, written(&batch, 5, false));
+        assert_eq!(refused.verdict, Verdict::Allow, "committed false");
+        let mut short = written(&batch, 5, true);
+        let results = short["db_write"]["results"].as_array_mut().unwrap();
+        let set = results.iter().position(|r| r["op"] == json!("set")).unwrap();
+        results.remove(set);
+        let incomplete = batch_sent(root, SPEC_URL, &batch, short);
+        assert_eq!(incomplete.verdict, Verdict::Allow, "one version missing");
+        assert!(witnessed(root).is_empty(), "nothing recorded");
+
+        let text = batch_sent(root, SPEC_URL, &batch, json!(committed(&batch, 6)));
+        assert_eq!(text.verdict, Verdict::Inject { context: recorded_line() }, "{text:?}");
+        let copies = witnessed(root);
+        assert_eq!(copies.len(), 1);
+        assert_eq!(versions_of(&copies[0]).get(COMPUTED), Some(&json!(6)), "{:?}", copies[0]);
+    }
+
     /// O mesmo resultado lido duas vezes grava uma cópia só: gravada a
     /// cópia, o registro sai, e o segundo passa calado.
     #[test]

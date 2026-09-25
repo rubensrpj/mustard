@@ -3531,4 +3531,83 @@ mod tests {
             .collect();
         assert_eq!(asked, ["O log não gira"], "só a sem `kind` espera a pergunta de destino: {listed}");
     }
+
+    /// A sobra que quebra, apontada por uma onda com critério, vira tarefa
+    /// que cobre os critérios dessa onda; na rodada seguinte, a onda do
+    /// conserto nasce do backlog com esses critérios e com a prova deles no
+    /// pronta-quando, e sai no despacho sem recusa.
+    #[test]
+    fn the_fix_task_of_a_breaking_leftover_covers_the_criteria_of_the_wave_that_found_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/c.rs"), "fn tres() {}\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
+        round(root, "x", None);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a soma sai", "leftovers": [
+                {"title": "A leitura para sem o índice", "detail": "Sem o índice, `src/c.rs` para.", "kind": "breaks"},
+            ]}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let task_id = out["recorded"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|r| r["type"] == json!("task"))
+            .and_then(|r| r["id"].as_u64())
+            .unwrap_or_else(|| panic!("a sobra que quebra não virou tarefa: {out}"));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let task = log.get(task_id).unwrap();
+        assert_eq!(task.fields["covers"], json!([crit]), "a tarefa cobre os critérios da onda 1: {:?}", task.fields);
+
+        let next = round(root, "x", None);
+        assert_eq!(next["ok"], json!(true), "a onda do conserto se forma sem recusa: {next}");
+        assert_eq!(waves_in(&next, "analysis"), vec![2], "{next}");
+        let chosen = line("ANALYSIS", json!({"wave": 2, "removed": [], "added": []}));
+        let sent = round(root, "x", Some(&chosen));
+        assert_eq!(sent["ok"], json!(true), "a onda do conserto sai sem recusa: {sent}");
+        assert_eq!(waves_in(&sent, "dispatch"), vec![2], "a onda do conserto é despachada: {sent}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let fix = log
+            .visible()
+            .into_iter()
+            .find(|e| e.event_type == "wave" && e.wave() == Some(2))
+            .unwrap_or_else(|| panic!("a onda do conserto não foi formada: {next}"));
+        assert_eq!(fix.fields["criteria"], json!([crit]), "{:?}", fix.fields);
+        assert_eq!(fix.fields["done_when"], json!("git --version"), "{:?}", fix.fields);
+        assert_eq!(fix.fields["order"], json!([task_id]), "{:?}", fix.fields);
+    }
+
+    /// A sobra que quebra, apontada por uma onda sem critério, vira tarefa
+    /// sem `covers`; a de uma onda com critério leva os da versão atual da
+    /// onda, não os da versão que ela substituiu.
+    #[test]
+    fn the_fix_task_follows_the_current_criteria_of_the_wave_and_goes_without_covers_when_it_has_none() {
+        let dir = tempdir().unwrap();
+        let log = mustard_core::domain::spec_events::parse_log(
+            &[
+                json!({"v":1,"id":1,"type":"criterion","when":"a","then":"b","proof":"git --version","form":"ubiquitous"}),
+                json!({"v":1,"id":2,"type":"criterion","when":"c","then":"d","proof":"git --help","form":"ubiquitous"}),
+                json!({"v":1,"id":3,"type":"wave","n":1,"text":"t","criteria":[1],"done_when":"d"}),
+                json!({"v":1,"id":4,"type":"wave","n":1,"text":"t","criteria":[1, 2],"done_when":"d","replaces":3}),
+                json!({"v":1,"id":5,"type":"wave","n":2,"text":"t","criteria":[],"done_when":"d"}),
+            ]
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        );
+        let leftover = Leftover { title: "Quebra".into(), detail: "Sem índice.".into(), kind: Some(LeftoverKind::Breaks) };
+        let task = leftover_task(dir.path(), &log, 1, &leftover);
+        assert_eq!(task.get("covers"), Some(&json!([1, 2])), "{task:?}");
+        let task = leftover_task(dir.path(), &log, 2, &leftover);
+        assert!(!task.contains_key("covers"), "onda sem critério, tarefa sem `covers`: {task:?}");
+    }
 }

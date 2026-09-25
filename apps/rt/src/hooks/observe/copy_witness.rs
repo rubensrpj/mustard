@@ -12,8 +12,11 @@
 //! página da spec, com os lotes dela (`pages::copy::SPEC_RECORD`). A
 //! testemunha age só no lote mandado ao endereço da página da spec atual,
 //! cujas escritas casam com um dos lotes desse registro, e só quando o
-//! resultado diz `committed` e traz a versão de cada documento escrito, uma
-//! linha por escrita, como `- set "ranges"/"1100" (version 6)`. As versões
+//! resultado diz `committed` e traz a versão de cada documento escrito. A
+//! ferramenta entrega o resultado como objeto, com `db_write.committed`
+//! verdadeiro e a versão de cada documento em `db_write.results`; o texto,
+//! ou a lista de blocos de texto, fica como reserva, com uma linha por
+//! escrita, como `- set "ranges"/"1100" (version 6)`. As versões
 //! de cada lote ficam guardadas na pasta da cópia. Quando todo lote voltou,
 //! ela grava o registro `copy` com o `last` guardado e as versões de todos
 //! os lotes, pela mesma gravação do `run write`, e apaga o registro: o mesmo
@@ -166,20 +169,52 @@ fn batch_of(writes: &[Value], batches: &[Value]) -> Option<usize> {
 }
 
 /// A versão que o resultado `response` do lote devolveu a cada documento
-/// escrito, pelo nome `coleção/doc_id`. `None` quando o lote não deu certo:
-/// o resultado não diz `committed`, ou falta a versão de algum documento que
-/// o lote grava (`set`).
+/// escrito, pelo nome `coleção/doc_id`. Lê primeiro o objeto que a
+/// ferramenta entrega, com `db_write`; sem ele, o texto do resultado. `None`
+/// quando o lote não deu certo: o resultado não diz `committed`, ou falta a
+/// versão de algum documento que o lote grava (`set`).
 fn returned(response: &Value, writes: &[Value]) -> Option<Map<String, Value>> {
-    let text = response_text(response);
-    if !text.to_lowercase().contains("committed") {
-        return None;
-    }
-    let versions: Map<String, Value> = text.lines().filter_map(version_line).collect();
+    let versions = match response.get("db_write").filter(|db_write| db_write.is_object()) {
+        Some(db_write) => written_versions(db_write)?,
+        None => text_versions(response)?,
+    };
     let complete = writes.iter().filter(|w| w["op"] == json!("set")).all(|w| {
         let doc = format!("{}/{}", w["collection"].as_str().unwrap_or_default(), w["doc_id"].as_str().unwrap_or_default());
         versions.contains_key(&doc)
     });
     complete.then_some(versions)
+}
+
+/// As versões do resultado na forma de objeto, a que a ferramenta entrega:
+/// `committed` verdadeiro e, em `results`, a versão de cada documento pelo
+/// nome `coleção/doc_id`. A entrada sem versão, como a da escrita que tira o
+/// documento, não entra. `None` quando `committed` não é verdadeiro.
+fn written_versions(db_write: &Value) -> Option<Map<String, Value>> {
+    if db_write.get("committed") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let versions = db_write
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|result| {
+            let (collection, doc_id) = (result["collection"].as_str()?, result["doc_id"].as_str()?);
+            Some((format!("{collection}/{doc_id}"), json!(result["version"].as_u64()?)))
+        })
+        .collect();
+    Some(versions)
+}
+
+/// As versões do resultado lido como texto — o próprio texto ou a lista de
+/// blocos —, uma linha por escrita. `None` quando o texto não diz
+/// `committed`.
+fn text_versions(response: &Value) -> Option<Map<String, Value>> {
+    let text = response_text(response);
+    if !text.to_lowercase().contains("committed") {
+        return None;
+    }
+    Some(text.lines().filter_map(version_line).collect())
 }
 
 /// O texto do resultado de uma ferramenta: o próprio texto, ou os blocos de
