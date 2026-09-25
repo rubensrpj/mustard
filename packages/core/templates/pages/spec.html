@@ -768,10 +768,23 @@ details.agent>.md p:last-child{margin-bottom:0}
     var ITEM_LINE = /^- `([a-z_-]+)` (MSTD-[A-Z]+-\d{4,}): (.*)$/;
     var TASK_LINE = /^- `(MSTD-[A-Z]+-\d{4,})` (.+)$/;
     var CODES_LINE = /^- `([a-z_-]+)`: (.+)$/;
+    var INDENTED_LINE = /^[ \t]+\S/;
     function fullPrompt(prompt) {
-      var out = [];
-      prompt.split('\n').forEach(function (raw) {
+      var out = [], rows = prompt.split('\n');
+      rows.forEach(function (raw, at) {
         var line = raw.replace(/\r$/, ''), m, e;
+        // O pedido de hoje já traz, recuada sob a linha do item, a parte do
+        // agente, ou o texto inteiro do item antigo: a página põe só a linha
+        // e, no item com parte do agente, o porquê dele, que o pedido não
+        // traz. As linhas recuadas passam como vieram, uma vez só.
+        if ((m = ITEM_LINE.exec(line)) && BLOCKS.indexOf(m[1]) >= 0 && (e = byCode.get(m[2]))
+          && INDENTED_LINE.test(rows[at + 1] || '')) {
+          out.push('- `' + m[1] + '` **' + m[2] + '**' + (m[3] ? ' — ' + m[3] : ''));
+          var own = agentPart(e) ? (str(e.text) || '').trim() : '';
+          if (own) out = out.concat([''], indented(own.split('\n'), '  '), ['']);
+          return;
+        }
+        // Sem linha recuada embaixo, o pedido antigo: o item inteiro no lugar.
         if ((m = ITEM_LINE.exec(line)) && BLOCKS.indexOf(m[1]) >= 0 && (e = byCode.get(m[2]))) {
           var lines = itemLines(e);
           out.push('- `' + m[1] + '` **' + m[2] + '**' + (lines[0] ? ' — ' + lines[0] : ''));

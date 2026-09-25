@@ -476,18 +476,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "This conversation is about to be compacted; after the summary, the session start \
              brings the resume block back on its own. {block} {autocompact}"
         }
-        // O valor de compactação configurado na máquina contra o que esta
-        // versão instalada do Mustard recomenda, no mesmo aviso.
+        // O valor de compactação no mesmo aviso: a máquina sem valor recebe a
+        // recomendação e onde ajustá-la; a que escolheu o seu só o vê
+        // informado.
         ("conversation_size.autocompact", Locale::PtBr) => {
-            "Valor de compactação: a máquina está configurada para {machine}; a versão instalada do \
-             Mustard recomenda {installed}. Se os dois não baterem, ajuste \
-             CLAUDE_AUTOCOMPACT_PCT_OVERRIDE em ~/.claude/settings.json para {installed} e recarregue \
-             a sessão."
+            "Valor de compactação: esta máquina não escolheu um, e o Mustard recomenda {installed}. \
+             Para usá-lo, ponha CLAUDE_AUTOCOMPACT_PCT_OVERRIDE em ~/.claude/settings.json com \
+             {installed} e recarregue a sessão."
         }
         ("conversation_size.autocompact", Locale::EnUs) => {
-            "Compaction value: the machine is configured for {machine}; the installed Mustard version \
-             recommends {installed}. If the two disagree, set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in \
-             ~/.claude/settings.json to {installed} and reload the session."
+            "Compaction value: this machine has not chosen one, and Mustard recommends {installed}. \
+             To use it, set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in ~/.claude/settings.json to \
+             {installed} and reload the session."
+        }
+        ("conversation_size.autocompact_set", Locale::PtBr) => {
+            "Valor de compactação: esta máquina usa {machine}, o valor escolhido nela."
+        }
+        ("conversation_size.autocompact_set", Locale::EnUs) => {
+            "Compaction value: this machine uses {machine}, the value chosen on it."
         }
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
@@ -1347,8 +1353,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            166,
-            0x1d75_b3ec_635d_ccd0,
+            167,
+            0xbb4c_a634_7faf_fcf7,
         );
     }
 
@@ -1505,7 +1511,8 @@ mod tests {
             ("conversation_size.replan", &["{wave}"][..]),
             ("conversation_size.more", &["{count}"][..]),
             ("conversation_size.precompact", &["{block}", "{autocompact}"][..]),
-            ("conversation_size.autocompact", &["{machine}", "{installed}"][..]),
+            ("conversation_size.autocompact", &["{installed}"][..]),
+            ("conversation_size.autocompact_set", &["{machine}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),

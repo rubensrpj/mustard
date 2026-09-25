@@ -113,7 +113,7 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 /// cada mudança no molde montado (o template ou o catálogo dele): é ela, e
 /// não a versão do Mustard, que manda publicar de novo a página já
 /// publicada. A trava dos testes falha quando o molde muda sem ela subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 1;
+pub const SPEC_LAYOUT_VERSION: u32 = 2;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
@@ -375,8 +375,8 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 1, "65bf6d1b90c28223"),
-        ("spec", Locale::EnUs, 1, "aae78616009088d4"),
+        ("spec", Locale::PtBr, 2, "071cb504af3bb320"),
+        ("spec", Locale::EnUs, 2, "c9cff3704eb98ca3"),
         ("project", Locale::PtBr, 1, "5679d4353f9b2605"),
         ("project", Locale::EnUs, 1, "30bdfad32f90648a"),
     ];
@@ -1273,6 +1273,88 @@ mod tests {
             "    **Para o agente**",
         ] {
             assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
+    }
+
+    /// No pedido de hoje, a linha de cada item traz embaixo, recuada, a parte
+    /// do agente do item novo ou o texto inteiro do item antigo. A página
+    /// mostra essa parte uma vez: a linha do item, o porquê do item novo logo
+    /// abaixo dela e as linhas recuadas como vieram; o texto do item antigo
+    /// também aparece uma vez. No pedido antigo, sem linha recuada sob o
+    /// item, a página segue pondo o item inteiro no lugar, como antes.
+    #[test]
+    fn the_agent_part_under_an_item_line_shows_once() {
+        let long = "A página lê o banco de eventos da spec, linha a linha, e monta cada cartão sem guardar cópia.";
+        let title = "A página lê o banco de eventos da spec, linha a linha, e monta cada…";
+        let new_request = format!(
+            "# demo — onda 5\n\n## Itens da onda\n\n\
+            - `agreed` MSTD-RULE-0001: A linha de item\n\
+            \x20 - o formato mora em `wave_prompt.rs`\n\
+            - `specification` MSTD-CTX-0001: {title}\n\
+            \x20 {long}\n\
+            \x20 O banco guarda os itens.\n"
+        );
+        let old_request = format!(
+            "# demo — onda 6\n\n## Itens da onda\n\n\
+            - `agreed` MSTD-RULE-0001: A linha de item\n\
+            - `specification` MSTD-CTX-0001: {title}\n"
+        );
+        let lines = vec![
+            json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant",
+                "text":format!("{long}\n\nO banco guarda os itens.")}),
+            json!({"v":1,"id":2,"code":"MSTD-RULE-0001","at":"2026-09-25T09:01:00-03:00","type":"rule","author":"assistant",
+                "title":"A linha de item","text":"O pedido e a página leem a mesma linha.","agent":"- o formato mora em `wave_prompt.rs`",
+                "keys":["linha"],"origin":1}),
+            json!({"v":1,"id":3,"code":"MSTD-WAVE-0001","at":"2026-09-25T09:02:00-03:00","type":"wave","author":"binary","n":5,
+                "text":"A onda cinco.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+            json!({"v":1,"id":4,"at":"2026-09-25T09:04:00-03:00","type":"send","author":"binary","wave":5,"role":"wave","agent":"wave",
+                "text":new_request,"lines":9,"chars":300,"items":[1,2,3],"mustard":"0.2.4"}),
+            json!({"v":1,"id":5,"code":"MSTD-WAVE-0002","at":"2026-09-25T09:05:00-03:00","type":"wave","author":"binary","n":6,
+                "text":"A onda seis.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+        ];
+        let mut db = spec_database(&lines);
+        db["computed"][0]["data"]["waves"] = json!({"5": "approved"});
+        db["computed"][0]["data"]["prompts"] = json!({"6": old_request});
+        let steps = json!([
+            {"do": "wait"}, {"do": "hash", "value": "waves-5"}, {"do": "scrape", "as": "new"},
+            {"do": "hash", "value": "waves-6"}, {"do": "scrape", "as": "old"},
+        ]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        let once = |text: &str, piece: &str| {
+            assert_eq!(text.matches(piece).count(), 1, "{piece:?} should show once in:\n{text}");
+        };
+
+        let new = prompt_of(&got["new"])["text"].as_str().unwrap_or_default().to_string();
+        assert_in_order(
+            &new,
+            &[
+                "MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "o formato mora em wave_prompt.rs",
+                &format!("MSTD-CTX-0001 — {title}"),
+                long,
+                "O banco guarda os itens.",
+            ],
+        );
+        for piece in ["O pedido e a página leem a mesma linha.", "o formato mora em wave_prompt.rs", long, "O banco guarda os itens."] {
+            once(&new, piece);
+        }
+
+        assert_eq!(got["old"]["detail"]["wave"], json!(6), "the address opens wave 6");
+        let old = prompt_of(&got["old"])["text"].as_str().unwrap_or_default().to_string();
+        assert_in_order(
+            &old,
+            &[
+                "MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "Para o agente",
+                "o formato mora em wave_prompt.rs",
+                &format!("MSTD-CTX-0001 — {long}"),
+                "O banco guarda os itens.",
+            ],
+        );
+        for piece in ["O pedido e a página leem a mesma linha.", "o formato mora em wave_prompt.rs", long, "O banco guarda os itens."] {
+            once(&old, piece);
         }
     }
 

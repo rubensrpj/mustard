@@ -540,9 +540,6 @@ pub(super) fn run_round_with_mine(
     // trava do passo do git presa: a rodada que chega ao mesmo tempo só lê a
     // spec depois dos envios desta, e nunca solta a mesma onda de novo.
     let held_lock = git_lock(root)?;
-    // A primeira rodada leva a spec para a execução.
-    let entering = phase == "approved"
-        && crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
 
     // O mapa volta ao commit atual antes de montar os pedidos: um commit à
     // mão ou um pull podem ter mudado o código fora da rodada, e sem isto a
@@ -558,6 +555,12 @@ pub(super) fn run_round_with_mine(
     // pela leitura já mexida pelo relatório a empacotaria de novo na mesma
     // rodada que a soltou.
     dispatch_backlog(&opts.root, &spec, &log_on_entry).map_err(RoundRefusal::Refused)?;
+    // A primeira rodada leva a spec para a execução só depois de o lote
+    // passar, ainda com a trava do git presa: o lote recusado deixa a spec
+    // aprovada, como estava, e a rodada seguinte entra de novo por aqui. A
+    // leitura logo abaixo já vê a fase nova.
+    let entering = phase == "approved"
+        && crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
     let log = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
@@ -1211,6 +1214,89 @@ mod tests {
         assert_eq!(sent.len(), 1, "um envio por onda despachada");
         assert_eq!(sent[0].str_field("text"), Some(prompt.as_str()));
         assert_eq!(sent[0].wave(), Some(1));
+    }
+
+    /// Uma spec aprovada sem onda nenhuma, com `src/a.rs` e `src/b.rs` no
+    /// git e duas tarefas soltas no backlog, uma em cada arquivo, que a
+    /// primeira rodada empacota num lote só. Devolve o número da segunda.
+    fn approved_backlog(root: &Path) -> u64 {
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for name in ["a.rs", "b.rs"] {
+            std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
+        }
+        approved(root, "x", &[]);
+        let log = log_of(root);
+        let first = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
+        let (said, crit) = (first("message"), first("criterion"));
+        let task = |text: &str, file: &str| {
+            id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}],
+                "depends_on": [], "covers": [crit], "origin": said})))
+        };
+        task("Mexer no código de um.", "src/a.rs");
+        task("Mexer no código de dois.", "src/b.rs")
+    }
+
+    /// A fase gravada da spec `x`, em `root`.
+    fn phase_of(root: &Path) -> String {
+        State::from_log(&log_of(root)).phase.unwrap_or_default().to_string()
+    }
+
+    /// Na primeira rodada de uma spec aprovada, o lote que a gravação recusa
+    /// não leva a spec para a execução: ela fica aprovada, e nada do lote
+    /// fica gravado — nem a onda, nem a versão da primeira tarefa. A spec
+    /// fica igual byte a byte, e a rodada seguinte entra de novo pela
+    /// aprovação. A recusa é forçada na segunda tarefa, com um campo que esta
+    /// versão não conhece, e a prova atravessa `round`, o comando de verdade.
+    #[test]
+    fn a_primeira_rodada_com_o_lote_recusado_deixa_a_spec_aprovada() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let bad = approved_backlog(root);
+        assert_eq!(phase_of(root), "approved");
+
+        let path = store::spec_file(root, "x").unwrap();
+        let mark = format!("\"id\":{bad},");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let edited: String = original
+            .lines()
+            .map(|line| if line.contains(&mark) { line.replacen(",\"text\":", ",\"futuro\":1,\"text\":", 1) } else { line.to_string() })
+            .map(|line| line + "\n")
+            .collect();
+        assert_ne!(edited, original, "a linha da segunda tarefa mudou");
+        std::fs::write(&path, &edited).unwrap();
+
+        let out = round(root, "x", None);
+
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("unknown-field"), "{out}");
+        assert_eq!(phase_of(root), "approved", "a spec segue aprovada: {out}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited, "a spec fica igual byte a byte");
+        assert!(log_of(root).visible().iter().all(|e| e.event_type != "wave"), "nenhuma onda gravada");
+    }
+
+    /// Sem recusa, a primeira rodada de uma spec aprovada forma o lote das
+    /// tarefas soltas, grava a onda dele com as duas tarefas e deixa a spec na
+    /// execução, na resposta e no arquivo, como sempre.
+    #[test]
+    fn a_primeira_rodada_forma_o_lote_e_leva_a_spec_para_a_execucao() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_backlog(root);
+
+        let out = round(root, "x", None);
+
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["phase"], json!("running"), "{out}");
+        assert_eq!(phase_of(root), "running", "{out}");
+        let log = log_of(root);
+        let waves: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "wave").collect();
+        assert_eq!(waves.len(), 1, "um lote só: {out}");
+        assert_eq!(waves[0].str_field("author"), Some("binary"), "{out}");
+        let n = waves[0].fields.get("n").cloned();
+        let in_batch = log.visible().into_iter().filter(|e| e.event_type == "task" && e.fields.get("wave").cloned() == n).count();
+        assert_eq!(in_batch, 2, "as duas tarefas entram no lote: {out}");
+        let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
+        assert_eq!(dispatched.len(), 1, "o lote sai despachado: {out}");
     }
 
     /// Toda onda vai ao agente `wave`. A de uma tarefa só grava o `wave` no

@@ -27,10 +27,11 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::translate;
 
-/// O valor de compactação que esta versão instalada do Mustard recomenda —
-/// verificado contra o binário do Claude Code 2.1.278, que ainda honra
-/// `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
-/// (`docs/2026-07-25-revisao-portoes-pipeline-ondas.md`, seção 9).
+/// O valor de compactação que esta versão instalada do Mustard recomenda à
+/// máquina que ainda não escolheu o seu — verificado contra o binário do
+/// Claude Code 2.1.278, que ainda honra `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+/// (`docs/2026-07-25-revisao-portoes-pipeline-ondas.md`, seção 9). Máquina
+/// com valor próprio não o recebe: a escolha dela vale.
 const RECOMMENDED_AUTOCOMPACT_PCT: &str = "15";
 
 /// O aviso, antes de compactar: o bloco de retomada, que volta sozinho
@@ -51,20 +52,20 @@ impl Check for PrecompactNotice {
     }
 }
 
-/// A linha que compara o valor de compactação configurado na máquina (a
-/// variável `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, quando presente) com o que
-/// esta versão instalada do Mustard recomenda, dizendo os dois valores e o
-/// que fazer quando divergem. `machine` chega como parâmetro, e não por
-/// `std::env::var` direto aqui dentro, para o teste poder variá-lo sem
-/// `std::env::set_var` — `unsafe` no Rust 2024 e vedado neste crate.
+/// A linha do valor de compactação no aviso. Com valor escolhido na máquina
+/// (a variável `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, presente e não vazia), ela
+/// só informa esse valor: não cita o recomendado nem manda trocar. Sem valor,
+/// recomenda o [`RECOMMENDED_AUTOCOMPACT_PCT`] e diz onde ajustá-lo.
+/// `machine` chega como parâmetro, e não por `std::env::var` direto aqui
+/// dentro, para o teste poder variá-lo sem `std::env::set_var` — `unsafe` no
+/// Rust 2024 e vedado neste crate.
 fn autocompact_line(machine: Option<&str>, lang: Locale) -> String {
-    let machine_display = match machine {
-        Some(value) if !value.is_empty() => value.to_string(),
-        _ => translate("resume.none", lang).to_string(),
-    };
-    translate("conversation_size.autocompact", lang)
-        .replace("{machine}", &machine_display)
-        .replace("{installed}", RECOMMENDED_AUTOCOMPACT_PCT)
+    match machine {
+        Some(value) if !value.is_empty() => {
+            translate("conversation_size.autocompact_set", lang).replace("{machine}", value)
+        }
+        _ => translate("conversation_size.autocompact", lang).replace("{installed}", RECOMMENDED_AUTOCOMPACT_PCT),
+    }
 }
 
 /// O aviso antes de compactar: o bloco de retomada da spec atual, dizendo
@@ -156,21 +157,26 @@ mod tests {
         }
     }
 
-    /// Numa máquina configurada para `33`, que não bate com o `15` que a
-    /// versão instalada recomenda, o aviso diz os dois valores e o que
-    /// fazer. Sem nada configurado, a máquina aparece como "nenhum", nunca
-    /// como um número inventado.
+    /// Numa máquina que escolheu `25`, o aviso só informa esse valor: não
+    /// cita o `15` que a versão instalada recomenda nem manda ajustar. Numa
+    /// máquina sem valor (a variável ausente ou vazia), o aviso recomenda o
+    /// `15` e diz onde ajustá-lo. Nos dois idiomas.
     #[test]
-    fn o_aviso_compara_o_valor_de_compactacao_com_a_versao_instalada() {
-        let line = autocompact_line(Some("33"), Locale::PtBr);
-        assert!(line.contains("33"), "{line}");
-        assert!(line.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{line}");
-        assert!(line.contains("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"), "{line}");
-        assert!(line.contains("settings.json"), "{line}");
+    fn o_aviso_respeita_o_valor_da_maquina_e_so_recomenda_quando_ela_nao_tem_um() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let set = autocompact_line(Some("25"), lang);
+            assert!(set.contains("25"), "{lang:?}: {set}");
+            assert!(!set.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{lang:?}: cites the recommended value: {set}");
+            for order in ["settings.json", "ajuste", "ponha", "set ", "reload", "recarregue"] {
+                assert!(!set.contains(order), "{lang:?}: tells the machine to change its value ({order}): {set}");
+            }
 
-        let unset = autocompact_line(None, Locale::PtBr);
-        assert!(unset.contains("nenhum"), "{unset}");
-        assert!(unset.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{unset}");
+            for unset in [autocompact_line(None, lang), autocompact_line(Some(""), lang)] {
+                assert!(unset.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{lang:?}: {unset}");
+                assert!(unset.contains("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"), "{lang:?}: {unset}");
+                assert!(unset.contains("~/.claude/settings.json"), "{lang:?}: {unset}");
+            }
+        }
     }
 
     /// O aviso de compactar chega pelo gancho de `PreCompact`, com o bloco de
@@ -199,14 +205,6 @@ mod tests {
         };
         assert!(context.contains('x'), "o bloco traz a spec: {context}");
         assert!(context.contains("fase"), "o bloco traz a fase: {context}");
-        assert!(
-            context.contains(RECOMMENDED_AUTOCOMPACT_PCT),
-            "o aviso cita o valor de compactação que a versão instalada recomenda: {context}"
-        );
-        assert!(
-            context.contains("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"),
-            "o aviso diz o que fazer quando o valor da máquina não bate: {context}"
-        );
 
         // Com uma onda em andamento, o bloco continua saindo, com a onda
         // citada.
