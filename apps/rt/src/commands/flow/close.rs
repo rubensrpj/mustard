@@ -117,6 +117,9 @@ enum CloseRefusal {
     /// Um critério cuja prova saiu verde sem rodar teste nenhum, com o
     /// comando dela e o número de testes que a saída dele disse.
     CriterionRanNoTest { code: String, command: String, tests: u64 },
+    /// Um critério cuja prova saiu verde citando um nome de teste que não
+    /// existe no projeto, com o nome que faltou.
+    CriterionMissingTest { code: String, name: String },
 }
 
 impl CloseRefusal {
@@ -135,6 +138,7 @@ impl CloseRefusal {
             Self::ReviewCopyFailed { .. } => "review-copy-failed".into(),
             Self::CriterionFailed { .. } => "criterion-failed".into(),
             Self::CriterionRanNoTest { .. } => "criterion-ran-no-test".into(),
+            Self::CriterionMissingTest { .. } => "criterion-missing-test".into(),
         }
     }
 
@@ -173,6 +177,9 @@ impl CloseRefusal {
                 "close.criterion_ran_no_test",
                 &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
             ),
+            Self::CriterionMissingTest { code, name } => {
+                fill("close.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())])
+            }
         }
     }
 
@@ -562,11 +569,12 @@ fn machine(
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms }));
     }
     match failed {
-        Some(failed) => Err(match failed.ran_no_test {
-            Some(tests) => {
+        Some(failed) => Err(match (failed.ran_no_test, failed.missing_test) {
+            (Some(tests), _) => {
                 CloseRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests }
             }
-            None => CloseRefusal::CriterionFailed { code: failed.code, output: failed.output },
+            (None, Some(name)) => CloseRefusal::CriterionMissingTest { code: failed.code, name },
+            (None, None) => CloseRefusal::CriterionFailed { code: failed.code, output: failed.output },
         }),
         None => Ok((runs, undeclared)),
     }
@@ -3119,6 +3127,53 @@ exit "${2:-0}"
         assert_eq!(
             runs,
             vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail")), (Some(criteria[2]), Some("pass"))]
+        );
+        assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
+    }
+
+    /// Uma prova verde que cita dois testes, um que existe num arquivo do
+    /// projeto e outro que não existe em arquivo nenhum, trava o fechamento:
+    /// a recusa diz qual critério e o nome que faltou, e a execução dele fica
+    /// gravada como reprovada. A prova que cita só nomes presentes passa, e a
+    /// que não cita nome nenhum segue como antes.
+    #[test]
+    fn a_green_proof_citing_a_test_that_exists_nowhere_blocks_the_close() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "#[test]\nfn soma_de_dois() {}\n#[test]\nfn soma_de_tres() {}\n")
+            .unwrap();
+        let absent = "echo soma_de_dois soma_de_quatro";
+        ready_to_close(root, "x", &["echo Tests: 3 total", "echo soma_de_dois soma_de_tres", absent]);
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("criterion-missing-test"), "{refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
+        let expected = translate("close.criterion_missing_test", Locale::PtBr)
+            .replace("{code}", &codes[&criteria[2]])
+            .replace("{name}", "soma_de_quatro");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&codes[&criteria[2]]) && hint.contains("soma_de_quatro"), "{hint}");
+        assert!(!hint.contains("soma_de_dois"), "a recusa não acusa o nome que existe: {hint}");
+        let runs: Vec<(Option<u64>, Option<&str>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "criterion_run")
+            .map(|e| (e.int("criterion"), e.str_field("result")))
+            .collect();
+        // O quarto é o critério que cobre a onda na cópia de teste — sempre
+        // verde, para a rodada não travar a entrega.
+        assert_eq!(
+            runs,
+            vec![
+                (Some(criteria[0]), Some("pass")),
+                (Some(criteria[1]), Some("pass")),
+                (Some(criteria[2]), Some("fail")),
+                (Some(criteria[3]), Some("pass")),
+            ]
         );
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }

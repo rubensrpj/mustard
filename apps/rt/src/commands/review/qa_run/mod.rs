@@ -6,12 +6,14 @@
 //! [`run_server_command`], which the close calls for the lint and the whole
 //! suite the server runs, and the section reader the page uses.
 //!
-//! As duas portas rodam o mesmo comando do mesmo jeito e se separam numa
-//! leitura só: quantos testes a saída diz ter rodado. Ela vale na prova de um
-//! critério, que promete rodar teste, e nunca no lint nem em outro comando do
-//! fluxo.
+//! As duas portas rodam o mesmo comando do mesmo jeito e se separam em duas
+//! leituras, que valem só na prova de um critério, que promete rodar teste, e
+//! nunca no lint nem em outro comando do fluxo: quantos testes a saída diz ter
+//! rodado, e se cada nome de teste que o comando cita existe no projeto.
 
 use std::path::Path;
+
+use mustard_core::platform::git;
 
 mod runner;
 
@@ -48,6 +50,12 @@ pub(crate) struct ProofRun {
     /// recusa mostra. `None` quando a prova passou, quando ela falhou por
     /// outro motivo, e em todo comando que não é prova de critério.
     pub ran_no_test: Option<u64>,
+    /// A prova de critério saiu verde, mas cita um nome de teste que não
+    /// aparece em arquivo nenhum do projeto, e por isso não passou: o
+    /// primeiro nome que faltou, que é o que a recusa mostra. `None` quando a
+    /// prova passou, quando ela falhou por outro motivo, e em todo comando
+    /// que não é prova de critério.
+    pub missing_test: Option<String>,
 }
 
 /// Roda a prova de um critério uma vez, pelo mesmo executor do QA: o mesmo
@@ -57,10 +65,11 @@ pub(crate) struct ProofRun {
 ///
 /// Só a prova de um critério promete rodar teste, e por isso só ela é lida
 /// assim: verde sem rodar teste nenhum não passa, porque o nome do teste não
-/// casou. O comando do fluxo que não é prova de critério — o lint do projeto
-/// — roda por [`run_command`], que não faz essa leitura.
+/// casou, e verde citando um teste que não existe também não. O comando do
+/// fluxo que não é prova de critério — o lint do projeto — roda por
+/// [`run_command`], que não faz essas leituras.
 pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
-    graded(runner::run_ac_command(command, None, cwd), true)
+    graded(runner::run_ac_command(command, None, cwd), Some((command, cwd)))
 }
 
 /// Roda um comando do fluxo que não é prova de critério — hoje, a
@@ -71,7 +80,7 @@ pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
 /// cuja saída cite "no tests" não é uma prova que deixou de provar, e quem
 /// lesse assim recusaria um verde legítimo.
 pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
-    graded(runner::run_ac_command(command, None, cwd), false)
+    graded(runner::run_ac_command(command, None, cwd), None)
 }
 
 /// Roda um dos dois comandos que o servidor roda — o `lintCommand` e o
@@ -80,7 +89,7 @@ pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
 /// hora: a suíte inteira de um projeto não cabe no teto de uma prova de
 /// critério, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` vale só para a prova.
 pub(crate) fn run_server_command(command: &str, cwd: &Path) -> ProofRun {
-    graded(runner::run_server_command(command, cwd), false)
+    graded(runner::run_server_command(command, cwd), None)
 }
 
 /// A prova de um critério que não passou: o código dele, o comando inteiro
@@ -93,6 +102,9 @@ pub(crate) struct FailedProof {
     /// A saída disse zero teste rodado, com o número que ela leu — só quando
     /// foi esse o motivo da falha.
     pub ran_no_test: Option<u64>,
+    /// O nome de teste citado que não existe no projeto — só quando foi esse
+    /// o motivo da falha.
+    pub missing_test: Option<String>,
 }
 
 /// Roda a prova de cada critério de `criteria` (id, código, comando), na
@@ -116,6 +128,7 @@ pub(crate) fn run_criteria_proofs(
                 command: proof.clone(),
                 output: out.output.clone(),
                 ran_no_test: out.ran_no_test,
+                missing_test: out.missing_test.clone(),
             });
         }
         runs.push((*id, code.clone(), out));
@@ -124,24 +137,175 @@ pub(crate) fn run_criteria_proofs(
 }
 
 /// Uma execução classificada como o fechamento a grava. As duas portas
-/// entram aqui, e a diferença entre elas é um lugar só: `is_proof`, que diz
-/// se o comando é a prova de um critério. Só nela o verde sem rodar teste
-/// nenhum vira recusa, e a recusa carrega o número que a saída do executor
-/// disse — não há recusa sem contagem lida.
+/// entram aqui, e a diferença entre elas é um lugar só: `proof`, o comando e
+/// a raiz quando ele é a prova de um critério. Só nela o verde vira recusa,
+/// por dois motivos. Um é a saída do executor dizer que não rodou teste
+/// nenhum, e a recusa carrega o número lido — não há recusa sem contagem
+/// lida. O outro, quando a contagem não recusou, é o comando citar um nome
+/// de teste que não existe no projeto ([`missing_test_name`]).
 ///
 /// O que a execução leva é sempre o que o comando escreveu, e nunca uma frase
 /// montada aqui: quem lê o evento gravado precisa ver a saída do executor. O
-/// número lido vai pelo `ran_no_test`, e é dele que a recusa tira a contagem
-/// que mostra.
-fn graded(out: AcResult, is_proof: bool) -> ProofRun {
-    let ran_no_test = out.tests_run.filter(|count| *count == 0 && is_proof && out.status == "pass");
+/// número lido vai pelo `ran_no_test`, e o nome que faltou pelo
+/// `missing_test`: é deles que a recusa tira o que mostra.
+fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
+    let green = out.status == "pass";
+    let ran_no_test = out.tests_run.filter(|count| *count == 0 && proof.is_some() && green);
+    let missing_test = match proof {
+        Some((command, root)) if green && ran_no_test.is_none() => missing_test_name(command, root),
+        _ => None,
+    };
     ProofRun {
-        result: if out.status == "pass" && ran_no_test.is_none() { "pass" } else { "fail" },
+        result: if green && ran_no_test.is_none() && missing_test.is_none() { "pass" } else { "fail" },
         exit: out.exit.unwrap_or(1),
         ms: u64::try_from(out.duration_ms).unwrap_or(u64::MAX),
         ran_no_test,
+        missing_test,
         output: out.stderr_excerpt,
     }
+}
+
+/// O primeiro nome de teste que `command` cita ([`cited_test_names`]) e que
+/// não aparece em arquivo nenhum do projeto em `root`, nem como palavra
+/// inteira dentro de um arquivo, nem como nome de arquivo ou pasta.
+///
+/// A busca olha os arquivos que o git guarda e os novos que ele não ignora:
+/// a rodada roda a prova antes de comitar, quando o arquivo de teste que a
+/// onda criou ainda não foi registrado. O que o git ignora fica de fora — a
+/// pasta de compilação guarda os nomes dos testes que já existiram. A pasta
+/// das specs também fica de fora, porque é nela que o próprio comando está
+/// gravado. O nome de arquivo conta porque um alvo de teste inteiro, como o
+/// de `cargo test --test nome_do_alvo`, é o nome do arquivo dele.
+///
+/// Onde o git não responde — raiz sem repositório, programa ausente —, nada
+/// é recusado: sem a lista de arquivos não há como dizer que falta um teste.
+fn missing_test_name(command: &str, root: &Path) -> Option<String> {
+    let names = cited_test_names(command);
+    if names.is_empty() {
+        return None;
+    }
+    let mut files: Option<Option<Vec<String>>> = None;
+    names.into_iter().find(|name| {
+        let search = git::run(
+            root,
+            &["grep", "--untracked", "-w", "-F", "-q", "-e", name, "--", ".", ":(exclude).claude/spec"],
+        );
+        // Achou (saída zero) ou não pôde procurar (erro escrito): não falta.
+        if search.ok || !search.stderr.trim().is_empty() {
+            return false;
+        }
+        let listed = files.get_or_insert_with(|| {
+            let run = git::run(root, &["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
+            run.ok.then(|| run.stdout.split('\0').map(str::to_string).collect())
+        });
+        listed.as_ref().is_some_and(|paths| !paths.iter().any(|path| names_file(path, name)))
+    })
+}
+
+/// `path` tem um pedaço — pasta ou arquivo, sem o que vem depois do primeiro
+/// ponto — igual a `name`.
+fn names_file(path: &str, name: &str) -> bool {
+    path.split('/').any(|piece| piece.split('.').next() == Some(name))
+}
+
+/// Os nomes de teste que `command` cita, na ordem em que aparecem e sem
+/// repetir. O comando é lido como o shell o separa em palavras, com as aspas
+/// tiradas. Tem jeito de nome de teste a palavra feita só de letras, dígitos
+/// e sublinhado, com pelo menos um sublinhado; num caminho como `a::b`, vale
+/// o último pedaço.
+///
+/// Não entram a opção (começa com `-`), a atribuição (tem `=`), o texto com
+/// `/`, `$`, `~` ou espaço, o nome do programa de cada comando da linha —
+/// o primeiro depois das atribuições, no começo e depois de `;`, `|`, `&` e
+/// parênteses — e o arquivo de um redirecionamento (`>` ou `<`).
+fn cited_test_names(command: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut program_next = true;
+    let mut redirect_target = false;
+    for token in shell_tokens(command) {
+        let word = match token {
+            ShellToken::Break => {
+                program_next = true;
+                redirect_target = false;
+                continue;
+            }
+            ShellToken::Redirect => {
+                redirect_target = true;
+                continue;
+            }
+            ShellToken::Word(word) => word,
+        };
+        if std::mem::take(&mut redirect_target) || word.contains('=') {
+            continue;
+        }
+        if std::mem::take(&mut program_next) {
+            continue;
+        }
+        if let Some(name) = test_name(&word)
+            && !names.contains(&name)
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// O nome de teste que `word` cita, pela regra de [`cited_test_names`].
+fn test_name(word: &str) -> Option<String> {
+    if word.starts_with('-') || word.contains(['=', '/', '$', '~']) || word.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let last = word.rsplit("::").next().unwrap_or(word);
+    let shaped = last.contains('_')
+        && last.chars().any(char::is_alphanumeric)
+        && last.chars().all(|c| c.is_alphanumeric() || c == '_');
+    shaped.then(|| last.to_string())
+}
+
+/// Um pedaço da linha de comando como o shell a separa.
+enum ShellToken {
+    /// Uma palavra, já sem as aspas.
+    Word(String),
+    /// O fim de um comando: `;`, `|`, `&`, parêntese ou quebra de linha.
+    Break,
+    /// Um redirecionamento: a palavra seguinte é um arquivo.
+    Redirect,
+}
+
+/// `command` separado como o shell o separa: espaço fora de aspas separa
+/// palavras, aspas simples e duplas juntam, a barra invertida protege o
+/// caractere seguinte.
+fn shell_tokens(command: &str) -> Vec<ShellToken> {
+    let mut tokens = Vec::new();
+    let mut word: Option<String> = None;
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (Some('"') | None, '\\') => {
+                if let Some(next) = chars.next() {
+                    word.get_or_insert_with(String::new).push(next);
+                }
+            }
+            (Some(_), c) => word.get_or_insert_with(String::new).push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                word.get_or_insert_with(String::new);
+            }
+            (None, c) if c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '<' | '>') => {
+                tokens.extend(word.take().map(ShellToken::Word));
+                if matches!(c, '<' | '>') {
+                    tokens.push(ShellToken::Redirect);
+                } else if !c.is_whitespace() || c == '\n' {
+                    tokens.push(ShellToken::Break);
+                }
+            }
+            (None, c) => word.get_or_insert_with(String::new).push(c),
+        }
+    }
+    tokens.extend(word.take().map(ShellToken::Word));
+    tokens
 }
 
 /// Extract the `## Acceptance Criteria` section body (heading line stripped),
@@ -235,5 +399,106 @@ mod tests {
         let out = run_proof("cargo test --lib -- nome_que_nao_existe_em_lugar_nenhum", root);
         assert_eq!(out.result, "fail", "verde sem rodar teste não é prova aprovada");
         assert_eq!(out.ran_no_test, Some(0), "a recusa carrega o número que a saída disse");
+    }
+
+    /// Um repositório em `root` com o arquivo `path` comitado, contendo
+    /// `body`.
+    fn repo_with(root: &Path, files: &[(&str, &str)]) {
+        for (path, body) in files {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, body).unwrap();
+        }
+        for args in [&["init", "-q"][..], &["add", "-A"][..], &["commit", "-q", "-m", "semente"][..]] {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+
+    /// Das palavras da prova, só as que têm jeito de nome de teste são
+    /// buscadas: letras, dígitos e sublinhado, com pelo menos um sublinhado,
+    /// e de um caminho `a::b` o último pedaço. A variável, o programa, as
+    /// opções e o pacote com hífen ficam de fora, e a prova que não cita
+    /// nome nenhum não tem o que buscar.
+    #[test]
+    fn a_proof_cites_only_the_words_shaped_like_a_test_name() {
+        let names = |command: &str| cited_test_names(command);
+        assert_eq!(
+            names(r#"PATH="$HOME/.cargo/bin:$PATH" cargo test --locked -p pacote-x -- nome_presente"#),
+            ["nome_presente"],
+        );
+        assert!(names("echo Tests: 3 total").is_empty());
+        assert_eq!(names("cargo test --lib -- tests::soma_de_dois --exact"), ["soma_de_dois"]);
+        assert!(names("cargo test --lib -- tests::soma --exact").is_empty(), "sem sublinhado não é nome");
+        assert_eq!(names("cargo test -- um_teste um_teste outro_teste"), ["um_teste", "outro_teste"]);
+        for left_out in [
+            "cargo test -- \"dois_nomes com_espaco\"",
+            "cargo test -- $NOME_VAR",
+            "cargo test -- ~/pasta_x",
+            "pytest tests/test_soma.py::test_um",
+            "dotnet test --filter Name=Soma_Dois",
+            "dotnet test --filter FullyQualifiedName~Soma_Dois",
+            "cargo test --no_run",
+            "run_all_tests && cd pasta-x",
+            "cargo test > saida_log",
+            "FOO_BAR=1 run_tests",
+        ] {
+            assert!(names(left_out).is_empty(), "{left_out}: {:?}", names(left_out));
+        }
+        assert_eq!(names("cd pasta-x && run_all -- um_teste | tail_it"), ["um_teste"], "cada comando tem seu programa");
+    }
+
+    /// A prova verde que cita um nome ausente de todo arquivo do projeto não
+    /// passa, e leva o nome que faltou; a que cita só nomes presentes passa.
+    /// Conta o arquivo que o git guarda, o novo que ele não ignora e o nome
+    /// de arquivo, como o de um alvo de teste inteiro. Não conta o que o git
+    /// ignora nem a pasta das specs, onde o próprio comando está gravado. O
+    /// comando do fluxo que não é prova não faz essa busca, e sem
+    /// repositório não há recusa.
+    #[test]
+    fn a_green_proof_citing_a_test_in_no_file_does_not_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        repo_with(
+            root,
+            &[
+                ("src/lib.rs", "#[test]\nfn nome_presente() {}\n"),
+                ("tests/alvo_inteiro.rs", "#[test]\nfn um() {}\n"),
+                (".gitignore", "target/\n"),
+            ],
+        );
+        std::fs::write(root.join("src/novo.rs"), "fn teste_novo() {}\n").unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/velho.d"), "teste_velho\n").unwrap();
+        std::fs::create_dir_all(root.join(".claude/spec/x")).unwrap();
+        std::fs::write(root.join(".claude/spec/x/spec.ndjson"), "echo nome_so_na_spec\n").unwrap();
+
+        let missing = run_proof("echo nome_presente nome_ausente_aqui", root);
+        assert_eq!(missing.result, "fail", "verde citando teste que não existe não passa");
+        assert_eq!(missing.missing_test.as_deref(), Some("nome_ausente_aqui"));
+        assert_eq!(missing.ran_no_test, None);
+        assert_eq!(missing.exit, 0, "a execução guarda o código com que o comando saiu");
+
+        for present in ["echo nome_presente", "echo alvo_inteiro", "echo teste_novo", "echo Tests: 3 total"] {
+            let out = run_proof(present, root);
+            assert_eq!((out.result, out.missing_test), ("pass", None), "{present}");
+        }
+        for absent in ["echo teste_velho", "echo nome_so_na_spec"] {
+            assert_eq!(run_proof(absent, root).result, "fail", "{absent}");
+        }
+        assert_eq!(
+            missing_test_name(r#"PATH="$HOME/.cargo/bin:$PATH" cargo test --locked -p pacote-x -- nome_presente"#, root),
+            None,
+            "só o nome é buscado, e ele existe",
+        );
+        assert_eq!(run_command("echo nome_ausente_aqui", root).result, "pass", "o comando do fluxo não busca nome");
+
+        let bare = tempfile::tempdir().unwrap();
+        assert_eq!(run_proof("echo nome_ausente_aqui", bare.path()).result, "pass", "sem repositório não há recusa");
     }
 }

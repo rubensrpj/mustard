@@ -247,6 +247,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The verification of criterion {code} came out green without running any test: `{command}` says \
              it ran {count} tests. Record the criterion's new version with the right verification and close again."
         }
+        ("close.criterion_missing_test", Locale::PtBr) => {
+            "A verificação do critério {code} cita o teste {name}, que não aparece em nenhum arquivo do \
+             projeto. Escreva esse teste ou grave a versão nova do critério com o nome certo, e feche de novo."
+        }
+        ("close.criterion_missing_test", Locale::EnUs) => {
+            "The verification of criterion {code} names the test {name}, which appears in no file of the \
+             project. Write that test or record the criterion's new version with the right name, and close again."
+        }
         ("close.lint_failed", Locale::PtBr) => {
             "O lint do projeto (`{command}`) não passou, e a spec não fechou: {output}"
         }
@@ -1370,8 +1378,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            170,
-            0xb016_5ada_2f0f_74e6,
+            171,
+            0xee63_411b_18bb_5404,
         );
     }
 
@@ -1489,6 +1497,7 @@ mod tests {
             ("close.backlog_not_empty", &["{tasks}"][..]),
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
+            ("close.criterion_missing_test", &["{code}", "{name}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.suite_failed", &["{command}", "{output}"][..]),
             ("close.server_command_not_declared", &["{key}"][..]),

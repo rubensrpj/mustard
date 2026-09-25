@@ -22,11 +22,10 @@ const SHIPPED_HOOKS_MANIFEST: &str = "../../plugin/hooks/hooks.json";
 /// from (`include_str!` of `$OUT_DIR/hooks.json`).
 ///
 /// Embedding it straight from `plugin/` made cargo record the file by its
-/// absolute path — the path of the copy of the project that compiled it. The
-/// build folder is shared between copies: the next copy saw another path, or a
-/// missing file once the old copy was gone, and recompiled the crate. A file
-/// under `OUT_DIR` is recorded relative to the build folder, and the watch
-/// printed here is relative to this crate, so both name the copy being built.
+/// absolute path, which ties the build to one place on disk. Each copy of the
+/// project compiles into its own build folder, inside it. A file under
+/// `OUT_DIR` is recorded relative to that folder, and the watch printed here
+/// is relative to this crate, so both always name the copy being built.
 ///
 /// Outside cargo — a test compiles and runs this script alone — there is no
 /// `OUT_DIR` to fill, and the step is skipped.

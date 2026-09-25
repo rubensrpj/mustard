@@ -24,8 +24,9 @@ use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
 use crate::shared::dag::{sets_cross, touches_whole_tree};
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
-/// é quanto a máquina aguenta compilando ao mesmo tempo agora que é o arquivo
-/// declarado, e não a vaga de compilação, quem trava o paralelo de verdade.
+/// é quanto a máquina aguenta compilando ao mesmo tempo. Cada onda compila
+/// dentro da própria vaga, e é o arquivo declarado que segura na fila a onda
+/// pronta que cruzaria com outra.
 const DEFAULT_PARALLEL: usize = 4;
 
 /// Quantas ondas o projeto deixa compilar ao mesmo tempo.
@@ -99,8 +100,9 @@ pub(super) fn next_waves(
     // A onda órfã segue com o pedido aberto, mas não está compilando nada: a
     // vaga que ela guardava sozinha volta a valer para uma onda pronta de
     // verdade. Quem trava de fato quantas cópias saem é [`open_copies`], pela
-    // pasta de compilação livre de verdade — este número é só o teto de
-    // quantas ondas prontas entram na disputa por elas.
+    // vaga livre de verdade: cada vaga é uma cópia fixa, com a compilação
+    // dentro dela, e a da órfã continua presa para o reenvio. Este número é
+    // só o teto de quantas ondas prontas entram na disputa pelas vagas.
     let orphans = orphaned_waves(log);
     let effective_running = running.keys().filter(|n| !orphans.contains_key(n)).count();
     let slots = limit.saturating_sub(effective_running);
