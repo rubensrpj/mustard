@@ -234,9 +234,9 @@ pub struct LanguageConfig {
     /// dialect (`pt-BR`, `en-US`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// The language of the names in the code: variables, functions, files and
-    /// commands. Always `en`: code is written in English, so the installer
-    /// never asks for it and never writes it.
+    /// The language of the names in the code: variables, functions, files,
+    /// commands and database tables. Spelled like `text` (`pt-BR`, `en-US`);
+    /// without it, names are written in English.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
 }
@@ -254,8 +254,9 @@ pub struct Language {
     /// The declared text language; `None` when absent, blank or not one of the
     /// locales Mustard ships messages for.
     pub text: Option<SupportedLocale>,
-    /// The declared code language, trimmed; `None` when absent or blank.
-    pub code: Option<String>,
+    /// The declared code language, in the same spelling as the text one;
+    /// `None` when absent, blank, in the short form or outside the list.
+    pub code: Option<SupportedLocale>,
 }
 
 impl Language {
@@ -269,6 +270,13 @@ impl Language {
     #[must_use]
     pub fn text_or_default(&self) -> SupportedLocale {
         self.text.unwrap_or_default()
+    }
+
+    /// The language the names in the code are written in: the declared code
+    /// language, or `en-US` when none was declared.
+    #[must_use]
+    pub fn code_or_default(&self) -> SupportedLocale {
+        self.code.unwrap_or(SupportedLocale::EnUs)
     }
 }
 
@@ -661,20 +669,17 @@ impl ProjectConfig {
     /// `language` block, and so the one place any part of Mustard learns a
     /// project's language.
     ///
-    /// Nothing is inferred: an absent, blank or unsupported `language.text`
-    /// is `None`, and the keys that came before it (`specLang`, `lang`) are not
-    /// consulted. Mustard's own messages fall back through
-    /// [`Language::text_or_default`]; a check that judges text reads
+    /// Nothing is inferred: an absent, blank or unsupported `language.text` or
+    /// `language.code` is `None`, and the keys that came before them
+    /// (`specLang`, `lang`) are not consulted. Mustard's own messages fall back
+    /// through [`Language::text_or_default`], and the names in the code through
+    /// [`Language::code_or_default`]; a check that judges text reads
     /// [`Language::text`] and has no verdict without it.
     #[must_use]
     pub fn language(&self) -> Language {
         Language {
-            text: self
-                .language
-                .text
-                .as_deref()
-                .and_then(|raw| raw.parse::<SupportedLocale>().ok()),
-            code: non_blank(self.language.code.as_deref()),
+            text: declared_locale(self.language.text.as_deref()),
+            code: declared_locale(self.language.code.as_deref()),
         }
     }
 
@@ -692,6 +697,12 @@ impl ProjectConfig {
         }
         out
     }
+}
+
+/// A declared language key read as one of the supported locales: `None` when
+/// absent, blank, in the short form (`en`, `pt`) or outside the list.
+fn declared_locale(raw: Option<&str>) -> Option<SupportedLocale> {
+    raw?.trim().parse::<SupportedLocale>().ok()
 }
 
 /// Trim a string-ish option, returning `None` when absent or blank.
@@ -782,7 +793,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cfg = ProjectConfig {
             build_command: Some("cargo build".into()),
-            language: LanguageConfig { text: Some("pt-BR".into()), code: Some("en".into()) },
+            language: LanguageConfig { text: Some("pt-BR".into()), code: Some("en-US".into()) },
             ..Default::default()
         };
         cfg.write(dir.path()).unwrap();
@@ -791,12 +802,12 @@ mod tests {
         assert!(raw.contains("\"buildCommand\""), "top-level key is camelCase");
         assert!(!raw.contains("build_command"), "no snake_case on write");
         let value: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(value["language"], serde_json::json!({"text": "pt-BR", "code": "en"}));
+        assert_eq!(value["language"], serde_json::json!({"text": "pt-BR", "code": "en-US"}));
 
         let back = ProjectConfig::load(dir.path());
         assert_eq!(back.build_command(), Some("cargo build".to_string()));
         assert_eq!(back.language().text, Some(SupportedLocale::PtBr));
-        assert_eq!(back.language().code.as_deref(), Some("en"));
+        assert_eq!(back.language().code, Some(SupportedLocale::EnUs));
     }
 
     /// Um projeto que não declarou idioma não ganha a chave: nada é gravado
@@ -896,33 +907,46 @@ mod tests {
     }
 
     /// O idioma vem só do bloco `language`: o texto e o código, cada um na
-    /// sua chave. Sem declaração não há idioma, e as mensagens do Mustard
-    /// caem no pt-BR.
+    /// sua chave e na mesma grafia. Sem declaração não há idioma: as mensagens
+    /// do Mustard caem no pt-BR, e os nomes no código, no inglês.
     #[test]
     fn language_reads_the_text_and_code_keys() {
         let cfg = ProjectConfig::default();
         assert_eq!(cfg.language(), Language::default());
         assert_eq!(cfg.language().text_or_default(), SupportedLocale::PtBr);
+        assert_eq!(cfg.language().code_or_default(), SupportedLocale::EnUs, "no code language: English");
 
         let dir = tempdir().unwrap();
         std::fs::write(
             dir.path().join("mustard.json"),
-            r#"{"language":{"text":"en-US","code":" en "}}"#,
+            r#"{"language":{"text":"en-US","code":" en-US "}}"#,
         )
         .unwrap();
         let language = ProjectConfig::load(dir.path()).language();
         assert_eq!(language.text, Some(SupportedLocale::EnUs));
         assert_eq!(language.text_or_default(), SupportedLocale::EnUs);
-        assert_eq!(language.code.as_deref(), Some("en"), "the code language is trimmed");
+        assert_eq!(language.code, Some(SupportedLocale::EnUs), "the code language is trimmed");
 
-        // A short form or an unknown locale is not a declared text language.
-        for text in ["pt", "fr-FR", "  "] {
-            std::fs::write(
-                dir.path().join("mustard.json"),
-                format!(r#"{{"language":{{"text":"{text}"}}}}"#),
-            )
-            .unwrap();
-            assert_eq!(ProjectConfig::load(dir.path()).language().text, None, "{text:?}");
+        // A project that names its code in Portuguese is read as such.
+        std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
+        let language = ProjectConfig::load(dir.path()).language();
+        assert_eq!(language.code, Some(SupportedLocale::PtBr));
+        assert_eq!(language.code_or_default(), SupportedLocale::PtBr);
+        assert_eq!(language.text, None, "the code language says nothing about the text");
+
+        // A short form, an unknown locale or a blank is not a declared
+        // language, on either key; the names then fall back to English.
+        for value in ["en", "pt", "fr-FR", "  "] {
+            for key in ["text", "code"] {
+                std::fs::write(
+                    dir.path().join("mustard.json"),
+                    format!(r#"{{"language":{{"{key}":"{value}"}}}}"#),
+                )
+                .unwrap();
+                let language = ProjectConfig::load(dir.path()).language();
+                assert_eq!(language, Language::default(), "{key}: {value:?}");
+                assert_eq!(language.code_or_default(), SupportedLocale::EnUs, "{key}: {value:?}");
+            }
         }
     }
 

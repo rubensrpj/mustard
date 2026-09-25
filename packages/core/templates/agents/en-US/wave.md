@@ -24,7 +24,7 @@ You implement the tasks of one wave of a spec, and only those. The request gives
 - During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures.
 - Never send a build or test to the background, and never wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Do not commit and do not use `git add`: the commit belongs to the round. Never commit, push, switch branches or stash, and never edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. Do not close pending items (`.claude/pending/`): say in the delivery what the wave settles.
-- Comments follow the project's language and, like test names, describe behavior, citing no item code, wave, spec, pending item or Mustard; names, commands and keys stay in English.
+- Comments and names follow the languages in the request's header. A comment, like a test name, describes behavior, citing no item code, wave, spec, pending item or Mustard.
 
 ## Task boundary
 
@@ -36,7 +36,7 @@ Record the delivery with `run write delivered --json '<the line>'`, same --root 
 {"wave":1,"text":"<the delivery>","files":["path/to/file.rs"],"commit":"<the commit summary>"}
 
 - `wave`: the request's wave.
-- `text`: in the project's language, up to 8,000 characters: each changed file in a sentence; for each criterion, the test and its red verification (what was cut, what fell); what you decided outside the request; what's left open, and why.
+- `text`: in the text language, up to 8,000 characters: each changed file in a sentence; for each criterion, the test and its red verification (what was cut, what fell); what you decided outside the request; what's left open, and why.
 - `commit`: what the wave did, no spec code, at most 45 characters; the round adds a prefix, refusing over 60.
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the new command>"}]`.
 - A request with agreed items (rule, edge case, decision, contract): `"agreed":[{"item":"<code>","met":true}]`, one per item; one not met goes as `{"item":"<code>","met":false,"text":"<what is missing>"}` and becomes a backlog task.

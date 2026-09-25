@@ -1,9 +1,9 @@
 //! Git-flow + language configuration for the project-root `mustard.json`.
 //!
 //! Probes the repository (default branch, current branch, submodules),
-//! collects the two bases and the user's choice of **text language** (names in the code are
-//! always English, so there is no code language to ask for), detects the
-//! build/test/lint/type-check command set
+//! collects the two bases and the user's two languages (the **text language**
+//! people read and the **code language** the names are written in), detects
+//! the build/test/lint/type-check command set
 //! agnostically (no hardcoded `npm`), and folds all of it into the single
 //! [`ProjectConfig`] written at the project root. There is no private config
 //! struct here any more — the one schema lives in `mustard_core`.
@@ -24,7 +24,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Input, Select};
-use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale};
+use mustard_core::{detect_commands, GitConfig, Language, ProjectConfig, SupportedLocale};
 
 /// Facts probed from the repository, all fail-open.
 ///
@@ -46,6 +46,31 @@ pub struct Choices {
     provider: String,
     /// The text language the operator picked; `None` when nothing was asked.
     text_language: Option<String>,
+    /// The code language the operator picked; `None` when nothing was asked.
+    code_language: Option<String>,
+}
+
+/// The rows of both language questions, in the catalogue spelling.
+const LANGUAGES: [&str; 2] = ["pt-BR", "en-US"];
+
+/// The row a language question pre-selects: the `declared` language when it is
+/// one of `rows`, otherwise the `fallback` one, otherwise the first row.
+fn preselected_row(rows: &[&str], declared: Option<SupportedLocale>, fallback: SupportedLocale) -> usize {
+    declared
+        .and_then(|locale| rows.iter().position(|row| *row == locale.as_str()))
+        .or_else(|| rows.iter().position(|row| *row == fallback.as_str()))
+        .unwrap_or(0)
+}
+
+/// The rows the two language questions pre-select, text first: what the
+/// project declared or, without a declaration, the language the reader falls
+/// back to — Portuguese for the text, English for the names in the code.
+fn language_rows(declared: &Language) -> (usize, usize) {
+    let undeclared = Language::default();
+    (
+        preselected_row(&LANGUAGES, declared.text, undeclared.text_or_default()),
+        preselected_row(&LANGUAGES, declared.code, undeclared.code_or_default()),
+    )
 }
 
 /// Probe the repository at `project_path`.
@@ -107,14 +132,15 @@ pub fn collect_choices(
         // Preserve what the project already declared; invent nothing. The old
         // code fell back to the probed default branch and to a `dev`/`develop`
         // guess, which is how a fresh install acquired a flow nobody asked for.
-        // The language went the same way — `pt-BR` written for every project
-        // that never answered — and goes the same way now: nothing is asked,
-        // so no language is chosen, and the project keeps the one it declared.
+        // The languages went the same way — `pt-BR` written for every project
+        // that never answered — and go the same way now: nothing is asked, so
+        // no language is chosen, and the project keeps the ones it declared.
         return Ok(Choices {
             production: existing_prod.unwrap_or_default(),
             dev_branch: existing_dev.unwrap_or_default(),
             provider: existing_provider,
             text_language: None,
+            code_language: None,
         });
     }
 
@@ -148,24 +174,30 @@ pub fn collect_choices(
     // EXISTING declaration is carried forward untouched here.
     let provider = existing_provider;
 
-    // Only the language people read is asked. Names in the code are always
-    // English, so a question about them would have one right answer and could
-    // only record a wrong one. A language the project already declared
-    // pre-selects its row.
-    let declared = existing.language();
-    let texts = ["pt-BR", "en-US"];
+    // The two languages, each on its own key: the one people read and the one
+    // the names in the code are written in. A language the project already
+    // declared pre-selects its row; without one, the row is the language the
+    // reader would fall back to.
+    let (text_row, code_row) = language_rows(&existing.language());
     let text_idx = Select::with_theme(&theme)
         .with_prompt("Text language (conversation, specs, pages, code comments, commit messages)")
-        .items(texts)
-        .default(declared.text.and_then(|l| texts.iter().position(|t| *t == l.as_str())).unwrap_or(0))
+        .items(LANGUAGES)
+        .default(text_row)
         .interact()
         .context("reading the text language")?;
+    let code_idx = Select::with_theme(&theme)
+        .with_prompt("Code language (names of variables, functions, files, commands and database tables)")
+        .items(LANGUAGES)
+        .default(code_row)
+        .interact()
+        .context("reading the code language")?;
 
     Ok(Choices {
         production,
         dev_branch,
         provider,
-        text_language: Some(texts[text_idx].to_string()),
+        text_language: Some(LANGUAGES[text_idx].to_string()),
+        code_language: Some(LANGUAGES[code_idx].to_string()),
     })
 }
 
@@ -261,10 +293,13 @@ pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path)
     // Only a language the operator chose is written, in the catalogue
     // spelling. Nothing is asked outside the interactive mode, and then the
     // project keeps what it declared — or stays without a language, which is
-    // never supposed for it. The code language is never written: it is not
-    // asked, because names in the code are always English.
+    // never supposed for it: the reader then falls back to English for the
+    // names in the code.
     if let Some(text) = choices.text_language.as_deref().and_then(|t| t.parse::<SupportedLocale>().ok()) {
         config.language.text = Some(text.as_str().to_string());
+    }
+    if let Some(code) = choices.code_language.as_deref().and_then(|c| c.parse::<SupportedLocale>().ok()) {
+        config.language.code = Some(code.as_str().to_string());
     }
 }
 
@@ -381,7 +416,7 @@ mod tests {
         let ((dev_branch, production), asked) = ask(None, None, &["develop", "master"]);
         assert_eq!(asked, ["trunk", "trunk"], "as duas bases são perguntadas");
         let answered =
-            Choices { production, dev_branch, provider: String::new(), text_language: None };
+            Choices { production, dev_branch, provider: String::new(), text_language: None, code_language: None };
         let mut config = ProjectConfig::default();
         apply_choices(&mut config, &answered, root);
         assert_eq!(
@@ -411,6 +446,7 @@ mod tests {
             dev_branch: "develop".to_string(),
             provider: String::new(),
             text_language: None,
+            code_language: None,
         };
         let mut config = ProjectConfig::default();
         apply_choices(&mut config, &answered, root);
@@ -429,6 +465,7 @@ mod tests {
             dev_branch: String::new(),
             provider: String::new(),
             text_language: None,
+            code_language: None,
         };
         let mut none = ProjectConfig::default();
         apply_choices(&mut none, &empty, root);
@@ -494,6 +531,7 @@ mod tests {
             dev_branch: "dev".into(),
             provider: "gitlab".into(),
             text_language: Some("en-US".into()),
+            code_language: Some("pt-BR".into()),
         };
         apply_choices(&mut config, &choices, dir.path());
 
@@ -502,11 +540,11 @@ mod tests {
         // Cargo project → cargo build, never npm.
         assert_eq!(config.build_command.as_deref(), Some("cargo build"));
         assert_eq!(config.language().text, Some(SupportedLocale::EnUs));
-        // Names in the code are always English: the install never asks for a
-        // code language, so it never writes one.
-        assert_eq!(config.language().code, None);
+        // The code language the operator chose is written too, in the same
+        // spelling as the text one.
+        assert_eq!(config.language().code, Some(SupportedLocale::PtBr));
         let written = serde_json::to_string(&config).expect("serialises");
-        assert!(written.contains(r#""language":{"text":"en-US"}"#), "{written}");
+        assert!(written.contains(r#""language":{"text":"en-US","code":"pt-BR"}"#), "{written}");
         assert!(!written.contains("specLang") && !written.contains("tone"), "{written}");
     }
 
@@ -523,7 +561,7 @@ mod tests {
         std::fs::write(old.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#).unwrap();
         let mut config = ProjectConfig::load(old.path());
         let choices = collect_choices(&probed, &config, false).expect("nothing is asked");
-        assert!(choices.text_language.is_none());
+        assert!(choices.text_language.is_none() && choices.code_language.is_none());
         apply_choices(&mut config, &choices, old.path());
         config.write(old.path()).unwrap();
         let raw = std::fs::read_to_string(old.path().join("mustard.json")).unwrap();
@@ -546,14 +584,36 @@ mod tests {
         let declared = tempdir().unwrap();
         std::fs::write(
             declared.path().join("mustard.json"),
-            r#"{"language":{"text":"en-US","code":"en"}}"#,
+            r#"{"language":{"text":"en-US","code":"en-US"}}"#,
         )
         .unwrap();
         let mut config = ProjectConfig::load(declared.path());
         let choices = collect_choices(&probed, &config, false).expect("nothing is asked");
         apply_choices(&mut config, &choices, declared.path());
         assert_eq!(config.language().text, Some(SupportedLocale::EnUs));
-        assert_eq!(config.language().code.as_deref(), Some("en"));
+        assert_eq!(config.language().code, Some(SupportedLocale::EnUs));
+    }
+
+    /// As duas perguntas de idioma marcam o que o projeto já declarou; sem
+    /// declaração, o texto marca o português e o código marca o inglês, o
+    /// mesmo idioma que a leitura assume quando nada foi escolhido.
+    #[test]
+    fn the_language_questions_preselect_the_declared_row_or_the_reader_default() {
+        let row = |declared: &str| {
+            let dir = tempdir().unwrap();
+            std::fs::write(dir.path().join("mustard.json"), declared).unwrap();
+            let (text, code) = language_rows(&ProjectConfig::load(dir.path()).language());
+            (LANGUAGES[text], LANGUAGES[code])
+        };
+        assert_eq!(row("{}"), ("pt-BR", "en-US"), "nothing declared");
+        assert_eq!(row(r#"{"language":{"code":"pt-BR"}}"#), ("pt-BR", "pt-BR"), "code declared");
+        assert_eq!(row(r#"{"language":{"text":"en-US"}}"#), ("en-US", "en-US"), "text declared");
+        assert_eq!(
+            row(r#"{"language":{"text":"en-US","code":"pt-BR"}}"#),
+            ("en-US", "pt-BR"),
+            "each question marks its own key",
+        );
+        assert_eq!(row(r#"{"language":{"code":"pt"}}"#), ("pt-BR", "en-US"), "a short form declares nothing");
     }
 
     #[test]
@@ -569,6 +629,7 @@ mod tests {
             dev_branch: String::new(),
             provider: "github".into(),
             text_language: None,
+            code_language: None,
         };
         apply_choices(&mut config, &choices, dir.path());
         // User's command survives; detection does not clobber it.
@@ -586,6 +647,7 @@ mod tests {
             dev_branch: String::new(),
             provider: "github".into(),
             text_language: None,
+            code_language: None,
         };
         let rust = tempdir().unwrap();
         std::fs::write(rust.path().join("Cargo.toml"), "[package]").unwrap();

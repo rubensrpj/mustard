@@ -24,7 +24,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido traz o
 - Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
 - Não comite e não use `git add`: o commit é da rodada. Nunca comite, envie ao servidor, troque de branch ou use o stash, e nunca edite os `spec.*`, o `mustard.json` nem o `.claude/` dele. Antes de apagar ou mover algo no git, prove que nada se perde; sem prova, pare e diga o motivo. Não feche pendência (`.claude/pending/`): diga na entrega o que a onda resolve.
-- Comentários seguem o idioma do projeto e, como o nome de teste, descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard; nomes, comandos e chaves ficam em inglês.
+- Comentários e nomes seguem os idiomas do cabeçalho do pedido. O comentário, como o nome de teste, descreve o comportamento sem citar código de item, onda, spec, pendência ou Mustard.
 
 ## Fronteira da tarefa
 
@@ -36,7 +36,7 @@ Grave a entrega com `run write delivered --json '<a linha>'`, mesmo --root e --s
 {"wave":1,"text":"<a entrega>","files":["caminho/do/arquivo.rs"],"commit":"<o resumo do commit>"}
 
 - `wave`: a onda do pedido.
-- `text`: no idioma do projeto, até 8.000 caracteres: cada arquivo mudado numa frase; de cada critério, o teste e a verificação do vermelho (o que foi cortado e o que caiu); o que decidiu fora do pedido; o que ficou aberto, e por quê.
+- `text`: no idioma do texto, até 8.000 caracteres: cada arquivo mudado numa frase; de cada critério, o teste e a verificação do vermelho (o que foi cortado e o que caiu); o que decidiu fora do pedido; o que ficou aberto, e por quê.
 - `commit`: o que a onda fez, sem código, até 45 caracteres; a rodada soma o começo e recusa acima de 60.
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando novo>"}]`.
 - Pedido com item combinado (regra, caso de borda, decisão, contrato): `"agreed":[{"item":"<código>","met":true}]`, um por item; o não cumprido vai como `{"item":"<código>","met":false,"text":"<o que falta>"}` e vira tarefa no backlog.

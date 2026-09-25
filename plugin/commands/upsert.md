@@ -11,7 +11,7 @@ argument-hint: [--doctor]
 3. `pluginRefresh`: `refreshed` names the new version, which only a Claude Code restart loads; relay `skipped` with its reason.
 4. `cleanup` and `cleaned`: what an older Mustard left in the `CLAUDE.md` files and the team's `.claude/settings.json` already left. Relay it file by file, and the Guards rules, now in the pending item `cleaned.pending`, each to become a test or be dropped; a file under `unmarked` was not touched: the person decides.
 5. `localFilesFound`, while `mustard.json` lacks `localFiles`: ignored files outside ignored folders, like `.env`, that a wave copy lacks. Show it once, with the prepare command its lockfile or manifest suggests (`npm ci`, `dotnet restore`; none if nothing installs), and record what the person confirms: `mustard-rt run upsert --local-files <a,b> --prepare "<command>"`; an empty value records none.
-6. After a first install, say that `mustard.json` takes `git.flow`, `git.protected`, `language.text`, `enabled` (off turns Mustard's hooks off here) and `rtk` (off drops rtk's hook from the local settings on the next upsert).
+6. After a first install, say that `mustard.json` takes `git.flow`, `git.protected`, `language.text`, `language.code` (the names in the code; English without it), `enabled` (off turns Mustard's hooks off here) and `rtk` (off drops rtk's hook from the local settings on the next upsert).
 
 ## Doctor
 

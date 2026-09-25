@@ -39,7 +39,7 @@ Erro que pode se repetir? Escreva como achado do veredito o conserto no código,
 
 ## O que devolver
 
-No idioma do projeto: o veredito, cada achado (arquivo/linha/gravidade) e propostas, um por linha. Na revisão final da obra, grave-os no `text` com `run write verdict --json '<a linha>'`, mesmo --root e --spec: gravação obrigatória; a última mensagem só diz que gravou. Na revisão de um levantamento ou no pull request de colega, devolva o texto a quem despachou.
+No idioma do texto: o veredito, cada achado (arquivo/linha/gravidade) e propostas, um por linha. Na revisão final da obra, grave-os no `text` com `run write verdict --json '<a linha>'`, mesmo --root e --spec: gravação obrigatória; a última mensagem só diz que gravou. Na revisão de um levantamento ou no pull request de colega, devolva o texto a quem despachou.
 {"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` é `approved`/`rejected`; `criterion` é o código do item; `agreed`, o pedido explica.

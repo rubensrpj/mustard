@@ -1,6 +1,7 @@
 //! O que o Mustard deixa no projeto: o mapa do scan, que só pode ficar fora
-//! do git; as escolhas do `mustard.json` contra as configurações locais; e as
-//! sobras de um Mustard antigo em arquivos que não são dele.
+//! do git; as escolhas do `mustard.json`, entre elas os dois idiomas, contra
+//! as configurações locais; e as sobras de um Mustard antigo em arquivos que
+//! não são dele.
 
 use std::path::Path;
 
@@ -47,12 +48,13 @@ fn visible_to_git(root: &Path, paths: &[String]) -> Option<Vec<String>> {
 
 /// The choices `mustard.json` holds for the project against what the local
 /// settings carry. Only reads. A WARN when Mustard is off here, when the `rtk`
-/// option and rtk's hook disagree, and when Claude Code's signature is on — each
-/// in the language `lang`, naming what to run.
+/// option and rtk's hook disagree, when Claude Code's signature is on, and when
+/// a language key holds a value the reader drops — each in the language
+/// `lang`, naming what to run or what to write.
 pub(super) fn check_switches(root: &Path, lang: Locale) -> CheckResult {
     const NAME: &str = "switches";
     let switches = mustard_core::Switches::read(root);
-    let mut details = Vec::new();
+    let mut details = unread_languages(root, lang);
     if !switches.enabled {
         details.push(translate("doctor.switches.off", lang).to_string());
     }
@@ -68,6 +70,28 @@ pub(super) fn check_switches(root: &Path, lang: Locale) -> CheckResult {
     } else {
         CheckResult::warn(NAME, details)
     }
+}
+
+/// Each language key `mustard.json` writes and the reader does not take — the
+/// short form (`pt`, `en`), another locale, a blank — as a sentence naming the
+/// field, its value and the two accepted ones. The verdict is the one reader's
+/// own, so the doctor never flags a value the configuration reads, nor passes
+/// one it drops.
+fn unread_languages(root: &Path, lang: Locale) -> Vec<String> {
+    let config = mustard_core::ProjectConfig::load(root);
+    let read = config.language();
+    [
+        ("language.text", config.language.text.as_deref(), read.text.is_some()),
+        ("language.code", config.language.code.as_deref(), read.code.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(field, written, understood)| match written {
+        Some(value) if !understood => Some(
+            translate("doctor.switches.language_unknown", lang).replace("{field}", field).replace("{value}", value),
+        ),
+        _ => None,
+    })
+    .collect()
 }
 
 /// What an older Mustard left in files that are not its own — the marks in
@@ -144,6 +168,41 @@ mod tests {
         assert!(said.contains("is not in"), "the missing hook is named: {said}");
         assert!(said.contains("signature"), "{said}");
         assert!(!said.contains("turned off in this project"), "{said}");
+    }
+
+    /// Um idioma do `mustard.json` fora de `pt-BR` e `en-US` vira aviso que
+    /// nomeia o campo, o valor e as duas opções; a forma curta não é aceita. O
+    /// idioma da lista e a chave ausente passam.
+    #[test]
+    fn the_doctor_flags_a_language_outside_the_list() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write_file(
+            &root.join(".claude").join("settings.local.json"),
+            r#"{"attribution":{"commit":"","pr":""},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#,
+        );
+
+        write_file(&root.join("mustard.json"), r#"{"language":{"code":"pt"}}"#);
+        let short = check_switches(root, Locale::PtBr);
+        assert_eq!(short.status, Status::Warn, "{:?}", short.details);
+        let said = short.details.join(" ");
+        for named in ["`language.code`", "`pt`", "`pt-BR`", "`en-US`"] {
+            assert!(said.contains(named), "{named} is named: {said}");
+        }
+        assert!(!said.contains("language.text"), "{said}");
+
+        write_file(&root.join("mustard.json"), r#"{"language":{"text":"fr-FR","code":"en-US"}}"#);
+        let other = check_switches(root, Locale::EnUs);
+        assert_eq!(other.status, Status::Warn, "{:?}", other.details);
+        let said = other.details.join(" ");
+        assert!(said.contains("`language.text`") && said.contains("`fr-FR`"), "{said}");
+        assert!(said.contains("not an accepted language") && !said.contains("language.code"), "{said}");
+
+        for calm in [r#"{"language":{"text":"en-US","code":"pt-BR"}}"#, "{}"] {
+            write_file(&root.join("mustard.json"), calm);
+            let passed = check_switches(root, Locale::PtBr);
+            assert_eq!(passed.status, Status::Ok, "{calm}: {:?}", passed.details);
+        }
     }
 
     /// As sobras do Mustard nos `CLAUDE.md` viram aviso com os arquivos; sem

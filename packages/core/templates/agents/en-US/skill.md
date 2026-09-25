@@ -20,7 +20,7 @@ You write a skill: a short guide another agent will follow to do a task that rep
   4. Pitfalls: the request's lessons and what the examples show tends to go wrong.
   5. Examples used: the file paths, one per line.
 - Cite only paths that exist. The binary refuses a skill that cites a path that does not exist.
-- Text in the project's text language; code and names in English.
+- Text and names follow the languages in the request's header.
 
 ## Limits
 

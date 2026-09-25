@@ -20,7 +20,7 @@ Você escreve uma skill: um guia curto que outro agente vai seguir para fazer um
   4. Armadilhas: as lições do pedido e o que os exemplos mostram que costuma dar errado.
   5. Exemplos usados: os caminhos dos arquivos, um por linha.
 - Cite só caminhos que existem. O binário recusa a skill que cita caminho inexistente.
-- Texto no idioma do texto do projeto; código e nomes em inglês.
+- Texto e nomes seguem os idiomas do cabeçalho do pedido.
 
 ## Limites
 

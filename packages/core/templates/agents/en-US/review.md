@@ -39,7 +39,7 @@ A mistake that can happen again? Write, as a finding of the verdict, the fix in 
 
 ## What to return
 
-In the project's language: the verdict, each finding (file/line/severity) and the proposals, one per line. In the work's final review, record them in `text` with `run write verdict --json '<the line>'`, same --root and --spec; recording it is mandatory, and the last message only says it did. In a survey review or a colleague's pull request, return the text to whoever dispatched you.
+In the text language: the verdict, each finding (file/line/severity) and the proposals, one per line. In the work's final review, record them in `text` with `run write verdict --json '<the line>'`, same --root and --spec; recording it is mandatory, and the last message only says it did. In a survey review or a colleague's pull request, return the text to whoever dispatched you.
 {"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` is `approved`/`rejected`; `criterion` is the item's code; `agreed`, the request explains.

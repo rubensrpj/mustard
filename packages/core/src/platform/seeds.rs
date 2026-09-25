@@ -107,6 +107,75 @@ mod tests {
         assert!(CLAUDE_GITIGNORE.contains(".events/"), "gitignore covers the event logs");
     }
 
+    /// As palavras que, num molde, só aparecem quando ele fixa o idioma de
+    /// alguma coisa: o idioma dos nomes e do texto vem do cabeçalho de cada
+    /// pedido, lido da configuração do projeto, nunca do molde.
+    const LANGUAGE_WORDS: [&str; 6] = ["inglês", "ingles", "english", "português", "portugues", "portuguese"];
+
+    /// Cada linha de `body` que cita um idioma pelo nome, como
+    /// `caminho:linha: texto`, com a linha contada a partir de 1.
+    fn lines_fixing_a_language(path: &str, body: &str) -> Vec<String> {
+        body.lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let lower = line.to_lowercase();
+                LANGUAGE_WORDS.iter().any(|word| lower.contains(word))
+            })
+            .map(|(index, line)| format!("{path}:{}: {}", index + 1, line.trim()))
+            .collect()
+    }
+
+    /// Todo arquivo sob `dir`, recursivo, com o caminho relativo a `root`
+    /// escrito com `/`.
+    fn files_under(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap_or_else(|err| panic!("reading {}: {err}", dir.display()))
+            .map(|entry| entry.expect("a readable folder entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                files_under(root, &path, out);
+                continue;
+            }
+            let relative = path.strip_prefix(root).expect("the file lives under the templates folder");
+            let label = relative.components().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+            let bytes = std::fs::read(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+            out.push((label, String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+
+    /// Nenhum molde que o produto grava no projeto fixa o idioma dos nomes
+    /// ou do texto: quem diz os dois idiomas é o cabeçalho do pedido, lido
+    /// da configuração. O teste percorre todos os moldes, sem exceção, e
+    /// aponta cada linha que cita um idioma pelo nome, com arquivo e linha.
+    #[test]
+    fn no_template_fixes_the_language_of_names() {
+        let old = "- Comentários seguem o idioma do projeto e, como o nome de teste, descrevem o comportamento sem citar \
+                   código de item, onda, spec, pendência ou Mustard; nomes, comandos e chaves ficam em inglês.";
+        assert_eq!(
+            lines_fixing_a_language("agents/pt-BR/wave.md", &format!("---\n{old}\n")),
+            vec![format!("agents/pt-BR/wave.md:2: {old}")],
+            "the sentence that keeps names in English is not pointed out",
+        );
+        assert_eq!(
+            lines_fixing_a_language("agents/en-US/skill.md", "Text in the project's text language; code and names in English."),
+            vec!["agents/en-US/skill.md:1: Text in the project's text language; code and names in English.".to_string()],
+            "the English sentence that fixes the names is not pointed out",
+        );
+
+        let templates = crate::manifest_dir::manifest_dir().join("templates");
+        let mut files = Vec::new();
+        files_under(&templates, &templates, &mut files);
+        assert!(
+            files.iter().any(|(label, _)| label == "agents/pt-BR/wave.md"),
+            "the walk did not reach the agent templates: {:?}",
+            files.iter().map(|(label, _)| label).collect::<Vec<_>>(),
+        );
+        let fixed: Vec<String> = files.iter().flat_map(|(label, body)| lines_fixing_a_language(label, body)).collect();
+        assert!(fixed.is_empty(), "templates that fix a language instead of following the request's header:\n{}", fixed.join("\n"));
+    }
+
     /// O mapa não manda mais passar toda execução de código a um agente: quem
     /// diz quem executa é a resposta do plano, pela soma das notas. A
     /// delegação da investigação que abre muitos arquivos continua.
