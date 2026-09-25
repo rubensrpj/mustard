@@ -443,6 +443,37 @@ pub fn line_has_file_marker(line: &str, marker: FileMarker) -> bool {
     file_marker_synonyms(marker).iter().any(|syn| lower.contains(syn))
 }
 
+// ---------------------------------------------------------------------------
+// Palavras em maiúsculas nas frases do programa
+// ---------------------------------------------------------------------------
+
+/// As palavras em maiúsculas que podem ficar fora de crase numa frase do
+/// programa: siglas e unidades de uso comum. Uma sigla nova só passa se
+/// alguém a puser aqui de propósito.
+pub const CAPS_ALLOWED: [&str; 4] = ["JSON", "UTF", "MB", "GB"];
+
+/// Cada palavra de duas letras ou mais, toda em maiúsculas e fora de crase,
+/// uma vez só, na ordem em que aparece, salvo as de [`CAPS_ALLOWED`].
+///
+/// É a regra única das frases fixas do programa, as do catálogo e as da
+/// ajuda dos comandos: elas são escritas por nós, então a conferência não
+/// adivinha se a palavra é grito ou sigla, e o nome de código vai entre
+/// crases. Lista vazia quer dizer que o texto segue a regra.
+#[must_use]
+pub fn uppercase_words(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    for outside in text.split('`').step_by(2) {
+        for word in outside.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            let letters = word.chars().filter(|c| c.is_alphabetic()).count();
+            let upper = letters >= 2 && !word.chars().any(char::is_lowercase);
+            if upper && !CAPS_ALLOWED.contains(&word) && !found.contains(&word) {
+                found.push(word);
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,29 +573,6 @@ mod tests {
         out
     }
 
-    /// As palavras em maiúsculas que podem ficar fora de crase no catálogo.
-    /// Uma sigla nova só passa se alguém a puser aqui de propósito.
-    const CAPS_ALLOWED: [&str; 3] = ["JSON", "UTF", "MB"];
-
-    /// Cada palavra de duas letras ou mais, toda em maiúsculas e fora de
-    /// crase, uma vez só, na ordem em que aparece, salvo as de
-    /// [`CAPS_ALLOWED`]. As frases do catálogo são fixas e escritas por nós:
-    /// o teste não adivinha se a palavra é grito ou sigla, e o nome de código
-    /// vai entre crases.
-    fn uppercase_words(text: &str) -> Vec<&str> {
-        let mut found = Vec::new();
-        for outside in text.split('`').step_by(2) {
-            for word in outside.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-                let letters = word.chars().filter(|c| c.is_alphabetic()).count();
-                let upper = letters >= 2 && !word.chars().any(char::is_lowercase);
-                if upper && !CAPS_ALLOWED.contains(&word) && !found.contains(&word) {
-                    found.push(word);
-                }
-            }
-        }
-        found
-    }
-
     /// Os defeitos de escrita de um texto do catálogo, cada um com a chave e o
     /// idioma: os da conferência das respostas e, além deles, cada palavra
     /// toda em maiúsculas fora de crase. O texto é medido com as lacunas já
@@ -641,7 +649,7 @@ mod tests {
             "Isso `NÃO` apaga nada.",
             "O relatório leva as linhas `USAGE` e `PAUSED`.",
             "Busque pelo código, como `DEC-0142`.",
-            "O JSON em UTF-8 passa de 2 MB.",
+            "O JSON em UTF-8 passa de 2 MB, longe de 1 GB.",
             "O item A de {spec} saiu.",
         ] {
             assert_eq!(catalog_text_defects(key, Locale::PtBr, calm), Vec::<String>::new(), "{calm}");

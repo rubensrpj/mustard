@@ -51,35 +51,38 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Emit a small, AI-sized capability DIGEST of the model (contracts, hubs,
-    /// projects + a domain-term index) — the searchable surface a
-    /// decomposition/feature step queries instead of reading source.
+    /// Emit a small capability digest of the model, sized for a language model
+    /// to read: contracts, hubs, projects and a domain-term index. It is the
+    /// searchable surface a decomposition or feature step queries instead of
+    /// reading source.
     ///
-    /// With `--query`, returns only the slice of the digest matching the terms
-    /// (a few KB instead of the whole catalog) — the cheap per-interaction lookup
-    /// a `feature` does to research the repo without reading source files.
+    /// With `--query`, returns only the slice of the digest matching the terms,
+    /// a few kB instead of the whole catalog. It is the cheap lookup a
+    /// `feature` does per interaction to research the repo without reading
+    /// source files.
     Digest {
         path: PathBuf,
-        /// Comma/space-separated domain terms to look up (OR across terms; terms
-        /// <3 chars ignored), e.g. "tenant,receivable". Empty = full digest.
+        /// Comma/space-separated domain terms to look up (any term matches;
+        /// terms under 3 characters are ignored), e.g. "tenant,receivable".
+        /// Empty = full digest.
         #[arg(long, default_value = "")]
         query: String,
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Emit the small, stable FACTS the orchestrator consumes — the subproject
-    /// list and the known declaration names — as JSON, so a consumer never has
-    /// to parse the (large) model itself. `path` is a project dir to scan, or a
+    /// Emit the small, stable facts the orchestrator consumes, as JSON: the
+    /// subproject list and the known declaration names. So a consumer never
+    /// has to parse the (large) model itself. `path` is a project dir to scan, or a
     /// model.json.
     Facts {
         path: PathBuf,
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// One-shot research bundle for the `feature` flow: parse the model ONCE and
+    /// One-shot research bundle for the `feature` flow: parse the model once and
     /// return the per-query digest and the full domain-term index (the
-    /// non-strong vocabulary menu) — the two projections `feature` used to fetch
-    /// with separate spawns, each re-parsing the model. `--query` carries the
+    /// non-strong vocabulary menu). These are the two projections `feature`
+    /// used to fetch with separate spawns, each re-parsing the model. `--query` carries the
     /// digest terms. Byte-stable JSON `{digest, terms}`.
     FeatureBundle {
         path: PathBuf,
@@ -583,6 +586,89 @@ mod tests {
 
     fn module(path: &str) -> Module {
         Module { path: path.into(), ..Default::default() }
+    }
+
+    /// As palavras em maiúsculas fora de crase em `texts`, cada uma uma vez,
+    /// no defeito que diz onde ela está.
+    fn push_defects(place: &str, texts: &[String], out: &mut Vec<String>) {
+        let mut seen: Vec<&str> = Vec::new();
+        for text in texts {
+            for word in mustard_core::platform::i18n::uppercase_words(text) {
+                if !seen.contains(&word) {
+                    seen.push(word);
+                    out.push(format!("{place}: uppercase word {word} outside backticks"));
+                }
+            }
+        }
+    }
+
+    /// Cada palavra em maiúsculas fora de crase na ajuda de `cmd` e dos
+    /// comandos abaixo dele: o texto do comando, o de cada argumento e o de
+    /// cada valor que o argumento aceita. O defeito diz o comando, o
+    /// argumento, quando há, e a palavra.
+    fn help_uppercase_defects(path: &str, cmd: &clap::Command, out: &mut Vec<String>) {
+        let own: Vec<String> = [
+            cmd.get_about(),
+            cmd.get_long_about(),
+            cmd.get_before_help(),
+            cmd.get_before_long_help(),
+            cmd.get_after_help(),
+            cmd.get_after_long_help(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(ToString::to_string)
+        .collect();
+        push_defects(path, &own, out);
+        for arg in cmd.get_arguments() {
+            let name = arg.get_long().map_or_else(|| arg.get_id().to_string(), |long| format!("--{long}"));
+            let mut texts: Vec<String> =
+                [arg.get_help(), arg.get_long_help()].into_iter().flatten().map(ToString::to_string).collect();
+            texts.extend(arg.get_possible_values().iter().filter_map(|value| value.get_help().map(ToString::to_string)));
+            push_defects(&format!("{path} {name}"), &texts, out);
+        }
+        for sub in cmd.get_subcommands() {
+            help_uppercase_defects(&format!("{path} {}", sub.get_name()), sub, out);
+        }
+    }
+
+    /// Os defeitos da árvore inteira, a partir do nome do programa.
+    fn tree_defects(tree: &clap::Command) -> Vec<String> {
+        let mut out = Vec::new();
+        help_uppercase_defects(tree.get_name(), tree, &mut out);
+        out
+    }
+
+    /// A ajuda de todo comando do scan segue a regra das frases do programa:
+    /// nenhuma palavra toda em maiúsculas fora de crase, salvo a lista curta
+    /// de siglas e unidades. A falha lista o comando, o argumento e a palavra.
+    #[test]
+    fn every_command_help_keeps_uppercase_inside_backticks() {
+        use clap::CommandFactory;
+        let tree = Cli::command();
+        assert!(tree.get_subcommands().count() >= 4, "the check reached every command");
+        let defects = tree_defects(&tree);
+        assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
+    }
+
+    /// Um "THE" solto na ajuda de um comando, ou na de um argumento dele, cai
+    /// com o comando, o argumento e a palavra; entre crases ele passa.
+    #[test]
+    fn a_loose_uppercase_word_in_a_help_fails_naming_the_command() {
+        use clap::CommandFactory;
+        let with = |about: &str, help: &str| {
+            let (about, help) = (about.to_string(), help.to_string());
+            Cli::command().mut_subcommand("scan", move |scan| scan.about(about).mut_arg("all", move |all| all.help(help)))
+        };
+        assert_eq!(
+            tree_defects(&with("Writes THE model.", "Reads every file.")),
+            vec!["grain scan: uppercase word THE outside backticks"]
+        );
+        assert_eq!(
+            tree_defects(&with("Writes the model.", "Reads THE files.")),
+            vec!["grain scan --all: uppercase word THE outside backticks"]
+        );
+        assert_eq!(tree_defects(&with("Writes `THE` model.", "Reads `THE` files.")), Vec::<String>::new());
     }
 
     #[test]

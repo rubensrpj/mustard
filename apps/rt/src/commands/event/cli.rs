@@ -21,12 +21,12 @@ use crate::commands::{event};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum EventCmd {
-    /// The PENDING ledger: work agreed in the conversation that has not closed
-    /// yet. It lives OUTSIDE every unit, in `.claude/pending/ledger.json` of the
-    /// main checkout, so it is recorded with no unit open, survives a branch
-    /// switch and outlives the unit that delivers it. Without a flag it LISTS
+    /// The pending ledger: work agreed in the conversation that has not closed
+    /// yet. It lives outside every unit, in `.claude/pending/ledger.json` of the
+    /// main checkout. So it is recorded with no unit open, survives a branch
+    /// switch and outlives the unit that delivers it. Without a flag it lists
     /// `{ok, path, open, closed, count_line}`, the only answer carrying the
-    /// whole lists: every write answers `ok`, `path`, `count_line` and what it
+    /// whole lists. Every write answers `ok`, `path`, `count_line` and what it
     /// wrote. `--add` records one item and prints its `P-N` id; `--close`
     /// settles one as delivered, always with a non-blank `--reason`. A removal
     /// (`--remove`, `--drop`) takes two calls: the first shows what would
@@ -44,10 +44,10 @@ pub enum EventCmd {
         /// Its scope or reason, one line.
         #[arg(long)]
         detail: Option<String>,
-        /// Settle the item `P-N` as DELIVERED.
+        /// Settle the item `P-N` as delivered.
         #[arg(long, value_name = "ID", conflicts_with = "drop")]
         close: Option<String>,
-        /// Drop the item `P-N` ON PURPOSE: the same removal as `--remove
+        /// Drop the item `P-N` on purpose: the same removal as `--remove
         /// --id P-N`, shown first and confirmed with `--confirm`.
         #[arg(long, value_name = "ID", group = "removal")]
         drop: Option<String>,
@@ -55,7 +55,7 @@ pub enum EventCmd {
         /// `--remove`; a blank one is refused and nothing is written.
         #[arg(long)]
         reason: Option<String>,
-        /// Take items out, with ONE selector (`--id`, `--term` or `--before`)
+        /// Take items out, with one selector (`--id`, `--term` or `--before`)
         /// and a `--reason`. Without `--confirm` it only shows what would
         /// leave and prints the code to confirm with.
         #[arg(long, group = "removal")]

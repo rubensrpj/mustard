@@ -21,8 +21,8 @@ use crate::commands::{doctor};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum DoctorCmd {
     /// Read-only installation health diagnostic: wiring, drift, state health,
-    /// wave-integrity and (optionally) residue. Prints a compact OK/WARN/FAIL
-    /// report and exits 1 if any category is FAIL, 0 otherwise.
+    /// wave-integrity and (optionally) residue. Prints a compact `OK`/`WARN`/`FAIL`
+    /// report and exits 1 if any category is `FAIL`, 0 otherwise.
     ///
     /// Pass `--json` as a shortcut for `--format json`.
     #[command(display_order = 20)]

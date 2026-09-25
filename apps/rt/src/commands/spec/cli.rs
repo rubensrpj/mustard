@@ -26,7 +26,7 @@ pub enum SpecCmd {
     ///
     /// Com `--body` e `--out`, gera uma página avulsa (análise, relatório,
     /// plano) a partir de um arquivo markdown: escreve-se markdown, nunca
-    /// HTML. Sem `--title`, o título é a primeira linha `# Título`.
+    /// `HTML`. Sem `--title`, o título é a primeira linha `# Título`.
     /// Devolve `{ok, path}`.
     #[command(name = "page")]
     #[command(display_order = 17)]

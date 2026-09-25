@@ -19,7 +19,7 @@ use crate::commands::spec_events;
 /// The `run` subcommands owned by the spec event file (`spec_events/`).
 #[derive(Debug, Subcommand)]
 pub enum SpecEventsCmd {
-    /// Read ONE block of a spec's event file (`.claude/spec/<spec>/spec.ndjson`
+    /// Read one block of a spec's event file (`.claude/spec/<spec>/spec.ndjson`
     /// of the main checkout), never the whole file: `state`, `metrics`,
     /// `agreed`, `specification`, `criteria`, `waves`, `wave-<n>`, `review`,
     /// `progress`, `notes` or `conversation`. Removed and replaced items are
@@ -45,7 +45,7 @@ pub enum SpecEventsCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Write ONE event to a spec's event file, the only way it is written.
+    /// Write one event to a spec's event file, the only way it is written.
     /// Refuses an unknown type, an empty required field, a `task` missing one
     /// of its three mandatory declarations (what it does, the files it
     /// touches, which tasks it depends on) and, on a `point`, a fact without

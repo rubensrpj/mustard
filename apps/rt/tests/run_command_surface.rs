@@ -321,7 +321,7 @@ fn the_pending_help_shows_the_item_id_as_p_n() {
     let help = String::from_utf8_lossy(&out.stdout);
 
     let close = help.lines().find(|line| line.trim_start().starts_with("--close")).expect("the --close line");
-    assert!(close.contains("`P-N` as DELIVERED"), "the id stays on the option's line: {close}");
+    assert!(close.contains("`P-N` as delivered"), "the id stays on the option's line: {close}");
     let spelled: Vec<String> = help.match_indices("P-").map(|(at, _)| help[at..].chars().take(3).collect()).collect();
     assert!(spelled.len() >= 6, "the summary and the five options name the id: {help}");
     assert!(spelled.iter().all(|id| *id == "P-N"), "every id is spelled P-N: {spelled:?}\n{help}");

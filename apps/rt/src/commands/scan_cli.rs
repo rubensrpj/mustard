@@ -19,9 +19,10 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
-    /// Mine the workspace into `grain.model.json` via the bundled `scan` tool —
-    /// THE scan (replaced the old in-tree miner + per-project skill/agent
-    /// generation; the model is the single durable artifact).
+    /// Mine the workspace into `grain.model.json` with the bundled `scan` tool.
+    /// This is the one scan of the project, and the model is the single
+    /// durable artifact. It replaced the old in-tree miner and the per-project
+    /// skill and agent generation.
     #[command(display_order = 15)]
     Scan {
         /// The workspace root to scan. Defaults to the current directory.
