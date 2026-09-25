@@ -844,9 +844,10 @@ const HARNESS_SCRATCH_DIRS: &[&str] = &[
     "knowledge",
     "memory",
     // The git worktrees Claude Code creates for its own sessions — never
-    // branch content. The separate copies of each wave and of its reviewer
-    // live outside the project, in the copies folder under the user's cache
-    // (`wave_prompt::copies_dir`), so they never show up under `.claude/`.
+    // branch content. The separate copies of each wave and of the final
+    // reviewer live outside the project, in the copies folder under the
+    // user's cache (`wave_prompt::copies_dir`), so they never show up under
+    // `.claude/`.
     "worktrees",
 ];
 

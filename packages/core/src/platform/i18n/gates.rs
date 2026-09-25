@@ -79,14 +79,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // (`workbranch.busy.census_*`): the remedy differs, so the sentence
         // does.
         ("workbranch.busy.refusal", Locale::PtBr) => {
-            "O checkout está na branch '{current}', de OUTRA unidade de trabalho, com trabalho \
-             NÃO commitado em: {paths}{more}. Criar '{target}' aqui levaria essas edições junto, \
+            "O checkout está na branch '{current}', de outra unidade de trabalho, com trabalho \
+             não commitado em: {paths}{more}. Criar '{target}' aqui levaria essas edições junto, \
              para dentro de outra unidade. Commite ou guarde (`git stash`) esse trabalho antes de \
              abrir a segunda unidade."
         }
         ("workbranch.busy.refusal", Locale::EnUs) => {
-            "The checkout is on branch '{current}', which belongs to ANOTHER work unit, with \
-             UNCOMMITTED work in: {paths}{more}. Cutting '{target}' here would carry those edits \
+            "The checkout is on branch '{current}', which belongs to another work unit, with \
+             uncommitted work in: {paths}{more}. Cutting '{target}' here would carry those edits \
              along into a different unit. Commit or stash (`git stash`) that work before opening \
              the second unit."
         }
@@ -98,15 +98,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // teaches the operator that the refusal is noise. `{current}`/`{target}`
         // are interpolated by `work_branch::BusyCheckout::reason`.
         ("workbranch.busy.unmeasured", Locale::PtBr) => {
-            "O checkout está na branch '{current}', de OUTRA unidade de trabalho, e NÃO consegui \
+            "O checkout está na branch '{current}', de outra unidade de trabalho, e não consegui \
              medir o que há de não commitado ali (o `git status` não respondeu). Criar '{target}' \
              aqui levaria junto qualquer trabalho pendente, para dentro de outra unidade. Commite \
              ou guarde (`git stash`) o que houver — ou conserte o estado do git — antes de abrir a \
              segunda unidade."
         }
         ("workbranch.busy.unmeasured", Locale::EnUs) => {
-            "The checkout is on branch '{current}', which belongs to ANOTHER work unit, and the \
-             uncommitted work there could NOT be measured (`git status` did not answer). Cutting \
+            "The checkout is on branch '{current}', which belongs to another work unit, and the \
+             uncommitted work there could not be measured (`git status` did not answer). Cutting \
              '{target}' here would carry whatever is pending along into a different unit. Commit \
              or stash (`git stash`) whatever is there — or repair the git state — before opening \
              the second unit."
@@ -140,14 +140,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // `work_branch::BusyCheckout::reason`.
         ("workbranch.busy.base_blocked", Locale::PtBr) => {
             "A base '{base}' está atrás de origin/{base}, e avançá-la sobrescreveria trabalho \
-             NÃO commitado seu em: {paths}{more}. Nada foi cortado nem gravado, e nada foi \
+             não commitado seu em: {paths}{more}. Nada foi cortado nem gravado, e nada foi \
              tocado. Guarde esse trabalho (`git stash push -- <caminhos>`), coloque '{base}' em \
              dia (`git pull --ff-only origin {base}`), traga-o de volta (`git stash pop`) e \
              tente de novo."
         }
         ("workbranch.busy.base_blocked", Locale::EnUs) => {
             "The base '{base}' is behind origin/{base}, and advancing it would overwrite \
-             UNCOMMITTED work of yours in: {paths}{more}. Nothing was cut, nothing recorded, \
+             uncommitted work of yours in: {paths}{more}. Nothing was cut, nothing recorded, \
              and nothing touched. Stash that work (`git stash push -- <paths>`), bring '{base}' \
              up to date (`git pull --ff-only origin {base}`), take it back (`git stash pop`) \
              and try again."
@@ -431,9 +431,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // leva a linha inteira; a mensagem seguinte a uma resposta leva só o
         // erro, o trecho antes da primeira pontuação dessas
         // (`clarity_check::error_of`). Sem parênteses: o tom técnico os
-        // apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`, `{lines}`,
-        // `{limit}`, `{score}`, `{min}`, `{found}` e `{expected}` vêm do
-        // chamador.
+        // apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`, `{score}`,
+        // `{min}`, `{found}` e `{expected}` vêm do chamador.
         ("clarity.long_sentence", Locale::PtBr) => {
             "frase com {words} palavras: \"{opening}…\"; diga a mesma ideia em frases curtas"
         }
@@ -450,17 +449,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "{code} é um código interno; diga o assunto pelo nome"
         }
         ("clarity.internal_code", Locale::EnUs) => "{code} is an internal code; name the subject instead",
-        // O texto longo pede um resumo curto, como o da nota de leitura
-        // baixa, e manda o JSON, a tabela ou o documento pedido para a página
-        // avulsa: o chat fica com o resumo.
-        ("clarity.too_long", Locale::PtBr) => {
-            "resposta com {lines} linhas, e o limite é {limit}; faça no chat um resumo curto, e \
-             JSON, tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`"
-        }
-        ("clarity.too_long", Locale::EnUs) => {
-            "reply with {lines} lines, and the limit is {limit}; write a short summary in the chat, \
-             and put a requested JSON, table or document on its own page: `mustard-rt run page`"
-        }
         ("clarity.hard_to_read", Locale::PtBr) => {
             "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é {min}; faça um \
              resumo curto em palavras simples"
@@ -468,21 +456,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("clarity.hard_to_read", Locale::EnUs) => {
             "hard to read: {score} on the Flesch reading-ease index, and the minimum is {min}; \
              write a short summary in plain words"
-        }
-        // A resposta longa e difícil de ler ao mesmo tempo: as duas linhas
-        // acima se juntam nesta, para o pedido de resumo curto não se
-        // repetir.
-        ("clarity.too_long_and_hard_to_read", Locale::PtBr) => {
-            "resposta com {lines} linhas (o limite é {limit}) e difícil de ler: nota {score} no \
-             índice de Flesch (o mínimo é {min}); faça no chat um resumo curto, em palavras \
-             simples, e o JSON, a tabela ou o documento pedido vai para a página avulsa: \
-             `mustard-rt run page`"
-        }
-        ("clarity.too_long_and_hard_to_read", Locale::EnUs) => {
-            "reply with {lines} lines (the limit is {limit}) and hard to read: {score} on the \
-             Flesch reading-ease index (the minimum is {min}); write a short summary in the chat, \
-             in plain words, and put a requested JSON, table or document on its own page: \
-             `mustard-rt run page`"
         }
         // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
         // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
@@ -522,8 +495,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            67,
-            0x23e8_612d_ede2_f27c,
+            65,
+            0x7493_731b_a127_4131,
         );
     }
 
@@ -639,16 +612,16 @@ mod tests {
     /// Os defeitos de clareza e a frase da mensagem seguinte saem do catálogo
     /// nos dois idiomas, cada um com as vagas que o medidor preenche. A frase
     /// abre dizendo que o erro foi na última resposta. O pedido do complemento
-    /// saiu com o bloqueio da escrita, e o aviso da volta saiu antes dele.
+    /// saiu com o bloqueio da escrita, e o aviso da volta saiu antes dele. O
+    /// teto de linhas da resposta também saiu, com a linha dele e a que o
+    /// juntava à nota de leitura.
     #[test]
     fn i18n_translates_clarity_defect_keys() {
         for (key, slots) in [
             ("clarity.long_sentence", &["{words}", "{opening}"][..]),
             ("clarity.unexpanded_acronym", &["{acronym}"][..]),
             ("clarity.internal_code", &["{code}"][..]),
-            ("clarity.too_long", &["{lines}", "{limit}"][..]),
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),
-("clarity.too_long_and_hard_to_read", &["{lines}", "{limit}", "{score}", "{min}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
             ("clarity.next.head", &["{errors}"][..]),
             ("clarity.more", &["{count}"][..]),
@@ -666,6 +639,9 @@ mod tests {
         for lang in [Locale::PtBr, Locale::EnUs] {
             assert_eq!(translate("clarity.block.head", lang), "<missing-key>", "the complement request left");
             assert_eq!(translate("clarity.note.head", lang), "<missing-key>", "the warning after the complement left");
+            for key in ["clarity.too_long", "clarity.too_long_and_hard_to_read"] {
+                assert_eq!(translate(key, lang), "<missing-key>", "the reply line cap left: {key}");
+            }
         }
     }
 }

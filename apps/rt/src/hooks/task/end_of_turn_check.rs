@@ -295,31 +295,36 @@ mod tests {
         );
     }
 
-    /// A resposta com 16 linhas, uma a mais que o limite de 15, e sem nenhum
-    /// outro defeito não é barrada pelo `Stop` de verdade; a mensagem seguinte
-    /// leva o erro, nos dois idiomas. Com 15 linhas nada vai: a conta das
-    /// linhas não mudou. O jeito de consertar mora no estilo de resposta de
-    /// cada idioma, que manda o JSON, a tabela ou o documento pedido para a
-    /// página avulsa.
+    /// Uma resposta longa e clara não leva aviso: com 16 linhas curtas, a
+    /// primeira quantidade que o teto antigo apontava, e com 200, o `Stop` de
+    /// verdade não barra, e a mensagem seguinte leva só a linha escondida de
+    /// sempre, nos dois idiomas. A resposta tem o tamanho que a pergunta pede;
+    /// só a escrita de cada frase é conferida.
     #[test]
-    fn a_reply_over_fifteen_lines_goes_with_the_next_message() {
-        let cases = [
-            (PT_PROJECT, "Uma linha curta.", PT_LINE, "Na última resposta: resposta com 16 linhas, e o limite é 15."),
-            (EN_PROJECT, "The test runs fine.", EN_LINE, "In the last reply: reply with 16 lines, and the limit is 15."),
-        ];
-        for style in [STYLE_PT, STYLE_EN] {
-            assert!(style.contains("`mustard-rt run page`"), "the answer style names the page: {style}");
-        }
-        for (config, line, hidden, note) in cases {
+    fn a_long_clear_reply_carries_no_warning() {
+        let cases = [(PT_PROJECT, "Uma linha curta.", PT_LINE), (EN_PROJECT, "The test runs fine.", EN_LINE)];
+        for (config, line, hidden) in cases {
             let dir = project(config);
             let root = dir.path();
-            let fits = vec![line; 15].join("\n");
-            assert_eq!(run_stop(root, &stop("s1", &fits, false)), Value::Null, "{config}");
-            assert_eq!(next_line(root, "s1"), hidden, "15 lines carry nothing: {config}");
+            for count in [16, 200] {
+                let long = vec![line; count].join("\n");
+                assert_eq!(stop_event(root, "s1", &long, false), Value::Null, "{count} lines are not blocked: {config}");
+                assert_eq!(next_line(root, "s1"), hidden, "{count} lines carry no warning: {config}");
+            }
+        }
+    }
 
-            let over = vec![line; 16].join("\n");
-            assert_eq!(run_stop(root, &stop("s1", &over, false)), Value::Null, "16 lines are not blocked: {config}");
-            assert_eq!(next_line(root, "s1"), format!("{hidden} {note}"));
+    /// O estilo de resposta de cada idioma não põe teto de linhas na
+    /// resposta, manda o JSON, a tabela ou o documento pedido para a página
+    /// avulsa e pede o contexto antes do código.
+    #[test]
+    fn the_answer_styles_drop_the_line_cap_and_put_context_before_code() {
+        for (style, context) in [(STYLE_PT, "Contexto antes do código"), (STYLE_EN, "Context before code")] {
+            assert!(style.contains("`mustard-rt run page`"), "the answer style names the page: {style}");
+            for cap in ["15 linhas", "15 lines"] {
+                assert!(!style.contains(cap), "the answer style still caps the reply at `{cap}`: {style}");
+            }
+            assert!(style.contains(context), "the answer style lacks `{context}`: {style}");
         }
     }
 

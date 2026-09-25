@@ -29,7 +29,8 @@
 //!
 //! Mede o texto com o medidor do núcleo (`domain::clarity`): frase longa,
 //! sigla sem as palavras por extenso, código de item da spec
-//! (`MSTD-RULE-NNNN`), tamanho, a nota de Flesch em português e o idioma.
+//! (`MSTD-RULE-NNNN`), a nota de Flesch em português e o idioma. O tamanho da
+//! resposta não é medido: ela tem o tamanho que a pergunta pede.
 //!
 //! - Nunca barra a resposta, e nada aparece na tela. A barragem aparecia duas
 //!   vezes no terminal e custava outra rodada; na Suzano foram 22.
@@ -493,19 +494,20 @@ mod tests {
     /// A frase da mensagem seguinte lista no máximo [`MAX_LISTED_ERRORS`]
     /// erros, numa linha só, e o resto vira uma contagem, qualquer que seja a
     /// resposta. Sessenta frases longas, cada uma de um tamanho, dão sessenta
-    /// erros, e as sessenta linhas dão mais um.
+    /// erros; as sessenta linhas não somam erro, porque a resposta não tem
+    /// teto de linhas.
     #[test]
     fn the_next_note_lists_at_most_five_errors() {
         let dir = project();
         let root = dir.path();
         let reply = (26..86).map(|words| vec!["palavra"; words].join(" ")).collect::<Vec<_>>().join(".\n");
         assert_eq!(check(root, &stop("s1", &reply)), Verdict::Allow);
-        assert_eq!(kept_errors(root, "s1").len(), 61);
+        assert_eq!(kept_errors(root, "s1").len(), 60);
         assert_eq!(
             next_line(root, "s1", "e agora?"),
             format!(
                 "{PT_LINE} Na última resposta: frase com 26 palavras; frase com 27 palavras; \
-                 frase com 28 palavras; frase com 29 palavras; frase com 30 palavras; e mais 56."
+                 frase com 28 palavras; frase com 29 palavras; frase com 30 palavras; e mais 55."
             )
         );
     }
@@ -613,8 +615,8 @@ mod tests {
     /// trecho antes da primeira pontuação que fecha o erro. As linhas vêm do
     /// próprio catálogo, lidas por `ClarityReport::defects`, não de cópias
     /// escritas à mão: se o catálogo mudar a pontuação de uma linha, o
-    /// recorte muda e este teste cai. Longa e difícil de ler ao mesmo tempo
-    /// vira uma linha só, a junta; cada uma sozinha continua como sempre.
+    /// recorte muda e este teste cai. Nenhuma linha fala do tamanho da
+    /// resposta: a nota de leitura baixa leva só a linha dela.
     #[test]
     fn every_catalog_defect_line_yields_its_error_name() {
         let full_report = |found: Locale, expected: Locale| ClarityReport {
@@ -622,8 +624,6 @@ mod tests {
             unexpanded_acronyms: vec!["CI".to_string()],
             internal_codes: vec!["MSTD-RULE-0008".to_string()],
             prose_lines: 16,
-            lines: 16,
-            too_long: true,
             reading_ease: Some(12),
             hard_to_read: true,
             wrong_language: Some(WrongLanguage { found, expected }),
@@ -638,7 +638,7 @@ mod tests {
                     "frase com 29 palavras",
                     "CI é uma sigla sem explicação",
                     "MSTD-RULE-0008 é um código interno",
-                    "resposta com 16 linhas (o limite é 15) e difícil de ler",
+                    "texto difícil de ler",
                     "resposta em en-US",
                 ],
             ),
@@ -649,7 +649,7 @@ mod tests {
                     "sentence with 29 words",
                     "CI is an unexplained acronym",
                     "MSTD-RULE-0008 is an internal code",
-                    "reply with 16 lines (the limit is 15) and hard to read",
+                    "hard to read",
                     "reply in pt-BR",
                 ],
             ),
@@ -661,43 +661,6 @@ mod tests {
             }
         }
 
-        // Só a resposta longa, sem ser difícil de ler: a linha própria dela,
-        // sem juntar com nada.
-        let only_too_long = ClarityReport {
-            long_sentences: Vec::new(),
-            unexpanded_acronyms: Vec::new(),
-            internal_codes: Vec::new(),
-            prose_lines: 16,
-            lines: 16,
-            too_long: true,
-            reading_ease: None,
-            hard_to_read: false,
-            wrong_language: None,
-            passed: false,
-            explained: Vec::new(),
-        };
-        let lines = only_too_long.defects(Locale::PtBr);
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert_eq!(error_of(&lines[0]), "resposta com 16 linhas, e o limite é 15");
-
-        // Só difícil de ler, sem ser longa: a linha própria dela, sem juntar
-        // com nada.
-        let only_hard_to_read = ClarityReport {
-            long_sentences: Vec::new(),
-            unexpanded_acronyms: Vec::new(),
-            internal_codes: Vec::new(),
-            prose_lines: 8,
-            lines: 8,
-            too_long: false,
-            reading_ease: Some(12),
-            hard_to_read: true,
-            wrong_language: None,
-            passed: false,
-            explained: Vec::new(),
-        };
-        let lines = only_hard_to_read.defects(Locale::PtBr);
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert_eq!(error_of(&lines[0]), "texto difícil de ler");
 
         let dir = project();
         let reply = "A regra MSTD-RULE-0008 ficou pronta.";

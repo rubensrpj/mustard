@@ -177,9 +177,9 @@ const DOCUMENTED_DIRS: &[&str] = &[
     // Plan-mode plan files — `settings.json#plansDirectory` points here.
     "plans",
     // The git worktrees Claude Code creates for its own sessions. The
-    // separate copies of each wave and of its reviewer are not here: the
-    // round creates them in the copies folder outside the project, under the
-    // user's cache (`io::wave_prompt::copies_dir`).
+    // separate copies of each wave and of the final reviewer are not here:
+    // the round and the close create them in the copies folder outside the
+    // project, under the user's cache (`io::wave_prompt::copies_dir`).
     "worktrees",
     // Sanctioned scratch evidence — the throwaway a diagnosis RUNS to decide
     // between two hypotheses. Carved out of branch protection by the write

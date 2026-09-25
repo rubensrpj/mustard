@@ -2,12 +2,12 @@
 //!
 //! A regra pede uma escrita que se lê uma vez, por quem não escreveu o código:
 //! uma ideia por frase; nenhuma sigla sem as palavras por extenso; nenhum
-//! código do Mustard (`MSTD-RULE-NNNN`) no lugar do nome do assunto; e nenhuma
-//! resposta maior do que o assunto pede. Este módulo confere isso por sinais
-//! objetivos — quantas palavras tem cada frase, quais siglas e códigos
-//! aparecem, quantas linhas a resposta tem e a nota de facilidade de leitura
-//! (o índice de Flesch adaptado ao português). Ele não tenta entender o
-//! sentido do texto.
+//! código do Mustard (`MSTD-RULE-NNNN`) no lugar do nome do assunto. Este
+//! módulo confere isso por sinais objetivos — quantas palavras tem cada frase,
+//! quais siglas e códigos aparecem e a nota de facilidade de leitura (o índice
+//! de Flesch adaptado ao português). Ele não tenta entender o sentido do
+//! texto, nem mede o tamanho da resposta: ela tem o tamanho que a pergunta
+//! pede.
 //!
 //! Função pura: sem disco, sem log, sem relógio. A única lista fixa é a das
 //! poucas siglas que dispensam expansão.
@@ -16,9 +16,7 @@
 //! código, código inline, URLs, caminhos de arquivo, linhas de tabela e JSON.
 //! Cada linha de texto é medida sozinha: numa resposta de chat a quebra de
 //! linha separa ideias, e um item de lista conta como frase. O rótulo que abre
-//! a linha ("Fora do escopo:") não soma na frase dele ([`without_label`]). O
-//! tamanho é a exceção: conta todas as linhas não vazias ([`MAX_LINES`]),
-//! porque é o que o leitor tem de percorrer.
+//! a linha ("Fora do escopo:") não soma na frase dele ([`without_label`]).
 //!
 //! Há ainda a medição do idioma. A resposta sai no idioma do projeto, que é o
 //! do usuário. O idioma da prosa sai de uma contagem de palavras comuns do
@@ -34,10 +32,6 @@ use crate::platform::i18n::{translate, Locale};
 
 /// Palavras acima das quais uma frase conta como longa.
 pub const MAX_SENTENCE_WORDS: usize = 25;
-
-/// Linhas não vazias acima das quais a resposta conta como longa demais. Conta
-/// a resposta inteira, com código e tabela: é o que o leitor tem de percorrer.
-pub const MAX_LINES: usize = 15;
 
 /// A nota mínima de facilidade de leitura, no índice de Flesch adaptado ao
 /// português (Martins et al., 1996). Abaixo de 25 a escala diz "muito difícil".
@@ -156,10 +150,6 @@ pub struct ClarityReport {
     pub internal_codes: Vec<String>,
     /// Linhas de texto corrido, sem código, tabela nem JSON.
     pub prose_lines: usize,
-    /// Linhas não vazias da resposta inteira, com código e tabela.
-    pub lines: usize,
-    /// A resposta passou de [`MAX_LINES`] linhas.
-    pub too_long: bool,
     /// A nota de facilidade de leitura do texto corrido (Flesch adaptado ao
     /// português). `None` quando a prosa não está em português ou é curta
     /// demais para uma média honesta.
@@ -193,34 +183,12 @@ impl ClarityReport {
         for code in &self.internal_codes {
             out.push(translate("clarity.internal_code", lang).replace("{code}", code));
         }
-        // Longa e difícil de ler ao mesmo tempo: as duas viravam duas linhas,
-        // cada uma pedindo o próprio resumo curto, e o pedido se repetia. As
-        // duas se juntam numa linha só, com o pedido de resumo uma vez.
-        // Sozinha, cada uma continua como sempre.
-        match (self.too_long, self.hard_to_read, self.reading_ease) {
-            (true, true, Some(score)) => out.push(
-                translate("clarity.too_long_and_hard_to_read", lang)
-                    .replace("{lines}", &self.lines.to_string())
-                    .replace("{limit}", &MAX_LINES.to_string())
+        if let (true, Some(score)) = (self.hard_to_read, self.reading_ease) {
+            out.push(
+                translate("clarity.hard_to_read", lang)
                     .replace("{score}", &score.to_string())
                     .replace("{min}", &MIN_READING_EASE.to_string()),
-            ),
-            (too_long, hard_to_read, reading_ease) => {
-                if too_long {
-                    out.push(
-                        translate("clarity.too_long", lang)
-                            .replace("{lines}", &self.lines.to_string())
-                            .replace("{limit}", &MAX_LINES.to_string()),
-                    );
-                }
-                if let (true, Some(score)) = (hard_to_read, reading_ease) {
-                    out.push(
-                        translate("clarity.hard_to_read", lang)
-                            .replace("{score}", &score.to_string())
-                            .replace("{min}", &MIN_READING_EASE.to_string()),
-                    );
-                }
-            }
+            );
         }
         if let Some(wrong) = self.wrong_language {
             out.push(wrong.defect(lang));
@@ -246,15 +214,12 @@ pub fn measure(text: &str, already_explained: &[String], expected: Option<Locale
     let mut explained = Vec::new();
     let unexpanded_acronyms = unexpanded_acronyms(&sentences, already_explained, &mut explained);
     let internal_codes = internal_codes(&sentences);
-    let total_lines = text.lines().filter(|line| !line.trim().is_empty()).count();
-    let too_long = total_lines > MAX_LINES;
     let reading_ease = reading_ease(&lines, &sentences);
     let hard_to_read = reading_ease.is_some_and(|score| score < MIN_READING_EASE);
     let wrong_language = expected.and_then(|lang| wrong_language(&lines, lang));
     let passed = long_sentences.is_empty()
         && unexpanded_acronyms.is_empty()
         && internal_codes.is_empty()
-        && !too_long
         && !hard_to_read
         && wrong_language.is_none();
 
@@ -263,8 +228,6 @@ pub fn measure(text: &str, already_explained: &[String], expected: Option<Locale
         unexpanded_acronyms,
         internal_codes,
         prose_lines: lines.len(),
-        lines: total_lines,
-        too_long,
         reading_ease,
         hard_to_read,
         wrong_language,
@@ -1105,35 +1068,24 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert!(report.passed);
     }
 
-    /// Mais de quinze linhas reprovam a resposta pelo tamanho, e o tamanho
-    /// conta a resposta inteira: linhas de código também são lidas.
+    /// A resposta não tem teto de linhas: 16 linhas curtas, a primeira
+    /// quantidade que o teto antigo reprovava, e 200 passam sem defeito
+    /// nenhum, nos dois idiomas. Um bloco de código comprido também passa.
     #[test]
-    fn clarity_reply_over_fifteen_lines_is_too_long() {
-        let fits = vec!["Uma linha curta."; MAX_LINES].join("\n\n");
-        assert!(measure(&fits, &[], Some(Locale::PtBr)).passed, "blank lines do not count");
+    fn a_long_clear_reply_has_no_line_limit() {
+        for count in [16, 200] {
+            let long = vec!["Uma linha curta."; count].join("\n");
+            let report = measure(&long, &[], Some(Locale::PtBr));
+            assert!(report.passed, "{count} lines: {report:?}");
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                assert_eq!(report.defects(lang), Vec::<String>::new(), "{count} lines in {lang:?}");
+            }
+        }
 
-        let over = vec!["Uma linha curta."; MAX_LINES + 1].join("\n");
-        let report = measure(&over, &[], Some(Locale::PtBr));
-        assert!(report.too_long && !report.passed);
-        assert_eq!(
-            report.defects(Locale::EnUs),
-            vec![
-                "reply with 16 lines, and the limit is 15; write a short summary in the chat, and put a \
-                 requested JSON, table or document on its own page: `mustard-rt run page`"
-            ]
-        );
-        assert_eq!(
-            report.defects(Locale::PtBr),
-            vec![
-                "resposta com 16 linhas, e o limite é 15; faça no chat um resumo curto, e JSON, tabela ou \
-                 documento pedido vai para a página avulsa: `mustard-rt run page`"
-            ]
-        );
-
-        let code = format!("Rode isto:\n```text\n{}\n```", vec!["linha"; MAX_LINES].join("\n"));
+        let code = format!("Rode isto:\n```text\n{}\n```", vec!["linha"; 200].join("\n"));
         let report = measure(&code, &[], Some(Locale::PtBr));
-        assert_eq!((report.prose_lines, report.lines), (1, MAX_LINES + 3), "{report:?}");
-        assert!(report.too_long, "{report:?}");
+        assert_eq!(report.prose_lines, 1, "{report:?}");
+        assert!(report.passed, "{report:?}");
     }
 
     /// Código do Mustard no texto corrido é apontado, cada um uma vez, e pede
@@ -1225,11 +1177,11 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert_eq!(measure("Frase curta.", &[], Some(Locale::PtBr)).reading_ease, None);
     }
 
-    /// Longa e difícil de ler ao mesmo tempo: as duas linhas separadas viram
-    /// uma só, com o pedido de resumo curto uma vez. Sozinha, cada uma
-    /// continua como está.
+    /// Longa e difícil de ler ao mesmo tempo, a resposta leva só a linha da
+    /// nota de leitura, a mesma do texto curto e difícil: o tamanho não soma
+    /// defeito, e o pedido de resumo aparece uma vez, nos dois idiomas.
     #[test]
-    fn a_long_and_hard_answer_asks_for_one_short_summary() {
+    fn a_long_and_hard_answer_is_charged_only_for_reading_ease() {
         let dense = "A implementação da configuração automatizada da infraestrutura \
                      organizacional exige documentação complementar significativamente \
                      detalhada. A coordenação interdepartamental das especificações \
@@ -1237,52 +1189,30 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
                      planejamento estratégico permanentemente atualizado. A parametrização \
                      das integrações corporativas depende da homologação das funcionalidades \
                      disponibilizadas pela arquitetura.";
-        let long_and_hard = vec![dense; MAX_LINES + 1].join("\n");
+        let long_and_hard = vec![dense; 16].join("\n");
         let report = measure(&long_and_hard, &[], Some(Locale::PtBr));
-        assert!(report.too_long && report.hard_to_read, "{report:?}");
+        assert!(report.hard_to_read && !report.passed, "{report:?}");
         let score = report.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {report:?}"));
 
-        let pt = report.defects(Locale::PtBr);
-        assert_eq!(pt.len(), 1, "uma linha só, não duas: {pt:?}");
         assert_eq!(
-            pt[0],
-            format!(
-                "resposta com {} linhas (o limite é {MAX_LINES}) e difícil de ler: nota {score} no \
-                 índice de Flesch (o mínimo é {MIN_READING_EASE}); faça no chat um resumo curto, \
-                 em palavras simples, e o JSON, a tabela ou o documento pedido vai para a página \
-                 avulsa: `mustard-rt run page`",
-                report.lines
-            )
-        );
-        assert_eq!(pt[0].matches("resumo").count(), 1, "o pedido de resumo não se repete: {pt:?}");
-
-        let en = report.defects(Locale::EnUs);
-        assert_eq!(en.len(), 1, "{en:?}");
-        assert_eq!(en[0].matches("summary").count(), 1, "{en:?}");
-
-        // Sozinha, cada defeito continua com a própria linha e o próprio
-        // pedido, sem juntar nada.
-        let only_long = measure(&vec!["Uma linha curta."; MAX_LINES + 1].join("\n"), &[], Some(Locale::PtBr));
-        assert!(only_long.too_long && !only_long.hard_to_read, "{only_long:?}");
-        assert_eq!(
-            only_long.defects(Locale::PtBr),
+            report.defects(Locale::PtBr),
             vec![format!(
-                "resposta com {} linhas, e o limite é {MAX_LINES}; faça no chat um resumo curto, e \
-                 JSON, tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`",
-                only_long.lines
-            )]
-        );
-
-        let only_hard = measure(dense, &[], Some(Locale::PtBr));
-        assert!(!only_hard.too_long && only_hard.hard_to_read, "{only_hard:?}");
-        let hard_score = only_hard.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {only_hard:?}"));
-        assert_eq!(
-            only_hard.defects(Locale::PtBr),
-            vec![format!(
-                "texto difícil de ler: nota {hard_score} no índice de Flesch, e o mínimo é \
+                "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é \
                  {MIN_READING_EASE}; faça um resumo curto em palavras simples"
             )]
         );
+        assert_eq!(
+            report.defects(Locale::EnUs),
+            vec![format!(
+                "hard to read: {score} on the Flesch reading-ease index, and the minimum is \
+                 {MIN_READING_EASE}; write a short summary in plain words"
+            )]
+        );
+
+        let short_and_hard = measure(dense, &[], Some(Locale::PtBr));
+        let short_score = short_and_hard.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {short_and_hard:?}"));
+        assert_eq!(short_score, score, "the same prose scores the same, long or short");
+        assert_eq!(short_and_hard.defects(Locale::PtBr), report.defects(Locale::PtBr));
     }
 
     /// Ênfase em maiúsculas não é sigla: nem a palavra comprida com vogais,
