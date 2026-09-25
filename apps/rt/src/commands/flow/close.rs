@@ -2722,6 +2722,71 @@ exit "${2:-0}"
         assert_eq!(rejected, Vec::<u64>::new(), "{closed}");
     }
 
+    /// O fechamento que pede a revisão de volta, depois de um veredito final
+    /// que reprovou e do conserto que a rodada comitou: o pedido lista o que
+    /// mudou desde o veredito — ele e o commit do conserto, nunca os commits
+    /// de antes dele. Nem a primeira revisão nem a de volta mandam rodar a
+    /// suíte inteira, que o próprio fechamento acabou de rodar: as duas dizem
+    /// que ela passou no commit da cópia.
+    #[test]
+    fn the_review_after_a_rejection_lists_what_changed_and_never_reruns_the_suite() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 2);
+        std::fs::write(root.join("mustard.json"), json!({"testCommand": "git --version"}).to_string()).unwrap();
+        let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
+        let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None);
+        let since = translate("prompt.part.since_verdict", Locale::PtBr);
+        let listed = |prompt: &str| -> String {
+            let Some((_, rest)) = prompt.split_once(&format!("## {since}\n")) else { return String::new() };
+            rest.split("\n## ").next().unwrap_or_default().to_string()
+        };
+        let suite_line = |prompt: &str| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let commit = mustard_core::io::wave_prompt::final_review_commit(root, &log).unwrap_or_else(|| "HEAD".into());
+            let said = translate("prompt.review.suite", Locale::PtBr).replace("{command}", "git --version");
+            assert!(prompt.contains(&said.replace("{commit}", &commit)), "a suíte passou no commit da cópia: {prompt}");
+            assert!(!prompt.contains("Teste com `git --version`"), "a revisão não roda a suíte inteira: {prompt}");
+        };
+
+        let first = close(None);
+        assert_eq!(first["review"]["final"], json!(true), "{first}");
+        let prompt = first["review"]["prompt"].as_str().unwrap_or_default();
+        assert!(listed(prompt).is_empty(), "a primeira revisão confere a obra inteira: {prompt}");
+        suite_line(prompt);
+
+        let reject = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1."});
+        assert_eq!(close(verdict_written(root, "x", reject))["reason"], json!("wave-rejected"));
+        assert_eq!(round(None)["ok"], json!(true));
+        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
+        returned(root, "x", json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetir"}));
+        assert_eq!(round(None)["ok"], json!(true));
+
+        let again = close(None);
+        assert_eq!(again["review"]["final"], json!(true), "{again}");
+        let prompt = again["review"]["prompt"].as_str().unwrap_or_default();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let verdict = log
+            .visible()
+            .into_iter()
+            .rfind(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&json!(true)))
+            .map(|e| e.id)
+            .unwrap();
+        let commits: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "commit").map(|e| e.id).collect();
+        let (before, after): (Vec<u64>, Vec<u64>) = commits.into_iter().partition(|id| *id < verdict);
+        assert!(!before.is_empty() && !after.is_empty(), "um commit antes do veredito e o do conserto depois: {prompt}");
+        let part = listed(prompt);
+        assert!(part.contains(&format!("- `review`: {}", codes[&verdict])), "{prompt}");
+        for id in after {
+            assert!(part.contains(&codes[&id]), "o commit do conserto está no que mudou: {prompt}");
+        }
+        for id in before {
+            assert!(!part.contains(&codes[&id]), "o commit de antes do veredito fica fora do que mudou: {prompt}");
+        }
+        suite_line(prompt);
+    }
+
     /// Um veredito de onda do fluxo antigo, sem o campo `final` — como o
     /// round-review de antes gravava —, reprova a onda 2. Sem essa marca, ele
     /// não pode pôr a spec em modo de conserto: a rodada não tem conserto

@@ -162,6 +162,10 @@ pub struct Material<'a> {
     /// Os commits da rodada: as mudanças que já entraram na branch, que o
     /// agente de teste dedicado confere no pedido da revisão final.
     pub changes: Vec<&'a SpecEvent>,
+    /// O que mudou desde o veredito final que reprovou
+    /// ([`since_last_verdict`]): com ele, o pedido da revisão final é o da
+    /// revisão de volta. Vazio na primeira revisão.
+    pub since_verdict: Vec<&'a SpecEvent>,
     /// O código de cada evento, para o pedido citar item por código.
     pub codes: BTreeMap<u64, String>,
 }
@@ -233,8 +237,12 @@ pub fn write(material: &Material, lang: Locale) -> String {
 /// último (`own_delivered`), os critérios, os commits da branch (`changes`) e
 /// como revisar numa cópia separada. Onda reprovada com o conserto já
 /// entregue restringe `block`, `agreed` e `own_delivered` a ela: o agente
-/// confere só o conserto, não a obra inteira de novo. O número da onda do
-/// material não conta aqui.
+/// confere só o conserto, não a obra inteira de novo. Depois de um veredito
+/// final que reprovou (`since_verdict`), o pedido lista o que mudou desde ele
+/// e manda conferir isso e o encaixe no resto, repetindo a conclusão
+/// anterior para os outros itens acordados. Nenhum pedido manda rodar a
+/// suíte inteira: ela passou no fechamento, no commit da cópia. O número da
+/// onda do material não conta aqui.
 #[must_use]
 pub fn write_final_review(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.final_review_text()
@@ -1113,6 +1121,73 @@ pub fn fix_lines(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// A revisão de volta
+// ---------------------------------------------------------------------------
+
+/// O veredito final mais novo da spec, quando ele reprovou: a revisão pedida
+/// depois dele é a de volta. `None` sem veredito final, ou quando o mais novo
+/// aprovou — aí a revisão confere a obra inteira, como a primeira.
+#[must_use]
+pub fn last_final_rejection(log: &SpecLog) -> Option<&SpecEvent> {
+    log.block(BlockQuery::Block(Block::Review))
+        .into_iter()
+        .filter(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&Value::Bool(true)))
+        .max_by_key(|e| e.id)
+        .filter(|e| e.str_field("result").map(str::trim) == Some("rejected"))
+}
+
+/// O que mudou desde o veredito final que reprovou ([`last_final_rejection`]),
+/// na ordem em que o pedido da revisão de volta o lista: o próprio veredito,
+/// os commits gravados depois dele, os requisitos acordados gravados ou
+/// regravados depois dele, junto com os que ele deu como não atendidos — na
+/// versão vigente de cada um —, e os critérios gravados ou regravados depois
+/// dele. O que veio antes do veredito fica de fora: a conclusão dele vale
+/// para o que não mudou. Vazio sem veredito final reprovado.
+#[must_use]
+pub fn since_last_verdict(log: &SpecLog) -> Vec<&SpecEvent> {
+    let Some(verdict) = last_final_rejection(log) else {
+        return Vec::new();
+    };
+    let codes = log.codes();
+    // O item da resposta vem pelo número, como a rodada o grava, ou pelo
+    // código, como o revisor o escreve.
+    let item_id = |reference: &Value| match reference {
+        Value::Number(n) => n.as_u64(),
+        Value::String(code) => {
+            let code = code.trim();
+            code.parse().ok().or_else(|| codes.iter().filter(|(_, c)| c.as_str() == code).map(|(id, _)| *id).max())
+        }
+        _ => None,
+    };
+    let unmet: BTreeSet<u64> = verdict
+        .fields
+        .get("agreed")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|answer| answer.get("met").and_then(Value::as_bool) != Some(true))
+        .filter_map(|answer| answer.get("item").and_then(item_id))
+        .filter_map(|id| log.current(id).map(|e| e.id))
+        .collect();
+    let mut out = vec![verdict];
+    out.extend(
+        log.block(BlockQuery::Block(Block::Progress))
+            .into_iter()
+            .filter(|e| e.event_type == "commit" && e.id > verdict.id),
+    );
+    let mut agreed: Vec<&SpecEvent> =
+        all_agreed(log).into_iter().filter(|e| e.id > verdict.id || unmet.contains(&e.id)).collect();
+    agreed.sort_by_key(|e| e.id);
+    out.extend(agreed);
+    out.extend(
+        log.block(BlockQuery::Block(Block::Criteria))
+            .into_iter()
+            .filter(|e| e.event_type == "criterion" && e.id > verdict.id),
+    );
+    out
+}
+
 struct Writer<'a> {
     material: &'a Material<'a>,
     lang: Locale,
@@ -1147,18 +1222,25 @@ impl Writer<'_> {
     }
 
     /// O pedido do agente de teste dedicado, que o fechamento pede a toda
-    /// obra: as instruções fixas dele, o exemplo de leitura, o conserto —
-    /// quando alguma onda voltou reprovada e já entregou de novo, só ele, sem
-    /// pedir a obra inteira outra vez —, as ondas com as tarefas, as emendas
-    /// gravadas para elas, o que cada uma entregou, os critérios, os commits
-    /// que já entraram na branch e como revisar numa cópia separada.
+    /// obra: as instruções fixas dele, o que olhar — a obra inteira na
+    /// primeira revisão; na de volta, o que mudou desde o veredito que
+    /// reprovou e o encaixe disso no resto —, o exemplo de leitura, o que
+    /// mudou, o conserto — quando alguma onda voltou reprovada e já entregou
+    /// de novo, só ele, sem pedir a obra inteira outra vez —, as ondas com as
+    /// tarefas, as emendas gravadas para elas, o que cada uma entregou, os
+    /// critérios, os commits que já entraram na branch e como revisar numa
+    /// cópia separada.
     fn final_review_text(&self) -> String {
         let m = self.material;
         let mut out = String::new();
         let _ = writeln!(out, "# {}\n", self.t("prompt.final.title").replace("{spec}", &m.spec));
         out.push_str(self.t("prompt.final.fixed"));
         out.push_str("\n\n");
+        let look = if m.since_verdict.is_empty() { "prompt.final.look" } else { "prompt.final.look_again" };
+        out.push_str(self.t(look));
+        out.push_str("\n\n");
         self.read_example(&mut out, "prompt.read", true);
+        self.part(&mut out, "prompt.part.since_verdict", &m.since_verdict);
         self.fix(&mut out, "prompt.fix.final");
         self.part(&mut out, "prompt.part.waves", &m.block);
         self.part(&mut out, "prompt.part.agreed", &m.agreed);
@@ -1402,10 +1484,11 @@ impl Writer<'_> {
 
     /// As regras da execução do revisor: a cópia que o fechamento já criou no
     /// commit da obra, o preparo que o projeto declara, os arquivos locais
-    /// que a cópia recebe pelo conteúdo, os comandos do projeto com menos
-    /// processos, e desfazer cada corte antes de gravar o veredito — quem
-    /// apaga a cópia é o fechamento. De onde ler a spec, o exemplo de leitura
-    /// já diz.
+    /// que a cópia recebe pelo conteúdo, o comando de compilar, a suíte que o
+    /// fechamento já rodou nesse commit — no lugar da ordem de rodá-la, só os
+    /// testes em volta de cada corte —, menos processos, e desfazer cada corte
+    /// antes de gravar o veredito — quem apaga a cópia é o fechamento. De onde
+    /// ler a spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let (copy, root) = (execution.copy.clone().unwrap_or_default(), &execution.root);
@@ -1419,7 +1502,11 @@ impl Writer<'_> {
             let line = self.t("prompt.review.local_files").replace("{files}", &files.join(", ")).replace("{root}", root);
             let _ = writeln!(out, "- {line}");
         }
-        self.commands(out);
+        self.build_line(out);
+        if let Some(command) = &execution.test {
+            let line = self.t("prompt.review.suite").replace("{command}", command).replace("{commit}", commit);
+            let _ = writeln!(out, "- {line}");
+        }
         let _ = writeln!(out, "- {}", self.t("prompt.review.jobs"));
         let _ = writeln!(out, "- {}", self.t("prompt.review.cleanup").replace("{copy}", &copy.path));
         out.push('\n');
@@ -1465,11 +1552,16 @@ impl Writer<'_> {
     /// Os comandos de compilar e de testar que o projeto declara, um por
     /// linha; o que ele não declara não aparece.
     fn commands(&self, out: &mut String) {
-        let execution = &self.material.execution;
-        for (key, command) in [("prompt.execution.build", &execution.build), ("prompt.execution.test", &execution.test)] {
-            if let Some(command) = command {
-                let _ = writeln!(out, "- {}", self.t(key).replace("{command}", command));
-            }
+        self.build_line(out);
+        if let Some(command) = &self.material.execution.test {
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.test").replace("{command}", command));
+        }
+    }
+
+    /// O comando de compilar que o projeto declara; sem ele, nada.
+    fn build_line(&self, out: &mut String) {
+        if let Some(command) = &self.material.execution.build {
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.build").replace("{command}", command));
         }
     }
 

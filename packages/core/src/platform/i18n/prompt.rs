@@ -80,17 +80,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Outside it, no loose text."
         }
         // O agente de teste dedicado, que o fechamento pede a toda obra —
-        // mesmo a de uma onda só —, no lugar da revisão de cada onda.
+        // mesmo a de uma onda só —, no lugar da revisão de cada onda. A
+        // parte fixa diz o que o pedido é e o que devolver; o que olhar vem
+        // logo depois, e muda na revisão que volta depois de uma reprovação.
         ("prompt.final.title", Locale::PtBr) => "{spec} — agente de teste dedicado",
         ("prompt.final.title", Locale::EnUs) => "{spec} — dedicated test agent",
         ("prompt.final.fixed", Locale::PtBr) => {
             "**O que é isto.** O pedido do agente de teste dedicado desta spec, com a obra inteira, \
              montado pelo binário a partir dela. Nenhum texto vem copiado: cada parte traz só os \
              códigos dos itens, em sequência, numa linha por bloco da spec.\n\n\
-             **O que olhar.** As entregas, os critérios, as mudanças da branch, as emendas gravadas \
-             entre as ondas e o que cada onda deixou aberto. Olhe como as ondas se encaixam: código \
-             repetido entre ondas, decisão de uma que contradiz a de outra, verificação que uma \
-             apagou da outra. Aponte só; não conserte.\n\n\
              **O que devolver.** O veredito com `\"final\":true`, gravado por `mustard-rt run write \
              verdict`. O pedido traz os requisitos acordados inteiros da spec, dono ou não de onda. \
              Responda por cada item em `agreed`, com o código em `item` e `met` dizendo se está \
@@ -102,10 +100,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "**What this is.** The dedicated test agent's request for this spec, with the whole \
              work, assembled by the binary from it. No text is copied in: each part carries only \
              the items' codes, in sequence, one line per spec block.\n\n\
-             **What to look at.** The deliveries, the criteria, the branch changes, the amendments \
-             recorded between waves and what each wave left open. Look at how the waves fit \
-             together: code repeated across them, a decision of one that contradicts another's, a \
-             verification one erased from another. Point it out only; do not fix it.\n\n\
              **What to return.** The verdict with `\"final\":true`, recorded through `mustard-rt run \
              write verdict`. The request carries the spec's whole agreed requirements, owned by a \
              wave or not. Answer for each item in `agreed`, with the code in `item` and `met` \
@@ -113,6 +107,38 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the files, and they become a new task. Missing any agreed requirement from the list is \
              a malformed verdict: nothing gets recorded."
         }
+        // A primeira revisão da obra confere tudo.
+        ("prompt.final.look", Locale::PtBr) => {
+            "**O que olhar.** As entregas, os critérios, as mudanças da branch, as emendas gravadas \
+             entre as ondas e o que cada onda deixou aberto. Olhe como as ondas se encaixam: código \
+             repetido entre ondas, decisão de uma que contradiz a de outra, verificação que uma \
+             apagou da outra. Aponte só; não conserte."
+        }
+        ("prompt.final.look", Locale::EnUs) => {
+            "**What to look at.** The deliveries, the criteria, the branch changes, the amendments \
+             recorded between waves and what each wave left open. Look at how the waves fit \
+             together: code repeated across them, a decision of one that contradicts another's, a \
+             verification one erased from another. Point it out only; do not fix it."
+        }
+        // A revisão que volta depois de uma reprovação confere só o que mudou
+        // e o encaixe disso no resto. Para o que não mudou, vale a conclusão
+        // anterior; o veredito continua respondendo por todo o combinado.
+        ("prompt.final.look_again", Locale::PtBr) => {
+            "**O que olhar.** Esta revisão volta depois de um veredito que reprovou. A parte do que \
+             mudou lista esse veredito, os commits e os itens gravados ou regravados depois dele. Ela \
+             lista também os itens que ele deu como não atendidos. Confira essa parte e como ela se \
+             encaixa no resto da obra. Para os outros requisitos acordados, repita a conclusão do \
+             veredito anterior. Aponte só; não conserte."
+        }
+        ("prompt.final.look_again", Locale::EnUs) => {
+            "**What to look at.** This review comes back after a verdict that rejected the work. The \
+             part on what changed lists that verdict, the commits and the items recorded or \
+             re-recorded after it. It also lists the items that verdict marked as not met. Check that \
+             part and how it fits the rest of the work. For the other agreed requirements, repeat \
+             the previous verdict's conclusion. Point it out only; do not fix it."
+        }
+        ("prompt.part.since_verdict", Locale::PtBr) => "O que mudou desde o veredito anterior",
+        ("prompt.part.since_verdict", Locale::EnUs) => "What changed since the previous verdict",
         // Como ler, logo depois da parte fixa. `{root}` é `--root <caminho> `
         // quando o agente trabalha numa cópia, e nada quando não trabalha.
         // O pedido de uma onda já traz o título e a parte do agente de cada
@@ -335,6 +361,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The local files git ignores and the copy needs are {files}. Whatever is missing from \
              it, copy from the main repository `{root}` by content, never by link or shortcut."
         }
+        // O fechamento roda a suíte e os critérios antes de pedir a revisão,
+        // no mesmo commit em que a cópia do revisor nasce. O revisor não a
+        // repete: roda só o que cerca os cortes que ele faz.
+        ("prompt.review.suite", Locale::PtBr) => {
+            "A suíte `{command}` e os critérios já passaram no fechamento, no commit `{commit}` desta \
+             cópia. Não rode a suíte inteira de novo: rode só os testes em volta de cada corte, com \
+             esse comando filtrado."
+        }
+        ("prompt.review.suite", Locale::EnUs) => {
+            "The suite `{command}` and the criteria already passed at the close, at commit `{commit}` \
+             of this copy. Do not run the whole suite again: run only the tests around each cut, \
+             with that command filtered."
+        }
         ("prompt.review.jobs", Locale::PtBr) => {
             "Compile e teste com menos processos em paralelo que o normal: as ondas compilam ao mesmo \
              tempo que você."
@@ -365,8 +404,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            46,
-            0xa782_62f9_be30_947f,
+            50,
+            0xd6e6_962f_5a2e_1ba5,
         );
     }
 }

@@ -257,6 +257,13 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// [`crate::domain::spec_events::SpecLog::last_rejected`]) restringe as
 /// ondas, as emendas e as entregas a ela: o agente confere só o conserto, sem
 /// reabrir a obra inteira.
+///
+/// Depois de um veredito final que reprovou, o pedido é o da revisão de
+/// volta: ele lista o que mudou desde esse veredito
+/// ([`wave_prompt::since_last_verdict`]), e o revisor confere isso e o
+/// encaixe no resto, sem repetir o que o veredito já concluiu. Os requisitos
+/// acordados continuam todos no pedido, porque o veredito responde por cada
+/// um.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> String {
     let planned = log.planned_waves();
@@ -303,6 +310,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         fix,
         own_delivered,
         changes,
+        since_verdict: wave_prompt::since_last_verdict(log),
         execution,
         codes: log.codes(),
         ..Material::default()
@@ -508,6 +516,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         task_reads,
         file_tests,
         changes: Vec::new(),
+        since_verdict: Vec::new(),
         codes,
     };
     let text = wave_prompt::write(&material, lang);
@@ -1606,6 +1615,103 @@ mod tests {
         assert_eq!(slot_name(25), "z");
         assert_eq!(slot_name(26), "27");
         assert_eq!(slot_path(root, "teste", 1), copies_dir(root).join("teste").join("b"));
+    }
+
+    /// A obra da revisão de volta: três requisitos acordados, um critério, a
+    /// onda e o commit dela, e o veredito final que reprovou um requisito.
+    /// Depois dele, um commit novo, a versão nova de outro requisito, um
+    /// requisito novo e um critério novo. `verdict` troca o veredito: `None`
+    /// tira ele e tudo o que veio depois; `Some("approved")` o grava
+    /// aprovando.
+    fn reviewed_again(root: &Path, verdict: Option<&str>) -> SpecLog {
+        let repo = root.file_name().unwrap().to_string_lossy().to_string();
+        let commit = |sha: &str| {
+            ("commit", json!({"sha": sha, "title": "t", "waves": [1], "files": ["src/a.rs"], "repo": repo}))
+        };
+        let mut events = vec![
+            ("rule", json!({"text": "Atendida antes", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("decision", json!({"text": "Reprovada", "keys": ["b"], "why": "w"})),
+            ("decision", json!({"text": "Regravada", "keys": ["c"], "why": "w"})),
+            ("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true"})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [4], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+            commit("aaa1111"),
+        ];
+        let Some(result) = verdict else { return log_of(&events) };
+        let agreed = json!([{"item": 1, "met": true}, {"item": 2, "met": false, "text": "falta"}, {"item": 3, "met": true}]);
+        events.push(("verdict", json!({"final": true, "result": result, "text": "v", "agreed": agreed})));
+        events.push(commit("bbb2222"));
+        events.push(("decision", json!({"text": "Regravada de novo", "keys": ["c"], "why": "w", "replaces": 3})));
+        events.push(("rule", json!({"text": "Nova", "keys": ["d"], "example": "e", "applies_to": {"files": ["**"]}})));
+        events.push(("criterion", json!({"when": "a volta roda", "then": "passa", "proof": "true"})));
+        log_of(&events)
+    }
+
+    /// As linhas de lista da parte `heading` de um pedido; vazia quando a
+    /// parte não existe.
+    fn part_lines(text: &str, heading: &str) -> Vec<String> {
+        let Some((_, rest)) = text.split_once(&format!("## {heading}\n")) else { return Vec::new() };
+        let part = rest.split("\n## ").next().unwrap_or_default();
+        part.lines().filter(|line| line.starts_with("- ")).map(str::to_string).collect()
+    }
+
+    /// A revisão que volta depois de um veredito final que reprovou traz a
+    /// parte do que mudou desde ele: o veredito, só os commits gravados
+    /// depois dele, o requisito que ele deu como não atendido, o regravado e
+    /// o novo depois dele e o critério novo. O resto não entra nessa parte,
+    /// mas todos os requisitos acordados continuam no pedido, porque o
+    /// veredito responde por cada um. A primeira revisão, e a que vem depois
+    /// de uma aprovação, conferem a obra inteira, sem essa parte. Nenhuma
+    /// manda rodar a suíte: dizem que ela passou no fechamento, no commit da
+    /// cópia, e mandam rodar só os testes em volta de cada corte. Nos dois
+    /// idiomas.
+    #[test]
+    fn a_review_after_a_rejection_lists_only_what_changed_since_the_verdict() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let config = json!({"buildCommand": "make", "testCommand": "make test"});
+        std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+        let again = reviewed_again(root, Some("rejected"));
+        let codes = again.codes();
+        let code = |id: u64| codes[&id].clone();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let t = |key: &str| crate::platform::i18n::translate(key, lang);
+            let since = t("prompt.part.since_verdict");
+            let whole_suite = t("prompt.execution.test").replace("{command}", "make test");
+            let build = format!("- {}", t("prompt.execution.build").replace("{command}", "make"));
+
+            let last = final_review(root, "teste", &again, lang);
+            assert_eq!(
+                part_lines(&last, since),
+                [
+                    format!("- `review`: {}", code(8)),
+                    format!("- `progress`: {}", code(9)),
+                    format!("- `agreed`: {}, {}, {}", code(2), code(10), code(11)),
+                    format!("- `criteria`: {}", code(12)),
+                ],
+                "{lang:?}: {last}"
+            );
+            assert!(!part_lines(&last, since).concat().contains(&code(7)), "o commit de antes fica fora: {last}");
+            assert_eq!(
+                part_lines(&last, t("prompt.part.agreed")),
+                [format!("- `agreed`: {}, {}, {}, {}", code(1), code(2), code(10), code(11))],
+                "o pedido ainda traz todos os requisitos acordados: {last}"
+            );
+            assert!(last.contains(t("prompt.final.look_again")) && !last.contains(t("prompt.final.look")), "{last}");
+            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "bbb2222");
+            assert!(last.contains(&format!("- {suite}")) && last.contains(&build), "{lang:?}: {last}");
+            assert!(!last.contains(&whole_suite), "a revisão não roda a suíte inteira: {last}");
+
+            for (what, log) in [("primeira", reviewed_again(root, None)), ("aprovada", reviewed_again(root, Some("approved")))] {
+                let first = final_review(root, "teste", &log, lang);
+                assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{what}: {first}");
+                assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{what}: {first}");
+                assert!(!first.contains(&whole_suite), "{what}: a revisão não roda a suíte inteira: {first}");
+                let sha = if log.max_id() > 7 { "bbb2222" } else { "aaa1111" };
+                let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", sha);
+                assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{what}: {first}");
+            }
+        }
     }
 
     /// Num projeto que declara o preparo (`npm ci`) e os arquivos locais, o
