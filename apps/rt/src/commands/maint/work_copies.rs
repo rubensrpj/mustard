@@ -374,7 +374,7 @@ mod tests {
     /// O nome antigo de cópia diz a obra; o que não segue o desenho não diz.
     #[test]
     fn the_old_copy_name_tells_the_work() {
-        assert_eq!(old_spec("ajuste-na-spec-fechada-44").as_deref(), Some("ajuste-na-spec-fechada"));
+        assert_eq!(old_spec("obra-de-exemplo-12").as_deref(), Some("obra-de-exemplo"));
         assert_eq!(old_spec("x-final-review").as_deref(), Some("x"));
         assert_eq!(old_spec("sem-numero"), None);
         assert_eq!(old_spec("-3"), None);

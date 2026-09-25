@@ -652,7 +652,7 @@ pub(super) fn run_entered_round(
     // para a rodada que trouxer a escolha.
     let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &log, &ready, &given, lang);
     warnings.extend(ignored);
-    let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, &occupied, false, lang);
+    let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, false, lang);
     warnings.extend(not_copied);
     let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as que

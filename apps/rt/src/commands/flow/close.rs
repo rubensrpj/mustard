@@ -1823,27 +1823,53 @@ mod tests {
         assert!(outside.join("arquivo").is_file(), "the link's target stays");
     }
 
+    /// `true` quando a lista de travas do sistema (`/proc/locks`) mostra este
+    /// processo esperando a trava do arquivo de número `inode`: a linha de
+    /// quem espera traz `->` antes do tipo da trava.
+    #[cfg(target_os = "linux")]
+    fn waiting_for_lock(inode: u64) -> bool {
+        let pid = std::process::id().to_string();
+        let inode = inode.to_string();
+        std::fs::read_to_string("/proc/locks").unwrap_or_default().lines().any(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            fields.get(1) == Some(&"->")
+                && fields.get(5) == Some(&pid.as_str())
+                && fields.get(6).and_then(|file| file.rsplit(':').next()) == Some(inode.as_str())
+        })
+    }
+
     /// A remoção espera a trava do passo do git, que a rodada segura ao
     /// compilar antes do commit: enquanto outra rodada a segura, a pasta fica;
-    /// solta a trava, ela sai.
+    /// solta a trava, ela sai. Sem relógio: o teste segue quando a lista de
+    /// travas do sistema mostra a remoção parada na trava, ou falha quando a
+    /// remoção termina antes, sem ter esperado.
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_removal_waits_for_the_git_step_lock() {
+        use std::os::unix::fs::MetadataExt;
         use std::sync::mpsc;
-        use std::time::Duration;
         let dir = tempdir().unwrap();
         let root = dir.path();
         let built = project_with_build(root, r#"{"buildOutput":["target"]}"#);
-        std::fs::create_dir_all(root.join(".claude").join("spec")).unwrap();
+        let specs = root.join(".claude").join("spec");
+        std::fs::create_dir_all(&specs).unwrap();
 
         let held = crate::commands::git_settle::git_step_lock(root).unwrap();
+        let lock: Vec<PathBuf> = std::fs::read_dir(&specs).unwrap().flatten().map(|entry| entry.path()).collect();
+        assert_eq!(lock.len(), 1, "the lock is the only file in the spec folder: {lock:?}");
+        let inode = std::fs::metadata(&lock[0]).unwrap().ino();
         std::thread::scope(|scope| {
             let (done_tx, done_rx) = mpsc::channel();
             scope.spawn(move || done_tx.send(remove_build_output(root, Locale::PtBr).removed));
-            let early = done_rx.recv_timeout(Duration::from_millis(500));
-            assert!(early.is_err(), "the removal waits while another round compiles");
+            while !waiting_for_lock(inode) {
+                if let Ok(removed) = done_rx.try_recv() {
+                    panic!("the removal ran while another round held the lock: {removed:?}");
+                }
+                std::thread::yield_now();
+            }
             assert!(built.is_file(), "the build of the other round stays while it holds the lock");
             drop(held);
-            assert_eq!(done_rx.recv_timeout(Duration::from_secs(30)), Ok(vec!["target".to_string()]));
+            assert_eq!(done_rx.recv(), Ok(vec!["target".to_string()]));
         });
         assert!(!built.exists());
     }

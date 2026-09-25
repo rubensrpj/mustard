@@ -73,36 +73,46 @@ fn git_describe() -> Option<(String, bool, String)> {
 /// stamped hash/date stay current. Best-effort: a missing `.git` (no repo, or a
 /// packaged source tree) just skips the watches.
 ///
-/// The watched paths are printed relative to this crate. Cargo keeps a watched
-/// path as printed, and the build folder is shared between copies of the
-/// project: an absolute path names the copy that ran this script, so the next
-/// copy sees another path — or a missing file, once that copy is gone — and
-/// recompiles this crate.
-///
-/// In a linked worktree (`git worktree add`, the kind of working copy made for
-/// each batch of work) the git folder lives outside the checkout, under a name
-/// of its own, so no path to it reads the same from two copies: there the
-/// watches are skipped. Such a copy is born at one commit and is gone before
-/// the next; the next copy brings
-/// files newer than the last build, `build.rs` among them, and that recompiles
-/// and re-runs this script, which stamps the new commit.
+/// The watched files are the checkout's own `HEAD` and, when HEAD points at a
+/// branch, that branch's file. In the main checkout the git folder sits inside
+/// it, and the watch is printed relative to this crate. In a linked worktree
+/// (`git worktree add`, the kind of fixed working copy each slot of work keeps
+/// from one batch to the next, with its own build folder inside it) the git
+/// folder of the copy lives outside the checkout, under the main checkout's
+/// `.git/worktrees/<name>`, and the watch names it by its absolute path. The
+/// build folder belongs to that copy alone, so the absolute path always names
+/// the copy being built; moving the copy to another commit (`git checkout
+/// --detach`, which leaves every unchanged file with its old date) rewrites
+/// that `HEAD`, and that re-runs this script, which stamps the new commit.
 fn rerun_if_git_head_changed() {
-    let (Some(git_dir), Some(top)) = (git(&["rev-parse", "--absolute-git-dir"]), git(&["rev-parse", "--show-toplevel"]))
-    else {
+    let (Some(git_dir), Some(common_dir), Some(top)) = (
+        git(&["rev-parse", "--absolute-git-dir"]),
+        git(&["rev-parse", "--git-common-dir"]),
+        git(&["rev-parse", "--show-toplevel"]),
+    ) else {
         return;
     };
-    let Some(crate_root) = std::env::var_os("CARGO_MANIFEST_DIR") else {
+    let (Some(crate_root), Ok(here)) = (std::env::var_os("CARGO_MANIFEST_DIR"), std::env::current_dir()) else {
         return;
     };
-    let Some(git_dir) = relative_inside(Path::new(&crate_root), Path::new(&top), Path::new(&git_dir)) else {
-        return;
-    };
-    println!("cargo:rerun-if-changed={git_dir}/HEAD");
-    // The packed/loose ref HEAD points at (e.g. refs/heads/<branch>) — its
-    // change is what actually moves the commit on a normal `git commit`.
+    let (crate_root, top) = (Path::new(&crate_root), Path::new(&top));
+    println!("cargo:rerun-if-changed={}", watched(crate_root, top, &Path::new(&git_dir).join("HEAD")));
+    // The ref HEAD points at (e.g. refs/heads/<branch>) — its change is what
+    // actually moves the commit on a normal `git commit`. Branch files live in
+    // the git folder every worktree shares (`--git-common-dir`, printed
+    // relative to the folder git ran in).
     if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        println!("cargo:rerun-if-changed={git_dir}/{reference}");
+        println!("cargo:rerun-if-changed={}", watched(crate_root, top, &here.join(&common_dir).join(reference)));
     }
+}
+
+/// The path cargo watches for `file`: relative to this crate when it sits
+/// inside the checkout `top`, absolute otherwise — the git folder of a linked
+/// worktree lies outside it, and so does a branch file that is missing because
+/// the branch is kept only in `packed-refs`, which cargo then treats as
+/// changed on every build.
+fn watched(crate_root: &Path, top: &Path, file: &Path) -> String {
+    relative_inside(crate_root, top, file).unwrap_or_else(|| file.to_string_lossy().replace('\\', "/"))
 }
 
 /// `target` as a path relative to `from`, when both sit inside `top`; `None`

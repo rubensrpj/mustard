@@ -134,11 +134,12 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
 pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{backlog_left, open_review, open_sends, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use queue::{backlog_left, open_review, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
 pub(crate) use slots::{
-    ensure_copy, local_file_ignored, local_file_missing, remove_copy, remove_spec_copies, reset_slot, spec_copies,
+    ensure_copy, held_slots, local_file_ignored, local_file_missing, remove_copy, remove_spec_copies, reset_slot,
+    spec_copies,
 };
 pub(crate) use report::{check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;

@@ -100,3 +100,91 @@ fn the_version_shows_the_commit_from_the_environment() {
     );
     assert_eq!(full, "9.9.9 (build dev, gdeadbeef1234-dirty 2026-01-02)", "a versão tem de trazer o commit da variável de ambiente: {full}");
 }
+
+/// O `git` em `dir`, com quem comita já dito, e a saída sem as bordas.
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Um projeto git em `root` com dois pacotes, cada um com um dos dois
+/// scripts de build de verdade — o do `mustard-rt` e o do `mustard` — e um
+/// binário que só imprime a versão que o script carimbou.
+fn stamped_project(root: &Path) {
+    let write = |path: &str, body: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent folder")).expect("mkdir");
+        std::fs::write(path, body).expect("write");
+    };
+    write("Cargo.toml", "[workspace]\nmembers = [\"apps/rt\", \"apps/cli\"]\nresolver = \"2\"\n");
+    for (crate_dir, name) in [("apps/rt", "carimbo-rt"), ("apps/cli", "carimbo-cli")] {
+        let manifest = format!("[package]\nname = \"{name}\"\nversion = \"9.9.9\"\nedition = \"2021\"\n");
+        write(&format!("{crate_dir}/Cargo.toml"), &manifest);
+        let script = std::fs::read_to_string(repo_root().join(crate_dir).join("build.rs")).expect("the build script");
+        write(&format!("{crate_dir}/build.rs"), &script);
+        write(&format!("{crate_dir}/src/main.rs"), "fn main() {\n    println!(\"{}\", env!(\"MUSTARD_VERSION_FULL\"));\n}\n");
+    }
+    write("plugin/hooks/hooks.json", "{}\n");
+    write(".gitignore", "target/\nCargo.lock\n");
+    write("LEIAME.md", "um\n");
+    git_in(root, &["init", "-q"]);
+    git_in(root, &["add", "-A"]);
+    git_in(root, &["commit", "-q", "-m", "primeiro"]);
+}
+
+/// Compila o projeto de teste na cópia `copy`, com a pasta de compilação
+/// dentro dela, pelo mesmo cargo que roda os testes, e devolve a versão que
+/// cada binário imprime.
+fn build_and_read_versions(copy: &Path) -> Vec<String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut build = Command::new(cargo);
+    build.args(["build", "--offline", "--quiet"]).current_dir(copy).env("CARGO_TARGET_DIR", copy.join("target"));
+    for var in ["MUSTARD_BUILD_NUMBER", "MUSTARD_GIT_HASH", "MUSTARD_GIT_DIRTY", "MUSTARD_GIT_DATE", "GIT_DIR", "GIT_WORK_TREE"] {
+        build.env_remove(var);
+    }
+    let out = build.output().expect("cargo runs");
+    assert!(out.status.success(), "cargo build: {}", String::from_utf8_lossy(&out.stderr));
+    ["carimbo-rt", "carimbo-cli"]
+        .iter()
+        .map(|name| {
+            let bin = copy.join("target").join("debug").join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+            let out = Command::new(&bin).output().expect("the stamped binary runs");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        })
+        .collect()
+}
+
+/// Na cópia ligada ao projeto (`git worktree add`), com a compilação dentro
+/// dela, a versão acompanha o commit da cópia: compilada num commit, levada a
+/// outro com `checkout --detach` — que só muda o arquivo que o commit mudou,
+/// e nenhum dos pacotes — e compilada de novo, a versão dos dois binários
+/// mostra o commit novo.
+#[test]
+fn a_linked_copy_moved_to_another_commit_stamps_the_new_commit() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("projeto");
+    std::fs::create_dir_all(&root).expect("mkdir");
+    stamped_project(&root);
+    let copy = tmp.path().join("vaga");
+    git_in(&root, &["worktree", "add", "-q", "--detach", &copy.to_string_lossy(), "HEAD"]);
+
+    let first = git_in(&copy, &["rev-parse", "--short=12", "HEAD"]);
+    for version in build_and_read_versions(&copy) {
+        assert!(version.contains(&format!("g{first} ")), "a primeira compilação carimba o commit da cópia: {version}");
+    }
+
+    std::fs::write(root.join("LEIAME.md"), "dois\n").expect("write");
+    git_in(&root, &["commit", "-q", "-am", "segundo"]);
+    let second = git_in(&root, &["rev-parse", "--short=12", "HEAD"]);
+    git_in(&copy, &["checkout", "-q", "--detach", "--force", &second]);
+
+    for version in build_and_read_versions(&copy) {
+        assert!(version.contains(&format!("g{second} ")), "a cópia levada a outro commit carimba o novo: {version}");
+    }
+}

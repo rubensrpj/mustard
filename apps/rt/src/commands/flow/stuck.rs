@@ -16,9 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::{final_copy_path, is_slot_of, recorded_copy};
 use mustard_core::platform::i18n::{translate, Locale};
 
 #[cfg(target_os = "linux")]
@@ -116,35 +114,27 @@ fn is_slot_folder(copies: &Path, spec: &str, slot: &str) -> bool {
 }
 
 /// As vagas com trabalho de cada spec que tem pasta sob `copies`, pelo nome:
-/// a cópia gravada em cada envio aberto de onda — a órfã inclusive, que a
-/// rodada reenvia na mesma vaga — e, com a revisão final aberta, a vaga
-/// dela. A spec sem registro no projeto não tem vaga com trabalho.
+/// as presas da spec, pela mesma conta do despacho
+/// ([`crate::commands::flow::round::held_slots`]) — o envio aberto de onda e
+/// a revisão final aberta. A spec sem registro no projeto não tem vaga com
+/// trabalho.
 fn busy_slots(root: &Path, copies: &Path) -> BTreeMap<String, BTreeSet<String>> {
     let Ok(entries) = std::fs::read_dir(copies) else { return BTreeMap::new() };
+    let name = |copy: &str| Path::new(copy).file_name().map(|name| name.to_string_lossy().into_owned());
     entries
         .flatten()
         .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
         .map(|spec| {
             let log = store::spec_file(root, &spec).ok().and_then(|path| store::read(&path).ok().flatten());
-            let held = log.map(|log| held_slots(root, &spec, &log)).unwrap_or_default();
+            let held = log
+                .map(|log| crate::commands::flow::round::held_slots(root, &spec, &log))
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|copy| name(copy))
+                .collect();
             (spec, held)
         })
         .collect()
-}
-
-/// As vagas com trabalho da spec `spec`, lida em `log`, pelo nome.
-fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<String> {
-    let name = |copy: &Path| copy.file_name().map(|name| name.to_string_lossy().into_owned());
-    let mut held: BTreeSet<String> = crate::commands::flow::round::open_sends(log)
-        .keys()
-        .filter_map(|wave| recorded_copy(log, *wave))
-        .filter(|copy| is_slot_of(root, spec, &copy.path))
-        .filter_map(|copy| name(Path::new(&copy.path)))
-        .collect();
-    if crate::commands::flow::round::open_review(log).is_some() {
-        held.extend(name(&final_copy_path(root, spec, log)));
-    }
-    held
 }
 
 /// O trecho de `argv` que um shell recebeu por `-c`: `["sh", "-c", "while …
@@ -455,29 +445,57 @@ mod tests {
         let _ = foreign_orphan.wait();
     }
 
-    /// A spec `x` com o plano de duas ondas e o pedido aberto da onda 2,
-    /// gravado na vaga b; a onda 1 já foi entregue. Linhas escritas direto no
-    /// arquivo de eventos, como a rodada as deixa.
-    fn spec_with_wave_two_running(root: &Path) {
+    /// A spec `x` com o plano de duas ondas: a onda 1 saiu na vaga a e foi
+    /// entregue; depois dela, as linhas `after`. Linhas escritas direto no
+    /// arquivo de eventos, como a rodada as deixa, numeradas na ordem.
+    fn spec_with_wave_one_delivered(root: &Path, after: &[serde_json::Value]) {
         use mustard_core::io::wave_prompt::{shown, slot_path};
         let folder = root.join(".claude").join("spec").join("x");
         std::fs::create_dir_all(&folder).expect("spec folder");
         let at = "2026-09-25T10:00:00-03:00";
         let lines = [
-            serde_json::json!({"v": 1, "id": 1, "at": at, "type": "message", "author": "user", "text": "o objetivo"}),
-            serde_json::json!({"v": 1, "id": 2, "at": at, "type": "wave", "author": "assistant", "n": 1,
+            serde_json::json!({"type": "message", "author": "user", "text": "o objetivo"}),
+            serde_json::json!({"type": "wave", "author": "assistant", "n": 1,
                 "text": "Onda 1.", "done_when": "A suíte passa.", "origin": 1}),
-            serde_json::json!({"v": 1, "id": 3, "at": at, "type": "wave", "author": "assistant", "n": 2,
+            serde_json::json!({"type": "wave", "author": "assistant", "n": 2,
                 "text": "Onda 2.", "done_when": "A suíte passa.", "origin": 1}),
-            serde_json::json!({"v": 1, "id": 4, "at": at, "type": "send", "author": "binary", "wave": 1,
+            serde_json::json!({"type": "send", "author": "binary", "wave": 1,
                 "role": "wave", "text": "pedido", "copy": shown(&slot_path(root, "x", 0))}),
-            serde_json::json!({"v": 1, "id": 5, "at": at, "type": "delivered", "author": "assistant", "wave": 1,
-                "text": "entregue"}),
-            serde_json::json!({"v": 1, "id": 6, "at": at, "type": "send", "author": "binary", "wave": 2,
-                "role": "wave", "text": "pedido", "copy": shown(&slot_path(root, "x", 1))}),
+            serde_json::json!({"type": "delivered", "author": "assistant", "wave": 1, "text": "entregue"}),
         ];
-        let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+        let text: String = lines
+            .iter()
+            .chain(after)
+            .zip(1_u64..)
+            .map(|(line, id)| {
+                let mut line = line.clone();
+                line["v"] = serde_json::json!(1);
+                line["id"] = serde_json::json!(id);
+                line["at"] = serde_json::json!(at);
+                line.to_string() + "\n"
+            })
+            .collect();
         std::fs::write(folder.join("spec.ndjson"), text).expect("spec file");
+    }
+
+    /// A spec `x` com o pedido aberto da onda 2, gravado na vaga b; a onda 1
+    /// já foi entregue.
+    fn spec_with_wave_two_running(root: &Path) {
+        use mustard_core::io::wave_prompt::{shown, slot_path};
+        spec_with_wave_one_delivered(
+            root,
+            &[serde_json::json!({"type": "send", "author": "binary", "wave": 2, "role": "wave", "text": "pedido",
+                "copy": shown(&slot_path(root, "x", 1))})],
+        );
+    }
+
+    /// As vagas `slots` da pasta das cópias, cada uma com uma pasta de código
+    /// e o `.git` em arquivo, como a cópia ligada ao projeto.
+    fn live_slots(slots: &[&Path]) {
+        for copy in slots {
+            std::fs::create_dir_all(copy.join("src")).expect("copy dir");
+            std::fs::write(copy.join(".git"), "gitdir: /nowhere\n").expect("the copy's git link");
+        }
     }
 
     /// A vaga fica no disco de uma onda para a seguinte. O processo parado
@@ -496,10 +514,7 @@ mod tests {
         let free = slot_path(root, "x", 0);
         let held = slot_path(root, "x", 1);
         let old = copies_dir(root).join("x-3");
-        for copy in [&free, &held, &old] {
-            std::fs::create_dir_all(copy.join("src")).expect("copy dir");
-            std::fs::write(copy.join(".git"), "gitdir: /nowhere\n").expect("the copy's git link");
-        }
+        live_slots(&[&free, &held, &old]);
 
         let mut idle = spawn(Command::new("sleep").arg("32").current_dir(free.join("src")));
         let mut working = spawn(Command::new("sleep").arg("33").current_dir(held.join("src")));
@@ -522,6 +537,40 @@ mod tests {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+
+    /// A vaga da revisão final aberta tem trabalho, como a de uma onda em
+    /// andamento: o processo do revisor, parado na vaga da última onda, fica;
+    /// o da vaga sem onda nem revisão é encerrado.
+    #[test]
+    fn a_process_in_the_slot_of_the_open_final_review_is_left_alone() {
+        use mustard_core::io::wave_prompt::slot_path;
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        crate::commands::flow::round::copies_leave_with_the_test(root);
+        spec_with_wave_one_delivered(
+            root,
+            &[serde_json::json!({"type": "send", "author": "binary", "role": "review", "text": "revise"})],
+        );
+        let review = slot_path(root, "x", 0);
+        let free = slot_path(root, "x", 1);
+        live_slots(&[&review, &free]);
+
+        let mut reviewing = spawn(Command::new("sleep").arg("35").current_dir(review.join("src")));
+        let mut idle = spawn(Command::new("sleep").arg("36").current_dir(free.join("src")));
+        wait_until_spawned(reviewing.id(), "sleep");
+        wait_until_spawned(idle.id(), "sleep");
+
+        let ended = end_stuck_processes(root);
+        assert!(gone(&mut idle), "the command left in the slot with no work must be ended");
+        assert!(reviewing.try_wait().ok().flatten().is_none(), "the slot of the open final review is left alone");
+        let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
+        assert!(reasons.contains(&(idle.id(), "idle_copy")), "{reasons:?}");
+        assert!(!reasons.iter().any(|(pid, _)| *pid == reviewing.id()), "{reasons:?}");
+
+        let _ = reviewing.kill();
+        let _ = reviewing.wait();
     }
 
     /// Sem processo nenhum encerrado, a linha da resposta não existe: o

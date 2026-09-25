@@ -11,20 +11,41 @@ use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
 use mustard_core::domain::wave_prompt::{Reuse, WaveCopy};
 use mustard_core::io::fs::lock::LockedFile;
-use mustard_core::io::wave_prompt::{copies_dir, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir};
+use mustard_core::io::wave_prompt::{
+    copies_dir, final_copy_path, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
+};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-use super::queue::{max_parallel, orphaned_waves};
+use super::queue::{max_parallel, open_review, open_sends, orphaned_waves};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 
+/// As vagas presas da spec `spec`, lida em `log`, cada uma pelo caminho como
+/// o envio a grava: a cópia gravada em cada envio aberto de onda — a órfã
+/// inclusive, que a rodada reenvia na mesma vaga — e, com a revisão final
+/// aberta, a vaga dela ([`final_copy_path`]). É a conta única da vaga
+/// ocupada: o despacho não entrega nenhuma delas a outra onda, e a busca dos
+/// processos presos não encerra o que roda nelas.
+pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<String> {
+    let mut held: BTreeSet<String> = open_sends(log)
+        .keys()
+        .filter_map(|wave| recorded_copy(log, *wave))
+        .map(|copy| copy.path)
+        .filter(|copy| is_slot_of(root, spec, copy))
+        .collect();
+    if open_review(log).is_some() {
+        held.insert(shown(&final_copy_path(root, spec, log)));
+    }
+    held
+}
+
 /// As cópias das ondas `waves`, que saem agora, cada uma numa vaga livre da
-/// spec `spec`: a vaga que nenhum envio aberto (`running`, órfãs incluídas)
-/// gravou. A vaga é uma cópia fixa, com a compilação dentro dela, que passa
-/// de uma onda para a seguinte: só o que o git mudou muda de data, e a
-/// compilação refaz só isso.
+/// spec `spec`: a vaga que não está presa ([`held_slots`]) por um envio
+/// aberto nem pela revisão final aberta. A vaga é uma cópia fixa, com a
+/// compilação dentro dela, que passa de uma onda para a seguinte: só o que o
+/// git mudou muda de data, e a compilação refaz só isso.
 ///
 /// A onda que sai de novo e cujo último envio, sem entrega depois, gravou uma
 /// vaga hoje livre — a replanejada — volta a essa vaga, e a cópia com
@@ -45,7 +66,6 @@ pub(super) fn open_copies(
     log: &SpecLog,
     _held: &LockedFile,
     waves: &[u64],
-    running: &BTreeMap<u64, u64>,
     solo: bool,
     lang: Locale,
 ) -> (BTreeMap<u64, WaveCopy>, Vec<Value>) {
@@ -59,7 +79,7 @@ pub(super) fn open_copies(
     for wave in orphaned_waves(log).keys() {
         super::commit::clean_orphan_copy(root, log, *wave);
     }
-    let held: BTreeSet<String> = running.keys().filter_map(|n| recorded_copy(log, *n)).map(|copy| copy.path).collect();
+    let held = held_slots(root, spec, log);
     let mut free: Vec<PathBuf> =
         (0..max_parallel(root)).map(|slot| slot_path(root, spec, slot)).filter(|slot| !held.contains(&shown(slot))).collect();
 
@@ -439,4 +459,117 @@ fn copy_submodule(root: &Path, copy: &Path, sub: &str, unit: &str) -> Result<(),
     git::run(&repo, &["worktree", "prune"]).result()?;
     let target = inner.to_string_lossy();
     git::run(&repo, &["worktree", "add", "--detach", &target, "HEAD"]).result().map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Component;
+
+    use mustard_core::io::spec_events as store;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::commands::flow::round::tests::*;
+
+    /// A spec `x`, como a rodada a deixou no arquivo de eventos.
+    fn spec_log(root: &Path) -> SpecLog {
+        store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
+    }
+
+    /// A cópia gravada no envio mais novo da onda `wave` da spec `x`.
+    fn sent_copy(root: &Path, wave: u64) -> String {
+        recorded_copy(&spec_log(root), wave).unwrap_or_else(|| panic!("wave {wave}")).path
+    }
+
+    /// A vaga da revisão final aberta fica presa como a de uma onda em
+    /// andamento: a onda que sai enquanto o revisor trabalha na vaga a, a da
+    /// última onda, vai para a vaga b, e o que o revisor mudou na a, sem
+    /// comitar, fica.
+    #[test]
+    fn an_open_final_review_holds_its_slot_and_the_new_wave_takes_another() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let review = slot_path(root, "x", 0);
+        assert_eq!(sent_copy(root, 1), shown(&review), "{first}");
+        let done = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(done["ok"], json!(true), "{done}");
+
+        seed_review(root);
+        assert_eq!(final_copy_path(root, "x", &spec_log(root)), review, "o revisor usa a vaga da última onda");
+        std::fs::write(review.join("src/a.rs"), "fn revisto() {}\n").unwrap();
+        let log = spec_log(root);
+        let first_of = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
+        let (said, crit) = (first_of("message"), first_of("criterion"));
+        write(root, "x", "wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit], "done_when": "A suíte passa.",
+            "origin": said}));
+        write(root, "x", "task", json!({"wave": 2, "text": "Tarefa da onda 2.", "files": [{"path": "src/b.rs"}],
+            "depends_on": [], "origin": said}));
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
+        assert_eq!(sent_copy(root, 2), shown(&slot_path(root, "x", 1)), "a vaga da revisão aberta está presa: {out}");
+        let kept = std::fs::read_to_string(review.join("src/a.rs")).unwrap();
+        assert_eq!(kept, "fn revisto() {}\n", "a mudança do revisor fica na vaga dele");
+    }
+
+    /// Um projeto git vazio, com as cópias dele saindo no fim do teste.
+    fn bare_project(root: &Path) {
+        git_at(root, &["init", "-q"]);
+        copies_leave_with_the_test(root);
+    }
+
+    /// O caminho que entra na pasta das cópias do projeto `root` e volta, por
+    /// `..`, até a pasta `target`, fora dela.
+    fn climbing_out(root: &Path, target: &Path) -> PathBuf {
+        let copies = copies_dir(root);
+        let up = copies.components().filter(|part| matches!(part, Component::Normal(_))).count();
+        let mut path = copies;
+        path.extend(std::iter::repeat_n("..", up));
+        path.extend(target.components().filter(|part| matches!(part, Component::Normal(_))));
+        path
+    }
+
+    /// Tirar uma cópia só vale dentro dos lugares de cópia do projeto: a pasta
+    /// fora deles, como a compilação da pasta principal, e o caminho que entra
+    /// na pasta das cópias e sai dela por `..` são recusados, e a pasta fica
+    /// no disco com o que tinha.
+    #[test]
+    fn a_copy_outside_the_copy_places_is_never_removed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        bare_project(root);
+        let built = root.join("target").join("debug");
+        std::fs::create_dir_all(&built).unwrap();
+        std::fs::write(built.join("mustard"), "compilado").unwrap();
+
+        for path in [built.clone(), climbing_out(root, &built)] {
+            let refused = remove_copy(root, &path);
+            assert_eq!(refused, Err(format!("not a copy folder: {}", shown(&path))), "{}", path.display());
+        }
+        assert_eq!(std::fs::read_to_string(built.join("mustard")).unwrap(), "compilado", "a compilação principal fica");
+    }
+
+    /// Tirar as cópias de uma obra só vale para um nome de uma pasta só,
+    /// direto na pasta das cópias do projeto: o nome com barra, que cairia
+    /// dentro da vaga de outra obra, e o `..`, que subiria para a pasta de
+    /// todos os projetos, são recusados, e nada sai do disco.
+    #[test]
+    fn the_copies_of_a_spec_name_with_a_slash_or_dots_are_never_removed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        bare_project(root);
+        let slot = slot_path(root, "x", 0);
+        std::fs::create_dir_all(slot.join("src")).unwrap();
+        std::fs::write(slot.join("src").join("lib.rs"), "fn um() {}\n").unwrap();
+
+        for spec in ["x/a", ".."] {
+            let folder = shown(&spec_copies_dir(root, spec));
+            let refused = remove_spec_copies(root, spec);
+            assert_eq!(refused, vec![(folder.clone(), format!("not a copy folder: {folder}"))], "{spec}");
+        }
+        assert_eq!(std::fs::read_to_string(slot.join("src").join("lib.rs")).unwrap(), "fn um() {}\n", "a vaga fica");
+    }
 }

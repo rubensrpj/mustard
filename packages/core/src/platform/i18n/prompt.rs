@@ -47,9 +47,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
         // O modelo em que a onda roda, dito no cabeçalho do próprio pedido —
-        // do mesmo jeito que ele já diz a cópia e a pasta de compilação —,
-        // porque o molde do agente sozinho não bastou: em 20/09 a onda saiu
-        // em Opus por herdar o modelo da sessão.
+        // do mesmo jeito que ele já diz a cópia —, porque o molde do agente
+        // sozinho não bastou: em 20/09 a onda saiu em Opus por herdar o
+        // modelo da sessão.
         ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: Opus.",
         ("prompt.model.wave", Locale::EnUs) => "This wave's model: Opus.",
         ("prompt.part.items", Locale::PtBr) => "Itens da onda",
