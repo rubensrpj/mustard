@@ -34,10 +34,16 @@
 //! [`crate::io::workspace::anchor_of`], the workspace resolver's own ancestor
 //! walk, so this is not a second opinion about where a project begins.
 //!
-//! When that walk finds no project, nobody declared anything, and the program
-//! is the default one. A `mustard.json` lying beside the directory without its
-//! `.claude/` is not a project, and it is not read: reading it would be a
-//! second rule for where a project begins.
+//! The separate copy of a wave lives outside its project and carries no
+//! `mustard.json`, so the walk from inside it finds nothing. It is a linked
+//! worktree, though, and its `.git` file points back at the main checkout:
+//! when the walk finds no project, the owner is looked for there
+//! ([`crate::io::workspace::worktree_main_from_files`]), by reading files and
+//! never by running git — this function cannot call itself to find out how to
+//! call itself. When neither finds a project, nobody declared anything, and the
+//! program is the default one. A `mustard.json` lying beside the directory
+//! without its `.claude/` is not a project, and it is not read: reading it
+//! would be a second rule for where a project begins.
 //!
 //! ## What it deliberately is not
 //!
@@ -124,7 +130,7 @@ impl GitRun {
 /// verbatim, in order.
 ///
 /// Which program it is comes from the `mustard.json` of the project that owns
-/// `root` — see the module note above. A project that pinned the key to an
+/// `root`, a wave copy outside it included — see the module note above. A project that pinned the key to an
 /// empty string gets no spawn at all: the answer is a [`GitRun`] carrying
 /// [`OPTED_OUT`], which every caller already degrades from the same way it
 /// degrades from an absent binary.
@@ -139,9 +145,7 @@ impl GitRun {
 /// how to degrade from.
 #[must_use]
 pub fn run(root: &Path, args: &[&str]) -> GitRun {
-    let config = crate::io::workspace::anchor_of(root)
-        .map(|owner| ProjectConfig::load(&owner))
-        .unwrap_or_default();
+    let config = owner_of(root).map(|owner| ProjectConfig::load(&owner)).unwrap_or_default();
     let Some(binary) = config.vcs() else {
         return GitRun { ok: false, stdout: String::new(), stderr: OPTED_OUT.to_string() };
     };
@@ -159,6 +163,16 @@ pub fn run(root: &Path, args: &[&str]) -> GitRun {
         },
         Err(err) => GitRun { ok: false, stdout: String::new(), stderr: err.to_string() },
     }
+}
+
+/// The project that owns `root`: the ancestor walk first; for a wave copy that
+/// lives outside its project, the main checkout its `.git` file points at.
+/// Both by reading files — asking git here would be asking git how to ask git.
+fn owner_of(root: &Path) -> Option<std::path::PathBuf> {
+    crate::io::workspace::anchor_of(root).or_else(|| {
+        crate::io::workspace::worktree_main_from_files(root)
+            .and_then(|main| crate::io::workspace::anchor_of(&main))
+    })
 }
 
 #[cfg(test)]
@@ -351,6 +365,78 @@ mod tests {
         assert!(
             refused.result().unwrap_err().contains("vcs"),
             "o motivo aponta a chave que produziu a recusa",
+        );
+    }
+
+    /// Monta à mão, sem rodar git, o que o `git worktree add` deixa: no
+    /// projeto, a pasta `.git/worktrees/<nome>` com o `commondir`; na cópia,
+    /// o arquivo `.git` apontando para ela, pelo caminho que `pointer` dá.
+    ///
+    /// Montada assim, a cópia não é um worktree que o git aceite: só quem a
+    /// lê como arquivo chega ao projeto por ela.
+    fn link_copy(project: &Path, copy: &Path, pointer: &str) {
+        let admin = project.join(".git").join("worktrees").join("copia");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        std::fs::create_dir_all(copy).unwrap();
+        std::fs::write(copy.join(".git"), format!("gitdir: {pointer}\n")).unwrap();
+    }
+
+    /// A cópia de uma onda mora fora da pasta do projeto e não traz o
+    /// `mustard.json`: o programa é o que o projeto dono declarou, achado pelo
+    /// arquivo `.git` da cópia; e o projeto que desligou o controle de versão
+    /// não roda nada, nem de dentro da cópia.
+    #[test]
+    fn a_git_run_inside_a_wave_copy_uses_the_vcs_its_owner_project_declared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let copies = tmp.path().join("copias");
+
+        // O projeto que nomeou outro programa; a cópia aponta para ele por um
+        // caminho relativo, como o git grava quando pedem caminhos relativos.
+        let named = tmp.path().join("nomeou");
+        std::fs::create_dir_all(&named).unwrap();
+        declare_fake_program(&named, true);
+        let copy = copies.join("nomeou-1");
+        link_copy(&named, &copy, "../../nomeou/.git/worktrees/copia");
+        let deep = copy.join("src");
+        std::fs::create_dir_all(&deep).unwrap();
+        let answer = run_fake(&deep);
+        assert!(
+            answer.out().is_some_and(|out| out.contains(MARK)),
+            "de dentro da cópia, quem responde é o programa do projeto dono: {answer:?}",
+        );
+
+        // O projeto que desligou o controle de versão; o caminho é absoluto.
+        let off = tmp.path().join("desligou");
+        std::fs::create_dir_all(off.join(".claude")).unwrap();
+        std::fs::write(off.join("mustard.json"), b"{\"vcs\": \"\"}\n").unwrap();
+        let copy = copies.join("desligou-1");
+        let admin = off.join(".git").join("worktrees").join("copia");
+        link_copy(&off, &copy, &admin.to_string_lossy());
+        let inner = copy.join("dentro");
+        std::fs::create_dir_all(&inner).unwrap();
+        let refused = run(&inner, &["init", "-q", "."]);
+        assert_eq!(refused.stderr, OPTED_OUT, "a cópia recusa como o projeto dono: {refused:?}");
+        assert!(!inner.join(".git").exists(), "nada foi chamado, então nada foi criado");
+
+        // Um worktree de verdade, quando há git aqui: o arquivo que o git grava
+        // leva ao mesmo projeto.
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        if !run(&real, &["init", "-q", "."]).ok {
+            return; // sem git utilizável aqui
+        }
+        let _ = run(&real, &["config", "user.email", "t@t.t"]);
+        let _ = run(&real, &["config", "user.name", "t"]);
+        assert!(run(&real, &["commit", "-q", "--allow-empty", "-m", "semente"]).ok);
+        let copy = copies.join("real-1");
+        let added = run(&real, &["worktree", "add", "-q", "-b", "onda-1", &copy.to_string_lossy()]);
+        assert!(added.ok, "{added:?}");
+        declare_fake_program(&real, true);
+        let answer = run_fake(&copy);
+        assert!(
+            answer.out().is_some_and(|out| out.contains(MARK)),
+            "o arquivo que o git grava leva ao projeto dono: {answer:?}",
         );
     }
 }

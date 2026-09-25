@@ -169,6 +169,14 @@ fn host_repo_stays_clean_and_untouched() {
          four seeds, so the comparison below would be proving very little",
     );
     for path in &seeds {
+        // The local layer is the one exception: a shared install writes into it
+        // only the folder of the project's copies, a path of this machine, and
+        // the seeded `.claude/.gitignore` keeps that file out of git in either
+        // mode.
+        if path == ".claude/settings.local.json" {
+            assert!(!status.contains(path.as_str()), "the local layer reached git: {status:?}");
+            continue;
+        }
         assert!(
             status.contains(path.as_str()),
             "a shared install is versionable, so git must report {path}: {status:?}",

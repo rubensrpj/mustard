@@ -5,14 +5,14 @@
 
 //! Os textos de agente do Mustard, pelo binário de verdade.
 //!
-//! O projeto recebe exatamente quatro agentes — `mustard-wave`,
-//! `mustard-wave-solo`, `mustard-review` e `mustard-skill` —, no idioma do
+//! O projeto recebe exatamente três agentes — `mustard-wave`,
+//! `mustard-review` e `mustard-skill` —, no idioma do
 //! `language.text`; os dois idiomas existem como molde do produto; nenhum
 //! texto manda criar cópia do projeto por conta própria, e os de onda e de
 //! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
 //! indica; e cada comando do fluxo responde o próximo passo, que o modelo não
 //! escolhe sozinho. O que prende o texto de um agente é o que ele diz, não
-//! quantos bytes ele tem. Nenhum dos dois agentes de onda traz teto de idas e
+//! quantos bytes ele tem. O agente de onda não traz teto de idas e
 //! voltas no cabeçalho: os tetos de dez e quinze cortavam toda onda real no
 //! meio, e a onda cortada recomeçava do zero.
 
@@ -121,14 +121,14 @@ fn template(lang: &str, name: &str) -> String {
         .unwrap_or_else(|e| panic!("the {lang} `{name}` template is missing: {e}"))
 }
 
-/// O projeto recebe exatamente os quatro agentes, no idioma do
+/// O projeto recebe exatamente os três agentes, no idioma do
 /// `language.text`; os dois idiomas existem como molde; e o
 /// plugin não entrega agente nenhum, porque entregaria os dois idiomas. Os
 /// textos que o instalador escreve trazem as duas guardas desta obra: provar
 /// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
 /// do caso em que o "antes" falha quando o critério diz "só depois de".
 #[test]
-fn the_project_receives_exactly_four_agents_in_its_text_language() {
+fn the_project_receives_exactly_three_agents_in_its_text_language() {
     for (lang, other) in [("pt-BR", "en-US"), ("en-US", "pt-BR")] {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
@@ -136,10 +136,10 @@ fn the_project_receives_exactly_four_agents_in_its_text_language() {
         let agents = files_under(&root.join(".claude/agents"));
         assert_eq!(
             agents,
-            ["mustard/review.md", "mustard/skill.md", "mustard/wave-solo.md", "mustard/wave.md"],
+            ["mustard/review.md", "mustard/skill.md", "mustard/wave.md"],
             "the {lang} project got another set of agent texts",
         );
-        for name in ["wave", "review", "skill", "wave-solo"] {
+        for name in ["wave", "review", "skill"] {
             let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
             assert_eq!(installed, template(lang, name), "the {lang} project got another text for `{name}`");
             assert_ne!(installed, template(other, name), "the {lang} and {other} `{name}` texts are the same");
@@ -192,38 +192,38 @@ fn frontmatter(body: &str) -> &str {
     body.strip_prefix("---\n").and_then(|rest| rest.split_once("\n---")).map(|(head, _)| head).unwrap_or(body)
 }
 
-/// O instalador escreve os dois moldes de agente de onda — o de lote de uma
-/// tarefa (`wave-solo.md`) e o de lote de várias (`wave.md`) —, e nenhum dos
-/// dois traz teto de idas e voltas no cabeçalho. A medição das vinte e cinco
+/// O instalador escreve o molde do agente de onda (`wave.md`), que recebe
+/// toda onda, de uma tarefa ou de várias, e ele não traz teto de idas e
+/// voltas no cabeçalho. A medição das vinte e cinco
 /// ondas entregues desta obra deu gasto de 36 a 403 idas, com média de 153:
 /// nenhuma onda real cabia nos tetos de dez e quinze que havia aqui, e a onda
 /// cortada recomeçava do zero. Quem cuida da janela cheia é a compactação e
-/// quem cuida da onda parada é o sinal de vida da rodada. Nenhum dos dois pede
-/// mais um relatório pelo tamanho: a entrega vai gravada na spec.
+/// quem cuida da onda parada é o sinal de vida da rodada. Ele não pede mais
+/// um relatório pelo tamanho: a entrega vai gravada na spec.
 #[test]
 fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
     for (lang, tokens) in [("pt-BR", "mil e dois mil tokens"), ("en-US", "one and two thousand tokens")] {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
 
-        for name in ["wave", "wave-solo"] {
-            let path = root.join(format!(".claude/agents/mustard/{name}.md"));
-            assert!(path.is_file(), "the {lang} installation did not write the {name} agent");
-            let body = std::fs::read_to_string(&path).unwrap();
-            let head = frontmatter(&body);
-            let cap = head.lines().find(|line| line.to_lowercase().contains("turn"));
-            assert!(cap.is_none(), "the {lang} {name} agent header still carries a turn cap: {cap:?}");
-            assert!(!head.contains("10") && !head.contains("15"), "the {lang} {name} agent header still pins ten or fifteen: {head}");
-            assert!(!body.contains(tokens), "the {lang} {name} agent still asks for a report by size");
-        }
+        let name = "wave";
+        let path = root.join(format!(".claude/agents/mustard/{name}.md"));
+        assert!(path.is_file(), "the {lang} installation did not write the {name} agent");
+        let body = std::fs::read_to_string(&path).unwrap();
+        let head = frontmatter(&body);
+        let cap = head.lines().find(|line| line.to_lowercase().contains("turn"));
+        assert!(cap.is_none(), "the {lang} {name} agent header still carries a turn cap: {cap:?}");
+        assert!(!head.contains("10") && !head.contains("15"), "the {lang} {name} agent header still pins ten or fifteen: {head}");
+        assert!(!body.contains(tokens), "the {lang} {name} agent still asks for a report by size");
     }
 }
 
 /// O nome de cada agente do Mustard leva o prefixo do Mustard, e um projeto
 /// que já tem um agente chamado `review` fica com os dois: o dele, intocado,
-/// e o `mustard-review`. Uma instalação antiga, com os nomes sem prefixo, é
-/// migrada pela instalação seguinte, e a rodada manda cada pedido ao agente
-/// pelo nome com prefixo.
+/// e o `mustard-review`. Uma instalação antiga, com os nomes sem prefixo e
+/// com o agente de onda de tarefa única, é migrada pela instalação seguinte,
+/// que tira esse agente, e a rodada manda cada pedido ao agente pelo nome com
+/// prefixo.
 #[test]
 fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_same_name() {
     let dir = tempfile::tempdir().unwrap();
@@ -236,9 +236,13 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
         let old = std::fs::read_to_string(&path).unwrap().replacen(&format!("name: mustard-{name}"), &format!("name: {name}"), 1);
         std::fs::write(&path, old).unwrap();
     }
+    // …e o agente de onda de tarefa única, que foi juntado ao de onda.
+    std::fs::write(root.join(".claude/agents/mustard/wave-solo.md"), "---\nname: mustard-wave-solo\n---\n\nUma tarefa.\n")
+        .unwrap();
 
     let report = rt(&root, &home, &["run", "upsert"], None);
     assert!(report.get("error").is_none(), "{report}");
+    assert!(!root.join(".claude/agents/mustard/wave-solo.md").exists(), "the retired agent stayed: {report}");
 
     assert_eq!(std::fs::read_to_string(root.join(".claude/agents/review.md")).unwrap(), own, "the project's agent changed");
     let mut names: Vec<String> = files_under(&root.join(".claude/agents"))
@@ -251,7 +255,7 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
     names.sort();
     assert_eq!(
         names,
-        ["mustard-review", "mustard-skill", "mustard-wave", "mustard-wave-solo", "review"],
+        ["mustard-review", "mustard-skill", "mustard-wave", "review"],
         "two agents share a name",
     );
 
@@ -299,17 +303,17 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
     }
 }
 
-/// Os quatro moldes — onda de lote, onda de tarefa única, revisão e skill —
+/// Os três moldes — onda, revisão e skill —
 /// declaram o modelo opus com o esforço xhigh, nos dois idiomas: cada agente
 /// sabe o próprio modelo e o próprio esforço, sem herdar o da sessão em
-/// silêncio. Teto de idas e voltas não anda junto: nenhum dos dois moldes de
-/// onda traz um, e quem prende isso é o teste do teto. Nenhum teste desta
+/// silêncio. Teto de idas e voltas não anda junto: o molde de onda não traz
+/// um, e quem prende isso é o teste do teto. Nenhum teste desta
 /// obra recusa um molde pelo tamanho em bytes — o que prende o texto é o que
 /// ele diz.
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
     for lang in ["pt-BR", "en-US"] {
-        for name in ["wave", "wave-solo", "review", "skill"] {
+        for name in ["wave", "review", "skill"] {
             let text = template(lang, name);
             assert!(text.contains("\nmodel: opus\n"), "the {lang} `{name}` agent does not declare the opus model:\n{text}");
             assert!(text.contains("\neffort: xhigh\n"), "the {lang} `{name}` agent does not declare the xhigh effort:\n{text}");
@@ -370,7 +374,7 @@ fn wave_headers(lang: &str) -> (&'static str, &'static str) {
     if lang == "pt-BR" { ("## Fronteira da tarefa", "## Formato de saída") } else { ("## Task boundary", "## Output format") }
 }
 
-/// Os dois moldes do agente de onda, nos dois idiomas, mandam mudar o arquivo
+/// O molde do agente de onda, nos dois idiomas, manda mudar o arquivo
 /// que a mesma mudança exige, mesmo fora da lista da tarefa, e dizê-lo em
 /// `files`; a mudança de plano fica para o critério que precisa mudar ou a
 /// spec que não diz o que fazer, e sai ao perceber, antes de explorar o
@@ -381,43 +385,42 @@ fn o_molde_da_onda_poe_na_tarefa_o_arquivo_que_a_mudanca_exige() {
         ("pt-BR", ["entra no trabalho", "antes de explorar", "`files`", "`replan`"], "arquivo que falta"),
         ("en-US", ["is part of the work", "before exploring", "`files`", "`replan`"], "a missing file"),
     ] {
-        for name in ["wave", "wave-solo"] {
-            let body = template(lang, name);
-            let boundary = section(&body, wave_headers(lang).0);
-            for phrase in said {
-                assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
-            }
-            assert!(!body.contains(gone), "the {lang} `{name}` agent still stops for `{gone}`:{boundary}");
+        let name = "wave";
+        let body = template(lang, name);
+        let boundary = section(&body, wave_headers(lang).0);
+        for phrase in said {
+            assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
         }
+        assert!(!body.contains(gone), "the {lang} `{name}` agent still stops for `{gone}`:{boundary}");
     }
 }
 
-/// A fronteira dos dois moldes de onda, nos dois idiomas, manda tirar na
+/// A fronteira do molde de onda, nos dois idiomas, manda tirar na
 /// mesma onda o que a própria mudança deixou sem uso, com o teste que só
 /// existia para ele; num arquivo de outra onda em andamento, o agente não
-/// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada vira
-/// pendência.
+/// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
+/// grava, com o `kind` que diz se ela quebra algo ou é só cosmética.
 #[test]
 fn a_fronteira_manda_tirar_o_que_a_mudanca_deixou_sem_uso() {
     for (lang, said) in [
         ("pt-BR", ["deixa sem uso", "com o teste só dele", "sai na mesma onda", "outra onda em andamento, não edite"]),
         ("en-US", ["leaves unused", "with the test only it had", "goes in the same wave", "another running wave, do not edit"]),
     ] {
-        for name in ["wave", "wave-solo"] {
-            let body = template(lang, name);
-            let boundary = section(&body, wave_headers(lang).0);
-            for phrase in said.iter().chain(&["\"leftovers\":[{\"title\"", "\"detail\""]) {
-                assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
-            }
+        let name = "wave";
+        let body = template(lang, name);
+        let boundary = section(&body, wave_headers(lang).0);
+        let kinds = ["\"leftovers\":[{\"title\"", "\"detail\"", "\"kind\":\"breaks\"", "`cosmetic`"];
+        for phrase in said.iter().chain(&kinds) {
+            assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
         }
     }
 }
 
 /// Todo comando de compilação ou de teste leva o teto de dez minutos do
 /// terminal, e o que pode passar disso roda por pacote, um por comando: a
-/// frase mora na mesma linha que proíbe o segundo plano, nos três moldes que
-/// compilam — onda de lote, onda de tarefa única e revisor —, nos dois
-/// idiomas, e o teto vago do comando saiu.
+/// frase mora na mesma linha que proíbe o segundo plano, nos dois moldes que
+/// compilam — onda e revisor —, nos dois idiomas, e o teto vago do comando
+/// saiu.
 #[test]
 fn os_moldes_mandam_o_teto_de_dez_minutos_em_compilacao_e_teste() {
     for (lang, rule, said, vague) in [
@@ -434,7 +437,7 @@ fn os_moldes_mandam_o_teto_de_dez_minutos_em_compilacao_e_teste() {
             "command's time limit",
         ),
     ] {
-        for name in ["wave", "wave-solo", "review"] {
+        for name in ["wave", "review"] {
             let body = template(lang, name);
             let line = body.lines().find(|l| l.contains(rule)).unwrap_or_else(|| panic!("the {lang} `{name}` agent lost `{rule}`"));
             for phrase in said {
@@ -447,7 +450,7 @@ fn os_moldes_mandam_o_teto_de_dez_minutos_em_compilacao_e_teste() {
 
 /// Comentário e nome de teste descrevem o comportamento em palavras e nunca
 /// citam código de item, número de onda, nome de spec, pendência ou o
-/// Mustard: os dois moldes de onda mandam isso na linha dos comentários, e o
+/// Mustard: o molde de onda manda isso na linha dos comentários, e o
 /// revisor confere nas linhas novas da obra, nos dois idiomas.
 #[test]
 fn os_moldes_proibem_codigo_da_spec_no_comentario() {
@@ -467,12 +470,11 @@ fn os_moldes_proibem_codigo_da_spec_no_comentario() {
             ["test name", "item code", "wave", "spec", "pending item", "Mustard"],
         ),
     ] {
-        for name in ["wave", "wave-solo"] {
-            let body = template(lang, name);
-            let line = body.lines().find(|l| l.starts_with(comments)).unwrap_or_else(|| panic!("the {lang} `{name}` agent has no comments line"));
-            for word in cited {
-                assert!(line.contains(word), "the {lang} `{name}` comments line does not name `{word}`: {line}");
-            }
+        let name = "wave";
+        let body = template(lang, name);
+        let line = body.lines().find(|l| l.starts_with(comments)).unwrap_or_else(|| panic!("the {lang} `{name}` agent has no comments line"));
+        for word in cited {
+            assert!(line.contains(word), "the {lang} `{name}` comments line does not name `{word}`: {line}");
         }
         let review = template(lang, "review");
         let check = section(&review, review_check);
@@ -687,7 +689,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
         let send = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(wave)).unwrap();
         let copy = send.str_field("copy").unwrap_or_else(|| panic!("wave {wave} recorded no copy: {round}"));
         let build = send.str_field("build_dir").unwrap_or_else(|| panic!("wave {wave} recorded no build folder"));
-        assert!(copy.ends_with(&format!("/.claude/worktrees/mustard-copia-{wave}")), "{copy}");
+        let expected = mustard_core::io::wave_prompt::copy_path(&root, "copia", wave, false);
+        assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "the copy lives in the project's copies folder");
+        assert!(!Path::new(copy).starts_with(&root), "the copy lives outside the project: {copy}");
         assert!(Path::new(copy).join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
         assert!(build.contains("/target/copias/"), "{build}");
         assert!(prompt.contains(&format!("`{copy}`")), "the request names the copy: {prompt}");
@@ -738,7 +742,7 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
 /// trabalho no campo de texto dela: a parte fixa do pedido diz isso, e a
 /// regra da execução repete logo depois das duas frases sobre não comitar.
 /// Nenhum texto ensina mais a linha colada na última mensagem: nem o pedido
-/// da onda, nem os dois moldes de onda — que trazem a linha de exemplo, sem
+/// da onda, nem o molde de onda — que traz a linha de exemplo, sem
 /// marca, e o campo das sobras —, nem o pedido da revisão final. A instrução
 /// volta ao orquestrador na saída da própria rodada: quando a volta de um
 /// agente não estiver na spec, o `next` manda o agente gravá-la de novo. Nos
@@ -785,16 +789,15 @@ fn o_pedido_manda_gravar_a_entrega_pela_ferramenta() {
         let final_fixed = translate("prompt.final.fixed", text);
         assert!(final_fixed.contains("run write verdict") && !final_fixed.contains("<VERDICT>"), "{final_fixed}");
 
-        for name in ["wave", "wave-solo"] {
-            let body = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
-            let output = section(&body, wave_headers(lang).1);
-            assert!(output.contains("`run write delivered --json"), "{lang} `{name}`:{output}");
-            assert!(body.contains("\"leftovers\""), "{lang} `{name}` lacks the leftovers field");
-            assert!(!body.contains("<DELIVERED>"), "{lang} `{name}` still teaches the pasted line");
-            let example = output.lines().find(|l| l.starts_with("{\"wave\"")).unwrap_or_else(|| panic!("no example line:{output}"));
-            let parsed: Value = serde_json::from_str(example).unwrap_or_else(|e| panic!("{lang} `{name}`: {e}: {example}"));
-            assert_eq!(parsed["wave"], json!(1), "{example}");
-        }
+        let name = "wave";
+        let body = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+        let output = section(&body, wave_headers(lang).1);
+        assert!(output.contains("`run write delivered --json"), "{lang} `{name}`:{output}");
+        assert!(body.contains("\"leftovers\""), "{lang} `{name}` lacks the leftovers field");
+        assert!(!body.contains("<DELIVERED>"), "{lang} `{name}` still teaches the pasted line");
+        let example = output.lines().find(|l| l.starts_with("{\"wave\"")).unwrap_or_else(|| panic!("no example line:{output}"));
+        let parsed: Value = serde_json::from_str(example).unwrap_or_else(|e| panic!("{lang} `{name}`: {e}: {example}"));
+        assert_eq!(parsed["wave"], json!(1), "{example}");
 
         // A segunda metade: a instrução que a rodada devolve ao orquestrador
         // depois de despachar, mandando o agente gravar de novo quando a volta

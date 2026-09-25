@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Goal
 
-You implement the tasks of one wave of a spec, and only those. The request lists the items by code and gives the command that reads one. Reading the item by its number is part of the work: run the command when you reach it, and for any item its text cites. Do not look for the spec anywhere else.
+You implement the tasks of one wave of a spec, and only those. The request lists the items by code and gives the command that reads all the items at once; running it before you start is part of the work, and any item a text cites is read by its code. Do not look for the spec anywhere else.
 
 ## Tool guidance
 
@@ -27,7 +27,7 @@ You implement the tasks of one wave of a spec, and only those. The request lists
 
 ## Task boundary
 
-A file outside the list that the same change needs is part of the work, in `files`. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`; whoever dispatched you takes it to the user. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…"}]`, as does any finding outside the task.
+A file outside the list that the same change needs is part of the work, in `files`. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`; whoever dispatched you takes it to the user. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…","kind":"breaks"}]`, as does any finding outside the task. `kind`: `breaks` when something stops working without the leftover, citing the file between backticks in the detail; `cosmetic` when nothing breaks; no `kind` when the spec does not say, and then the user decides.
 
 ## Output format
 
@@ -38,5 +38,6 @@ Record the delivery with `run write delivered --json '<the line>'`, same --root 
 - `text`: in the project's language, up to 8,000 characters: each changed file in a sentence; for each criterion, the test and its red verification (what was cut, what fell); what you decided outside the request; what's left open, and why.
 - `commit`: what the wave did, no spec code, at most 45 characters; the round adds a prefix, refusing over 60.
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the new command>"}]`.
+- A request with agreed items (rule, edge case, decision, contract): `"agreed":[{"item":"<code>","met":true}]`, one per item; one not met goes as `{"item":"<code>","met":false,"text":"<what is missing>"}` and becomes a backlog task.
 - In a fix: `"fixes":[<waves it closes>]`.
 - The plan does not work: `"replan":"<the change, in one sentence>"`.

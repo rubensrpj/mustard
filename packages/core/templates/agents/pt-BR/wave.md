@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Objetivo
 
-Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista os itens pelo código e traz o comando que lê um. Ler o item pelo número é parte do trabalho: rode o comando ao chegar nele e no item que o texto citar. Não procure a spec em outro lugar.
+Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista os itens pelo código e traz o comando que lê todos os itens de uma vez; rodá-lo antes de começar é parte do trabalho, e o item que um texto citar se lê pelo código. Não procure a spec em outro lugar.
 
 ## Orientação sobre ferramentas
 
@@ -27,7 +27,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista 
 
 ## Fronteira da tarefa
 
-Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa.
+Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…","kind":"breaks"}]`, como todo achado fora da tarefa. `kind`: `breaks` quando algo deixa de funcionar sem a sobra, citando o arquivo entre crases no detalhe; `cosmetic` quando nada quebra; sem `kind` quando a spec não diz, e aí o usuário decide.
 
 ## Formato de saída
 
@@ -38,5 +38,6 @@ Grave a entrega com `run write delivered --json '<a linha>'`, mesmo --root e --s
 - `text`: no idioma do projeto, até 8.000 caracteres: cada arquivo mudado numa frase; de cada critério, o teste e a verificação do vermelho (o que foi cortado e o que caiu); o que decidiu fora do pedido; o que ficou aberto, e por quê.
 - `commit`: o que a onda fez, sem código, até 45 caracteres; a rodada soma o começo e recusa acima de 60.
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando novo>"}]`.
+- Pedido com item combinado (regra, caso de borda, decisão, contrato): `"agreed":[{"item":"<código>","met":true}]`, um por item; o não cumprido vai como `{"item":"<código>","met":false,"text":"<o que falta>"}` e vira tarefa no backlog.
 - Num conserto: `"fixes":[<as ondas que ele fecha>]`.
 - O plano não funciona: `"replan":"<a mudança, numa frase>"`.

@@ -326,6 +326,24 @@ pub(crate) trait PrProvider {
     /// Mark draft pull request `number` ready for review.
     fn ready(&self, number: u64) -> Result<(), String>;
 
+    /// Troca o título do pull request `number`.
+    ///
+    /// É o que a reabertura pede ao fechar de novo: o pull request continua o
+    /// mesmo, e o título tem de dizer o que ele leva agora. Quem não sabe
+    /// fazer responde [`PR_UNSUPPORTED`], nunca um sucesso inventado.
+    fn edit_title(&self, _number: u64, _title: &str) -> Result<(), String> {
+        unsupported()
+    }
+
+    /// Põe o pull request `number` de volta em rascunho.
+    ///
+    /// É o que segura o merge pelo botão do provedor enquanto a spec reaberta
+    /// não fecha de novo. Quem não sabe fazer responde [`PR_UNSUPPORTED`], e
+    /// quem chamou avisa que o pull request ficou liberado.
+    fn mark_draft(&self, _number: u64) -> Result<(), String> {
+        unsupported()
+    }
+
     /// One pull request, normalised — the one [`PrRef`] points at.
     fn view(&self, which: PrRef<'_>) -> Result<PrView, String>;
 
@@ -481,13 +499,29 @@ impl Drop for BodyFile {
 /// `{owner}` / `{repo}` are `gh`'s own placeholders, resolved from the working
 /// directory the caller sets — no URL is parsed here.
 fn patch_body_argv(number: u64, body_path: &str) -> Vec<String> {
+    patch_one_field_argv(number, "-F", format!("body=@{body_path}"))
+}
+
+/// O argv do `gh` que troca só o `title` do pull request `number`.
+///
+/// Pelo mesmo endpoint do corpo, e não pelo `gh pr edit`, que lê o pull
+/// request inteiro antes e quebrou num dado que ninguém pediu (ver
+/// [`GithubPrCli::edit_body`]). `-f`, cru: com `-F`, um título que começasse
+/// com `@` seria lido como caminho de arquivo.
+fn patch_title_argv(number: u64, title: &str) -> Vec<String> {
+    patch_one_field_argv(number, "-f", format!("title={title}"))
+}
+
+/// O PATCH de um campo só do pull request `number`, com a opção do `gh` que
+/// leva o valor.
+fn patch_one_field_argv(number: u64, flag: &str, assignment: String) -> Vec<String> {
     vec![
         "api".to_string(),
         "--method".to_string(),
         "PATCH".to_string(),
         format!("repos/{{owner}}/{{repo}}/pulls/{number}"),
-        "-F".to_string(),
-        format!("body=@{body_path}"),
+        flag.to_string(),
+        assignment,
     ]
 }
 
@@ -561,6 +595,15 @@ impl PrProvider for GithubPrCli {
 
     fn ready(&self, number: u64) -> Result<(), String> {
         gh_out(&self.repo, &["pr", "ready", &number.to_string()]).map(|_| ())
+    }
+
+    fn edit_title(&self, number: u64, title: &str) -> Result<(), String> {
+        let argv = patch_title_argv(number, title);
+        gh_out(&self.repo, &argv.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ())
+    }
+
+    fn mark_draft(&self, number: u64) -> Result<(), String> {
+        gh_out(&self.repo, &["pr", "ready", &number.to_string(), "--undo"]).map(|_| ())
     }
 
     fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
@@ -741,6 +784,17 @@ mod tests {
         assert_eq!(argv[4], "-F", "{argv:?}");
         assert_eq!(argv[5], "body=@/tmp/mustard-pr-body-1-2.md", "{argv:?}");
         // Exactly the body — nothing else about the pull request is touched.
+        assert_eq!(argv.len(), 6, "one field, one flag: {argv:?}");
+    }
+
+    /// O título novo vai pelo mesmo endpoint do corpo, um campo só, e cru: um
+    /// título que começa com `@` é texto, nunca o caminho de um arquivo.
+    #[test]
+    fn editing_a_title_patches_one_raw_field() {
+        let argv = patch_title_argv(57, "@equipe ajusta o pedido");
+        assert_eq!(&argv[0..4], ["api", "--method", "PATCH", "repos/{owner}/{repo}/pulls/57"], "{argv:?}");
+        assert_eq!(argv[4], "-f", "a raw field, never read from a file: {argv:?}");
+        assert_eq!(argv[5], "title=@equipe ajusta o pedido", "{argv:?}");
         assert_eq!(argv.len(), 6, "one field, one flag: {argv:?}");
     }
 

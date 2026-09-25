@@ -141,6 +141,10 @@ pub enum Refusal {
     /// item combinado vigente de fora dela. Nada é gravado, e a mensagem
     /// nomeia pelo código cada item que faltou.
     AgreedItemsMissing { missing: Vec<String> },
+    /// A entrega da onda `wave` sem a resposta, em `agreed`, por algum item
+    /// combinado que o pedido dela levou. Nada é gravado, e a mensagem nomeia
+    /// pelo código cada item que faltou.
+    DeliveryAgreedMissing { wave: u64, missing: Vec<String> },
     /// Um critério gravado sem declarar a forma: nenhuma das cinco do padrão
     /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
     /// pelo nome, nos dois idiomas.
@@ -151,6 +155,15 @@ pub enum Refusal {
     /// adiante, um comando que o shell não acha. `criterion` é o critério, e
     /// `found` o texto que veio no lugar do comando.
     ProofNotACommand { criterion: String, found: String },
+    /// Um pedido gravado pelo assistente numa spec que já fechou, com a fase
+    /// `phase` (fechada ou com o pull request aberto). Ela recebe o pedido
+    /// depois de reaberta, na mesma spec e na mesma branch: a mensagem aponta
+    /// a reabertura. Nada é gravado.
+    RequestOnClosedSpec { spec: String, phase: String },
+    /// Um pedido ou uma tarefa (`event_type`) gravado pelo assistente numa
+    /// spec entregue na base ou descartada, com a fase `phase`. Ela não volta
+    /// por caminho nenhum: a mensagem aponta uma spec nova. Nada é gravado.
+    WorkOnFinishedSpec { spec: String, phase: String, event_type: String },
     Io { detail: String },
 }
 
@@ -243,8 +256,11 @@ impl Refusal {
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
+            Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
+            Self::RequestOnClosedSpec { .. } => "request-on-closed-spec",
+            Self::WorkOnFinishedSpec { .. } => "work-on-finished-spec",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -454,10 +470,22 @@ impl Refusal {
                 "spec_events.agreed_items_missing",
                 &[("{missing}", missing.join(", "))],
             ),
+            Self::DeliveryAgreedMissing { wave, missing } => fill(
+                "spec_events.delivery_agreed_missing",
+                &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
+            ),
             Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
             Self::ProofNotACommand { criterion, found } => fill(
                 "spec_events.proof_not_a_command",
                 &[("{criterion}", criterion.clone()), ("{found}", found.clone())],
+            ),
+            Self::RequestOnClosedSpec { spec, phase } => fill(
+                "spec_events.request_on_closed_spec",
+                &[("{spec}", spec.clone()), ("{phase}", phase.clone())],
+            ),
+            Self::WorkOnFinishedSpec { spec, phase, event_type } => fill(
+                "spec_events.work_on_finished_spec",
+                &[("{spec}", spec.clone()), ("{phase}", phase.clone()), ("{type}", event_type.clone())],
             ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }

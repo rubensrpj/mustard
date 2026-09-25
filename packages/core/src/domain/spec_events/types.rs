@@ -86,12 +86,15 @@ impl BlockQuery {
         Block::parse(name).map(Self::Block)
     }
 
-    /// Os nomes aceitos, na ordem da página, para a mensagem de recusa.
+    /// Os nomes aceitos, na ordem da página, para a mensagem de recusa. Com
+    /// eles, `dispatch-<n>`: o que o pedido da onda lista, que a leitura
+    /// monta fora dos blocos.
     #[must_use]
     pub fn accepted_names() -> String {
         let mut names: Vec<&str> = Block::ALL.iter().map(|b| b.name()).collect();
         if let Some(i) = names.iter().position(|n| *n == "waves") {
             names.insert(i + 1, "wave-<n>");
+            names.insert(i + 2, "dispatch-<n>");
         }
         names.join(", ")
     }
@@ -527,13 +530,15 @@ pub const TYPES: &[TypeSpec] = &[
             // rodada usa para o pedido de cada onda.
             opt("wave", Kind::Int),
             req("role", Kind::OneOf(ROLES)),
-            // O nome do agente que a onda chamou (`wave` ou `wave-solo`): é
-            // por ele que o reenvio chama o mesmo agente. O molde em si não
-            // é gravado — ele mora no projeto, igual para todo envio.
+            // O nome do agente que a onda chamou: `wave`, o mesmo em toda
+            // onda. O envio antigo pode trazer `wave-solo`, o agente de
+            // tarefa única que foi juntado ao `wave`; o reenvio dele chama o
+            // `wave`. O molde em si não é gravado — ele mora no projeto,
+            // igual para todo envio.
             opt("agent", Kind::Text),
             // O molde do agente, como o instalador o gravou no projeto: só o
-            // envio antigo o traz, e o reenvio dele acha o nome do agente
-            // pelo molde.
+            // envio antigo o traz, e nada mais o lê — o reenvio dele chama o
+            // `wave`, como todo envio.
             opt("template", Kind::Text),
             // O pedido exato, como foi injetado no agente; nada aqui é
             // remontado na leitura.
@@ -606,6 +611,10 @@ pub const TYPES: &[TypeSpec] = &[
             // sobra com título e detalhe (`title`, `detail`): vira pendência
             // da spec quando a rodada assume a volta.
             opt("leftovers", Kind::Objects),
+            // A resposta por cada item combinado que o pedido da onda levou,
+            // como a do veredito final (`item`, `met`): o item que não vem
+            // cumprido vira tarefa no backlog quando a rodada assume a volta.
+            opt("agreed", Kind::Objects),
             RETURNED,
         ],
     ),
@@ -734,7 +743,7 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-2"), Some(BlockQuery::Wave(2)));
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
-        assert!(BlockQuery::accepted_names().contains("waves, wave-<n>, review"));
+        assert!(BlockQuery::accepted_names().contains("waves, wave-<n>, dispatch-<n>, review"));
     }
 
     #[test]

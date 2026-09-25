@@ -27,14 +27,20 @@
 //! projeto (`.claude/spec/lessons.ndjson`) e o `--term` é o número da lição
 //! no banco, não uma busca. É assim que o pedido de uma onda leva a lição só
 //! pelo número dela, sem copiar o texto.
+//!
+//! `dispatch-<n>` também foge: não é um bloco, é tudo o que o pedido da onda
+//! `n` lista — os itens da spec, cada um com o código, e as lições do banco —,
+//! pela mesma conta que monta o pedido, numa leitura só. O `--term` filtra
+//! dentro disso.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::kept;
-use mustard_core::domain::spec_events::{found_by, shown_line, Block, BlockQuery, Refusal, SpecEvent};
+use mustard_core::domain::spec_events::{found_by, shown_line, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
+use mustard_core::io::wave_prompt::{lesson_bank, request_items};
 use mustard_core::platform::i18n::Locale;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
@@ -67,8 +73,10 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
     if block == "lessons" {
         return read_lessons(&project.root, opts.spec.as_deref(), opts.term.as_deref(), lang);
     }
-    let Some(query) = BlockQuery::parse(block) else {
-        return Err(refuse(Refusal::UnknownBlock { found: block.to_string() }));
+    let unknown = || refuse(Refusal::UnknownBlock { found: block.to_string() });
+    let reading = match block.strip_prefix("dispatch-") {
+        Some(n) => Reading::Dispatch(n.parse().map_err(|_| unknown())?),
+        None => Reading::Block(BlockQuery::parse(block).ok_or_else(unknown)?),
     };
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
@@ -82,14 +90,44 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
     };
     let codes = log.codes();
     let term = opts.term.as_deref().unwrap_or_default();
-    // O pedido de cada envio é o texto maior da spec: a lista das ondas e o
-    // painel mostram o envio sem ele, e só a leitura de uma onda o traz
-    // inteiro.
-    let brief = matches!(query, BlockQuery::Block(Block::Waves | Block::Metrics));
-    let events: Vec<String> =
-        found_by(log.block(query), term, &codes).into_iter().map(|e| shown_with_code(e, &codes, brief)).collect();
+    let events: Vec<String> = match reading {
+        Reading::Dispatch(wave) => dispatch_lines(&project.root, &log, wave, term, &codes),
+        Reading::Block(query) => {
+            // O pedido de cada envio é o texto maior da spec: a lista das
+            // ondas e o painel mostram o envio sem ele, e só a leitura de uma
+            // onda o traz inteiro.
+            let brief = matches!(query, BlockQuery::Block(Block::Waves | Block::Metrics));
+            found_by(log.block(query), term, &codes).into_iter().map(|e| shown_with_code(e, &codes, brief)).collect()
+        }
+    };
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &warnings))
+}
+
+/// O que a leitura pede: um bloco da spec ou o pedido de uma onda.
+enum Reading {
+    Block(BlockQuery),
+    Dispatch(u64),
+}
+
+/// O que o pedido da onda `wave` lista, pela mesma conta que o monta
+/// ([`request_items`], com a escolha gravada no envio): primeiro os itens da
+/// spec, cada um com o código, depois as lições do banco do projeto `root`,
+/// pelo número delas. Com `term`, um código de item acha só aquele item, e
+/// qualquer outro termo passa pela busca por nota nos itens e nas lições. A
+/// onda que o plano não tem não tem pedido: a lista vem vazia.
+fn dispatch_lines(root: &Path, log: &SpecLog, wave: u64, term: &str, codes: &BTreeMap<u64, String>) -> Vec<String> {
+    if !log.planned_waves().contains(&wave) {
+        return Vec::new();
+    }
+    let bank = lesson_bank(root);
+    let found = request_items(log, bank.as_ref(), wave, None);
+    let mut lines: Vec<String> =
+        found_by(found.items, term, codes).into_iter().map(|e| shown_with_code(e, codes, false)).collect();
+    // A lição não tem código de item, e o número dela no banco pode ser o de
+    // um item da spec: ela passa só pela busca, nunca pelos códigos da spec.
+    lines.extend(found_by(found.lessons, term, &BTreeMap::new()).into_iter().map(|lesson| shown_line(&lesson.fields)));
+    lines
 }
 
 /// O bloco `lessons`: fora da spec, no banco do projeto. `--term` é o número

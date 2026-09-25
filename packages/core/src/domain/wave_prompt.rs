@@ -11,9 +11,11 @@
 //! a frase do `done_when` da própria onda, que abre o pedido porque é o que
 //! ela entrega, e o `<bloco>` de cada arquivo de leitura por tarefa. Fora
 //! disso, cada parte traz, numa linha por bloco da spec, os códigos dos itens
-//! em sequência, e o pedido mostra uma vez só o comando que lê um item pelo
-//! binário, com o caminho do repositório principal quando o agente trabalha
-//! numa cópia. O agente lê cada código na ordem, na hora de agir. As tarefas
+//! em sequência, e o pedido diz uma vez só como ler pelo binário, com o
+//! caminho do repositório principal quando o agente trabalha numa cópia: o
+//! pedido de uma onda, com o comando que lê de uma vez tudo o que ele lista,
+//! antes de começar, e o que lê pelo código o item que um texto cita e não
+//! veio; o da revisão final, com o que lê cada código na ordem. As tarefas
 //! saem na ordem de execução que a onda declara, cada uma com o arquivo dela
 //! e o que precisa ler antes; sem essa ordem, na ordem do arquivo. A lista
 //! inteira fica no pedido, porque é ela que mostra o escopo todo de uma vez.
@@ -34,41 +36,8 @@ use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog,
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
-/// O nome do agente de onda a chamar, pelo número de tarefas do lote:
-/// `"wave-solo"` para uma tarefa só, `"wave"` para várias. É o nome do
-/// arquivo, sem a extensão, sob `.claude/agents/mustard/`. Nenhum dos dois
-/// limita as idas e voltas do agente: a medição das ondas já entregues deu de
-/// 36 a 403 idas, com média de 153, e nada que a montagem do lote conhece
-/// prevê esse gasto — quem cuida da janela cheia é a compactação, que o agente
-/// faz sozinho, e quem cuida da onda parada é o sinal de vida da rodada.
-#[must_use]
-pub fn agent_role(tasks: usize) -> &'static str {
-    if tasks <= 1 {
-        "wave-solo"
-    } else {
-        "wave"
-    }
-}
-
-/// O nome do agente que o molde `template` identifica, pelo campo `name` do
-/// frontmatter dele: `mustard-wave-solo` vira `"wave-solo"`, `mustard-wave`
-/// vira `"wave"`. Sem o campo, ou um nome fora do prefixo `mustard-`, volta
-/// `"wave"` — o papel que a plataforma já aceitava antes dos dois moldes. É
-/// como o reenvio, que não remonta o pedido, sabe qual dos dois o envio
-/// original usou.
-#[must_use]
-pub fn agent_from_template(template: &str) -> String {
-    template
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("name:"))
-        .map(str::trim)
-        .and_then(|name| name.strip_prefix("mustard-"))
-        .unwrap_or("wave")
-        .to_string()
-}
-
-/// O modelo pedido no envio, seja qual for o papel (`wave`, `wave-solo`,
-/// `review` ou `skill`): todo agente do Mustard sai em Opus, pelo apelido que
+/// O modelo pedido no envio, seja qual for o papel (`wave`, `review` ou
+/// `skill`): todo agente do Mustard sai em Opus, pelo apelido que
 /// a plataforma resolve sempre para a versão mais nova. Quem manda isso é o
 /// binário, no próprio pedido — sem escolha explícita, o agente herda o
 /// modelo da sessão e a decisão morre em silêncio.
@@ -112,6 +81,14 @@ pub struct Execution {
     pub build: Option<String>,
     /// O comando que roda os testes do projeto, quando ele declara um.
     pub test: Option<String>,
+    /// O comando de preparo que o projeto declara (`prepareCommand`), como
+    /// `npm ci`: os dois pedidos mandam rodá-lo dentro da cópia antes de
+    /// compilar. Sem ele, nenhum dos dois fala de preparo.
+    pub prepare: Option<String>,
+    /// Os arquivos locais que o git ignora e a cópia precisa (`localFiles`),
+    /// relativos à raiz e já sem o caminho que sairia do projeto: o pedido
+    /// do revisor os lista, a copiar pelo conteúdo. Vazia, ele não fala deles.
+    pub local_files: Vec<String>,
     /// As outras ondas em andamento, cada uma com os arquivos das tarefas
     /// dela: o arquivo dividido com elas é juntado na volta.
     pub running: Vec<(u64, Vec<String>)>,
@@ -1102,7 +1079,7 @@ impl Writer<'_> {
         let _ = writeln!(out, "{}\n", self.t("prompt.model.wave"));
         out.push_str(self.t("prompt.fixed"));
         out.push_str("\n\n");
-        self.read_example(&mut out, m.execution.copy.is_some());
+        self.read_example(&mut out, "prompt.read.wave", m.execution.copy.is_some());
         self.delivers(&mut out);
         self.items(&mut out);
         self.tasks(&mut out);
@@ -1126,7 +1103,7 @@ impl Writer<'_> {
         let _ = writeln!(out, "# {}\n", self.t("prompt.final.title").replace("{spec}", &m.spec));
         out.push_str(self.t("prompt.final.fixed"));
         out.push_str("\n\n");
-        self.read_example(&mut out, true);
+        self.read_example(&mut out, "prompt.read", true);
         self.fix(&mut out, "prompt.fix.final");
         self.part(&mut out, "prompt.part.waves", &m.block);
         self.part(&mut out, "prompt.part.agreed", &m.agreed);
@@ -1190,8 +1167,8 @@ impl Writer<'_> {
     /// nomeiam. Cada bloco da spec sai em sua própria linha de códigos, como
     /// [`codes_by_block`] os agrupa; lições e skills mantêm a listagem
     /// própria, uma linha por item, porque carregam mais que um código. Nem
-    /// o texto do item nem o comando de leitura entram aqui — o comando está
-    /// uma vez só no pedido, em [`Self::read_example`].
+    /// o texto do item nem o comando de leitura entram aqui — a leitura
+    /// aparece uma vez só no pedido, em [`Self::read_example`].
     fn items(&self, out: &mut String) {
         let m = self.material;
         let wave_only = self.wave_only();
@@ -1286,14 +1263,20 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// O exemplo único do comando que lê um item, com o nome da spec. Leva o
-    /// caminho do repositório principal quando o agente trabalha numa cópia
-    /// (`in_copy`): de dentro dela, a spec só se lê por lá. Sem cópia, o
-    /// agente roda no próprio repositório principal, e o caminho sobra.
-    fn read_example(&self, out: &mut String, in_copy: bool) {
+    /// Como ler, pela chave `key`, com o nome da spec e o número da onda: o
+    /// pedido de uma onda manda ler tudo o que ele lista num comando só, e o
+    /// da revisão final, cada item pelo código. Leva o caminho do repositório
+    /// principal quando o agente trabalha numa cópia (`in_copy`): de dentro
+    /// dela, a spec só se lê por lá. Sem cópia, o agente roda no próprio
+    /// repositório principal, e o caminho sobra.
+    fn read_example(&self, out: &mut String, key: &str, in_copy: bool) {
         let root = &self.material.execution.root;
         let flag = if in_copy && !root.is_empty() { format!("--root {root} ") } else { String::new() };
-        let line = self.t("prompt.read").replace("{root}", &flag).replace("{spec}", &self.material.spec);
+        let line = self
+            .t(key)
+            .replace("{root}", &flag)
+            .replace("{spec}", &self.material.spec)
+            .replace("{n}", &self.material.wave.to_string());
         let _ = writeln!(out, "{line}\n");
     }
 
@@ -1327,7 +1310,8 @@ impl Writer<'_> {
 
     /// As regras da execução do agente da onda que carregam valor deste
     /// projeto e desta rodada — a cópia separada, a pasta de compilação num
-    /// projeto Rust, os comandos do projeto e as outras ondas em andamento,
+    /// projeto Rust, o preparo que o projeto declara, os comandos do projeto
+    /// e as outras ondas em andamento,
     /// com os arquivos delas — e, ligadas à cópia, as três frases que dizem
     /// com todas as letras que o agente não comita, que o campo `commit` da
     /// entrega é o título, nunca o código do commit, e que a entrega vai para
@@ -1343,6 +1327,7 @@ impl Writer<'_> {
             let line = self.t("prompt.execution.copy").replace("{copy}", &copy.path).replace("{root}", &execution.root);
             let _ = writeln!(out, "- {line}");
             self.build_dir(out, copy);
+            self.prepare(out);
             let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
             let _ = writeln!(out, "- {}", self.t("prompt.execution.commit_field"));
             let _ = writeln!(out, "- {}", self.t("prompt.execution.report_lines"));
@@ -1365,7 +1350,9 @@ impl Writer<'_> {
 
     /// As regras da execução do revisor: a cópia que o fechamento já criou no
     /// commit da obra, compilar na pasta de compilação dela num projeto Rust,
-    /// os comandos do projeto com menos processos, e desfazer cada corte
+    /// o preparo que o projeto declara, os arquivos locais que a cópia recebe
+    /// pelo conteúdo, os comandos do projeto com menos processos, e desfazer
+    /// cada corte
     /// antes de gravar o veredito — quem apaga a cópia é o fechamento. De onde ler a
     /// spec, o exemplo de leitura já diz.
     fn review_execution(&self, out: &mut String) {
@@ -1376,10 +1363,25 @@ impl Writer<'_> {
         let line = self.t("prompt.review.copy").replace("{copy}", &copy.path).replace("{root}", root);
         let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
         self.build_dir(out, copy);
+        self.prepare(out);
+        if !execution.local_files.is_empty() {
+            let files: Vec<String> = execution.local_files.iter().map(|file| format!("`{file}`")).collect();
+            let line = self.t("prompt.review.local_files").replace("{files}", &files.join(", ")).replace("{root}", root);
+            let _ = writeln!(out, "- {line}");
+        }
         self.commands(out);
         let _ = writeln!(out, "- {}", self.t("prompt.review.jobs"));
         let _ = writeln!(out, "- {}", self.t("prompt.review.cleanup").replace("{copy}", &copy.path));
         out.push('\n');
+    }
+
+    /// O preparo que o projeto declara, rodado dentro da cópia antes de
+    /// compilar, com o arquivo versionado que ele mudar de volta ao commit;
+    /// sem comando declarado, nada.
+    fn prepare(&self, out: &mut String) {
+        if let Some(command) = &self.material.execution.prepare {
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.prepare").replace("{command}", command));
+        }
     }
 
     /// A pasta de compilação da cópia, quando ela tem uma e o projeto é Rust:
@@ -1524,9 +1526,12 @@ mod tests {
             let tasks = section(&prompt.text, translate("prompt.part.tasks", lang));
             assert!(tasks.contains("MSTD-TASK-0001") && tasks.contains("`src/a.rs`"), "{tasks}");
             assert!(tasks.contains("MSTD-TASK-0002") && tasks.contains("`src/b.rs`"), "{tasks}");
-            let example = translate("prompt.read", lang).replace("{root}", "").replace("{spec}", "teste");
+            let example =
+                translate("prompt.read.wave", lang).replace("{root}", "").replace("{spec}", "teste").replace("{n}", "1");
             assert!(prompt.text.contains(&example), "{}", prompt.text);
-            assert_eq!(prompt.text.matches("mustard-rt run read").count(), 1, "{}", prompt.text);
+            // O comando que lê o pedido inteiro e o que lê um item pelo
+            // código, os dois só na linha de como ler.
+            assert_eq!(prompt.text.matches("mustard-rt run read").count(), 2, "{}", prompt.text);
             assert_eq!(prompt.text.matches("--term").count(), 1, "{}", prompt.text);
             for code in ["MSTD-WAVE-0001", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-CRIT-0001"] {
                 assert_eq!(prompt.text.matches(code).count(), 1, "{code}: {}", prompt.text);
@@ -2302,15 +2307,15 @@ mod tests {
         }
     }
 
-    /// Ler o item pelo número é parte do trabalho, e quem diz isso é o texto
-    /// do agente da onda, que ele carrega uma vez; a parte fixa do pedido não
-    /// repete a instrução nem traz a proibição antiga de procurar o resto em
-    /// outro arquivo.
+    /// Rodar, antes de começar, o comando que lê o pedido inteiro é parte do
+    /// trabalho, e quem diz isso é o texto do agente da onda, que ele carrega
+    /// uma vez; a parte fixa do pedido não repete a instrução nem traz a
+    /// proibição antiga de procurar o resto em outro arquivo.
     #[test]
-    fn the_wave_agent_says_that_reading_the_item_by_its_number_is_part_of_the_work() {
+    fn the_wave_agent_says_that_reading_the_whole_request_before_starting_is_part_of_the_work() {
         for (lang, reading, forbidden) in [
-            (Locale::PtBr, "Ler o item pelo número é parte do trabalho", "nunca vá procurar o resto em outro arquivo"),
-            (Locale::EnUs, "Reading the item by its number is part of the work", "never go looking for the rest in another file"),
+            (Locale::PtBr, "rodá-lo antes de começar é parte do trabalho", "nunca vá procurar o resto em outro arquivo"),
+            (Locale::EnUs, "running it before you start is part of the work", "never go looking for the rest in another file"),
         ] {
             let (_, agent) = crate::platform::seeds::agent_texts(lang)[0];
             assert!(agent.contains(reading), "{agent}");
@@ -2488,6 +2493,7 @@ mod tests {
             copy: Some(WaveCopy { path: "/repo/copia-1".into(), build_dir: Some("/repo/target/copias/a".into()) }),
             review: WaveCopy { path: "/repo/revisao-1".into(), build_dir: Some("/repo/target/copias/b".into()) },
             rust: true,
+            ..Execution::default()
         }
     }
 
@@ -2547,11 +2553,14 @@ mod tests {
             assert!(rules.contains(&line), "{line}: {rules}");
         }
         assert!(!rules.contains("worktree") && !rules.contains("revisao-1"), "{rules}");
-        // De onde ler a spec, só o exemplo de leitura diz, uma vez.
-        let example = t("prompt.read").replace("{root}", "--root /repo ").replace("{spec}", "teste");
-        assert!(wave.contains(&example) && !rules.contains("--root"), "{wave}");
-        assert_eq!(wave.matches("--root").count(), 1, "{wave}");
+        // De onde ler a spec, só a linha de como ler diz, uma vez, nos dois
+        // comandos dela.
+        let wave_example =
+            t("prompt.read.wave").replace("{root}", "--root /repo ").replace("{spec}", "teste").replace("{n}", "1");
+        assert!(wave.contains(&wave_example) && !rules.contains("--root"), "{wave}");
+        assert_eq!(wave.matches("--root").count(), 2, "{wave}");
 
+        let example = t("prompt.read").replace("{root}", "--root /repo ").replace("{spec}", "teste");
         let last = write_final_review(&m, Locale::PtBr);
         assert!(last.contains(&example), "{last}");
         assert_eq!(last.matches("--root").count(), 1, "{last}");

@@ -79,6 +79,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The final verdict must answer for all the vigent agreed requirements: {missing} is missing. \
              The reviewer writes the verdict again, with all of them. Nothing was written."
         }
+        ("spec_events.delivery_agreed_missing", Locale::PtBr) => {
+            "A entrega da onda {wave} precisa responder, em `agreed`, por cada item combinado que o pedido \
+             dela levou: faltou {missing}. Grave a entrega de novo com cada um em `agreed`, pelo código em \
+             `item` e com `met`: `true` se foi cumprido, ou `false` com o que falta em `text`. Nada foi \
+             gravado."
+        }
+        ("spec_events.delivery_agreed_missing", Locale::EnUs) => {
+            "The delivery of wave {wave} must answer, in `agreed`, for each agreed item its request carried: \
+             {missing} is missing. Record the delivery again with each one in `agreed`, by its code in \
+             `item` and with `met`: `true` if it was met, or `false` with what is missing in `text`. \
+             Nothing was written."
+        }
         ("spec_events.criterion_form_missing", Locale::PtBr) => {
             "O critério precisa declarar a forma dele, uma das cinco do padrão: a que vale sempre, a \
              disparada por um acontecimento, a que só vale enquanto um estado durar, a que só vale se \
@@ -474,6 +486,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              tasks it depends on (`depends_on`). In the new version of a task that is already in a \
              wave, repeat the `wave` of the version it replaces."
         }
+        ("spec_events.request_on_closed_spec", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela já fechou, e o pedido novo só entra nela \
+             depois de reaberta. Rode `mustard-rt run reopen --spec {spec} --reason \"<motivo>\"`: \
+             ela volta à execução, já aprovada, na mesma branch e com o mesmo pull request; depois \
+             grave o pedido de novo. Nada foi gravado."
+        }
+        ("spec_events.request_on_closed_spec", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it has already closed, and a new request only \
+             goes into it after it is reopened. Run `mustard-rt run reopen --spec {spec} --reason \
+             \"<reason>\"`: it goes back to running, already approved, on the same branch and with \
+             the same pull request; then write the request again. Nothing was written."
+        }
+        ("spec_events.work_on_finished_spec", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: a spec entregue na base, com o merge feito, e a \
+             descartada não voltam, e o `run write {type}` não grava nela. Pedido novo sobre ela é \
+             obra nova: abra uma spec nova com `mustard-rt run open` e grave nela. Nada foi \
+             gravado."
+        }
+        ("spec_events.work_on_finished_spec", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: a spec delivered to the base, already merged, \
+             and a discarded one do not come back, and `run write {type}` does not write to it. A \
+             new request on it is new work: open a new spec with `mustard-rt run open` and write \
+             there. Nothing was written."
+        }
         ("spec_events.old_format_spec", Locale::PtBr) => {
             "A spec {spec} está no formato antigo (o `spec.md` dela traz a seção \"Critérios de \
              Aceitação\", ou a pasta tem `meta.json` e nenhum `spec.ndjson`), e o binário não grava \
@@ -744,8 +780,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            98,
-            0x5165_0806_b8a9_7240,
+            101,
+            0xfcea_ff74_2471_07ba,
         );
     }
 
@@ -765,6 +801,7 @@ mod tests {
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
+            ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
@@ -814,6 +851,8 @@ mod tests {
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
             ("spec_events.binary_author", &[][..]),
             ("spec_events.wave_by_backlog", &[][..]),
+            ("spec_events.request_on_closed_spec", &["{spec}", "{phase}"][..]),
+            ("spec_events.work_on_finished_spec", &["{spec}", "{phase}", "{type}"][..]),
             ("spec_events.user_message_by_hook", &["{spec}"][..]),
             ("spec_events.old_format_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),

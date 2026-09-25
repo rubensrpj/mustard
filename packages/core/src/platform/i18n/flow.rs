@@ -377,6 +377,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave}'s copy could not be created: {detail}. The wave did not go out this round; \
              fix it and run the round again."
         }
+        // Um arquivo da lista de arquivos locais do projeto não chegou à
+        // cópia. Não trava nada: a cópia sai sem ele, e o aviso diz qual.
+        ("round.local_file_missing", Locale::PtBr) => {
+            "O arquivo local `{file}`, da lista `localFiles` do `mustard.json`, não chegou à cópia \
+             `{copy}`: não existe no repositório principal, não é um caminho relativo dentro do projeto \
+             ou não pôde ser copiado. A cópia saiu sem ele."
+        }
+        ("round.local_file_missing", Locale::EnUs) => {
+            "The local file `{file}`, from the `localFiles` list in `mustard.json`, did not reach the \
+             copy `{copy}`: it does not exist in the main repository, is not a relative path inside \
+             the project, or could not be copied. The copy went out without it."
+        }
         ("round.copy_kept", Locale::PtBr) => {
             "A cópia da onda {wave}, {copy}, ficou no disco: {files} mudou nela e não estava na \
              entrega. Leve o que servir ao repositório principal e apague a cópia com \
@@ -465,14 +477,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              was left out. All of it went into the commit anyway."
         }
         ("round.usage_missing", Locale::PtBr) => {
-            "A onda {wave} entregou sem a linha de consumo, e o gasto dela não entrou na página: \
-             a entrega ficou gravada assim mesmo. Rode a rodada de novo só com a linha USAGE \
-             dessa onda, com o modelo, os passos e os tokens."
+            "O arquivo de conversa do agente da onda {wave} não foi achado entre os que a \
+             plataforma grava para esta sessão, e o consumo dela não entrou na página: a entrega \
+             ficou gravada assim mesmo."
         }
         ("round.usage_missing", Locale::EnUs) => {
-            "Wave {wave} delivered without the usage line, and its cost did not reach the page: \
-             the delivery was written anyway. Run the round again with only that wave's USAGE line, \
-             with the model, the steps and the tokens."
+            "The conversation file of wave {wave}'s agent was not found among the ones the \
+             platform records for this session, and its usage did not reach the page: the delivery \
+             was written anyway."
         }
         ("round.build_failed", Locale::PtBr) => {
             "O repositório principal não compilou com `{command}`, e a rodada não comitou nada: {output}"
@@ -504,6 +516,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} delivered {file}, which is neither on disk nor in git: the commit would have \
              nothing to take. Ask the agent for the right path. Nothing was recorded."
         }
+        ("round.leftover_cosmetic", Locale::PtBr) => "cosmética, apontada pela onda {wave}",
+        ("round.leftover_cosmetic", Locale::EnUs) => "cosmetic, pointed out by wave {wave}",
         ("round.proof_ran_no_test", Locale::PtBr) => {
             "A verificação nova do critério {code} saiu verde sem rodar teste nenhum: o nome do teste não \
              casa. Peça a verificação certa antes de fechar."
@@ -525,6 +539,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.not_approved", Locale::EnUs) => {
             "The spec is in the {phase} phase and is not approved yet: no wave goes out before the user says yes."
+        }
+        ("round.closed", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela já fechou, e a rodada não despacha onda nova \
+             numa spec fechada. Para um pedido novo nela, rode `mustard-rt run reopen --spec {spec} \
+             --reason \"<motivo>\"`: ela volta à execução, já aprovada, na mesma branch. Se o \
+             servidor reprovou o pull request, o conserto vai pelo mesmo comando com `--fix`."
+        }
+        ("round.closed", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it has already closed, and the round sends no \
+             new wave on a closed spec. For a new request on it, run `mustard-rt run reopen --spec \
+             {spec} --reason \"<reason>\"`: it goes back to running, already approved, on the same \
+             branch. If the server failed the pull request, the repair goes through the same \
+             command with `--fix`."
+        }
+        ("round.finished", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela já foi entregue na base, com o merge feito, \
+             ou descartada, e a rodada não despacha onda nela. Ela não volta: o pedido novo sobre \
+             ela abre uma spec nova com `mustard-rt run open`. Nada foi gravado."
+        }
+        ("round.finished", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it has already been delivered to the base, \
+             already merged, or discarded, and the round sends no wave on it. It does not come \
+             back: a new request on it opens a new spec with `mustard-rt run open`. Nothing was \
+             written."
         }
         ("round.commit_too_long", Locale::PtBr) => {
             "O {part} da mensagem do commit tem {chars} caracteres e o teto é {max}."
@@ -601,22 +639,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.report", Locale::PtBr) => {
             "Quando voltarem, cada agente já terá gravado a própria volta na spec — o de onda com \
              `mustard-rt run write delivered`, o revisor com `mustard-rt run write verdict` —, e a \
-             rodada a assume. Rode a rodada de novo com o consumo que a plataforma entregou a você \
-             quando cada agente de onda terminou, uma linha por onda, todas no mesmo `--report '…'`: \
-             `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\"tokens\":…,\"caller_steps\":…,\
-             \"caller_tokens\":…}</USAGE>` — nunca um número que o agente tenha digitado. A rodada \
-             monta o commit do `commit` de cada entrega. Quando a volta de um agente não estiver na \
+             rodada a assume. Quando cada agente de onda terminar, rode a rodada de novo com uma \
+             linha por onda, todas no mesmo `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, só com o \
+             número da onda. O consumo de cada onda e o seu a rodada mede nos arquivos de conversa \
+             que a plataforma grava, nunca num número digitado. A rodada monta o commit do \
+             `commit` de cada entrega. Quando a volta de um agente não estiver na \
              spec, mande o agente gravá-la de novo pela ferramenta: nunca a monte a partir da prosa \
              dele."
         }
         ("round.report", Locale::EnUs) => {
             "When they come back, each agent has already recorded its own return in the spec — the \
              wave agent with `mustard-rt run write delivered`, the reviewer with \
-             `mustard-rt run write verdict` —, and the round takes it over. Run the round again with \
-             the usage the platform handed you when each wave agent finished, one line per wave, all \
-             in the same `--report '…'`: `<USAGE>{\"wave\":1,\"model\":\"…\",\"steps\":…,\
-             \"tokens\":…,\"caller_steps\":…,\"caller_tokens\":…}</USAGE>` — never a number the \
-             agent typed itself. The round builds the commit from each delivery's `commit`. When an \
+             `mustard-rt run write verdict` —, and the round takes it over. When each wave agent \
+             finishes, run the round again with one line per wave, all in the same \
+             `--report '…'`: `<USAGE>{\"wave\":1}</USAGE>`, with only the wave's number. The round \
+             measures each wave's usage and yours from the conversation files the platform \
+             records, never from a typed number. The round builds the commit from each delivery's \
+             `commit`. When an \
              agent's return is not in the spec, have the agent record it again through the tool: \
              never assemble it from its prose."
         }
@@ -1011,6 +1050,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("pr.pointer_commit", Locale::PtBr) => "chore(submódulo): atualiza o ponteiro",
         ("pr.pointer_commit", Locale::EnUs) => "chore(submodule): update the pointer",
+        // A recusa do merge de uma spec reaberta: o pull request dela leva a
+        // versão sem o ajuste até a spec fechar de novo.
+        ("pr.merge_reopened", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela foi reaberta e ainda não fechou de novo, e o \
+             pull request #{pr} leva a versão sem o ajuste. Nada foi juntado, e o provedor nem foi \
+             perguntado. Termine o ajuste e feche a spec pela rodada (`mustard-rt run round --spec \
+             {spec}`); depois do fechamento, o `pr-open` que ele aponta atualiza o mesmo pull \
+             request, e o merge segue."
+        }
+        ("pr.merge_reopened", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it was reopened and has not closed again, and \
+             pull request #{pr} carries the version without the change. Nothing was merged, and \
+             the provider was not even asked. Finish the change and close the spec through the \
+             round (`mustard-rt run round --spec {spec}`); after the close, the `pr-open` it points \
+             to updates the same pull request, and the merge goes on."
+        }
         ("message.too_long", Locale::PtBr) => {
             "A parte `{part}` da mensagem tem {chars} caracteres e o limite é {max}. Escreva outro: o \
              corte automático mentiria sobre o que a mensagem diz. Nada foi enviado."
@@ -1044,13 +1099,64 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the spec goes back. The reason is written into the event. Nothing was written."
         }
         ("reopen.settled", Locale::PtBr) => {
-            "A spec {spec} está na fase {phase} e não volta ao levantamento: o que ela decidiu já \
-             saiu. Abra uma spec nova com `mustard-rt run open`. Nada foi gravado."
+            "A spec {spec} está na fase {phase}: a spec entregue na base, com o merge feito, e a \
+             descartada não voltam, porque o que elas decidiram já saiu. Abra uma spec nova com \
+             `mustard-rt run open`. Nada foi gravado."
         }
         ("reopen.settled", Locale::EnUs) => {
-            "The spec {spec} is in the phase {phase} and does not go back to the survey: what it \
-             decided is already out. Open a new spec with `mustard-rt run open`. Nothing was \
-             written."
+            "The spec {spec} is in the phase {phase}: a spec delivered to the base, already merged, \
+             and a discarded one do not come back, because what they decided is already out. Open \
+             a new spec with `mustard-rt run open`. Nothing was written."
+        }
+        ("reopen.reopened", Locale::PtBr) => {
+            "A spec {spec} voltou à execução, já aprovada, na mesma branch, e o motivo ficou \
+             gravado: nada do que foi decidido é perguntado de novo. Grave o pedido novo com \
+             `mustard-rt run write request --spec {spec}` e, dele, as tarefas novas; as ondas \
+             delas saem pela rodada depois que o usuário aprovar a mudança. Depois vem o \
+             fechamento de novo, e o pull request continua o mesmo."
+        }
+        ("reopen.reopened", Locale::EnUs) => {
+            "The spec {spec} is back to running, already approved, on the same branch, and the \
+             reason is on the record: nothing already decided is asked again. Write the new \
+             request with `mustard-rt run write request --spec {spec}` and, from it, the new \
+             tasks; their waves go out through the round after the user approves the change. \
+             Then comes the close again, and the pull request stays the same."
+        }
+        ("reopen.fix_not_red", Locale::PtBr) => {
+            "A porta de conserto da spec {spec} não abriu: ela pede a spec com o pull request \
+             aberto, na branch dela, e o vermelho do servidor relatado pelo provedor; a spec está \
+             na fase {phase} sem isso. Para um pedido novo, rode o `mustard-rt run reopen` sem \
+             `--fix`. Nada foi gravado."
+        }
+        ("reopen.fix_not_red", Locale::EnUs) => {
+            "The fix door of the spec {spec} did not open: it needs the spec with its pull request \
+             open, on its branch, and the server's red reported by the provider; the spec is in \
+             the phase {phase} without that. For a new request, run `mustard-rt run reopen` \
+             without `--fix`. Nothing was written."
+        }
+        // Os avisos da reabertura de uma spec com o pull request aberto: o
+        // merge que não deu para conferir e o rascunho que o provedor recusou.
+        ("reopen.merge_unchecked", Locale::PtBr) => {
+            "Não deu para conferir no provedor se o pull request da spec {spec} já entrou na base \
+             ({reason}), e a spec voltou à execução mesmo assim. Se alguém já fez o merge, o \
+             ajuste novo iria para uma branch já juntada: confira no provedor antes de seguir."
+        }
+        ("reopen.merge_unchecked", Locale::EnUs) => {
+            "The provider could not be asked whether the pull request of the spec {spec} is already \
+             merged ({reason}), and the spec went back to running anyway. If someone already merged \
+             it, the new change would go to a branch already merged: check on the provider before \
+             going on."
+        }
+        ("reopen.draft_failed", Locale::PtBr) => {
+            "O pull request da spec {spec} não foi posto em rascunho ({reason}) e ficou liberado: um \
+             merge pelo botão do provedor agora juntaria na base a versão sem o ajuste. Ponha-o em \
+             rascunho pelo provedor, se puder; o merge do Mustard recusa até a spec fechar de novo."
+        }
+        ("reopen.draft_failed", Locale::EnUs) => {
+            "The pull request of the spec {spec} was not put in draft ({reason}) and stays open to \
+             merging: a merge through the provider's button now would take the version without the \
+             change into the base. Put it in draft on the provider if you can; Mustard's merge \
+             refuses until the spec closes again."
         }
         ("reopen.next", Locale::PtBr) => {
             "A spec {spec} voltou ao levantamento, e o motivo ficou gravado. Rode `mustard-rt run \
@@ -1181,8 +1287,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            152,
-            0xc7a6_7773_5fdb_5227,
+            161,
+            0xec01_7ccc_5ec1_29e6,
         );
     }
 
@@ -1313,10 +1419,12 @@ mod tests {
             ("round.line_field", &["{line}", "{field}"][..]),
             ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),
             ("round.copy_failed", &["{wave}", "{detail}"][..]),
+            ("round.local_file_missing", &["{file}", "{copy}"][..]),
             ("pr.submodules.waiting", &["{pr}", "{paths}"][..]),
             ("pr.submodules.ready", &["{pr}", "{paths}"][..]),
             ("pr.submodules.stuck", &["{pr}", "{reason}"][..]),
             ("pr.pointer_commit", &[][..]),
+            ("pr.merge_reopened", &["{spec}", "{phase}", "{pr}"][..]),
             ("round.copy_kept", &["{wave}", "{copy}", "{files}"][..]),
             ("stuck.ended", &["{list}"][..]),
             ("stuck.reason.waiting_loop", &[][..]),
@@ -1338,11 +1446,14 @@ mod tests {
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
+            ("round.leftover_cosmetic", &["{wave}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
             ("round.commit.scope.many", &["{waves}"][..]),
             ("round.commit.line", &["{wave}", "{summary}"][..]),
             ("round.commit.fixes", &["{waves}"][..]),
             ("round.not_approved", &["{phase}"][..]),
+            ("round.closed", &["{spec}", "{phase}"][..]),
+            ("round.finished", &["{spec}", "{phase}"][..]),
             ("round.commit_too_long", &["{part}", "{chars}", "{max}"][..]),
             ("round.commit_forbidden", &["{found}"][..]),
             ("round.commit_looks_like_sha", &["{found}"][..]),
@@ -1386,6 +1497,8 @@ mod tests {
             ("prompt.execution.build_dir", &["{dir}"][..]),
             ("prompt.review.copy", &["{copy}", "{root}", "{commit}"][..]),
             ("prompt.review.cleanup", &["{copy}"][..]),
+            ("prompt.execution.prepare", &["{command}"][..]),
+            ("prompt.review.local_files", &["{files}", "{root}"][..]),
             ("page.wave.prompt", &["{n}"][..]),
             ("page.wave.prompt.summary", &["{lines}"][..]),
         ] {

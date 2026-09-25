@@ -185,6 +185,7 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     // detalhe, não há o que abrir.
     ("delivered", "leftovers", &["title", "detail"]),
     ("delivered", "proofs", &["criterion", "proof"]),
+    ("delivered", "agreed", &["item", "met"]),
     ("verdict", "criteria", &["criterion", "tests_rule"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
     ("tracking", "items", &["item", "met"]),

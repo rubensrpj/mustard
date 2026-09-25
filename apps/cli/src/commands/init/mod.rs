@@ -232,14 +232,13 @@ pub fn init_with_templates(
     // the response style of the text language and Claude Code's signature off
     // — the core engine owns the content, the merge rules and the destination
     // (the untracked local layer).
-    let settings_name = if mode.is_private() {
-        ".claude/settings.local.json"
-    } else {
-        ".claude/settings.json"
-    };
-    let outcome = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
-        .with_context(|| format!("seeding {settings_name}"))?;
-    seeding::report_seed(settings_name, outcome, false);
+    // The local settings also receive the folder of the project's separate
+    // copies, in either mode — in shared mode, that is all they receive.
+    let seeded = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
+        .context("seeding the settings under .claude/")?;
+    for (name, outcome) in seeded {
+        seeding::report_seed(name, outcome, false);
+    }
     // Mustard's own texts — so the answer to "merge or overwrite?" does not
     // reach them: the seeder takes no such argument and always lays the
     // shipped text down again, in the text language.
@@ -608,6 +607,33 @@ mod tests {
                 .is_none(),
             "merge must not plant plugin enablement"
         );
+    }
+
+    /// A instalação sobre um projeto de uma versão antiga, que ainda tem o
+    /// agente de onda de tarefa única, tira esse arquivo e deixa os três
+    /// agentes de hoje; o agente do projeto com o mesmo nome, fora da pasta do
+    /// Mustard, fica intocado.
+    #[test]
+    fn an_install_over_an_older_project_removes_the_retired_single_task_wave_agent() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        let claude = project.join(".claude");
+        fs::create_dir_all(claude.join("agents/mustard")).unwrap();
+        fs::write(claude.join("agents/mustard/wave-solo.md"), "---\nname: mustard-wave-solo\n---\n").unwrap();
+        let own = "---\nname: wave-solo\n---\n\nO agente do projeto.\n";
+        fs::write(claude.join("agents/wave-solo.md"), own).unwrap();
+
+        init_with_templates(&project, &templates, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+
+        let mut agents: Vec<String> = fs::read_dir(claude.join("agents/mustard"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        agents.sort();
+        assert_eq!(agents, ["review.md", "skill.md", "wave.md"], "the install left another set of agents");
+        assert_eq!(fs::read_to_string(claude.join("agents/wave-solo.md")).unwrap(), own, "the project's agent changed");
     }
 
     /// Um orquestrador plantado por uma instalação antiga e as marcas do

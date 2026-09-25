@@ -25,12 +25,14 @@ pub enum EventCmd {
     /// yet. It lives OUTSIDE every unit, in `.claude/pending/ledger.json` of the
     /// main checkout, so it is recorded with no unit open, survives a branch
     /// switch and outlives the unit that delivers it. Without a flag it LISTS
-    /// `{ok, open, closed, count_line}`; `--add` records one item and prints
-    /// its `P-{n}` id; `--close` settles one as delivered, always with a
-    /// non-blank `--reason`. A removal (`--remove`, `--drop`) takes two calls:
-    /// the first shows what would leave and prints a code, the second passes
-    /// that code in `--confirm` after the user's yes. `--stale` shows the idle
-    /// items once, and `--expire --keep` drops the ones the user did not keep.
+    /// `{ok, path, open, closed, count_line}`, the only answer carrying the
+    /// whole lists: every write answers `ok`, `path`, `count_line` and what it
+    /// wrote. `--add` records one item and prints its `P-N` id; `--close`
+    /// settles one as delivered, always with a non-blank `--reason`. A removal
+    /// (`--remove`, `--drop`) takes two calls: the first shows what would
+    /// leave and prints a code, the second passes that code in `--confirm`
+    /// after the user's yes. `--stale` shows the idle items once, and
+    /// `--expire --keep` drops the ones the user did not keep.
     #[command(display_order = 13)]
     Pending {
         /// Record a new item (needs `--title` and `--detail`).
@@ -42,11 +44,11 @@ pub enum EventCmd {
         /// Its scope or reason, one line.
         #[arg(long)]
         detail: Option<String>,
-        /// Settle the item `P-{n}` as DELIVERED.
+        /// Settle the item `P-N` as DELIVERED.
         #[arg(long, value_name = "ID", conflicts_with = "drop")]
         close: Option<String>,
-        /// Drop the item `P-{n}` ON PURPOSE: the same removal as `--remove
-        /// --id P-{n}`, shown first and confirmed with `--confirm`.
+        /// Drop the item `P-N` ON PURPOSE: the same removal as `--remove
+        /// --id P-N`, shown first and confirmed with `--confirm`.
         #[arg(long, value_name = "ID", group = "removal")]
         drop: Option<String>,
         /// Why the item leaves the list. Required by `--close`, `--drop` and
@@ -58,7 +60,7 @@ pub enum EventCmd {
         /// leave and prints the code to confirm with.
         #[arg(long, group = "removal")]
         remove: bool,
-        /// Removal selector: the items `P-{n}`, comma-separated.
+        /// Removal selector: the items `P-N`, comma-separated.
         #[arg(long, value_name = "IDS", requires = "remove")]
         id: Option<String>,
         /// Removal selector: words searched in the title and the detail.
@@ -71,7 +73,7 @@ pub enum EventCmd {
         /// nothing when the list changed since.
         #[arg(long, value_name = "CODE", requires = "removal")]
         confirm: Option<String>,
-        /// Bring a dropped item `P-{n}` back to open.
+        /// Bring a dropped item `P-N` back to open.
         #[arg(long, value_name = "ID")]
         reopen: Option<String>,
         /// Show, once, the open items idle for 30 days or more, with the one

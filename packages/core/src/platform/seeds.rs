@@ -48,40 +48,33 @@ pub fn session_map(text: Locale) -> &'static str {
     }
 }
 
-/// Os nomes dos quatro agentes do Mustard: os dois moldes de onda (um para
-/// lote de uma tarefa só, outro para lote de várias), o que revisa e o que
-/// escreve uma skill. O nome do arquivo é o nome com `.md`.
-pub const AGENT_NAMES: [&str; 4] = ["wave", "review", "skill", "wave-solo"];
+/// Os nomes dos três agentes do Mustard: o de onda, que recebe toda onda,
+/// de uma tarefa ou de várias, o que revisa e o que escreve uma skill. O nome
+/// do arquivo é o nome com `.md`.
+pub const AGENT_NAMES: [&str; 3] = ["wave", "review", "skill"];
 
-const AGENTS_PT_BR: [&str; 4] = [
+const AGENTS_PT_BR: [&str; 3] = [
     include_str!("../../templates/agents/pt-BR/wave.md"),
     include_str!("../../templates/agents/pt-BR/review.md"),
     include_str!("../../templates/agents/pt-BR/skill.md"),
-    include_str!("../../templates/agents/pt-BR/wave-solo.md"),
 ];
-const AGENTS_EN_US: [&str; 4] = [
+const AGENTS_EN_US: [&str; 3] = [
     include_str!("../../templates/agents/en-US/wave.md"),
     include_str!("../../templates/agents/en-US/review.md"),
     include_str!("../../templates/agents/en-US/skill.md"),
-    include_str!("../../templates/agents/en-US/wave-solo.md"),
 ];
 
 /// O texto de cada agente no idioma `text`, na ordem de [`AGENT_NAMES`]:
 /// `(nome, corpo)`. Os dois idiomas são molde do produto; o projeto recebe
-/// só os quatro do `language.text`. `wave` fica no índice 0 e `review` no
+/// só os três do `language.text`. `wave` fica no índice 0 e `review` no
 /// índice 1, como o resto do código já assume.
 #[must_use]
-pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 4] {
+pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 3] {
     let bodies = match text {
         Locale::PtBr => AGENTS_PT_BR,
         Locale::EnUs => AGENTS_EN_US,
     };
-    [
-        (AGENT_NAMES[0], bodies[0]),
-        (AGENT_NAMES[1], bodies[1]),
-        (AGENT_NAMES[2], bodies[2]),
-        (AGENT_NAMES[3], bodies[3]),
-    ]
+    [(AGENT_NAMES[0], bodies[0]), (AGENT_NAMES[1], bodies[1]), (AGENT_NAMES[2], bodies[2])]
 }
 
 /// The `.claude/.gitignore` seed covering the ephemeral harness state
@@ -131,10 +124,43 @@ mod tests {
         }
     }
 
-    /// Os dois moldes de onda, nos dois idiomas, não pedem mais um relatório
-    /// pelo tamanho: a entrega vai gravada na spec pela ferramenta, a última
+    /// O pedido novo numa spec fechada, ou com o pull request aberto, passa
+    /// antes pela reabertura, e só depois entra pelo `write request`: sem
+    /// ela, a gravação é recusada e o assistente propõe uma spec nova em
+    /// outra branch. O pull request que o servidor reprovou vai à porta de
+    /// conserto, pedida pelo nome; o pedido novo nunca vai a ela. Os dois
+    /// mapas dizem as duas coisas.
+    #[test]
+    fn the_session_map_sends_a_request_on_a_closed_spec_through_the_reopen() {
+        for (text, closed, pr_open, first, server_failed) in [
+            (Locale::PtBr, "spec fechada", "pull request aberto", "vem antes", "reprovado pelo servidor"),
+            (Locale::EnUs, "closed spec", "pull request open", "comes first", "the server failed"),
+        ] {
+            let map = session_map(text);
+            let sentence_with = |needle: &str| {
+                map.lines().flat_map(|line| line.split(". ")).find(|sentence| sentence.contains(needle))
+            };
+
+            let request = sentence_with(closed)
+                .unwrap_or_else(|| panic!("the {text} map says nothing of a request on a closed spec: {map}"));
+            assert!(request.contains("`write request`"), "the {text} map does not say where the request is recorded: {request}");
+            assert!(request.contains(pr_open), "the {text} map leaves out the spec with the pull request open: {request}");
+            let reopen = request
+                .find("`mustard-rt run reopen --reason")
+                .unwrap_or_else(|| panic!("the {text} map does not send the request through the reopen: {request}"));
+            assert!(request[reopen..].contains(first), "the {text} map does not put the reopen before the request: {request}");
+            assert!(!request.contains("--fix"), "the {text} map sends a new request to the fix door: {request}");
+
+            let fix = sentence_with(server_failed)
+                .unwrap_or_else(|| panic!("the {text} map says nothing of a pull request the server failed: {map}"));
+            assert!(fix.contains("`mustard-rt run reopen --fix"), "the {text} map does not send the failed pull request to the fix: {fix}");
+        }
+    }
+
+    /// O molde de onda, nos dois idiomas, não pede mais um relatório pelo
+    /// tamanho: a entrega vai gravada na spec pela ferramenta, a última
     /// mensagem só diz que gravou, e todo o detalhe do trabalho vai no campo
-    /// de texto da entrega. Nenhum dos dois ensina mais a linha colada.
+    /// de texto da entrega. Ele não ensina mais a linha colada.
     #[test]
     fn o_molde_da_onda_grava_a_entrega_sem_relatorio_pelo_tamanho() {
         for (text, size_report, recorded, last_message) in [
@@ -142,7 +168,7 @@ mod tests {
             (Locale::EnUs, "between one and two thousand tokens", "`run write delivered --json", "the last message only says it did"),
         ] {
             for (name, body) in agent_texts(text) {
-                if name != "wave" && name != "wave-solo" {
+                if name != "wave" {
                     continue;
                 }
                 let lower = body.to_lowercase();

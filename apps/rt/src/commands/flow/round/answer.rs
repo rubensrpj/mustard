@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{agent_from_template, estimate_tokens, token_cap_message, wave_files};
+use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
+use mustard_core::domain::wave_prompt::{estimate_tokens, token_cap_message, wave_files};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -23,6 +23,7 @@ use super::queue::{
 };
 use super::report::Taken;
 use super::stops::{change_question, stopped_waves, waves_stuck};
+use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::{read::checkout, write::record};
 use crate::commands::wave::wave_overlap_check::wave_graph;
@@ -52,6 +53,12 @@ pub(crate) enum RoundRefusal {
     FileUnknown { file: String, wave: u64 },
     /// A spec ainda não foi aprovada.
     NotApproved { phase: String },
+    /// A spec fechou, ou está com o pull request aberto, e não tem onda de
+    /// conserto aberta: o pedido novo nela passa antes pela reabertura.
+    SpecClosed { spec: String, phase: String },
+    /// A spec já foi entregue na base ou descartada: ela não volta, e o
+    /// pedido novo sobre ela abre uma spec nova.
+    SpecFinished { spec: String, phase: String },
     /// O relatório trouxe a linha da entrega colada: a entrega mora na spec,
     /// e o agente a grava.
     ReturnLine,
@@ -99,6 +106,8 @@ impl RoundRefusal {
             Self::MergeConflict { .. } => "round-merge-conflict".into(),
             Self::FileUnknown { .. } => "round-file-unknown".into(),
             Self::NotApproved { .. } => "round-not-approved".into(),
+            Self::SpecClosed { .. } => "round-spec-closed".into(),
+            Self::SpecFinished { .. } => "round-spec-finished".into(),
             Self::ReturnLine => "round-return-line".into(),
             Self::ReturnMissing { .. } => "round-return-missing".into(),
             Self::ReturnNeedsCommit { .. } => "round-return-needs-commit".into(),
@@ -143,6 +152,12 @@ impl RoundRefusal {
                 fill("round.file_unknown", &[("{file}", file.clone()), ("{wave}", wave.to_string())])
             }
             Self::NotApproved { phase } => fill("round.not_approved", &[("{phase}", phase.clone())]),
+            Self::SpecClosed { spec, phase } => {
+                fill("round.closed", &[("{spec}", spec.clone()), ("{phase}", phase.clone())])
+            }
+            Self::SpecFinished { spec, phase } => {
+                fill("round.finished", &[("{spec}", spec.clone()), ("{phase}", phase.clone())])
+            }
             Self::ReturnLine => fill("spec_events.report_carries_return_line", &[]),
             Self::ReturnMissing { wave } => fill("spec_events.return_missing", &[("{wave}", wave.to_string())]),
             Self::ReturnNeedsCommit { wave } => {
@@ -424,9 +439,9 @@ pub(super) fn run_round(
     opts: &RoundOpts,
     root: &Path,
     lang: Locale,
-    session: Option<&str>,
+    caller: Caller<'_>,
 ) -> Result<Value, RoundRefusal> {
-    run_round_with_mine(opts, root, lang, session, &|root, out| {
+    run_round_with_mine(opts, root, lang, caller, &|root, out| {
         mustard_core::Scan::locate().scan(root, out)
     })
 }
@@ -437,9 +452,10 @@ pub(super) fn run_round_with_mine(
     opts: &RoundOpts,
     root: &Path,
     lang: Locale,
-    session: Option<&str>,
+    caller: Caller<'_>,
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
 ) -> Result<Value, RoundRefusal> {
+    let session = caller.session;
     let refuse = RoundRefusal::Refused;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
@@ -459,9 +475,25 @@ pub(super) fn run_round_with_mine(
     // ([`crate::commands::flow::reopen::open_fix_wave_of`]): é a rodada de
     // sempre que a despacha e comita o conserto na mesma branch, e sem esta
     // fresta a porta abriria uma onda que nunca sairia.
-    let phase = State::from_log(&log).phase.unwrap_or_default().to_string();
+    //
+    // A spec fechada, ou com o pull request aberto, sem onda de conserto tem
+    // recusa própria: ela já foi aprovada, e o pedido novo nela entra pela
+    // reabertura, que a leva de volta à execução.
+    //
+    // A spec entregue na base ou descartada também já passou da aprovação, e
+    // não volta por caminho nenhum: a recusa aponta uma spec nova, a mesma
+    // saída de quem grava pedido ou tarefa nela. A frase de spec não
+    // aprovada fica só para as fases antes da aprovação.
+    let recorded = State::from_log(&log).phase;
+    let phase = recorded.unwrap_or_default().to_string();
     if !can_run(&phase) && crate::commands::flow::reopen::open_fix_wave_of(&log).is_none() {
-        return Err(RoundRefusal::NotApproved { phase });
+        return Err(if returns_to_running(&phase) {
+            RoundRefusal::SpecClosed { spec, phase }
+        } else if recorded.is_some_and(|phase| !not_closed_yet(phase)) {
+            RoundRefusal::SpecFinished { spec, phase }
+        } else {
+            RoundRefusal::NotApproved { phase }
+        });
     }
 
     // A spec antiga passa para o backlog antes de qualquer leitura das ondas:
@@ -491,7 +523,7 @@ pub(super) fn run_round_with_mine(
     // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, mut warnings, commit, paused } =
-        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, mine)?;
+        super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
     let (given, unread) = analysis_lines(raw, lang);
     warnings.extend(unread);
 
@@ -603,10 +635,9 @@ pub(super) fn run_round_with_mine(
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
-        // O nome do agente escolhido pelo tamanho do lote (`wave` ou
-        // `wave-solo`), e não o molde dele, que mora no projeto: é o nome que
-        // o reenvio chama de novo, e a resposta desta rodada o repete, para
-        // quem despacha saber qual dos dois chamar. O pedido e o modelo
+        // O nome do agente, `wave` em toda onda, de uma tarefa ou de várias,
+        // e não o molde dele, que mora no projeto: a resposta desta rodada o
+        // repete, para quem despacha saber qual chamar. O pedido e o modelo
         // pedido vão junto — nada disso é remontado na leitura, é o que foi
         // enviado.
         let agent = prompt.agent.clone();
@@ -658,14 +689,11 @@ pub(super) fn run_round_with_mine(
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
-        // O agente e o modelo pedido são os do envio original: um reenvio não
-        // remonta o input, só acrescenta o aviso do que mudou na cópia. O
-        // reenvio chama o mesmo dos dois agentes que o envio original chamou:
-        // pelo nome gravado nele ou, no envio antigo que só guardou o molde,
-        // pelo nome que o molde traz.
-        let agent = prior
-            .str_field("agent")
-            .map_or_else(|| agent_from_template(prior.str_field("template").unwrap_or_default()), str::to_string);
+        // O modelo pedido é o do envio original: um reenvio não remonta o
+        // input, só acrescenta o aviso do que mudou na cópia. O agente é o
+        // `wave`, o de toda onda, mesmo quando o envio antigo chamou o agente
+        // de tarefa única, que foi juntado a ele e não existe mais no projeto.
+        let agent = "wave";
         draft.insert("agent".into(), json!(agent));
         if let Some(model) = prior.str_field("model") {
             draft.insert("model".into(), json!(model));
@@ -753,7 +781,7 @@ pub(super) fn run_round_with_mine(
         // mesma porta que o abriu.
         let (step, key) = if state.phase == Some("pr_open") {
             let reason = translate("round.fix_reason", lang);
-            (Some(format!("mustard-rt run reopen --spec {spec} --reason \"{reason}\"")), "round.fix_push")
+            (Some(format!("mustard-rt run reopen --fix --spec {spec} --reason \"{reason}\"")), "round.fix_push")
         } else {
             (crate::commands::flow::resume::step_command(DONE_STEP, &spec, &state), "round.close")
         };
@@ -922,7 +950,7 @@ mod tests {
 
         // Sem onda de conserto, a obra fechada não roda rodada nenhuma.
         let refused = round(root, "x", None);
-        assert_eq!(refused["reason"], json!("round-not-approved"), "{refused}");
+        assert_eq!(refused["reason"], json!("round-spec-closed"), "{refused}");
 
         // O vermelho do servidor abre a onda de conserto pela porta.
         let opened = reopen_with(
@@ -930,6 +958,7 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 reason: "o teste do servidor caiu".into(),
+                fix: true,
             },
             None,
             &|_, number| {
@@ -953,6 +982,196 @@ mod tests {
         );
     }
 
+    /// A obra aprovada `x`, com a onda 1 entregue e fechada; com `pr`, também
+    /// com o pull request 9 aberto.
+    fn closed_work(root: &Path, pr: bool) {
+        use crate::commands::spec_events::write::{record_phase, record_pr_open};
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let delivered = json!({"author": "binary", "wave": 1, "text": "A onda 1 entregou.", "files": ["src/a.rs"]});
+        record(root, "x", "delivered", delivered.as_object().cloned().expect("an object"), PhaseWriter::Binary)
+            .expect("the delivery of wave 1");
+        assert!(record_phase(root, "x", "closed", None), "the work closes");
+        if pr {
+            assert!(record_pr_open(root, "x", 9, None), "the pull request opens");
+        }
+    }
+
+    /// O arquivo de eventos da spec `x`, lido de novo.
+    fn log_of(root: &Path) -> SpecLog {
+        store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
+    }
+
+    /// A rodada numa spec fechada, ou com o pull request aberto, sem onda de
+    /// conserto aberta recusa com razão própria, e nada é gravado: a frase
+    /// diz que a spec fechou e aponta a reabertura, nos dois idiomas. A
+    /// frase de spec não aprovada fica para a spec antes da aprovação.
+    #[test]
+    fn a_round_on_a_closed_spec_points_to_the_reopen() {
+        for (language, lang, closed_word) in [("pt-BR", Locale::PtBr, "fechou"), ("en-US", Locale::EnUs, "closed")] {
+            for phase in ["closed", "pr_open"] {
+                let dir = tempdir().unwrap();
+                let root = dir.path();
+                closed_work(root, phase == "pr_open");
+                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
+                    .unwrap();
+                let before = std::fs::read(store::spec_file(root, "x").unwrap()).unwrap();
+
+                let refused = round(root, "x", None);
+                assert_eq!(refused["ok"], json!(false), "{language} {phase}: {refused}");
+                assert_eq!(refused["reason"], json!("round-spec-closed"), "{language} {phase}: {refused}");
+                let hint = refused["hint"].as_str().unwrap_or_default();
+                assert!(hint.contains("mustard-rt run reopen --spec x"), "{language} {phase}: {hint}");
+                assert!(hint.contains(closed_word) && hint.contains(phase), "{language} {phase}: {hint}");
+                assert_ne!(hint, translate("round.not_approved", lang).replace("{phase}", phase), "{language}");
+                assert!(refused["dispatch"].is_null(), "{refused}");
+                assert_eq!(std::fs::read(store::spec_file(root, "x").unwrap()).unwrap(), before, "nothing written");
+            }
+
+            // Antes da aprovação, a frase de spec não aprovada, com a fase.
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#)).unwrap();
+            assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+            let early = round(root, "x", None);
+            assert_eq!(early["reason"], json!("round-not-approved"), "{early}");
+            assert_eq!(early["hint"], json!(translate("round.not_approved", lang).replace("{phase}", "survey")));
+        }
+    }
+
+    /// A rodada numa spec entregue na base ou descartada recusa com razão
+    /// própria, e nada é gravado: a frase diz que a spec foi entregue ou
+    /// descartada e manda abrir uma spec nova, nos dois idiomas. Nunca a
+    /// frase de spec não aprovada, nem a reabertura, que ela não aceita.
+    #[test]
+    fn a_round_on_a_delivered_or_discarded_spec_points_to_a_new_spec() {
+        use crate::commands::spec_events::write::record_phase;
+        let languages = [
+            ("pt-BR", Locale::PtBr, ["entregue", "descartada"], ["não foi aprovada", "reopen"]),
+            ("en-US", Locale::EnUs, ["delivered", "discarded"], ["not approved", "reopen"]),
+        ];
+        for (language, lang, says, never) in languages {
+            for phase in ["delivered", "discarded"] {
+                let dir = tempdir().unwrap();
+                let root = dir.path();
+                if phase == "delivered" {
+                    closed_work(root, true);
+                    assert!(record_phase(root, "x", "delivered", None), "the merge is recorded");
+                } else {
+                    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+                    let gone = json!({"phase": "discarded", "author": "binary", "reason": "Descartada."});
+                    store::write(
+                        &store::spec_file(root, "x").unwrap(),
+                        "state",
+                        gone.as_object().cloned().expect("an object"),
+                        &[],
+                    )
+                    .expect("the discard");
+                }
+                assert_eq!(State::from_log(&log_of(root)).phase, Some(phase), "{language} {phase}");
+                std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#))
+                    .unwrap();
+                let before = std::fs::read(store::spec_file(root, "x").unwrap()).unwrap();
+
+                let refused = round(root, "x", None);
+                assert_eq!(refused["ok"], json!(false), "{language} {phase}: {refused}");
+                assert_eq!(refused["reason"], json!("round-spec-finished"), "{language} {phase}: {refused}");
+                let hint = refused["hint"].as_str().unwrap_or_default();
+                assert!(hint.contains("mustard-rt run open"), "{language} {phase}: {hint}");
+                assert!(hint.contains(phase), "{language} {phase}: {hint}");
+                for word in says {
+                    assert!(hint.contains(word), "{language} {phase}: no {word:?} in {hint}");
+                }
+                for word in never {
+                    assert!(!hint.contains(word), "{language} {phase}: {word:?} in {hint}");
+                }
+                assert_ne!(hint, translate("round.not_approved", lang).replace("{phase}", phase), "{language}");
+                assert!(refused["dispatch"].is_null(), "{refused}");
+                assert_eq!(std::fs::read(store::spec_file(root, "x").unwrap()).unwrap(), before, "nothing written");
+            }
+        }
+    }
+
+    /// Depois da reabertura de uma spec fechada, a onda nova que a rodada
+    /// grava do backlog, depois do último fechamento, é onda comum: a rodada
+    /// a despacha como numa spec em execução, e a leitura da onda de conserto
+    /// não a conta. Onda de conserto é só a que traz as chaves do conserto,
+    /// numa spec fechada ou com o pull request aberto.
+    #[test]
+    fn only_a_fix_keyed_wave_of_a_closed_spec_is_a_fix_wave() {
+        use crate::commands::flow::reopen::{open_fix_wave_of, reopen_with, ReopenOpts, FIX_KEYS};
+        let reopened = |root: &Path| {
+            reopen_with(
+                &ReopenOpts {
+                    root: root.to_path_buf(),
+                    spec: Some("x".into()),
+                    reason: "Ajustar o pedido.".into(),
+                    fix: false,
+                },
+                None,
+                &|_, _| panic!("the reopen without --fix never asks the provider"),
+                &|_, branch| panic!("nothing pushes {branch}"),
+            )
+        };
+        // Uma onda gravada pelo binário na spec, depois de tudo o que já está
+        // lá, com ou sem as chaves do conserto.
+        let wave = |root: &Path, n: u64, keyed: bool| {
+            let crit = log_of(root).visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id);
+            let mut fields = json!({"author": "binary", "n": n, "text": format!("Onda {n}."), "criteria": [crit],
+                "done_when": "A suíte passa."});
+            if keyed {
+                fields["keys"] = json!(FIX_KEYS);
+            }
+            record(root, "x", "wave", fields.as_object().cloned().expect("an object"), PhaseWriter::Binary)
+                .expect("the wave")
+                .written
+                .id
+        };
+
+        // A spec reaberta recebe um pedido novo, e a rodada despacha a onda
+        // que ela grava do backlog, depois do fechamento.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        closed_work(root, false);
+        let closing = State::from_log(&log_of(root)).last_closing.expect("the closing");
+        let back = reopened(root);
+        assert_eq!(back["phase"], json!("running"), "{back}");
+        std::fs::write(root.join("src/b.rs"), "fn dois() {}\n").unwrap();
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "b"]);
+        let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "Ajustar o pedido."})));
+        let crit = log_of(root).visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+        write(root, "x", "task", json!({"text": "Ajustar o pedido.", "files": [{"path": "src/b.rs"}],
+            "depends_on": [], "covers": [crit], "origin": said}));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
+        assert_eq!(dispatched.len(), 1, "{out}");
+        let n = dispatched[0]["wave"].as_u64().unwrap_or_else(|| panic!("{out}"));
+        let log = log_of(root);
+        let born = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(n)).expect("the wave");
+        assert!(born.id > closing, "the new wave came after the closing");
+        assert_eq!(State::from_log(&log).phase, Some("running"));
+        assert_eq!(open_fix_wave_of(&log), None, "the new wave of a reopened spec is not a fix wave");
+
+        // Nem com as chaves do conserto a onda de uma spec em execução é onda
+        // de conserto.
+        wave(root, n + 1, true);
+        assert_eq!(open_fix_wave_of(&log_of(root)), None, "a keyed wave of a running spec");
+
+        // Numa spec fechada ou com o pull request aberto, a onda depois do
+        // fechamento só é de conserto com as chaves.
+        for pr in [false, true] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            closed_work(root, pr);
+            wave(root, 2, false);
+            assert_eq!(open_fix_wave_of(&log_of(root)), None, "pr {pr}: a wave without the fix keys");
+            wave(root, 3, true);
+            assert_eq!(open_fix_wave_of(&log_of(root)), Some(3), "pr {pr}: the fix-keyed wave");
+        }
+    }
+
     /// A primeira rodada leva a spec para a execução, grava o envio de cada
     /// onda com o pedido exato e devolve o pedido pronto para injetar.
     #[test]
@@ -967,15 +1186,17 @@ mod tests {
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{out}");
         let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default().to_string();
-        // A tarefa ganha linha própria, pelo código, e o comando de leitura
-        // uma vez só, no exemplo, com o caminho do repositório principal: a
+        // A tarefa ganha linha própria, pelo código, e a leitura aparece uma
+        // vez só, na linha de como ler — o comando do pedido inteiro e o de
+        // um item pelo código —, com o caminho do repositório principal: a
         // onda trabalha na cópia que a rodada criou.
         assert!(prompt.lines().any(|l| l.starts_with("- `MSTD-TASK-0001`") && l.contains("src/a.rs")), "{prompt}");
-        let example = translate("prompt.read", Locale::PtBr)
+        let example = translate("prompt.read.wave", Locale::PtBr)
             .replace("{root}", &format!("--root {} ", mustard_core::io::wave_prompt::shown(root)))
-            .replace("{spec}", "x");
+            .replace("{spec}", "x")
+            .replace("{n}", "1");
         assert!(prompt.contains(&example), "{prompt}");
-        assert_eq!(prompt.matches("mustard-rt run read").count(), 1, "{prompt}");
+        assert_eq!(prompt.matches("mustard-rt run read").count(), 2, "{prompt}");
 
         // O envio gravado guarda o pedido exato, letra por letra.
         let path = store::spec_file(root, "x").unwrap();
@@ -987,33 +1208,59 @@ mod tests {
         assert_eq!(sent[0].wave(), Some(1));
     }
 
-    /// A resposta da rodada diz qual dos dois arquivos de agente usar em
-    /// cada lote despachado, pelo tamanho dele: `wave-solo` para uma tarefa
-    /// só, `wave` para várias — no envio novo e no reenvio, que ecoa o
-    /// mesmo agente do envio original, sem remontar o pedido.
+    /// Toda onda vai ao agente `wave`. A de uma tarefa só grava o `wave` no
+    /// envio, e a resposta da rodada o nomeia no despacho e no próximo passo,
+    /// que manda ao `mustard-wave` e nunca ao agente de tarefa única, juntado
+    /// a ele. O reenvio de um envio antigo gravado com o agente de tarefa
+    /// única — pelo nome ou só pelo molde — também sai ao `wave`, sem
+    /// remontar o pedido. A onda de várias tarefas vai ao mesmo agente.
     #[test]
-    fn a_resposta_da_rodada_diz_qual_agente_usar() {
-        let solo_dir = tempdir().unwrap();
-        let solo_root = solo_dir.path();
-        approved(solo_root, "x", &[(1, &["src/a.rs"], &[])]);
-        let first = round(solo_root, "x", None);
-        let agent_of = |out: &Value, wave: u64| -> String {
+    fn a_single_task_wave_is_sent_to_the_wave_agent() {
+        let agent_of = |out: &Value| -> String {
             out["dispatch"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|d| d["wave"].as_u64() == Some(wave))
+                .find(|d| d["wave"].as_u64() == Some(1))
                 .and_then(|d| d["agent"].as_str())
                 .unwrap_or_default()
                 .to_string()
         };
-        assert_eq!(agent_of(&first, 1), "wave-solo", "{first}");
+        let last_send = |root: &Path| -> SpecEvent {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            log.last_by_wave("send").get(&1).and_then(|id| log.get(*id)).cloned().expect("the send")
+        };
 
-        // O reenvio não remonta o pedido, mas a resposta segue dizendo qual
-        // dos dois agentes chamar: o mesmo do envio original.
-        let paused = line("PAUSED", json!({"wave": 1}));
-        let resent = round(solo_root, "x", Some(&paused));
-        assert_eq!(agent_of(&resent, 1), "wave-solo", "{resent}");
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(agent_of(&first), "wave", "{first}");
+        let sent = last_send(root);
+        assert_eq!(sent.str_field("agent"), Some("wave"), "{sent:?}");
+        let next = first["next"].as_str().unwrap_or_default();
+        assert!(next.contains("`mustard-wave`") && !next.contains("wave-solo"), "{first}");
+
+        // O envio antigo gravado com o nome do agente de tarefa única, e o
+        // mais antigo ainda, que só guardou o molde dele: cada um é reenviado
+        // ao `wave`, e o envio novo não guarda o molde.
+        for (key, old_value) in [("agent", "wave-solo"), ("template", "---\nname: mustard-wave-solo\n---\n\nO molde.")] {
+            let current = last_send(root);
+            let mut old = current.fields.clone();
+            for gone in ["v", "id", "code", "at", "search", "type", "agent", "template", "resends", "replaces"] {
+                old.remove(gone);
+            }
+            old.insert(key.into(), json!(old_value));
+            old.insert("replaces".into(), json!(current.id));
+            crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(old));
+
+            let resent = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+            assert_eq!(agent_of(&resent), "wave", "{key}: {resent}");
+            let last = last_send(root);
+            assert!(last.fields.contains_key("resends"), "{key}: {last:?}");
+            assert_eq!(last.str_field("agent"), Some("wave"), "{key}: {last:?}");
+            assert_eq!(last.str_field("template"), None, "{key}: {last:?}");
+        }
 
         let multi_dir = tempdir().unwrap();
         let multi_root = multi_dir.path();
@@ -1027,13 +1274,12 @@ mod tests {
             );
         });
         let multi_out = round(multi_root, "x", None);
-        assert_eq!(agent_of(&multi_out, 1), "wave", "{multi_out}");
+        assert_eq!(agent_of(&multi_out), "wave", "{multi_out}");
     }
 
     /// O envio grava o nome do agente e não o molde dele; a lista das ondas
     /// e o painel mostram o envio sem o pedido, e só a leitura da onda o
-    /// traz inteiro. O envio antigo, que só guardou o molde, é reenviado ao
-    /// mesmo agente que o molde nomeia.
+    /// traz inteiro.
     #[test]
     fn a_leitura_das_ondas_nao_repete_o_molde_nem_o_pedido() {
         use crate::commands::spec_events::read::{read_for, ReadOpts};
@@ -1048,7 +1294,7 @@ mod tests {
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send").cloned().expect("the send");
-        assert_eq!(sent.str_field("agent"), Some("wave-solo"), "{sent:?}");
+        assert_eq!(sent.str_field("agent"), Some("wave"), "{sent:?}");
         assert_eq!(sent.str_field("template"), None, "{sent:?}");
 
         let read = |block: &str| -> Value {
@@ -1061,27 +1307,9 @@ mod tests {
         for block in ["waves", "metrics"] {
             let shown = send_of(&read(block));
             assert!(shown.get("text").is_none(), "{block} shows the request: {shown}");
-            assert_eq!(shown["agent"], json!("wave-solo"), "{block}: {shown}");
+            assert_eq!(shown["agent"], json!("wave"), "{block}: {shown}");
         }
         assert_eq!(send_of(&read("wave-1"))["text"], json!(prompt), "the wave shows the whole request");
-
-        // O envio antigo: o molde, com o nome do agente de tarefa única, e
-        // nenhum nome à parte.
-        let mut old = sent.fields.clone();
-        for key in ["v", "id", "code", "at", "search", "type", "agent"] {
-            old.remove(key);
-        }
-        old.insert("template".into(), json!("---\nname: mustard-wave-solo\n---\n\nO molde."));
-        old.insert("replaces".into(), json!(sent.id));
-        crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(old));
-
-        let resent = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
-        assert_eq!(resent["dispatch"][0]["agent"], json!("wave-solo"), "{resent}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let last = log.last_by_wave("send").get(&1).and_then(|id| log.get(*id)).cloned().expect("the new send");
-        assert!(last.fields.contains_key("resends"), "{last:?}");
-        assert_eq!(last.str_field("agent"), Some("wave-solo"), "{last:?}");
-        assert_eq!(last.str_field("template"), None, "{last:?}");
     }
 
     /// A instrução de publicar e copiar a página, por extenso, fica só no
@@ -1684,7 +1912,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        let copy = mustard_core::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join("mustard-x-99");
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 99, false);
         std::fs::create_dir_all(&copy).unwrap();
         let mut orphaned = Command::new("sleep")
             .arg("30")

@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 use crate::domain::config::ProjectConfig;
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
+use crate::io::wave_prompt::copies_dir;
 use crate::platform::error::Result;
 use crate::platform::harness::PLUGIN_NAME;
 use crate::platform::i18n::Locale;
@@ -102,6 +103,10 @@ const RETIRED_DENY_RULES: &[&str] = &[
 /// escrevê-lo.
 const RETIRED_ENV: &[(&str, &str)] = &[("MUSTARD_SPEC_SIZE_MODE", "warn")];
 
+/// A lista de `permissions` em que o Claude Code guarda as pastas de fora do
+/// projeto que a sessão pode ler e editar sem perguntar.
+const ADDITIONAL_DIRECTORIES_KEY: &str = "additionalDirectories";
+
 /// The signature value the seed used to write before it wrote the empty one.
 const RETIRED_SIGNATURE: &str = "assistant";
 
@@ -121,7 +126,15 @@ const FORCE_HYPERLINK_KEY: &str = "FORCE_HYPERLINK";
 /// The destination follows `mode`: `.claude/settings.json` when shared,
 /// `.claude/settings.local.json` when private (see [`settings_dest`]). The
 /// merge semantics are the same either way, applied to whichever file is the
-/// target — the other one is never read and never written.
+/// target.
+///
+/// A pasta das cópias separadas do projeto
+/// ([`crate::io::wave_prompt::copies_dir`]) entra em
+/// `permissions.additionalDirectories` das configurações locais, qualquer que
+/// seja o modo, uma vez só ([`allow_copies_dir`]): o caminho é desta máquina,
+/// e o `.claude/settings.json` da equipe nunca o recebe. No modo
+/// compartilhado, é a única escrita no arquivo local, que é da pessoa e fica
+/// como está quando não se lê.
 ///
 /// - Absent (or `overwrite == true`): the seed is the base.
 /// - Present under merge: the user's file is the base and any top-level seed
@@ -141,15 +154,38 @@ const FORCE_HYPERLINK_KEY: &str = "FORCE_HYPERLINK";
 /// only rewritten when the serialized result differs from what is on disk, so
 /// a settled project reports [`SeedOutcome::Preserved`].
 ///
+/// Answers each file it seeded, by its project-root-relative name, with what
+/// happened to it: the destination first, then — shared mode only — the local
+/// settings that hold the copies folder.
+///
 /// # Errors
 ///
-/// An IO error writing the file, or a serialization failure.
+/// An IO error writing a file, or a serialization failure.
 pub fn seed_settings(
     claude_dir: &Path,
     overwrite: bool,
     mode: InstallMode,
     rtk: bool,
     text: Locale,
+) -> Result<Vec<(&'static str, SeedOutcome)>> {
+    let copies = copies_dir_of(claude_dir);
+    let mut seeded = vec![(settings_footprint(mode), seed_dest(claude_dir, overwrite, mode, rtk, text, &copies)?)];
+    if !mode.is_private() {
+        seeded.push((SETTINGS_LOCAL_JSON, seed_local_copies_dir(claude_dir, &copies)?));
+    }
+    Ok(seeded)
+}
+
+/// O arquivo de destino de [`seed_settings`]: a semente, as migrações e, no
+/// modo privado, as chaves das configurações locais, a pasta das cópias
+/// inclusive.
+fn seed_dest(
+    claude_dir: &Path,
+    overwrite: bool,
+    mode: InstallMode,
+    rtk: bool,
+    text: Locale,
+    copies: &str,
 ) -> Result<SeedOutcome> {
     let dest = settings_dest(claude_dir, mode);
     let existing_raw = fs::read_to_string(&dest).ok();
@@ -181,16 +217,66 @@ pub fn seed_settings(
         apply_rtk_hook(&mut settings, rtk);
         apply_output_style(&mut settings, text);
         backfill_force_hyperlink(&mut settings, &seed);
+        allow_copies_dir(&mut settings, copies);
     }
     turn_signature_off(&mut settings);
+    write_if_changed(&dest, existing_raw.as_deref(), settings)
+}
 
+/// No modo compartilhado, leva a pasta das cópias ao arquivo local, que o
+/// modo não semeia: só essa chave entra, e o resto do arquivo fica. O arquivo
+/// que existe e não é um objeto JSON fica intocado.
+fn seed_local_copies_dir(claude_dir: &Path, copies: &str) -> Result<SeedOutcome> {
+    let dest = settings_dest(claude_dir, InstallMode::Private);
+    let existing_raw = fs::read_to_string(&dest).ok();
+    let mut settings = match existing_raw.as_deref() {
+        None => Map::new(),
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(settings)) => settings,
+            _ => return Ok(SeedOutcome::Preserved),
+        },
+    };
+    allow_copies_dir(&mut settings, copies);
+    write_if_changed(&dest, existing_raw.as_deref(), settings)
+}
+
+/// Grava `settings` em `dest` só quando o texto muda: o arquivo igual volta
+/// como [`SeedOutcome::Preserved`].
+fn write_if_changed(dest: &Path, existing_raw: Option<&str>, settings: Map<String, Value>) -> Result<SeedOutcome> {
     let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))?;
     serialized.push('\n');
-    if existing_raw.as_deref() == Some(serialized.as_str()) {
+    if existing_raw == Some(serialized.as_str()) {
         return Ok(SeedOutcome::Preserved);
     }
-    fs::write_atomic(&dest, serialized.as_bytes())?;
-    Ok(if existed { SeedOutcome::Updated } else { SeedOutcome::Created })
+    fs::write_atomic(dest, serialized.as_bytes())?;
+    Ok(if existing_raw.is_some() { SeedOutcome::Updated } else { SeedOutcome::Created })
+}
+
+/// A pasta das cópias separadas do projeto cujo `.claude/` é `claude_dir`,
+/// pela mesma função que dá o lugar da cópia de cada onda.
+fn copies_dir_of(claude_dir: &Path) -> String {
+    copies_dir(claude_dir.parent().unwrap_or(claude_dir)).to_string_lossy().into_owned()
+}
+
+/// Põe a pasta `dir` em `permissions.additionalDirectories`, quando ela ainda
+/// não está lá: as cópias moram fora do projeto, e sem a pasta liberada o
+/// agente de cada onda pararia a cada arquivo que lê ou edita na cópia dele.
+/// As pastas que a pessoa já liberou ficam, na ordem delas. Um `permissions`
+/// ou uma lista que não é do tipo esperado fica como está.
+fn allow_copies_dir(settings: &mut Map<String, Value>, dir: &str) {
+    let permissions = settings.entry("permissions").or_insert_with(|| Value::Object(Map::new()));
+    let Some(permissions) = permissions.as_object_mut() else {
+        return;
+    };
+    let list = permissions
+        .entry(ADDITIONAL_DIRECTORIES_KEY)
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(list) = list.as_array_mut() else {
+        return;
+    };
+    if !list.iter().any(|known| known.as_str() == Some(dir)) {
+        list.push(Value::String(dir.to_string()));
+    }
 }
 
 /// The settings file `mode` seeds, composed through [`ClaudePaths`] — the
@@ -1223,6 +1309,59 @@ mod tests {
         assert_eq!(env["MUSTARD_SKILL_SIZE_MODE"], json!("strict"), "the person's value stays");
         assert_eq!(env["MY_OWN"], json!("1"));
         assert_eq!(env.len(), 3, "only the link variable arrives: {env:?}");
+    }
+
+    // --- a pasta das cópias -------------------------------------------------
+
+    /// As pastas liberadas em `permissions.additionalDirectories` do arquivo
+    /// `name` em `.claude/`, ou nenhuma quando a lista falta.
+    fn additional_directories(root: &Path, name: &str) -> Vec<String> {
+        let raw = std_fs::read_to_string(root.join(".claude").join(name)).unwrap();
+        parse_json_object(&raw)
+            .get("permissions")
+            .and_then(|p| p.get(ADDITIONAL_DIRECTORIES_KEY))
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    /// O upsert, rodado duas vezes, põe a pasta das cópias do projeto uma vez
+    /// só nas pastas liberadas das configurações locais, nos dois modos, ao
+    /// lado da pasta que a pessoa já tinha liberado. O `settings.json` da
+    /// equipe fica igual: no modo privado, byte a byte; no compartilhado, é o
+    /// molde e nada mais.
+    #[test]
+    fn the_upsert_adds_the_copies_folder_to_the_local_settings_only() {
+        let seed = format!("{}\n", serde_json::to_string_pretty(&Value::Object(parse_json_object(SETTINGS_SEED))).unwrap());
+        for mode in [InstallMode::Private, InstallMode::Shared] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let claude = root.join(".claude");
+            std_fs::create_dir_all(&claude).unwrap();
+            std_fs::write(
+                claude.join("settings.local.json"),
+                r#"{"permissions":{"additionalDirectories":["../docs"]}}"#,
+            )
+            .unwrap();
+            let team = "{\n  \"env\": {\"TEAM\": \"1\"}\n}\n";
+            if mode.is_private() {
+                std_fs::write(claude.join("settings.json"), team).unwrap();
+            }
+            let copies = copies_dir(root).to_string_lossy().into_owned();
+
+            upsert_project(root, None, mode).unwrap();
+            let second = upsert_project(root, None, mode).unwrap();
+
+            let local = additional_directories(root, "settings.local.json");
+            assert_eq!(local, vec!["../docs".to_string(), copies.clone()], "{mode:?}: once, after the person's own");
+            assert!(
+                second.preserved.iter().any(|name| name == SETTINGS_LOCAL_JSON),
+                "{mode:?}: the second run changes nothing in the local settings: {second:?}",
+            );
+            let shared = std_fs::read_to_string(claude.join("settings.json")).unwrap();
+            assert_eq!(shared, if mode.is_private() { team.to_string() } else { seed.clone() }, "{mode:?}");
+            assert!(!shared.contains(&copies), "{mode:?}: the team's file got the copies folder");
+        }
     }
 
     /// A variável que a pessoa já tinha, como `"0"`, não é trocada por `"1"`,

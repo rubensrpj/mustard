@@ -193,6 +193,17 @@ fn is_false(b: &bool) -> bool {
 }
 
 impl UpsertReport {
+    /// `mustard.json` changed after this report was made, by a later step of
+    /// the same install, like the answers `run upsert` records: it moves from
+    /// `preserved` to `updated`. A file this run created stays created.
+    pub fn record_mustard_json_change(&mut self) {
+        if self.created.iter().chain(&self.updated).any(|name| name == MUSTARD_JSON) {
+            return;
+        }
+        self.preserved.retain(|name| name != MUSTARD_JSON);
+        self.updated.push(MUSTARD_JSON.to_string());
+    }
+
     /// Fold one file's [`SeedOutcome`] into the matching list.
     fn record(&mut self, name: &str, outcome: SeedOutcome) {
         let list = match outcome {
@@ -228,7 +239,8 @@ impl UpsertReport {
 /// 2. the settings file — seed when absent, backfill missing top-level keys
 ///    when present, with the point migrations of [`seed_settings`], rtk's hook
 ///    following `mustard.json#rtk`, Claude Code's signature kept off and the
-///    response style of `language.text` chosen;
+///    response style of `language.text` chosen — and, in either mode, the
+///    folder of the project's separate copies allowed in the local settings;
 /// 3. Mustard's own texts — the compiled-in body of each is written every
 ///    time;
 /// 4. `.claude/.gitignore` — created when absent, and when present the pattern
@@ -325,10 +337,9 @@ pub fn upsert_project_with(
     //       which take no mode: they are always rewritten.
     let config = ProjectConfig::load(root);
     let text = config.language().text_or_default();
-    report.record(
-        settings::settings_footprint(mode),
-        seed_settings(&claude_dir, false, mode, config.rtk(), text)?,
-    );
+    for (name, outcome) in seed_settings(&claude_dir, false, mode, config.rtk(), text)? {
+        report.record(name, outcome);
+    }
     for (rel, outcome) in seed_harness_texts(&claude_dir, text)? {
         report.record(&format!(".claude/{rel}"), outcome);
     }
@@ -378,13 +389,13 @@ mod tests {
             report.created,
             vec![
                 ".claude/settings.json",
+                ".claude/settings.local.json",
                 ".claude/mustard/session-map.md",
                 ".claude/mustard/pages/spec.html",
                 ".claude/mustard/pages/project.html",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
                 ".claude/agents/mustard/skill.md",
-                ".claude/agents/mustard/wave-solo.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -444,17 +455,78 @@ mod tests {
             second.preserved,
             vec![
                 ".claude/settings.json",
+                ".claude/settings.local.json",
                 ".claude/mustard/session-map.md",
                 ".claude/mustard/pages/spec.html",
                 ".claude/mustard/pages/project.html",
                 ".claude/agents/mustard/wave.md",
                 ".claude/agents/mustard/review.md",
                 ".claude/agents/mustard/skill.md",
-                ".claude/agents/mustard/wave-solo.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
         );
+    }
+
+    /// Instalar e atualizar deixa na pasta dos agentes do Mustard só os três
+    /// de hoje — onda, revisão e skill —, no idioma do projeto, nos dois
+    /// idiomas. O projeto de uma versão antiga, que ainda tem o agente de onda
+    /// de tarefa única, perde esse arquivo na atualização, que diz o que
+    /// tirou; o agente do projeto com o mesmo nome, fora da pasta do Mustard,
+    /// fica como está; e a atualização seguinte não tem mais nada a tirar. O
+    /// produto não traz mais o molde dele em idioma nenhum.
+    #[test]
+    fn an_update_removes_the_retired_single_task_wave_agent() {
+        let today = ["review.md", "skill.md", "wave.md"];
+        let files_in = |dir: &Path| -> Vec<String> {
+            let mut names: Vec<String> = std_fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        for text in [Locale::PtBr, Locale::EnUs] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}}}}"#, text.as_str()))
+                .unwrap();
+            upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            let agents = root.join(".claude/agents/mustard");
+            assert_eq!(files_in(&agents), today, "the {text} install seeds another set of agents");
+
+            // A instalação antiga: o agente de tarefa única ainda na pasta do
+            // Mustard, e um agente do próprio projeto com o mesmo nome.
+            std_fs::write(agents.join("wave-solo.md"), "---\nname: mustard-wave-solo\n---\n\nO molde antigo.\n").unwrap();
+            let own = "---\nname: wave-solo\n---\n\nO agente do projeto.\n";
+            std_fs::write(root.join(".claude/agents/wave-solo.md"), own).unwrap();
+
+            let report = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert_eq!(files_in(&agents), today, "the {text} update left the retired agent behind");
+            for (name, body) in crate::platform::seeds::agent_texts(text) {
+                assert_eq!(std_fs::read_to_string(agents.join(format!("{name}.md"))).unwrap(), body, "{text} `{name}`");
+            }
+            assert_eq!(
+                report.migrated,
+                vec![".claude/agents/mustard/wave-solo.md (retired agent)".to_string()],
+                "the {text} update does not say what it took out",
+            );
+            assert_eq!(
+                std_fs::read_to_string(root.join(".claude/agents/wave-solo.md")).unwrap(),
+                own,
+                "the project's own agent changed",
+            );
+
+            let again = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert!(again.migrated.is_empty(), "nothing is left to retire: {:?}", again.migrated);
+        }
+
+        for lang in ["pt-BR", "en-US"] {
+            let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/agents").join(lang);
+            assert_eq!(files_in(&shipped), today, "the product still ships another {lang} agent template");
+        }
     }
 
     // --- upsert_project: merge over user files -------------------------------

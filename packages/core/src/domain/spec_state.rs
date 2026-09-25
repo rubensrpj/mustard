@@ -72,16 +72,8 @@ impl State {
     /// fica.
     #[must_use]
     pub fn from_log(log: &SpecLog) -> Self {
-        let mut states: Vec<(u64, &SpecEvent)> = log
-            .block(BlockQuery::Block(Block::State))
-            .into_iter()
-            .filter(|event| event.event_type == "state")
-            .map(|event| (original_of(log, event), event))
-            .collect();
-        states.sort_by_key(|(at, event)| (*at, event.id));
-
         let mut state = Self::default();
-        for (_, event) in states {
+        for event in folded_states(log) {
             if let Some(phase) = event.str_field("phase").and_then(known_phase) {
                 state.phase = Some(phase);
                 if CLOSING_PHASES.contains(&phase) {
@@ -112,6 +104,38 @@ impl State {
     }
 }
 
+/// Os eventos `state` visíveis na ordem da dobra: pelo número da primeira
+/// versão de cada item, e a revisão no lugar dele. É a ordem única em que a
+/// fase anda, para o [`State`] e para quem procura uma mudança de fase.
+fn folded_states(log: &SpecLog) -> Vec<&SpecEvent> {
+    let mut states: Vec<(u64, &SpecEvent)> = log
+        .block(BlockQuery::Block(Block::State))
+        .into_iter()
+        .filter(|event| event.event_type == "state")
+        .map(|event| (original_of(log, event), event))
+        .collect();
+    states.sort_by_key(|(at, event)| (*at, event.id));
+    states.into_iter().map(|(_, event)| event).collect()
+}
+
+/// O número do último `state` que levou a spec de volta à execução depois do
+/// fechamento: de `closed` ou `pr_open` para `running`, na ordem da dobra.
+/// `None` numa spec que nunca foi reaberta assim.
+fn last_reopening(log: &SpecLog) -> Option<u64> {
+    let mut was: Option<&str> = None;
+    let mut last = None;
+    for event in folded_states(log) {
+        let Some(phase) = event.str_field("phase").and_then(known_phase) else {
+            continue;
+        };
+        if phase == "running" && was.is_some_and(returns_to_running) {
+            last = Some(event.id);
+        }
+        was = Some(phase);
+    }
+    last
+}
+
 /// A fase é a de uma spec aprovada. A lista é uma só: a que o [`State`] dobra
 /// e a que o portão de escrita lê.
 #[must_use]
@@ -125,13 +149,33 @@ fn order(phase: &str) -> usize {
     PHASES.iter().position(|known| *known == phase.trim()).unwrap_or(PHASES.len())
 }
 
+/// A spec ainda não fechou: a fase de agora vem antes do fechamento. Em
+/// levantamento, em plano, aprovada ou em execução, sim; fechada, com o pull
+/// request aberto, entregue ou descartada, não. É a pergunta de quem aponta
+/// uma spec para receber trabalho novo sem reabri-la, separada da regra de
+/// volta ([`reopenable`] e [`returns_to_running`]).
+#[must_use]
+pub fn not_closed_yet(phase: &str) -> bool {
+    order(phase) < order("closed")
+}
+
 /// A spec pode voltar ao levantamento: a fase de agora vem antes do
 /// fechamento. Em levantamento, em plano, aprovada ou em execução, a volta
-/// passa; fechada, com o pull request aberto, entregue ou descartada, não: o
-/// que essas decidiram já saiu, e o caminho é uma spec nova.
+/// passa. A fechada e a com o pull request aberto voltam à execução, e não
+/// ao levantamento ([`returns_to_running`]); a entregue e a descartada não
+/// voltam por caminho nenhum.
 #[must_use]
 pub fn reopenable(phase: &str) -> bool {
     order(phase) < order("closed")
+}
+
+/// A spec reaberta volta à execução, já aprovada, na mesma branch: a fechada
+/// e a com o pull request aberto. O que ela decidiu continua valendo, e o
+/// pedido novo entra como tarefas novas. A entregue na base e a descartada
+/// não voltam: pedido novo sobre elas é obra nova.
+#[must_use]
+pub fn returns_to_running(phase: &str) -> bool {
+    matches!(phase.trim(), "closed" | "pr_open")
 }
 
 /// Quem grava uma mudança de fase no `spec.ndjson`. O modelo não está aqui:
@@ -153,11 +197,14 @@ pub enum PhaseWriter {
 ///
 /// - `approved` só pela testemunha, e só de nenhuma fase ou de `plan`.
 /// - As fases depois da aprovação (`running`, `closed`, `pr_open`,
-///   `delivered`) só pelo binário, e só a partir de uma fase aprovada.
+///   `delivered`) só pelo binário, só a partir de uma fase aprovada e para a
+///   frente na ordem das fases. A única volta entre elas é a reabertura: a
+///   spec fechada ou com o pull request aberto volta à execução
+///   ([`returns_to_running`]). A entregue não volta a fase nenhuma.
 /// - Uma fase que não aprova (`survey`, `plan`, `discarded`) só fecha a
 ///   trava, e só o binário a grava: o nascimento, a passagem para a frente na
-///   ordem das fases e a volta ao levantamento, que é a única marcha à ré e
-///   sai só de uma spec que ainda não fechou ([`reopenable`]).
+///   ordem das fases e a volta ao levantamento, que sai só de uma spec que
+///   ainda não fechou ([`reopenable`]).
 /// - A branch e a base, só o binário: no nascimento, ou completando a que
 ///   falta. O portão deixa de travar numa branch diferente da gravada.
 /// - A fase nunca some: tirar o último `state` voltaria a spec ao nascimento.
@@ -189,14 +236,22 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
         let Some(from) = before.phase else {
             return true;
         };
-        // A volta ao levantamento é a única marcha à ré, e sai só de uma spec
-        // que ainda não fechou. O resto anda para a frente, na ordem das
-        // fases.
+        // A volta ao levantamento sai só de uma spec que ainda não fechou. O
+        // resto anda para a frente, na ordem das fases.
         return if to == "survey" { reopenable(from) } else { order(from) < order(to) };
     }
     match by {
         PhaseWriter::Witness => to == "approved" && matches!(before.phase, None | Some("plan")),
-        PhaseWriter::Binary => to != "approved" && before.approved,
+        // Entre as fases aprovadas, só para a frente; a volta é a da
+        // reabertura, da fechada ou da com o pull request aberto para a
+        // execução. A entregue, a última delas, não volta a nenhuma.
+        PhaseWriter::Binary => {
+            to != "approved"
+                && before.approved
+                && before.phase.is_some_and(|from| {
+                    order(from) < order(to) || (to == "running" && returns_to_running(from))
+                })
+        }
     }
 }
 
@@ -480,12 +535,19 @@ impl Review {
     }
 }
 
-/// O número da última mudança da obra: a entrega ou o commit mais novo, ou
-/// zero numa spec que ainda não mudou nada. É daqui que o fechamento e o
-/// portão do merge medem o que a aprovação final já viu.
+/// O número da última mudança da obra: a entrega, o commit ou a reabertura
+/// mais nova, ou zero numa spec que ainda não mudou nada. É daqui que o
+/// fechamento e o portão do merge medem o que a aprovação final já viu.
+///
+/// A reabertura conta como mudança: a spec fechada ou com o pull request
+/// aberto que volta à execução vai receber pedido novo, e a aprovação final
+/// dada antes dela não viu o que vem. O fechamento seguinte chama o revisor
+/// final de novo, mesmo sem entrega nova.
 #[must_use]
 pub fn last_change(log: &SpecLog) -> u64 {
-    log.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "commit")).map(|e| e.id).max().unwrap_or(0)
+    let work =
+        log.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "commit")).map(|e| e.id).max();
+    work.max(last_reopening(log)).unwrap_or(0)
 }
 
 /// A aprovação final da obra: o veredito do agente de teste dedicado
@@ -715,6 +777,92 @@ mod tests {
         );
         assert!(!phase_write_allowed(&on(Some("feature/x"), "dev"), &on(Some("outra"), "dev"), Some("plan"), Witness));
         assert!(!phase_write_allowed(&on(Some("feature/x"), "dev"), &on(Some("feature/x"), "main"), Some("plan"), Witness));
+    }
+
+    /// A reabertura é a única volta entre as fases aprovadas: a spec fechada
+    /// e a com o pull request aberto voltam à execução pelo binário, e a
+    /// entregue não sai do lugar para fase aprovada nenhuma. A volta ao
+    /// levantamento continua só para a spec que ainda não fechou.
+    #[test]
+    fn closed_and_pr_open_go_back_to_running_and_delivered_never_does() {
+        use PhaseWriter::{Binary, Witness};
+        let allowed = |from, to, by| phase_write_allowed(&at(from), &at(to), to, by);
+
+        for from in ["closed", "pr_open"] {
+            assert!(allowed(Some(from), Some("running"), Binary), "{from} goes back to running");
+            assert!(!allowed(Some(from), Some("running"), Witness), "only the binary reopens {from}");
+            assert!(!allowed(Some(from), Some("survey"), Binary), "{from} never goes back to the survey");
+            assert!(!allowed(Some(from), Some("approved"), Binary), "{from} never goes back to the approval");
+        }
+        for to in ["running", "closed", "pr_open"] {
+            assert!(!allowed(Some("delivered"), Some(to), Binary), "delivered never goes back to {to}");
+        }
+        assert!(!allowed(Some("delivered"), Some("survey"), Binary), "delivered never goes back to the survey");
+        // Não há outra marcha à ré entre as fases aprovadas.
+        assert!(!allowed(Some("pr_open"), Some("closed"), Binary), "the pull request does not go back to closed");
+        // A ida para a frente segue como era.
+        assert!(allowed(Some("running"), Some("closed"), Binary));
+        assert!(allowed(Some("closed"), Some("pr_open"), Binary));
+        assert!(allowed(Some("pr_open"), Some("delivered"), Binary));
+        // A spec sem fase nunca chega à execução.
+        assert!(!allowed(None, Some("running"), Binary), "a phaseless spec never runs");
+
+        // A volta ao levantamento é a da spec que ainda não fechou, e a volta
+        // à execução é a da fechada ou com o pull request aberto.
+        for phase in ["survey", "plan", "approved", "running"] {
+            assert!(reopenable(phase) && not_closed_yet(phase) && !returns_to_running(phase), "{phase}");
+        }
+        for phase in ["closed", "pr_open"] {
+            assert!(!reopenable(phase) && !not_closed_yet(phase) && returns_to_running(phase), "{phase}");
+        }
+        for phase in ["delivered", "discarded", "-"] {
+            assert!(!reopenable(phase) && !not_closed_yet(phase) && !returns_to_running(phase), "{phase}");
+        }
+    }
+
+    /// A aprovação final dada antes da última reabertura não vale: a spec
+    /// fechada que volta à execução vai receber pedido novo, e o fechamento
+    /// seguinte chama o revisor final de novo, mesmo sem entrega nova. A que
+    /// vem depois da reabertura vale.
+    #[test]
+    fn a_final_approval_before_the_last_reopen_does_not_count() {
+        let final_verdict = |id: u64| {
+            json!({"v":1,"id":id,"type":"verdict","author":"review","final":true,"result":"approved",
+                   "text":"Sem achados.","agreed":[{"item":1,"met":true}]})
+        };
+        let mut lines = vec![
+            json!({"v":1,"id":1,"type":"state","phase":"survey","branch":"feature/x","base":"dev"}),
+            json!({"v":1,"id":2,"type":"state","phase":"approved","witness":{"question":"q","answer":"a"}}),
+            json!({"v":1,"id":3,"type":"state","phase":"running"}),
+            json!({"v":1,"id":4,"type":"delivered","wave":1,"text":"A onda 1 entregou.","files":["src/a.rs"]}),
+            final_verdict(5),
+            json!({"v":1,"id":6,"type":"state","phase":"closed"}),
+        ];
+        // Fechada, a aprovação final vale.
+        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(5));
+        assert_eq!(last_change(&log(&lines)), 4);
+
+        // Reaberta, sem entrega nova: a aprovação de antes já não vale.
+        lines.push(json!({"v":1,"id":7,"type":"state","phase":"running","reason":"Pedido novo."}));
+        let reopened = log(&lines);
+        assert_eq!(last_change(&reopened), 7, "the reopening is the last change");
+        assert_eq!(final_approval(&reopened), None, "the approval before the reopening does not count");
+
+        // A aprovação final dada depois da reabertura vale.
+        lines.push(final_verdict(8));
+        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(8));
+
+        // Pelo pull request aberto, a mesma coisa.
+        let mut from_pr = lines[..6].to_vec();
+        from_pr.push(json!({"v":1,"id":7,"type":"state","phase":"pr_open"}));
+        assert_eq!(final_approval(&log(&from_pr)).map(|e| e.id), Some(5));
+        from_pr.push(json!({"v":1,"id":8,"type":"state","phase":"running","reason":"Pedido novo."}));
+        assert_eq!(final_approval(&log(&from_pr)), None, "reopened from the pull request");
+
+        // A entrada na execução pela primeira vez não é reabertura.
+        let first_run = log(&lines[..5]);
+        assert_eq!(last_change(&first_run), 4, "the first run is not a reopening");
+        assert_eq!(final_approval(&first_run).map(|e| e.id), Some(5));
     }
 
     #[test]

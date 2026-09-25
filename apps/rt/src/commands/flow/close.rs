@@ -65,6 +65,7 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use crate::commands::flow::round::Caller;
 use crate::commands::spec_events::{self, read::checkout, write::record};
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
@@ -179,17 +180,28 @@ impl CloseRefusal {
     }
 }
 
-/// O núcleo testável de [`run_cmd`]. A sessão vem do ambiente. Nunca entra em
-/// pânico.
+/// O núcleo testável de [`run_cmd`]. A sessão e a pasta de configuração da
+/// plataforma vêm do ambiente. Nunca entra em pânico.
 pub(crate) fn close_at(opts: &CloseOpts) -> Value {
-    close_for(opts, session_from_env().as_deref())
+    let session = session_from_env();
+    let config_dir = mustard_core::claude_config_dir();
+    close_in(opts, Caller { session: session.as_deref(), config_dir: config_dir.as_deref() })
 }
 
-/// [`close_at`] com a sessão recebida, que é como um teste a escolhe.
+/// [`close_at`] com a sessão recebida, que é como um teste a escolhe, sem a
+/// pasta de configuração da plataforma: o consumo da última onda não é
+/// medido.
+#[cfg(test)]
 pub(crate) fn close_for(opts: &CloseOpts, session: Option<&str>) -> Value {
+    close_in(opts, Caller { session, config_dir: None })
+}
+
+/// [`close_at`] com a sessão e a pasta de configuração da plataforma
+/// recebidas (`caller`), de onde a última onda assumida tem o consumo medido.
+fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    match run_close(opts, &project.root, lang, session) {
+    match run_close(opts, &project.root, lang, caller) {
         Ok(report) => report,
         Err(refusal) => refusal.to_value(lang),
     }
@@ -199,8 +211,9 @@ fn run_close(
     opts: &CloseOpts,
     root: &Path,
     lang: Locale,
-    session: Option<&str>,
+    caller: Caller<'_>,
 ) -> Result<Value, CloseRefusal> {
+    let session = caller.session;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
         None => DiskSpecState::new(&checkout(&opts.root))
@@ -240,9 +253,10 @@ fn run_close(
     // é assumida aqui, com ou sem relatório, e é o commit dela que fecha a
     // última onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let recorded: Vec<Value> = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang)
-        .map_err(CloseRefusal::Report)?
-        .recorded;
+    let recorded: Vec<Value> =
+        crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang, caller)
+            .map_err(CloseRefusal::Report)?
+            .recorded;
 
     // A spec antiga passa para o backlog antes de ler as ondas: a onda
     // desenhada à mão que nunca saiu não recusa o fechamento, porque a versão
@@ -260,10 +274,9 @@ fn run_close(
     // A cópia do revisor sai antes da máquina, pela mesma porta das cópias de
     // onda: a que chegou com mudança trava aqui, antes de gastar a suíte, e
     // a limpa vai para o commit da obra. Com a obra já aprovada, ninguém mais
-    // revisa, e a cópia só espera ser apagada lá embaixo.
-    if !final_approved(&log) {
-        prepare_review_copy(root, &spec, &log)?;
-    }
+    // revisa, e a cópia só espera ser apagada lá embaixo. Os arquivos locais
+    // que não chegaram a ela viram aviso no pedido do revisor.
+    let not_copied = if final_approved(&log) { Vec::new() } else { prepare_review_copy(root, &spec, &log)? };
 
     // A máquina antes do agente de teste dedicado: os dois comandos do
     // servidor e cada critério, uma vez por fechamento. A volta que só
@@ -310,6 +323,11 @@ fn run_close(
         }
         for hint in &unowned_tests {
             spec_events::pages::push_warning(&mut out, "unowned-test", hint);
+        }
+        let copy = mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::final_copy_path(root, &spec));
+        for file in &not_copied {
+            let hint = crate::commands::flow::round::local_file_missing(file, &copy, lang);
+            spec_events::pages::push_warning(&mut out, "local-file-missing", &hint);
         }
         return Ok(out);
     }
@@ -596,7 +614,9 @@ fn clean_env(command: &str) -> String {
 /// vai para o commit; a que tem mudança recusa, com os arquivos, e a
 /// recusa diz como descartar — é o corte que o revisor anterior deixou, e
 /// revisar por cima dele é ler código sabotado como se fosse o da obra.
-fn prepare_review_copy(root: &Path, spec: &str, log: &SpecLog) -> Result<(), CloseRefusal> {
+/// Como a cópia de onda, ela recebe os arquivos locais do projeto pelo
+/// conteúdo; devolve os que não chegaram.
+fn prepare_review_copy(root: &Path, spec: &str, log: &SpecLog) -> Result<Vec<String>, CloseRefusal> {
     use mustard_core::io::wave_prompt::{final_copy_path, final_review_commit, shown};
     use mustard_core::platform::git;
     let path = final_copy_path(root, spec);
@@ -1406,6 +1426,55 @@ mod tests {
         assert!(!git_out(root, &["worktree", "list", "--porcelain"]).contains(&shown), "{closed}");
     }
 
+    /// A cópia do revisor final recebe os arquivos da lista de arquivos
+    /// locais do projeto como a cópia da onda: no mesmo caminho, como arquivo
+    /// comum, com o mesmo conteúdo, nunca como link; o que falta no principal
+    /// vira aviso no pedido do revisor, e o pedido sai assim mesmo. O arquivo
+    /// copiado, que o git ignora, não suja a cópia: depois de uma reprovação,
+    /// o fechamento seguinte pede a revisão de novo sobre ela, que recebe os
+    /// arquivos com o conteúdo de agora.
+    #[test]
+    fn the_final_review_copy_gets_the_local_files_too() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let exclude = root.join(".git").join("info").join("exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::write(&exclude, ".env\n").unwrap();
+        std::fs::write(root.join(".env"), "SEGREDO=1\n").unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"localFiles":[".env","falta.env"]}"#).unwrap();
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x");
+        let shown = mustard_core::io::wave_prompt::shown(&copy);
+        let ask = |report: Option<String>| {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
+        };
+        let regular = |file: &Path| std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_file());
+
+        let asked = ask(None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert!(regular(&copy.join(".env")), "o arquivo local chega como arquivo comum: {asked}");
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=1\n");
+        std::fs::write(copy.join(".env"), "MUDOU=1\n").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join(".env")).unwrap(), "SEGREDO=1\n", "a cópia não escreve no principal");
+        let warnings = asked["warnings"].as_array().cloned().unwrap_or_default();
+        let missing: Vec<&str> = warnings
+            .iter()
+            .filter(|w| w["reason"] == json!("local-file-missing"))
+            .filter_map(|w| w["hint"].as_str())
+            .collect();
+        assert_eq!(missing.len(), 1, "{asked}");
+        assert!(missing[0].contains("`falta.env`") && missing[0].contains(&shown), "{}", missing[0]);
+
+        std::fs::remove_file(copy.join(".env")).unwrap();
+        std::fs::write(root.join(".env"), "SEGREDO=2\n").unwrap();
+        let rejected = json!({"final": true, "result": "rejected", "text": "Refazer a conferência."});
+        let again = ask(verdict_written(root, "x", rejected));
+        assert_eq!(again["review"]["final"], json!(true), "o arquivo local não suja a cópia: {again}");
+        assert!(regular(&copy.join(".env")), "{again}");
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "{again}");
+        let _ = std::fs::remove_dir_all(mustard_core::io::wave_prompt::copies_dir(root));
+    }
+
     /// O roteiro que os dois comandos do servidor rodam no teste: grava, num
     /// arquivo com o nome do papel, a casa, se o git tem identidade global,
     /// as variáveis do Claude Code e os processos pais, e sai com o código
@@ -1791,7 +1860,9 @@ exit "${2:-0}"
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
 
         std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
-        returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));
+        // A entrega responde pela decisão que o pedido da onda levou.
+        returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai",
+            "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
         let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();

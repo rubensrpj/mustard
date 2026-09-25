@@ -1,6 +1,6 @@
 # Mustard in this project
 
-Mustard runs every piece of work that changes a file through one flow: survey, plan, approval, waves, review, close and pull request. Every command answers what the next step is. Follow that answer instead of choosing the order yourself: that is how nothing is left behind.
+Mustard runs every piece of work that changes a file through one flow: survey, plan, approval, waves, review, close and pull request. Every command answers what the next step is. Follow that answer instead of choosing the order yourself.
 
 ## When a request arrives
 
@@ -11,15 +11,15 @@ Mustard runs every piece of work that changes a file through one flow: survey, p
 ## During the survey
 
 - Present one point at a time, in the order of explaining from the response style.
-- Check the code before stating a fact. The binary refuses a fact without a source.
-- Record each answer right away, with `mustard-rt run write <type>`. The `write` answer brings the next point.
+- Check the code before stating a fact.
+- Record each answer right away, with `mustard-rt run write <type>`.
 
 ## While the spec is open
 
-- A new request from the user joins the same spec, with `write request`. A different subject becomes a pending item, with `mustard-rt run pending --add`.
+- A new request from the user joins the same spec, with `write request`; on a closed spec, or one with its pull request open, `mustard-rt run reopen --reason "<why>"` comes first. A pull request the server failed goes to `mustard-rt run reopen --fix --reason "<why>"`. A different subject becomes a pending item, with `mustard-rt run pending --add`.
 - A change that comes from you or from an agent only goes ahead with the user's "yes".
 - Never edit the `spec.*` files by hand. Record through `write` and read one block with `mustard-rt run read <block>`.
-- Hand to an agent any investigation that opens many files. A single check you do yourself: delegating costs more than reading one file.
+- Hand to an agent any investigation that opens many files. A single check you do yourself.
 
 ## Pages
 

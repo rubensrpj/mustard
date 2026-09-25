@@ -3,7 +3,8 @@
 //! Duas gravações ao mesmo tempo, em dois processos, recebem números seguidos
 //! e nenhuma linha sai estragada: a trava é a do sistema, a mesma no Linux, no
 //! macOS e no Windows. Uma spec gravada pelo `write` é lida bloco a bloco pelo
-//! `read`, e `read wave-2` devolve só a onda 2. O que só os ganchos e a rodada
+//! `read`, `read wave-2` devolve só a onda 2 e `read dispatch-2`, tudo o que o
+//! pedido da onda 2 lista. O que só os ganchos e a rodada
 //! gravam — a fala do usuário, a entrega oficial de uma onda — entra aqui pela
 //! gravação do núcleo. O `write` recusa a fala, e aceita a entrega só como a
 //! volta da onda com o envio dela aberto.
@@ -301,6 +302,157 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let block = rt(root, &["read", "everything", "--spec", "teste"]).output().expect("run");
     assert_eq!(block.status.code(), Some(1));
     assert_eq!(stdout_json(&block)["reason"], json!("unknown-block"));
+}
+
+/// Os códigos de item que um texto cita (`MSTD-<sigla>-<NNNN>`).
+fn codes_in(text: &str) -> std::collections::BTreeSet<String> {
+    text.match_indices("MSTD-")
+        .map(|(at, _)| {
+            let rest = &text[at..];
+            let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).unwrap_or(rest.len());
+            rest[..end].to_string()
+        })
+        .filter(|code| code.rsplit('-').next().is_some_and(|n| n.len() == 4 && n.chars().all(|c| c.is_ascii_digit())))
+        .collect()
+}
+
+/// O pedido da onda `wave` como a rodada o monta, e o que ele lista: os
+/// códigos dos itens e os números das lições.
+fn request_of(root: &Path, wave: u64) -> (String, std::collections::BTreeSet<String>, std::collections::BTreeSet<u64>) {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    let built = mustard_core::io::wave_prompt::prompts(
+        root,
+        "teste",
+        &log,
+        mustard_core::platform::i18n::Locale::PtBr,
+        &mustard_core::io::wave_prompt::Flight::default(),
+    );
+    let text = built.into_iter().find(|p| p.wave == wave).expect("the request of the wave").text;
+    let lessons = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("- `lessons`: "))
+        .map(|n| n.trim().parse().expect("a lesson number"))
+        .collect();
+    (text.clone(), codes_in(&text), lessons)
+}
+
+/// O que a leitura `dispatch-<n>` traz: os códigos dos itens da spec e os
+/// números das lições, que não têm código.
+fn dispatch_of(root: &Path, wave: u64, term: Option<&str>) -> (Value, std::collections::BTreeSet<String>, std::collections::BTreeSet<u64>) {
+    let block = format!("dispatch-{wave}");
+    let mut args = vec!["read", block.as_str(), "--spec", "teste"];
+    if let Some(term) = term {
+        args.extend(["--term", term]);
+    }
+    let out = rt(root, &args).output().expect("run read");
+    assert!(out.status.success(), "read {block}: {}", String::from_utf8_lossy(&out.stdout));
+    let report = stdout_json(&out);
+    let events = report["events"].as_array().cloned().unwrap_or_default();
+    let codes = events.iter().filter_map(|e| e["code"].as_str().map(str::to_string)).collect();
+    let lessons = events.iter().filter(|e| e.get("code").is_none()).map(|e| e["id"].as_u64().expect("a lesson number")).collect();
+    (report, codes, lessons)
+}
+
+/// O agente lê numa leitura só tudo o que o pedido da onda lista: a onda, a
+/// tarefa, o critério dela, a especificação, o combinado do arquivo que ela
+/// toca, a entrega da onda de que ela depende e as lições, menos a que a
+/// escolha antes do envio tirou. Nada do envio, da entrega nem dos passos da
+/// própria onda. No conserto, a reprovação e a entrega que ela julgou, que o
+/// pedido cita, vêm junto. Um código de item acha só aquele item, mesmo que
+/// uma lição tenha o mesmo número dele no banco.
+#[test]
+fn the_dispatch_reading_returns_every_item_the_wave_request_lists() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Somar a fatura"}));
+    let context = write(root, "context", &json!({"text": "A fatura soma centavos.", "origin": msg}));
+    let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
+    let c2 = write(root, "criterion", &json!({"when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
+    let mine = write(root, "decision", &json!({"text": "A soma arredonda no fim.", "why": "Centavos.", "keys": ["soma"],
+        "applies_to": {"files": ["src/soma.rs"]}, "origin": msg}));
+    let other = write(root, "decision", &json!({"text": "O outro arquivo guarda o histórico.", "why": "Auditoria.", "keys": ["outro"],
+        "applies_to": {"files": ["src/outro.rs"]}, "origin": msg}));
+    let w1 = seed_binary(root, "wave", &json!({"author": "binary", "n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
+    seed_binary(root, "task", &json!({"author": "binary", "wave": 1, "text": "Guardar o histórico.",
+        "files": [{"path": "src/outro.rs"}], "depends_on": [], "origin": msg}));
+    let w2 = seed_binary(root, "wave", &json!({"author": "binary", "n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y",
+        "depends_on": [1], "origin": msg}));
+    let task = seed_binary(root, "task", &json!({"author": "binary", "wave": 2, "text": "Somar a fatura no total.",
+        "files": [{"path": "src/soma.rs"}], "depends_on": [], "origin": msg}));
+    let before = seed_binary(root, "delivered", &json!({"author": "wave", "wave": 1, "text": "Histórico guardado.", "files": ["src/outro.rs"]}));
+
+    // As lições do banco: a do arquivo da onda, a que a escolha antes do
+    // envio tira e a do arquivo da outra onda.
+    let lesson = |keys: &[&str], file: &str, text: &str| -> u64 {
+        let body = json!({"class": "environment_trap", "text": text, "keys": keys,
+            "applies_to": {"files": [file]}, "found_in": {"spec": "teste"}});
+        write(root, "lesson", &body)
+    };
+    let elsewhere = lesson(&["fatura"], "src/outro.rs", "A fatura antiga fica no histórico.");
+    let removed = lesson(&["total"], "src/soma.rs", "O total passa pelo arredondamento.");
+    let kept = lesson(&["fatura"], "src/soma.rs", "A fatura chega em centavos.");
+    assert_eq!(kept, context, "the lesson that reaches the wave shares the number of the context item");
+
+    let analysis = json!({"judged": [], "removed": [], "added": [], "judged_lessons": [kept, removed],
+        "removed_lessons": [{"lesson": removed, "why": "A tarefa não arredonda."}], "tasks": []});
+    let sent = seed_binary(root, "send", &json!({"author": "binary", "wave": 2, "role": "wave", "agent": "wave",
+        "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0", "analysis": analysis}));
+    let step = seed_binary(root, "step", &json!({"author": "wave", "wave": 2, "item": task, "text": "Tarefa feita."}));
+    let own = seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Somado.", "files": ["src/soma.rs"]}));
+
+    let code = |id: u64| -> String {
+        let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+        let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+        log.codes().get(&id).cloned().unwrap_or_else(|| panic!("no code for {id}"))
+    };
+
+    let (request, listed, listed_lessons) = request_of(root, 2);
+    let (report, read, lessons) = dispatch_of(root, 2, None);
+    assert_eq!(report["block"], json!("dispatch-2"), "{report}");
+    let expected: std::collections::BTreeSet<String> =
+        [w2, task, c2, context, mine, before].into_iter().map(code).collect();
+    assert_eq!(read, expected, "{report}");
+    assert_eq!(read, listed, "the reading and the request list the same items:\n{request}\n{report}");
+    assert_eq!(lessons, [kept].into_iter().collect(), "{report}");
+    assert_eq!(lessons, listed_lessons, "the reading and the request carry the same lessons:\n{request}\n{report}");
+    for (what, id) in [("send", sent), ("step", step), ("own delivery", own), ("wave 1", w1), ("criterion of wave 1", c1), ("other file", other)] {
+        assert!(!read.contains(&code(id)), "the {what} is not part of the request: {report}");
+    }
+    assert!(!lessons.contains(&removed) && !lessons.contains(&elsewhere), "{report}");
+    for event in report["events"].as_array().expect("events") {
+        assert!(event.get("search").is_none(), "the search field is never shown: {event}");
+    }
+
+    // Um código de item acha só aquele item, e nunca a lição que tem o
+    // mesmo número dele no banco.
+    for id in [context, task] {
+        let (by_code, found, found_lessons) = dispatch_of(root, 2, Some(&code(id)));
+        assert_eq!(found, [code(id)].into_iter().collect(), "{by_code}");
+        assert!(found_lessons.is_empty(), "{by_code}");
+    }
+    // Uma palavra filtra dentro do que o pedido lista: a lição que a tem vem,
+    // e o item que não a tem fica fora.
+    let (by_word, found, found_lessons) = dispatch_of(root, 2, Some("fatura"));
+    assert_eq!(found_lessons, [kept].into_iter().collect(), "{by_word}");
+    assert!(!found.contains(&code(w2)), "{by_word}");
+    // A onda que o plano não tem não tem pedido.
+    assert_eq!(dispatch_of(root, 9, None).0["count"], json!(0));
+    let bad = rt(root, &["read", "dispatch-x", "--spec", "teste"]).output().expect("run");
+    assert_eq!(bad.status.code(), Some(1));
+    assert_eq!(stdout_json(&bad)["reason"], json!("unknown-block"));
+
+    // O conserto: a revisão reprovou a entrega, e o pedido novo cita a
+    // reprovação e a entrega que ela julgou; a leitura as traz junto.
+    let rejected = seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "rejected", "text": "Falta o arredondamento.",
+        "criteria": [{"criterion": c2, "tests_rule": false}]}));
+    seed_binary(root, "send", &json!({"author": "binary", "wave": 2, "role": "wave", "agent": "wave",
+        "text": "o conserto", "lines": 1, "chars": 10, "mustard": "0", "analysis": analysis}));
+    let (request, listed, _) = request_of(root, 2);
+    let (report, read, _) = dispatch_of(root, 2, None);
+    assert!(read.contains(&code(rejected)) && read.contains(&code(own)), "{report}");
+    assert_eq!(read, listed, "the reading and the request of the fix list the same items:\n{request}\n{report}");
 }
 
 /// O commit da rodada nunca depende da lista de arquivos que a onda

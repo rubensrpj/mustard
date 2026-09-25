@@ -13,7 +13,7 @@ use mustard_core::domain::spec_state::{PhaseWriter, State};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, TaskChoice, WaveCopy};
 use mustard_core::io::fs::lock::LockedFile;
-use mustard_core::io::wave_prompt::{copy_path, lesson_bank, recorded_copy, shown, wave_lessons};
+use mustard_core::io::wave_prompt::{copy_path, lesson_bank, local_file_inside, recorded_copy, shown, wave_lessons};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
@@ -501,12 +501,18 @@ pub(super) fn open_copies(
             .collect();
         let made = match &head {
             Err(detail) => Err(detail.clone()),
-            Ok(head) => ensure_copy(root, &path, head)
-                .and_then(|()| touched.iter().try_for_each(|sub| copy_submodule(root, &path, sub, &unit))),
+            Ok(head) => ensure_copy(root, &path, head).and_then(|missing| {
+                touched.iter().try_for_each(|sub| copy_submodule(root, &path, sub, &unit)).map(|()| missing)
+            }),
         };
         match made {
-            Ok(()) => {
-                copies.insert(wave, WaveCopy { path: shown(&path), build_dir: Some(free.remove(0)) });
+            Ok(missing) => {
+                let copy = shown(&path);
+                for file in missing {
+                    let hint = local_file_missing(&file, &copy, lang);
+                    warnings.push(json!({ "reason": "local-file-missing", "wave": wave, "file": file, "hint": hint }));
+                }
+                copies.insert(wave, WaveCopy { path: copy, build_dir: Some(free.remove(0)) });
             }
             Err(detail) => warnings.push(failed(wave, detail)),
         }
@@ -514,23 +520,80 @@ pub(super) fn open_copies(
     (copies, warnings)
 }
 
+/// O aviso do arquivo local `file` que não chegou à cópia `copy`.
+pub(crate) fn local_file_missing(file: &str, copy: &str, lang: Locale) -> String {
+    translate("round.local_file_missing", lang).replace("{file}", file).replace("{copy}", copy)
+}
+
 /// A cópia em `path`, criada no commit `head` do checkout `root`. A pasta que
 /// já é uma cópia ligada ao repositório, de um envio anterior da mesma onda, e
 /// está limpa vai para o commit `head`, porque um commit fora da rodada pode
 /// ter avançado o checkout principal desde a criação dela. A que tem mudança,
-/// como a de uma retomada em andamento, fica como está.
-pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), String> {
+/// como a de uma retomada em andamento, fica como está. A pasta mãe, a das
+/// cópias do projeto, fora dele, nasce antes da cópia.
+///
+/// A cópia nova e a limpa recebem os arquivos locais do projeto
+/// ([`copy_local_files`]): o git não os leva, e a limpeza da cópia órfã os
+/// apaga. Devolve os itens da lista que não chegaram; a cópia sai assim mesmo.
+pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<Vec<String>, String> {
     if path.join(".git").is_file() {
         let clean = git::run(path, &["status", "--porcelain", "--untracked-files=all"])
             .out()
             .is_some_and(|status| status.is_empty());
-        if clean {
-            git::run(path, &["checkout", "--detach", head]).result().map(|_| ())?;
+        if !clean {
+            return Ok(Vec::new());
         }
-        return Ok(());
+        git::run(path, &["checkout", "--detach", head]).result()?;
+        return Ok(copy_local_files(root, path));
+    }
+    if let Some(parent) = path.parent() {
+        mustard_core::io::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let target = path.to_string_lossy();
-    git::run(root, &["worktree", "add", "--detach", &target, head]).result().map(|_| ())
+    git::run(root, &["worktree", "add", "--detach", &target, head]).result()?;
+    Ok(copy_local_files(root, path))
+}
+
+/// Os arquivos locais que o projeto `root` declara (`localFiles`, no
+/// `mustard.json`) levados à cópia `copy`, cada um no mesmo caminho relativo,
+/// sempre pelo conteúdo: nenhum atalho, junção ou link para o repositório
+/// principal, em nenhum sistema, então apagar a cópia nunca toca arquivo
+/// dele. Devolve, na ordem da lista, os itens que não chegaram: o que falta
+/// no principal, o que não é arquivo, o caminho que sairia do projeto
+/// ([`local_file_inside`]) e o que o disco recusou. Lista vazia ou ausente
+/// não copia nada.
+fn copy_local_files(root: &Path, copy: &Path) -> Vec<String> {
+    let listed = mustard_core::ProjectConfig::load(root).local_files.unwrap_or_default();
+    listed
+        .iter()
+        .map(|file| file.trim())
+        .filter(|file| !file.is_empty())
+        .filter(|file| !copy_local_file(root, copy, file))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Copia o arquivo local `file` do checkout `root` para a cópia `copy`;
+/// `false` quando ele não chegou. O link que já estiver no lugar dele na
+/// cópia sai antes: copiar por cima escreveria no alvo do link.
+fn copy_local_file(root: &Path, copy: &Path, file: &str) -> bool {
+    if !local_file_inside(file) {
+        return false;
+    }
+    let (from, to) = (root.join(file), copy.join(file));
+    if !from.is_file() {
+        return false;
+    }
+    if let Some(parent) = to.parent()
+        && mustard_core::io::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    let linked = std::fs::symlink_metadata(&to).is_ok_and(|meta| meta.file_type().is_symlink());
+    if linked && mustard_core::io::fs::remove_file(&to).is_err() {
+        return false;
+    }
+    std::fs::copy(&from, &to).is_ok()
 }
 
 /// A cópia do submódulo `sub` dentro da cópia `copy`: o submódulo do
@@ -1180,6 +1243,66 @@ mod tests {
         assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
     }
 
+    /// A rodada abre a cópia da onda fora da pasta do projeto, na pasta das
+    /// cópias dele — o nome do projeto e um código curto que não muda —, e o
+    /// envio grava esse caminho, que o pedido cita. A cópia do revisor da
+    /// onda e a do revisor final moram ao lado; nada nasce em
+    /// `.claude/worktrees`. A entrega que cita o arquivo pelo caminho absoluto
+    /// da cópia gravada no envio volta relativa ao repositório, mesmo quando
+    /// essa cópia não é a que a pasta das cópias daria hoje, como a da onda
+    /// que saiu antes de a pasta mudar.
+    #[test]
+    fn a_wave_copy_is_born_outside_the_project_folder() {
+        use mustard_core::io::wave_prompt::{copies_dir, final_copy_path};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+
+        let project = std::fs::canonicalize(root).unwrap();
+        let copies = copies_dir(root);
+        assert!(!copies.starts_with(root) && !copies.starts_with(&project), "{copies:?}");
+        let folder = copies.file_name().unwrap().to_string_lossy().into_owned();
+        let (name, code) = folder.rsplit_once('-').unwrap();
+        assert_eq!(name, project.file_name().unwrap().to_string_lossy(), "{folder}");
+        assert!(code.len() == 8 && code.chars().all(|c| c.is_ascii_hexdigit()), "{folder}");
+        assert_eq!(copies_dir(&project), copies, "the same project always gives the same folder");
+
+        let (copy, _) = sent_copy(root, 1);
+        assert_eq!(copy, shown(&copies.join("x-1")), "{out}");
+        assert!(Path::new(&copy).join(".git").is_file(), "the copy is a linked checkout");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
+        assert_eq!(copy_path(root, "x", 1, true), copies.join("x-1-review"));
+        assert_eq!(final_copy_path(root, "x"), copies.join("x-final-review"));
+        assert!(!root.join(".claude").join("worktrees").exists(), "nothing is born inside the project");
+
+        // Um envio mais novo da onda grava a cópia noutro lugar.
+        let elsewhere = tempdir().unwrap();
+        let moved = shown(&elsewhere.path().join("x-1"));
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.wave() == Some(1) && e.event_type == "send").unwrap();
+        let draft = json!({
+            "wave": 1, "role": "wave", "text": sent.str_field("text").unwrap_or_default(),
+            "lines": sent.int("lines").unwrap_or(1), "chars": sent.int("chars").unwrap_or(1),
+            "items": sent.fields.get("items").cloned().unwrap_or_else(|| json!([])),
+            "mustard": "0", "author": "binary", "copy": moved,
+        });
+        store::write(&path, "send", draft.as_object().cloned().unwrap(), &[]).unwrap();
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// mudou\n").unwrap();
+        let body = json!({"wave": 1, "text": "Saiu.", "files": [format!("{moved}/src/a.rs")], "commit": "a onda 1 saiu"});
+        let wrote = returned(root, body);
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let log = store::read(&path).unwrap().unwrap();
+        let back = log.events.iter().rfind(|e| e.event_type == "delivered").unwrap();
+        assert_eq!(back.fields.get("files"), Some(&json!(["src/a.rs"])), "{wrote}");
+        let _ = std::fs::remove_dir_all(&copies);
+    }
+
     /// Duas ondas sem dependência entre si, mas com o mesmo arquivo
     /// declarado, não saem juntas mesmo com vaga livre: quem chegou depois
     /// espera a que já está em andamento entregar, e só então sai sozinha.
@@ -1407,6 +1530,99 @@ mod tests {
             } else {
                 assert_eq!(copy_head, new_head, "a cópia limpa vai para o commit atual: {copy_head}");
             }
+        }
+    }
+
+    /// Os avisos de arquivo local que não chegou à cópia, na resposta da
+    /// rodada: o item da lista de cada um.
+    fn local_files_missing(out: &Value) -> Vec<String> {
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        warnings
+            .iter()
+            .filter(|w| w["reason"] == json!("local-file-missing"))
+            .map(|w| w["file"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// A cópia nova da onda recebe cada arquivo da lista de arquivos locais
+    /// do projeto (`localFiles`) no mesmo caminho, como arquivo comum e com o
+    /// mesmo conteúdo, nunca como link: mudar o da cópia não muda o do
+    /// repositório principal. O arquivo que falta no principal, o caminho com
+    /// `..` e o absoluto não chegam, viram aviso cada um, e a cópia sai do
+    /// mesmo jeito — sem escrever nada fora dela. A cópia limpa reaproveitada,
+    /// depois da limpeza que apaga o que o git ignora, recebe os arquivos de
+    /// novo, com o conteúdo de agora. Com a lista vazia ou ausente, nada é
+    /// copiado e nada é avisado.
+    #[test]
+    fn a_new_copy_gets_the_local_files_as_copies_never_links() {
+        use mustard_core::io::wave_prompt::copies_dir;
+
+        let dir = tempdir().unwrap();
+        let root = &dir.path().join("projeto");
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env\nconfig/local.json\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join(".env"), "SEGREDO=1\n").unwrap();
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::write(root.join("config/local.json"), "{\"porta\":1}\n").unwrap();
+        let outside = dir.path().join("fora.env");
+        std::fs::write(&outside, "FORA=1\n").unwrap();
+        let absolute = shown(&dir.path().join("absoluto.env"));
+        std::fs::write(&absolute, "ABSOLUTO=1\n").unwrap();
+        let listed = json!([".env", "config/local.json", "falta.env", "../fora.env", absolute]);
+        std::fs::write(root.join("mustard.json"), json!({ "localFiles": listed }).to_string()).unwrap();
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "a cópia sai mesmo com o arquivo que falta: {out}");
+        let (copy_path, _) = sent_copy(root, 1);
+        let copy = Path::new(&copy_path);
+        for (file, content) in [(".env", "SEGREDO=1\n"), ("config/local.json", "{\"porta\":1}\n")] {
+            let kind = std::fs::symlink_metadata(copy.join(file)).unwrap().file_type();
+            assert!(kind.is_file() && !kind.is_symlink(), "{file} chega como arquivo comum");
+            assert_eq!(std::fs::read_to_string(copy.join(file)).unwrap(), content, "{file}");
+        }
+        std::fs::write(copy.join(".env"), "MUDOU=1\n").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join(".env")).unwrap(), "SEGREDO=1\n", "a cópia não escreve no principal");
+        assert!(!copies_dir(root).join("fora.env").exists(), "o item com .. não escreve fora da cópia");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "FORA=1\n");
+        assert_eq!(std::fs::read_to_string(&absolute).unwrap(), "ABSOLUTO=1\n", "o item absoluto não toca o arquivo");
+        assert_eq!(local_files_missing(&out), ["falta.env", "../fora.env", absolute.as_str()], "{out}");
+        let hints = out["warnings"].as_array().cloned().unwrap_or_default();
+        let hint = hints.iter().find(|w| w["file"] == json!("falta.env")).unwrap()["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`falta.env`") && hint.contains(&copy_path), "{hint}");
+        assert_eq!(git_text(copy, &["status", "--porcelain", "--untracked-files=all"]), "", "a cópia segue limpa");
+
+        // A cópia limpa, como a limpeza da cópia órfã a deixa, perde o que o
+        // git ignora; a onda sai de novo com a mesma cópia, que recebe os
+        // arquivos com o conteúdo de agora.
+        git_at(copy, &["clean", "-fdx"]);
+        assert!(!copy.join(".env").exists());
+        std::fs::write(root.join(".env"), "SEGREDO=2\n").unwrap();
+        replan(root, 1);
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![1], "{again}");
+        assert_eq!(sent_copy(root, 1).0, copy_path, "a mesma cópia: {again}");
+        let kind = std::fs::symlink_metadata(copy.join(".env")).unwrap().file_type();
+        assert!(kind.is_file() && !kind.is_symlink(), "{again}");
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "{again}");
+        assert_eq!(std::fs::read_to_string(copy.join("config/local.json")).unwrap(), "{\"porta\":1}\n");
+        let _ = std::fs::remove_dir_all(copies_dir(root));
+
+        // Lista vazia ou ausente: a cópia sai sem nenhum arquivo local.
+        for config in [json!({ "localFiles": [] }), json!({})] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+            approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+            std::fs::write(root.join(".env"), "SEGREDO=1\n").unwrap();
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+            let out = round(root, "x", None);
+            assert_eq!(waves_in(&out, "dispatch"), vec![1], "{config}: {out}");
+            let (copy, _) = sent_copy(root, 1);
+            assert!(!Path::new(&copy).join(".env").exists(), "{config}: nada é copiado");
+            assert!(local_files_missing(&out).is_empty(), "{config}: {out}");
+            let _ = std::fs::remove_dir_all(copies_dir(root));
         }
     }
 
@@ -2471,6 +2687,7 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 reason: "Mais trabalho na mesma obra.".into(),
+                fix: false,
             },
             None,
         );
