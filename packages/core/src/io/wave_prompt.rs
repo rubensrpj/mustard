@@ -252,16 +252,15 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// e a cópia do revisor, no commit mais novo da spec e na pasta de compilação
 /// que a última onda enviada usou.
 ///
-/// Uma onda cuja última revisão reprovou e que já entregou o conserto (o
-/// fechamento só chega aqui depois disso: veja
-/// [`crate::domain::spec_events::SpecLog::last_rejected`]) restringe as
-/// ondas, as emendas e as entregas a ela: o agente confere só o conserto, sem
-/// reabrir a obra inteira.
-///
 /// Depois de um veredito final que reprovou, o pedido é o da revisão de
 /// volta: ele lista o que mudou desde esse veredito
 /// ([`wave_prompt::since_last_verdict`]), e o revisor confere isso e o
-/// encaixe no resto, sem repetir o que o veredito já concluiu. Os requisitos
+/// encaixe no resto, sem repetir o que o veredito já concluiu. É o mesmo
+/// pedido quando o veredito aponta uma onda: ele aparece uma vez só, na parte
+/// do que mudou, sem parte de conserto à parte. Nesse caso, as ondas e as
+/// entregas do pedido ficam restritas às ondas reprovadas, que já entregaram
+/// o conserto (o fechamento só chega aqui depois disso: veja
+/// [`crate::domain::spec_events::SpecLog::last_rejected`]). Os requisitos
 /// acordados continuam todos no pedido, porque o veredito responde por cada
 /// um.
 #[must_use]
@@ -290,12 +289,6 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
     agreed.sort_by_key(|e| e.id);
     let changes: Vec<&SpecEvent> =
         log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit").collect();
-    let fix: Vec<&SpecEvent> = if fixing.is_empty() {
-        Vec::new()
-    } else {
-        let verdicts = log.verdicts_by_wave();
-        fixing.iter().filter_map(|n| verdicts.get(n).and_then(|v| v.last().copied())).collect()
-    };
     let commit = final_review_commit(root, log);
     let execution = Execution {
         commit,
@@ -307,7 +300,6 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         block,
         criteria,
         agreed,
-        fix,
         own_delivered,
         changes,
         since_verdict: wave_prompt::since_last_verdict(log),
@@ -1711,6 +1703,63 @@ mod tests {
                 let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", sha);
                 assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{what}: {first}");
             }
+        }
+    }
+
+    /// Quando o veredito final reprova uma onda e o conserto dela já foi
+    /// entregue, a revisão de volta cita esse veredito uma vez só, na parte do
+    /// que mudou. Nenhuma outra parte repete o veredito nem manda conferir o
+    /// conserto à parte: o pedido tem as mesmas partes da revisão de volta de
+    /// uma obra inteira. As ondas e as entregas continuam restritas à onda
+    /// reprovada. Nos dois idiomas.
+    #[test]
+    fn a_review_after_a_rejected_wave_names_the_verdict_once_in_what_changed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let commit = |sha: &str, waves: Value| ("commit", json!({"sha": sha, "title": "t", "waves": waves, "files": ["src/a.rs"]}));
+        let log = log_of(&[
+            ("rule", json!({"text": "Do projeto", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true"})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+            ("wave", json!({"n": 2, "text": "A outra", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 2, "text": "Subtrair", "files": [{"path": "src/b.rs"}]})),
+            ("delivered", json!({"wave": 1, "text": "Feito", "files": ["src/a.rs"]})),
+            ("delivered", json!({"wave": 2, "text": "Feita", "files": ["src/b.rs"]})),
+            commit("aaa1111", json!([1, 2])),
+            (
+                "verdict",
+                json!({"final": true, "wave": 1, "result": "rejected", "text": "Falta o teste",
+                       "agreed": [{"item": 1, "met": false, "text": "falta"}]}),
+            ),
+            ("delivered", json!({"wave": 1, "text": "Consertado", "files": ["src/a.rs"]})),
+            commit("bbb2222", json!([1])),
+        ]);
+        let codes = log.codes();
+        let code = |id: u64| codes[&id].clone();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let t = |key: &str| crate::platform::i18n::translate(key, lang);
+            let last = final_review(root, "teste", &log, lang);
+            let since = t("prompt.part.since_verdict");
+            assert_eq!(last.matches(code(10).as_str()).count(), 1, "o veredito aparece uma vez só: {last}");
+            assert!(part_lines(&last, since).contains(&format!("- `review`: {}", code(10))), "{lang:?}: {last}");
+            let headings: Vec<&str> = last.lines().filter_map(|line| line.strip_prefix("## ")).collect();
+            let expected: Vec<&str> = [
+                "prompt.part.since_verdict",
+                "prompt.part.waves",
+                "prompt.part.agreed",
+                "prompt.part.each_delivered",
+                "prompt.part.criteria",
+                "prompt.part.branch_changes",
+                "prompt.part.execution",
+            ]
+            .into_iter()
+            .map(t)
+            .collect();
+            assert_eq!(headings, expected, "nenhuma parte de conserto à parte: {last}");
+            assert!(last.contains(t("prompt.final.look_again")), "{lang:?}: {last}");
+            assert_eq!(part_lines(&last, t("prompt.part.waves")), [format!("- `waves`: {}, {}", code(3), code(4))], "{last}");
+            assert_eq!(part_lines(&last, t("prompt.part.each_delivered")), [format!("- `waves`: {}", code(11))], "{last}");
         }
     }
 

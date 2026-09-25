@@ -235,13 +235,13 @@ pub fn write(material: &Material, lang: Locale) -> String {
 /// toda obra, mesmo a de uma onda só: as ondas e as tarefas delas (`block`),
 /// as emendas gravadas para elas (`agreed`), o que cada onda entregou por
 /// último (`own_delivered`), os critérios, os commits da branch (`changes`) e
-/// como revisar numa cópia separada. Onda reprovada com o conserto já
-/// entregue restringe `block`, `agreed` e `own_delivered` a ela: o agente
-/// confere só o conserto, não a obra inteira de novo. Depois de um veredito
-/// final que reprovou (`since_verdict`), o pedido lista o que mudou desde ele
-/// e manda conferir isso e o encaixe no resto, repetindo a conclusão
-/// anterior para os outros itens acordados. Nenhum pedido manda rodar a
-/// suíte inteira: ela passou no fechamento, no commit da cópia. O número da
+/// como revisar numa cópia separada. Depois de um veredito final que reprovou
+/// (`since_verdict`), o pedido lista o que mudou desde ele e manda conferir
+/// isso e o encaixe no resto, repetindo a conclusão anterior para os outros
+/// itens acordados — é o único jeito de a revisão de volta dizer o que
+/// conferir, reprove o veredito uma onda ou a obra. As linhas do conserto
+/// (`fix`) são do pedido da onda e não entram aqui. Nenhum pedido manda rodar
+/// a suíte inteira: ela passou no fechamento, no commit da cópia. O número da
 /// onda do material não conta aqui.
 #[must_use]
 pub fn write_final_review(material: &Material, lang: Locale) -> String {
@@ -1225,11 +1225,10 @@ impl Writer<'_> {
     /// obra: as instruções fixas dele, o que olhar — a obra inteira na
     /// primeira revisão; na de volta, o que mudou desde o veredito que
     /// reprovou e o encaixe disso no resto —, o exemplo de leitura, o que
-    /// mudou, o conserto — quando alguma onda voltou reprovada e já entregou
-    /// de novo, só ele, sem pedir a obra inteira outra vez —, as ondas com as
-    /// tarefas, as emendas gravadas para elas, o que cada uma entregou, os
-    /// critérios, os commits que já entraram na branch e como revisar numa
-    /// cópia separada.
+    /// mudou, as ondas com as tarefas, as emendas gravadas para elas, o que
+    /// cada uma entregou, os critérios, os commits que já entraram na branch
+    /// e como revisar numa cópia separada. O veredito que reprovou aparece
+    /// uma vez só, na parte do que mudou.
     fn final_review_text(&self) -> String {
         let m = self.material;
         let mut out = String::new();
@@ -1241,7 +1240,6 @@ impl Writer<'_> {
         out.push_str("\n\n");
         self.read_example(&mut out, "prompt.read", true);
         self.part(&mut out, "prompt.part.since_verdict", &m.since_verdict);
-        self.fix(&mut out, "prompt.fix.final");
         self.part(&mut out, "prompt.part.waves", &m.block);
         self.part(&mut out, "prompt.part.agreed", &m.agreed);
         self.part(&mut out, "prompt.part.each_delivered", &m.own_delivered);
@@ -1424,21 +1422,6 @@ impl Writer<'_> {
         }
         let _ = writeln!(out, "## {}\n", self.t(key));
         for line in codes_by_block(self.material, events) {
-            let _ = writeln!(out, "{line}");
-        }
-        out.push('\n');
-    }
-
-    /// As linhas do conserto: o título, o que fazer com elas (`intro`: o do
-    /// agente da onda ou o do revisor) e uma linha por bloco da spec, com os
-    /// códigos em sequência. Fora de um conserto, nada.
-    fn fix(&self, out: &mut String, intro: &str) {
-        if self.material.fix.is_empty() {
-            return;
-        }
-        let _ = writeln!(out, "## {}\n", self.t("prompt.part.fix"));
-        let _ = writeln!(out, "{}\n", self.t(intro));
-        for line in codes_by_block(self.material, &self.material.fix) {
             let _ = writeln!(out, "{line}");
         }
         out.push('\n');
@@ -2699,23 +2682,23 @@ mod tests {
         }
     }
 
-    /// O pedido do conserto (o da própria onda) e o do agente de teste final
-    /// trazem as mesmas linhas do conserto, cada um com o que fazer com elas:
-    /// consertar só isso, e olhar só o conserto. O pedido da onda leva essas
-    /// linhas dentro dos itens da onda, sem título próprio — junto com o
-    /// resto que abre o trabalho; o do agente de teste final mantém o título
-    /// próprio de antes, porque é onde ele confere o conserto sozinho, sem
-    /// pedir a obra inteira outra vez. Fora de um conserto, nenhum dos dois
-    /// pedidos traz a frase de abertura do conserto.
+    /// O pedido do conserto (o da própria onda) leva as linhas do conserto
+    /// dentro dos itens da onda, sem título próprio, junto com o resto que
+    /// abre o trabalho, e a frase que manda consertar só isso. O pedido da
+    /// revisão final não as repete: o veredito que reprovou aparece uma vez
+    /// só, na parte do que mudou, e a entrega e os itens do conserto não
+    /// ganham parte à parte. Fora de um conserto, o pedido da onda não traz a
+    /// frase de abertura do conserto.
     #[test]
-    fn the_final_review_request_is_unchanged() {
+    fn the_fix_lines_go_into_the_wave_items_and_never_into_the_final_review() {
         let log = rejected(false);
         let mut m = material(&log, 1);
         m.fix = fix_lines(&log, 1);
+        m.since_verdict = log.get(8).into_iter().collect();
         for lang in [Locale::PtBr, Locale::EnUs] {
             let fix_intro = translate("prompt.fix.wave", lang);
             let items_heading = translate("prompt.part.items", lang);
-            let fix_heading = translate("prompt.part.fix", lang);
+            let since_heading = translate("prompt.part.since_verdict", lang);
             let wave = write(&m, lang);
             let last = write_final_review(&m, lang);
             let items = section(&wave, items_heading);
@@ -2728,22 +2711,15 @@ mod tests {
             ] {
                 assert!(items.lines().any(|l| l == line), "{line}: {wave}");
             }
-            assert!(section(&last, fix_heading).contains(translate("prompt.fix.final", lang)), "{last}");
-            let fix = section(&last, fix_heading);
-            assert_eq!(
-                listed(&last, fix_heading),
-                [
-                    "- `review`: MSTD-VERD-0001",
-                    "- `waves`: MSTD-DELIV-0001",
-                    "- `agreed`: MSTD-DEC-0003, MSTD-RULE-0001",
-                ],
-                "{fix}"
-            );
-            assert!(!fix.contains("Falta o teste"), "nenhum texto é copiado: {fix}");
+            assert_eq!(last.matches("MSTD-VERD-0001").count(), 1, "o veredito aparece uma vez só: {last}");
+            assert_eq!(listed(&last, since_heading), ["- `review`: MSTD-VERD-0001"], "{last}");
+            let headings: Vec<&str> = last.lines().filter_map(|line| line.strip_prefix("## ")).collect();
+            let expected = [since_heading, translate("prompt.part.waves", lang), translate("prompt.part.execution", lang)];
+            assert_eq!(headings, expected, "o conserto não ganha parte à parte: {last}");
+            assert!(!last.contains("MSTD-DEC-0003"), "o item gravado depois da reprovação fica no pedido da onda: {last}");
         }
         let plain = material(&log, 1);
         assert!(!write(&plain, Locale::PtBr).contains(translate("prompt.fix.wave", Locale::PtBr)));
-        assert!(section(&write_final_review(&plain, Locale::PtBr), "Conserto").is_empty());
     }
 
     /// A execução de um pedido montado com a cópia que a rodada criou.

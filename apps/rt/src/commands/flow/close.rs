@@ -2534,7 +2534,7 @@ exit "${2:-0}"
         assert_eq!(again["review"]["final"], json!(true), "{again}");
         assert!(ran(root), "{again}");
         let fix_prompt = again["review"]["prompt"].as_str().unwrap_or_default();
-        assert!(fix_prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "{fix_prompt}");
+        assert!(fix_prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "{fix_prompt}");
         assert!(fix_prompt.contains("MSTD-WAVE-0002") && !fix_prompt.contains("MSTD-WAVE-0001"), "só o conserto: {fix_prompt}");
 
         // Aprovado, a spec fecha sem rodar a máquina outra vez.
@@ -2629,7 +2629,7 @@ exit "${2:-0}"
         let rechecked = close(None);
         assert_eq!(rechecked["review"]["final"], json!(true), "{rechecked}");
         let fix_prompt = rechecked["review"]["prompt"].as_str().unwrap_or_default();
-        assert!(fix_prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "{fix_prompt}");
+        assert!(fix_prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "{fix_prompt}");
         assert!(fix_prompt.contains("MSTD-WAVE-0002") && !fix_prompt.contains("MSTD-WAVE-0001"), "só o conserto: {fix_prompt}");
 
         // A segunda volta de conserto: reprovado de novo, o conserto sai mais
@@ -2817,7 +2817,7 @@ exit "${2:-0}"
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
         let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
-        assert!(!prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "não é modo de conserto: {prompt}");
+        assert!(!prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "não é modo de conserto: {prompt}");
         for n in [1, 2] {
             assert!(prompt.contains(&format!("MSTD-WAVE-000{n}")), "a onda {n} está no pedido: {prompt}");
         }

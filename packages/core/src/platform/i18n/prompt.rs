@@ -181,8 +181,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.skill.read", Locale::EnUs) => "Read the skill file before starting the task that names it.",
 
         // O conserto: a onda que volta por reprovação.
-        ("prompt.part.fix", Locale::PtBr) => "Conserto",
-        ("prompt.part.fix", Locale::EnUs) => "Fix",
         ("prompt.fix.wave", Locale::PtBr) => {
             "Esta onda voltou por reprovação. As linhas abaixo são o veredito que reprovou, a entrega \
              anterior desta onda e os requisitos acordados gravados depois do último envio. Conserte só o \
@@ -192,18 +190,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "This wave came back rejected. The lines below are the verdict that rejected it, this \
              wave's previous delivery and the agreed requirements recorded after the last send. Fix only what \
              the verdict points out, in light of those items: do not redo the wave."
-        }
-        ("prompt.fix.final", Locale::PtBr) => {
-            "Esta é a volta do conserto. A linha abaixo é o veredito que reprovou. As ondas, as \
-             emendas e as entregas que o resto do pedido traz já estão restritas a quem foi \
-             reprovado. Confira só o conserto — o que o veredito apontou —, não a obra inteira de \
-             novo."
-        }
-        ("prompt.fix.final", Locale::EnUs) => {
-            "This is the fix round. The line below is the verdict that rejected it. The waves, the \
-             amendments and the deliveries the rest of the request carries are already restricted to \
-             whoever was rejected. Check only the fix — what the verdict pointed out —, not the \
-             whole work again."
         }
         // As regras da execução: o que o orquestrador acrescentava à mão.
         ("prompt.part.execution", Locale::PtBr) => "Regras da execução",
@@ -404,8 +390,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            50,
-            0xd6e6_962f_5a2e_1ba5,
+            48,
+            0x56a0_9c73_8916_ec8f,
         );
     }
 }
