@@ -10,8 +10,9 @@
 //!   aberta nascida nela. Esta barra;
 //! - a clareza ([`ClarityRule`], `clarity_check.rs`): a resposta segue a regra
 //!   de escrita e sai no idioma que o projeto declarou. Esta nunca barra: o
-//!   erro que ela acha fica guardado na pasta da sessão, e a linha escondida
-//!   da mensagem seguinte do usuário o leva numa frase curta.
+//!   erro que ela acha fica guardado na pasta da sessão, e só por ele a
+//!   mensagem seguinte do usuário leva uma linha escondida, com o erro numa
+//!   frase curta.
 //!
 //! ## Um bloqueio só
 //!
@@ -165,17 +166,12 @@ mod tests {
     /// Um projeto que declarou o inglês dos Estados Unidos.
     const EN_PROJECT: &str = r#"{"language":{"text":"en-US"}}"#;
 
-    /// A linha escondida de cada mensagem num projeto em pt-BR, a mesma de
-    /// antes.
+    /// A linha curta que abre a correção num projeto em pt-BR.
     const PT_LINE: &str =
         "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
 
     /// A mesma linha num projeto em en-US.
     const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
-
-    /// A mesma linha num projeto que não declarou idioma.
-    const UNDECLARED_LINE: &str =
-        "Responda no idioma de quem escreve, em texto simples: frases curtas e nenhum código interno.";
 
     fn project(config: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -240,7 +236,7 @@ mod tests {
     }
 
     /// O texto escondido que a mensagem seguinte do usuário leva ao
-    /// assistente, pelo gancho de verdade.
+    /// assistente, pelo gancho de verdade; vazio quando não leva nenhum.
     fn next_line(root: &Path, session: &str) -> String {
         let out = hook_event(root, "UserPromptSubmit", session, json!({ "prompt": "e agora?" }));
         out["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_string()
@@ -297,19 +293,19 @@ mod tests {
 
     /// Uma resposta longa e clara não leva aviso: com 16 linhas curtas, a
     /// primeira quantidade que o teto antigo apontava, e com 200, o `Stop` de
-    /// verdade não barra, e a mensagem seguinte leva só a linha escondida de
-    /// sempre, nos dois idiomas. A resposta tem o tamanho que a pergunta pede;
-    /// só a escrita de cada frase é conferida.
+    /// verdade não barra, e a mensagem seguinte não leva texto nenhum, nos
+    /// dois idiomas. A resposta tem o tamanho que a pergunta pede; só a
+    /// escrita de cada frase é conferida.
     #[test]
     fn a_long_clear_reply_carries_no_warning() {
-        let cases = [(PT_PROJECT, "Uma linha curta.", PT_LINE), (EN_PROJECT, "The test runs fine.", EN_LINE)];
-        for (config, line, hidden) in cases {
+        let cases = [(PT_PROJECT, "Uma linha curta."), (EN_PROJECT, "The test runs fine.")];
+        for (config, line) in cases {
             let dir = project(config);
             let root = dir.path();
             for count in [16, 200] {
                 let long = vec![line; count].join("\n");
                 assert_eq!(stop_event(root, "s1", &long, false), Value::Null, "{count} lines are not blocked: {config}");
-                assert_eq!(next_line(root, "s1"), hidden, "{count} lines carry no warning: {config}");
+                assert_eq!(next_line(root, "s1"), "", "{count} lines carry no warning: {config}");
             }
         }
     }
@@ -358,7 +354,7 @@ mod tests {
         let en = project(EN_PROJECT);
         let english = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(en.path()));
         assert_eq!(english.expect("never errors"), Verdict::Allow);
-        assert_eq!(next_line(en.path(), "s1"), EN_LINE);
+        assert_eq!(next_line(en.path(), "s1"), "");
         let portuguese = "A onda terminou e os testes passaram.\n\
             A medição agora compara o idioma da resposta com o idioma do projeto.\n\
             Ela conta as palavras comuns de cada idioma.\n\
@@ -370,7 +366,7 @@ mod tests {
         let old_key = project(r#"{"specLang":"pt-BR"}"#);
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(old_key.path()));
         assert_eq!(verdict.expect("never errors"), Verdict::Allow);
-        assert_eq!(next_line(old_key.path(), "s1"), UNDECLARED_LINE, "the old key declares no language");
+        assert_eq!(next_line(old_key.path(), "s1"), "", "the old key declares no language");
     }
 
     /// Lado a lado — a cobrança de pendências mudou de gancho próprio para
@@ -434,7 +430,7 @@ mod tests {
         let reply = "Guardei o arquivo no R2 da Cloudflare, no S3 e numa folha A4.";
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", reply, false), &ctx(dir.path())).expect("never errors");
         assert_eq!(verdict, Verdict::Allow);
-        assert_eq!(next_line(dir.path(), "s1"), PT_LINE);
+        assert_eq!(next_line(dir.path(), "s1"), "");
     }
 
     /// Fora do `Stop` da sessão principal nada é conferido nem guardado.
@@ -448,6 +444,6 @@ mod tests {
         let pre = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         let other = EndOfTurnCheck.evaluate(&stop("s1", &reply, false), &pre).expect("never errors");
         assert_eq!(other, Verdict::Allow);
-        assert_eq!(next_line(dir.path(), "s1"), PT_LINE, "nothing was kept");
+        assert_eq!(next_line(dir.path(), "s1"), "", "nothing was kept");
     }
 }

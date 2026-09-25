@@ -56,7 +56,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 |---|---|---|
 | `session_start_inject` | início da sessão | Coloca o mapa, a linha de retomada e os avisos, até 3 kB. Num projeto sem a página do projeto publicada, manda publicar o template dela e gravar o endereço. |
 | `statusline_heal_observer` | início da sessão | Conserta a barra de status. |
-| `prompt_entry` | cada mensagem | Coloca a linha curta e grava a mensagem na spec atual. |
+| `prompt_entry` | cada mensagem | Grava a mensagem na spec atual; depois de uma resposta com erro de escrita, coloca a linha curta com o erro, uma vez. |
 | `write_gate` | antes de escrever | Recusa escrita sem spec aprovada, numa base, em arquivo de segredo e nos `spec.*`. |
 | `command_guard` | antes de um comando | Recusa comando que apaga trabalho. |
 | `subagent_inject` | antes de despachar um agente | Troca o bilhete `MUSTARD-WAVE: <spec> <n>` pelo pedido montado da onda. |

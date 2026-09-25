@@ -5,9 +5,8 @@
 //!
 //! ## Por que existe
 //!
-//! O assistente recebe a regra de escrita no estilo de resposta, e toda
-//! mensagem leva uma linha curta que a lembra (`prompt_entry`). Nada conferia
-//! se ela foi cumprida: em 09/09/2026 o usuário reclamou duas vezes de
+//! O assistente recebe a regra de escrita no estilo de resposta. Nada
+//! conferia se ela foi cumprida: em 09/09/2026 o usuário reclamou duas vezes de
 //! respostas difíceis de entender, com a regra ativa, e nenhum gancho
 //! percebeu.
 //!
@@ -38,7 +37,7 @@
 //!   como "frase com 29 palavras": a linha do defeito até os dois-pontos ou o
 //!   ponto e vírgula, sem o jeito de consertar, que o estilo de resposta já
 //!   diz ([`error_of`]). A mensagem seguinte do usuário leva os erros numa
-//!   frase curta, junto da linha escondida, e os apaga ([`take_next_note`]):
+//!   frase curta, junto da linha curta, e os apaga ([`take_next_note`]):
 //!   o assistente corrige na resposta seguinte. Uma resposta sem erro apaga o
 //!   que estava guardado, porque a frase fala só da última resposta.
 //! - A volta que o bloqueio das pendências pede chega com
@@ -136,7 +135,8 @@ fn error_of(defect: &str) -> String {
 }
 
 /// A frase curta com os erros da última resposta da sessão `session`, no
-/// idioma do projeto em `root`, para a linha escondida da mensagem seguinte.
+/// idioma do projeto em `root`, que a mensagem seguinte leva junto da linha
+/// curta; sem ela, a mensagem não leva texto nenhum.
 /// `None` quando a resposta não teve erro, quando outra mensagem já levou a
 /// frase ou sem sessão que se use. Levar apaga os erros: a frase vai uma vez
 /// só.
@@ -235,10 +235,10 @@ mod tests {
     /// Passa: frase curta e sem sigla.
     const CLEAR: &str = "A resposta ficou curta e clara.";
 
-    /// A linha escondida de um projeto que declarou pt-BR, a mesma de antes.
+    /// A linha curta que abre a correção num projeto que declarou pt-BR.
     const PT_LINE: &str =
         "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
-    /// A linha escondida de um projeto que declarou en-US.
+    /// A mesma linha num projeto que declarou en-US.
     const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
 
     /// Uma frase de 25 palavras, o limite: o último tamanho que passa.
@@ -351,7 +351,8 @@ mod tests {
 
     /// A mensagem do usuário como o Claude Code a manda ao `mustard-rt on
     /// UserPromptSubmit`, com todos os campos, pelo despachante inteiro. Devolve
-    /// o texto escondido que vai junto dela ao assistente.
+    /// o texto escondido que vai junto dela ao assistente, vazio quando não vai
+    /// nenhum.
     fn next_line(root: &Path, session: &str, prompt: &str) -> String {
         let payload = json!({
             "session_id": session,
@@ -370,11 +371,11 @@ mod tests {
         out["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_string()
     }
 
-    /// Uma frase de 25 palavras, o limite, não tem erro: nada barra, e a linha
-    /// escondida da mensagem seguinte fica igual à de antes. Com 26 palavras,
-    /// a resposta também não é barrada e nada volta para a tela; a linha da
-    /// mensagem seguinte leva mais uma frase curta com o erro, uma vez só. Nos
-    /// dois idiomas, pelos ganchos de verdade.
+    /// Uma frase de 25 palavras, o limite, não tem erro: nada barra, e a
+    /// mensagem seguinte não leva texto. Com 26 palavras, a resposta também
+    /// não é barrada e nada volta para a tela; a mensagem seguinte leva a
+    /// linha curta com uma frase curta com o erro, uma vez só. Nos dois
+    /// idiomas, pelos ganchos de verdade.
     #[test]
     fn a_long_sentence_goes_with_the_next_message_instead_of_blocking() {
         assert_eq!(TWENTY_FIVE_WORDS.split_whitespace().count(), 25);
@@ -384,14 +385,14 @@ mod tests {
         let root = dir.path();
 
         assert_eq!(stop_event(root, "s1", TWENTY_FIVE_WORDS), Value::Null, "25 words pass");
-        assert_eq!(next_line(root, "s1", "e agora?"), PT_LINE, "no error, the line is the same");
+        assert_eq!(next_line(root, "s1", "e agora?"), "", "no error, no text");
 
         assert_eq!(stop_event(root, "s1", TWENTY_SIX_WORDS), Value::Null, "26 words are not blocked");
         assert_eq!(
             next_line(root, "s1", "e agora?"),
             format!("{PT_LINE} Na última resposta: frase com 26 palavras.")
         );
-        assert_eq!(next_line(root, "s1", "e depois?"), PT_LINE, "the phrase goes once");
+        assert_eq!(next_line(root, "s1", "e depois?"), "", "the phrase goes once");
 
         let en = project_with(r#"{"language":{"text":"en-US"}}"#);
         assert_eq!(stop_event(en.path(), "s1", TWENTY_SIX_WORDS_EN), Value::Null);
@@ -411,7 +412,7 @@ mod tests {
         assert_eq!(kept_errors(root, "s1"), [FAILING_ERROR]);
         assert_eq!(check(root, &stop("s1", CLEAR)), Verdict::Allow);
         assert_eq!(kept_errors(root, "s1"), Vec::<String>::new());
-        assert_eq!(next_line(root, "s1", "e agora?"), PT_LINE);
+        assert_eq!(next_line(root, "s1", "e agora?"), "");
     }
 
     /// Uma resposta em inglês num projeto em português não é barrada; o erro
@@ -575,7 +576,7 @@ mod tests {
         let root = listed.path();
         assert_eq!(stop_event(root, "s1", "A PI da fábrica mudou, e o PCP já sabe."), Value::Null);
         assert!(!std::fs::read_to_string(record_file(root, "s1")).unwrap_or_default().contains("PI"));
-        assert_eq!(next_line(root, "s1", "e agora?"), PT_LINE);
+        assert_eq!(next_line(root, "s1", "e agora?"), "");
 
         assert_eq!(stop_event(root, "s2", "A PI da fábrica mudou, e o PCP e o MRP já sabem."), Value::Null);
         assert_eq!(
@@ -604,7 +605,7 @@ mod tests {
         let path = record_file(root, "s1");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"explained":["slug","CI"],"defects":["um defeito antigo"]}"#).unwrap();
-        assert_eq!(next_line(root, "s1", "e agora?"), PT_LINE, "the old defects are not carried");
+        assert_eq!(next_line(root, "s1", "e agora?"), "", "the old defects are not carried");
         assert_eq!(check(root, &stop("s1", FAILING)), Verdict::Allow);
         let kept = read_record(&path);
         assert_eq!(kept.explained, ["slug", "CI"].map(String::from));

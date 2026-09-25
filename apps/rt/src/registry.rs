@@ -122,7 +122,7 @@ impl Registry {
                 observer: None,
             },
             // A entrada da mensagem, numa chamada só: a trava de instalação,
-            // a mensagem gravada e a linha curta.
+            // a mensagem gravada e a correção da escrita, quando houver.
             Module {
                 id: "prompt_entry",
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],

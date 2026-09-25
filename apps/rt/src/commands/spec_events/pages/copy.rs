@@ -1387,7 +1387,8 @@ mod tests {
 
     /// Um marco chega depois de itens novos no `spec.ndjson`, gravados pelos
     /// ganchos e pelos comandos de verdade: a fala do usuário e o texto que
-    /// os ganchos colocam, um comando que a trava barra, a resposta, uma
+    /// os ganchos colocam depois de uma resposta com erro de escrita, um
+    /// comando que a trava barra, a resposta, uma
     /// decisão, uma anotação com uma senha e a chamada de um passo do fluxo.
     /// Os itens desta spec pequena cabem todos na mesma faixa (0-99), então a
     /// cópia do segundo marco reenvia a faixa inteira, com os itens de antes
@@ -1410,7 +1411,11 @@ mod tests {
         assert_eq!(sent_items(root, &first).first(), Some(&1), "the whole spec: {first}");
         follow(root, &first);
 
-        // Itens novos, pelos ganchos e pelos comandos.
+        // Itens novos, pelos ganchos e pelos comandos. A resposta com uma
+        // sigla sem explicação faz a mensagem seguinte levar a correção, o
+        // texto que o gancho coloca.
+        let unclear = json!({"last_assistant_message": "O CI falhou de novo."});
+        assert!(!hook_event(root, "Stop", None, Value::Null, unclear).is_blocking());
         let prompt = json!({"prompt": "Anote a senha do banco e siga."});
         assert!(!hook_event(root, "UserPromptSubmit", None, Value::Null, prompt).is_blocking());
         let barred = json!({"command": "rm -rf /"});
