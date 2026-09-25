@@ -34,9 +34,16 @@
 //!
 //! Cada documento vai num arquivo JSON próprio, dentro de `copy/` na pasta da
 //! spec, e cada lote (`spec-<n>.json`) é a lista `writes` de uma chamada da
-//! ferramenta do banco, com até [`BATCH_MAX`] escritas. A cópia feita vira um
-//! registro `copy` na spec, gravado pela conversa, com o número até onde a
-//! cópia foi: é por ele que a cópia seguinte começa.
+//! ferramenta do banco, com até [`BATCH_MAX`] escritas. A resposta traz as
+//! escritas de cada lote prontas, em `copy.<página>.writes`, com o
+//! `file_path` absoluto: a conversa as manda sem ler arquivo nenhum. A cópia
+//! feita vira um registro `copy` na spec, com o número até onde a cópia foi:
+//! é por ele que a cópia seguinte começa. O da página da spec se grava
+//! sozinho: o gancho que lê o resultado de cada lote
+//! (`hooks::observe::copy_witness`) o grava quando o último volta, com o
+//! registro que a preparação deixou em [`SPEC_RECORD`]. A gravação à mão pela
+//! conversa fica para quando o gancho não avisar que gravou, e é a única da
+//! página do projeto.
 //!
 //! ## A versão de cada documento
 //!
@@ -68,19 +75,23 @@
 //! Quando o template nasce num marco que não é a aprovação — a spec foi
 //! aprovada por uma versão antiga —, a cópia segue igual, sem nota nenhuma.
 //!
-//! ## O molde novo na página já publicada
+//! ## O layout novo na página já publicada
 //!
 //! A publicação do template grava em `stamp` o carimbo do molde publicado: a
-//! versão do Mustard e a impressão do conteúdo montado
-//! (`page_templates::template_stamp`). Num marco, quando o molde que o
-//! programa rodando monta tem outro carimbo que o da última publicação que deu
-//! certo, ou ela não tem carimbo, o molde novo é escrito no projeto e a ordem
-//! manda publicá-lo de novo no mesmo endereço, antes dos lotes, e gravar a
-//! publicação com o carimbo. O banco da página continua no mesmo endereço:
-//! a cópia depois da república segue de onde parou, sem levar a spec inteira
-//! de novo. Com o mesmo carimbo, nada é publicado de novo. O mesmo vale para
-//! a página do projeto, cujo carimbo é o da última publicação dela gravada em
-//! qualquer spec do projeto.
+//! versão do layout dele e a impressão do conteúdo montado
+//! (`page_templates::template_stamp`). Só a versão do layout conta
+//! (`page_templates::layout_version`). Num marco, quando a versão do layout
+//! que o programa rodando monta é outra que a da última publicação que deu
+//! certo, ou ela tem o carimbo de antes da versão do layout, ou nenhum, o
+//! molde novo é escrito no projeto e a ordem manda publicá-lo de novo no
+//! mesmo endereço, antes dos lotes, e gravar a publicação com o carimbo. O
+//! banco da página continua no mesmo endereço: a cópia depois da república
+//! segue de onde parou, sem levar a spec inteira de novo. Com a mesma versão
+//! de layout, nada é publicado de novo, mesmo com o Mustard noutra versão ou
+//! outra impressão. A publicação que o usuário pede segue pelo caminho de
+//! sempre, fora dos marcos. O mesmo vale para a página do projeto, cujo
+//! carimbo é o da última publicação dela gravada em qualquer spec do
+//! projeto.
 //!
 //! ## A linha da spec na página do projeto
 //!
@@ -111,8 +122,8 @@ use mustard_core::io::spec_events as store;
 use mustard_core::io::spec_index::later;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::platform::page_templates::{
-    project_page_template, spec_page_template, template_stamp, COMPUTED, PROJECT_CAPABILITIES, RANGES,
-    RANGE_MAX_BYTES, RANGE_WIDTH, SPECS, SPEC_CAPABILITIES,
+    layout_version, project_page_template, spec_page_template, template_stamp, COMPUTED, PROJECT_CAPABILITIES,
+    PROJECT_LAYOUT_VERSION, RANGES, RANGE_MAX_BYTES, RANGE_WIDTH, SPECS, SPEC_CAPABILITIES, SPEC_LAYOUT_VERSION,
 };
 use mustard_core::view::document::{RtkDay, WaveState};
 use mustard_core::ClaudePaths;
@@ -122,6 +133,15 @@ use super::relative;
 
 /// A pasta da cópia, dentro da pasta da spec.
 pub(crate) const FOLDER: &str = "copy";
+
+/// O registro da cópia da página da spec, dentro da pasta da cópia: o
+/// `--json` do `run write copy` que a grava e os arquivos de cada lote, na
+/// ordem, como `{"record":{...},"batches":[["<arquivo>",...],...]}`. O
+/// gancho que lê o resultado de cada lote casa as escritas dele com estes
+/// lotes e grava a cópia quando o último volta. O nome fica fora do
+/// `<página>-<n>.json` dos lotes: quem lê a pasta atrás dos lotes não o
+/// toma por um.
+pub(crate) const SPEC_RECORD: &str = "record.json";
 
 /// Quantas escritas cabem numa chamada da ferramenta do banco.
 pub(crate) const BATCH_MAX: usize = 50;
@@ -156,14 +176,18 @@ pub(crate) struct Target {
     pub url: Option<String>,
     /// Os lotes, relativos ao projeto, na ordem em que vão.
     pub batches: Vec<String>,
+    /// As escritas de cada lote, na ordem de [`Target::batches`], como a
+    /// ferramenta do banco as recebe, com o `file_path` absoluto: a resposta
+    /// as leva prontas, sem a conversa ler os lotes.
+    pub writes: Vec<Vec<Value>>,
     /// O `--json` do `run write copy` que grava a cópia feita.
     pub record: Value,
     /// A página já foi publicada inteira por uma versão antiga, sem banco: o
     /// template sai num link novo, e a antiga fica parada.
     pub old: bool,
-    /// A página já tem endereço, mas foi publicada com um molde de outro
-    /// carimbo, ou sem carimbo: o marco a publica de novo no mesmo endereço,
-    /// antes dos lotes.
+    /// A página já tem endereço, mas foi publicada com outra versão de
+    /// layout, com o carimbo de antes dela ou sem carimbo: o marco a publica
+    /// de novo no mesmo endereço, antes dos lotes.
     pub republish: bool,
     /// O carimbo do molde que o programa rodando monta, gravado com a
     /// publicação.
@@ -280,20 +304,17 @@ fn build(
     let template = spec_page_template(lang);
     let stamp = template_stamp(&template).unwrap_or_default().to_string();
     // A ordem de um marco publica de novo; depois de um pedido, a página com
-    // molde velho fica para o próximo marco.
-    let republish = url.is_some() && published.as_deref() != Some(stamp.as_str());
+    // layout velho fica para o próximo marco. Só a versão do layout conta:
+    // outra versão do Mustard, ou outra impressão, com o mesmo layout não
+    // publica de novo.
+    let republish = url.is_some() && !same_layout(published.as_deref(), SPEC_LAYOUT_VERSION);
     if url.is_none() || republish {
         ensure_template(place.root, SPEC_TEMPLATE, &template)?;
     }
-    let spec = Target {
-        url,
-        batches: batches(place, "spec", &writes)?,
-        record: json!({ "page": SPEC_PAGE, "last": log.max_id() }),
-        old,
-        republish,
-        stamp,
-        existing,
-    };
+    let (files, sent) = batches(place, "spec", &writes)?;
+    let record = json!({ "page": SPEC_PAGE, "last": log.max_id() });
+    write_spec_record(place, &record, &sent)?;
+    let spec = Target { url, batches: files, writes: absolute(place.root, sent), record, old, republish, stamp, existing };
     let project = project_rows(place, log, others, lang)?;
     Ok(Prepared { folder: relative(place.root, &place.folder), spec, project, withheld: withheld(log) })
 }
@@ -311,8 +332,8 @@ struct SpecPage {
     /// O endereço da última publicação já tinha sido publicado antes dela: o
     /// documento calculado já está no banco desde essa publicação anterior.
     republished: bool,
-    /// O carimbo do molde dessa publicação; `None` na publicação de antes do
-    /// carimbo.
+    /// O carimbo do molde dessa publicação, que leva a versão do layout;
+    /// `None` na publicação de antes do carimbo.
     stamp: Option<String>,
     /// A versão de cada documento no banco desse endereço, pelo nome
     /// `coleção/doc_id`: a do registro de cópia mais novo para ele que traz a
@@ -349,6 +370,19 @@ fn spec_page(log: &SpecLog) -> SpecPage {
         }
     }
     SpecPage { url: Some(url.to_string()), since, old, republished, stamp: stamp.map(str::to_string), versions }
+}
+
+/// O endereço da página da spec do arquivo `log`: o da última publicação do
+/// template que deu certo. `None` antes dela.
+pub(crate) fn spec_page_url(log: &SpecLog) -> Option<String> {
+    spec_page(log).url
+}
+
+/// O carimbo publicado `published` tem a versão de layout `current`. O
+/// carimbo de antes da versão do layout, que traz a versão do Mustard, e a
+/// publicação sem carimbo não têm versão nenhuma, e contam como outra.
+fn same_layout(published: Option<&str>, current: u32) -> bool {
+    published.and_then(layout_version) == Some(current)
 }
 
 /// A versão que o registro de cópia `event` guardou para cada documento que
@@ -796,7 +830,7 @@ fn project_rows(
     let published_stamp = latest.filter(|p| url.as_deref() == Some(p.url.as_str())).and_then(|p| p.stamp.as_deref());
     let template = project_page_template(lang);
     let stamp = template_stamp(&template).unwrap_or_default().to_string();
-    let republish = url.is_some() && published_stamp != Some(stamp.as_str());
+    let republish = url.is_some() && !same_layout(published_stamp, PROJECT_LAYOUT_VERSION);
     let chosen: Vec<&ProjectRow> = if url.is_none() || fresh {
         rows.iter().collect()
     } else if copied.is_none() || own.phase != copied_phase || republish {
@@ -837,15 +871,8 @@ fn project_rows(
     if let Some(phase) = &own.phase {
         record["phase"] = json!(phase);
     }
-    Ok(Some(Target {
-        url,
-        batches: batches(place, "project", &writes)?,
-        record,
-        old,
-        republish,
-        stamp,
-        existing,
-    }))
+    let (files, sent) = batches(place, "project", &writes)?;
+    Ok(Some(Target { url, batches: files, writes: absolute(place.root, sent), record, old, republish, stamp, existing }))
 }
 
 /// A publicação `p`, gravada na spec de posição `p_spec` em `logs`, veio
@@ -947,16 +974,56 @@ fn set(place: &Place, collection: &str, doc_id: &str, body: &Value) -> Result<Va
 }
 
 /// Grava as escritas em lotes de até [`BATCH_MAX`], `<nome>-1.json`,
-/// `<nome>-2.json`…, uma escrita por linha, e devolve os caminhos.
-fn batches(place: &Place, name: &str, writes: &[Value]) -> Result<Vec<String>, Refusal> {
-    let mut out = Vec::new();
+/// `<nome>-2.json`…, uma escrita por linha, e devolve os caminhos e as
+/// escritas de cada lote, como foram gravadas.
+fn batches(place: &Place, name: &str, writes: &[Value]) -> Result<(Vec<String>, Vec<Vec<Value>>), Refusal> {
+    let mut files = Vec::new();
+    let mut sent = Vec::new();
     for (n, chunk) in writes.chunks(BATCH_MAX).enumerate() {
         let path = place.folder.join(format!("{name}-{}.json", n + 1));
         let lines: Vec<String> = chunk.iter().map(Value::to_string).collect();
         write(&path, &format!("[\n{}\n]\n", lines.join(",\n")))?;
-        out.push(relative(place.root, &path));
+        files.push(relative(place.root, &path));
+        sent.push(chunk.to_vec());
     }
-    Ok(out)
+    Ok((files, sent))
+}
+
+/// As escritas de cada lote de `sent` como a resposta as mostra: o
+/// `file_path` de cada uma, relativo ao projeto `root` no disco, vira o
+/// caminho absoluto, que a ferramenta do banco lê sem saber onde o projeto
+/// está.
+fn absolute(root: &Path, sent: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
+    sent.into_iter()
+        .map(|batch| {
+            batch
+                .into_iter()
+                .map(|mut write| {
+                    if let Some(file) = write["file_path"].as_str() {
+                        let path = root.join(file);
+                        let path = std::path::absolute(&path).unwrap_or(path);
+                        write["file_path"] = json!(path.to_string_lossy());
+                    }
+                    write
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Grava na pasta da cópia o registro da cópia da página da spec
+/// ([`SPEC_RECORD`]): o `--json` que a grava e, de cada lote de `sent`, na
+/// ordem, o que marca cada escrita dele ([`write_mark`]).
+fn write_spec_record(place: &Place, record: &Value, sent: &[Vec<Value>]) -> Result<(), Refusal> {
+    let marks: Vec<Vec<String>> = sent.iter().map(|batch| batch.iter().map(write_mark).collect()).collect();
+    write(&place.folder.join(SPEC_RECORD), &json!({ "record": record, "batches": marks }).to_string())
+}
+
+/// O que marca uma escrita de um lote no registro da cópia: o `file_path`
+/// dela, relativo ao projeto como o lote em disco o guarda, ou, na que tira
+/// um documento e não tem arquivo, o nome `coleção/doc_id` dele.
+pub(crate) fn write_mark(write: &Value) -> String {
+    write["file_path"].as_str().map_or_else(|| doc_name(write), |file| file.replace('\\', "/"))
 }
 
 /// Apaga a cópia anterior: os lotes dela não valem mais.
@@ -993,7 +1060,8 @@ impl Prepared {
     /// A cópia como a resposta de um passo a mostra.
     pub(crate) fn to_value(&self) -> Value {
         let target = |t: &Target| {
-            let mut out = json!({ "published": t.url.is_some(), "batches": t.batches, "record": t.record });
+            let mut out =
+                json!({ "published": t.url.is_some(), "batches": t.batches, "writes": t.writes, "record": t.record });
             if t.republish {
                 out["republish"] = json!(true);
             }
@@ -1023,11 +1091,14 @@ impl Prepared {
     /// A ordem da cópia, uma frase por passo: publicar a página que ainda não
     /// tem endereço, no marco `milestone`, num link novo quando ela ainda é a
     /// página inteira de uma versão antiga, e publicar de novo no mesmo
-    /// endereço a que foi publicada com um molde de outro carimbo; copiar os lotes de cada
-    /// página, nomeando só os documentos que já existem no banco sem versão
-    /// guardada, para ler a versão de cada um antes de trocar, e, fora do
-    /// descarte, gravar cada cópia feita com a versão que o banco devolveu a
-    /// cada documento; no fim, não levar os endereços para a resposta. Quem copia
+    /// endereço a que foi publicada com outra versão de layout; copiar os
+    /// lotes de cada página, mandando as escritas que a resposta já traz,
+    /// nomeando só os documentos que já existem no banco sem versão guardada,
+    /// para ler a versão de cada um antes de trocar, e, fora do descarte,
+    /// gravar cada cópia feita com a versão que o banco devolveu a cada
+    /// documento — a da página da spec se grava sozinha, e a gravação à mão
+    /// fica para quando o gancho não avisar; no fim, não levar os endereços
+    /// para a resposta. Quem copia
     /// é o orquestrador, sem agente, também na primeira cópia. Sem marco, como
     /// depois de um pedido, nada é publicado: a página sem endereço fica para
     /// o próximo marco, e a de molde velho é copiada no endereço que já tem.
@@ -1068,18 +1139,19 @@ impl Prepared {
                 );
             }
             let url = target.url.clone().unwrap_or_else(|| translate("page.copy.new_address", lang).to_string());
-            let files: Vec<String> = target.batches.iter().map(|b| format!("`{b}`")).collect();
-            let mut copy = translate("page.copy.batches", lang)
-                .replace("{page}", page)
-                .replace("{url}", &url)
-                .replace("{files}", &files.join(", "));
+            let mut copy =
+                translate("page.copy.batches", lang).replace("{page}", page).replace("{url}", &url).replace("{key}", key);
             if !target.existing.is_empty() {
                 let docs: Vec<String> = target.existing.iter().map(|d| format!("`{d}`")).collect();
                 let existing = translate("page.copy.existing", lang).replace("{docs}", &docs.join(", "));
                 copy = format!("{copy} {existing}");
             }
             if record_next {
-                let record = translate("page.copy.record", lang)
+                // A cópia da página da spec se grava sozinha quando o último
+                // lote volta; a da página do projeto, só pela conversa.
+                let phrase = if key == SPEC_PAGE { "page.copy.record" } else { "page.copy.record_project" };
+                let record = translate(phrase, lang)
+                    .replace("{page}", page)
                     .replace("{spec}", spec)
                     .replace("{record}", &target.record.to_string());
                 copy = format!("{copy} {record}");
@@ -1156,18 +1228,16 @@ pub(crate) fn batches_order(report: &Value, spec: &str, url: &str, lang: Locale)
 /// sem leitura nenhuma, como quando toda troca já leva a versão guardada.
 #[cfg(test)]
 pub(crate) fn batches_order_with(report: &Value, spec: &str, url: &str, existing: &[&str], lang: Locale) -> String {
-    let batches = report["copy"][SPEC_PAGE]["batches"].as_array().cloned().unwrap_or_default();
-    let files: Vec<String> = batches.iter().map(|b| format!("`{}`", b.as_str().unwrap_or_default())).collect();
-    let mut copy = translate("page.copy.batches", lang)
-        .replace("{page}", translate("page.name.spec", lang))
-        .replace("{url}", url)
-        .replace("{files}", &files.join(", "));
+    let page = translate("page.name.spec", lang);
+    let mut copy =
+        translate("page.copy.batches", lang).replace("{page}", page).replace("{url}", url).replace("{key}", SPEC_PAGE);
     if !existing.is_empty() {
         let docs: Vec<String> = existing.iter().map(|d| format!("`{d}`")).collect();
         let existing = translate("page.copy.existing", lang).replace("{docs}", &docs.join(", "));
         copy = format!("{copy} {existing}");
     }
     let record = translate("page.copy.record", lang)
+        .replace("{page}", page)
         .replace("{spec}", spec)
         .replace("{record}", &report["copy"][SPEC_PAGE]["record"].to_string());
     format!("{copy} {record}")
@@ -1187,7 +1257,7 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger};
+    use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict};
     use mustard_core::domain::spec_state::SpecState as _;
     use serde_json::{json, Value};
     use tempfile::tempdir;
@@ -1879,19 +1949,14 @@ mod tests {
             .replace("{milestone}", "round")
             .replace("{stamp}", &stamp_of(PROJECT_PAGE));
         let old = old_page_order(PROJECT_PAGE, lang);
-        let files: Vec<String> = first["copy"]["project"]["batches"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|b| format!("`{}`", b.as_str().unwrap_or_default()))
-            .collect();
         let copy = translate("page.copy.batches", lang)
             .replace("{page}", translate("page.name.project", lang))
             .replace("{url}", translate("page.copy.new_address", lang))
-            .replace("{files}", &files.join(", "))
+            .replace("{key}", PROJECT_PAGE);
+        let record = translate("page.copy.record_project", lang)
             .replace("{spec}", "x")
             .replace("{record}", &first["copy"]["project"]["record"].to_string());
+        assert!(next.contains(&format!("{copy} {record}")), "the project page records its copy by hand: {next}");
         let at = |sentence: &str| next.find(sentence).unwrap_or_else(|| panic!("missing «{sentence}» in {next}"));
         assert!(at(&publish) < at(&old) && at(&old) < at(&copy), "publish, keep the old one still, then copy: {next}");
         assert!(!next.contains(&old_page_order(SPEC_PAGE, lang)), "the spec page is the template: {next}");
@@ -2148,9 +2213,9 @@ mod tests {
         assert_eq!(installed, spec_page_template(Locale::PtBr), "o modelo velho foi trocado pelo de agora");
     }
 
-    /// O modelo instalado com a mesma versão e outro conteúdo — o molde do
-    /// programa instalado, lido por um programa compilado no meio de uma
-    /// obra — é reescrito; o modelo com o carimbo de agora fica como está.
+    /// O modelo instalado com a mesma versão de layout e outro conteúdo — o
+    /// molde do programa instalado, lido por um programa compilado no meio de
+    /// uma obra — é reescrito; o modelo com o carimbo de agora fica como está.
     #[test]
     fn the_installed_template_is_compared_by_the_whole_stamp() {
         let dir = tempdir().unwrap();
@@ -2159,7 +2224,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().expect("a pasta do modelo")).unwrap();
         let built = spec_page_template(Locale::PtBr);
 
-        let same_version = format!("<!-- mustard: {} -->\nmolde de ontem", mustard_core::harness_version());
+        let same_version = format!("<!-- mustard: layout-{SPEC_LAYOUT_VERSION} 0123456789abcdef -->\nmolde de ontem");
         std::fs::write(&path, &same_version).unwrap();
         ensure_template(root, SPEC_TEMPLATE, &built).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), built, "a mesma versão com outro conteúdo é trocada");
@@ -2170,30 +2235,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), current, "o mesmo carimbo fica como está");
     }
 
-    /// A página já publicada com um molde velho é publicada de novo no mesmo
-    /// endereço, antes do lote de cópia: sem carimbo, com o carimbo de outra
-    /// versão e com o carimbo da mesma versão e outro conteúdo, as três. O
-    /// molde novo é escrito no projeto, e a ordem manda gravar a publicação
-    /// com o carimbo. Com o carimbo de agora, nada é publicado de novo. O
-    /// mesmo vale para a página do projeto.
+    /// A página já publicada com um layout velho é publicada de novo no mesmo
+    /// endereço, antes do lote de cópia: sem carimbo, com a marca de antes da
+    /// versão do layout (a versão do Mustard) e com outra versão de layout,
+    /// as três. O molde novo é escrito no projeto, e a ordem manda gravar a
+    /// publicação com o carimbo. Gravada a publicação, nada é publicado de
+    /// novo. O mesmo vale para a página do projeto.
     #[test]
-    fn a_pagina_publicada_com_molde_antigo_e_publicada_de_novo_no_mesmo_endereco() {
+    fn a_pagina_publicada_com_layout_antigo_e_publicada_de_novo_no_mesmo_endereco() {
         let lang = Locale::PtBr;
-        // O molde da mesma versão com outro conteúdo: o mesmo template
-        // montado com o catálogo em outro idioma.
-        let other_content = |page: &str| {
-            let template =
-                if page == PROJECT_PAGE { project_page_template(Locale::EnUs) } else { spec_page_template(Locale::EnUs) };
-            let stamp = template_stamp(&template).expect("the stamp").to_string();
-            assert!(stamp.starts_with(mustard_core::harness_version().as_str()), "the same version: {stamp}");
-            stamp
+        // A versão de layout anterior à de cada molde, com a impressão de
+        // agora: só a versão difere.
+        let older = |page: &str| {
+            let version = if page == PROJECT_PAGE { PROJECT_LAYOUT_VERSION } else { SPEC_LAYOUT_VERSION };
+            let print = stamp_of(page).split_whitespace().nth(1).expect("the fingerprint").to_string();
+            format!("layout-{} {print}", version - 1)
         };
-        let other_version = "0.0.1 0123456789abcdef".to_string();
+        let old_mark = "0.2.0 0123456789abcdef".to_string();
         // O carimbo velho de cada caso, o da página da spec e o da do projeto.
         let cases: [(&str, Option<(String, String)>); 3] = [
             ("sem carimbo", None),
-            ("outra versão", Some((other_version.clone(), other_version))),
-            ("outro conteúdo", Some((other_content(SPEC_PAGE), other_content(PROJECT_PAGE)))),
+            ("marca antiga", Some((old_mark.clone(), old_mark))),
+            ("outra versão de layout", Some((older(SPEC_PAGE), older(PROJECT_PAGE)))),
         ];
         for (case, old) in cases {
             let dir = approved_project();
@@ -2232,10 +2295,10 @@ mod tests {
                     .replace("{url}", url);
                 let copy = translate("page.copy.batches", lang)
                     .replace("{page}", translate(name, lang))
-                    .replace("{url}", url);
-                let copy = copy.split("{files}").next().unwrap_or_default();
+                    .replace("{url}", url)
+                    .replace("{key}", page);
                 let at = |s: &str| next.find(s).unwrap_or_else(|| panic!("{case}: missing «{s}» in {next}"));
-                assert!(at(&republish) < at(copy), "{case}: publish again before the batches: {next}");
+                assert!(at(&republish) < at(&copy), "{case}: publish again before the batches: {next}");
                 let installed = std::fs::read_to_string(root.join(template)).unwrap();
                 assert_eq!(template_stamp(&installed), Some(stamp_of(page).as_str()), "{case}: the new template");
             }
@@ -2251,9 +2314,39 @@ mod tests {
             // publica mais.
             follow(root, &first);
             let second = round(root);
-            assert!(second.get("publish").is_none(), "{case}: the same stamp publishes nothing: {second}");
+            assert!(second.get("publish").is_none(), "{case}: the same layout publishes nothing: {second}");
             let next = full_next(root, &second);
             assert!(!next.contains("write publish"), "{case}: {next}");
+        }
+    }
+
+    /// A página publicada com a versão de layout de agora não é publicada de
+    /// novo, mesmo com outra impressão no carimbo — o molde que outra versão
+    /// do Mustard montou com o mesmo layout — nem com o modelo instalado no
+    /// projeto velho: a ordem só copia. O mesmo vale para a página do
+    /// projeto.
+    #[test]
+    fn another_mustard_version_with_the_same_layout_does_not_publish_again() {
+        let dir = approved_project();
+        let root = dir.path();
+        for (page, url, version) in
+            [(SPEC_PAGE, SPEC_URL, SPEC_LAYOUT_VERSION), (PROJECT_PAGE, PROJECT_URL, PROJECT_LAYOUT_VERSION)]
+        {
+            let stamp = format!("layout-{version} ffffffffffffffff");
+            assert_ne!(stamp, stamp_of(page), "another fingerprint than the one built now");
+            write(root, "publish", json!({"page": page, "milestone": "approval", "ok": true, "template": true,
+                "stamp": stamp, "url": url}));
+        }
+        write(root, "copy", json!({"page": "spec", "last": log(root).max_id()}));
+        write(root, "copy", json!({"page": "project", "phase": "approved"}));
+
+        let first = round(root);
+        assert!(first.get("publish").is_none(), "the same layout publishes nothing: {first}");
+        let next = full_next(root, &first);
+        assert!(!next.contains("write publish"), "{next}");
+        assert!(next.contains("ArtifactData"), "the copy still goes: {next}");
+        for template in [SPEC_TEMPLATE, PROJECT_TEMPLATE] {
+            assert!(!root.join(template).exists(), "no template to publish: {template}");
         }
     }
 
@@ -2284,6 +2377,163 @@ mod tests {
 
         let first = round(root);
         assert!(first.get("publish").is_none(), "the other spec already published the new template: {first}");
+    }
+
+    /// Um projeto aprovado com as duas páginas já publicadas no layout de
+    /// agora, e a resposta da rodada que prepara a cópia: a ordem só copia.
+    fn published_round(root: &Path) -> Value {
+        for (page, url) in [(SPEC_PAGE, SPEC_URL), (PROJECT_PAGE, PROJECT_URL)] {
+            write(root, "publish", json!({"page": page, "milestone": "approval", "ok": true, "template": true,
+                "stamp": stamp_of(page), "url": url}));
+        }
+        let report = round(root);
+        assert!(report.get("publish").is_none(), "{report}");
+        report
+    }
+
+    /// O resultado que a ferramenta do banco devolve a um lote que deu certo:
+    /// `committed` e uma linha por escrita, com a versão `version` em cada
+    /// documento gravado.
+    fn committed(batch: &Value, version: u64) -> String {
+        let lines: Vec<String> = batch
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|w| {
+                let (op, doc) = (w["op"].as_str().unwrap_or_default(), (&w["collection"], &w["doc_id"]));
+                let name = format!("{}/{}", doc.0, doc.1);
+                if op == "set" { format!("- {op} {name} (version {version})") } else { format!("- {op} {name}") }
+            })
+            .collect();
+        format!("Batch committed: {} writes\n{}", lines.len(), lines.join("\n"))
+    }
+
+    /// Um lote mandado ao banco no endereço `url`, com o resultado
+    /// `response`, pelo mesmo despachante do `mustard-rt on`.
+    fn batch_sent(root: &Path, url: &str, batch: &Value, response: Value) -> Outcome {
+        hook_event(
+            root,
+            "PostToolUse",
+            Some("ArtifactData"),
+            json!({"action": "batch", "url": url, "writes": batch}),
+            json!({"tool_response": response}),
+        )
+    }
+
+    /// Os registros de cópia da página da spec que o gancho gravou.
+    fn witnessed(root: &Path) -> Vec<SpecEvent> {
+        log(root)
+            .visible()
+            .into_iter()
+            .filter(|e| copy_of(e) == Some(SPEC_PAGE) && e.str_field("author") == Some("hook"))
+            .cloned()
+            .collect()
+    }
+
+    /// A linha que o gancho coloca na conversa quando grava a cópia.
+    fn recorded_line() -> String {
+        let lang = Locale::PtBr;
+        translate("page.copy.recorded", lang).replace("{page}", translate("page.name.spec", lang))
+    }
+
+    /// A resposta da rodada traz as escritas de cada lote prontas, com o
+    /// arquivo pelo caminho absoluto, e a ordem manda mandá-las sem ler
+    /// arquivo. O resultado do lote mandado ao endereço da página da spec
+    /// grava a cópia sozinho, com o número até onde ela foi e a versão que o
+    /// banco devolveu a cada documento, e a conversa ouve que não precisa
+    /// gravar; a cópia seguinte já troca cada documento com essa versão.
+    #[test]
+    fn the_batch_result_records_the_copy_with_its_versions() {
+        let dir = approved_project();
+        let root = dir.path();
+        let first = published_round(root);
+        let batches = first["copy"]["spec"]["writes"].as_array().cloned().unwrap_or_default();
+        assert_eq!(batches.len(), 1, "{first}");
+        for write in batches[0].as_array().into_iter().flatten().filter(|w| w.get("file_path").is_some()) {
+            let file = write["file_path"].as_str().unwrap_or_default();
+            assert!(Path::new(file).is_absolute(), "{file}");
+            assert!(Path::new(file).is_file(), "the document is on disk: {file}");
+        }
+        assert!(first["next"].as_str().unwrap_or_default().contains("`copy.spec.writes`"), "{first}");
+
+        let outcome = batch_sent(root, SPEC_URL, &batches[0], json!(committed(&batches[0], 7)));
+        assert_eq!(outcome.verdict, Verdict::Inject { context: recorded_line() }, "{outcome:?}");
+        let copies = witnessed(root);
+        assert_eq!(copies.len(), 1, "one copy recorded");
+        assert_eq!(copies[0].int("last"), first["copy"]["spec"]["record"]["last"].as_u64(), "{:?}", copies[0]);
+        let versions = versions_of(&copies[0]);
+        assert_eq!(versions.get("ranges/0"), Some(&json!(7)), "{versions:?}");
+        assert_eq!(versions.get(COMPUTED), Some(&json!(7)), "{versions:?}");
+
+        let second = round(root);
+        assert_eq!(pinned(root, &second, SPEC_PAGE, COMPUTED), json!(7), "the next copy uses the version");
+    }
+
+    /// O lote de outro endereço, outra ação da ferramenta e o lote que falhou
+    /// não gravam nada, e o gancho não diz nada: a ordem continua com a
+    /// gravação à mão. O registro da cópia fica onde estava, e o resultado
+    /// certo, depois, grava.
+    #[test]
+    fn a_batch_elsewhere_or_a_failed_one_records_nothing() {
+        let dir = approved_project();
+        let root = dir.path();
+        let first = published_round(root);
+        let batch = first["copy"]["spec"]["writes"][0].clone();
+
+        let elsewhere = batch_sent(root, "https://claude.ai/code/artifact/outra", &batch, json!(committed(&batch, 7)));
+        assert_eq!(elsewhere.verdict, Verdict::Allow, "another address");
+        let project = batch_sent(root, PROJECT_URL, &batch, json!(committed(&batch, 7)));
+        assert_eq!(project.verdict, Verdict::Allow, "the project page");
+        let get = hook_event(root, "PostToolUse", Some("ArtifactData"),
+            json!({"action": "get", "url": SPEC_URL, "collection": "ranges", "doc_id": "0"}),
+            json!({"tool_response": committed(&batch, 7)}));
+        assert_eq!(get.verdict, Verdict::Allow, "another action");
+        let failed = batch_sent(root, SPEC_URL, &batch,
+            json!([{"type": "text", "text": "Error: version conflict on \"ranges\"/\"0\"; nothing was written"}]));
+        assert_eq!(failed.verdict, Verdict::Allow, "the failed batch");
+        assert!(witnessed(root).is_empty(), "nothing recorded");
+
+        let blocks = json!([{"type": "text", "text": committed(&batch, 9)}]);
+        assert_eq!(batch_sent(root, SPEC_URL, &batch, blocks).verdict, Verdict::Inject { context: recorded_line() });
+        assert_eq!(witnessed(root).len(), 1);
+    }
+
+    /// O mesmo resultado lido duas vezes grava uma cópia só: gravada a
+    /// cópia, o registro sai, e o segundo passa calado.
+    #[test]
+    fn the_same_result_twice_records_once() {
+        let dir = approved_project();
+        let root = dir.path();
+        let first = published_round(root);
+        let batch = first["copy"]["spec"]["writes"][0].clone();
+        let result = json!(committed(&batch, 4));
+        assert_eq!(batch_sent(root, SPEC_URL, &batch, result.clone()).verdict, Verdict::Inject { context: recorded_line() });
+        assert_eq!(batch_sent(root, SPEC_URL, &batch, result).verdict, Verdict::Allow);
+        assert_eq!(witnessed(root).len(), 1, "one copy");
+    }
+
+    /// Numa cópia de dois lotes, o primeiro que volta só guarda as versões
+    /// dele; o último grava a cópia, com as versões dos dois.
+    #[test]
+    fn with_two_batches_only_the_last_records_with_both_versions() {
+        let dir = approved_project();
+        let root = dir.path();
+        append_notes(root, 5_100, 0);
+        let first = published_round(root);
+        let batches = first["copy"]["spec"]["writes"].as_array().cloned().unwrap_or_default();
+        assert_eq!(batches.len(), 2, "more than fifty writes");
+
+        assert_eq!(batch_sent(root, SPEC_URL, &batches[0], json!(committed(&batches[0], 2))).verdict, Verdict::Allow);
+        assert!(witnessed(root).is_empty(), "the first batch records nothing");
+        let outcome = batch_sent(root, SPEC_URL, &batches[1], json!(committed(&batches[1], 3)));
+        assert_eq!(outcome.verdict, Verdict::Inject { context: recorded_line() }, "{outcome:?}");
+        let copies = witnessed(root);
+        assert_eq!(copies.len(), 1);
+        let versions = versions_of(&copies[0]);
+        let sets = |batch: &Value| batch.as_array().into_iter().flatten().filter(|w| w["op"] == json!("set")).count();
+        assert_eq!(versions.len(), sets(&batches[0]) + sets(&batches[1]), "{versions:?}");
+        assert_eq!(versions.get("ranges/0"), Some(&json!(2)), "the first batch's version");
+        assert_eq!(versions.get(COMPUTED), Some(&json!(3)), "the last batch's version");
     }
 
     /// A linha do gasto soma os tokens de toda onda enviada e toma o maior

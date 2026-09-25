@@ -447,8 +447,11 @@ fn a_copia_seguinte_leva_a_versao_guardada_sem_pedir_leitura() {
         let named = translate("page.copy.existing", lang).replace("{docs}", &format!("`{row}`"));
         assert!(next.contains(&named), "{lang:?}: only the row without a version is read: {next}");
         assert_eq!(next.matches(read.as_str()).count(), 1, "{lang:?}: the spec page reads nothing: {next}");
-        for page in ["spec", "project"] {
-            let record = translate("page.copy.record", lang)
+        for (page, phrase, name) in
+            [("spec", "page.copy.record", "page.name.spec"), ("project", "page.copy.record_project", "page.name.project")]
+        {
+            let record = translate(phrase, lang)
+                .replace("{page}", translate(name, lang))
                 .replace("{spec}", SPEC)
                 .replace("{record}", &second["copy"][page]["record"].to_string());
             assert!(record.contains("`versions`"), "{lang:?}: {record}");

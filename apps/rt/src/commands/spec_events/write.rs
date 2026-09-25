@@ -3259,6 +3259,53 @@ mod tests {
         }
     }
 
+    /// A gravação com `--copy` devolve as escritas de cada lote prontas para
+    /// a ferramenta do banco: o arquivo de cada documento pelo caminho
+    /// absoluto, e a troca do documento já copiado com a versão que a cópia
+    /// anterior guardou. A ordem manda mandá-las, sem ler arquivo.
+    #[test]
+    fn the_copying_write_answers_with_the_writes_ready() {
+        use mustard_core::platform::i18n::Locale;
+        use mustard_core::platform::page_templates::{spec_page_template, template_stamp};
+        const URL: &str = "https://claude.ai/code/artifact/teste";
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        born(root);
+        let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
+        let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        witness_approves(root);
+        let stamp = template_stamp(&spec_page_template(Locale::PtBr)).expect("the stamp").to_string();
+        let publish = json!({"page": "spec", "milestone": "approval", "ok": true, "template": true, "stamp": stamp,
+            "url": URL});
+        assert_eq!(write(root, "publish", &publish.to_string())["ok"], json!(true));
+        let last = DiskSpecState::new(root).log("teste").unwrap().max_id();
+        let copied = json!({"page": "spec", "last": last, "versions": {"ranges/0": 5, "computed/current": 5}});
+        assert_eq!(write(root, "copy", &copied.to_string())["ok"], json!(true));
+
+        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "agent": "- dividir",
+            "files": [], "depends_on": [], "covers": [criterion], "origin": msg});
+        let out = write_at_with(
+            &WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(),
+                json: task.to_string() },
+            true,
+        );
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let batches = out["copy"]["spec"]["writes"].as_array().cloned().unwrap_or_default();
+        assert_eq!(batches.len(), out["copy"]["spec"]["batches"].as_array().map_or(0, Vec::len), "one list per batch");
+        let writes: Vec<Value> = batches.iter().flat_map(|b| b.as_array().cloned().unwrap_or_default()).collect();
+        for write in &writes {
+            let file = write["file_path"].as_str().unwrap_or_else(|| panic!("{write}"));
+            assert!(std::path::Path::new(file).is_absolute(), "{file}");
+            assert!(std::path::Path::new(file).is_file(), "{file}");
+        }
+        let range = writes.iter().find(|w| w["collection"] == json!("ranges") && w["doc_id"] == json!("0"));
+        assert_eq!(range.map(|w| w["if_version"].clone()), Some(json!(5)), "{writes:?}");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains("`copy.spec.writes`") && next.contains("write copy"), "{next}");
+    }
+
     /// A onda nasce do backlog: pela porta do modelo, a onda nova e a versão
     /// nova de uma onda são recusadas, antes e depois da aprovação, e nada é
     /// gravado. Tirar uma onda continua valendo.

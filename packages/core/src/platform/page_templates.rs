@@ -72,7 +72,6 @@ use serde_json::{json, Value};
 
 use crate::domain::spec_events::{Block, Kind, AUTHORS, PHASES, PURGED_MARK, TYPES};
 use crate::domain::spec_state::is_approved_phase;
-use crate::platform::harness::harness_version;
 use crate::platform::i18n::{translate, Locale};
 
 /// O template da página da spec, como mora no repositório.
@@ -110,6 +109,16 @@ pub const SPEC_CAPABILITIES: &str =
 /// só quem edita a página grava.
 pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"view","write":"admin"}]}}"#;
 
+/// A versão do layout da página da spec, escrita na marca do molde. Sobe a
+/// cada mudança no molde montado (o template ou o catálogo dele): é ela, e
+/// não a versão do Mustard, que manda publicar de novo a página já
+/// publicada. A trava dos testes falha quando o molde muda sem ela subir.
+pub const SPEC_LAYOUT_VERSION: u32 = 1;
+
+/// A versão do layout da página do projeto, com a mesma regra de
+/// [`SPEC_LAYOUT_VERSION`].
+pub const PROJECT_LAYOUT_VERSION: u32 = 1;
+
 /// O template da página da spec, com o catálogo no idioma `lang`.
 #[must_use]
 pub fn spec_page_template(lang: Locale) -> String {
@@ -125,7 +134,7 @@ pub fn spec_page_template(lang: Locale) -> String {
         "purgedMark": PURGED_MARK,
         "labels": labels(SPEC_PAGE, lang),
     });
-    fill(SPEC_PAGE, &catalog)
+    fill(SPEC_PAGE, &catalog, SPEC_LAYOUT_VERSION)
 }
 
 /// O template da página do projeto, com o catálogo no idioma `lang`.
@@ -137,17 +146,18 @@ pub fn project_page_template(lang: Locale) -> String {
         "phases": PHASES,
         "labels": labels(PROJECT_PAGE, lang),
     });
-    fill(PROJECT_PAGE, &catalog)
+    fill(PROJECT_PAGE, &catalog, PROJECT_LAYOUT_VERSION)
 }
 
-/// O template com o catálogo no lugar dele. O catálogo vai como JSON dentro
-/// de uma tag `<script>`: todo `<` vira o escape `\u003c` do JSON, para nenhum texto
-/// fechar a tag antes da hora.
-fn fill(template: &str, catalog: &Value) -> String {
+/// O template com o catálogo no lugar dele, marcado com a versão `layout`
+/// do molde. O catálogo vai como JSON dentro de uma tag `<script>`: todo `<`
+/// vira o escape `\u003c` do JSON, para nenhum texto fechar a tag antes da
+/// hora.
+fn fill(template: &str, catalog: &Value, layout: u32) -> String {
     let json = catalog.to_string().replace('<', "\\u003c");
     let filled = format!(r#"<script type="application/json" id="mustard-catalog">{json}</script>"#);
     let body = template.replacen(CATALOG_SLOT, &filled, 1);
-    stamp(&body)
+    stamp(&body, layout)
 }
 
 /// O que vem antes do carimbo na marca do começo do modelo, na primeira
@@ -157,15 +167,22 @@ const VERSION_MARK_PREFIX: &str = "<!-- mustard:";
 /// O que vem depois do carimbo na marca do começo do modelo.
 const VERSION_MARK_SUFFIX: &str = "-->";
 
+/// O começo da versão do layout dentro do carimbo: `layout-1`, `layout-2`…
+const LAYOUT_PREFIX: &str = "layout-";
+
 /// `body` com o carimbo do modelo na frente, numa linha só: a versão do
-/// Mustard rodando e a impressão do conteúdo montado, o template com o
-/// catálogo já no lugar. É pelo carimbo inteiro que o passo que publica
-/// compara o modelo instalado no projeto e o da última publicação com o que
-/// o binário monta agora, sem reconstruir o catálogo inteiro: dois programas
-/// com a mesma versão e moldes diferentes, um instalado e outro compilado no
-/// meio de uma obra, dão carimbos diferentes.
-fn stamp(body: &str) -> String {
-    format!("{VERSION_MARK_PREFIX} {} {:016x} {VERSION_MARK_SUFFIX}\n{body}", harness_version(), fingerprint(body))
+/// layout do molde, `layout`, e a impressão do conteúdo montado, o template
+/// com o catálogo já no lugar. A versão decide se a página já publicada é
+/// publicada de novo ([`layout_version`]); a impressão fica para o modelo
+/// instalado no projeto, que o passo que publica compara pelo carimbo
+/// inteiro, sem reconstruir o catálogo: dois programas com a mesma versão de
+/// layout e moldes diferentes, um instalado e outro compilado no meio de uma
+/// obra, dão carimbos diferentes.
+fn stamp(body: &str, layout: u32) -> String {
+    format!(
+        "{VERSION_MARK_PREFIX} {LAYOUT_PREFIX}{layout} {:016x} {VERSION_MARK_SUFFIX}\n{body}",
+        fingerprint(body)
+    )
 }
 
 /// A impressão do conteúdo `body`: o FNV-1a de 64 bits sobre os bytes dele,
@@ -177,16 +194,25 @@ pub(crate) fn fingerprint(body: &str) -> u64 {
     body.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// O carimbo do modelo `text`, lido da primeira linha: a versão do Mustard
-/// que o gerou e a impressão do conteúdo, juntas, como a publicação o grava.
-/// `None` quando a marca não está lá — um modelo de antes dela, ou qualquer
-/// outro texto. O modelo de antes da impressão tem só a versão no carimbo, e
-/// por isso nunca é igual ao de agora.
+/// O carimbo do modelo `text`, lido da primeira linha: a versão do layout e
+/// a impressão do conteúdo, juntas, como a publicação o grava. `None` quando
+/// a marca não está lá — um modelo de antes dela, ou qualquer outro texto. O
+/// modelo de antes da versão do layout traz a versão do Mustard no lugar
+/// dela, e por isso nunca é igual ao de agora.
 #[must_use]
 pub fn template_stamp(text: &str) -> Option<&str> {
     let line = text.lines().next()?;
     let rest = line.strip_prefix(VERSION_MARK_PREFIX)?.trim();
     rest.strip_suffix(VERSION_MARK_SUFFIX).map(str::trim)
+}
+
+/// A versão do layout que o carimbo `stamp` guarda, como [`template_stamp`]
+/// o lê e a publicação o grava: `Some(2)` para `layout-2 <impressão>`. `None`
+/// para o carimbo de antes da versão do layout, que traz a versão do Mustard,
+/// e para qualquer texto sem ela.
+#[must_use]
+pub fn layout_version(stamp: &str) -> Option<u32> {
+    stamp.split_whitespace().next()?.strip_prefix(LAYOUT_PREFIX)?.parse().ok()
 }
 
 /// Cada tipo de evento como o template o lê: o nome, a sigla do código, o
@@ -291,43 +317,131 @@ mod tests {
     use crate::domain::spec_index::ProjectRow;
     use crate::view::document::{RtkDay, WaveState, WaveStates};
 
-    /// O modelo gerado leva na primeira linha o carimbo: a versão do binário
-    /// rodando e a impressão do conteúdo montado. É essa marca que o passo
-    /// que publica confere para saber se o modelo instalado no projeto, ou o
-    /// da página publicada, está velho.
+    /// O modelo gerado leva na primeira linha o carimbo: a versão do layout
+    /// do molde e a impressão do conteúdo montado. A versão é a do molde, e
+    /// não a do Mustard: é por ela que o passo que publica sabe se a página
+    /// publicada está velha; a impressão diz se o modelo instalado no
+    /// projeto está em dia.
     #[test]
-    fn the_generated_template_is_stamped_with_the_version_and_the_content() {
-        for html in [spec_page_template(Locale::PtBr), project_page_template(Locale::PtBr)] {
+    fn the_generated_template_is_stamped_with_the_layout_version_and_the_content() {
+        for (html, layout) in [
+            (spec_page_template(Locale::PtBr), SPEC_LAYOUT_VERSION),
+            (project_page_template(Locale::PtBr), PROJECT_LAYOUT_VERSION),
+        ] {
             let stamp = template_stamp(&html).expect("the stamp");
             let (version, print) = stamp.split_once(' ').expect("the version and the fingerprint");
-            assert_eq!(version, harness_version(), "{stamp}");
+            assert_eq!(version, format!("layout-{layout}"), "{stamp}");
+            assert_eq!(layout_version(stamp), Some(layout), "{stamp}");
+            let mustard = crate::platform::harness::harness_version();
+            assert!(!stamp.contains(mustard.as_str()), "the Mustard version stays out of the stamp: {stamp}");
             let body = html.split_once('\n').map(|(_, body)| body).expect("the body after the stamp");
             assert_eq!(print, format!("{:016x}", fingerprint(body)), "{stamp}");
         }
     }
 
-    /// Com a mesma versão, um molde de conteúdo diferente dá outro carimbo:
-    /// o idioma do catálogo muda o conteúdo, e muda o carimbo; o mesmo molde
-    /// montado duas vezes dá o mesmo carimbo.
+    /// Com a mesma versão de layout, um molde de conteúdo diferente dá outro
+    /// carimbo: o idioma do catálogo muda o conteúdo, e muda o carimbo; o
+    /// mesmo molde montado duas vezes dá o mesmo carimbo.
     #[test]
-    fn the_same_version_with_another_content_has_another_stamp() {
+    fn the_same_layout_version_with_another_content_has_another_stamp() {
         let pt = spec_page_template(Locale::PtBr);
         let en = spec_page_template(Locale::EnUs);
         assert_ne!(template_stamp(&pt), template_stamp(&en), "the content differs");
         assert_eq!(template_stamp(&pt), template_stamp(&spec_page_template(Locale::PtBr)), "the same content");
-        assert_ne!(stamp("a"), stamp("b"), "one byte is enough");
+        assert_ne!(stamp("a", 1), stamp("b", 1), "one byte is enough");
+        assert_ne!(stamp("a", 1), stamp("a", 2), "the layout version is in the stamp");
     }
 
     /// Um modelo sem a marca — de antes dela, ou qualquer outro texto — não
-    /// tem carimbo nenhum: a leitura não inventa um. O de antes da impressão
-    /// tem só a versão, e por isso não é o carimbo de agora.
+    /// tem carimbo nenhum: a leitura não inventa um. A marca de antes da
+    /// versão do layout traz a versão do Mustard: ela tem carimbo, mas
+    /// nenhuma versão de layout, e por isso não é o carimbo de agora.
     #[test]
     fn a_template_without_the_stamp_has_no_stamp() {
         assert_eq!(template_stamp("<!doctype html><html></html>"), None);
         assert_eq!(template_stamp(""), None);
-        let only_version = format!("<!-- mustard: {} -->\n<html></html>", harness_version());
-        assert_eq!(template_stamp(&only_version), Some(harness_version().as_str()));
-        assert_ne!(template_stamp(&only_version), template_stamp(&spec_page_template(Locale::PtBr)));
+        let old = "<!-- mustard: 0.2.0 0123456789abcdef -->\n<html></html>";
+        assert_eq!(template_stamp(old), Some("0.2.0 0123456789abcdef"));
+        assert_eq!(layout_version("0.2.0 0123456789abcdef"), None, "the old stamp has no layout version");
+        assert_eq!(layout_version("0.2.0"), None, "the stamp with only the version either");
+        assert_eq!(layout_version(""), None);
+        assert_eq!(layout_version("layout-x 0123"), None, "the version is a number");
+        assert_eq!(layout_version("layout-7 0123456789abcdef"), Some(7));
+        assert_ne!(template_stamp(old), template_stamp(&spec_page_template(Locale::PtBr)));
+    }
+
+    /// A versão do layout e a impressão de cada molde montado, nos dois
+    /// idiomas, como a última mudança de molde as deixou. Quem muda o molde
+    /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
+    /// mostra.
+    const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
+        ("spec", Locale::PtBr, 1, "65bf6d1b90c28223"),
+        ("spec", Locale::EnUs, 1, "aae78616009088d4"),
+        ("project", Locale::PtBr, 1, "5679d4353f9b2605"),
+        ("project", Locale::EnUs, 1, "30bdfad32f90648a"),
+    ];
+
+    /// Confere o carimbo `built` do molde `page` em `lang` contra a linha
+    /// dele em `table`: a impressão mudou com a mesma versão de layout, a
+    /// versão subiu sem a tabela acompanhar, ou a linha falta. Cada falha diz
+    /// o que fazer.
+    fn layout_drift(table: &[(&str, Locale, u32, &str)], page: &str, lang: Locale, built: &str) -> Option<String> {
+        let Some(&(_, _, version, print)) = table.iter().find(|(p, l, _, _)| *p == page && *l == lang) else {
+            return Some(format!("{page} ({lang}): no row in the layout table for the stamp {built}"));
+        };
+        let built_version = layout_version(built);
+        let built_print = built.split_whitespace().nth(1).unwrap_or_default();
+        if built_version == Some(version) && built_print != print {
+            return Some(format!(
+                "{page} ({lang}): the template changed without a new layout version. Raise the layout \
+                 version of this page and write in the layout table the version and the fingerprint \
+                 {built_print}"
+            ));
+        }
+        if built_version != Some(version) || built_print != print {
+            return Some(format!(
+                "{page} ({lang}): the layout version is {built_version:?}, and the table says {version}. Write \
+                 in the layout table the version and the fingerprint {built_print}"
+            ));
+        }
+        None
+    }
+
+    /// A trava das versões de layout: cada molde montado, nas duas páginas e
+    /// nos dois idiomas, tem a versão e a impressão da tabela. Mudar o molde
+    /// — o template ou o catálogo dele — sem subir a versão do layout falha
+    /// aqui, porque a página já publicada só é publicada de novo quando a
+    /// versão sobe.
+    #[test]
+    fn a_template_change_needs_a_new_layout_version() {
+        let mut failures = Vec::new();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            for (page, html) in [("spec", spec_page_template(lang)), ("project", project_page_template(lang))] {
+                let built = template_stamp(&html).expect("the stamp");
+                failures.extend(layout_drift(LAYOUT_TABLE, page, lang, built));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A trava falha quando o molde muda com a mesma versão de layout, e a
+    /// falha manda subir a versão; com a versão nova e a tabela em dia, ela
+    /// passa, nas duas páginas.
+    #[test]
+    fn the_layout_lock_fails_on_a_new_template_with_the_same_version() {
+        let table = [("spec", Locale::PtBr, 3, "00000000000000aa"), ("project", Locale::PtBr, 5, "00000000000000bb")];
+        for (page, version) in [("spec", 3), ("project", 5)] {
+            let print = if page == "spec" { "00000000000000aa" } else { "00000000000000bb" };
+            let same = format!("layout-{version} {print}");
+            assert_eq!(layout_drift(&table, page, Locale::PtBr, &same), None, "{page}: the same template");
+            let changed = format!("layout-{version} 00000000000000cc");
+            let failure = layout_drift(&table, page, Locale::PtBr, &changed).expect("the new template fails");
+            assert!(failure.contains("Raise the layout version"), "{page}: {failure}");
+            let raised = format!("layout-{} 00000000000000cc", version + 1);
+            let failure = layout_drift(&table, page, Locale::PtBr, &raised).expect("the table is behind");
+            assert!(failure.contains("00000000000000cc"), "{page}: {failure}");
+            assert!(!failure.contains("Raise"), "{page}: the version already went up: {failure}");
+        }
     }
 
     /// O apoio que roda um template no Node, com o DOM e as capacidades do
@@ -1049,7 +1163,7 @@ mod tests {
         assert_eq!(field_labels(crit), [translate("page.field.origin", Locale::PtBr)]);
 
         let backlog = now_rows(page);
-        assert!(backlog.contains(&json!(["backlog", "PRONTA", "Título curto do backlog", "0 arquivos"])), "{backlog:?}");
+        assert!(backlog.contains(&json!(["backlog", "Pronta", "Título curto do backlog", "0 arquivos"])), "{backlog:?}");
         let md = got["md"]["data"].as_str().unwrap_or_default();
         let ready = translate("page.now.ready", Locale::PtBr);
         for line in [
@@ -1962,8 +2076,8 @@ mod tests {
                 json!(["group", "Rodando"]),
                 json!(["wave", "Onda 3", "3 tarefas", "0 arquivos · em andamento"]),
                 json!(["group", "Backlog · tarefas que ainda não viraram onda"]),
-                json!(["backlog", "ESPERA", "Título curto do backlog", "0 arquivos · espera 1 tarefa do backlog"]),
-                json!(["backlog", "PRONTA", "A tarefa sem título espera nada.", "0 arquivos"]),
+                json!(["backlog", "Espera", "Título curto do backlog", "0 arquivos · espera 1 tarefa do backlog"]),
+                json!(["backlog", "Pronta", "A tarefa sem título espera nada.", "0 arquivos"]),
                 json!(["after", "Depois vêm a revisão final e o fechamento."]),
             ],
             "{}",
@@ -2179,8 +2293,8 @@ mod tests {
                 json!(["wave", "Onda 2", "A lista do meio", "1 arquivo · em andamento"]),
                 json!(["wave", "Onda 3", "3 tarefas", "3 arquivos · em andamento"]),
                 json!(["group", "Backlog · tarefas que ainda não viraram onda"]),
-                json!(["backlog", "ESPERA", "A troca de tema", "1 arquivo · espera a onda 2"]),
-                json!(["backlog", "PRONTA", "A busca por código", "1 arquivo"]),
+                json!(["backlog", "Espera", "A troca de tema", "1 arquivo · espera a onda 2"]),
+                json!(["backlog", "Pronta", "A busca por código", "1 arquivo"]),
                 json!(["after", "Depois vêm a revisão final e o fechamento."]),
             ],
             tabs: ["Especificação", "Acordado", "Critérios", "Anotações", "Revisão", "Andamento", "Conversa", "Removidos"],
@@ -2202,8 +2316,8 @@ mod tests {
                 json!(["wave", "Wave 2", "A lista do meio", "1 file · in progress"]),
                 json!(["wave", "Wave 3", "3 tasks", "3 files · in progress"]),
                 json!(["group", "Backlog · tasks not yet in a wave"]),
-                json!(["backlog", "WAITS", "A troca de tema", "1 file · waits for wave 2"]),
-                json!(["backlog", "READY", "A busca por código", "1 file"]),
+                json!(["backlog", "Waits", "A troca de tema", "1 file · waits for wave 2"]),
+                json!(["backlog", "Ready", "A busca por código", "1 file"]),
                 json!(["after", "Then come the final review and the closing."]),
             ],
             tabs: ["Specification", "Agreed", "Criteria", "Notes", "Review", "Progress", "Conversation", "Removed"],

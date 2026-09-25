@@ -5,14 +5,15 @@
 //! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
 //! roda, e uma chamada que não casa com nenhum deles nem o executa.
 //!
-//! São onze, e só eles: a trava de comandos, o portão de escrita, o pedido do
-//! subagente, a testemunha da aprovação, a entrada da mensagem, o início da
-//! sessão, o conserto da barra de status, o sinal de vida da onda, o aviso
-//! antes de compactar, a faxina do fim da sessão e a conferência do fim da
-//! resposta.
+//! São doze, e só eles: a trava de comandos, o portão de escrita, o pedido do
+//! subagente, a testemunha da aprovação, a testemunha da cópia da página, a
+//! entrada da mensagem, o início da sessão, o conserto da barra de status, o
+//! sinal de vida da onda, o aviso antes de compactar, a faxina do fim da
+//! sessão e a conferência do fim da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
+use crate::hooks::observe::copy_witness::CopyWitness;
 use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
 use crate::hooks::session::conversation_size::PrecompactNotice;
 use crate::hooks::session::prompt_entry::PromptEntry;
@@ -23,6 +24,7 @@ use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::write::write_gate::WriteGate;
 use mustard_core::domain::model::contract::{Check, Observer, Trigger};
+use mustard_core::platform::project_seed::PAGE_DATABASE_TOOL;
 
 /// Em que ferramenta uma entrada do registro roda.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +121,15 @@ impl Registry {
                 id: "approval_witness",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("AskUserQuestion"))],
                 check: Some(Box::new(ApprovalWitness)),
+                observer: None,
+            },
+            // A testemunha da cópia: no resultado de um lote mandado ao banco
+            // da página da spec, guarda as versões que o banco devolveu e,
+            // quando o último lote volta, grava a cópia. Nunca barra.
+            Module {
+                id: "copy_witness",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named(PAGE_DATABASE_TOOL))],
+                check: Some(Box::new(CopyWitness)),
                 observer: None,
             },
             // A entrada da mensagem, numa chamada só: a trava de instalação,
@@ -232,9 +243,9 @@ mod tests {
         registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
-    /// O registro tem os onze ganchos que ficam, e só eles.
+    /// O registro tem os doze ganchos que ficam, e só eles.
     #[test]
-    fn the_registry_holds_exactly_the_eleven_hooks() {
+    fn the_registry_holds_exactly_the_twelve_hooks() {
         let registry = Registry::new();
         let mut ids = registry.ids();
         ids.sort_unstable();
@@ -243,6 +254,7 @@ mod tests {
             [
                 "approval_witness",
                 "command_guard",
+                "copy_witness",
                 "end_of_turn_check",
                 "precompact_notice",
                 "prompt_entry",

@@ -32,21 +32,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"…\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
-        // A página já publicada com um molde de outro carimbo, ou sem carimbo,
-        // é publicada de novo no mesmo endereço, antes do lote de cópia: o
-        // banco dela continua lá, e a cópia segue de onde parou.
+        // A página já publicada com outra versão do layout, ou com a marca de
+        // antes da versão do layout, é publicada de novo no mesmo endereço,
+        // antes do lote de cópia: o banco dela continua lá, e a cópia segue de
+        // onde parou.
         ("page.copy.republish", Locale::PtBr) => {
-            "A {page} foi publicada com um molde diferente do que esta versão do Mustard monta. Antes de \
-             copiar os lotes, publique de novo o template `{template}` com a ferramenta `Artifact` no mesmo \
-             endereço, {url}, passando em `capabilities` o valor `{capabilities}`. Grave a publicação com \
+            "O layout da {page} mudou de versão. Antes de copiar os lotes, publique de novo o template \
+             `{template}` com a ferramenta `Artifact` no mesmo endereço, {url}, passando em `capabilities` o \
+             valor `{capabilities}`. Grave a publicação com \
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              com `\"ok\":false` e `\"reason\"` quando falhar."
         }
         ("page.copy.republish", Locale::EnUs) => {
-            "The {page} was published with a template other than the one this Mustard version builds. \
-             Before copying the batches, publish the template `{template}` again with the `Artifact` tool \
-             at the same address, {url}, passing `{capabilities}` as `capabilities`. Record the publication \
-             with \
+            "The {page}'s layout has a new version. Before copying the batches, publish the template \
+             `{template}` again with the `Artifact` tool at the same address, {url}, passing `{capabilities}` \
+             as `capabilities`. Record the publication with \
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
@@ -86,18 +86,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              goes back to the user to approve its split before it goes out."
         }
         // Quem copia é o orquestrador, na própria conversa, também na
-        // primeira cópia, que leva a spec inteira.
+        // primeira cópia, que leva a spec inteira. As escritas de cada lote
+        // já vêm prontas na resposta, em `copy.<página>.writes`: nenhum
+        // arquivo é lido para mandá-las.
         ("page.copy.batches", Locale::PtBr) => {
             "Copie você mesmo, nesta conversa e sem agente, para o banco de dados da {page}, no endereço \
-             {url}, os lotes {files}, nessa ordem. Cada arquivo é a lista `writes` de uma chamada da \
-             ferramenta `ArtifactData` com `action` `batch`. Cada documento vai pelo `file_path` dele, \
-             sem você ler os itens."
+             {url}. Mande cada lista de `copy.{key}.writes` desta resposta numa chamada da ferramenta \
+             `ArtifactData` com `action` `batch`, uma chamada por lote, na ordem. Cada documento vai pelo \
+             `file_path` dele, sem você ler arquivo nenhum."
         }
         ("page.copy.batches", Locale::EnUs) => {
             "Copy it yourself, in this conversation and without an agent, into the {page}'s database at \
-             {url}: the batches {files}, in this order. Each file is the `writes` list of one \
-             `ArtifactData` call with `action` `batch`. Each document goes by its `file_path`, without \
-             reading the items."
+             {url}. Send each list in `copy.{key}.writes` of this response in one `ArtifactData` call with \
+             `action` `batch`, one call per batch, in order. Each document goes by its `file_path`, without \
+             reading any file."
         }
         // Só entra depois de `page.copy.batches`, quando algum documento do
         // lote já existe no banco sem versão guardada, de uma cópia gravada
@@ -120,18 +122,46 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // Só entra depois de `page.copy.batches`, e só fora do descarte: a
         // spec descartada é terminal, sem cópia seguinte para continuar dela.
-        // As versões gravadas poupam a leitura na cópia seguinte.
+        // As versões gravadas poupam a leitura na cópia seguinte. Na página
+        // da spec, o gancho que lê o resultado de cada lote grava a cópia
+        // sozinho quando o último volta; a gravação à mão fica para quando
+        // ele não avisar que gravou.
         ("page.copy.record", Locale::PtBr) => {
+            "A cópia da {page} se grava sozinha quando o último lote volta, e o Mustard avisa que gravou. \
+             Se esse aviso não vier, grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`. \
+             Some ao `--json` o campo `versions`: a versão que o resultado do lote devolveu para cada \
+             documento escrito, pelo nome `coleção/doc_id` dele, como \
+             `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
+        }
+        ("page.copy.record", Locale::EnUs) => {
+            "The copy to the {page} records itself when the last batch comes back, and Mustard says it did. \
+             If that notice does not come, record the copy with \
+             `mustard-rt run write copy --spec {spec} --json '{record}'`. Add to the `--json` the `versions` \
+             field: the version the batch result returned for each document written, by its \
+             `collection/doc_id` name, as in `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
+        }
+        // O mesmo registro na página do projeto, que ninguém grava sozinho.
+        ("page.copy.record_project", Locale::PtBr) => {
             "Depois grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`, \
              somando ao `--json` o campo `versions`: a versão que o resultado do lote devolveu para cada \
              documento escrito, pelo nome `coleção/doc_id` dele, como \
              `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
         }
-        ("page.copy.record", Locale::EnUs) => {
+        ("page.copy.record_project", Locale::EnUs) => {
             "Then record the copy with `mustard-rt run write copy --spec {spec} --json '{record}'`, adding \
              to the `--json` the `versions` field: the version the batch result returned for each document \
              written, by its `collection/doc_id` name, as in \
              `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
+        }
+        // O que o gancho diz quando o último lote da cópia da página da spec
+        // voltou e ele gravou a cópia com as versões de todos os lotes.
+        ("page.copy.recorded", Locale::PtBr) => {
+            "A cópia da {page} foi gravada na spec, com a versão de cada documento. Não rode o \
+             `write copy` desta cópia."
+        }
+        ("page.copy.recorded", Locale::EnUs) => {
+            "The copy to the {page} was recorded in the spec, with each document's version. Do not run \
+             `write copy` for this copy."
         }
         // Sempre entra em `{url}` de `page.copy.batches`, depois de "no
         // endereço": sem "o endereço" aqui, ou a frase dobra a palavra.
@@ -488,10 +518,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.now.backlog", Locale::EnUs) => "Backlog · tasks not yet in a wave",
         ("page.now.pill.wave", Locale::PtBr) => "Onda {n}",
         ("page.now.pill.wave", Locale::EnUs) => "Wave {n}",
-        ("page.now.pill.waits", Locale::PtBr) => "ESPERA",
-        ("page.now.pill.waits", Locale::EnUs) => "WAITS",
-        ("page.now.pill.ready", Locale::PtBr) => "PRONTA",
-        ("page.now.pill.ready", Locale::EnUs) => "READY",
+        ("page.now.pill.waits", Locale::PtBr) => "Espera",
+        ("page.now.pill.waits", Locale::EnUs) => "Waits",
+        ("page.now.pill.ready", Locale::PtBr) => "Pronta",
+        ("page.now.pill.ready", Locale::EnUs) => "Ready",
         ("page.now.files.one", Locale::PtBr) => "{n} arquivo",
         ("page.now.files.one", Locale::EnUs) => "{n} file",
         ("page.now.files.many", Locale::PtBr) => "{n} arquivos",
@@ -988,8 +1018,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            387,
-            0x7ae6_9218_2713_a275,
+            389,
+            0xd33c_c547_0683_6e1a,
         );
     }
 
@@ -1007,6 +1037,21 @@ mod tests {
             }
             assert!(again.contains(r#""stamp":"{stamp}","url":"{url}""#), "{again}");
             assert!(again.matches("{url}").count() >= 2, "{again}");
+        }
+    }
+
+    /// A frase dos lotes aponta as escritas prontas da resposta pela chave
+    /// da página, sem arquivo de lote a ler, e a do registro da página da
+    /// spec continua com o comando de gravar a cópia à mão, para quando o
+    /// gancho não gravar.
+    #[test]
+    fn the_copy_order_points_to_the_ready_writes() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let batches = super::text("page.copy.batches", lang).expect("page.copy.batches");
+            assert!(batches.contains("`copy.{key}.writes`"), "{batches}");
+            assert!(!batches.contains("{files}"), "no batch file to read: {batches}");
+            let record = super::text("page.copy.record", lang).expect("page.copy.record");
+            assert!(record.contains("write copy --spec {spec} --json '{record}'"), "the way out stays: {record}");
         }
     }
 

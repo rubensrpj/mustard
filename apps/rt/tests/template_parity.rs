@@ -448,6 +448,7 @@ fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
 const KEPT_HOOKS: &[&str] = &[
     "approval_witness",
     "command_guard",
+    "copy_witness",
     "end_of_turn_check",
     "precompact_notice",
     "prompt_entry",

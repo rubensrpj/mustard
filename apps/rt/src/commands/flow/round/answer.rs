@@ -863,14 +863,19 @@ fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale
 }
 
 /// A instrução de publicar e copiar a página, que [`crate::commands::spec_events::pages::end_milestone`]
-/// monta por extenso em `out["next"]` — com a lista inteira dos lotes, numerada
-/// quando há mais de uma ordem —, sai dali: o texto vai para
-/// `.claude/spec/<spec>/copy/next.md`, sob a pasta da spec, e `out["next"]`
-/// fica só com uma linha curta que manda ler o arquivo, seguida do `then`, que
-/// já era curto. O que o orquestrador copia não muda, ele mesmo e sem agente:
-/// só onde a ordem mora. Sem instrução de página — `next` já é só o `then` —,
-/// nada muda; falha de disco também deixa `next` como estava.
+/// monta por extenso em `out["next"]` — numerada quando há mais de uma
+/// ordem —, sai dali quando há página a publicar (`out["publish"]`): o texto
+/// vai para `.claude/spec/<spec>/copy/next.md`, sob a pasta da spec, e
+/// `out["next"]` fica só com uma linha curta que manda ler o arquivo, seguida
+/// do `then`, que já era curto. O que o orquestrador copia não muda, ele
+/// mesmo e sem agente: só onde a ordem mora. Sem página a publicar, a ordem
+/// é só a da cópia, curta, e fica em `next`: ler um arquivo custaria uma
+/// resposta a mais à cópia. Sem instrução de página — `next` já é só o
+/// `then` —, nada muda; falha de disco também deixa `next` como estava.
 fn shorten_publish_order(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
+    if out.get("publish").is_none() {
+        return;
+    }
     let Some(next) = out.get("next").and_then(Value::as_str).map(str::to_string) else { return };
     if next == then {
         return;
@@ -1342,6 +1347,33 @@ mod tests {
             before.len(),
             next.len()
         );
+    }
+
+    /// Sem página a publicar, a ordem da cópia é curta e fica na própria
+    /// resposta da rodada: nenhum arquivo a ler antes de mandar os lotes, e
+    /// o `copy/next.md` nem nasce.
+    #[test]
+    fn without_a_page_to_publish_the_copy_order_stays_in_the_response() {
+        use mustard_core::platform::page_templates::{project_page_template, spec_page_template, template_stamp};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        for page in ["spec", "project"] {
+            let template =
+                if page == "spec" { spec_page_template(Locale::PtBr) } else { project_page_template(Locale::PtBr) };
+            let stamp = template_stamp(&template).expect("the stamp");
+            let url = format!("https://claude.ai/code/artifact/{page}");
+            let published = write(root, "x", "publish",
+                json!({"page": page, "milestone": "approval", "ok": true, "template": true, "stamp": stamp, "url": url}));
+            assert_eq!(published["ok"], json!(true), "{published}");
+        }
+
+        let out = round(root, "x", None);
+        assert!(out.get("publish").is_none(), "both pages are published: {out}");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains("ArtifactData") && next.contains("`copy.spec.writes`"), "the order stays: {next}");
+        assert!(!next.contains("copy/next.md"), "{next}");
+        assert!(!root.join(".claude/spec/x/copy/next.md").exists(), "no file to read");
     }
 
     /// Os campos de um envio já gravado, prontos para virar a base de um novo
