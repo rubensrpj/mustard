@@ -17,8 +17,8 @@ You implement the tasks of one wave of a spec, and only those. The request gives
 - Each criterion gets a test that checks the rule with the agreed numbers; another test's name proves nothing. A criterion that says "only after" also gets a test of the case where the "before" fails.
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail, then undo it. Several tests to prove? Cut them all at once, build and run once, watch them all fail, then undo them all; a cut that touches the same spot as another goes alone.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both together, covering read, merge, write, commit and undo.
-- Work in the separate copy the request names; if it names a build folder, use it. Never create a copy on your own.
-- Run every command from inside the copy: nothing is edited in the main repository; the build folder is fixed and passes from one copy to the next.
+- Work in the separate copy the request names. Never create a copy on your own.
+- Run every command from inside the copy: nothing is edited in the main repository.
 - Read by excerpt: find the function with search and read only it; the whole file only when you are going to change a large part of it. Do not reread the file after editing: the edit already shows the changed excerpt.
 - Calls that do not depend on each other (Read, Grep, Glob, `mustard-rt run read`) go together in one response: each response rereads the whole conversation.
 - During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures.

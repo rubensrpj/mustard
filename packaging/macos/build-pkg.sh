@@ -113,6 +113,11 @@ done
 # binários não assinados/notarizados: libera o Gatekeeper para esta instalação.
 xattr -dr com.apple.quarantine "$PREFIX" 2>/dev/null || true
 
+# A pasta de moldes que versões anteriores instalavam ao lado de bin/: nenhum
+# programa a lê mais, e o .pkg não apaga sozinho o que a versão nova não traz.
+# Só este lugar, que é onde elas a criaram.
+rm -rf "$PREFIX/templates"
+
 # O passo do plugin: atualiza a CÓPIA DO PLUGIN, que é a que o Claude Code
 # executa — o .pkg acabou de atualizar apenas a cópia do sistema. Este
 # postinstall roda como root e o plugin mora no ~/.claude de UMA pessoa; o

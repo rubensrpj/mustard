@@ -32,6 +32,11 @@ Write-Host "==> Instalando o Mustard em $Prefix"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 Copy-Item -Path (Join-Path $PkgBin '*') -Destination $BinDir -Recurse -Force
 
+# A pasta de moldes que versões anteriores deste instalador copiavam ao lado de
+# bin\: nenhum programa a lê mais, e ela sai aqui, só nesse lugar.
+$OldTemplates = Join-Path $Prefix 'templates'
+if (Test-Path $OldTemplates) { Remove-Item -Recurse -Force $OldTemplates }
+
 # PATH da sessão atual, para o init abaixo enxergar mustard + rtk.
 $env:PATH = "$BinDir;$env:PATH"
 

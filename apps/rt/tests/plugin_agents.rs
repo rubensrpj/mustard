@@ -613,9 +613,10 @@ fn o_revisor_propoe_o_conserto_com_teste_no_lugar_da_licao() {
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
 /// reler depois de editar, a suíte inteira uma vez no fim pelo `rtk`, nada
 /// em segundo plano, não comitar nem usar `git add`, rodar cada comando de
-/// dentro da cópia e a pasta de compilação fixa — moram só no molde do
-/// agente, escritas à mão e fora do catálogo de textos, e o molde da onda e
-/// do revisor levam as mesmas palavras, nos dois idiomas. Rodar só os testes
+/// dentro da cópia — moram só no molde do agente, escritas à mão e fora do
+/// catálogo de textos, e o molde da onda e do revisor levam as mesmas
+/// palavras, nos dois idiomas. Nenhum dos dois fala mais de pasta de
+/// compilação: a cópia é a vaga fixa, com a compilação dentro. Rodar só os testes
 /// do que mudou é da onda; o revisor roda os testes que lê e os que seus
 /// cortes derrubam e, na revisão final, não repete a suíte que o fechamento
 /// rodou do `testCommand`.
@@ -628,7 +629,6 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
         "Nunca mande compilação ou teste para segundo plano",
         "Não comite e não use `git add`: o commit é da rodada",
         "Rode cada comando de dentro da cópia",
-        "passa de uma cópia para a seguinte",
         "o corte que mexe no mesmo trecho de outro vai sozinho",
     ];
     let en_us = [
@@ -638,14 +638,19 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
         "Never send a build or test to the background",
         "Do not commit and do not use `git add`: the commit belongs to the round",
         "Run every command from inside the copy",
-        "passes from one copy to the next",
         "a cut that touches the same spot as another goes alone",
     ];
-    for (lang, phrases) in [("pt-BR", pt_br), ("en-US", en_us)] {
+    for (lang, phrases, gone) in [
+        ("pt-BR", pt_br, ["pasta de compilação", "passa de uma cópia para a seguinte"]),
+        ("en-US", en_us, ["build folder", "passes from one copy to the next"]),
+    ] {
         for name in ["wave", "review"] {
             let agent = template(lang, name);
             for phrase in phrases {
                 assert!(agent.contains(phrase), "the {lang} `{name}` agent lost the execution rule `{phrase}`");
+            }
+            for phrase in gone {
+                assert!(!agent.contains(phrase), "the {lang} `{name}` agent still speaks of a build folder: `{phrase}`");
             }
         }
     }
@@ -679,8 +684,8 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
 /// Nenhum texto de agente manda criar cópia do projeto por conta própria —
 /// nem os três que o projeto recebe, em cada idioma, nem as instruções fixas
 /// que o binário monta no pedido da onda e da revisão —; os de onda e de
-/// revisão mandam trabalhar na cópia separada que o pedido indica e usar a
-/// pasta de compilação quando ele indicar uma. O pedido que a rodada monta,
+/// revisão mandam trabalhar na cópia separada que o pedido indica. O pedido
+/// que a rodada monta,
 /// pelo binário, mesmo num projeto que o mapa marca como Rust, traz a vaga
 /// que ela preparou — cada onda na sua — e nenhuma pasta de compilação: o que
 /// a cópia compila fica dentro dela. O aviso das sobras no disco continua no
@@ -698,10 +703,10 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
                 assert!(!body.contains(forbidden), "{what} still says `{forbidden}`");
             }
         }
-        let said: [&str; 3] = if text == Locale::PtBr {
-            ["cópia separada que o pedido indica", "se ele indicar uma pasta de compilação, use-a", "Nunca crie cópia por conta própria"]
+        let said: [&str; 2] = if text == Locale::PtBr {
+            ["cópia separada que o pedido indica", "Nunca crie cópia por conta própria"]
         } else {
-            ["separate copy the request names", "if it names a build folder, use it", "Never create a copy on your own"]
+            ["separate copy the request names", "Never create a copy on your own"]
         };
         for name in ["wave", "review"] {
             for line in said {

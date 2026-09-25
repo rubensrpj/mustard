@@ -9,7 +9,8 @@
 //! que seria tirado, então um sim nunca serve para outro descarte.
 //!
 //! As cópias da obra, com o que compilaram, saem junto, e a prévia as
-//! lista.
+//! lista. Depois delas sai da pasta principal a pasta de compilação que o
+//! projeto declarou descartável, como no fechamento; a prévia não apaga nada.
 //!
 //! A pasta da spec é arquivada por padrão, ao lado das outras, e só é apagada
 //! quando quem chama pede: nada fica pela metade, e nada some sem se pedir.
@@ -136,6 +137,10 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     } else {
         Vec::new()
     };
+    // Depois das cópias, a pasta de compilação que o projeto declarou
+    // descartável sai da pasta principal, como no fechamento.
+    let build_output =
+        phase_written.then(|| crate::commands::flow::close::remove_build_output(&project.root, lang));
 
     // O descarte é um marco, como o fechamento: a cópia para o banco da
     // página sai aqui, com a fase descartada na linha da spec da página do
@@ -184,6 +189,9 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     }
     if let Some(hint) = crate::commands::flow::close::copies_kept_hint(&copies_left, lang) {
         spec_events::pages::push_warning(&mut out, "copies-kept", &hint);
+    }
+    if let Some(swept) = &build_output {
+        swept.tell(&mut out);
     }
     if let Some(prepared) = &prepared {
         let then = translate("discard.done", lang).to_string();
@@ -342,6 +350,29 @@ mod tests {
         let built = root.join("target").join("debug").join("mustard");
         assert_eq!(std::fs::read_to_string(built).unwrap(), "compilado", "a compilação principal fica");
         assert!(root.join("mustard.json").is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+    }
+
+    /// O descarte confirmado apaga da pasta principal a pasta de compilação
+    /// que o projeto declarou, e a resposta diz o que saiu; a prévia não
+    /// apaga nada. O resto da pasta principal fica.
+    #[test]
+    fn discarding_removes_the_declared_build_output_and_the_preview_does_not() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project_with_copies(root, "x");
+        std::fs::write(root.join("mustard.json"), br#"{"buildOutput":["target"]}"#).unwrap();
+        let built = root.join("target").join("debug").join("mustard");
+
+        let preview = discard(root, "x", None, false, false);
+        assert!(built.is_file(), "the preview removes nothing: {preview}");
+        assert!(preview.get("build_output_removed").is_none(), "{preview}");
+
+        let code = preview["token"].as_str().unwrap_or_default().to_string();
+        let done = discard(root, "x", Some(&code), false, false);
+        assert_eq!(done["ok"], json!(true), "{done}");
+        assert_eq!(done["build_output_removed"], json!(["target"]), "{done}");
+        assert!(!root.join("target").exists(), "the declared folder is gone: {done}");
+        assert!(root.join(".gitignore").is_file() && root.join(".git").is_dir(), "the main folder stays");
     }
 
     /// `true` quando o servidor ainda carrega a branch.

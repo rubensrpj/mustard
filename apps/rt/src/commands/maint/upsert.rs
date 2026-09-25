@@ -1301,6 +1301,57 @@ mod tests {
         assert_eq!(ProjectConfig::load(other.path()).commands().prepare, None, "and runs nothing");
     }
 
+    /// O projeto instalado antes da pasta de compilação declarada a ganha na
+    /// atualização pelo plugin, pela mesma detecção da instalação nova: o
+    /// projeto em Rust passa a declarar `target`, e a atualização seguinte não
+    /// muda mais nada. O projeto que a detecção não reconhece fica sem a
+    /// chave, e a lista que o projeto gravou, mesmo vazia, fica como está.
+    #[test]
+    fn an_installed_project_gains_the_detected_build_output_on_update() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        std::fs::write(root.join("mustard.json"), r#"{"buildCommand":"cargo build"}"#).expect("mustard.json");
+
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(mustard_json(root)["buildOutput"], serde_json::json!(["target"]));
+        assert_eq!(mustard_json(root)["buildCommand"], serde_json::json!("cargo build"), "the rest stays");
+        let written = std::fs::read(root.join("mustard.json")).expect("mustard.json");
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(std::fs::read(root.join("mustard.json")).expect("mustard.json"), written, "nothing more to add");
+
+        let js = tempfile::tempdir().expect("temp dir");
+        std::fs::write(js.path().join("package.json"), "{}").expect("package.json");
+        std::fs::write(js.path().join("pnpm-lock.yaml"), "").expect("lockfile");
+        std::fs::write(js.path().join("mustard.json"), "{}").expect("mustard.json");
+        upsert_json(js.path(), &UpsertOpts::default());
+        assert!(!mustard_json(js.path()).contains_key("buildOutput"), "nothing detected, nothing written");
+
+        let declared = tempfile::tempdir().expect("temp dir");
+        std::fs::write(declared.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        std::fs::write(declared.path().join("mustard.json"), r#"{"buildOutput":[]}"#).expect("mustard.json");
+        upsert_json(declared.path(), &UpsertOpts::default());
+        assert_eq!(mustard_json(declared.path())["buildOutput"], serde_json::json!([]), "the project's answer stays");
+    }
+
+    /// A instalação nova grava a pasta de compilação detectada no
+    /// `mustard.json` que ela cria, ao lado do comando de compilação; o
+    /// projeto que a detecção não reconhece nasce sem a chave.
+    #[test]
+    fn a_fresh_install_declares_the_detected_build_output() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(mustard_json(root)["buildOutput"], serde_json::json!(["target"]));
+
+        let js = tempfile::tempdir().expect("temp dir");
+        std::fs::write(js.path().join("package.json"), "{}").expect("package.json");
+        std::fs::write(js.path().join("pnpm-lock.yaml"), "").expect("lockfile");
+        upsert_json(js.path(), &UpsertOpts::default());
+        assert!(!mustard_json(js.path()).contains_key("buildOutput"), "nothing detected, nothing written");
+    }
+
     /// Uma versão anterior gravou numa spec uma decisão com a busca de outra
     /// regra. A atualização pelo plugin a recalcula, como a instalação pelo
     /// terminal: só o `search` da linha velha muda, a resposta não traz aviso

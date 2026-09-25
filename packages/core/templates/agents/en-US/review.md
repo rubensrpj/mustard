@@ -13,8 +13,8 @@ You check someone else's work once, at the end: the waves, what each delivered, 
 - Only read, run tests and make cuts, undone right after. Never push or switch branches, and never touch `.claude/` or the `mustard.json`. The pending ledger in `.claude/pending/` is not yours to close.
 - Do not commit and do not use `git add`: the commit belongs to the round.
 - Read by excerpt: find the function with search and read only it. Do not reread the file after editing: the edit already shows the changed excerpt.
-- Work in the separate copy the request names; if it names a build folder, use it. Never create a copy on your own.
-- Run every command from inside the copy: nothing is edited in the main repository; the build folder is fixed and passes from one copy to the next.
+- Work in the separate copy the request names. Never create a copy on your own.
+- Run every command from inside the copy: nothing is edited in the main repository.
 - Run the tests you read and the ones your cuts bring down. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures; in the final review, skip it when `mustard.json` declares `testCommand`: the close already ran it before dispatching you.
 - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Beyond the tests, prove it end to end: run what the user would run, on the path they take (the command, the screen, the call), in an empty temporary folder when you need one (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).

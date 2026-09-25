@@ -1,6 +1,7 @@
 ; ============================================================================
 ; hooks.nsh — everything the Windows installer does to the machine beyond
-; copying files: the user Path and the plugin step. Included by
+; copying files: the user Path, the plugin step and the removal of the old
+; templates variable. Included by
 ; packaging/windows/mustard.nsi, which decides when each macro runs.
 ;
 ; Installed layout (mustard.nsi writes it; this file depends on it):
@@ -44,12 +45,19 @@
 ; PowerShell (o motivo de antes não remover era a fragilidade de fazê-lo por
 ; substring em NSIS), tira do Path só as entradas \mustard-cli.
 ;
+; MUSTARD_TEMPLATES_DIR: versões anteriores gravavam essa variável de usuário,
+; apontando a pasta de moldes. Nenhum programa a lê mais; a instalação e a
+; desinstalação a apagam, e apagar a que não existe não faz nada.
+;
 ; Notifica o sistema com WM_SETTINGCHANGE para o ambiente atualizar sem logoff.
 ; ============================================================================
 
 !include "WinMessages.nsh"
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; A variável de moldes que versões anteriores gravaram (ver cabeçalho).
+  DeleteRegValue HKCU "Environment" "MUSTARD_TEMPLATES_DIR"
+
   ; Path de usuário: lido, filtrado e gravado inteiramente DENTRO do
   ; PowerShell — o valor nunca entra numa variável NSIS (ver cabeçalho).
   nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\mustard-cli'; $$p = [Environment]::GetEnvironmentVariable('Path', 'User'); $$k = @(); if ($$p) { $$k = @($$p -split ';' | Where-Object { $$_ -and ($$_ -notlike '*\mustard-cli') }) }; [Environment]::SetEnvironmentVariable('Path', (($$k + $$d) -join ';'), 'User')"`
@@ -81,6 +89,9 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  ; A variável de moldes que versões anteriores gravaram (ver cabeçalho).
+  DeleteRegValue HKCU "Environment" "MUSTARD_TEMPLATES_DIR"
+
   ; Remove só as entradas \mustard-cli; todo o resto do Path passa
   ; intocado pelo mesmo caminho sem limite do POSTINSTALL.
   nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($$p) { $$k = @($$p -split ';' | Where-Object { $$_ -and ($$_ -notlike '*\mustard-cli') }); [Environment]::SetEnvironmentVariable('Path', ($$k -join ';'), 'User') }"`

@@ -239,8 +239,9 @@ pub fn default_inject_entries() -> Vec<Injectable> {
 /// agnostically detected commands, the default `inject` declarations,
 /// `runtime`, and `version` (when supplied). Present → `version` is re-stamped
 /// (only when `Some` and different), an empty `inject` is backfilled with the
-/// defaults, an absent `runtime` is filled — everything else is preserved
-/// verbatim, and the file is not rewritten when nothing changed.
+/// defaults, an absent `runtime` is filled, an absent `buildOutput` is filled
+/// when the detection finds a folder — everything else is preserved verbatim,
+/// and the file is not rewritten when nothing changed.
 pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome> {
     let existed = ProjectConfig::exists(root);
     let mut config = ProjectConfig::load(root);
@@ -251,6 +252,7 @@ pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<
         config.test_command = commands.test;
         config.lint_command = commands.lint;
         config.type_check_command = commands.type_check;
+        config.build_output = (!commands.build_output.is_empty()).then_some(commands.build_output);
         config.inject = default_inject_entries();
         config.runtime = Some(Runtime::detect());
         config.version = version.map(str::to_string);
@@ -271,6 +273,16 @@ pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<
     if config.runtime.is_none() {
         config.runtime = Some(Runtime::detect());
         changed = true;
+    }
+    // O projeto instalado antes da pasta de compilação declarada a ganha aqui,
+    // pela mesma detecção da instalação nova. A lista que o projeto gravou,
+    // mesmo vazia, fica como está.
+    if config.build_output.is_none() {
+        let detected = detect_commands(root).build_output;
+        if !detected.is_empty() {
+            config.build_output = Some(detected);
+            changed = true;
+        }
     }
     if !changed {
         return Ok(SeedOutcome::Preserved);

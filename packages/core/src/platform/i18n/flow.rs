@@ -298,6 +298,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "These copies of the work stayed on disk: {copies}. Git said: {detail}. Delete each one \
              with `git worktree remove --force <copy>`, then run `git worktree prune`."
         }
+        ("close.build_output_unsafe", Locale::PtBr) => {
+            "A pasta de compilação `{folder}`, declarada no `mustard.json`, ficou no disco. Ela precisa \
+             ser uma pasta dentro do projeto, fora do `.git` e diferente da raiz."
+        }
+        ("close.build_output_unsafe", Locale::EnUs) => {
+            "The build folder `{folder}`, declared in `mustard.json`, stayed on disk. It must be a \
+             folder inside the project, outside `.git` and other than the root."
+        }
+        ("close.build_output_not_ignored", Locale::PtBr) => {
+            "A pasta de compilação `{folder}`, declarada no `mustard.json`, ficou no disco. O git não \
+             a ignora ou guarda arquivo dela. Acerte o `.gitignore` ou tire a pasta da lista."
+        }
+        ("close.build_output_not_ignored", Locale::EnUs) => {
+            "The build folder `{folder}`, declared in `mustard.json`, stayed on disk. Git does not \
+             ignore it or tracks a file in it. Fix the `.gitignore` or take the folder off the list."
+        }
+        ("close.build_output_failed", Locale::PtBr) => {
+            "A pasta de compilação `{folder}` ficou no disco: {detail}. Apague-a quando nada estiver \
+             compilando."
+        }
+        ("close.build_output_failed", Locale::EnUs) => {
+            "The build folder `{folder}` stayed on disk: {detail}. Delete it when nothing is building."
+        }
         ("close.final_review", Locale::PtBr) => {
             "A máquina passou: antes do pull request, despache ao agente de teste dedicado o pedido \
              em `review.prompt`; ele grava o veredito na spec com `mustard-rt run write verdict`. \
@@ -1347,8 +1370,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            167,
-            0x67f9_4044_e075_d48b,
+            170,
+            0xb016_5ada_2f0f_74e6,
         );
     }
 
@@ -1472,6 +1495,9 @@ mod tests {
             ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
             ("close.review_copy_failed", &["{copy}", "{detail}"][..]),
             ("close.review_copy_kept", &["{copies}", "{detail}"][..]),
+            ("close.build_output_unsafe", &["{folder}"][..]),
+            ("close.build_output_not_ignored", &["{folder}"][..]),
+            ("close.build_output_failed", &["{folder}", "{detail}"][..]),
             ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),

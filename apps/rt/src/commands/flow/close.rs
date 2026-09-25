@@ -33,6 +33,10 @@
 //! desfez — trava o fechamento, com os arquivos: ler código sabotado como se
 //! fosse o da obra é pior do que parar.
 //!
+//! **A pasta de compilação.** No fim, a obra fechada apaga da pasta principal
+//! a pasta de compilação que o projeto declarou descartável no `mustard.json`
+//! (`buildOutput`), e nada mais dela; a resposta diz o que saiu.
+//!
 //! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
 //! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
 //! a cópia do revisor com mudança, ou que não pôde ser criada; o lint ou a
@@ -359,6 +363,9 @@ fn run_close(
     // revisor cortou para ver a prova cair não é trabalho de ninguém. A que
     // não sai vira aviso, e a obra fecha do mesmo jeito.
     let copies_kept = copies_kept_hint(&crate::commands::flow::round::remove_spec_copies(root, &spec), lang);
+    // Por último, a pasta de compilação que o projeto declarou descartável
+    // sai da pasta principal: ela só cresce, e a próxima obra a refaz uma vez.
+    let build_output = remove_build_output(root, lang);
     // O fechamento é um marco: a cópia para o banco da página sai aqui, com a
     // fase fechada na linha da spec da página do projeto.
     let prepared = crate::commands::spec_events::pages::copy::prepare(root, &spec, lang);
@@ -384,6 +391,7 @@ fn run_close(
     if let Some(hint) = &copies_kept {
         spec_events::pages::push_warning(&mut out, "copies-kept", hint);
     }
+    build_output.tell(&mut out);
     for hint in &undeclared {
         spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
     }
@@ -675,6 +683,115 @@ pub(crate) fn copies_kept_hint(left: &[(String, String)], lang: Locale) -> Optio
             .replace("{copies}", &copies.join(", "))
             .replace("{detail}", &details.join("; ")),
     )
+}
+
+/// O que [`remove_build_output`] fez com as pastas de compilação declaradas:
+/// as que saíram, como o projeto as declarou, e o aviso de cada uma que ficou.
+pub(crate) struct BuildOutputSwept {
+    removed: Vec<String>,
+    kept: Vec<String>,
+}
+
+impl BuildOutputSwept {
+    /// Põe na resposta `out` as pastas apagadas (`build_output_removed`) e um
+    /// aviso para cada uma que ficou no disco.
+    pub(crate) fn tell(&self, out: &mut Value) {
+        if !self.removed.is_empty() {
+            out["build_output_removed"] = json!(self.removed);
+        }
+        for hint in &self.kept {
+            spec_events::pages::push_warning(out, "build-output-kept", hint);
+        }
+    }
+}
+
+/// Apaga da pasta principal `root` cada pasta de compilação que o projeto
+/// declarou descartável (`buildOutput`, no `mustard.json`), no fim do
+/// fechamento e do descarte, depois que as cópias da obra saíram. Nada mais
+/// da pasta principal é apagado, e sem a declaração nada sai.
+///
+/// A pasta só sai quando é um caminho relativo que fica dentro da raiz, que
+/// não é a raiz nem o `.git`, que o git ignora e onde ele não guarda arquivo
+/// nenhum; a que não passa fica, com um aviso. A que não existe não é erro. A
+/// remoção segura a trava do passo do git, a mesma que a rodada segura ao
+/// compilar antes do commit, e assim não corta a compilação de outra rodada.
+/// A falha ao apagar vira aviso e não derruba quem chamou.
+pub(crate) fn remove_build_output(root: &Path, lang: Locale) -> BuildOutputSwept {
+    let mut swept = BuildOutputSwept { removed: Vec::new(), kept: Vec::new() };
+    let mut held = None;
+    for folder in mustard_core::ProjectConfig::load(root).commands().build_output {
+        let warn = |key: &str| translate(key, lang).replace("{folder}", &folder);
+        let Some(rel) = declared_folder(&folder) else {
+            swept.kept.push(warn("close.build_output_unsafe"));
+            continue;
+        };
+        let path = root.join(&rel);
+        if std::fs::symlink_metadata(&path).is_err() {
+            continue;
+        }
+        if !path.is_dir() || !resolves_inside(root, &path) {
+            swept.kept.push(warn("close.build_output_unsafe"));
+            continue;
+        }
+        if !ignored_and_untracked(root, &rel) {
+            swept.kept.push(warn("close.build_output_not_ignored"));
+            continue;
+        }
+        if held.is_none() {
+            match crate::commands::git_settle::git_step_lock(root) {
+                Ok(lock) => held = Some(lock),
+                Err(detail) => {
+                    swept.kept.push(warn("close.build_output_failed").replace("{detail}", &detail));
+                    continue;
+                }
+            }
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => swept.removed.push(folder.clone()),
+            Err(err) => swept.kept.push(warn("close.build_output_failed").replace("{detail}", &err.to_string())),
+        }
+    }
+    swept
+}
+
+/// A pasta declarada `folder` como caminho relativo à raiz, com as partes
+/// separadas por `/`. `None` quando ela sai da raiz (caminho absoluto ou com
+/// `..`), quando é a própria raiz ou quando passa pelo `.git`.
+fn declared_folder(folder: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for part in Path::new(folder).components() {
+        match part {
+            std::path::Component::Normal(name) if !name.to_string_lossy().eq_ignore_ascii_case(".git") => {
+                parts.push(name.to_string_lossy().to_string());
+            }
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// A pasta `path`, com cada atalho resolvido, fica dentro da raiz `root`, não
+/// é a raiz e não passa pelo `.git`: um atalho no caminho não leva a remoção
+/// para fora do projeto.
+fn resolves_inside(root: &Path, path: &Path) -> bool {
+    let (Ok(root), Ok(path)) = (std::fs::canonicalize(root), std::fs::canonicalize(path)) else {
+        return false;
+    };
+    path.strip_prefix(&root).is_ok_and(|rel| {
+        rel.components().next().is_some()
+            && rel.components().all(|part| !part.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))
+    })
+}
+
+/// O git da raiz `root` ignora a pasta `rel` e não guarda nenhum arquivo
+/// dentro dela. Sem git, a pasta não passa.
+fn ignored_and_untracked(root: &Path, rel: &str) -> bool {
+    use mustard_core::platform::git;
+    if !git::run(root, &["check-ignore", "-q", "--", rel]).ok {
+        return false;
+    }
+    git::run(root, &["--literal-pathspecs", "ls-files", "-z", "--", rel]).out().is_some_and(|tracked| tracked.is_empty())
 }
 
 /// A máquina já passou depois da última mudança: cada critério vigente tem,
@@ -1512,6 +1629,223 @@ mod tests {
         assert!(copy.exists(), "a cópia ficou no disco");
         assert_eq!(std::fs::read_to_string(&built).unwrap(), "compilado", "a compilação principal fica");
         assert!(root.join(wave_file(1)).is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+    }
+
+    /// Uma pasta que o git do projeto ignora, com um arquivo dentro. Devolve o
+    /// arquivo.
+    fn ignored_folder(root: &Path, name: &str) -> PathBuf {
+        let exclude = root.join(".git").join("info").join("exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        let rules = std::fs::read_to_string(&exclude).unwrap_or_default();
+        std::fs::write(&exclude, format!("{rules}{name}/\n")).unwrap();
+        let file = root.join(name).join("dentro");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "x").unwrap();
+        file
+    }
+
+    /// O fechamento apaga da pasta principal a pasta de compilação que o
+    /// projeto declarou, só quando fecha — o pedido da revisão não apaga — e
+    /// a resposta diz o que saiu. O resto fica: o código, o `.git` e a pasta
+    /// ignorada que ninguém declarou. A pasta que não sai do disco vira aviso,
+    /// e a obra fecha assim mesmo.
+    #[test]
+    fn closing_removes_the_declared_build_output_and_keeps_the_rest() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let built = main_build(root);
+        let other = ignored_folder(root, "outra");
+        // A pasta com uma pasta sem escrita dentro não sai do disco.
+        #[cfg(unix)]
+        let stuck = {
+            use std::os::unix::fs::PermissionsExt;
+            let file = ignored_folder(root, "presa");
+            let inner = root.join("presa").join("trava");
+            std::fs::create_dir_all(&inner).unwrap();
+            std::fs::write(inner.join("arquivo"), "x").unwrap();
+            std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o555)).unwrap();
+            (file, inner)
+        };
+        let declared = if cfg!(unix) { vec!["target", "presa"] } else { vec!["target"] };
+        std::fs::write(root.join("mustard.json"), json!({"buildOutput": declared}).to_string()).unwrap();
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert!(built.is_file(), "the review request removes nothing: {asked}");
+
+        let closed = close(root, "x");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stuck.1, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        assert_eq!(closed["build_output_removed"], json!(["target"]), "{closed}");
+        assert!(!root.join("target").exists(), "the declared folder is gone: {closed}");
+        assert!(other.is_file(), "an ignored folder nobody declared stays");
+        assert!(root.join(wave_file(1)).is_file() && root.join(".git").is_dir(), "the main folder stays");
+        let kept: Vec<String> = closed["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["reason"] == json!("build-output-kept"))
+            .filter_map(|w| w["hint"].as_str().map(str::to_string))
+            .collect();
+        #[cfg(unix)]
+        {
+            assert_eq!(kept.len(), 1, "{closed}");
+            assert!(kept[0].contains("`presa`"), "the warning names the folder: {}", kept[0]);
+            assert!(stuck.0.is_file() || root.join("presa").exists(), "the folder that failed stays on disk");
+        }
+        #[cfg(not(unix))]
+        assert!(kept.is_empty(), "{closed}");
+    }
+
+    /// Um projeto git com uma pasta de compilação `target` que o git ignora,
+    /// com um arquivo dentro, e o `mustard.json` com a declaração `config`.
+    fn project_with_build(root: &Path, config: &str) -> PathBuf {
+        git_at(root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "semente"]);
+        std::fs::write(root.join("mustard.json"), config).unwrap();
+        std::fs::create_dir_all(root.join("target").join("debug")).unwrap();
+        let built = root.join("target").join("debug").join("programa");
+        std::fs::write(&built, "compilado").unwrap();
+        built
+    }
+
+    /// Os avisos de pasta que ficou, na resposta `swept` posta num objeto.
+    fn kept_of(swept: &BuildOutputSwept) -> Vec<String> {
+        let mut out = json!({});
+        swept.tell(&mut out);
+        out["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["reason"] == json!("build-output-kept"))
+            .filter_map(|w| w["hint"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// Sem a declaração no `mustard.json`, nada da pasta principal sai, nem
+    /// a pasta de compilação que o git ignora; a declaração vazia também não
+    /// apaga nada.
+    #[test]
+    fn without_a_declaration_nothing_is_removed() {
+        for config in ["{}", r#"{"buildOutput":[]}"#] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let built = project_with_build(root, config);
+            let swept = remove_build_output(root, Locale::PtBr);
+            assert!(swept.removed.is_empty() && swept.kept.is_empty(), "{config}");
+            assert!(built.is_file(), "{config}: the build stays");
+        }
+    }
+
+    /// A declaração que sai da raiz, que é a própria raiz, que passa pelo
+    /// `.git`, que é um caminho absoluto ou que tem `..` — mesmo quando ele
+    /// acaba numa pasta ignorada dentro da raiz — não apaga nada: fica e vira
+    /// o aviso do caminho. A que aponta uma pasta que o git não ignora ou uma
+    /// pasta com arquivo versionado também fica, com o aviso do git. A pasta
+    /// que não existe não é erro nem aviso. A pasta boa da mesma lista sai.
+    #[test]
+    fn an_unsafe_declaration_removes_nothing_and_warns() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("obra");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let outside = dir.path().join("fora");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("arquivo"), "x").unwrap();
+        let built = project_with_build(root, "{}");
+        // Ignorada, mas com um arquivo versionado dentro.
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        std::fs::write(root.join("dist/versionado"), "x").unwrap();
+        git_at(root, &["add", "-f", "dist/versionado"]);
+        git_at(root, &["commit", "-q", "-m", "dist"]);
+        // Ignorada e sem nada versionado, alcançada só por um caminho torto.
+        std::fs::write(root.join(".gitignore"), "target/\ndist/\nlixo/\n").unwrap();
+        std::fs::create_dir_all(root.join("lixo")).unwrap();
+        std::fs::write(root.join("lixo/sobra"), "x").unwrap();
+        // Não ignorada.
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build/saida"), "x").unwrap();
+        let outside_abs = outside.to_string_lossy().to_string();
+        let inside_abs = root.join("lixo").to_string_lossy().to_string();
+        let by_path = ["../fora", outside_abs.as_str(), inside_abs.as_str(), "src/../lixo", ".", "./", ".git", "src/../.."];
+        let by_git = ["dist", "build"];
+        let declared: Vec<&str> = by_path.iter().chain(&by_git).copied().chain(["nao-existe", "target"]).collect();
+        std::fs::write(root.join("mustard.json"), json!({"buildOutput": declared}).to_string()).unwrap();
+
+        let swept = remove_build_output(root, Locale::PtBr);
+        assert_eq!(swept.removed, vec!["target".to_string()], "only the good folder leaves");
+        assert!(!built.exists());
+        let kept = kept_of(&swept);
+        let hint = |key: &str, folder: &str| translate(key, Locale::PtBr).replace("{folder}", folder);
+        let expected: Vec<String> = by_path
+            .iter()
+            .map(|folder| hint("close.build_output_unsafe", folder))
+            .chain(by_git.iter().map(|folder| hint("close.build_output_not_ignored", folder)))
+            .collect();
+        assert_eq!(kept, expected, "each folder that stays gets its own warning, and the missing one none");
+        assert!(outside.join("arquivo").is_file(), "nothing outside the root is touched");
+        assert!(root.join("lixo/sobra").is_file(), "a crooked path to an ignored folder removes nothing");
+        assert!(root.join(".git").join("HEAD").is_file() && root.join("src/lib.rs").is_file());
+        assert!(root.join("dist/versionado").is_file() && root.join("build/saida").is_file());
+    }
+
+    /// Um atalho declarado como pasta de compilação, que leva para fora do
+    /// projeto, não apaga nada do lugar para onde ele aponta.
+    #[cfg(unix)]
+    #[test]
+    fn a_declared_link_out_of_the_root_removes_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("obra");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = dir.path().join("fora");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("arquivo"), "x").unwrap();
+        project_with_build(&root, r#"{"buildOutput":["saida"]}"#);
+        std::fs::write(root.join(".gitignore"), "target/\nsaida\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("saida")).unwrap();
+
+        let swept = remove_build_output(&root, Locale::PtBr);
+        assert!(swept.removed.is_empty(), "the link is not removed");
+        let warned = translate("close.build_output_unsafe", Locale::PtBr).replace("{folder}", "saida");
+        assert_eq!(kept_of(&swept), vec![warned]);
+        assert!(root.join("saida").exists(), "the link stays");
+        assert!(outside.join("arquivo").is_file(), "the link's target stays");
+    }
+
+    /// A remoção espera a trava do passo do git, que a rodada segura ao
+    /// compilar antes do commit: enquanto outra rodada a segura, a pasta fica;
+    /// solta a trava, ela sai.
+    #[test]
+    fn the_removal_waits_for_the_git_step_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let built = project_with_build(root, r#"{"buildOutput":["target"]}"#);
+        std::fs::create_dir_all(root.join(".claude").join("spec")).unwrap();
+
+        let held = crate::commands::git_settle::git_step_lock(root).unwrap();
+        std::thread::scope(|scope| {
+            let (done_tx, done_rx) = mpsc::channel();
+            scope.spawn(move || done_tx.send(remove_build_output(root, Locale::PtBr).removed));
+            let early = done_rx.recv_timeout(Duration::from_millis(500));
+            assert!(early.is_err(), "the removal waits while another round compiles");
+            assert!(built.is_file(), "the build of the other round stays while it holds the lock");
+            drop(held);
+            assert_eq!(done_rx.recv_timeout(Duration::from_secs(30)), Ok(vec!["target".to_string()]));
+        });
+        assert!(!built.exists());
     }
 
     /// A cópia do revisor final recebe os arquivos da lista de arquivos

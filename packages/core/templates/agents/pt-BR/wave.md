@@ -17,8 +17,8 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido traz o
 - Cada critério ganha um teste que confere a regra com os números combinados; conferir o nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha.
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça. Vários testes a provar? Corte tudo de uma vez, compile e rode uma vez, veja todos caírem, desfaça tudo; o corte que mexe no mesmo trecho de outro vai sozinho.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que a substitui e teste o caso que ela barrava; o passo de duas rodadas juntas ganha teste com as duas juntas, cobrindo ler, juntar, gravar, comitar e desfazer.
-- Trabalhe na cópia separada que o pedido indica; se ele indicar uma pasta de compilação, use-a. Nunca crie cópia por conta própria.
-- Rode cada comando de dentro da cópia: nada se edita no repositório principal; a pasta de compilação é fixa e passa de uma cópia para a seguinte.
+- Trabalhe na cópia separada que o pedido indica. Nunca crie cópia por conta própria.
+- Rode cada comando de dentro da cópia: nada se edita no repositório principal.
 - Leia por trecho: ache a função com a busca e leia só ela; o arquivo inteiro, só quando for mudar boa parte dele. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
 - Chamadas que não dependem uma da outra (Read, Grep, Glob, `mustard-rt run read`) saem juntas numa resposta: cada resposta relê a conversa inteira.
 - Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.

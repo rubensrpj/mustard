@@ -252,6 +252,11 @@ pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path)
     if config.type_check_command.is_none() {
         config.type_check_command = cmds.type_check;
     }
+    // A pasta de compilação que o fechamento apaga vem da mesma detecção, e
+    // só quando ela achou alguma: sem nada detectado, a chave não é gravada.
+    if config.build_output.is_none() && !cmds.build_output.is_empty() {
+        config.build_output = Some(cmds.build_output);
+    }
 
     // Only a language the operator chose is written, in the catalogue
     // spelling. Nothing is asked outside the interactive mode, and then the
@@ -568,6 +573,36 @@ mod tests {
         apply_choices(&mut config, &choices, dir.path());
         // User's command survives; detection does not clobber it.
         assert_eq!(config.build_command.as_deref(), Some("custom build"));
+    }
+
+    /// A instalação grava ao lado do comando de compilação a pasta que o
+    /// fechamento pode apagar, quando a detecção acha uma; o projeto que a
+    /// detecção não reconhece fica sem a chave, e a lista que o projeto já
+    /// declarou, mesmo vazia, fica como está.
+    #[test]
+    fn apply_choices_declares_the_detected_build_output_and_keeps_the_declared_one() {
+        let choices = Choices {
+            production: "main".into(),
+            dev_branch: String::new(),
+            provider: "github".into(),
+            text_language: None,
+        };
+        let rust = tempdir().unwrap();
+        std::fs::write(rust.path().join("Cargo.toml"), "[package]").unwrap();
+        let mut config = ProjectConfig::default();
+        apply_choices(&mut config, &choices, rust.path());
+        assert_eq!(config.build_output, Some(vec!["target".to_string()]));
+
+        let js = tempdir().unwrap();
+        std::fs::write(js.path().join("package.json"), "{}").unwrap();
+        std::fs::write(js.path().join("pnpm-lock.yaml"), "").unwrap();
+        let mut config = ProjectConfig::default();
+        apply_choices(&mut config, &choices, js.path());
+        assert_eq!(config.build_output, None, "nothing detected, nothing written");
+
+        let mut declared = ProjectConfig { build_output: Some(Vec::new()), ..Default::default() };
+        apply_choices(&mut declared, &choices, rust.path());
+        assert_eq!(declared.build_output, Some(Vec::new()), "the project's own answer stays");
     }
 
     #[test]

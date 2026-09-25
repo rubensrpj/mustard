@@ -340,6 +340,10 @@ pub struct Commands {
     /// quando o projeto não tem, quando está em branco ou quando ainda não
     /// foi perguntado: nada roda.
     pub prepare: Option<String>,
+    /// As pastas de compilação que o fechamento e o descarte podem apagar
+    /// (`buildOutput`), relativas à raiz, sem as entradas em branco. Vazia
+    /// quando o projeto não declarou nenhuma: nada é apagado.
+    pub build_output: Vec<String>,
 }
 
 /// The full `mustard.json` document — the project config, at the project root.
@@ -373,6 +377,13 @@ pub struct ProjectConfig {
     /// instalação ainda não perguntou; vazio, o projeto não tem preparo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prepare_command: Option<String>,
+    /// As pastas de compilação da pasta principal que só crescem e podem ser
+    /// apagadas no fim do fechamento e do descarte, relativas à raiz. A
+    /// instalação as grava pela detecção dos comandos. Ausente, a instalação
+    /// ainda não detectou; vazia, o projeto não tem nenhuma. Nas duas, nada é
+    /// apagado.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_output: Option<Vec<String>>,
     /// Os arquivos que o git ignora e a cópia de cada onda precisa, como o
     /// `.env`, em caminhos relativos à raiz, na lista que a pessoa confirmou.
     /// Ausente, a instalação ainda não perguntou; vazia, o projeto confirmou
@@ -535,6 +546,12 @@ impl ProjectConfig {
             lint: non_blank(self.lint_command.as_deref()),
             type_check: non_blank(self.type_check_command.as_deref()),
             prepare: non_blank(self.prepare_command.as_deref()),
+            build_output: self
+                .build_output
+                .iter()
+                .flatten()
+                .filter_map(|folder| non_blank(Some(folder.as_str())))
+                .collect(),
         }
     }
 
@@ -821,6 +838,26 @@ mod tests {
         assert!(cfg.commands().build.is_none(), "{:?}", cfg.commands().build);
         assert_eq!(cfg.build_command(), Some(BUILD_COMMAND_FALLBACK.to_string()), "a dica continua no lugar de quem edita o mustard.json");
         assert_eq!(cfg.build_command_or_fallback(), BUILD_COMMAND_FALLBACK);
+    }
+
+    /// A pasta de compilação declarada vai e volta pelo disco com o nome
+    /// `buildOutput`, e o conjunto de comandos a lê sem os espaços das pontas
+    /// e sem as entradas em branco. Ausente, o conjunto não traz pasta
+    /// nenhuma, e a chave não é gravada.
+    #[test]
+    fn the_declared_build_output_round_trips_and_absent_declares_nothing() {
+        let dir = tempdir().unwrap();
+        let cfg = ProjectConfig { build_output: Some(vec![" target ".into(), "  ".into()]), ..Default::default() };
+        cfg.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"buildOutput\""), "{raw}");
+        assert_eq!(ProjectConfig::load(dir.path()).commands().build_output, vec!["target".to_string()]);
+
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("buildOutput"), "{raw}");
+        assert!(ProjectConfig::load(bare.path()).commands().build_output.is_empty());
     }
 
     #[test]

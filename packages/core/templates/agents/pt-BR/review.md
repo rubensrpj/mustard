@@ -13,8 +13,8 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
 - Só leia, rode testes e faça cortes, desfeitos em seguida. Nunca envie ao servidor nem troque de branch, e nunca mexa no `.claude/` nem no `mustard.json`. A lista de pendências, em `.claude/pending/`, não é sua para fechar.
 - Não comite e não use `git add`: o commit é da rodada.
 - Leia por trecho: ache a função com a busca e leia só ela. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
-- Trabalhe na cópia separada que o pedido indica; se ele indicar uma pasta de compilação, use-a. Nunca crie cópia por conta própria.
-- Rode cada comando de dentro da cópia: nada se edita no repositório principal; a pasta de compilação é fixa e passa de uma cópia para a seguinte.
+- Trabalhe na cópia separada que o pedido indica. Nunca crie cópia por conta própria.
+- Rode cada comando de dentro da cópia: nada se edita no repositório principal.
 - Rode os testes que você lê e os que seus cortes derrubam. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas; na revisão final, pule-a quando o `mustard.json` declara `testCommand`: o fechamento já a rodou antes de despachar você.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
 - Além dos testes, prove de ponta a ponta: rode o que o usuário rodaria, pelo caminho que ele usa (o comando, a tela, a chamada), numa pasta temporária vazia quando precisar de uma (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
