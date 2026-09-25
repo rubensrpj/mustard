@@ -357,6 +357,10 @@ const USER_TOOL_DIRS: [&str; 4] = [".cargo/bin", ".local/bin", ".dotnet/tools", 
 pub struct MachineRunner {
     path_env: String,
     home: Option<PathBuf>,
+    /// Se o sistema é o Windows: decide o separador do `PATH` e o nome com
+    /// que o programa aparece numa pasta. Vem da compilação; o teste o troca
+    /// para conferir o Windows fora dele.
+    windows: bool,
 }
 
 impl MachineRunner {
@@ -366,6 +370,7 @@ impl MachineRunner {
         Self {
             path_env: path_env.to_string(),
             home: home_dir(),
+            windows: cfg!(windows),
         }
     }
 
@@ -379,17 +384,25 @@ impl MachineRunner {
     }
 }
 
+/// Os nomes de arquivo com que `program` aparece numa pasta: no Windows, com
+/// as extensões de executável que o sistema roda sem que se digite a
+/// extensão; nos outros sistemas, o nome puro. A busca no `PATH` e a busca
+/// nas pastas de ferramenta do usuário usam os mesmos nomes.
+fn program_file_names(program: &str, windows: bool) -> Vec<String> {
+    if windows {
+        ["exe", "cmd", "bat"].iter().map(|ext| format!("{program}.{ext}")).collect()
+    } else {
+        vec![program.to_string()]
+    }
+}
+
 impl ToolRunner for MachineRunner {
     fn on_path(&self, program: &str) -> bool {
         if program.is_empty() {
             return false;
         }
-        let sep = if cfg!(windows) { ';' } else { ':' };
-        let names: Vec<String> = if cfg!(windows) {
-            ["exe", "cmd", "bat"].iter().map(|ext| format!("{program}.{ext}")).collect()
-        } else {
-            vec![program.to_string()]
-        };
+        let sep = if self.windows { ';' } else { ':' };
+        let names = program_file_names(program, self.windows);
         self.path_env
             .split(sep)
             .any(|dir| names.iter().any(|n| Path::new(dir).join(n).is_file()))
@@ -404,9 +417,10 @@ impl ToolRunner for MachineRunner {
     }
 
     fn found_off_path(&self, program: &str) -> Option<PathBuf> {
+        let names = program_file_names(program, self.windows);
         self.user_tool_dirs()
             .into_iter()
-            .map(|dir| dir.join(program))
+            .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
             .find(|p| p.is_file())
     }
 }
@@ -599,5 +613,35 @@ mod tests {
         assert!(runner.on_path("toolx"));
         assert!(!runner.on_path("tooly"));
         assert!(!runner.on_path(""));
+    }
+
+    /// Ferramenta instalada na pasta de ferramentas do usuário, fora do
+    /// `PATH`, é achada pelo nome que o sistema dá ao arquivo: no Windows, com
+    /// a extensão de executável; nos outros sistemas, pelo nome puro. Sem
+    /// isso, no Windows ela sairia como ausente, com o comando de instalar.
+    #[test]
+    fn o_executor_acha_fora_do_path_o_programa_pelo_nome_do_sistema() {
+        let windows_home = tempfile::tempdir().unwrap();
+        let windows_bin = windows_home.path().join(".cargo").join("bin");
+        std::fs::create_dir_all(&windows_bin).unwrap();
+        std::fs::write(windows_bin.join("rg.exe"), "").unwrap();
+        let windows = MachineRunner {
+            path_env: String::new(),
+            home: Some(windows_home.path().to_path_buf()),
+            windows: true,
+        };
+        assert_eq!(windows.found_off_path("rg"), Some(windows_bin.join("rg.exe")));
+        assert!(!windows.on_path("rg"));
+
+        let linux_home = tempfile::tempdir().unwrap();
+        let linux_bin = linux_home.path().join(".cargo").join("bin");
+        std::fs::create_dir_all(&linux_bin).unwrap();
+        std::fs::write(linux_bin.join("rg"), "").unwrap();
+        let linux = MachineRunner {
+            path_env: String::new(),
+            home: Some(linux_home.path().to_path_buf()),
+            windows: false,
+        };
+        assert_eq!(linux.found_off_path("rg"), Some(linux_bin.join("rg")));
     }
 }
