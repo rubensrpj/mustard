@@ -1,11 +1,11 @@
 # Auditoria do Mustard: consumo de tokens e qualidade de código
 
-**Data:** 25/09/2026 (revisão 3).
+**Data:** 25/09/2026 (revisão 4).
 **Base auditada:** branch `dev`. O código é o do commit `7464541`; os commits seguintes só alteram este documento.
 
 ## Como esta auditoria foi feita
 
-Foram três passadas.
+Foram quatro passadas.
 
 1. **Leitura do código contra cada item do checklist** (revisões 1 e 2).
 2. **Verificação das fontes externas do checklist e da documentação oficial do Claude Code** (revisão 3). As revisões anteriores não abriram nenhuma fonte e só repetiam as confianças do checklist. Isso foi falha da auditoria, não limitação técnica.
@@ -14,6 +14,7 @@ Foram três passadas.
    - a publicação de páginas;
    - o texto que os ganchos injetam;
    - o que é imposto por código e o que é só instrução.
+4. **Leitura integral das fontes externas** (revisão 4), numa máquina com rede livre. Cada afirmação atribuída a Uvik, Böckeler, ETH, StationX e Boringbot foi conferida no original.
 
 **Citações:** todas as citações `arquivo:linha` foram reconferidas. A revisão 2 tinha 5 erros (3 caminhos inexistentes e 2 linhas deslocadas), todos corrigidos aqui.
 
@@ -50,30 +51,41 @@ Foram três passadas.
 
 ## Verificação das fontes externas
 
-**Bloqueio de rede:** a política de rede deste ambiente bloqueou uvik.net, martinfowler.com, arxiv.org, stationx.net e boringbot.substack.com. Nesses casos, a evidência veio de trechos indexados por busca, que o resumidor pode ter parafraseado levemente. Para ler o texto integral, é preciso liberar esses domínios em "Network access" nas configurações do ambiente de nuvem.
+**Bloqueio de rede (revisão 3) e leitura integral (revisão 4):**
+- Na revisão 3, a rede do ambiente de nuvem bloqueou uvik.net, martinfowler.com, arxiv.org, stationx.net e boringbot.substack.com. A evidência veio de trechos de busca.
+- Na revisão 4, feita numa máquina com rede livre, as cinco páginas abriram:
+  - Uvik, Böckeler e StationX foram lidas inteiras;
+  - a ETH foi lida pelas páginas das versões 1 e 2 e pelos PDFs das duas versões;
+  - o Boringbot abriu, mas é post só para assinantes pagos.
+- **O que ainda falhou:** do Boringbot, só cerca de 1.700 das 8.149 palavras ficam abertas. O resto não foi lido.
 
 | Fonte | Como foi lida | Resultado |
 |---|---|---|
-| Uvik, benchmark SDD 2026 | Trechos de busca [MÉDIA] | 9 afirmações confirmadas, 2 parciais e 2 não encontradas: a mediana de 93 linhas do OpenSpec e o desvio de 2,4% a 12,5%. A inconsistência de datas foi confirmada. |
-| Gloaguen et al., ETH Zurich (arXiv 2602.11988) | v1 (12/02/2026) lida inteira, de uma cópia em PDF [ALTA]; v2 (23/06/2026) só por trechos [MÉDIA] | Confirmado, com nuances (ver 1.3). |
-| Böckeler, Thoughtworks (15/10/2025) | Trechos de busca [MÉDIA] | Confirmado, com duas atenuações de redação. |
+| Uvik, benchmark SDD 2026 | Página inteira [ALTA] | As 30 afirmações conferidas foram confirmadas. A mediana de 93 linhas do OpenSpec e o desvio de 2,4% a 12,5% estão na tabela 1 da página. A métrica principal existe (ver premissa 8). A inconsistência de datas foi confirmada. |
+| Gloaguen et al., ETH Zurich (arXiv 2602.11988) | v1 (12/02/2026) e v2 (23/06/2026) lidas inteiras, nos PDFs [ALTA] | Confirmado. A v2 é mais branda que a v1: nenhum tipo de arquivo muda o sucesso com significância estatística; o aumento de custo tem significância (ver 1.3). |
+| Böckeler, Thoughtworks (15/10/2025) | Página inteira [ALTA] | Confirmado, com uma diferença: o risco de rigidez vale também para a spec ancorada (ver 6.2). Duas citações foram ajustadas ao texto literal. |
 | Blog da Anthropic (14/08/2026) | Lido [ALTA] | 3 afirmações confirmadas, 2 diferentes e 1 não encontrada. |
 | Documentação do Claude Code: `costs`, `prompt-caching`, `sub-agents`, `skills`, `env-vars`, `hooks` | Lida [ALTA] | Corrige quatro premissas do checklist (lista abaixo). |
 | Issue anthropics/claude-code#37793 | Lida [ALTA] | É relato de usuário, não declaração da Anthropic. Continua aberta. |
-| StationX e Boringbot | Bloqueadas | NÃO VERIFICADO |
+| StationX, Nathan House (atualizado em agosto de 2026) | Página inteira [ALTA] | Confirma as 200 linhas do CLAUDE.md, o gancho que corta saída, os subagentes e o cache de 5 minutos. Sobre MCP, diz o contrário da premissa 1. |
+| Boringbot, Hamza Farooq (29/05/2026) | Só a parte aberta [ALTA]; o resto é pago | É a provável origem das premissas 1 e 2. Confirma as 200 linhas e o gancho de logs. Subagentes e expiração do cache não aparecem na parte aberta. |
 | JuanjoFuchs, claude-code-tips | Lido [ALTA] | Parcial (ver itens). |
 
-**Premissas do checklist que a verificação corrigiu:**
+**Premissas do checklist que a verificação corrigiu (e uma que ela confirmou):**
 1. **"Cada ferramenta MCP leva o schema JSON completo para o contexto."** Está desatualizado. Hoje as definições MCP são carregadas sob demanda por padrão: "only tool names and server instructions enter context until Claude uses a specific tool" (documentação `costs`) [ALTA].
+   - A premissa coincide com o Boringbot, de maio: "every connected server loads its tool schema into every request by default" [ALTA].
+   - O StationX, mais recente, já diz o contrário: "Modern Claude Code already defers MCP tool definitions by default" [ALTA].
 2. **"Conectar/desconectar MCP apaga o cache inteiro."** Só acontece quando as ferramentas estão carregadas no prefixo. No padrão, com carregamento sob demanda, a mudança "only appends new content and doesn't disturb anything already cached" (documentação `prompt-caching`) [ALTA].
+   - A premissa também coincide com o Boringbot: "Connecting or disconnecting MCP mid-session also wipes your entire prompt cache" [ALTA]. Vale a documentação oficial.
 3. **"CLAUDE.md abaixo de ~200 linhas [MÉDIA — guias]".** É recomendação oficial: "Aim to keep CLAUDE.md under 200 lines by including only essentials" (documentação `costs`) [ALTA].
+   - Os dois guias confirmam as 200 linhas. O Boringbot vai além: "Target: under 500 tokens" [ALTA].
 4. **"Divisão de modelos [MÉDIA — hipótese sem resultado]".** É recomendação oficial de custo, mesmo sem estudo controlado (ver 5.4) [ALTA quanto à recomendação].
 5. **"Trabalho em blocos com contexto limpo", atribuído ao blog da Anthropic.** O blog não diz isso; a frase vem do repositório JuanjoFuchs. O blog diz "/clear when you start something new, and /compact when the earlier part of the same task is done" e "One long session costs more than the same work spread over a few short ones" [ALTA].
 6. **"Até 90% de desconto".** O blog diz "Reading from the cache costs 0.1x the input price", o que equivale a 90% de desconto. Uma mudança no prefixo não apaga "tudo": "everything behind it gets prefilled again", ou seja, recalcula só o que vem depois do ponto alterado [ALTA].
 7. **Duas atenuações no Böckeler:**
    - "exagerar por seguir regras à risca" é, no original, "too eagerly following instructions" (seguir instruções com avidez demais);
-   - "tutoriais quase sempre partem do zero" é, no original, "usually" (geralmente) [MÉDIA].
-8. **Métrica principal da Uvik.** A frase "a métrica principal é custo ÷ aceitos" não foi encontrada. A página reporta custo por ticket mesclado (ver 0.3) [MÉDIA].
+   - "tutoriais quase sempre partem do zero" é, no original, "usually" (geralmente) [ALTA].
+8. **Métrica principal da Uvik: a revisão 3 errou, e a premissa estava certa.** A revisão 3 não a achou nos trechos de busca. A página inteira define o custo por ticket mesclado assim: "divided by the number of merged tickets. This is the headline number" [ALTA]. Ver 0.3.
 
 ---
 
@@ -132,7 +144,7 @@ Foram três passadas.
 - **Evidência:**
   - Não há benchmark de ponta a ponta.
   - O único teste de recuperação é o do scan, e ele recusa benchmark curado (`apps/scan/tests/retrieval_self_recall.rs:15`).
-- **Fonte externa:** a Uvik publicou os resultados em CSV sob licença CC BY 4.0 [MÉDIA]. O método pode ser copiado:
+- **Fonte externa:** a Uvik publicou os resultados em CSV sob licença CC BY 4.0 [ALTA]. O método pode ser copiado:
   - um revisor sênior que não executou a tarefa decide se o código é mesclado;
   - o controle sem spec recebe só o texto do ticket, os critérios e o arquivo de instruções do projeto.
 - **Correção:**
@@ -146,12 +158,13 @@ Foram três passadas.
   - Por spec, existem contagens de vereditos, retrabalho, chamadas recusadas e avisos (`page.rs:873-912`).
   - O gasto total por spec é somado, mas a partir dos números autodeclarados (`apps/rt/src/commands/spec_events/pages/copy.rs:718-740`).
   - Nada agrega esses números entre specs.
-- **Fonte externa (Uvik) [MÉDIA]:** a página reporta custo por ticket mesclado.
+- **Fonte externa (Uvik) [ALTA]:** a página reporta custo por ticket mesclado e o chama de "the headline number".
 
 | Fluxo | Custo por ticket mesclado |
 |---|---|
 | Kiro | US$ 2,35 |
 | Controle sem spec | US$ 2,43 |
+| OpenSpec | US$ 2,71 |
 | Spec Kit | US$ 3,33 |
 | BMAD | US$ 4,23 |
 
@@ -221,19 +234,26 @@ Foram três passadas.
     - `.claude/.gitignore`;
     - os textos de `harness_texts` (`packages/core/src/platform/project_seed/files.rs:46-56`): o mapa da sessão, os 2 modelos de página HTML e os 4 agentes.
 - **Fonte externa, ETH Zurich:** "Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?", de Gloaguen, Mündler, Müller, Raychev e Vechev.
-  - **Na versão 2 [MÉDIA]:** "providing context files does not generally improve task success rates, while increasing inference cost by over 20% on average".
-  - **Na versão 1 [ALTA], a afirmação é mais forte:** "tend to reduce task success rates".
-  - **Números da versão 1 [ALTA]:**
-    - arquivos escritos por desenvolvedores: +4% em média;
-    - arquivos gerados por modelo: −3% em média, com custo 20% e 23% maior;
-    - quando a documentação do repositório foi removida, os arquivos gerados ajudaram (+2,7%). Ou seja, só ajudam quando não repetem o que já existe.
-  - **Limite do estudo:** só Python, 138 instâncias de 12 repositórios.
+  - **Na versão 2 [ALTA]:** "providing context files does not generally improve task success rates, while increasing inference cost by over 20% on average".
+  - **Na versão 1 [ALTA], a afirmação é mais forte:** "tend to reduce task success rates". A versão 2 tirou essa frase.
+  - **Números, versão 1 contra versão 2 [ALTA]:**
+
+| Medida | Versão 1 | Versão 2 |
+|---|---|---|
+| Arquivos dos desenvolvedores: sucesso | +4% em média, na introdução | +2,4% em média, sem significância estatística |
+| Arquivos gerados por modelo: sucesso | −3% em média, na introdução | −0,5% e −2% nos dois conjuntos, sem significância |
+| Arquivos gerados por modelo: custo | +20% e +23% | +20% e +23%, com significância |
+| Arquivos dos desenvolvedores contra os gerados | melhores nos 4 agentes | 7% melhores, com significância |
+| Repositório sem documentação: arquivos gerados | +2,7% | +2,7% (apêndice) |
+
+  - A leitura prática não muda: os arquivos gerados só ajudam quando não repetem o que já existe.
+  - **Limite do estudo:** só Python. São 138 instâncias de 12 repositórios no conjunto novo e 300 tarefas do SWE-bench Lite, de 11 repositórios populares. A revisão 3 citava só o primeiro conjunto.
 
 #### 1.3a O Mustard gera ou injeta visão geral do repositório?
 - **Resposta:** injeta. É o "terreno": uma linha por subprojeto, no máximo 16 linhas (`TERRAIN_ROWS_CAP`, `apps/rt/src/commands/orient.rs:192-223`), em todo início de sessão.
 - **Fonte externa:**
-  - "repository overviews, although popular and recommended by model providers, are not helpful" (versão 2) [MÉDIA];
-  - na versão 1, as visões gerais não reduziram o número de passos até o agente tocar o primeiro arquivo relevante [ALTA].
+  - "repository overviews, although popular and recommended by model providers, are not helpful" (versão 2) [ALTA];
+  - nas versões 1 e 2, as visões gerais não reduziram o número de passos até o agente tocar o primeiro arquivo relevante [ALTA].
 - **Observação [BAIXA–MÉDIA]:**
   - O terreno é gerado por um programa determinístico, não por um modelo. Aplicar o estudo a ele é extrapolação.
   - São só 16 linhas.
@@ -308,6 +328,7 @@ Foram três passadas.
 
 - Blog: "the cache expires after an hour on a subscription or five minutes on an API key… the next turn prefills the whole conversation again".
 - Documentação `prompt-caching`, sobre subagentes: "they get five minutes even on a subscription until you choose a longer one".
+- O StationX [ALTA] diz só "the default cache lives for 5 minutes of inactivity", sem separar a assinatura. Vale a tabela acima.
 - O TTL pode ser ajustado:
   - conversa principal: `promptCacheTtl` ou `CLAUDE_CODE_PROMPT_CACHE_TTL`;
   - subagentes: `subagentPromptCacheTtl`, ou o campo `experimental.cacheTtl` no frontmatter do agente (v2.1.248 ou posterior).
@@ -359,10 +380,10 @@ Foram três passadas.
   - **Repetição a cada gravação [ALTA]:**
     - enquanto os pontos são gravados, cada `write point` reimprime a lista inteira dos pontos ainda não gravados, junto com uma instrução de 416 caracteres (`apps/rt/src/commands/spec_events/write.rs:934-937`);
     - isso soma cerca de n(n−1)/2 pontos repetidos: 36 numa funcionalidade e 10 numa correção.
-- **Fonte externa (Uvik) [MÉDIA]:**
-  - "the spec phase used 35.1% of all tokens in the spec arms", "more than 40% for BMAD Method";
-  - mediana geral de 128 linhas por ticket: BMAD 188, Spec Kit 132 e Kiro 106;
-  - os 93 do OpenSpec **não foram encontrados**;
+- **Fonte externa (Uvik) [ALTA]:**
+  - "the spec phase used 35.1% of all tokens in the spec arms", "more than 40% for BMAD Method" (43,9% na tabela 4 da página);
+  - mediana geral de 128 linhas por ticket: BMAD 188, Spec Kit 132, Kiro 106 e OpenSpec 93;
+  - os 93 do OpenSpec, que a revisão 3 não achou, estão na tabela 1 da página;
   - o OpenSpec teve a fase de spec mais curta (12 minutos, contra 28 do BMAD) e o maior número de tickets mesclados (42 de 50).
 - **Correção de menor custo:**
   1. Ecoar só o próximo ponto, e não a lista inteira.
@@ -385,12 +406,12 @@ Foram três passadas.
 | (5) mais de um agente ou pessoa | sim | mais de uma onda |
 | (6) código regulado | não | precisaria de configuração |
 
-- **Fonte externa (Uvik, o "Spec Fit Test") [MÉDIA]:** "Write a spec when 3 or more of these statements are true".
+- **Fonte externa (Uvik, o "Spec Fit Test") [ALTA]:** "Write a spec when 3 or more of these statements are true".
   - O item 3 é "crosses a module, service or repository boundary".
   - Em tickets de 1 ou 2 arquivos, "little advantage".
   - "did not pay for itself on bug-fix, refactor, or test-writing tickets".
   - Fora do critério: "give the agent the ticket text and the acceptance criteria, then review the result".
-- **Fonte externa (Böckeler) [MÉDIA]:** uma boa ferramenta "would at the very least have to provide flexibility for a few different core workflows, for different sizes and types of changes".
+- **Fonte externa (Böckeler) [ALTA]:** uma boa ferramenta "would at the very least have to provide flexibility for a few different core workflows, for different sizes and types of changes".
 - **Problema de ordem [MÉDIA]:** vários sinais só existem depois do plano. A rota curta, portanto, tem de ser decidida no plano, dispensando onda e revisões, e não no levantamento.
 
 #### 3.2b O Mustard tem "modo leve" automático?
@@ -434,8 +455,8 @@ Foram três passadas.
   - Cada item é gravado uma vez.
   - O pedido da onda leva os códigos dos itens, não o texto (`wave_prompt.rs:10-12`).
   - Os fatos citam `arquivo:linha` em vez de copiar código (`packages/core/src/domain/spec_events/check.rs:370-381`), e a citação é verificada (`packages/core/src/domain/citation.rs:5-6`).
-- **Fonte externa (Böckeler) [MÉDIA]:**
-  - no spec-kit: "repetitive with each other and with existing code. Some contained code already";
+- **Fonte externa (Böckeler) [ALTA]:**
+  - no spec-kit: "They were repetitive, both with each other, and with the code that already existed. Some contained code already";
   - no Kiro: "turned this small bug into 4 'user stories' with a total of 16 acceptance criteria".
 - **Observação:** o desenho do Mustard evita a repetição entre spec e código. Mas a repetição **na saída dos comandos** existe: ver 3.1a e a observação 12.
 
@@ -453,7 +474,7 @@ Foram três passadas.
 | Restrições | sim | `rule`, `limit`, `decision` (`types.rs:418-424`) |
 | O que NÃO pode mudar | **só em `refactor`** | `MustNotChange` (`survey.rs:257`) |
 
-- **Fonte externa (Uvik) [MÉDIA]:**
+- **Fonte externa (Uvik) [ALTA]:**
   - os 8 itens batem: "Goal, Scope, Inputs and outputs, Data changes, Edge cases, Acceptance tests, Constraints, No-change list";
   - "specs with 6 or more of the 8 checklist items merged 89.3% of tickets, against 60.0% otherwise".
 
@@ -472,9 +493,9 @@ Foram três passadas.
 ## 4. EXECUTE (rodada de ondas)
 
 ### 4.1 Falsa sensação de controle (texto principal)
-- **Fonte externa (Böckeler) [MÉDIA]:**
+- **Fonte externa (Böckeler) [ALTA]:**
   - "I frequently saw the agent ultimately not follow all the instructions";
-  - "went way overboard because [it was] too eagerly following instructions".
+  - "go way overboard because it was too eagerly following instructions".
 - **Veredito:** PARCIAL [ALTA quanto aos itens conferidos]. O Mustard impõe por código parte do que exige, mas vários pontos centrais são só instrução.
 
 **Imposto por código:**
@@ -507,7 +528,7 @@ Foram três passadas.
 - **Evidência:**
   - Um arquivo marcado `new: true` que **já existe** passa sem aviso: o código só testa `!new` (`plan.rs:417-418`).
   - O `dependency_precheck` foi removido. As fixtures dele ficaram órfãs em `apps/rt/tests/fixtures/dependency_precheck/`, e sobraram referências em `packages/core/src/lib.rs:110` e `packages/core/src/domain/source_lang.rs:10`.
-- **Fonte externa (Böckeler, spec-kit) [MÉDIA]:** o agente "ignored the notes that these were descriptions of existing classes… took them as a new specification… creating duplicates".
+- **Fonte externa (Böckeler, spec-kit) [ALTA]:** o agente "ignored the notes that these were descriptions of existing classes… took them as a new specification… creating duplicates".
 - **Correção:**
   1. Recusar `new && world.file_lines(path).is_some()` em `plan.rs:417`.
   2. Avisar quando um nome novo já existe no mapa.
@@ -524,6 +545,9 @@ Foram três passadas.
 - **Fonte externa:**
   - **Documentação `costs` [ALTA]:** o exemplo oficial é justamente um gancho `PreToolUse` que reescreve o comando de teste para mostrar só as falhas. É o mesmo padrão do `rtk`.
   - **Blog [ALTA]:** "Add quiet flags to noisy commands". Saídas acima de 30.000 caracteres vão para arquivo (`BASH_MAX_OUTPUT_LENGTH`, com padrão de 30.000 e máximo de 150.000, segundo a documentação `env-vars`). "the real cost is output under the limit".
+  - **Guias [ALTA]:**
+    - O StationX descreve o mesmo padrão: "The hook rewrites the command before it runs; it doesn't filter output after the fact".
+    - O Boringbot fala em gancho `PostToolUse` e diz que o rtk "automates this". No Mustard, o rtk roda antes, como `PreToolUse`.
 - **Evidência, saída do próprio Mustard (onde está o ruído):**
   1. **Todo `run` imprime JSON indentado**, com espaços e quebras de linha que custam tokens (`apps/rt/src/commands/flow/mod.rs:32-38`, `to_string_pretty`) [ALTA].
   2. **Nenhum comando tem teto geral de saída**, e `run read` não tem teto [MÉDIA].
@@ -568,7 +592,10 @@ Foram três passadas.
 - **Fonte externa:**
   - **Documentação `costs` [ALTA]:** "Delegate verbose operations to subagents".
   - **Blog [ALTA]:** "for small jobs a subagent is just overhead". Isso pesa contra usar subagente em correção de 1 linha (ver 3.2b).
-- **Observação [MÉDIA]:** `omitClaudeMd` economiza, mas tem custo de qualidade. Pela ETH, as instruções do projeto **são** seguidas e ajudam em práticas fora do padrão. Medir antes de ligar.
+  - **StationX [ALTA]:** "Delegate verbose jobs to subagents", mas "not as a blanket habit".
+- **Observação [MÉDIA]:** `omitClaudeMd` economiza, mas pode custar qualidade. Medir antes de ligar.
+  - Pela ETH [ALTA], as instruções do projeto **são** seguidas e servem para "non-standard coding practices".
+  - **Revisão 4:** na versão 2, os arquivos dos desenvolvedores ajudaram todos os agentes "but Claude Code". O custo de qualidade de tirá-los, no Claude Code, é incerto.
 
 ### 4.4 Referência direta a arquivos
 - **Veredito:** ATENDE [ALTA]
@@ -601,9 +628,10 @@ Foram três passadas.
   - Todo item combinado precisa de uma resposta `met`; faltar alguma recusa o veredito (`report.rs:625-663`).
   - O binário executa todas as provas no fechamento (`close.rs:519-546`) e recusa prova com zero testes (`close.rs:113-114`).
   - O `met` e a pergunta "o teste verifica a regra?" são julgamento do modelo.
-- **Fonte externa (Uvik) [MÉDIA]:**
+- **Fonte externa (Uvik) [ALTA]:**
   - o desvio é definido ("a second reviewer compares each merged patch with its spec… logs each mismatch (spec drift)");
-  - **a faixa de 2,4% a 12,5% não foi encontrada.**
+  - a faixa de 2,4% a 12,5% está na tabela 1 da página: OpenSpec 2,4%, Kiro 4,9%, BMAD 12,2% e Spec Kit 12,5%;
+  - somados os fluxos com spec, o código mesclado não bateu com a spec em 7,9% dos tickets.
 
 #### 5.1b Detecta comportamento não pedido?
 - **Veredito:** NÃO ATENDE [ALTA]
@@ -619,7 +647,7 @@ Foram três passadas.
 - **Evidência:**
   - Subagente separado, trabalhando numa cópia própria (`packages/core/src/platform/i18n/prompt.rs:262-264`).
   - A entrada é montada pelo binário só com códigos (`prompt.rs:103`).
-- **Fonte externa (Uvik) [MÉDIA]:** a próxima rodada vai testar "a verifier agent that checks the build against the spec before human review". O Mustard já tem esse verificador.
+- **Fonte externa (Uvik) [ALTA]:** a próxima rodada vai testar "A verifier agent that checks the build against the spec before the human review". O Mustard já tem esse verificador.
 - **Ressalva 1 [MÉDIA]:** o revisor recebe o texto que o executor escreveu sobre a própria entrega, inclusive "o que decidiu fora do pedido" (`wave.md:38`). Isso pode ancorar o julgamento dele.
 - **Ressalva 2, defeito [ALTA]:** o modelo do revisor, instalado em **todo** projeto, manda "install Mustard (`mustard init`) and run what the user would run" numa pasta temporária (`packages/core/templates/agents/en-US/review.md:20`). É instrução específica do repositório do Mustard e não faz sentido num projeto de cliente. Custa tempo, tokens e confunde o revisor.
 - **Ressalva 3, trabalho repetido [ALTA]:**
@@ -636,7 +664,7 @@ Foram três passadas.
   - Por spec, existem vereditos, retrabalho, tempo por fase e o teto de 2 rodadas (`apps/rt/src/commands/flow/round/stops.rs:15`).
   - Faltam defeitos por tarefa aceita, a contagem de intervenções humanas e qualquer agregação entre specs.
   - `.claude/.metrics/` está declarado sem nenhum chamador (`packages/core/src/io/claude_paths.rs:279-283`).
-- **Fonte externa (Uvik) [MÉDIA]:** "0.46 defects per merged ticket across spec workflows versus 0.86 for the no-spec control". O 0,46 é a média dos 4 fluxos com spec.
+- **Fonte externa (Uvik) [ALTA]:** "0.46 defects per merged ticket across spec workflows versus 0.86 for the no-spec control". O 0,46 junta os 4 fluxos com spec ("for the spec arms together"); por fluxo, vai de 0,39 a 0,57.
 - **Correção:** `mustard-rt run metrics` com:
   - specs entregues;
   - rejeições por spec;
@@ -656,7 +684,7 @@ Foram três passadas.
     - Gasto alto inesperado "usually traces back to long sessions that were never cleared or to Opus left as the default model".
     - Os tokens de raciocínio são cobrados como saída, e a recomendação é baixar o esforço em tarefas simples.
   - **Blog [ALTA]:** "Give a repeated noisy job its own subagent definition with `model: haiku` (or sonnet)."
-  - **Uvik [MÉDIA]:** rodou todos os fluxos com "claude-sonnet-5 in all five arms".
+  - **Uvik [ALTA]:** rodou todos os fluxos com "claude-sonnet-5 in all five arms".
 - **Observação:** não há estudo controlado mostrando que Opus com `xhigh` em toda onda compensa. O argumento de qualidade do Mustard é legítimo, mas não está medido.
 - **Correção:** com o benchmark, testar primeiro `effort: high` nas ondas e Sonnet no `wave-solo` para correções.
 
@@ -678,8 +706,8 @@ Foram três passadas.
   - A spec fechada é mantida (`close.rs:9-10`), sem mesclagem.
   - O levantamento de uma spec nova busca, por BM25, as specs anteriores e as lições (`survey.rs:8-14`). Funciona como especificação viva parcial.
 - **Fonte externa:**
-  - **Uvik [MÉDIA]:** no OpenSpec, "The archive step merges the delta specs into the living spec folder".
-  - **Böckeler [MÉDIA]** descreve três níveis:
+  - **Uvik [ALTA]:** no OpenSpec, "The archive step merges the delta specs into the living spec folder".
+  - **Böckeler [ALTA]** descreve três níveis:
     - spec-first: a spec é escrita antes e usada só na tarefa;
     - spec-anchored: a spec é mantida para evoluir junto com o código;
     - spec-as-source: a spec é a fonte principal.
@@ -689,11 +717,13 @@ Foram três passadas.
 
 ### 6.2 Risco de rigidez (MDD) e não determinismo
 - **Veredito:** MITIGADO [MÉDIA]
-- **Fonte externa (Böckeler) [MÉDIA]:** "spec-as-source might end up with the downsides of both MDD and LLMs: inflexibility and non-determinism".
+- **Fonte externa (Böckeler) [ALTA]:** "I wonder if spec-as-source, and even spec-anchoring, might end up with the downsides of both MDD and LLMs: Inflexibility and non-determinism".
+  - **Correção da revisão 4:** a revisão 3 cortava "and even spec-anchoring". A dúvida dela vale também para a spec ancorada.
 - **Evidência:**
   - A spec do Mustard não é a fonte principal.
+  - Hoje a ancoragem é só pela busca, sem regra imposta.
   - Os critérios são provas executáveis.
-- **Risco residual:** a correção do 6.1 tem de ser **aviso**, nunca bloqueio.
+- **Risco residual:** a correção do 6.1 leva o Mustard para a spec ancorada, justamente a zona que Böckeler também põe em dúvida. Por isso, o índice do 6.1 ser **aviso**, nunca bloqueio, é condição da correção, não detalhe.
 
 ---
 
@@ -706,22 +736,23 @@ Foram três passadas.
   - Os fatos citam `arquivo:linha` verificados.
   - Não há nenhuma medição antes/depois.
 - **Fonte externa:**
-  - **Böckeler [MÉDIA]:** "even more work to introduce them into an existing codebase"; os tutoriais são "usually based on creating an application from scratch".
-  - **ETH [ALTA, v1]:** os arquivos gerados só ajudaram quando o repositório **não** tinha documentação. Isso sugere que o terreno e o mapa podem valer mais em código legado pouco documentado [BAIXA; é extrapolação].
+  - **Böckeler [ALTA]:** "even more work to introduce them into an existing codebase", para duas das três ferramentas que ela testou; os tutoriais são "usually based on creating an application from scratch".
+  - **ETH [ALTA, versões 1 e 2]:** os arquivos gerados só ajudaram quando o repositório **não** tinha documentação. Isso sugere que o terreno e o mapa podem valer mais em código legado pouco documentado [BAIXA; é extrapolação].
 - **Correção:** rodar o benchmark num repositório legado de cliente, com e sem o Mustard.
 
 ---
 
 ## Ressalva sobre o benchmark da Uvik (verificada)
-- **A inconsistência de datas é real [MÉDIA]:**
-  - a página diz "run in Q4 2026, on October 15, 2026", em duas buscas sem data na consulta;
-  - ela foi indexada cerca de 15 horas antes de 25/09/2026 e se diz "last updated September 24, 2026" (evidência mais fraca, porque a data estava na consulta).
-- **Conflito de interesse confirmado [MÉDIA]:** "Work with the engineers who ran this benchmark… staff augmentation…", "Senior rates are $50 to $99 per hour".
+- **A inconsistência de datas é real [ALTA]:**
+  - a página diz "Run: Q4 2026, October 15, 2026";
+  - ela se diz "Last updated: September 24, 2026", e os metadados da página dão a publicação em 24/09/2026;
+  - a execução, portanto, tem data três semanas depois da publicação.
+- **Conflito de interesse confirmado [ALTA]:** "Work with the engineers who ran this benchmark… staff augmentation…", "Senior rates are $50 to $99 per hour". A empresa também se diz "a member of the Claude Partner Network".
 - **Contexto:**
   - 50 tickets reais em Python;
   - 5 fluxos, todos com Sonnet 5;
   - revisão cega;
-  - tickets mesclados: controle 36, OpenSpec 42, BMAD 41, Spec Kit 40;
+  - tickets mesclados: controle 36, OpenSpec 42, BMAD 41, Kiro 41, Spec Kit 40;
   - tempo mediano até a mesclagem: 29 minutos sem spec, 36 a 55 minutos com spec.
 - **Conclusão:** trate como material de venda com dados. Use como direção, não como prova. Os vereditos dos itens 3.1, 3.2 e 5.1 medem se o Mustard **tem** o mecanismo. Se o mecanismo **compensa**, só o benchmark próprio dirá.
 
@@ -791,7 +822,7 @@ Foram três passadas.
 | 13 | Benchmark próprio | 0.2, 7.1 | médio | Decide os itens 14 e 15 |
 | 14 | Rota rápida: religar o modo solo e dispensar revisões em mudança pequena | 3.2 | alto | Maior ganho provável; exige sua decisão |
 | 15 | Medir e decidir: `AUTOCOMPACT=15` (inclusive nas ondas), TTL, modelo e esforço, texto do executor no revisor, `omitClaudeMd`, terreno | 2.4, 5.2, 5.4, 4.3, 1.3a | baixo, depois de 8 e 13 | Hipóteses que só o número decide |
-| 16 | Índice arquivo → regras aprovadas | 6.1 | médio | Especificação viva sem rigidez |
+| 16 | Índice arquivo → regras aprovadas | 6.1 | médio | Especificação viva; só como aviso, pelo risco de rigidez (6.2) |
 
 ---
 
@@ -799,9 +830,9 @@ Foram três passadas.
 
 | Fonte | Endereço | Status |
 |---|---|---|
-| Uvik Software, Spec-Driven Development Benchmark 2026 | https://uvik.net/spec-driven-development-benchmark/ | trechos de busca; acesso direto bloqueado |
-| Gloaguen et al. (ETH Zurich), Evaluating AGENTS.md | https://arxiv.org/abs/2602.11988 | v1 lida inteira (cópia em PDF); v2 por trechos |
-| Böckeler (Thoughtworks), Understanding Spec-Driven-Development | https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html | trechos de busca |
+| Uvik Software, Spec-Driven Development Benchmark 2026 | https://uvik.net/spec-driven-development-benchmark/ | lida inteira (revisão 4) |
+| Gloaguen et al. (ETH Zurich), Evaluating AGENTS.md | https://arxiv.org/abs/2602.11988 | v1 e v2 lidas inteiras, nos PDFs (revisão 4) |
+| Böckeler (Thoughtworks), Understanding Spec-Driven-Development: Kiro, spec-kit, and Tessl | https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html | lida inteira (revisão 4) |
 | Anthropic, Maximizing the value of your Claude Code sessions | https://claude.com/blog/maximizing-the-value-of-your-claude-code-sessions | lido |
 | Claude Code Docs, Manage costs effectively | https://code.claude.com/docs/en/costs | lido |
 | Claude Code Docs, How Claude Code uses prompt caching | https://code.claude.com/docs/en/prompt-caching | lido |
@@ -810,6 +841,6 @@ Foram três passadas.
 | Claude Code Docs, Environment variables | https://code.claude.com/docs/en/env-vars | lido |
 | Claude Code Docs, Hooks | https://code.claude.com/docs/en/hooks | lido |
 | Issue #37793 | https://github.com/anthropics/claude-code/issues/37793 | lida |
-| StationX, Reduce Claude Code token usage | https://app.stationx.net/articles/reduce-claude-code-token-usage | não verificada (bloqueada) |
-| Boringbot, How to save millions in Claude tokens | https://boringbot.substack.com/p/how-to-save-millions-in-claude-tokens | não verificada (bloqueada) |
+| StationX, Reduce Claude Code Token Usage: 8 Proven Ways (2026) | https://app.stationx.net/articles/reduce-claude-code-token-usage | lida inteira (revisão 4) |
+| Boringbot (Hamza Farooq), How to save millions in Claude tokens | https://boringbot.substack.com/p/how-to-save-millions-in-claude-tokens | só a parte aberta; o resto é pago (revisão 4) |
 | JuanjoFuchs, claude-code-tips | https://github.com/JuanjoFuchs/claude-code-tips | lido |
