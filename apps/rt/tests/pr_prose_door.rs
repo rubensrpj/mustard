@@ -13,6 +13,9 @@
 //!
 //! Deterministic: reads two committed files, no network, no env vars.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +30,7 @@ const DOOR_FILES: &[&str] = &["plugin/commands/pr.md"];
 
 /// The repo root, resolved from this crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 #[test]

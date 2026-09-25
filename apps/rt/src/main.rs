@@ -43,6 +43,11 @@ mod hook_output;
 mod commands;
 mod shared;
 mod util;
+// A pasta do pacote lida na hora de rodar, que os testes de dentro de `src/`
+// usam: a conferência de todos os alvos também compila esta face como teste.
+#[cfg(test)]
+#[path = "../tests/support/manifest_dir.rs"]
+mod manifest_dir;
 
 use clap::{Parser, Subcommand};
 use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger};

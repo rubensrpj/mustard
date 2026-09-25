@@ -1635,7 +1635,7 @@ mod tests {
     /// this spec?" em inglês.
     #[test]
     fn the_question_hints_follow_the_answer_style() {
-        let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+        let plugin = crate::manifest_dir::manifest_dir().join("../../plugin");
         let cases = [
             (
                 Locale::PtBr,

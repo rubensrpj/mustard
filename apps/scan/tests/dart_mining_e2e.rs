@@ -16,6 +16,9 @@
 //!   (c) `lib/counter.g.dart` is classed `generated` by the `**/*.g.dart`
 //!       path marker, so it is excluded from the source/stack mining surface.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -24,7 +27,7 @@ use mustard_core::domain::vocabulary::stacks::CONFIDENCE_TWO_CLASSES;
 /// A committed fixture root, resolved from the crate manifest dir so the test
 /// is location-independent.
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
 /// Scan a fixture into a temp `grain.model.json` and return (temp dir, parsed

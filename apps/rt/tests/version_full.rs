@@ -18,12 +18,15 @@
 //! que ele imprime — a mesma linha que o cargo lê para gravar a variável de
 //! compilação que os binários embutem com `env!(...)`.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A raiz do repositório, a partir deste crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    manifest_dir::manifest_dir()
         .join("../..")
         .canonicalize()
         .expect("repo root resolves")

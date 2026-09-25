@@ -445,8 +445,10 @@ mod tests {
     }
 
     /// O apoio que roda um template no Node, com o DOM e as capacidades do
-    /// claude.ai imitados.
-    const HARNESS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/page_templates/harness.js");
+    /// claude.ai imitados, lido da cópia que roda o teste.
+    fn harness() -> std::path::PathBuf {
+        crate::manifest_dir::manifest_dir().join("tests/fixtures/page_templates/harness.js")
+    }
 
     /// A spec de exemplo da página de hoje, com um item de cada tipo.
     const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/rt/tests/fixtures/spec_page/spec.ndjson"));
@@ -567,7 +569,7 @@ mod tests {
     /// navegador direto, porque isso não funciona dentro do claude.ai.
     fn run_with_downloads(page: &str, html: &str, db: Option<Value>, steps: Value, downloads: bool) -> Value {
         let mut child = Command::new("node")
-            .arg(HARNESS)
+            .arg(harness())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -16,6 +16,9 @@
 //! voltas no cabeçalho: os tetos de dez e quinze cortavam toda onda real no
 //! meio, e a onda cortada recomeçava do zero.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -45,7 +48,7 @@ const COPY_ON_ITS_OWN: &[&str] = &[
 ];
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 fn git(root: &Path, args: &[&str]) {

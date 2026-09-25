@@ -20,6 +20,9 @@
 //!
 //! Deterministic: walks the repo tree only (sorted), no network, no env vars.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,7 +52,7 @@ const CALLER_PREFIXES: &[&str] = &["mustard-rt run ", "mustard-rt.exe run ", "$R
 
 /// The repo root, resolved from this crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Build the `run` command tree exactly as `main.rs` hands it to clap.

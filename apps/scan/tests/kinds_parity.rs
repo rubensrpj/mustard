@@ -16,13 +16,16 @@
 //!     A second test cross-checks languages.toml against the manifest, so a
 //!     declared `dir` with no manifest entry cannot pass in silence.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
 /// A committed fixture root, resolved from the crate manifest dir.
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
 /// Scan a fixture into a temp `grain.model.json` and return the parsed value.
@@ -56,7 +59,7 @@ fn produced_kinds(v: &serde_json::Value) -> BTreeSet<String> {
 
 #[test]
 fn every_declared_query_dir_has_a_manifest_entry() {
-    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let crate_dir = manifest_dir::manifest_dir();
     let raw = std::fs::read_to_string(crate_dir.join("languages.toml")).expect("read languages.toml");
     let languages: toml::Value = toml::from_str(&raw).expect("languages.toml is valid TOML");
     let dirs: BTreeSet<String> = languages
@@ -92,7 +95,7 @@ fn every_declared_query_dir_has_a_manifest_entry() {
 #[test]
 fn kinds_manifest_matches_fixture_declarations_both_ways() {
     let manifest_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("queries").join("kinds-manifest.toml");
+        manifest_dir::manifest_dir().join("queries").join("kinds-manifest.toml");
     let raw = std::fs::read_to_string(&manifest_path).expect("read kinds-manifest.toml");
     let manifest: toml::Value = toml::from_str(&raw).expect("kinds-manifest.toml is valid TOML");
     let entries = manifest.as_table().expect("kinds-manifest.toml is a table of query sets");

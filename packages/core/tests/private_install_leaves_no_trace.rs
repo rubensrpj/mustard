@@ -55,6 +55,9 @@
 //! fixture also receives a SHARED install, and git is required to SEE that
 //! footprint — every entry of it that really landed on disk.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -297,7 +300,7 @@ fn footprint_on_disk(root: &Path, report: &UpsertReport) -> Vec<String> {
 /// rules match, and only those: no `.gitignore` and no global ignore file take
 /// part, so the answer is the footprint's alone.
 fn mustard_files_in_this_repository() -> Vec<String> {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo = manifest_dir::manifest_dir().join("../..");
     let rules = tempfile::NamedTempFile::new().expect("rules file");
     let mut body = footprint_rules().join("\n");
     body.push_str("\n/.claude/\n");

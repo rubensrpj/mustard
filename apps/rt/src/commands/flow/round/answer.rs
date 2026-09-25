@@ -6,7 +6,7 @@
 //! agente de teste dedicado que o fechamento pede, uma vez por obra.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
@@ -441,9 +441,13 @@ pub(super) fn run_round(
     lang: Locale,
     caller: Caller<'_>,
 ) -> Result<Value, RoundRefusal> {
-    run_round_with_mine(opts, root, lang, caller, &|root, out| {
-        mustard_core::Scan::locate().scan(root, out)
-    })
+    run_round_with_mine(opts, root, lang, caller, &scan_mine)
+}
+
+/// Quem relê o mapa depois do commit da rodada: a ferramenta do scan
+/// instalada.
+pub(super) fn scan_mine(root: &Path, out: &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
+    mustard_core::Scan::locate().scan(root, out)
 }
 
 /// [`run_round`] com quem relê o mapa depois do commit da rodada (`mine`),
@@ -455,7 +459,26 @@ pub(super) fn run_round_with_mine(
     caller: Caller<'_>,
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
 ) -> Result<Value, RoundRefusal> {
-    let session = caller.session;
+    let entry = enter_round(opts, root, lang, caller.session)?;
+    run_entered_round(opts, root, lang, caller, mine, entry)
+}
+
+/// O que a rodada leu ao entrar, antes de assumir qualquer volta e de pegar
+/// a trava do passo do git: o nome da spec, o arquivo dela, a leitura de
+/// entrada e a fase gravada nela.
+pub(super) struct Entry {
+    spec: String,
+    path: PathBuf,
+    log: SpecLog,
+    phase: String,
+}
+
+/// A entrada da rodada: acha a spec, lê o arquivo dela, recusa a spec que
+/// não pode rodar e passa ao backlog as ondas desenhadas à mão. A leitura que
+/// sai daqui é a de entrada, que o resto da rodada ([`run_entered_round`])
+/// compara com a feita já com a trava presa. A sessão (`session`) acha a spec
+/// atual quando o pedido não diz qual.
+pub(super) fn enter_round(opts: &RoundOpts, root: &Path, lang: Locale, session: Option<&str>) -> Result<Entry, RoundRefusal> {
     let refuse = RoundRefusal::Refused;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
@@ -510,6 +533,22 @@ pub(super) fn run_round_with_mine(
             .map_err(RoundRefusal::Refused)?
             .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
     };
+    Ok(Entry { spec, path, log, phase })
+}
+
+/// O resto da rodada, depois da leitura de entrada (`entry`, de
+/// [`enter_round`]): assume as voltas, forma os lotes, despacha as ondas
+/// prontas e monta a resposta.
+pub(super) fn run_entered_round(
+    opts: &RoundOpts,
+    root: &Path,
+    lang: Locale,
+    caller: Caller<'_>,
+    mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
+    entry: Entry,
+) -> Result<Value, RoundRefusal> {
+    let session = caller.session;
+    let Entry { spec, path, log, phase } = entry;
 
     // O backlog é lido também como estava ao entrar na rodada, antes de o
     // relatório dela mexer em onda ou tarefa: a tarefa que o corte de uma
@@ -1934,27 +1973,19 @@ mod tests {
         assert!(stuck["next"].as_str().unwrap_or_default().ends_with(&expected), "{stuck}");
     }
 
-    /// Duas rodadas ao mesmo tempo, sem relatório, com uma onda pronta. As
-    /// duas chegam ao despacho enquanto outro passo do git segura a trava;
-    /// solta a trava, uma despacha a onda, e a outra lê a spec depois do envio
-    /// dela: vê a onda em andamento e não a solta de novo. A onda tem um envio
-    /// só, as duas respostas a mostram em andamento com esse envio, e a spec
-    /// entra na execução uma vez.
+    /// Duas rodadas ao mesmo tempo, sem relatório, com uma onda pronta, leem
+    /// a spec antes de qualquer uma pegar a trava. Uma despacha a onda, e a
+    /// outra lê a spec, com a trava presa, depois do envio dela: vê a onda em
+    /// andamento e não a solta de novo. A onda tem um envio só, as duas
+    /// respostas a mostram em andamento com esse envio, e a spec entra na
+    /// execução uma vez.
     #[test]
     fn two_rounds_at_the_same_time_dispatch_a_wave_only_once() {
-        use std::time::Duration;
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
 
-        let outs: Vec<Value> = std::thread::scope(|scope| {
-            let Ok(lock) = super::git_lock(root) else { panic!("the git lock") };
-            let rounds = [scope.spawn(|| round(root, "x", None)), scope.spawn(|| round(root, "x", None))];
-            // O tempo de as duas lerem a spec e chegarem à trava.
-            std::thread::sleep(Duration::from_millis(1000));
-            drop(lock);
-            rounds.into_iter().map(|r| r.join().unwrap()).collect()
-        });
+        let outs = two_rounds_at_once(root, None);
         for out in &outs {
             assert_eq!(out["ok"], json!(true), "{outs:?}");
         }

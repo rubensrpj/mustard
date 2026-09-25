@@ -28,7 +28,7 @@ mod tests {
     #[test]
     fn o_pacote_nao_depende_mais_de_gramatica_nenhuma() {
         let manifesto = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+            crate::manifest_dir::manifest_dir().join("Cargo.toml"),
         )
         .expect("o Cargo.toml do próprio pacote precisa ser legível");
         for linha in manifesto.lines() {

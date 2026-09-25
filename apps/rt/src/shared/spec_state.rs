@@ -250,12 +250,12 @@ mod tests {
                 }
             }
         }
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let repo = crate::manifest_dir::manifest_dir().join("../..");
         let mut files = Vec::new();
         for dir in ["apps/rt/src", "apps/cli/src", "packages/core/src", "apps/dashboard/server/src"] {
             sources(&repo.join(dir), &mut files);
         }
-        let home = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("shared").join("spec_state.rs");
+        let home = crate::manifest_dir::manifest_dir().join("src").join("shared").join("spec_state.rs");
         let mut hits = Vec::new();
         for path in files.iter().filter(|p| std::fs::canonicalize(p).ok() != std::fs::canonicalize(&home).ok()) {
             let body = std::fs::read_to_string(path).unwrap_or_default();

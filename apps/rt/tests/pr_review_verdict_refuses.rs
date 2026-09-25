@@ -17,6 +17,9 @@
 //! `CLAUDE_PROJECT_DIR` na pasta temporária e sem as variáveis de sessão, para
 //! nada cair no projeto de verdade.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -118,7 +121,7 @@ fn pr_review_with_a_verdict_refuses_and_records_nothing() {
 /// A raiz do repositório, a partir desta crate (`apps/rt`), para a varredura
 /// não depender da pasta de onde o teste foi chamado.
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Os arquivos de extensão `ext` sob `dir`, em qualquer profundidade.

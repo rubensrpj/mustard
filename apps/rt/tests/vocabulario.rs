@@ -9,6 +9,9 @@
 //! pastas de compilação, de pacote e de fixtures. Este arquivo fica de fora:
 //! o nome do próprio teste diz a palavra que ele procura.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -26,7 +29,7 @@ const SKIPPED_DIRS: &[&str] = &["target", "dist", "node_modules", "fixtures"];
 
 /// A raiz do repositório, a partir deste crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Os arquivos de `apps/` e `packages/` que o git conhece, em ordem.

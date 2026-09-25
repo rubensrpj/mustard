@@ -28,6 +28,9 @@
 //! which equals the bare function name only at the root of an integration-test
 //! binary.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -36,7 +39,7 @@ use mustard_rt::commands::flow::resume::NEXT_BY_PHASE;
 
 /// The repository root — two levels up from this crate's manifest.
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Read a repo-relative file, failing with the path when it is missing.

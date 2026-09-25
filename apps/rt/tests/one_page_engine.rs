@@ -13,6 +13,9 @@
 //! crases e dos asteriscos. O código de teste fica de fora: ele confere
 //! páginas, não as escreve.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,7 +26,7 @@ use serde_json::Value;
 const ENGINE_ONLY: &[&str] = &["<!doctype", "<style", "<code>", "<strong>", "<em>"];
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Os arquivos `.rs` de código sob `dir`, em ordem; pastas de teste, de

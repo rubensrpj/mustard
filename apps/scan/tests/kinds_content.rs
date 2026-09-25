@@ -26,8 +26,10 @@
 //! roles from units only, so a dialect that files a member as `function`
 //! silently promotes helpers into architecture.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::process::Command;
 
 /// Scan a committed fixture into a temp model and return every
@@ -37,7 +39,7 @@ use std::process::Command;
 /// by fixture and pid, so tests running in parallel never yank each other's
 /// output directory.
 fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(fixture_dir);
+    let root = manifest_dir::manifest_dir().join("tests").join("fixtures").join(fixture_dir);
     let temp = tempfile::Builder::new().prefix(&format!("scan-content-{}-", fixture_dir)).tempdir().unwrap();
     let tmp = temp.path().to_path_buf();
     let model = tmp.join("grain.model.json");

@@ -2280,26 +2280,19 @@ mod tests {
         assert!(prompt.lines().any(|l| l == format!("- `lessons`: {kept}")), "{prompt}");
     }
 
-    /// Duas rodadas ao mesmo tempo, com a mesma linha da análise. As duas
-    /// chegam ao despacho enquanto outro passo do git segura a trava; solta a
-    /// trava, uma solta a onda com a escolha, e a outra lê a spec depois do
-    /// envio dela e não a solta de novo: a onda tem um envio só, com a escolha.
+    /// Duas rodadas ao mesmo tempo, com a mesma linha da análise, leem a spec
+    /// antes de qualquer uma pegar a trava. Uma solta a onda com a escolha, e
+    /// a outra lê a spec, com a trava presa, depois do envio dela e não a
+    /// solta de novo: a onda tem um envio só, com a escolha.
     #[test]
     fn two_rounds_with_the_same_analysis_send_the_wave_once() {
-        use std::time::Duration;
         let dir = tempdir().unwrap();
         let root = dir.path();
         with_items_to_judge(root);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), Vec::<u64>::new());
         let report = analysis(json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega."}]), json!([]));
 
-        let outs: Vec<Value> = std::thread::scope(|scope| {
-            let Ok(lock) = super::super::commit::git_lock(root) else { panic!("the git lock") };
-            let rounds = [scope.spawn(|| round(root, "x", Some(&report))), scope.spawn(|| round(root, "x", Some(&report)))];
-            std::thread::sleep(Duration::from_millis(1000));
-            drop(lock);
-            rounds.into_iter().map(|r| r.join().unwrap()).collect()
-        });
+        let outs = two_rounds_at_once(root, Some(&report));
         let dispatched: Vec<u64> = outs.iter().flat_map(|out| waves_in(out, "dispatch")).collect();
         assert_eq!(dispatched, vec![1], "only one round sends the wave out: {outs:?}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -2925,22 +2918,19 @@ mod tests {
             .collect()
     }
 
-    /// Duas rodadas soltas ao mesmo tempo, com uma tarefa pronta no backlog,
-    /// leem a spec antes de qualquer uma pegar a trava. A que pega primeiro
-    /// forma a onda de lote e a solta; a outra relê a spec já com a trava
-    /// presa, acha a tarefa na onda formada e não forma nem solta nada. Sai
-    /// uma onda só, com um envio só, e a tarefa ganha uma versão só com o
-    /// número da onda.
+    /// Duas rodadas ao mesmo tempo, com uma tarefa pronta no backlog, leem a
+    /// spec antes de qualquer uma pegar a trava. A que pega primeiro forma a
+    /// onda de lote e a solta; a outra relê a spec já com a trava presa, acha
+    /// a tarefa na onda formada e não forma nem solta nada. Sai uma onda só,
+    /// com um envio só, e a tarefa ganha uma versão só com o número da onda.
     #[test]
     fn two_rounds_at_once_form_and_send_a_single_batch_wave() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
         backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
-        let spec_file = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap();
 
-        let (while_held, outs) = two_rounds_at_once(root, &spec_file);
-        assert!(!while_held.contains("\"type\":\"wave\""), "nenhuma rodada forma onda enquanto a trava segue presa");
+        let outs = two_rounds_at_once(root, None);
         for out in &outs {
             assert_eq!(out["ok"], json!(true), "{outs:?}");
         }
@@ -2991,6 +2981,32 @@ mod tests {
         assert_eq!(waves, vec![json!(1), json!(2)], "nenhum número de onda se repete");
         let task_three = log.current(three).expect("a tarefa três segue viva");
         assert_eq!(task_three.wave(), None, "a tarefa três fica no backlog para a rodada seguinte");
+    }
+
+    /// A tarefa pronta quando a rodada entrou ganha versão nova — outro texto,
+    /// outro número — antes de a rodada pegar a trava. O lote sai com a
+    /// versão em vigor: a onda nova leva o número novo, e a tarefa, com o
+    /// texto revisto, ganha o número da onda. A prova atravessa a rodada de
+    /// verdade, com a revisão entre a leitura de entrada e o resto dela.
+    #[test]
+    fn a_task_revised_between_the_two_readings_goes_out_in_the_batch_with_its_current_version() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let first = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+
+        let entry = round_entry(root, None);
+        let revised = id_of(&write(root, "x", "task", json!({"replaces": first, "text": "Mexer de outro jeito no código de um.",
+            "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
+        let out = round_from(root, None, entry);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "a tarefa revista sai no lote: {out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let wave = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1));
+        assert_eq!(wave.map(|w| w.ints("order")), Some(vec![revised]), "a onda leva o número da versão em vigor");
+        let task = log.current(revised).expect("a tarefa segue viva");
+        assert_eq!(task.wave(), Some(1), "a tarefa ganha o número da onda");
+        assert_eq!(task.str_field("text"), Some("Mexer de outro jeito no código de um."), "com o texto revisto");
     }
 
     /// A tarefa da onda de lote em andamento ganha versão nova, pela porta do

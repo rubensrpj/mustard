@@ -20,8 +20,10 @@ pub const LANGUAGE_BUDGET: u64 = 25_600;
 /// Os dois idiomas do Mustard, como aparecem nos caminhos.
 pub const LANGUAGES: [&str; 2] = ["pt-BR", "en-US"];
 
+/// A raiz do repositório na cópia que roda o teste. Quem traz este arquivo
+/// declara, na raiz do próprio pacote, o módulo `manifest_dir` dele.
 pub fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    crate::manifest_dir::manifest_dir().join("../..")
 }
 
 /// Todo `.md` debaixo de `dir`, em ordem.

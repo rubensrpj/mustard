@@ -1621,7 +1621,7 @@ mod tests {
     fn with_the_real_spec_every_agreed_item_has_an_owner_and_each_request_cites_only_its_own() {
         use crate::domain::mustard_id;
         use crate::domain::wave_prompt::Owner;
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = crate::manifest_dir::manifest_dir().join("../..");
         let file = std::env::var_os("MUSTARD_SPEC_FILE")
             .map_or_else(|| root.join(".claude/spec/mustard-enxuto/spec.ndjson"), PathBuf::from);
         let log = crate::io::spec_events::read(&file).expect("a spec se lê").expect("a spec existe");

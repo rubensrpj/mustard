@@ -49,6 +49,9 @@
 //! working these numbers go UP and the test fails, asking to be re-baselined
 //! with the improvement.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -64,7 +67,7 @@ const CROSS_EN_PROMPT_PT_CODE_BASELINE: usize = 0;
 const CROSS_PT_PROMPT_EN_CODE_BASELINE: usize = 0;
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
 /// Scan a fixture into a temp model and return its path, together with the

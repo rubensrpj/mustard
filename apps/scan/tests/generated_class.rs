@@ -15,12 +15,15 @@
 //! Every tool/ecosystem marker name lives in the fixture and in the catalog
 //! (generated-markers.toml); `src/` stays agnostic.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The committed fixture root, resolved from the crate manifest dir.
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("generated_mix")
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join("generated_mix")
 }
 
 /// Scan the fixture into a temp `grain.model.json` and return (temp dir,

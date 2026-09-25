@@ -91,8 +91,6 @@ pub const PURGED_MARK: &str = "…";
 /// chamam por este caminho e a medida das linhas de cada parte.
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use serde_json::{json, Map, Value};
 
     use super::*;
@@ -233,7 +231,7 @@ mod tests {
     /// código: a porta e cada parte da pasta dela, pela medida única.
     #[test]
     fn no_file_of_the_spec_events_goes_over_the_code_line_cap() {
-        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("domain").join("spec_events.rs");
+        let gate = crate::manifest_dir::manifest_dir().join("src").join("domain").join("spec_events.rs");
         assert_eq!(crate::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

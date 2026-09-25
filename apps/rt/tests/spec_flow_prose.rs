@@ -19,6 +19,9 @@
 //! 3. a porta que o usuário tem manda repassar o campo `command` e proíbe
 //!    escolher o passo por conta própria.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -27,7 +30,7 @@ use mustard_rt::commands::flow::resume::NEXT_BY_PHASE;
 
 /// A raiz do repositório, a partir deste crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Os nomes que o `run --help` publica, lidos do mesmo retrato que a catraca

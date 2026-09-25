@@ -14,6 +14,9 @@
 //! ingested (manifests, modules, units) — convention mining must keep seeing
 //! test code.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -22,7 +25,7 @@ use mustard_core::domain::vocabulary::stacks::CONFIDENCE_TWO_CLASSES;
 /// A committed fixture root, resolved from the crate manifest dir so the test
 /// is location-independent.
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
 /// Recursively copy a committed fixture into the assembled parent fixture.

@@ -1910,11 +1910,11 @@ mod tests {
     ///
     /// Com o gancho do commit recusando, as duas leem as voltas, juntam, veem
     /// o git recusar e desfazem, uma depois da outra: nada é comitado nem
-    /// gravado, e as cópias ficam. Sem o gancho, enquanto outro passo do git
-    /// segura a trava, nenhuma lê nem junta nada; solta a trava, uma lê as
-    /// duas voltas, junta, comita e grava, e a outra, que lê a spec de novo
-    /// sob a trava, não acha volta a assumir: um commit só, com as duas
-    /// ondas, cada entrega gravada uma vez e as duas cópias somem.
+    /// gravado, e as cópias ficam. Sem o gancho, as duas leem a spec, com as
+    /// duas voltas, antes de qualquer uma pegar a trava; uma lê as duas
+    /// voltas de novo sob a trava, junta, comita e grava, e a outra, que lê a
+    /// spec de novo sob a trava, não acha volta a assumir: um commit só, com
+    /// as duas ondas, cada entrega gravada uma vez e as duas cópias somem.
     #[test]
     fn two_rounds_at_the_same_time_assume_each_return_once() {
         let dir = tempdir().unwrap();
@@ -1937,7 +1937,7 @@ mod tests {
         let main_file = || std::fs::read_to_string(root.join("src/a.rs")).unwrap();
 
         let hook = refusing_hook(root);
-        let (_, refused) = two_rounds_at_once(root, &main_file);
+        let refused = two_rounds_at_once(root, None);
         for out in &refused {
             assert_eq!(out["reason"], json!("git-refused"), "{refused:?}");
         }
@@ -1947,8 +1947,7 @@ mod tests {
         assert!(copy(1).exists() && copy(2).exists(), "the copies stay for the next round: {refused:?}");
 
         std::fs::remove_file(&hook).unwrap();
-        let (while_held, outs) = two_rounds_at_once(root, &main_file);
-        assert_eq!(while_held, "fn um() {}\n", "no round joined while another git step held the lock");
+        let outs = two_rounds_at_once(root, None);
         for out in &outs {
             assert_eq!(out["ok"], json!(true), "{outs:?}");
         }
@@ -1974,9 +1973,9 @@ mod tests {
     /// no mesmo arquivo de um submódulo, em trechos diferentes, já gravadas
     /// na spec — a cópia da 2 já existia, de um pedido anterior à trava por
     /// arquivo, na mesma base da 1, com o submódulo dela já na branch da
-    /// unidade. Enquanto outro passo do git segura a trava, nada é juntado;
-    /// solta a trava, uma rodada junta as duas, comita no submódulo e comita
-    /// o ponteiro no principal, e a outra não acha volta a assumir. O arquivo
+    /// unidade. As duas leem a spec antes de qualquer uma pegar a trava; uma
+    /// junta as duas, comita no submódulo e comita o ponteiro no principal,
+    /// e a outra não acha volta a assumir. O arquivo
     /// termina com as duas mudanças, num commit só em cada repositório, e as
     /// cópias somem, com as dos submódulos.
     #[test]
@@ -2008,8 +2007,7 @@ mod tests {
         let main_file = || std::fs::read_to_string(sub.join("lib.txt")).unwrap();
         let (main_before, sub_before) = (commit_count(root), commit_count(&sub));
 
-        let (while_held, outs) = two_rounds_at_once(root, &main_file);
-        assert_eq!(while_held, "fn um() {}\n", "no round joined while another git step held the lock");
+        let outs = two_rounds_at_once(root, None);
         for out in &outs {
             assert_eq!(out["ok"], json!(true), "{outs:?}");
         }

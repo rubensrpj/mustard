@@ -10,13 +10,16 @@
 //! plugin, os moldes, os comandos, os ganchos e o estilo de resposta — vem
 //! do próprio repositório, não de um resumo escrito à mão.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// A raiz do repositório, a partir deste crate (`apps/cli`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    manifest_dir::manifest_dir()
         .join("../..")
         .canonicalize()
         .expect("repo root resolves")

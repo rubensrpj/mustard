@@ -350,24 +350,43 @@ mod tests {
         )
     }
 
-    /// Duas rodadas da spec `x` soltas ao mesmo tempo, sem relatório,
-    /// enquanto outro passo do git segura a trava: devolve o arquivo
-    /// `main_file` como estava enquanto a trava seguia presa, e a resposta
-    /// de cada rodada, depois de a trava soltar.
-    pub(super) fn two_rounds_at_once(root: &Path, main_file: &dyn Fn() -> String) -> (String, Vec<Value>) {
-        let before = main_file();
+    /// As opções de uma rodada da spec `x`, com o relatório `report`.
+    fn round_opts(root: &Path, report: Option<&str>) -> RoundOpts {
+        RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: report.map(str::to_string) }
+    }
+
+    /// A leitura de entrada de uma rodada da spec `x`, com o relatório
+    /// `report`, pelo caminho de [`round`]: o que a rodada lê antes de assumir
+    /// qualquer volta e de pegar a trava do passo do git.
+    pub(super) fn round_entry(root: &Path, report: Option<&str>) -> Result<answer::Entry, RoundRefusal> {
+        let project = spec_events::project(root);
+        answer::enter_round(&round_opts(root, report), &project.root, project.lang, None)
+    }
+
+    /// O resto da rodada da spec `x`, com o relatório `report`, a partir da
+    /// leitura de entrada `entry` ([`round_entry`]), pelo caminho de
+    /// [`round`]: a mesma resposta que ele daria.
+    pub(super) fn round_from(root: &Path, report: Option<&str>, entry: Result<answer::Entry, RoundRefusal>) -> Value {
+        let project = spec_events::project(root);
+        let opts = round_opts(root, report);
+        entry
+            .and_then(|entry| {
+                answer::run_entered_round(&opts, &project.root, project.lang, Caller::default(), &answer::scan_mine, entry)
+            })
+            .unwrap_or_else(|refusal| refusal.to_value(project.lang))
+    }
+
+    /// Duas rodadas da spec `x` ao mesmo tempo, com o relatório `report`,
+    /// cada uma pelo caminho de [`round`]. As duas fazem a leitura de entrada
+    /// antes de qualquer uma seguir: a volta de cada leitura é o sinal de que
+    /// ela já aconteceu, sem esperar relógio nenhum. Só então as duas seguem,
+    /// cada uma na sua linha de execução, disputando a trava do passo do git.
+    /// Devolve a resposta de cada rodada.
+    pub(super) fn two_rounds_at_once(root: &Path, report: Option<&str>) -> Vec<Value> {
+        let entries = [(); 2].map(|()| round_entry(root, report));
         std::thread::scope(|scope| {
-            let Ok(lock) = commit::git_lock(root) else { panic!("the git lock") };
-            let rounds = [scope.spawn(|| round(root, "x", None)), scope.spawn(|| round(root, "x", None))];
-            for _ in 0..150 {
-                if main_file() != before {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            let while_held = main_file();
-            drop(lock);
-            (while_held, rounds.into_iter().map(|r| r.join().unwrap()).collect())
+            let rounds = entries.map(|entry| scope.spawn(move || round_from(root, report, entry)));
+            rounds.into_iter().map(|r| r.join().unwrap()).collect()
         })
     }
 
@@ -538,7 +557,7 @@ mod tests {
     /// cada parte da pasta dela, pela medida única do núcleo.
     #[test]
     fn no_file_of_the_round_goes_over_the_code_line_cap() {
-        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("flow").join("round.rs");
+        let gate = crate::manifest_dir::manifest_dir().join("src").join("commands").join("flow").join("round.rs");
         assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

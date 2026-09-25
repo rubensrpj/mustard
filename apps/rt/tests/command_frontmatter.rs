@@ -28,11 +28,14 @@
 //!   summary relayed from a forked subagent is second-hand evidence of the one
 //!   check the flow treats as final.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// The whole exposed surface: the commands a user may type. Kept sorted.

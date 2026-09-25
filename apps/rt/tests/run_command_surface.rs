@@ -18,6 +18,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -38,7 +41,7 @@ const DOC_SURFACES: &[(&str, Option<&str>)] = &[("plugin", Some("md"))];
 /// The repo root, resolved from this crate (`apps/rt`) so the scan does not
 /// depend on the directory the test runner happens to start in.
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Os nomes gravados no retrato, em ordem alfabética.

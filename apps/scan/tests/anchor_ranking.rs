@@ -21,6 +21,9 @@
 //! verbatim, hit or miss — and scan persists per-module `fan_in` such that
 //! the per-module degrees sum to the graph's edge count.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -357,7 +360,7 @@ fn digest_query_stacks_copies_model_detected_stacks() {
     // stack_detection_e2e.rs), then prove the per-query response carries the
     // model's detections verbatim — on a hit AND on a miss (the stacks are
     // repo facts, not match results).
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("php_laravel");
+    let fixture = manifest_dir::manifest_dir().join("tests").join("fixtures").join("php_laravel");
     let temp = tempfile::Builder::new().prefix("scan-anchor-ranking-stacks-").tempdir().unwrap();
     let dir = temp.path().to_path_buf();
     let model = dir.join("grain.model.json");

@@ -11,6 +11,9 @@
 //!
 //! Deterministic: walks the repo tree only (sorted), no network, no env vars.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,7 +34,7 @@ const UNCOMMITTED_POINTER_TARGETS: &[(&str, &str)] = &[(
 
 /// The repo root, resolved from this crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Read a file as lossy UTF-8; unreadable files degrade to an empty string.

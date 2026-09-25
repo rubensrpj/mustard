@@ -48,6 +48,9 @@
 //! therefore also writes `spec.md` and requires git to still SEE it — the
 //! sidecars are runtime output, the spec is not.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -188,7 +191,7 @@ fn field_proven_samples() -> Vec<String> {
 
 /// This repository's root — two levels up from `packages/core`.
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    manifest_dir::manifest_dir().join("..").join("..")
 }
 
 /// A fresh repository carrying the seeded `.claude/.gitignore` as its single

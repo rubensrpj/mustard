@@ -1258,7 +1258,7 @@ mod tests {
         assert!(team.get("outputStyle").is_none(), "the team's file never gets the style");
 
         // A outra metade: o plugin entrega um estilo com esse nome.
-        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+        let plugin = crate::manifest_dir::manifest_dir().join("../../plugin");
         let manifest: Value =
             serde_json::from_str(&std_fs::read_to_string(plugin.join(".claude-plugin/plugin.json")).unwrap()).unwrap();
         for text in [Locale::PtBr, Locale::EnUs] {

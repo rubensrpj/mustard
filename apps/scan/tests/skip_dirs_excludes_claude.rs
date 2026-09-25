@@ -5,13 +5,16 @@
 //! C#/TS project. `.claude` lives in `manifests.toml`'s skip_dirs, so the walker
 //! prunes it by name at any depth (same mechanism as `.git`/`node_modules`).
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A committed fixture root, resolved from the crate manifest dir so the test
 /// is location-independent.
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
 /// Recursively copy a committed fixture into the assembled temp repo.

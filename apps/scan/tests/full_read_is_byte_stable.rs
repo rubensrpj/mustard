@@ -3,7 +3,10 @@
 //! an order taken from a hash map once named the same convention differently
 //! on each read.
 
-use std::path::{Path, PathBuf};
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
+use std::path::Path;
 use std::process::Command;
 
 fn full_read(root: &Path, out: &Path) -> Vec<u8> {
@@ -17,7 +20,7 @@ fn full_read(root: &Path, out: &Path) -> Vec<u8> {
 
 #[test]
 fn two_full_reads_of_the_same_tree_give_the_same_bytes() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures");
+    let root = manifest_dir::manifest_dir().join("tests").join("fixtures");
     let temp = tempfile::Builder::new().prefix("scan-byte-stable-").tempdir().unwrap();
     let dir = temp.path().to_path_buf();
     let first = full_read(&root, &dir.join("first.json"));

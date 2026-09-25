@@ -10,12 +10,15 @@
 //!     (other directory, other subtokens) over the near-duplicate of the one
 //!     already picked. Every tie breaks on path asc — byte-stable output.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A committed fixture root, resolved from the crate manifest dir.
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
 /// Scan a fixture into `grain.model.json` inside a per-test temp dir and

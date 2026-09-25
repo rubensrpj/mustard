@@ -24,6 +24,9 @@
 //! unix, because the shims are shell scripts. Closing that means shims the
 //! Windows shell can run — its own unit, not a line here.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -287,7 +290,7 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
 /// including this file's other two tests. A revert of the fix was invisible.
 #[test]
 fn the_library_half_of_init_calls_no_environment_installer() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init");
+    let dir = manifest_dir::manifest_dir().join("src/commands/init");
     // The library half is every part of `init` except the tools it defines.
     let mut source = String::new();
     for part in ["mod.rs", "questions.rs", "seeding.rs", "project_config.rs"] {
@@ -310,7 +313,7 @@ fn the_library_half_of_init_calls_no_environment_installer() {
     // And the call site that IS allowed must still exist, so this test cannot
     // pass by the installer having disappeared altogether.
     let dispatch = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
+        manifest_dir::manifest_dir().join("src/cli.rs"),
     )
     .expect("cli.rs is readable");
     for call in ["init::ensure_ripgrep();", "init::probe_rtk();", "init::ensure_code_tools("] {

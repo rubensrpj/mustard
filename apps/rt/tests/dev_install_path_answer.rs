@@ -18,13 +18,16 @@
 //! caminho de busca montado aqui: uma vez com uma terceira cópia à frente
 //! (tem de avisar) e uma vez com a cópia do plugin à frente (não avisa).
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A raiz do repositório, subindo de `<repo>/apps/rt` até achar o script.
 fn repo_root() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = manifest_dir::manifest_dir();
     let mut dir = manifest.as_path();
     loop {
         if dir.join("scripts").join("dev-install.sh").is_file() {

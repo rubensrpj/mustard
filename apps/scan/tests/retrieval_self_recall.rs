@@ -33,6 +33,9 @@
 //! are skipped rather than counted as failures: the test measures retrieval,
 //! not how unique a file's names happen to be.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
@@ -56,7 +59,7 @@ const MAX_SHARE: f32 = 0.15;
 const MIN_TOP1: f32 = 0.70;
 
 fn crate_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    manifest_dir::manifest_dir()
 }
 
 /// Split an identifier into lowercase word tokens (camel, snake, kebab alike).

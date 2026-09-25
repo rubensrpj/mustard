@@ -494,7 +494,7 @@ mod tests {
     /// cada parte da pasta dela, pela medida única do núcleo.
     #[test]
     fn no_file_of_the_doctor_goes_over_the_code_line_cap() {
-        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("doctor").join("doctor.rs");
+        let gate = crate::manifest_dir::manifest_dir().join("src").join("commands").join("doctor").join("doctor.rs");
         assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

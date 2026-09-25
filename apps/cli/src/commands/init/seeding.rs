@@ -331,13 +331,13 @@ mod tests {
     /// harness seeds moved) — and fails if the obsolete path is reintroduced.
     #[test]
     fn templates_never_reference_obsolete_guards_file() {
-        let templates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let templates = crate::manifest_dir::manifest_dir().join("templates");
         assert!(
             templates.is_dir(),
             "templates payload missing at {}",
             templates.display()
         );
-        let core_templates = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let core_templates = crate::manifest_dir::manifest_dir()
             .join("../../packages/core/templates");
         assert!(
             core_templates.is_dir(),

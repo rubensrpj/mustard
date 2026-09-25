@@ -24,8 +24,11 @@
 //! stays a key), a test-only dependency. The installer scripts are shell and
 //! PowerShell, and are read as text.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use yaml_rust2::{Yaml, YamlLoader};
 
@@ -193,14 +196,15 @@ impl Workflow {
 /// The workspace root: the nearest directory above this crate that holds the
 /// verification workflow.
 fn workspace_root() -> PathBuf {
-    let mut dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = manifest_dir::manifest_dir();
+    let mut dir = manifest.as_path();
     loop {
         if dir.join(VERIFICATION).is_file() {
             return dir.to_path_buf();
         }
         dir = dir
             .parent()
-            .unwrap_or_else(|| panic!("no {VERIFICATION} above {}", env!("CARGO_MANIFEST_DIR")));
+            .unwrap_or_else(|| panic!("no {VERIFICATION} above {}", manifest.display()));
     }
 }
 

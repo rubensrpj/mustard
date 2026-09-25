@@ -20,6 +20,9 @@
 //! libtest matches `--exact` against the FULL test path — which equals the bare
 //! function name only at the root of an integration-test binary.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use mustard_rt::commands::doctor::doctor::known_hook_events;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -28,7 +31,7 @@ use std::path::PathBuf;
 /// `CARGO_MANIFEST_DIR` is `<repo>/apps/rt`; the manifest is
 /// `<repo>/plugin/hooks/hooks.json`.
 fn shipped_manifest_path() -> Option<PathBuf> {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = manifest_dir::manifest_dir();
     let mut dir = manifest.as_path();
     loop {
         let candidate = dir.join("plugin").join("hooks").join("hooks.json");

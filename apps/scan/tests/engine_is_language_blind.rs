@@ -31,6 +31,9 @@
 //! doc comments and none in executable code — the engine behaved agnostically
 //! and only its prose leaked. Prose is what the next author reads.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -40,7 +43,7 @@ use std::path::{Path, PathBuf};
 const MIN_TERM_LEN: usize = 3;
 
 fn crate_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    manifest_dir::manifest_dir()
 }
 
 /// Every language id the registry declares — its `name` and its queries `dir`,

@@ -43,3 +43,8 @@ mod report;
 // declares it too but no longer runs any test (`test = false`), which is what
 // stops every `#[cfg(test)]` block under `src/` from executing twice.
 mod hook_output;
+
+// A pasta do pacote lida na hora de rodar, para os testes de dentro de `src/`.
+#[cfg(test)]
+#[path = "../tests/support/manifest_dir.rs"]
+pub(crate) mod manifest_dir;

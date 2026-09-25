@@ -531,7 +531,7 @@ mod tests {
         }
 
         for lang in ["pt-BR", "en-US"] {
-            let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/agents").join(lang);
+            let shipped = crate::manifest_dir::manifest_dir().join("templates/agents").join(lang);
             assert_eq!(files_in(&shipped), today, "the product still ships another {lang} agent template");
         }
         prose_budget::assert_each_language_under_budget();

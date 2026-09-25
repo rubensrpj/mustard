@@ -38,6 +38,11 @@ pub mod domain;
 pub mod view;
 pub use platform::time;
 pub mod platform;
+
+// A pasta do pacote lida na hora de rodar, para os testes de dentro de `src/`.
+#[cfg(test)]
+#[path = "../tests/support/manifest_dir.rs"]
+pub(crate) mod manifest_dir;
 // Project seeding — the compiled-in seed payload (`seeds`) and the
 // install/update engine (`project_seed`) shared by `mustard init` and
 // `mustard-rt run upsert`. See `platform/seeds.rs` + `platform/project_seed/`.

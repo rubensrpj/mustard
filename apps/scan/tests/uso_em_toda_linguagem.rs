@@ -34,6 +34,9 @@
 //! E a pasta do projeto de teste some mesmo quando o teste quebra no meio, e
 //! nenhum teste do scan monta essa pasta à mão.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
@@ -862,7 +865,7 @@ fn a_pasta_do_projeto_de_teste_some_mesmo_quando_o_teste_falha() {
     // O nome da chamada é montado em partes, para este arquivo não se acusar.
     let chamada = concat!("temp", "_dir", "()");
     let mut achados = Vec::new();
-    arquivos_de_texto(Path::new(env!("CARGO_MANIFEST_DIR")), &mut achados);
+    arquivos_de_texto(&manifest_dir::manifest_dir(), &mut achados);
     assert!(achados.iter().any(|(c, _)| c.ends_with("src/refresh.rs")), "a busca percorre o scan inteiro");
     let a_mao: Vec<String> = achados
         .iter()

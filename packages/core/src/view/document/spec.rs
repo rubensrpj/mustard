@@ -42,8 +42,6 @@ pub type WaveStates = BTreeMap<u64, WaveState>;
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use crate::domain::text::{code_lines, CODE_LINE_CAP};
 
     /// Este arquivo não tem mais partes: o motor que montava a página inteira
@@ -51,7 +49,7 @@ mod tests {
     /// medida única do núcleo.
     #[test]
     fn the_file_does_not_go_over_the_code_line_cap() {
-        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("view").join("document").join("spec.rs");
+        let gate = crate::manifest_dir::manifest_dir().join("src").join("view").join("document").join("spec.rs");
         let source = std::fs::read_to_string(&gate).unwrap_or_default();
         assert!(code_lines(&source) <= CODE_LINE_CAP, "{}", gate.display());
     }
