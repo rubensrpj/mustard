@@ -1304,6 +1304,7 @@ mod tests {
         }
         git(root, &["checkout", "-q", "-b", "feature/x"]);
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         let said = id_of(&write(root, "message", json!({"author": "user", "text": "o objetivo"})));
         let crit = id_of(&write(root, "criterion",
             json!({"when": "a onda roda", "then": "a suíte passa", "proof": "cargo test", "form": "ubiquitous",

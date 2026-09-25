@@ -34,6 +34,10 @@
 //!   para rascunho, para ninguém juntar pelo botão a versão sem o ajuste; a
 //!   resposta traz `pr` e `draft`, e o rascunho recusado vira aviso, sem
 //!   desfazer a volta. O `pr-open` do fechamento seguinte tira o rascunho.
+//!   Fechado sem merge, o pull request não vai para rascunho, que o provedor
+//!   recusa num pull request fechado: a volta acontece, a resposta traz `pr`
+//!   sem `draft`, e o `next` diz que ele está fechado e que o `pr-open` do
+//!   fechamento seguinte abre outro, na mesma branch.
 //! - **Entregue na base, descartada ou sem fase gravada**, não volta por
 //!   caminho nenhum: pedido novo sobre ela é obra nova, pelo `open`.
 //!
@@ -283,6 +287,7 @@ pub(crate) fn reopen_with_provider(
     // caminho do merge percebido no início da sessão, e não volta. Sem
     // resposta, ela volta, e a resposta avisa.
     let mut warnings: Vec<String> = Vec::new();
+    let mut closed_pr = None;
     if from == "pr_open" {
         match merged_elsewhere_with(&opts.root, &spec, session, provider, settle) {
             Some(MergedElsewhere::Landed { .. }) => {
@@ -296,6 +301,7 @@ pub(crate) fn reopen_with_provider(
             Some(MergedElsewhere::Unanswered { reason }) => {
                 warnings.push(fill("reopen.merge_unchecked", lang, &[("{spec}", &spec), ("{reason}", &reason)]));
             }
+            Some(MergedElsewhere::Closed { pr }) => closed_pr = Some(pr),
             Some(MergedElsewhere::Submodules(_)) | None => {}
         }
     }
@@ -310,15 +316,26 @@ pub(crate) fn reopen_with_provider(
         Ok(recorded) => recorded,
         Err(refusal) => return refuse(ReopenRefusal::Spec(refusal)),
     };
+    // De volta à execução, o passo termina pelo pull request: o mesmo, ou o
+    // fechado sem merge, que dá lugar a outro no fechamento seguinte.
+    let next = match (to, closed_pr) {
+        ("running", Some(pr)) => {
+            format!("{} {}", say(next, lang, &spec), fill("reopen.pr_closed", lang, &[("{pr}", &pr.to_string())]))
+        }
+        ("running", None) => format!("{} {}", say(next, lang, &spec), translate("reopen.same_pr", lang)),
+        _ => say(next, lang, &spec),
+    };
     let mut answer = json!({
         "ok": true, "spec": spec, "phase": to, "from": from, "recorded": true,
-        "id": recorded.written.id, "reason": reason,
-        "next": say(next, lang, &spec),
+        "id": recorded.written.id, "reason": reason, "next": next,
     });
     // Já em execução, o pull request vai para rascunho, e ninguém o junta
     // pelo botão enquanto a spec não fecha de novo. O rascunho recusado não
-    // desfaz a volta: a resposta avisa que o pull request ficou liberado.
-    if from == "pr_open" {
+    // desfaz a volta: a resposta avisa que o pull request ficou liberado. O
+    // fechado sem merge não vai: o provedor recusa o rascunho dele.
+    if let Some(pr) = closed_pr {
+        answer["pr"] = json!(pr);
+    } else if from == "pr_open" {
         let (pr, drafted) = put_in_draft(&opts.root, &spec, provider);
         if let Some(number) = pr {
             answer["pr"] = json!(number);
@@ -746,6 +763,38 @@ mod tests {
         );
         assert_eq!(seen, ["view Number(1)", "draft 1 phase=running"]);
         assert_eq!(phase_of(root, "epico"), Some("running"), "the refused draft does not undo the return");
+    }
+
+    /// O pull request fechado sem merge não vai para rascunho, que o provedor
+    /// recusa num pull request fechado: a spec volta à execução do mesmo
+    /// jeito, a resposta traz o número dele sem `draft` e sem aviso, e o
+    /// próximo passo diz, nos dois idiomas, que ele está fechado e que o
+    /// fechamento seguinte abre outro — e não que o pull request continua o
+    /// mesmo. Nada é arrumado.
+    #[test]
+    fn a_closed_pull_request_is_not_put_in_draft_and_the_next_close_opens_another() {
+        let languages = [
+            ("pt-BR", Locale::PtBr, "está fechado, sem merge", "abre outro pull request"),
+            ("en-US", Locale::EnUs, "is closed, not merged", "opens another pull request"),
+        ];
+        for (language, lang, closed, another) in languages {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#)).unwrap();
+            spec_in(root, "epico", "pr_open");
+            let (out, seen, settled) = reopen_through(root, Ok(PrStatus::Closed), Err("gh-refused-closed".into()));
+            assert_eq!(out["ok"], json!(true), "{language}: {out}");
+            assert_eq!((out["from"].clone(), out["phase"].clone()), (json!("pr_open"), json!("running")), "{out}");
+            assert_eq!(out["pr"], json!(1), "{language}: {out}");
+            assert!(out.get("draft").is_none(), "{language}: no draft was asked: {out}");
+            assert!(out["warnings"].is_null(), "{language}: {out}");
+            assert_eq!(seen, ["view Number(1)"], "{language}: no draft on a closed pull request");
+            assert!(settled.is_empty(), "{language}: a closed pull request is not settled: {settled:?}");
+            let next = out["next"].as_str().unwrap_or_default();
+            assert!(next.contains("#1") && next.contains(closed) && next.contains(another), "{language}: {next}");
+            assert!(!next.contains(translate("reopen.same_pr", lang)), "{language}: {next}");
+            assert_eq!(phase_of(root, "epico"), Some("running"));
+        }
     }
 
     /// O pull request que um colega já juntou pelo provedor, sem o Mustard

@@ -38,6 +38,8 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
+mod support;
+
 const SPEC: &str = "ponta";
 const GOAL: &str = "Trocar a saudação do programa.";
 const SESSION: &str = "s-ponta";
@@ -189,6 +191,7 @@ impl Project {
         std::fs::write(&gh, script).expect("the fake gh");
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        support::copies_leave_with_the_test(&root);
         Self { _dir: dir, root, home, bin, remotes }
     }
 

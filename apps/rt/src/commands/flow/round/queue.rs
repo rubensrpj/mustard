@@ -558,10 +558,10 @@ pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<Vec<St
 /// `mustard.json`) levados à cópia `copy`, cada um no mesmo caminho relativo,
 /// sempre pelo conteúdo: nenhum atalho, junção ou link para o repositório
 /// principal, em nenhum sistema, então apagar a cópia nunca toca arquivo
-/// dele. Devolve, na ordem da lista, os itens que não chegaram: o que falta
-/// no principal, o que não é arquivo, o caminho que sairia do projeto
-/// ([`local_file_inside`]) e o que o disco recusou. Lista vazia ou ausente
-/// não copia nada.
+/// dele. Devolve, na ordem da lista, os itens que não foram copiados: o que o
+/// git não ignora ([`local_file_ignored`]), o que falta no principal, o que
+/// não é arquivo e o que o disco recusou. Lista vazia ou ausente não copia
+/// nada.
 fn copy_local_files(root: &Path, copy: &Path) -> Vec<String> {
     let listed = mustard_core::ProjectConfig::load(root).local_files.unwrap_or_default();
     listed
@@ -574,10 +574,12 @@ fn copy_local_files(root: &Path, copy: &Path) -> Vec<String> {
 }
 
 /// Copia o arquivo local `file` do checkout `root` para a cópia `copy`;
-/// `false` quando ele não chegou. O link que já estiver no lugar dele na
-/// cópia sai antes: copiar por cima escreveria no alvo do link.
+/// `false` quando ele não foi copiado. O arquivo que o git não ignora nunca é
+/// copiado: a cópia já o tem pelo git, na versão do commit. O link que já
+/// estiver no lugar dele na cópia sai antes: copiar por cima escreveria no
+/// alvo do link.
 fn copy_local_file(root: &Path, copy: &Path, file: &str) -> bool {
-    if !local_file_inside(file) {
+    if !local_file_ignored(root, file) {
         return false;
     }
     let (from, to) = (root.join(file), copy.join(file));
@@ -594,6 +596,55 @@ fn copy_local_file(root: &Path, copy: &Path, file: &str) -> bool {
         return false;
     }
     std::fs::copy(&from, &to).is_ok()
+}
+
+/// Os projetos de teste desta linha de execução e a pasta das cópias de cada
+/// um ([`mustard_core::io::wave_prompt::copies_dir`]). Quando a linha termina
+/// — o teste passou ou falhou —, cada pasta sai do disco e, com o repositório
+/// ainda no lugar, o git dele esquece as cópias que sumiram.
+#[cfg(test)]
+struct TestCopies(Vec<(PathBuf, PathBuf)>);
+
+#[cfg(test)]
+impl Drop for TestCopies {
+    fn drop(&mut self) {
+        for (root, copies) in &self.0 {
+            let _ = std::fs::remove_dir_all(copies);
+            // O git direto: no fim da linha de execução, outro valor dela que
+            // a porta do git lesse já pode ter saído.
+            if root.join(".git").exists() {
+                let _ = std::process::Command::new("git").args(["worktree", "prune"]).current_dir(root).output();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_COPIES: std::cell::RefCell<TestCopies> = const { std::cell::RefCell::new(TestCopies(Vec::new())) };
+}
+
+/// As cópias que um teste cria para o projeto `root` saem no fim dele,
+/// também quando ele falha, e o git do projeto deixa de listá-las. Elas moram
+/// fora da pasta temporária do teste — na pasta que `MUSTARD_COPIES_DIR`
+/// indica —, e a pasta temporária, quando sai, não as leva. Chame da linha de
+/// execução do próprio teste, com o projeto já no lugar.
+#[cfg(test)]
+pub(crate) fn copies_leave_with_the_test(root: &Path) {
+    let copies = mustard_core::io::wave_prompt::copies_dir(root);
+    TEST_COPIES.with(|made| made.borrow_mut().0.push((root.to_path_buf(), copies)));
+}
+
+/// O item `file` da lista de arquivos locais é um arquivo que o git do
+/// checkout `root` ignora: um caminho relativo dentro do projeto
+/// ([`local_file_inside`]) que casa com uma regra de ignorar e não está
+/// versionado. É a conferência única da lista, nos dois pontos: o `upsert`
+/// não grava o item que não passa, e a cópia da onda não o copia. O arquivo
+/// que o git não ignora chega à cópia pelo próprio git, na versão do commit;
+/// copiá-lo da pasta principal por cima trocaria essa versão pela de lá. Sem
+/// git, nenhum arquivo passa.
+pub(crate) fn local_file_ignored(root: &Path, file: &str) -> bool {
+    local_file_inside(file) && git::run(root, &["check-ignore", "-q", "--", file]).ok
 }
 
 /// A cópia do submódulo `sub` dentro da cópia `copy`: o submódulo do
@@ -1299,7 +1350,6 @@ mod tests {
         let log = store::read(&path).unwrap().unwrap();
         let back = log.events.iter().rfind(|e| e.event_type == "delivered").unwrap();
         assert_eq!(back.fields.get("files"), Some(&json!(["src/a.rs"])), "{wrote}");
-        let _ = std::fs::remove_dir_all(&copies);
     }
 
     /// Duas ondas sem dependência entre si, mas com o mesmo arquivo
@@ -1605,7 +1655,6 @@ mod tests {
         assert!(kind.is_file() && !kind.is_symlink(), "{again}");
         assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "{again}");
         assert_eq!(std::fs::read_to_string(copy.join("config/local.json")).unwrap(), "{\"porta\":1}\n");
-        let _ = std::fs::remove_dir_all(copies_dir(root));
 
         // Lista vazia ou ausente: a cópia sai sem nenhum arquivo local.
         for config in [json!({ "localFiles": [] }), json!({})] {
@@ -1621,7 +1670,94 @@ mod tests {
             let (copy, _) = sent_copy(root, 1);
             assert!(!Path::new(&copy).join(".env").exists(), "{config}: nada é copiado");
             assert!(local_files_missing(&out).is_empty(), "{config}: {out}");
-            let _ = std::fs::remove_dir_all(copies_dir(root));
+        }
+    }
+
+    /// A cópia reaproveitada com um link no lugar do arquivo local recebe um
+    /// arquivo comum, com o conteúdo de agora da pasta principal: o link sai
+    /// antes da cópia, e o alvo dele fica como estava.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_place_of_a_local_file_gives_way_to_a_plain_copy() {
+        let dir = tempdir().unwrap();
+        let root = &dir.path().join("projeto");
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join(".env"), "SEGREDO=1\n").unwrap();
+        std::fs::write(root.join("mustard.json"), json!({ "localFiles": [".env"] }).to_string()).unwrap();
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let (copy_path, _) = sent_copy(root, 1);
+        let copy = Path::new(&copy_path);
+
+        let target = dir.path().join("alvo.env");
+        std::fs::write(&target, "ALVO=1\n").unwrap();
+        std::fs::remove_file(copy.join(".env")).unwrap();
+        std::os::unix::fs::symlink(&target, copy.join(".env")).unwrap();
+        std::fs::write(root.join(".env"), "SEGREDO=2\n").unwrap();
+        replan(root, 1);
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![1], "{again}");
+        assert_eq!(sent_copy(root, 1).0, copy_path, "a mesma cópia: {again}");
+        let kind = std::fs::symlink_metadata(copy.join(".env")).unwrap().file_type();
+        assert!(kind.is_file() && !kind.is_symlink(), "o link saiu: {again}");
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "{again}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "ALVO=1\n", "o alvo do link fica como estava");
+        assert!(local_files_missing(&again).is_empty(), "{again}");
+    }
+
+    /// Um arquivo versionado posto à mão na lista de arquivos locais não é
+    /// copiado: a cópia fica com a versão do commit, mesmo com a pasta
+    /// principal mudada, e a rodada o devolve na lista dos que não foram
+    /// copiados. O arquivo da mesma lista que o git ignora chega.
+    #[test]
+    fn a_versioned_file_in_the_local_list_keeps_the_commit_version_in_the_copy() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        std::fs::write(root.join("config/app.json"), "{\"versao\":\"commit\"}\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("config/app.json"), "{\"versao\":\"principal\"}\n").unwrap();
+        std::fs::write(root.join(".env"), "SEGREDO=1\n").unwrap();
+        let listed = json!({ "localFiles": [".env", "config/app.json"] });
+        std::fs::write(root.join("mustard.json"), listed.to_string()).unwrap();
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let (copy_path, _) = sent_copy(root, 1);
+        let copy = Path::new(&copy_path);
+        let app = std::fs::read_to_string(copy.join("config/app.json")).unwrap();
+        assert_eq!(app, "{\"versao\":\"commit\"}\n", "a versão do commit fica intacta: {out}");
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=1\n", "{out}");
+        assert_eq!(local_files_missing(&out), ["config/app.json"], "{out}");
+        assert_eq!(git_text(copy, &["status", "--porcelain", "--untracked-files=all"]), "", "a cópia segue limpa");
+    }
+
+    /// As cópias que um teste da rodada cria moram fora da pasta temporária
+    /// dele, e saem quando ele termina — também quando ele falha —, e o git
+    /// do projeto deixa de listá-las.
+    #[test]
+    fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
+        use mustard_core::io::wave_prompt::copies_dir;
+
+        for fails in [false, true] {
+            let dir = tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let inside = root.clone();
+            let ended = std::thread::spawn(move || {
+                approved(&inside, "x", &[(1, &["src/a.rs"], &[])]);
+                let out = round(&inside, "x", None);
+                let (copy, _) = sent_copy(&inside, 1);
+                assert!(Path::new(&copy).join(".git").is_file(), "{out}");
+                assert!(!fails, "o teste falhou depois de criar a cópia");
+            })
+            .join();
+            assert_eq!(ended.is_err(), fails);
+            assert!(!copies_dir(&root).exists(), "fails={fails}: a pasta das cópias saiu");
+            let listed = git_text(&root, &["worktree", "list", "--porcelain"]);
+            assert_eq!(listed.matches("worktree ").count(), 1, "fails={fails}: só o checkout principal: {listed}");
         }
     }
 

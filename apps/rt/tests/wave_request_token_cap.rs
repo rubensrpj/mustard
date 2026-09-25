@@ -27,6 +27,8 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
+mod support;
+
 const SPEC: &str = "backlog";
 const GOAL: &str = "Trocar a saudação do programa.";
 const SESSION: &str = "s-backlog";
@@ -68,6 +70,7 @@ impl Project {
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-q", "-m", "init"]);
         git(&root, &["checkout", "-q", "-b", "dev"]);
+        support::copies_leave_with_the_test(&root);
         Self { _dir: dir, root, home }
     }
 

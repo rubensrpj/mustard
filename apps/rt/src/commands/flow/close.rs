@@ -1058,6 +1058,7 @@ mod tests {
                 "files": [{"path": wave_file(n)}], "origin": said}));
         }
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
 
         let round = |report: Option<String>| {
@@ -1247,6 +1248,7 @@ mod tests {
             json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/w1.rs"}], "origin": said}),
         );
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
 
         let round = |report: Option<String>| {
@@ -1472,7 +1474,6 @@ mod tests {
         assert_eq!(again["review"]["final"], json!(true), "o arquivo local não suja a cópia: {again}");
         assert!(regular(&copy.join(".env")), "{again}");
         assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "{again}");
-        let _ = std::fs::remove_dir_all(mustard_core::io::wave_prompt::copies_dir(root));
     }
 
     /// O roteiro que os dois comandos do servidor rodam no teste: grava, num
@@ -1843,6 +1844,7 @@ exit "${2:-0}"
         write(root, "x", "task", json!({"wave": 1, "text": "Tarefa da onda 1.",
             "files": [{"path": wave_file(1)}], "origin": said}));
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
 
         let round = |report: Option<String>| {
@@ -1924,6 +1926,7 @@ exit "${2:-0}"
         write(root, "x", "task", json!({"wave": 1, "text": "Tarefa da onda 1.",
             "files": [{"path": wave_file(1)}], "origin": said}));
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
 
         let round = |report: Option<String>| {

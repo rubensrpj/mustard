@@ -52,7 +52,11 @@
 //! each copy receives. While `localFiles` is absent — not asked yet — the
 //! report carries `localFilesFound`, the files git ignores outside an ignored
 //! folder, for the person to confirm once. No rule of any language decides
-//! either answer: both are the project's.
+//! either answer: both are the project's. A `--local-files` item git does not
+//! ignore is refused before anything is written — each copy already gets it
+//! through git, in the commit's version, and copying it over would swap that
+//! version for the main folder's — with the same check the copy runs
+//! ([`crate::commands::flow::round::local_file_ignored`]).
 //!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
 //! `UpsertReport` flattened, with `pluginRefresh`, `codeToolWarnings` and,
@@ -286,6 +290,15 @@ fn upsert(
     // reach it is the same failure with an extra step.
     let mode = InstallMode::Private;
 
+    // A lista de arquivos locais que traz um arquivo que o git não ignora é
+    // recusada antes de qualquer escrita: nada é gravado.
+    if let Some(file) = listed_local_files(opts).find(|file| !crate::commands::flow::round::local_file_ignored(root, file))
+    {
+        let lang = ProjectConfig::load(root).language().text_or_default();
+        let refusal = mustard_core::platform::i18n::translate("round.local_file_tracked", lang).replace("{file}", file);
+        return Err(mustard_core::platform::error::Error::Config(refusal));
+    }
+
     let version = mustard_core::harness_version();
     let mut project = upsert_project_with(root, Some(&version), mode, &ProjectPending { root })?;
 
@@ -329,9 +342,8 @@ fn record_answers(root: &Path, opts: &UpsertOpts) -> mustard_core::platform::err
         config.prepare_command = Some(prepare.to_string());
         changed = true;
     }
-    if let Some(raw) = opts.local_files.as_deref() {
-        let files: Vec<String> =
-            raw.split(',').map(str::trim).filter(|file| !file.is_empty()).map(str::to_string).collect();
+    if opts.local_files.is_some() {
+        let files: Vec<String> = listed_local_files(opts).map(str::to_string).collect();
         if config.local_files.as_ref() != Some(&files) {
             config.local_files = Some(files);
             changed = true;
@@ -341,6 +353,12 @@ fn record_answers(root: &Path, opts: &UpsertOpts) -> mustard_core::platform::err
         config.write(root)?;
     }
     Ok(changed)
+}
+
+/// Os itens de `--local-files`, na ordem em que vieram, sem os espaços das
+/// pontas e sem as entradas em branco.
+fn listed_local_files(opts: &UpsertOpts) -> impl Iterator<Item = &str> {
+    opts.local_files.as_deref().unwrap_or_default().split(',').map(str::trim).filter(|file| !file.is_empty())
 }
 
 /// Os arquivos que o git ignora na pasta `root` e que não estão dentro de uma
@@ -1195,6 +1213,40 @@ mod tests {
         std::fs::write(clean.path().join("main.rs"), "fn main() {}\n").expect("write");
         let none = upsert_json(clean.path(), &UpsertOpts::default());
         assert_eq!(none["localFilesFound"], serde_json::json!([]), "{none:#}");
+    }
+
+    /// Um item de `--local-files` que o git não ignora — o `config/app.json`,
+    /// versionado no commit — é recusado com a frase que diz qual e por quê, e
+    /// nada é gravado: nem a lista, nem o resto da instalação. O mesmo pedido
+    /// só com o que o git ignora grava a lista.
+    #[test]
+    fn the_upsert_refuses_a_local_file_that_git_does_not_ignore() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        git_repo(root);
+        std::fs::write(root.join(".gitignore"), ".env\n").expect("gitignore");
+        std::fs::create_dir_all(root.join("config")).expect("mkdir");
+        std::fs::write(root.join("config/app.json"), "{\"porta\":1}\n").expect("write");
+        let git = |args: &[&str]| assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?}");
+        git(&["add", "-A"]);
+        git(&["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "semente"]);
+        std::fs::write(root.join(".env"), "A=1\n").expect("write");
+
+        let asked = UpsertOpts { local_files: Some(".env, config/app.json".to_string()), prepare: None };
+        let refused = upsert(root, &asked, &FakeRunner::new(root, &[]), |_| -> PluginRefresh {
+            panic!("a refused upsert refreshes nothing")
+        });
+        let Err(mustard_core::platform::error::Error::Config(text)) = refused else {
+            panic!("the versioned file is refused: {refused:?}");
+        };
+        assert!(text.starts_with("O arquivo `config/app.json` não entra"), "names the file: {text}");
+        assert!(text.contains("o git não o ignora") && text.contains("versão do commit"), "says why: {text}");
+        assert!(text.contains("Nada foi gravado"), "{text}");
+        assert!(!root.join("mustard.json").exists(), "nothing is written");
+        assert!(!root.join(".claude").exists(), "nothing of the install is written");
+
+        upsert_json(root, &UpsertOpts { local_files: Some(".env".to_string()), prepare: None });
+        assert_eq!(mustard_json(root)["localFiles"], serde_json::json!([".env"]));
     }
 
     /// O comando de preparo vai ao `mustard.json` logo depois dos comandos de

@@ -14,6 +14,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{json, Value};
 
+mod support;
+
 fn rt(root: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
     cmd.arg("run").args(args).arg("--root").arg(root).current_dir(root);
@@ -65,8 +67,10 @@ fn seed_binary(root: &Path, event_type: &str, fields: &Value) -> u64 {
 
 /// A spec aprovada com `waves` ondas soltas, cada uma com a sua tarefa e o
 /// seu arquivo. As ondas saem com o autor do programa, como a rodada as
-/// grava ao montar os lotes.
+/// grava ao montar os lotes. As cópias que a rodada criar saem no fim do
+/// teste.
 fn approved_with_waves(root: &Path, waves: u64) {
+    support::copies_leave_with_the_test(root);
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
     // A prova precisa passar de verdade: a rodada agora roda o critério
@@ -189,6 +193,44 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
         for page in ["spec.md", "spec.html"] {
             assert!(!spec.join(page).exists(), "round {round}: no {page} is written");
         }
+    }
+}
+
+/// A cópia que a rodada, pelo binário, cria para um projeto de teste sai no
+/// fim do teste, também quando ele falha: a pasta das cópias do projeto não
+/// sobra no disco.
+#[test]
+fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
+    for fails in [false, true] {
+        let (sent, made) = std::sync::mpsc::channel();
+        let test = std::thread::spawn(move || {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let root = dir.path();
+            approved_with_waves(root, 1);
+            let git = |args: &[&str]| {
+                let out = Command::new("git")
+                    .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                    .args(args)
+                    .current_dir(root)
+                    .output()
+                    .expect("git");
+                assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            };
+            git(&["init", "-q"]);
+            std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
+            std::fs::write(root.join("a1.rs"), "fn um() {}\n").expect("seed file");
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "semente"]);
+            let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
+            assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
+            let copy = mustard_core::io::wave_prompt::copy_path(root, "teste", 1);
+            assert!(copy.join("a1.rs").is_file(), "the round made the copy: {}", String::from_utf8_lossy(&dispatch.stdout));
+            sent.send(mustard_core::io::wave_prompt::copies_dir(root)).expect("send the copies folder");
+            assert!(!fails, "the test fails on purpose");
+        });
+        assert_eq!(test.join().is_err(), fails);
+        let copies = made.recv().expect("the copies folder");
+        assert!(!copies.exists(), "fails={fails}: the copies folder stayed at {}", copies.display());
     }
 }
 
@@ -478,6 +520,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
         let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().expect("git rev-parse");
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
+    support::copies_leave_with_the_test(root);
 
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));

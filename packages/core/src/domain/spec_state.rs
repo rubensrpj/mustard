@@ -121,7 +121,8 @@ fn folded_states(log: &SpecLog) -> Vec<&SpecEvent> {
 /// O número do último `state` que levou a spec de volta à execução depois do
 /// fechamento: de `closed` ou `pr_open` para `running`, na ordem da dobra.
 /// `None` numa spec que nunca foi reaberta assim.
-fn last_reopening(log: &SpecLog) -> Option<u64> {
+#[must_use]
+pub fn last_reopening(log: &SpecLog) -> Option<u64> {
     let mut was: Option<&str> = None;
     let mut last = None;
     for event in folded_states(log) {

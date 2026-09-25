@@ -289,7 +289,7 @@ fn spec_merged_elsewhere(root: &Path, session: Option<&str>) -> Option<(String, 
 /// merge, ou o silêncio do provedor sobre ele. `None` quando não há nada a
 /// dizer.
 fn landed_notice(probe: &Probe<'_>) -> Option<String> {
-    probe.landing.map(|(spec, found)| landing_text(spec, found, probe.lang))
+    probe.landing.and_then(|(spec, found)| landing_text(spec, found, probe.lang))
 }
 
 /// As branches cujo trabalho já entrou na base e que seguem vivas, pela
@@ -328,9 +328,11 @@ fn merged_notice(probe: &Probe<'_>) -> Option<String> {
 
 /// O texto do pull request da spec `spec`: o que o caminho do merge fez — a
 /// spec entregue, a arrumação da branch e a pergunta das pendências nascidas
-/// nela — ou o silêncio do provedor.
-fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> String {
-    match found {
+/// nela — ou o silêncio do provedor. O pull request fechado sem merge não
+/// muda nada, e o início da sessão não diz nada dele.
+fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> Option<String> {
+    Some(match found {
+        MergedElsewhere::Closed { .. } => return None,
         MergedElsewhere::Unanswered { reason } => translate("session.provider_silent", lang)
             .replace("{spec}", spec)
             .replace("{reason}", reason),
@@ -348,7 +350,7 @@ fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> String {
             }
             text
         }
-    }
+    })
 }
 
 /// A arrumação da branch `branch`, pelo relatório dela: a base atualizada e a
@@ -585,7 +587,7 @@ mod tests {
             settle: Some(settled),
             pending_open: items,
         };
-        let landed = landing_text("uma-spec-de-nome-longo", &landed, Locale::PtBr);
+        let landed = landing_text("uma-spec-de-nome-longo", &landed, Locale::PtBr).expect("the landing is told");
         assert!(landed.contains("Revisor de fora") && landed.contains("saiu desta máquina"), "{landed}");
         let map = mustard_core::session_map(Locale::PtBr).trim().to_string();
         let with_landing = vec![

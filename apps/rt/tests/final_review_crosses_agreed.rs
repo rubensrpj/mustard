@@ -19,6 +19,8 @@ use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
 
+mod support;
+
 const SPEC: &str = "revisao";
 const SESSION: &str = "s-revisao";
 const GOAL: &str = "Somar dois números no programa.";
@@ -56,6 +58,7 @@ impl Project {
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-q", "-m", "init"]);
         git(&root, &["checkout", "-q", "-b", "dev"]);
+        support::copies_leave_with_the_test(&root);
         Self { _dir: dir, root, home }
     }
 

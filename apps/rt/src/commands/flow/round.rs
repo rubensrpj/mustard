@@ -134,8 +134,11 @@ use crate::shared::spec_state::session_from_env;
 pub(crate) use answer::RoundRefusal;
 pub(crate) use convert::convert_hand_waves;
 pub(crate) use queue::{
-    backlog_left, ensure_copy, local_file_missing, open_review, wave_states, waves_in_progress, waves_pending_fix,
+    backlog_left, ensure_copy, local_file_ignored, local_file_missing, open_review, wave_states, waves_in_progress,
+    waves_pending_fix,
 };
+#[cfg(test)]
+pub(crate) use queue::copies_leave_with_the_test;
 pub(crate) use report::{check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 
@@ -299,6 +302,7 @@ mod tests {
         }
         before(said);
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+        copies_leave_with_the_test(root);
     }
 
     /// O mapa do projeto em `root`, como o scan o grava, com uma parte só, na

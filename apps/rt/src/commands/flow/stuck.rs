@@ -288,6 +288,7 @@ mod tests {
     fn the_stuck_processes_are_ended_and_reported() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1);
         std::fs::create_dir_all(&copy).expect("copy dir");
         let outside = tempdir().expect("tempdir for the other project");
@@ -341,7 +342,6 @@ mod tests {
         let _ = elsewhere_looping.wait();
         let _ = ordinary.kill();
         let _ = ordinary.wait();
-        let _ = std::fs::remove_dir_all(mustard_core::io::wave_prompt::copies_dir(root));
     }
 
     /// A cópia da onda mora fora da pasta do projeto, na pasta das cópias
@@ -352,11 +352,14 @@ mod tests {
     /// projeto fica de fora.
     #[test]
     fn a_process_in_a_deleted_outside_copy_is_stuck() {
-        use mustard_core::io::wave_prompt::{copies_dir, copy_path};
+        use mustard_core::io::wave_prompt::copy_path;
 
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         let other = tempdir().expect("tempdir for the other project");
+        for project in [root, other.path()] {
+            crate::commands::flow::round::copies_leave_with_the_test(project);
+        }
         let copy = copy_path(root, "x", 1);
         let live = copy_path(root, "x", 2);
         let foreign = copy_path(other.path(), "x", 1);
@@ -391,8 +394,6 @@ mod tests {
 
         let _ = foreign_orphan.kill();
         let _ = foreign_orphan.wait();
-        let _ = std::fs::remove_dir_all(copies_dir(root));
-        let _ = std::fs::remove_dir_all(copies_dir(other.path()));
     }
 
     /// Sem processo nenhum encerrado, a linha da resposta não existe: o

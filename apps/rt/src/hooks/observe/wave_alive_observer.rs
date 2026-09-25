@@ -247,13 +247,13 @@ mod tests {
             WaveAliveObserver.observe(input, &ctx(root.to_str().unwrap(), Trigger::PostToolUse));
         };
 
-        observe(&command(format!("cd {} && cargo test", backslashed(&copy_path(root, "x", 3, false)))));
+        observe(&command(format!("cd {} && cargo test", backslashed(&copy_path(root, "x", 3)))));
         assert!(alive_path(root, "x", 3).exists(), "found by the copy written in backslashes");
-        let manifest = copy_path(root, "x", 7, false).join("Cargo.toml");
+        let manifest = copy_path(root, "x", 7).join("Cargo.toml");
         observe(&command(format!("cargo test --manifest-path \"{}\"", backslashed(&manifest))));
         assert!(alive_path(root, "x", 7).exists(), "found by the quoted copy written in backslashes");
 
-        observe(&command(format!("cd {} && cargo test", backslashed(&copy_path(other.path(), "x", 5, false)))));
+        observe(&command(format!("cd {} && cargo test", backslashed(&copy_path(other.path(), "x", 5)))));
         assert!(!alive_path(root, "x", 5).exists(), "another project's copy is not this project's wave");
     }
 

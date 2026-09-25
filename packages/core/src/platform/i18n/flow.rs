@@ -377,17 +377,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave}'s copy could not be created: {detail}. The wave did not go out this round; \
              fix it and run the round again."
         }
-        // Um arquivo da lista de arquivos locais do projeto não chegou à
-        // cópia. Não trava nada: a cópia sai sem ele, e o aviso diz qual.
+        // Um arquivo da lista de arquivos locais do projeto não foi copiado
+        // para a cópia. Não trava nada: a cópia sai sem a versão dele da pasta
+        // principal, e o aviso diz qual.
         ("round.local_file_missing", Locale::PtBr) => {
-            "O arquivo local `{file}`, da lista `localFiles` do `mustard.json`, não chegou à cópia \
-             `{copy}`: não existe no repositório principal, não é um caminho relativo dentro do projeto \
-             ou não pôde ser copiado. A cópia saiu sem ele."
+            "O arquivo local `{file}`, da lista `localFiles` do `mustard.json`, não foi copiado para a \
+             cópia `{copy}`: não existe no repositório principal, não é um caminho relativo dentro do \
+             projeto, não é ignorado pelo git — o que o git não ignora chega à cópia pelo próprio git, \
+             na versão do commit — ou o disco recusou a cópia. A cópia saiu sem a versão dele da pasta \
+             principal."
         }
         ("round.local_file_missing", Locale::EnUs) => {
-            "The local file `{file}`, from the `localFiles` list in `mustard.json`, did not reach the \
-             copy `{copy}`: it does not exist in the main repository, is not a relative path inside \
-             the project, or could not be copied. The copy went out without it."
+            "The local file `{file}`, from the `localFiles` list in `mustard.json`, was not copied into \
+             the copy `{copy}`: it does not exist in the main repository, is not a relative path inside \
+             the project, is not ignored by git — a file git does not ignore reaches the copy through \
+             git itself, in the commit's version — or the disk refused the copy. The copy went out \
+             without the main folder's version of it."
+        }
+        // A recusa do upsert a um item de `--local-files` que o git não
+        // ignora: nada é gravado.
+        ("round.local_file_tracked", Locale::PtBr) => {
+            "O arquivo `{file}` não entra em `localFiles`: o git não o ignora. A cópia de cada onda já \
+             recebe pelo git, na versão do commit, todo arquivo que ele não ignora, e copiá-lo da pasta \
+             principal por cima trocaria essa versão pela de lá. Só vai à lista o arquivo que o git \
+             ignora, como o `.env`. Nada foi gravado."
+        }
+        ("round.local_file_tracked", Locale::EnUs) => {
+            "The file `{file}` does not go into `localFiles`: git does not ignore it. Each wave's copy \
+             already gets every file git does not ignore through git, in the commit's version, and \
+             copying it over from the main folder would swap that version for the one there. Only a \
+             file git ignores, like `.env`, goes into the list. Nothing was written."
         }
         ("round.copy_kept", Locale::PtBr) => {
             "A cópia da onda {wave}, {copy}, ficou no disco: {files} mudou nela e não estava na \
@@ -1050,8 +1069,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("pr.pointer_commit", Locale::PtBr) => "chore(submódulo): atualiza o ponteiro",
         ("pr.pointer_commit", Locale::EnUs) => "chore(submodule): update the pointer",
-        // A recusa do merge de uma spec reaberta: o pull request dela leva a
-        // versão sem o ajuste até a spec fechar de novo.
+        // A recusa do merge de uma spec que voltou à execução depois do
+        // fechamento: o pull request dela leva a versão sem o ajuste até a
+        // spec fechar de novo.
         ("pr.merge_reopened", Locale::PtBr) => {
             "A spec {spec} está na fase {phase}: ela foi reaberta e ainda não fechou de novo, e o \
              pull request #{pr} leva a versão sem o ajuste. Nada foi juntado, e o provedor nem foi \
@@ -1065,6 +1085,33 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the provider was not even asked. Finish the change and close the spec through the \
              round (`mustard-rt run round --spec {spec}`); after the close, the `pr-open` it points \
              to updates the same pull request, and the merge goes on."
+        }
+        // A recusa do merge de uma spec que ainda não fechou e nunca voltou do
+        // fechamento: a fase dela e o passo que falta, sem falar em reabertura.
+        ("pr.merge_not_closed", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase} e ainda não fechou, e o pull request #{pr} só entra na \
+             base depois do fechamento dela. Nada foi juntado, e o provedor nem foi perguntado. O passo \
+             que falta agora é `{command}`; dele o fluxo segue até o fechamento pela rodada, e o merge \
+             vem depois."
+        }
+        ("pr.merge_not_closed", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase and has not closed yet, and pull request #{pr} \
+             only goes into the base after it closes. Nothing was merged, and the provider was not \
+             even asked. The step missing now is `{command}`; from it the flow goes on to the close \
+             through the round, and the merge comes after."
+        }
+        // A recusa do merge de uma spec entregue ou descartada: ela saiu do
+        // fluxo, e nenhum passo dela leva o pull request à base.
+        ("pr.merge_settled", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela já saiu do fluxo, entregue na base ou descartada, \
+             e nenhum passo dela leva o pull request #{pr} à base. Nada foi juntado, e o provedor nem \
+             foi perguntado. Pedido novo sobre ela é obra nova, pelo `mustard-rt run open`."
+        }
+        ("pr.merge_settled", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it has already left the flow, delivered to the \
+             base or discarded, and no step of it takes pull request #{pr} into the base. Nothing was \
+             merged, and the provider was not even asked. A new request about it is new work, through \
+             `mustard-rt run open`."
         }
         ("message.too_long", Locale::PtBr) => {
             "A parte `{part}` da mensagem tem {chars} caracteres e o limite é {max}. Escreva outro: o \
@@ -1112,15 +1159,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A spec {spec} voltou à execução, já aprovada, na mesma branch, e o motivo ficou \
              gravado: nada do que foi decidido é perguntado de novo. Grave o pedido novo com \
              `mustard-rt run write request --spec {spec}` e, dele, as tarefas novas; as ondas \
-             delas saem pela rodada depois que o usuário aprovar a mudança. Depois vem o \
-             fechamento de novo, e o pull request continua o mesmo."
+             delas saem pela rodada depois que o usuário aprovar a mudança."
         }
         ("reopen.reopened", Locale::EnUs) => {
             "The spec {spec} is back to running, already approved, on the same branch, and the \
              reason is on the record: nothing already decided is asked again. Write the new \
              request with `mustard-rt run write request --spec {spec}` and, from it, the new \
-             tasks; their waves go out through the round after the user approves the change. \
-             Then comes the close again, and the pull request stays the same."
+             tasks; their waves go out through the round after the user approves the change."
+        }
+        // O fim do passo da reabertura, pelo pull request da spec: o mesmo, ou
+        // o fechado sem merge, que não vai para rascunho e dá lugar a outro.
+        ("reopen.same_pr", Locale::PtBr) => "Depois vem o fechamento de novo, e o pull request continua o mesmo.",
+        ("reopen.same_pr", Locale::EnUs) => "Then comes the close again, and the pull request stays the same.",
+        ("reopen.pr_closed", Locale::PtBr) => {
+            "O pull request #{pr} dela está fechado, sem merge, e por isso não foi posto em rascunho. \
+             Depois vem o fechamento de novo, e o `pr-open` que ele aponta abre outro pull request, na \
+             mesma branch."
+        }
+        ("reopen.pr_closed", Locale::EnUs) => {
+            "Its pull request #{pr} is closed, not merged, so it was not put in draft. Then comes the \
+             close again, and the `pr-open` it points to opens another pull request, on the same branch."
         }
         ("reopen.fix_not_red", Locale::PtBr) => {
             "A porta de conserto da spec {spec} não abriu: ela pede a spec com o pull request \
@@ -1287,8 +1345,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            161,
-            0xec01_7ccc_5ec1_29e6,
+            166,
+            0x4395_e3e0_41cc_5b21,
         );
     }
 
@@ -1420,11 +1478,16 @@ mod tests {
             ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),
             ("round.copy_failed", &["{wave}", "{detail}"][..]),
             ("round.local_file_missing", &["{file}", "{copy}"][..]),
+            ("round.local_file_tracked", &["{file}"][..]),
             ("pr.submodules.waiting", &["{pr}", "{paths}"][..]),
             ("pr.submodules.ready", &["{pr}", "{paths}"][..]),
             ("pr.submodules.stuck", &["{pr}", "{reason}"][..]),
             ("pr.pointer_commit", &[][..]),
             ("pr.merge_reopened", &["{spec}", "{phase}", "{pr}"][..]),
+            ("pr.merge_not_closed", &["{spec}", "{phase}", "{pr}", "{command}"][..]),
+            ("pr.merge_settled", &["{spec}", "{phase}", "{pr}"][..]),
+            ("reopen.same_pr", &[][..]),
+            ("reopen.pr_closed", &["{pr}"][..]),
             ("round.copy_kept", &["{wave}", "{copy}", "{files}"][..]),
             ("stuck.ended", &["{list}"][..]),
             ("stuck.reason.waiting_loop", &[][..]),
@@ -1485,6 +1548,7 @@ mod tests {
             ("prompt.final.title", &["{spec}"][..]),
             ("prompt.final.fixed", &[][..]),
             ("prompt.read", &["{root}", "{spec}"][..]),
+            ("prompt.read.wave", &["{n}", "{root}", "{spec}"][..]),
             ("prompt.part.waves", &[][..]),
             ("prompt.part.each_delivered", &[][..]),
             ("prompt.part.agreed", &[][..]),

@@ -24,6 +24,8 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
+mod support;
+
 /// O jeito de o agente criar uma cópia do projeto por conta própria: a cópia
 /// em si, a pasta de compilação escolhida por ele, a pasta compartilhada que
 /// só servia às cópias soltas, e a porta que apagava a cópia depois. Só o
@@ -95,6 +97,7 @@ fn installed(dir: &Path, config: &str) -> (PathBuf, PathBuf) {
     std::fs::write(root.join("mustard.json"), config).unwrap();
     let report = rt(&root, &home, &["run", "upsert"], None);
     assert!(report.get("error").is_none(), "{report}");
+    support::copies_leave_with_the_test(&root);
     (root, home)
 }
 
