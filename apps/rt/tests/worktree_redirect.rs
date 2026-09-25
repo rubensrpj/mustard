@@ -10,11 +10,12 @@
 //! derive their project dir from it, so asserting it here at the public API
 //! proves the fix for both faces at once.
 //!
-//! These fixtures build REAL git repos in tempdirs (like the `git_settle` /
-//! `write_gate` suites) and no-op on a git-less host. They live in the rt
-//! crate — not core — because core's own test binary is currently unbuildable on
-//! this branch (an unrelated stale `retrieval` test in `domain/config.rs`), so
-//! `cargo test -p mustard-rt` is the vehicle that actually runs them.
+//! These fixtures build REAL git repos in tempdirs and no-op on a git-less
+//! host. They call core's public API from outside the crate — the same way the
+//! `run` face and the hooks of this binary consume it — so they prove the
+//! redirect through what the rt actually links against, never through core's
+//! private helpers. Core's own unit tests cover the pieces inside the module
+//! (reading a checkout's git folder, a copy that lives outside the project).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
