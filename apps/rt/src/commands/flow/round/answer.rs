@@ -511,10 +511,11 @@ pub(super) fn run_round_with_mine(
             .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
     };
 
-    // O backlog é lido como estava ao entrar na rodada, antes de o relatório
-    // dela mexer em onda ou tarefa: a tarefa que o corte de uma onda de lote
-    // devolve solta, agora mesmo, fica solta até a rodada seguinte — só a que
-    // já estava pronta antes desta rodada começar é empacotada aqui.
+    // O backlog é lido também como estava ao entrar na rodada, antes de o
+    // relatório dela mexer em onda ou tarefa: a tarefa que o corte de uma
+    // onda de lote devolve solta, agora mesmo, fica solta até a rodada
+    // seguinte — só a que já estava pronta antes desta rodada começar, e
+    // continua pronta com a trava presa, é empacotada aqui.
     let log_on_entry = log.clone();
 
     // A rodada assume, antes de despachar, a volta que cada onda gravou na
@@ -546,15 +547,19 @@ pub(super) fn run_round_with_mine(
     // sugestão da onda seguinte apontaria linhas velhas.
     super::commit::refresh_map_if_stale(root, mine);
 
-    // O backlog forma os lotes das tarefas que já estavam prontas antes desta
-    // rodada começar, pela leitura de entrada (`log_on_entry`): o binário
-    // grava a onda e as tarefas dela, com autor próprio, e só depois a
-    // rodada lê as ondas que existem — as novas e as já entregues. A tarefa
-    // que o corte de uma onda de lote acabou de devolver solta, no relatório
-    // desta mesma chamada, fica solta até a rodada seguinte; formar o lote
-    // pela leitura já mexida pelo relatório a empacotaria de novo na mesma
-    // rodada que a soltou.
-    dispatch_backlog(&opts.root, &spec, &log_on_entry).map_err(RoundRefusal::Refused)?;
+    // O backlog forma os lotes das tarefas prontas nas duas leituras: a de
+    // entrada (`log_on_entry`) e a feita agora, já com a trava presa. O
+    // binário grava a onda e as tarefas dela, com autor próprio, e só depois
+    // a rodada lê as ondas que existem — as novas e as já entregues. A
+    // tarefa que o corte de uma onda de lote acabou de devolver solta, no
+    // relatório desta mesma chamada, não estava pronta na entrada e fica
+    // solta até a rodada seguinte. A que outra rodada, chegada ao mesmo
+    // tempo, empacotou enquanto esta esperava a trava já tem onda na leitura
+    // de agora, e não sai de novo; o número da onda nova também sai dela.
+    let locked = store::read(&path)
+        .map_err(RoundRefusal::Refused)?
+        .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked).map_err(RoundRefusal::Refused)?;
     // A primeira rodada leva a spec para a execução só depois de o lote
     // passar, ainda com a trava do git presa: o lote recusado deixa a spec
     // aprovada, como estava, e a rodada seguinte entra de novo por aqui. A

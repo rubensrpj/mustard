@@ -350,6 +350,27 @@ mod tests {
         )
     }
 
+    /// Duas rodadas da spec `x` soltas ao mesmo tempo, sem relatório,
+    /// enquanto outro passo do git segura a trava: devolve o arquivo
+    /// `main_file` como estava enquanto a trava seguia presa, e a resposta
+    /// de cada rodada, depois de a trava soltar.
+    pub(super) fn two_rounds_at_once(root: &Path, main_file: &dyn Fn() -> String) -> (String, Vec<Value>) {
+        let before = main_file();
+        std::thread::scope(|scope| {
+            let Ok(lock) = commit::git_lock(root) else { panic!("the git lock") };
+            let rounds = [scope.spawn(|| round(root, "x", None)), scope.spawn(|| round(root, "x", None))];
+            for _ in 0..150 {
+                if main_file() != before {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let while_held = main_file();
+            drop(lock);
+            (while_held, rounds.into_iter().map(|r| r.join().unwrap()).collect())
+        })
+    }
+
     /// [`round`] com quem relê o mapa depois do commit da rodada (`mine`),
     /// que um teste escolhe sem instalar a ferramenta do scan de verdade.
     pub(super) fn round_with_mine(

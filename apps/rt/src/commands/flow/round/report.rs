@@ -1611,7 +1611,7 @@ mod tests {
         let (id1, id2, id3) = (id_of(&t1), id_of(&t2), id_of(&t3));
 
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log, &log).expect("formou o lote");
         assert_eq!(formed, vec![2], "as três tarefas soltas viram junto a mesma onda de lote: {formed:?}");
 
         let out = round(root, "x", None);
@@ -1693,7 +1693,7 @@ mod tests {
                 "covers": [crit], "origin": said}),
         ));
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log, &log).expect("formou o lote");
         assert_eq!(formed, vec![2], "o lote do backlog virou a onda 2: {formed:?}");
 
         let out = round(root, "x", None);
@@ -1896,27 +1896,6 @@ mod tests {
         }
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
         hook
-    }
-
-    /// Duas rodadas da spec `x` soltas ao mesmo tempo, sem relatório,
-    /// enquanto outro passo do git segura a trava: devolve o arquivo
-    /// principal (`main_file`) como estava enquanto a trava seguia presa, e
-    /// a resposta de cada rodada, depois de a trava soltar.
-    fn two_rounds_at_once(root: &Path, main_file: &dyn Fn() -> String) -> (String, Vec<Value>) {
-        let before = main_file();
-        std::thread::scope(|scope| {
-            let Ok(lock) = git_lock(root) else { panic!("the git lock") };
-            let rounds = [scope.spawn(|| round(root, "x", None)), scope.spawn(|| round(root, "x", None))];
-            for _ in 0..150 {
-                if main_file() != before {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            let while_held = main_file();
-            drop(lock);
-            (while_held, rounds.into_iter().map(|r| r.join().unwrap()).collect())
-        })
     }
 
     /// O número de commits do HEAD para trás no repositório `dir`.

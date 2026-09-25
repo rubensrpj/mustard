@@ -2906,7 +2906,7 @@ mod tests {
 
     /// A versão nova de um item de três partes precisa das três, pelo número
     /// ou pelo código; a versão nova de um item de antes da forma segue como
-    /// ele era, num bloco só.
+    /// ele era, num bloco só, também pelo número ou pelo código.
     #[test]
     fn item_form_a_new_version_of_a_three_part_item_needs_the_three_parts() {
         let dir = tempdir().unwrap();
@@ -2929,10 +2929,15 @@ mod tests {
         assert_eq!(by_model(root, "rule", &revised)["ok"], json!(true));
 
         let old = old_rule(root, said, "MSTD-RULE-0002");
-        let bare = json!({"text": "A pasta de cache nunca é apagada, nem a de logs.", "keys": ["cache"], "example": "e",
-            "origin": said, "replaces": old});
-        let written = by_model(root, "rule", &bare);
-        assert_eq!(written["ok"], json!(true), "the old item keeps its form: {written}");
+        let texts = ["A pasta de cache nunca é apagada, nem a de logs.", "A pasta de cache e a de logs ficam."];
+        for (target, text) in [json!(old), json!("MSTD-RULE-0002")].into_iter().zip(texts) {
+            let bare = json!({"text": text, "keys": ["cache"], "example": "e", "origin": said, "replaces": target});
+            let written = by_model(root, "rule", &bare);
+            assert_eq!(written["ok"], json!(true), "{target}: the old item keeps its form: {written}");
+        }
+        let log = store::read(&root.join(".claude").join("spec").join("teste").join("spec.ndjson")).unwrap().unwrap();
+        let current = log.current(old).expect("the old item is still there");
+        assert_eq!(current.str_field("text"), Some(texts[1]), "the revision by code is the one in force");
     }
 
     /// Procurar por uma palavra que só o título tem, ou só a parte do agente,
