@@ -52,6 +52,13 @@
 //!   (é worktree registrada). `--dry-run` não combina com `--apply` nem com
 //!   `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
 //!
+//! ## Cópias de obra
+//!
+//! Sem `--path`, a limpeza olha também as cópias de obra do projeto da pasta
+//! atual ([`super::work_copies`]): lista as de obra fechada, descartada ou
+//! que não existe mais, e deixa a de obra aberta, com o motivo. A regra de
+//! idade não vale para elas, e o `--apply` as tira pelo git.
+//!
 //! ## Compilação compartilhada
 //!
 //! As cópias descartáveis compilam em `~/.cache/mustard/scratch-target`. Acima
@@ -164,6 +171,11 @@ pub(crate) struct ScratchGcReport {
     pub removed: Vec<String>,
     pub errors: Vec<ErrorRecord>,
     pub shared_target: Option<SharedTargetRecord>,
+    /// As cópias de obra do projeto da pasta atual: as de obra que acabou ou
+    /// não existe mais, e as de obra aberta, que ficam. Fora de projeto, e no
+    /// `--path`, não sai.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copies: Option<super::work_copies::CopiesReport>,
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +627,7 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
                 removed: Vec::new(),
                 errors: vec![ErrorRecord { path: roots.temp_root.display().to_string(), error }],
                 shared_target: None,
+                copies: None,
             };
             return (report, true);
         }
@@ -630,6 +643,7 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
         removed: Vec::new(),
         errors: Vec::new(),
         shared_target: survey.shared_target,
+        copies: None,
     };
     if !apply {
         return (report, false);
@@ -760,6 +774,7 @@ fn path_report(target: &Path, roots: &ScratchRoots) -> (ScratchGcReport, bool) {
         removed: Vec::new(),
         errors: Vec::new(),
         shared_target: None,
+        copies: None,
     };
     let refused = match remove_path(target, roots) {
         Ok(dir) => {
@@ -802,10 +817,14 @@ pub(crate) fn human_bytes(n: u64) -> String {
 pub fn run(opts: ScratchGcOpts) {
     let _started = std::time::Instant::now();
     let roots = ScratchRoots::from_env();
-    let (report, refused) = match opts.path.as_deref() {
+    let (mut report, refused) = match opts.path.as_deref() {
         Some(target) => path_report(target, &roots),
         None => gc(&roots, opts.apply),
     };
+    if opts.path.is_none() && !refused {
+        let here = std::env::current_dir().unwrap_or_default();
+        report.copies = super::work_copies::clean(&here, opts.apply);
+    }
 
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");

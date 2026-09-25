@@ -16,8 +16,7 @@ Mustard-<versao>-universal.pkg
 O que o instalador faz:
 
 ```
-- instala os binários em /usr/local/mustard/bin, com os templates do
-  `mustard init` em /usr/local/mustard/templates
+- instala os binários em /usr/local/mustard/bin
 - cria os atalhos no PATH, em /usr/local/bin
   (mustard, mustard-rt, scan, rtk)
 ```
@@ -101,7 +100,7 @@ que é o passo do item 6, e é por isso que ele não é opcional.
 
 ## 6. Instalar o plugin dentro do Claude Code
 
-O `.pkg` traz **binários e templates**; ele não toca no seu `~/.claude`. Os comandos `/mustard:*`, o estilo de resposta e os hooks vêm do **plugin do Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
+O `.pkg` traz **os binários**; ele não toca no seu `~/.claude`. Os comandos `/mustard:*`, o estilo de resposta e os hooks vêm do **plugin do Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
 
 Abra o Claude Code no projeto (`claude`) e digite:
 

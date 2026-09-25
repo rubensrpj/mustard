@@ -681,11 +681,12 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
 /// que o binário monta no pedido da onda e da revisão —; os de onda e de
 /// revisão mandam trabalhar na cópia separada que o pedido indica e usar a
 /// pasta de compilação quando ele indicar uma. O pedido que a rodada monta,
-/// pelo binário, num projeto que o mapa marca como Rust, traz a cópia que ela
-/// criou e a pasta de compilação. O aviso das sobras no disco continua no
+/// pelo binário, mesmo num projeto que o mapa marca como Rust, traz a vaga
+/// que ela preparou — cada onda na sua — e nenhuma pasta de compilação: o que
+/// a cópia compila fica dentro dela. O aviso das sobras no disco continua no
 /// catálogo do início da sessão, com o comando que as limpa.
 #[test]
-fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_the_build_folder() {
+fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_without_a_build_folder() {
     for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let mut texts: Vec<(String, String)> =
             ["wave", "review", "skill"].iter().map(|name| (format!("{lang} {name}"), template(lang, name))).collect();
@@ -749,25 +750,27 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
     assert_eq!(dispatched.len(), 2, "the two waves, each on its own file, go out together: {round}");
     let log = store::read(&file).unwrap().unwrap();
-    let mut dirs = Vec::new();
+    let mut copies = Vec::new();
     for sent in dispatched {
         let wave = sent["wave"].as_u64().unwrap();
         let prompt = sent["prompt"].as_str().unwrap_or_default();
         let send = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(wave)).unwrap();
         let copy = send.str_field("copy").unwrap_or_else(|| panic!("wave {wave} recorded no copy: {round}"));
-        let build = send.str_field("build_dir").unwrap_or_else(|| panic!("wave {wave} recorded no build folder"));
-        let expected = mustard_core::io::wave_prompt::copy_path(&root, "copia", wave);
-        assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "the copy lives in the project's copies folder");
+        assert!(send.str_field("build_dir").is_none(), "wave {wave} recorded a build folder: {round}");
+        let slot = usize::try_from(wave).unwrap() - 1;
+        let expected = mustard_core::io::wave_prompt::slot_path(&root, "copia", slot);
+        assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "the slot lives in the project's copies folder");
         assert!(!Path::new(copy).starts_with(&root), "the copy lives outside the project: {copy}");
         assert!(Path::new(copy).join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
-        assert!(build.contains("/target/copias/"), "{build}");
         assert!(prompt.contains(&format!("`{copy}`")), "the request names the copy: {prompt}");
-        assert!(prompt.contains(&format!("`CARGO_TARGET_DIR={build}`")), "the request names the build folder: {prompt}");
+        for word in ["CARGO_TARGET_DIR", "target/copias"] {
+            assert!(!prompt.contains(word), "the request names no build folder ({word}): {prompt}");
+        }
         assert!(prompt.contains(translate("prompt.fixed", Locale::PtBr)), "{prompt}");
         assert!(!prompt.contains("nasce vermelho"), "the red proof lives in the agent text: {prompt}");
-        dirs.push(build.to_string());
+        copies.push(copy.to_string());
     }
-    assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
+    assert_ne!(copies[0], copies[1], "each wave works in its own slot");
 }
 
 /// O pedido de onda, montado pelo binário de verdade, diz com todas as

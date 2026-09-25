@@ -510,27 +510,42 @@ fn copy_of(log: &SpecLog, wave: u64) -> Option<PathBuf> {
 /// trabalho: o que ele deixou sem commitar, na cópia da onda e na cópia de
 /// cada submódulo dentro dela, volta ao commit atual, sem esperar o reenvio
 /// pedir isso — quem falhou no meio não deixou uma retomada em curso, deixou
-/// só o resto do que não terminou. A cópia que nunca existiu, ou que já não é
-/// mais um checkout ligado ao repositório, não faz nada.
+/// só o resto do que não terminou. A compilação, que o git ignora, fica. A
+/// cópia que nunca existiu, ou que já não é mais um checkout ligado ao
+/// repositório, não faz nada.
 pub(super) fn clean_orphan_copy(root: &Path, log: &SpecLog, wave: u64) -> bool {
     let Some(copy) = copy_of(log, wave) else { return false };
+    reset_with_submodules(root, &copy, &head(root))
+}
+
+/// Volta a cópia `copy` ao commit `head` ([`reset_copy`]) e cada cópia de
+/// submódulo dentro dela ao commit do submódulo no checkout `root`.
+pub(super) fn reset_with_submodules(root: &Path, copy: &Path, head: &str) -> bool {
     let subs = submodules_of(root);
     let inner: Vec<&String> = subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()).collect();
-    let mut ok = reset_copy(&copy, &head(root));
+    let mut ok = reset_copy(copy, head);
     for sub in inner {
-        ok = reset_copy(&copy.join(sub), &head(&root.join(sub))) && ok;
+        ok = reset_copy(&copy.join(sub), &self::head(&root.join(sub))) && ok;
     }
     ok
 }
 
 /// Volta o checkout ligado `dir` ao commit `head`, descartando qualquer
-/// mudança sem commitar e qualquer arquivo novo. A pasta que não é um
+/// mudança sem commitar e qualquer arquivo novo que o git não ignora. O que
+/// ele ignora — a compilação, as dependências instaladas — fica, e é por
+/// isso que a vaga não compila do zero. Antes, o git confere de novo a data
+/// e o tamanho de cada arquivo contra o conteúdo (`update-index --refresh`):
+/// sem isso, o `checkout --force` reescreve o arquivo só tocado, com o mesmo
+/// conteúdo, e ele ganha data nova sem ter mudado. A pasta que não é um
 /// checkout ligado, ou sem commit para onde voltar, não faz nada.
 fn reset_copy(dir: &Path, head: &str) -> bool {
     if !dir.join(".git").is_file() || head.is_empty() {
         return false;
     }
-    git(dir, &["checkout", "--detach", "--force", head]).is_ok() && git(dir, &["clean", "-fdx"]).is_ok()
+    // O refresh sai com erro quando algum arquivo mudou de fato; é o
+    // checkout que o desfaz logo abaixo.
+    let _ = git(dir, &["update-index", "-q", "--refresh"]);
+    git(dir, &["checkout", "--detach", "--force", head]).is_ok() && git(dir, &["clean", "-fd"]).is_ok()
 }
 
 /// Um arquivo que a junção muda no repositório principal: o que ele era e o
@@ -776,41 +791,6 @@ pub(super) fn ensure_criteria_proofs(root: &Path, log: &SpecLog, waves: &[u64]) 
         }
         None => Ok(()),
     }
-}
-
-/// Apaga a cópia de cada onda do relatório, depois do commit, com a cópia de
-/// cada submódulo dentro dela. A lista de arquivos de cada onda já foi
-/// trocada, antes do commit, pelo que a cópia mudou de fato — por isso a
-/// cópia só fica quando o próprio git não deixa removê-la, e o aviso mostra
-/// qual é. Não reinstala mais o binário: a rodada só comita e limpa a
-/// cópia, e a reinstalação passou a acontecer uma vez só, no fechamento,
-/// depois da aprovação final (`close.rs`).
-pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<Value> {
-    let subs = submodules_of(root);
-    let mut warnings = Vec::new();
-    for wave in waves {
-        let Some(copy) = copy_of(log, wave.wave) else { continue };
-        let shown = copy.to_string_lossy().replace('\\', "/");
-        let changed = copy_changed(&copy, &subs);
-        let inner: Vec<&String> = subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()).collect();
-        let left: Vec<String> = changed.into_iter().filter(|path| !wave.files.contains(path)).collect();
-        let removed = left.is_empty()
-            && git_lock(root).is_ok_and(|_held| {
-                inner.iter().all(|sub| {
-                    let target = copy.join(sub).to_string_lossy().replace('\\', "/");
-                    git(&root.join(sub), &["worktree", "remove", "--force", &target]).is_ok()
-                }) && git(root, &["worktree", "remove", "--force", &shown]).is_ok()
-            });
-        if !removed {
-            let files = if left.is_empty() { shown.clone() } else { left.join(", ") };
-            let hint = translate("round.copy_kept", lang)
-                .replace("{wave}", &wave.wave.to_string())
-                .replace("{copy}", &shown)
-                .replace("{files}", &files);
-            warnings.push(json!({ "reason": "copy-kept", "wave": wave.wave, "hint": hint }));
-        }
-    }
-    warnings
 }
 
 /// O comando que reinstala o binário do próprio Mustard, depois que a suíte
@@ -1166,14 +1146,15 @@ mod tests {
     /// A junção leva ao repositório principal o arquivo que a cópia apagou, e
     /// o commit leva a remoção. O arquivo que a cópia mudou e a entrega não
     /// citou entra no commit do mesmo jeito, com um aviso de divergência; as
-    /// duas cópias somem, porque tudo o que cada uma mudou já foi comitado.
+    /// duas cópias ficam no disco depois do commit, prontas para a próxima
+    /// onda.
     #[test]
     fn a_file_deleted_in_the_copy_is_deleted_and_an_undeclared_file_enters_the_commit_with_a_warning() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[]), (2, &["src/c.rs"], &[])]);
         round(root, "x", None);
-        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "x", usize::try_from(wave).unwrap() - 1);
         std::fs::remove_file(copy(1).join("src/a.rs")).unwrap();
         std::fs::write(copy(1).join("src/b.rs"), "fn um() {}\nfn b() {}\n").unwrap();
         std::fs::write(copy(2).join("src/c.rs"), "fn um() {}\nfn c() {}\n").unwrap();
@@ -1197,8 +1178,8 @@ mod tests {
             "{out}"
         );
 
-        assert!(!copy(1).exists(), "the copy with only delivered changes is gone");
-        assert!(!copy(2).exists(), "the copy whose extra file already entered the commit is gone too");
+        assert!(copy(1).join(".git").is_file(), "the copy stays after the commit of the wave");
+        assert!(copy(2).join(".git").is_file(), "the other copy stays too");
         let hint = translate("round.files_diverged", Locale::PtBr)
             .replace("{wave}", "2")
             .replace("{changed}", "2")
@@ -1315,7 +1296,7 @@ mod tests {
         with_submodule(root, dir.path());
         approved(root, "x", &[(1, &["src/a.rs", "libs/sub/lib.txt"], &[])]);
         round(root, "x", None);
-        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1);
+        let copy = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
         assert!(copy.join("libs/sub/.git").is_file(), "the copy brings the submodule");
         std::fs::write(copy.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
         std::fs::write(copy.join("libs/sub/lib.txt"), "fn um() {}\nfn sub() {}\n").unwrap();
@@ -1343,7 +1324,7 @@ mod tests {
         assert_eq!(git_text(&sub, &["rev-list", "--count", &format!("{before}..HEAD")]), "1", "one submodule commit");
         assert_eq!(git_text(root, &["rev-parse", "HEAD:libs/sub"]), git_text(&sub, &["rev-parse", "HEAD"]));
         assert_eq!(std::fs::read_to_string(sub.join("lib.txt")).unwrap(), "fn um() {}\nfn sub() {}\n");
-        assert!(!copy.exists(), "the copy is gone, with the submodule copy inside it: {went}");
+        assert!(copy.join("libs/sub/.git").is_file(), "the copy stays, with the submodule copy inside it: {went}");
     }
 
     /// O passo do git roda com uma trava própria, e não com a da spec:
@@ -1529,25 +1510,6 @@ mod tests {
         );
     }
 
-    /// Um `WaveReport` mínimo, só com o número da onda — o bastante para
-    /// provar que a rodada comitou algo, sem os campos que a reinstalação
-    /// nunca lê.
-    fn minimal_wave(wave: u64) -> WaveReport {
-        WaveReport {
-            wave,
-            delivered: String::new(),
-            files: Vec::new(),
-            commit: None,
-            proofs: Vec::new(),
-            fixes: Vec::new(),
-            replan: None,
-            leftovers: Vec::new(),
-            agreed: Vec::new(),
-            returns: Vec::new(),
-            usage: Default::default(),
-        }
-    }
-
     /// A raiz de um repositório que constrói o próprio `mustard-rt`: o
     /// bastante para `reinstall_with` reconhecer a raiz e seguir adiante.
     fn mustard_like_root(root: &Path, test_command: &str) {
@@ -1652,22 +1614,5 @@ mod tests {
         assert!(hint.contains("disco cheio"), "{warning}");
         assert!(!hint.contains("a suíte de teste"), "o aviso é da instalação, não da suíte: {warning}");
     }
-
-    /// A rodada não troca mais o binário instalado: `close_copies`, chamada
-    /// depois de cada commit, nunca avisa de reinstalação — mesmo com uma
-    /// onda entregue e a suíte do projeto vermelha, o caso que antes fazia
-    /// a rodada tentar reinstalar e avisar. A troca passou para o
-    /// fechamento, depois da aprovação final ([`super::super::close`]).
-    #[test]
-    fn a_rodada_nao_troca_o_binario_instalado() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        mustard_like_root(root, "exit 1");
-        let log = SpecLog::default();
-        let warnings = close_copies(root, &log, &[minimal_wave(9)], Locale::PtBr);
-        assert!(
-            warnings.iter().all(|w| w["reason"] != json!("binary-not-reinstalled")),
-            "a rodada não tenta mais reinstalar: {warnings:?}"
-        );
-    }
 }
+

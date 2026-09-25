@@ -7,7 +7,6 @@
 #
 # Layout instalado (gerenciado pelo apt, removível com `sudo apt remove mustard`):
 #   /usr/lib/mustard/bin/        binários reais
-#   /usr/lib/mustard/templates/  a carga do `mustard init`
 #   /usr/bin/mustard, …          symlinks no PATH (criados pelo pacote)
 #
 # Uso:
@@ -457,8 +456,8 @@ if [ -n "$TARGET" ]; then
   else
     echo "==> Rodando 'mustard init' em $TARGET"
   fi
-  # `set -e` mataria o script inteiro se o init falhasse (templates fora do
-  # lugar, alvo sem permissão de escrita, RTK ausente) — e o usuário sairia com
+  # `set -e` mataria o script inteiro se o init falhasse (alvo sem permissão
+  # de escrita, RTK ausente) — e o usuário sairia com
   # status != 0 logo depois de um apt que DEU CERTO, sem ler uma palavra sobre o
   # plugin, que é justamente o passo que este trabalho existe para não perder.
   # Dentro de um `if`, a falha vira desvio em vez de morte súbita.

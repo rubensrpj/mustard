@@ -211,23 +211,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.task_read.function_lines", Locale::EnUs) => {
             "read only lines {lines} of `{function}` in `{path}`"
         }
+        // A cópia é a vaga fixa da onda: depois do commit ela fica, com a
+        // compilação dentro, e a próxima onda que cair nela só refaz o que
+        // o git mudou.
         ("prompt.execution.copy", Locale::PtBr) => {
-            "Trabalhe só na cópia separada `{copy}`, que a rodada criou no commit atual, e rode cada \
-             comando de dentro dela; nunca crie outra. Nada se edita no repositório principal \
+            "Trabalhe só na cópia separada `{copy}`, que a rodada preparou no commit atual, e rode \
+             cada comando de dentro dela; nunca crie outra. Nada se edita no repositório principal \
              `{root}`, e a cópia fica onde está. Na volta, a rodada junta os arquivos entregues, \
-             novos e apagados inclusive, e depois do commit a apaga."
+             novos e apagados inclusive. Depois do commit, a cópia fica para a próxima onda, com a \
+             compilação dentro dela."
         }
         ("prompt.execution.copy", Locale::EnUs) => {
-            "Work only in the separate copy `{copy}`, which the round created at the current commit, \
+            "Work only in the separate copy `{copy}`, which the round prepared at the current commit, \
              and run every command from inside it; never create another. Nothing is edited in the \
              main repository `{root}`, and the copy stays where it is. On the way back, the round \
-             merges the delivered files, new and deleted ones included, and deletes the copy after \
-             the commit."
+             merges the delivered files, new and deleted ones included. After the commit, the copy \
+             stays for the next wave, with the build inside it."
         }
         // O preparo que o projeto declara traz à cópia as dependências que o
         // git não leva. Ele pode mexer num arquivo comitado, como o lockfile,
         // e essa mudança não é trabalho da onda: volta ao commit, a não ser
-        // que a tarefa declare o arquivo.
+        // que a tarefa declare o arquivo. É a frase do revisor, que não sabe
+        // o que mudou na cópia dele.
         ("prompt.execution.prepare", Locale::PtBr) => {
             "Antes de compilar, rode `{command}` dentro da cópia: é o preparo que o projeto declara. O \
              arquivo versionado que ele mudar, como o lockfile, volta ao commit com `git checkout -- \
@@ -238,6 +243,44 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              declares. A versioned file it changes, such as the lockfile, goes back to the commit with \
              `git checkout -- <file>`, unless the task declares it."
         }
+        // A cópia nova da onda não tem preparo nenhum.
+        ("prompt.execution.prepare_new", Locale::PtBr) => {
+            "Esta cópia é nova: antes de compilar, rode `{command}` dentro dela, que é o preparo que o \
+             projeto declara. O arquivo versionado que ele mudar, como o lockfile, volta ao commit com \
+             `git checkout -- <arquivo>`, salvo o que a tarefa declara."
+        }
+        ("prompt.execution.prepare_new", Locale::EnUs) => {
+            "This copy is new: before building, run `{command}` inside it, which is the preparation the \
+             project declares. A versioned file it changes, such as the lockfile, goes back to the \
+             commit with `git checkout -- <file>`, unless the task declares it."
+        }
+        // A cópia reaproveitada guarda o preparo de quem a usou antes. Quem
+        // julga se um arquivo da lista declara dependências é o agente: o
+        // binário não sabe isso de linguagem nenhuma.
+        ("prompt.execution.prepare_reused", Locale::PtBr) => {
+            "Esta cópia já foi usada e guarda o preparo anterior. Desde então, mudaram {files}. Rode \
+             `{command}` dentro dela só se um desses arquivos declara dependências. O arquivo \
+             versionado que ele mudar volta ao commit com `git checkout -- <arquivo>`, salvo o que a \
+             tarefa declara."
+        }
+        ("prompt.execution.prepare_reused", Locale::EnUs) => {
+            "This copy was already used and keeps the earlier preparation. Since then, these changed: \
+             {files}. Run `{command}` inside it only if one of these files declares dependencies. A \
+             versioned file it changes goes back to the commit with `git checkout -- <file>`, unless \
+             the task declares it."
+        }
+        ("prompt.execution.prepare_same", Locale::PtBr) => {
+            "Esta cópia já foi usada e guarda o preparo anterior. Nenhum arquivo mudou desde então: \
+             não rode `{command}` de novo."
+        }
+        ("prompt.execution.prepare_same", Locale::EnUs) => {
+            "This copy was already used and keeps the earlier preparation. No file changed since then: \
+             do not run `{command}` again."
+        }
+        // O fim da lista longa dos arquivos mudados, com o comando que a
+        // mostra inteira.
+        ("prompt.execution.prepare_more", Locale::PtBr) => "e mais {n}, que `{diff}` lista",
+        ("prompt.execution.prepare_more", Locale::EnUs) => "and {n} more, listed by `{diff}`",
         // O agente nunca comita: quem junta a cópia ao repositório principal
         // e faz o commit é a rodada. Precisa dizer isso com todas as letras,
         // porque em 22/09/2026 dois agentes comitaram dentro da cópia e
@@ -271,17 +314,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The delivery goes into the spec through `mustard-rt run write delivered`. The round \
              does not read the last message, and the account of the work lives in the delivery's \
              text field."
-        }
-        // A pasta de compilação da cópia. A frase cita o Cargo, então só vai
-        // ao pedido quando o mapa do projeto tem uma parte `cargo`; a pasta é
-        // escolhida para toda onda, porque é a vaga das ondas que rodam juntas.
-        ("prompt.execution.build_dir", Locale::PtBr) => {
-            "Compile e teste só na pasta de compilação `{dir}` (no Cargo, `CARGO_TARGET_DIR={dir}`), \
-             em primeiro plano: ela é fixa e passa de uma cópia para a seguinte."
-        }
-        ("prompt.execution.build_dir", Locale::EnUs) => {
-            "Build and test only in the build folder `{dir}` (with Cargo, `CARGO_TARGET_DIR={dir}`), in \
-             the foreground: it is fixed and passes from one copy to the next."
         }
         ("prompt.review.copy", Locale::PtBr) => {
             "Revise na cópia separada `{copy}`, nunca no repositório principal `{root}`: o fechamento \
@@ -333,8 +365,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            43,
-            0x8f38_978c_26ce_2cac,
+            46,
+            0xa782_62f9_be30_947f,
         );
     }
 }

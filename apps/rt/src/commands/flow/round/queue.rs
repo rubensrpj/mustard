@@ -1,27 +1,24 @@
 //! A fila da rodada e as ondas em andamento: quais ondas saem agora, a
-//! escolha do pedido antes do envio, a cópia separada e a pasta de compilação
-//! de cada uma, quais estão em andamento, quais já estão entregues e
+//! escolha do pedido antes do envio, a vaga fixa de cada uma, quais estão em
+//! andamento, quais já estão entregues e
 //! aprovadas, e o estado de cada uma que a página mostra. A rodada não pede
 //! revisão de onda nenhuma: quem confere o trabalho, uma vez por obra, é o
 //! agente de teste dedicado que o fechamento pede.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, State};
+use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::domain::spec_index::title_of;
-use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, TaskChoice, WaveCopy};
-use mustard_core::io::fs::lock::LockedFile;
-use mustard_core::io::wave_prompt::{copy_path, lesson_bank, local_file_inside, recorded_copy, shown, wave_lessons};
-use mustard_core::platform::git;
+use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, TaskChoice};
+use mustard_core::io::wave_prompt::{lesson_bank, wave_lessons};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use super::report::tagged;
 use super::stops::waves_replanned;
 use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
-use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::spec_events::write::{record, RecordCheck};
 use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
 use crate::shared::dag::{sets_cross, touches_whole_tree};
@@ -427,241 +424,6 @@ fn shown_candidates(
     out
 }
 
-/// As pastas de compilação fixas do checkout `root`, uma por vaga do limite
-/// de compilações, dentro da pasta de compilação do projeto. Elas passam de
-/// uma cópia para a seguinte, e a compilação de uma aproveita a da anterior.
-fn build_dirs(root: &Path, count: usize) -> Vec<PathBuf> {
-    let base = root.join("target").join("copias");
-    (0..count)
-        .map(|slot| match u8::try_from(slot).ok().filter(|n| *n < 26) {
-            Some(n) => base.join(char::from(b'a' + n).to_string()),
-            None => base.join((slot + 1).to_string()),
-        })
-        .collect()
-}
-
-/// As cópias das ondas `waves`, que saem agora, cada uma com uma pasta de
-/// compilação livre: a pasta que nenhuma onda em andamento (`running`) usa.
-/// Cada cópia sai do commit atual; a que já existe, de um envio anterior da
-/// mesma onda, é a mesma, e ela traz cada submódulo que as tarefas da onda
-/// tocam. A onda cuja cópia não pôde ser criada não sai, e o aviso diz por
-/// quê; a onda sem pasta livre também não sai, e fica para a rodada seguinte.
-/// Roda com a trava do passo do git que o despacho já prendeu (`_held`): duas
-/// rodadas ao mesmo tempo não criam a mesma cópia duas vezes.
-///
-/// A obra de até 3 pontos (`solo`, de
-/// [`crate::commands::flow::plan::is_solo_work`]) não cria cópia nenhuma: o
-/// orquestrador faz a onda no checkout principal, na própria janela, e nada
-/// aqui teria onde compilar.
-pub(super) fn open_copies(
-    root: &Path,
-    spec: &str,
-    log: &SpecLog,
-    _held: &LockedFile,
-    waves: &[u64],
-    running: &BTreeMap<u64, u64>,
-    solo: bool,
-    lang: Locale,
-) -> (BTreeMap<u64, WaveCopy>, Vec<Value>) {
-    if solo {
-        return (BTreeMap::new(), Vec::new());
-    }
-    // A cópia da onda órfã — em andamento sem o processo que a mandou — volta
-    // ao commit atual sozinha, nesta rodada, sem esperar o reenvio pedir
-    // isso: a onda falhou no meio do trabalho, e o que ela deixou para trás
-    // não é uma retomada em curso.
-    for wave in orphaned_waves(log).keys() {
-        super::commit::clean_orphan_copy(root, log, *wave);
-    }
-    let dir_of = |n: &u64| recorded_copy(log, *n).and_then(|copy| copy.build_dir);
-    let held: BTreeSet<String> = running.keys().filter_map(dir_of).collect();
-    let mut free: Vec<String> =
-        build_dirs(root, max_parallel(root)).iter().map(|dir| shown(dir)).filter(|dir| !held.contains(dir)).collect();
-
-    let mut copies = BTreeMap::new();
-    let mut warnings = Vec::new();
-    let failed = |wave: u64, detail: String| {
-        let hint = translate("round.copy_failed", lang).replace("{wave}", &wave.to_string()).replace("{detail}", &detail);
-        json!({ "reason": "copy-not-created", "wave": wave, "hint": hint })
-    };
-    let head = git::run(root, &["rev-parse", "HEAD"]).result();
-    let subs = submodules_of(root);
-    let files = if subs.is_empty() { BTreeMap::new() } else { wave_graph(log).files };
-    let unit = State::from_log(log).branch.unwrap_or_default();
-    for wave in waves.iter().copied() {
-        if free.is_empty() {
-            break;
-        }
-        let path = copy_path(root, spec, wave);
-        let touched: BTreeSet<&str> = files
-            .get(&wave)
-            .into_iter()
-            .flatten()
-            .filter_map(|file| submodule_holding(&subs, file).map(|(sub, _)| sub))
-            .collect();
-        let made = match &head {
-            Err(detail) => Err(detail.clone()),
-            Ok(head) => ensure_copy(root, &path, head).and_then(|missing| {
-                touched.iter().try_for_each(|sub| copy_submodule(root, &path, sub, &unit)).map(|()| missing)
-            }),
-        };
-        match made {
-            Ok(missing) => {
-                let copy = shown(&path);
-                for file in missing {
-                    let hint = local_file_missing(&file, &copy, lang);
-                    warnings.push(json!({ "reason": "local-file-missing", "wave": wave, "file": file, "hint": hint }));
-                }
-                copies.insert(wave, WaveCopy { path: copy, build_dir: Some(free.remove(0)) });
-            }
-            Err(detail) => warnings.push(failed(wave, detail)),
-        }
-    }
-    (copies, warnings)
-}
-
-/// O aviso do arquivo local `file` que não chegou à cópia `copy`.
-pub(crate) fn local_file_missing(file: &str, copy: &str, lang: Locale) -> String {
-    translate("round.local_file_missing", lang).replace("{file}", file).replace("{copy}", copy)
-}
-
-/// A cópia em `path`, criada no commit `head` do checkout `root`. A pasta que
-/// já é uma cópia ligada ao repositório, de um envio anterior da mesma onda, e
-/// está limpa vai para o commit `head`, porque um commit fora da rodada pode
-/// ter avançado o checkout principal desde a criação dela. A que tem mudança,
-/// como a de uma retomada em andamento, fica como está. A pasta mãe, a das
-/// cópias do projeto, fora dele, nasce antes da cópia.
-///
-/// A cópia nova e a limpa recebem os arquivos locais do projeto
-/// ([`copy_local_files`]): o git não os leva, e a limpeza da cópia órfã os
-/// apaga. Devolve os itens da lista que não chegaram; a cópia sai assim mesmo.
-pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<Vec<String>, String> {
-    if path.join(".git").is_file() {
-        let clean = git::run(path, &["status", "--porcelain", "--untracked-files=all"])
-            .out()
-            .is_some_and(|status| status.is_empty());
-        if !clean {
-            return Ok(Vec::new());
-        }
-        git::run(path, &["checkout", "--detach", head]).result()?;
-        return Ok(copy_local_files(root, path));
-    }
-    if let Some(parent) = path.parent() {
-        mustard_core::io::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let target = path.to_string_lossy();
-    git::run(root, &["worktree", "add", "--detach", &target, head]).result()?;
-    Ok(copy_local_files(root, path))
-}
-
-/// Os arquivos locais que o projeto `root` declara (`localFiles`, no
-/// `mustard.json`) levados à cópia `copy`, cada um no mesmo caminho relativo,
-/// sempre pelo conteúdo: nenhum atalho, junção ou link para o repositório
-/// principal, em nenhum sistema, então apagar a cópia nunca toca arquivo
-/// dele. Devolve, na ordem da lista, os itens que não foram copiados: o que o
-/// git não ignora ([`local_file_ignored`]), o que falta no principal, o que
-/// não é arquivo e o que o disco recusou. Lista vazia ou ausente não copia
-/// nada.
-fn copy_local_files(root: &Path, copy: &Path) -> Vec<String> {
-    let listed = mustard_core::ProjectConfig::load(root).local_files.unwrap_or_default();
-    listed
-        .iter()
-        .map(|file| file.trim())
-        .filter(|file| !file.is_empty())
-        .filter(|file| !copy_local_file(root, copy, file))
-        .map(str::to_string)
-        .collect()
-}
-
-/// Copia o arquivo local `file` do checkout `root` para a cópia `copy`;
-/// `false` quando ele não foi copiado. O arquivo que o git não ignora nunca é
-/// copiado: a cópia já o tem pelo git, na versão do commit. O link que já
-/// estiver no lugar dele na cópia sai antes: copiar por cima escreveria no
-/// alvo do link.
-fn copy_local_file(root: &Path, copy: &Path, file: &str) -> bool {
-    if !local_file_ignored(root, file) {
-        return false;
-    }
-    let (from, to) = (root.join(file), copy.join(file));
-    if !from.is_file() {
-        return false;
-    }
-    if let Some(parent) = to.parent()
-        && mustard_core::io::fs::create_dir_all(parent).is_err()
-    {
-        return false;
-    }
-    let linked = std::fs::symlink_metadata(&to).is_ok_and(|meta| meta.file_type().is_symlink());
-    if linked && mustard_core::io::fs::remove_file(&to).is_err() {
-        return false;
-    }
-    std::fs::copy(&from, &to).is_ok()
-}
-
-/// Os projetos de teste desta linha de execução e a pasta das cópias de cada
-/// um ([`mustard_core::io::wave_prompt::copies_dir`]). Quando a linha termina
-/// — o teste passou ou falhou —, cada pasta sai do disco e, com o repositório
-/// ainda no lugar, o git dele esquece as cópias que sumiram.
-#[cfg(test)]
-struct TestCopies(Vec<(PathBuf, PathBuf)>);
-
-#[cfg(test)]
-impl Drop for TestCopies {
-    fn drop(&mut self) {
-        for (root, copies) in &self.0 {
-            let _ = std::fs::remove_dir_all(copies);
-            // O git direto: no fim da linha de execução, outro valor dela que
-            // a porta do git lesse já pode ter saído.
-            if root.join(".git").exists() {
-                let _ = std::process::Command::new("git").args(["worktree", "prune"]).current_dir(root).output();
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_COPIES: std::cell::RefCell<TestCopies> = const { std::cell::RefCell::new(TestCopies(Vec::new())) };
-}
-
-/// As cópias que um teste cria para o projeto `root` saem no fim dele,
-/// também quando ele falha, e o git do projeto deixa de listá-las. Elas moram
-/// fora da pasta temporária do teste — na pasta que `MUSTARD_COPIES_DIR`
-/// indica —, e a pasta temporária, quando sai, não as leva. Chame da linha de
-/// execução do próprio teste, com o projeto já no lugar.
-#[cfg(test)]
-pub(crate) fn copies_leave_with_the_test(root: &Path) {
-    let copies = mustard_core::io::wave_prompt::copies_dir(root);
-    TEST_COPIES.with(|made| made.borrow_mut().0.push((root.to_path_buf(), copies)));
-}
-
-/// O item `file` da lista de arquivos locais é um arquivo que o git do
-/// checkout `root` ignora: um caminho relativo dentro do projeto
-/// ([`local_file_inside`]) que casa com uma regra de ignorar e não está
-/// versionado. É a conferência única da lista, nos dois pontos: o `upsert`
-/// não grava o item que não passa, e a cópia da onda não o copia. O arquivo
-/// que o git não ignora chega à cópia pelo próprio git, na versão do commit;
-/// copiá-lo da pasta principal por cima trocaria essa versão pela de lá. Sem
-/// git, nenhum arquivo passa.
-pub(crate) fn local_file_ignored(root: &Path, file: &str) -> bool {
-    local_file_inside(file) && git::run(root, &["check-ignore", "-q", "--", file]).ok
-}
-
-/// A cópia do submódulo `sub` dentro da cópia `copy`: o submódulo do
-/// repositório principal entra na branch `unit` da spec, criada na primeira
-/// vez sobre a base dele, e a cópia dele sai do commit em que ele fica. A que
-/// já existe, de um envio anterior da mesma onda, é a mesma.
-fn copy_submodule(root: &Path, copy: &Path, sub: &str, unit: &str) -> Result<(), String> {
-    let inner = copy.join(sub);
-    if inner.join(".git").is_file() {
-        return Ok(());
-    }
-    let repo = root.join(sub);
-    enter_unit_branch(&repo, unit)?;
-    let target = inner.to_string_lossy();
-    git::run(&repo, &["worktree", "add", "--detach", &target, "HEAD"]).result().map(|_| ())
-}
-
 /// As ondas com pedido aberto, cada uma com o número do pedido dela: a onda
 /// tem pedido e nenhuma entrega depois dele. O pedido mais antigo que a
 /// versão mais nova da onda ou de uma tarefa dela descreve um plano que já
@@ -780,15 +542,31 @@ pub(crate) fn emptied_backlog_waves(log: &SpecLog, graph: &WaveGraph) -> BTreeSe
         .collect()
 }
 
-/// Minutos desde a última ação da onda `wave`: a hora do arquivo de sinal de
-/// vida que [`crate::hooks::observe::wave_alive_observer`] grava, ou, sem
-/// ele, a hora do envio `sent`. `None` sem nenhuma hora legível — a rodada
-/// não avisa sem saber.
+/// Minutos desde a última ação da onda `wave`: a mais nova entre a hora do
+/// envio `sent` e a do arquivo de sinal de vida que
+/// [`crate::hooks::observe::wave_alive_observer`] grava para a vaga que o
+/// envio gravou. A vaga passa de uma onda para a seguinte, e o arquivo dela
+/// pode guardar a hora da onda anterior: a hora do envio vale enquanto a onda
+/// nova ainda não agiu. `None` sem nenhuma hora legível — a rodada não avisa
+/// sem saber.
 pub(crate) fn silent_minutes(root: &Path, spec: &str, wave: u64, log: &SpecLog, sent: u64) -> Option<i64> {
-    let path = crate::hooks::observe::wave_alive_observer::alive_path(root, spec, wave);
-    let from_file = std::fs::read_to_string(&path).ok().filter(|s| !s.trim().is_empty());
-    let raw = from_file.or_else(|| log.get(sent).map(|e| e.at().to_string()))?;
-    let at = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
+    let parse = |raw: &str| chrono::DateTime::parse_from_rfc3339(raw.trim()).ok();
+    let send = log.get(sent);
+    let copy = send.and_then(|event| event.str_field("copy").map(str::to_string)).or_else(|| {
+        mustard_core::io::wave_prompt::recorded_copy(log, wave).map(|copy| copy.path)
+    });
+    let from_file = copy
+        .filter(|copy| mustard_core::io::wave_prompt::is_slot_of(root, spec, copy))
+        .and_then(|copy| Path::new(&copy).file_name().map(|name| name.to_string_lossy().into_owned()))
+        .and_then(|slot| {
+            std::fs::read_to_string(crate::hooks::observe::wave_alive_observer::alive_path(root, spec, &slot)).ok()
+        })
+        .and_then(|raw| parse(&raw));
+    let from_send = send.and_then(|event| parse(event.at()));
+    let at = match (from_file, from_send) {
+        (Some(file), Some(send)) => file.max(send),
+        (file, send) => file.or(send)?,
+    };
     let now = chrono::Local::now().with_timezone(at.offset());
     Some((now - at).num_minutes())
 }
@@ -1253,29 +1031,30 @@ pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveSt
 mod tests {
     use std::process::Command;
 
+    use std::path::PathBuf;
+
     use mustard_core::io::spec_events as store;
+    use mustard_core::io::wave_prompt::{shown, slot_path};
     use tempfile::tempdir;
 
     use super::*;
     use crate::commands::flow::round::tests::*;
 
-    /// O envio gravado da onda `wave`: a cópia e a pasta de compilação dele.
-    fn sent_copy(root: &Path, wave: u64) -> (String, String) {
+    /// A cópia gravada no envio da onda `wave`.
+    fn sent_copy(root: &Path, wave: u64) -> String {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let copy = mustard_core::io::wave_prompt::recorded_copy(&log, wave).unwrap_or_else(|| panic!("wave {wave}"));
-        (copy.path, copy.build_dir.unwrap_or_default())
+        mustard_core::io::wave_prompt::recorded_copy(&log, wave).unwrap_or_else(|| panic!("wave {wave}")).path
     }
 
     /// Duas ondas sem dependência e sem arquivo em comum saem juntas, cada
-    /// uma na sua cópia, criada no commit atual, e com a sua pasta de
-    /// compilação, uma das fixas do projeto, porque a pasta é também a vaga
-    /// das ondas que rodam juntas. O pedido de cada uma traz a cópia; a pasta,
-    /// com o nome do Cargo, só quando o mapa marca o projeto como Rust, e não
-    /// num projeto Node. O teto de compilações do projeto limita quantas
+    /// uma na sua vaga — a pasta fixa `a`, `b`… sob a pasta da spec —,
+    /// posta no commit atual. O pedido de cada uma traz a cópia e nunca uma
+    /// pasta de compilação, em projeto Node ou Rust: o que a cópia compila
+    /// fica dentro dela. O teto de compilações do projeto limita quantas
     /// saem.
     #[test]
-    fn two_waves_without_a_shared_file_go_out_together_each_in_its_own_copy_and_the_cap_holds() {
-        for (kind, cites) in [("npm", false), ("cargo", true)] {
+    fn two_waves_without_a_shared_file_go_out_together_each_in_its_own_slot_and_the_cap_holds() {
+        for kind in ["npm", "cargo"] {
             let dir = tempdir().unwrap();
             let root = dir.path();
             approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[])]);
@@ -1286,24 +1065,20 @@ mod tests {
             assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "sem arquivo em comum, as duas saem juntas: {out}");
             let head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap();
             let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
-            let target = mustard_core::io::wave_prompt::shown(&root.join("target").join("copias"));
-            let mut folders = Vec::new();
             for (at, wave) in [1_u64, 2].iter().enumerate() {
-                let (copy, build) = sent_copy(root, *wave);
-                let expected = mustard_core::io::wave_prompt::copy_path(root, "x", *wave);
-                assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "{out}");
+                let copy = sent_copy(root, *wave);
+                let expected = mustard_core::io::wave_prompt::slot_path(root, "x", at);
+                assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "{kind}: {out}");
                 assert!(expected.join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
                 assert_eq!(std::fs::read_to_string(expected.join("src/a.rs")).unwrap(), "fn um() {}\n");
                 let copy_head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&expected).output().unwrap();
                 assert_eq!(String::from_utf8_lossy(&copy_head.stdout).trim(), head, "the copy stands on the current commit");
-                assert!(build.starts_with(&target), "{build}");
                 let prompt = out["dispatch"][at]["prompt"].as_str().unwrap_or_default();
                 assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
-                assert_eq!(prompt.contains(&format!("={build}`")), cites, "{kind}: {prompt}");
-                assert_eq!(prompt.contains("Cargo") || prompt.contains("target/copias"), cites, "{kind}: {prompt}");
-                folders.push(build);
+                for word in ["CARGO_TARGET_DIR", "target/copias", "pasta de compilação"] {
+                    assert!(!prompt.contains(word), "{kind}: no build folder in the request ({word}): {prompt}");
+                }
             }
-            assert_eq!(folders, [format!("{target}/a"), format!("{target}/b")], "{kind}: each copy gets its own folder");
         }
 
         // Com o teto do projeto em 1, só uma onda sai por rodada.
@@ -1316,9 +1091,9 @@ mod tests {
     }
 
     /// A rodada abre a cópia da onda fora da pasta do projeto, na pasta das
-    /// cópias dele — o nome do projeto e um código curto que não muda —, e o
-    /// envio grava esse caminho, que o pedido cita. A cópia do revisor final
-    /// mora ao lado; nada nasce em
+    /// cópias dele — o nome do projeto e um código curto que não muda —, sob
+    /// a pasta da spec, e o envio grava esse caminho, que o pedido cita. O
+    /// revisor final usa a vaga da última onda; nada nasce em
     /// `.claude/worktrees`. A entrega que cita o arquivo pelo caminho absoluto
     /// da cópia gravada no envio volta relativa ao repositório, mesmo quando
     /// essa cópia não é a que a pasta das cópias daria hoje, como a da onda
@@ -1342,17 +1117,18 @@ mod tests {
         assert!(code.len() == 8 && code.chars().all(|c| c.is_ascii_hexdigit()), "{folder}");
         assert_eq!(copies_dir(&project), copies, "the same project always gives the same folder");
 
-        let (copy, _) = sent_copy(root, 1);
-        assert_eq!(copy, shown(&copies.join("x-1")), "{out}");
+        let copy = sent_copy(root, 1);
+        assert_eq!(copy, shown(&copies.join("x").join("a")), "{out}");
         assert!(Path::new(&copy).join(".git").is_file(), "the copy is a linked checkout");
         let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
         assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
-        assert_eq!(final_copy_path(root, "x"), copies.join("x-final-review"));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert_eq!(final_copy_path(root, "x", &log), copies.join("x").join("a"), "the review uses the wave's slot");
         assert!(!root.join(".claude").join("worktrees").exists(), "nothing is born inside the project");
 
         // Um envio mais novo da onda grava a cópia noutro lugar.
         let elsewhere = tempdir().unwrap();
-        let moved = shown(&elsewhere.path().join("x-1"));
+        let moved = shown(&elsewhere.path().join("x").join("a"));
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         let sent = log.visible().into_iter().rfind(|e| e.wave() == Some(1) && e.event_type == "send").unwrap();
@@ -1413,20 +1189,28 @@ mod tests {
     /// A cópia da onda órfã — pedido aberto sem o processo que mandou —
     /// volta suja ao commit atual sozinha, na mesma rodada em que a rodada
     /// nota a órfã, sem que ninguém peça o reenvio primeiro: quem falhou no
-    /// meio do trabalho não deixou uma retomada em curso.
+    /// meio do trabalho não deixou uma retomada em curso. A limpeza leva o
+    /// arquivo novo e o mudado, mas não a pasta de compilação que o git
+    /// ignora: a compilação feita ali fica para quem usar a vaga depois. A
+    /// órfã segura a vaga dela: a onda que sai ao lado vai para outra.
     #[cfg(target_os = "linux")]
     #[test]
     fn copia_orfa_volta_limpa_ao_commit_atual_sem_esperar_reenvio() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        std::fs::write(root.join(".git").join("info").join("exclude"), "target/\n").unwrap();
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
 
-        let (copy_path, _) = sent_copy(root, 1);
+        let copy_path = sent_copy(root, 1);
         let copy = Path::new(&copy_path);
         std::fs::write(copy.join("src/a.rs"), "fn retomada() {}\n").unwrap();
         std::fs::write(copy.join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        let build = copy.join("target").join("debug").join("compilado.o");
+        std::fs::create_dir_all(build.parent().unwrap()).unwrap();
+        std::fs::write(&build, "compilado").unwrap();
         assert_ne!(git_text(copy, &["status", "--porcelain"]), "", "a cópia precisa estar suja antes da rodada");
 
         let path = store::spec_file(root, "x").unwrap();
@@ -1438,9 +1222,6 @@ mod tests {
             "items": sent.fields.get("items").cloned().unwrap_or_else(|| json!([])),
             "mustard": "0", "author": "binary", "copy": sent.str_field("copy").unwrap_or_default(),
         });
-        if let Some(build) = sent.str_field("build_dir") {
-            draft["build_dir"] = json!(build);
-        }
         drop(log);
 
         let mut dead = Command::new("true").spawn().expect("spawn the fixture process");
@@ -1457,11 +1238,17 @@ mod tests {
         )
         .unwrap();
 
-        round(root, "x", None);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        let second = round(root, "x", None);
 
         assert_eq!(git_text(copy, &["status", "--porcelain"]), "", "a cópia órfã volta limpa sem pedir reenvio");
         let head = git_text(root, &["rev-parse", "HEAD"]);
         assert_eq!(git_text(copy, &["rev-parse", "HEAD"]), head, "a cópia volta ao commit atual: {head}");
+        assert_eq!(std::fs::read_to_string(&build).unwrap(), "compilado", "a compilação ignorada fica na vaga");
+        assert_eq!(waves_in(&second, "dispatch"), vec![2, 1], "a onda 2 sai, e a órfã é reenviada: {second}");
+        let next = shown(&mustard_core::io::wave_prompt::slot_path(root, "x", 1));
+        assert_eq!(sent_copy(root, 2), next, "a órfã segura a vaga a, e a onda 2 vai para a b: {second}");
+        assert_eq!(sent_copy(root, 1), copy_path, "a órfã volta na mesma vaga: {second}");
     }
 
     /// A onda que já entregou não é despachada de novo, mesmo sem pedido
@@ -1562,7 +1349,7 @@ mod tests {
             approved(root, "x", &[(1, &["src/a.rs"], &[])]);
             let first = round(root, "x", None);
             assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-            let (copy_path, _) = sent_copy(root, 1);
+            let copy_path = sent_copy(root, 1);
             let copy = Path::new(&copy_path);
             let old_head = git_text(copy, &["rev-parse", "HEAD"]);
 
@@ -1594,13 +1381,113 @@ mod tests {
 
             let again = round(root, "x", None);
             assert_eq!(waves_in(&again, "dispatch"), vec![1], "a onda replanejada volta a sair: {again}");
+            assert_eq!(sent_copy(root, 1), copy_path, "a replanejada volta à vaga que gravou: {again}");
             let copy_head = git_text(copy, &["rev-parse", "HEAD"]);
             if dirty {
                 assert_eq!(copy_head, old_head, "a cópia com mudança fica como está: {copy_head}");
+                assert_eq!(std::fs::read_to_string(copy.join("src/a.rs")).unwrap(), "fn retomada() {}\n");
             } else {
                 assert_eq!(copy_head, new_head, "a cópia limpa vai para o commit atual: {copy_head}");
             }
         }
+    }
+
+    /// A data de mudança do arquivo `path`.
+    fn modified(path: &Path) -> std::time::SystemTime {
+        std::fs::metadata(path).and_then(|meta| meta.modified()).unwrap_or_else(|err| panic!("{path:?}: {err}"))
+    }
+
+    /// Põe no arquivo `path` uma data antiga e redonda, que o teste reconhece
+    /// depois.
+    fn age(path: &Path) -> std::time::SystemTime {
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(old).unwrap();
+        old
+    }
+
+    /// A vaga passa de uma onda para a seguinte sem nascer de novo: a onda 2
+    /// sai na vaga que a 1 deixou, posta no commit novo, e só o arquivo que
+    /// o commit da onda 1 mudou ganha data nova — o outro guarda a dele, e a
+    /// compilação que o git ignora fica. O pedido da onda 2 diz que a vaga é
+    /// reaproveitada e lista o arquivo que mudou desde o último uso dela.
+    #[test]
+    fn two_preparations_of_the_same_slot_keep_the_date_of_an_unchanged_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        std::fs::write(root.join(".git").join("info").join("exclude"), "target/\n").unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"prepareCommand":"true"}"#).unwrap();
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let slot = slot_path(root, "x", 0);
+        assert_eq!(sent_copy(root, 1), shown(&slot), "{first}");
+        let fresh = translate("prompt.execution.prepare_new", Locale::PtBr).replace("{command}", "true");
+        assert!(first["dispatch"][0]["prompt"].as_str().unwrap_or_default().contains(&fresh), "a vaga nova pede o preparo");
+        let untouched = age(&slot.join("src/b.rs"));
+        age(&slot.join("src/a.rs"));
+        let build = slot.join("target").join("compilado.o");
+        std::fs::create_dir_all(build.parent().unwrap()).unwrap();
+        std::fs::write(&build, "compilado").unwrap();
+
+        let second = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(waves_in(&second, "dispatch"), vec![2], "{second}");
+        assert_eq!(sent_copy(root, 2), shown(&slot), "a onda 2 usa a vaga que a 1 deixou: {second}");
+        assert_eq!(git_text(&slot, &["rev-parse", "HEAD"]), git_text(root, &["rev-parse", "HEAD"]));
+        assert!(std::fs::read_to_string(slot.join("src/a.rs")).unwrap().contains("A soma saiu."), "{second}");
+        assert_ne!(modified(&slot.join("src/a.rs")), untouched, "o arquivo mudado ganha data nova");
+        assert_eq!(modified(&slot.join("src/b.rs")), untouched, "o arquivo que não mudou guarda a data");
+        assert_eq!(std::fs::read_to_string(&build).unwrap(), "compilado", "a compilação ignorada fica na vaga");
+        let prompt = second["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let reused = translate("prompt.execution.prepare_reused", Locale::PtBr);
+        let opening = reused.split("{files}").next().unwrap_or_default();
+        assert!(prompt.contains(opening) && prompt.contains("`src/a.rs`"), "{prompt}");
+        assert!(!prompt.contains("`src/b.rs`."), "só o que mudou entra na lista: {prompt}");
+    }
+
+    /// A onda replanejada, cujo último envio ficou sem entrega, volta à vaga
+    /// que esse envio gravou, mesmo com outra vaga livre antes dela na
+    /// ordem.
+    #[test]
+    fn a_replanned_wave_goes_back_to_the_slot_it_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+        let second_slot = shown(&slot_path(root, "x", 1));
+        assert_eq!(sent_copy(root, 2), second_slot, "{first}");
+
+        round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        replan(root, 2);
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![2], "{again}");
+        assert_eq!(sent_copy(root, 2), second_slot, "a vaga a está livre, e a onda 2 volta à b: {again}");
+    }
+
+    /// A vaga cuja pasta existe sem ser cópia do git — sobra de um processo
+    /// que caiu no meio — nasce de novo, sem o que havia nela; a vaga cuja
+    /// pasta sumiu com o registro do git ainda de pé também, sem que o
+    /// registro velho trave a cópia nova.
+    #[test]
+    fn a_slot_folder_that_is_not_a_git_copy_or_a_stale_registration_is_rebuilt() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        let slot = slot_path(root, "x", 0);
+        std::fs::create_dir_all(slot.join("lixo")).unwrap();
+        std::fs::write(slot.join("lixo").join("velho.txt"), "sobra").unwrap();
+
+        let first = round(root, "x", None);
+        assert_eq!(sent_copy(root, 1), shown(&slot), "{first}");
+        assert!(slot.join(".git").is_file() && !slot.join("lixo").exists(), "a pasta solta vira cópia: {first}");
+
+        std::fs::remove_dir_all(&slot).unwrap();
+        assert!(git_text(root, &["worktree", "list", "--porcelain"]).contains(&shown(&slot)), "o registro ficou");
+        let second = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(waves_in(&second, "dispatch"), vec![2], "o registro velho não trava a cópia: {second}");
+        assert_eq!(sent_copy(root, 2), shown(&slot), "{second}");
+        assert!(slot.join(".git").is_file(), "{second}");
+        assert_eq!(git_text(&slot, &["rev-parse", "HEAD"]), git_text(root, &["rev-parse", "HEAD"]));
     }
 
     /// Os avisos de arquivo local que não chegou à cópia, na resposta da
@@ -1644,7 +1531,7 @@ mod tests {
 
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "a cópia sai mesmo com o arquivo que falta: {out}");
-        let (copy_path, _) = sent_copy(root, 1);
+        let copy_path = sent_copy(root, 1);
         let copy = Path::new(&copy_path);
         for (file, content) in [(".env", "SEGREDO=1\n"), ("config/local.json", "{\"porta\":1}\n")] {
             let kind = std::fs::symlink_metadata(copy.join(file)).unwrap().file_type();
@@ -1671,7 +1558,7 @@ mod tests {
         replan(root, 1);
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "{again}");
-        assert_eq!(sent_copy(root, 1).0, copy_path, "a mesma cópia: {again}");
+        assert_eq!(sent_copy(root, 1), copy_path, "a mesma cópia: {again}");
         let kind = std::fs::symlink_metadata(copy.join(".env")).unwrap().file_type();
         assert!(kind.is_file() && !kind.is_symlink(), "{again}");
         assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "{again}");
@@ -1688,7 +1575,7 @@ mod tests {
             std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
             let out = round(root, "x", None);
             assert_eq!(waves_in(&out, "dispatch"), vec![1], "{config}: {out}");
-            let (copy, _) = sent_copy(root, 1);
+            let copy = sent_copy(root, 1);
             assert!(!Path::new(&copy).join(".env").exists(), "{config}: nada é copiado");
             assert!(local_files_missing(&out).is_empty(), "{config}: {out}");
         }
@@ -1709,7 +1596,7 @@ mod tests {
         std::fs::write(root.join("mustard.json"), json!({ "localFiles": [".env"] }).to_string()).unwrap();
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        let (copy_path, _) = sent_copy(root, 1);
+        let copy_path = sent_copy(root, 1);
         let copy = Path::new(&copy_path);
 
         let target = dir.path().join("alvo.env");
@@ -1720,12 +1607,39 @@ mod tests {
         replan(root, 1);
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "{again}");
-        assert_eq!(sent_copy(root, 1).0, copy_path, "a mesma cópia: {again}");
+        assert_eq!(sent_copy(root, 1), copy_path, "a mesma cópia: {again}");
         let kind = std::fs::symlink_metadata(copy.join(".env")).unwrap().file_type();
         assert!(kind.is_file() && !kind.is_symlink(), "o link saiu: {again}");
         assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "{again}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "ALVO=1\n", "o alvo do link fica como estava");
         assert!(local_files_missing(&again).is_empty(), "{again}");
+    }
+
+    /// O arquivo local que já está igual na vaga não é escrito de novo: a
+    /// onda seguinte na mesma vaga o encontra com a data de antes. O que
+    /// mudou na pasta principal chega com o conteúdo novo.
+    #[test]
+    fn an_identical_local_file_keeps_its_date_in_the_slot() {
+        let dir = tempdir().unwrap();
+        let root = &dir.path().join("projeto");
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env\nlocal.json\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        std::fs::write(root.join(".env"), "SEGREDO=1\n").unwrap();
+        std::fs::write(root.join("local.json"), "{}\n").unwrap();
+        std::fs::write(root.join("mustard.json"), json!({ "localFiles": [".env", "local.json"] }).to_string()).unwrap();
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let copy = PathBuf::from(sent_copy(root, 1));
+        let kept = age(&copy.join(".env"));
+        age(&copy.join("local.json"));
+        std::fs::write(root.join("local.json"), "{\"porta\":2}\n").unwrap();
+
+        let second = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(sent_copy(root, 2), shown(&copy), "{second}");
+        assert_eq!(modified(&copy.join(".env")), kept, "o arquivo local igual guarda a data: {second}");
+        assert_eq!(std::fs::read_to_string(copy.join("local.json")).unwrap(), "{\"porta\":2}\n");
+        assert_ne!(modified(&copy.join("local.json")), kept, "o que mudou chega de novo");
     }
 
     /// Um arquivo versionado posto à mão na lista de arquivos locais não é
@@ -1747,7 +1661,7 @@ mod tests {
 
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        let (copy_path, _) = sent_copy(root, 1);
+        let copy_path = sent_copy(root, 1);
         let copy = Path::new(&copy_path);
         let app = std::fs::read_to_string(copy.join("config/app.json")).unwrap();
         assert_eq!(app, "{\"versao\":\"commit\"}\n", "a versão do commit fica intacta: {out}");
@@ -1770,7 +1684,7 @@ mod tests {
             let ended = std::thread::spawn(move || {
                 approved(&inside, "x", &[(1, &["src/a.rs"], &[])]);
                 let out = round(&inside, "x", None);
-                let (copy, _) = sent_copy(&inside, 1);
+                let copy = sent_copy(&inside, 1);
                 assert!(Path::new(&copy).join(".git").is_file(), "{out}");
                 assert!(!fails, "o teste falhou depois de criar a cópia");
             })
@@ -1819,14 +1733,16 @@ mod tests {
     }
 
     /// A onda em andamento — com pedido e sem entrega depois dele — ocupa uma
-    /// vaga do limite e a pasta de compilação dela: a rodada não passa do
-    /// limite contando as que já saíram, e a onda que sai no lugar da que
-    /// voltou fica com a pasta livre, e não com a da que segue em andamento.
+    /// vaga do limite e a cópia fixa dela: a rodada não passa do limite
+    /// contando as que já saíram, e a onda que sai no lugar da que voltou
+    /// fica com a vaga livre, e não com a da que segue em andamento. A cópia
+    /// da que voltou continua no disco depois do commit, pronta para a
+    /// seguinte.
     /// O pedido anterior ao replanejamento da onda não conta como andamento.
     /// A resposta lista as ondas em andamento com o código do pedido de cada
     /// uma.
     #[test]
-    fn a_wave_in_flight_holds_a_slot_and_its_build_folder_and_a_send_before_the_replan_does_not_count() {
+    fn a_wave_in_flight_holds_its_slot_and_a_send_before_the_replan_does_not_count() {
         // A onda 2 volta; a 3 sai no lugar dela, enquanto a 1 segue.
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1834,12 +1750,13 @@ mod tests {
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
-        let (_, held) = sent_copy(root, 1);
-        let (_, freed) = sent_copy(root, 2);
+        let held = sent_copy(root, 1);
+        let freed = sent_copy(root, 2);
         let out = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
         assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(Path::new(&freed).join(".git").is_file(), "a cópia fica depois do commit da onda: {out}");
         assert_eq!(waves_in(&out, "dispatch"), vec![3], "a vaga da 2 ficou livre: {out}");
-        assert_eq!(sent_copy(root, 3).1, freed, "a 3 compila na pasta que a 2 deixou, e não na da 1 ({held})");
+        assert_eq!(sent_copy(root, 3), freed, "a 3 usa a vaga que a 2 deixou, e não a da 1 ({held})");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let sent = |wave: u64| {
@@ -2105,7 +2022,7 @@ mod tests {
             assert_eq!(asked["ok"], json!(true), "{asked}");
             assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
             assert!(sends().is_empty(), "no send before the analysis: {asked}");
-            assert!(!copy_path(root, "x", 1).exists(), "no copy before the analysis");
+            assert!(!slot_path(root, "x", 0).exists(), "no copy before the analysis");
             let request = &asked["analysis"][0];
             assert_eq!(request["wave"], json!(1), "{asked}");
             assert_eq!(codes_in(request, "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002"], "the rule the task does is not judged");
@@ -2525,7 +2442,7 @@ mod tests {
 
         // A onda 1 ganha um arquivo novo, ainda não entregue, na cópia dela;
         // e um passo gravado depois do envio.
-        let (copy1, _) = sent_copy(root, 1);
+        let copy1 = sent_copy(root, 1);
         std::fs::write(Path::new(&copy1).join("rascunho.txt"), "x").unwrap();
         write(root, "x", "step", json!({"wave": 1, "item": "MSTD-TASK-0001", "text": "A tarefa 1 ficou pronta."}));
 
@@ -2552,6 +2469,33 @@ mod tests {
         assert!(second.get("stopped").is_none(), "{second}");
     }
 
+    /// O silêncio de uma onda conta da ação mais nova: o sinal de vida da
+    /// vaga que o envio gravou, quando é mais novo que o envio; a hora do
+    /// envio, quando o sinal da vaga ficou de uma onda anterior.
+    #[test]
+    fn the_silence_of_a_wave_counts_from_the_newest_between_its_slot_signal_and_its_send() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let copy = sent_copy(root, 1);
+        let slot = Path::new(&copy).file_name().unwrap().to_string_lossy().into_owned();
+        let alive = crate::hooks::observe::wave_alive_observer::alive_path(root, "x", &slot);
+        std::fs::create_dir_all(alive.parent().unwrap()).unwrap();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.last_by_wave("send")[&1];
+        let at = |minutes: i64| (chrono::Local::now() + chrono::Duration::minutes(minutes)).to_rfc3339();
+
+        std::fs::write(&alive, at(30)).unwrap();
+        let newer = silent_minutes(root, "x", 1, &log, sent).unwrap();
+        assert!(newer <= -29, "o sinal da vaga, mais novo que o envio, vale: {newer}");
+
+        std::fs::write(&alive, at(-120)).unwrap();
+        let older = silent_minutes(root, "x", 1, &log, sent).unwrap();
+        assert!((0..=1).contains(&older), "o sinal de uma onda anterior não conta: {older}");
+    }
+
     /// Um arquivo já rastreado, mudado sem estar preparado, sai do `git
     /// status` com o código de estado começando em espaço (`" M arquivo"`);
     /// a saída inteira é trimada antes de virar linhas, o que apaga esse
@@ -2566,7 +2510,7 @@ mod tests {
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
 
-        let (copy1, _) = sent_copy(root, 1);
+        let copy1 = sent_copy(root, 1);
         std::fs::write(Path::new(&copy1).join("src").join("a.rs"), "fn dois() {}\n").unwrap();
 
         let second = round(root, "x", None);

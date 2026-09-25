@@ -223,7 +223,7 @@ fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
             git(&["commit", "-q", "-m", "semente"]);
             let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
             assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
-            let copy = mustard_core::io::wave_prompt::copy_path(root, "teste", 1);
+            let copy = mustard_core::io::wave_prompt::slot_path(root, "teste", 0);
             assert!(copy.join("a1.rs").is_file(), "the round made the copy: {}", String::from_utf8_lossy(&dispatch.stdout));
             sent.send(mustard_core::io::wave_prompt::copies_dir(root)).expect("send the copies folder");
             assert!(!fails, "the test fails on purpose");
@@ -554,7 +554,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
     assert!(dispatch.status.success(), "{}", String::from_utf8_lossy(&dispatch.stdout));
 
-    let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "teste", wave);
+    let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "teste", usize::try_from(wave).expect("a wave number fits") - 1);
 
     // Onda 1: muda o arquivo declarado e um outro que a entrega não cita; o
     // repositório continua compilando com o Makefile que já está lá.

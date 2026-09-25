@@ -2,13 +2,13 @@
 //!
 //! É a porta única da execução, e cada rodada é uma chamada só. Sem relatório,
 //! a rodada despacha: escolhe as ondas que podem sair juntas — duas no mesmo
-//! arquivo inclusive —, cria a cópia separada de cada uma no commit atual e
-//! escolhe a pasta de compilação dela, monta o pedido de cada uma com as duas,
+//! arquivo inclusive —, prepara no commit atual a vaga de cada uma, a cópia
+//! fixa em que ela compila, monta o pedido de cada uma com a cópia dela,
 //! grava o envio com o pedido exato como foi injetado e marca a spec como em
 //! execução na primeira rodada. Com a entrega que uma onda gravou na spec e
 //! que ainda não foi assumida, ela primeiro fecha o que voltou — junta ao
-//! repositório principal os arquivos que cada cópia entregou, comita e apaga a
-//! cópia — e só então despacha a rodada seguinte.
+//! repositório principal os arquivos que cada cópia entregou e comita; a
+//! cópia fica, para a próxima onda — e só então despacha a rodada seguinte.
 //!
 //! **A spec antiga passa para o backlog.** Antes de tudo, a rodada converte a
 //! spec uma vez, no módulo `convert`: a onda desenhada à mão que nunca saiu deixa de
@@ -113,6 +113,7 @@ mod convert;
 mod leftovers;
 mod queue;
 mod report;
+mod slots;
 mod stops;
 mod usage;
 
@@ -133,12 +134,12 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
 pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{
-    backlog_left, ensure_copy, local_file_ignored, local_file_missing, open_review, wave_states, waves_in_progress,
-    waves_pending_fix,
-};
+pub(crate) use queue::{backlog_left, open_review, open_sends, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
-pub(crate) use queue::copies_leave_with_the_test;
+pub(crate) use slots::copies_leave_with_the_test;
+pub(crate) use slots::{
+    ensure_copy, local_file_ignored, local_file_missing, remove_copy, remove_spec_copies, reset_slot, spec_copies,
+};
 pub(crate) use report::{check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 

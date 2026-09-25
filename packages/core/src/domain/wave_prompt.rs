@@ -63,18 +63,33 @@ pub struct Skill {
     pub stale: bool,
 }
 
-/// Uma cópia separada do repositório e a pasta de compilação em que ela
-/// compila.
+/// Uma cópia separada do repositório: a vaga fixa em que a onda trabalha e
+/// compila. A compilação mora dentro dela e passa de uma onda para a
+/// seguinte, então o preparo só roda de novo quando precisa.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WaveCopy {
     /// A pasta da cópia.
     pub path: String,
-    /// A pasta de compilação fixa, que passa de uma cópia para a seguinte.
-    /// Toda onda recebe uma, porque ela é também a vaga que conta quantas
-    /// ondas rodam juntas; o pedido só a cita quando o projeto é Rust
-    /// ([`Execution::rust`]).
-    pub build_dir: Option<String>,
+    /// O que mudou desde o último uso da vaga, quando ela é reaproveitada: o
+    /// pedido lista os arquivos e manda preparar só se um deles declara
+    /// dependências. `None` na vaga nova, que sempre prepara.
+    pub reused: Option<Reuse>,
 }
+
+/// A vaga reaproveitada: o commit em que ela estava e os arquivos que
+/// mudaram de lá até o commit em que a onda começa.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reuse {
+    /// O commit em que a vaga estava antes de ser zerada.
+    pub since: String,
+    /// Os arquivos que mudaram desde esse commit, na ordem do git.
+    pub changed: Vec<String>,
+}
+
+/// Quantos arquivos mudados o pedido lista na vaga reaproveitada. Acima
+/// disso, ele diz quantos faltam e o comando que lista todos: a lista
+/// inteira de uma vaga parada por muitos commits encheria o pedido.
+const REUSED_FILES_SHOWN: usize = 40;
 
 /// As regras da execução que o pedido leva, lidas do projeto e da rodada.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -104,10 +119,6 @@ pub struct Execution {
     /// a onda, ou a do revisor final, que o fechamento cria. Sem ela, o
     /// pedido da onda não fala de cópia.
     pub copy: Option<WaveCopy>,
-    /// O mapa do projeto marca alguma parte dele como `cargo`. Só então o
-    /// pedido traz a frase que manda compilar na pasta de compilação da cópia
-    /// e cita o Cargo: num projeto Node, por exemplo, ela não serve.
-    pub rust: bool,
 }
 
 /// Os blocos já lidos de que o pedido de uma onda é feito.
@@ -1352,9 +1363,8 @@ impl Writer<'_> {
     }
 
     /// As regras da execução do agente da onda que carregam valor deste
-    /// projeto e desta rodada — a cópia separada, a pasta de compilação num
-    /// projeto Rust, o preparo que o projeto declara, os comandos do projeto
-    /// e as outras ondas em andamento,
+    /// projeto e desta rodada — a cópia separada, o preparo que o projeto
+    /// declara, os comandos do projeto e as outras ondas em andamento,
     /// com os arquivos delas — e, ligadas à cópia, as três frases que dizem
     /// com todas as letras que o agente não comita, que o campo `commit` da
     /// entrega é o título, nunca o código do commit, e que a entrega vai para
@@ -1369,8 +1379,7 @@ impl Writer<'_> {
         if let Some(copy) = &execution.copy {
             let line = self.t("prompt.execution.copy").replace("{copy}", &copy.path).replace("{root}", &execution.root);
             let _ = writeln!(out, "- {line}");
-            self.build_dir(out, copy);
-            self.prepare(out);
+            self.prepare(out, Some(copy));
             let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
             let _ = writeln!(out, "- {}", self.t("prompt.execution.commit_field"));
             let _ = writeln!(out, "- {}", self.t("prompt.execution.report_lines"));
@@ -1392,12 +1401,11 @@ impl Writer<'_> {
     }
 
     /// As regras da execução do revisor: a cópia que o fechamento já criou no
-    /// commit da obra, compilar na pasta de compilação dela num projeto Rust,
-    /// o preparo que o projeto declara, os arquivos locais que a cópia recebe
-    /// pelo conteúdo, os comandos do projeto com menos processos, e desfazer
-    /// cada corte
-    /// antes de gravar o veredito — quem apaga a cópia é o fechamento. De onde ler a
-    /// spec, o exemplo de leitura já diz.
+    /// commit da obra, o preparo que o projeto declara, os arquivos locais
+    /// que a cópia recebe pelo conteúdo, os comandos do projeto com menos
+    /// processos, e desfazer cada corte antes de gravar o veredito — quem
+    /// apaga a cópia é o fechamento. De onde ler a spec, o exemplo de leitura
+    /// já diz.
     fn review_execution(&self, out: &mut String) {
         let execution = &self.material.execution;
         let (copy, root) = (execution.copy.clone().unwrap_or_default(), &execution.root);
@@ -1405,8 +1413,7 @@ impl Writer<'_> {
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.execution"));
         let line = self.t("prompt.review.copy").replace("{copy}", &copy.path).replace("{root}", root);
         let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
-        self.build_dir(out, &copy);
-        self.prepare(out);
+        self.prepare(out, None);
         if !execution.local_files.is_empty() {
             let files: Vec<String> = execution.local_files.iter().map(|file| format!("`{file}`")).collect();
             let line = self.t("prompt.review.local_files").replace("{files}", &files.join(", ")).replace("{root}", root);
@@ -1420,22 +1427,39 @@ impl Writer<'_> {
 
     /// O preparo que o projeto declara, rodado dentro da cópia antes de
     /// compilar, com o arquivo versionado que ele mudar de volta ao commit;
-    /// sem comando declarado, nada.
-    fn prepare(&self, out: &mut String) {
-        if let Some(command) = &self.material.execution.prepare {
+    /// sem comando declarado, nada. O revisor (`copy` sem valor) sempre
+    /// prepara. Na onda, a cópia nova também. A reaproveitada já guarda o
+    /// preparo anterior: o pedido lista os arquivos que mudaram desde o
+    /// último uso dela e manda preparar só se um deles declara dependências.
+    /// Quem julga é o agente, pela lista: o binário não sabe quais arquivos
+    /// de cada linguagem declaram dependências.
+    fn prepare(&self, out: &mut String, copy: Option<&WaveCopy>) {
+        let Some(command) = &self.material.execution.prepare else { return };
+        let Some(copy) = copy else {
             let _ = writeln!(out, "- {}", self.t("prompt.execution.prepare").replace("{command}", command));
-        }
-    }
-
-    /// A pasta de compilação da cópia, quando ela tem uma e o projeto é Rust:
-    /// a frase cita o Cargo, e fora dele não serve.
-    fn build_dir(&self, out: &mut String, copy: &WaveCopy) {
-        if !self.material.execution.rust {
             return;
-        }
-        if let Some(dir) = &copy.build_dir {
-            let _ = writeln!(out, "- {}", self.t("prompt.execution.build_dir").replace("{dir}", dir));
-        }
+        };
+        let line = match &copy.reused {
+            None => self.t("prompt.execution.prepare_new").replace("{command}", command),
+            Some(reuse) if reuse.changed.is_empty() => {
+                self.t("prompt.execution.prepare_same").replace("{command}", command)
+            }
+            Some(reuse) => {
+                let mut files: Vec<String> =
+                    reuse.changed.iter().take(REUSED_FILES_SHOWN).map(|file| format!("`{file}`")).collect();
+                let left = reuse.changed.len().saturating_sub(REUSED_FILES_SHOWN);
+                if left > 0 {
+                    let diff = format!("git diff --name-only {} HEAD", reuse.since);
+                    files.push(
+                        self.t("prompt.execution.prepare_more").replace("{n}", &left.to_string()).replace("{diff}", &diff),
+                    );
+                }
+                self.t("prompt.execution.prepare_reused")
+                    .replace("{command}", command)
+                    .replace("{files}", &files.join(", "))
+            }
+        };
+        let _ = writeln!(out, "- {line}");
     }
 
     /// Os comandos de compilar e de testar que o projeto declara, um por
@@ -1642,7 +1666,7 @@ mod tests {
     /// execução que a onda declara (`order`); o cabeçalho diz o modelo da
     /// onda; nenhuma das seis frases de execução que o molde do agente já dá
     /// aparece; e o que sobra da execução é só o desta rodada e deste
-    /// projeto — a cópia, a pasta de compilação, os comandos do projeto e a
+    /// projeto — a cópia, os comandos do projeto e a
     /// onda que corre junto.
     #[test]
     fn the_request_opens_by_done_when_states_the_model_and_keeps_only_this_projects_execution() {
@@ -1657,9 +1681,8 @@ mod tests {
             build: Some("cargo build".into()),
             test: Some("cargo test".into()),
             root: "/repo".into(),
-            rust: true,
             running: vec![(9, vec!["src/c.rs".into()])],
-            copy: Some(WaveCopy { path: "/copia".into(), build_dir: Some("/build".into()) }),
+            copy: Some(WaveCopy { path: "/copia".into(), reused: None }),
             ..Execution::default()
         };
         let prompt = build(&m, Locale::PtBr);
@@ -1692,7 +1715,7 @@ mod tests {
         }
 
         // O que sobra da execução é só o desta rodada e deste projeto.
-        for kept in ["/copia", "/build", "cargo build", "cargo test", "Onda 9", "`src/c.rs`"] {
+        for kept in ["/copia", "cargo build", "cargo test", "Onda 9", "`src/c.rs`"] {
             assert!(text.contains(kept), "{kept:?} devia continuar no pedido: {text}");
         }
     }
@@ -2631,16 +2654,14 @@ mod tests {
         assert!(section(&write_final_review(&plain, Locale::PtBr), "Conserto").is_empty());
     }
 
-    /// A execução de um pedido montado com a cópia que a rodada criou, num
-    /// projeto Rust.
+    /// A execução de um pedido montado com a cópia que a rodada criou.
     fn with_copy() -> Execution {
         Execution {
             build: Some("make".into()),
             test: Some("make test".into()),
             running: vec![(2, vec!["src/b.rs".into(), "src/c.rs".into()]), (3, Vec::new())],
             root: "/repo".into(),
-            copy: Some(WaveCopy { path: "/repo/copia-1".into(), build_dir: Some("/repo/target/copias/a".into()) }),
-            rust: true,
+            copy: Some(WaveCopy { path: "/repo/copia-1".into(), reused: None }),
             ..Execution::default()
         }
     }
@@ -2650,47 +2671,21 @@ mod tests {
     fn with_final_copy() -> Execution {
         Execution {
             commit: Some("abc1234".into()),
-            copy: Some(WaveCopy { path: "/repo/revisao-1".into(), build_dir: Some("/repo/target/copias/b".into()) }),
+            copy: Some(WaveCopy { path: "/repo/revisao-1".into(), reused: None }),
             ..with_copy()
         }
     }
 
-    /// Num projeto sem parte Rust, a cópia recebe a pasta de compilação do
-    /// mesmo jeito, porque ela é a vaga das ondas que rodam juntas, mas
-    /// nenhum dos dois pedidos a cita nem fala do Cargo; a cópia e o resto
-    /// das regras continuam. Num projeto Rust, os dois citam a pasta.
-    #[test]
-    fn the_build_folder_sentence_is_written_only_for_a_rust_project() {
-        let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
-        let mut m = material(&log, 1);
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let rules = translate("prompt.part.execution", lang);
-            for rust in [false, true] {
-                m.execution = Execution { rust, ..with_copy() };
-                let wave = section(&write(&m, lang), rules).to_string();
-                m.execution = Execution { rust, ..with_final_copy() };
-                let last = section(&write_final_review(&m, lang), rules).to_string();
-                for (text, folder) in [(&wave, "/repo/target/copias/a"), (&last, "/repo/target/copias/b")] {
-                    let sentence = translate("prompt.execution.build_dir", lang).replace("{dir}", folder);
-                    assert_eq!(text.contains(&sentence), rust, "{lang:?} rust={rust}: {text}");
-                    assert_eq!(text.contains("Cargo") || text.contains("target/copias"), rust, "{lang:?} rust={rust}: {text}");
-                }
-                assert!(wave.contains("`/repo/copia-1`") && last.contains("`/repo/revisao-1`"), "{wave}\n{last}");
-                assert!(wave.contains("`make test`") && last.contains("`make test`"), "{wave}\n{last}");
-            }
-        }
-    }
-
     /// O pedido da onda traz as regras da execução: a cópia separada que a
-    /// rodada criou, a pasta de compilação dela, os comandos do projeto, não
-    /// comitar e as outras ondas em andamento com os arquivos delas; o
-    /// caminho do repositório principal vem só no exemplo de leitura. O da
-    /// revisão final diz em que cópia trabalhar, como criá-la no commit mais
-    /// novo, onde compilar, compilar com menos processos e apagar a cópia no
-    /// fim; sem commit, a cópia sai do atual. Sem cópia, o pedido da onda não
-    /// fala de cópia, de pasta de compilação nem do repositório principal.
+    /// rodada preparou, os comandos do projeto, não comitar e as outras ondas
+    /// em andamento com os arquivos delas; o caminho do repositório principal
+    /// vem só no exemplo de leitura. O da revisão final diz em que cópia
+    /// trabalhar, como criá-la no commit mais novo, compilar com menos
+    /// processos e apagar a cópia no fim; sem commit, a cópia sai do atual.
+    /// Sem cópia, o pedido da onda não fala de cópia nem do repositório
+    /// principal. Nenhum dos dois cita pasta de compilação à parte.
     #[test]
-    fn the_requests_carry_the_execution_rules_the_copy_and_its_build_folder() {
+    fn the_requests_carry_the_execution_rules_and_the_copy() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
         let mut m = material(&log, 1);
         m.execution = with_copy();
@@ -2699,7 +2694,6 @@ mod tests {
         let rules = section(&wave, t("prompt.part.execution"));
         for line in [
             format!("- {}", t("prompt.execution.copy").replace("{copy}", "/repo/copia-1").replace("{root}", "/repo")),
-            format!("- {}", t("prompt.execution.build_dir").replace("{dir}", "/repo/target/copias/a")),
             format!("- {}", t("prompt.execution.no_commit")),
             format!("- {}", t("prompt.execution.commit_field")),
             format!("- {}", t("prompt.execution.report_lines")),
@@ -2711,7 +2705,7 @@ mod tests {
         ] {
             assert!(rules.contains(&line), "{line}: {rules}");
         }
-        assert!(!rules.contains("worktree"), "{rules}");
+        assert!(!rules.contains("worktree") && !rules.contains("CARGO_TARGET_DIR"), "{rules}");
         // De onde ler a spec, só a linha de como ler diz, uma vez, nos dois
         // comandos dela.
         let wave_example =
@@ -2727,7 +2721,6 @@ mod tests {
         let rules = section(&last, t("prompt.part.execution"));
         for line in [
             "já a criou no commit `abc1234`",
-            "`CARGO_TARGET_DIR=/repo/target/copias/b`",
             t("prompt.review.jobs"),
             "recusa começar sobre `/repo/revisao-1` com mudança",
             "- Compile com `make`.",
@@ -2735,6 +2728,7 @@ mod tests {
             assert!(rules.contains(line), "{line}: {rules}");
         }
         assert!(!rules.contains("Onda 2"), "a revisão roda na cópia dela: {rules}");
+        assert!(!rules.contains("CARGO_TARGET_DIR"), "{rules}");
         assert!(
             !rules.contains(t("prompt.execution.no_commit"))
                 && !rules.contains(t("prompt.execution.commit_field"))
@@ -2757,7 +2751,7 @@ mod tests {
         assert!(write_final_review(&m, Locale::PtBr).contains(&example), "o revisor trabalha sempre numa cópia");
         let en = write(&Material { execution: with_copy(), ..material(&log, 1) }, Locale::EnUs);
         let rules = section(&en, translate("prompt.part.execution", Locale::EnUs));
-        assert!(rules.contains("`/repo/copia-1`") && rules.contains("`/repo/target/copias/a`"), "{rules}");
+        assert!(rules.contains("`/repo/copia-1`") && !rules.contains("target/copias"), "{rules}");
     }
 
     /// Os textos dos agentes, que cada agente carrega uma vez, exigem o teste

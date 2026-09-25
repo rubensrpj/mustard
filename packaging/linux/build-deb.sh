@@ -10,7 +10,6 @@
 #
 # Layout instalado pelo .deb:
 #   /usr/lib/mustard/bin/        os binários do CLI
-#   /usr/lib/mustard/templates/  a carga do `mustard init`
 # E o postinst cria os symlinks em /usr/bin para tudo entrar no PATH.
 #
 # The .deb used to be built by EXTRACTING the one the desktop-app bundler
@@ -18,12 +17,6 @@
 # webkit2gtk/gtk `Depends` came from. That bundler is gone: the tree below is
 # written from scratch, and the dependency list shrank to the C runtime every
 # Rust binary already needs.
-#
-# Por que /usr/lib/mustard/bin + symlinks (e não /usr/bin direto): o mustard
-# resolve a pasta templates como `<dir-do-exe>/../templates`. Com os binários
-# reais juntos em /usr/lib/mustard/bin, `../templates` aponta para
-# /usr/lib/mustard/templates. current_exe() resolve o symlink para o caminho
-# real, então a resolução funciona via /usr/bin também.
 #
 # Montagens esperadas (feitas pelo build-packages.ps1):
 #   /work   -> repo (somente leitura efetiva; copiamos para /build)
@@ -106,16 +99,14 @@ echo "==> [4/5] montando o .deb"
 MERGE=/tmp/merge
 rm -rf "$MERGE"
 mkdir -p "$MERGE/DEBIAN" \
-         "$MERGE/usr/lib/mustard/bin" \
-         "$MERGE/usr/lib/mustard/templates"
+         "$MERGE/usr/lib/mustard/bin"
 
-# 4a. binários + rtk + templates.
+# 4a. binários + rtk.
 for b in $CLI_BINS; do
   cp "$CARGO_TARGET/release/$b" "$MERGE/usr/lib/mustard/bin/$b"
 done
 cp "$RTK" "$MERGE/usr/lib/mustard/bin/rtk"
 chmod 0755 "$MERGE"/usr/lib/mustard/bin/*
-cp -R "$BUILD/apps/cli/templates/." "$MERGE/usr/lib/mustard/templates/"
 
 # 4a-bis. o passo do plugin. Ele NÃO fica em bin/ de propósito: bin/ inteiro
 # entra no PATH via symlinks em /usr/bin (passo 5c), e este script não é um

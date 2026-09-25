@@ -31,6 +31,10 @@ pub enum MaintCmd {
     /// 8 GB. `--path <dir>` apaga uma pasta só, sem o filtro de idade, depois
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
+    ///
+    /// Sem `--path`, lista também as cópias de obra do projeto da pasta
+    /// atual: saem as de obra fechada, descartada ou que não existe mais, sem
+    /// regra de idade; a de obra aberta fica. A pasta principal nunca entra.
     #[command(name = "clean")]
     #[command(display_order = 18)]
     ScratchGc {

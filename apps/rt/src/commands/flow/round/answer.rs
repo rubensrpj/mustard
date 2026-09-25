@@ -19,9 +19,10 @@ use serde_json::{json, Map, Value};
 use super::commit::git_lock;
 use super::queue::{
     analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, emptied_backlog_waves, first_unfinished, max_parallel, next_waves,
-    open_copies, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, Analysed,
+    open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, Analysed,
 };
 use super::report::Taken;
+use super::slots::open_copies;
 use super::stops::{change_question, stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
@@ -613,11 +614,11 @@ pub(super) fn run_entered_round(
     // O despacho da rodada seguinte: as ondas prontas, no máximo o que o
     // projeto deixa compilar ao mesmo tempo contando as que já estão em
     // andamento, e nenhuma que a onda parada pelo limite de consertos segura.
-    // Cada uma sai com a sua cópia e a sua pasta de compilação.
+    // Cada uma sai com a sua vaga, a cópia fixa em que ela compila.
     let running = waves_in_progress(&log);
-    // A órfã segue ocupando a cópia e a pasta de compilação dela até o
-    // reenvio, mais abaixo: quem conta vaga livre e cópia livre soma as duas,
-    // vivas e órfãs, e só a viva entra no "esperando" da resposta.
+    // A órfã segue ocupando a vaga dela até o reenvio, mais abaixo: quem
+    // conta vaga livre soma as vivas e as órfãs, e só a viva entra no
+    // "esperando" da resposta.
     let occupied = open_sends(&log);
     let stuck = waves_stuck(&log);
     // O ciclo entre as ondas seguintes só aparece aqui, depois de o relatório
@@ -702,9 +703,6 @@ pub(super) fn run_entered_round(
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         if let Some(copy) = flight.copies.get(wave) {
             draft.insert("copy".into(), json!(copy.path));
-            if let Some(dir) = &copy.build_dir {
-                draft.insert("build_dir".into(), json!(dir));
-            }
         }
         draft.insert("claude_pid".into(), json!(claude_pid));
         draft.insert("claude_started".into(), json!(claude_started));
@@ -718,7 +716,7 @@ pub(super) fn run_entered_round(
     }
     // O reenvio: a onda pausada por este relatório, ou a órfã de um Claude
     // Code que fechou, sai de novo com o pedido gravado no envio anterior,
-    // palavra por palavra, na mesma cópia e na mesma pasta de compilação — sem
+    // palavra por palavra, na mesma cópia — sem
     // montar o pedido de novo —, mais os passos já gravados e o aviso de
     // começar vendo o que mudou na cópia. O envio novo aponta o anterior.
     for (wave, previous) in resend_targets(&log, &paused) {
@@ -748,9 +746,6 @@ pub(super) fn run_entered_round(
         draft.insert("items".into(), prior.fields.get("items").cloned().unwrap_or_else(|| json!([])));
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("copy".into(), json!(copy.path));
-        if let Some(dir) = &copy.build_dir {
-            draft.insert("build_dir".into(), json!(dir));
-        }
         draft.insert("resends".into(), json!(previous));
         draft.insert("claude_pid".into(), json!(claude_pid));
         draft.insert("claude_started".into(), json!(claude_started));
@@ -1512,7 +1507,7 @@ mod tests {
     /// Linux.
     #[cfg(target_os = "linux")]
     fn resend_draft(sent: &SpecEvent) -> Value {
-        let mut draft = json!({
+        json!({
             "wave": sent.wave().unwrap(),
             "role": "wave",
             "text": sent.str_field("text").unwrap_or_default(),
@@ -1521,14 +1516,7 @@ mod tests {
             "items": sent.fields.get("items").cloned().unwrap_or_else(|| json!([])),
             "mustard": "0",
             "copy": sent.str_field("copy").unwrap_or_default(),
-        });
-        // A pasta de compilação segue com o pedido: sem ela, a rodada
-        // seguinte acha a vaga livre mesmo com a cópia desta onda ainda lá,
-        // e deixa duas ondas dividirem a mesma pasta.
-        if let Some(dir) = sent.str_field("build_dir") {
-            draft["build_dir"] = json!(dir);
-        }
-        draft
+        })
     }
 
     /// Grava um envio à mão, com a hora `at`: supera o envio mais novo da
@@ -1585,9 +1573,13 @@ mod tests {
         let mut dead = std::process::Command::new("true").spawn().expect("spawn the fixture process");
         let dead_pid = dead.id();
         dead.wait().expect("reap the fixture process");
+        // O envio dela é de antes da vaga fixa: ainda grava a pasta de
+        // compilação, o campo antigo que o envio novo não grava mais.
         let mut draft2 = draft2;
+        let copy2 = draft2["copy"].clone();
         draft2["claude_pid"] = json!(dead_pid);
         draft2["claude_started"] = json!(1);
+        draft2["build_dir"] = json!("/antiga/target/copias/b");
         seed_send_at(root, draft2, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
 
         // As ondas 3 e 4 seguem com o mesmo Claude Code, vivo de verdade, mas
@@ -1635,6 +1627,12 @@ mod tests {
             log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).collect();
         let (previous, resent_send) = (sends_of_1[sends_of_1.len() - 2], sends_of_1[sends_of_1.len() - 1]);
         assert_eq!(resent_send.int("resends"), Some(previous.id), "{out}");
+        // O envio antigo da onda 2, com a pasta de compilação, é lido e
+        // reenviado na mesma cópia; o envio novo não grava a pasta.
+        let resent2 = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(2)).unwrap();
+        assert!(resent2.int("resends").is_some(), "{out}");
+        assert_eq!(resent2.fields.get("copy"), Some(&copy2), "{out}");
+        assert!(resent2.fields.get("build_dir").is_none(), "{out}");
 
         // Só a onda 4 (40 minutos) sai como aviso.
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
@@ -1707,9 +1705,9 @@ mod tests {
         assert_eq!(before(&resent), before(&first_prompt), "{resent}");
     }
 
-    /// A onda órfã segue ocupando a vaga e a cópia dela até o reenvio: com o
-    /// teto de compilação em 1, uma onda fresca não sai por cima da órfã na
-    /// mesma rodada em que ela é reenviada — a pasta de compilação é a mesma,
+    /// A onda órfã segue ocupando a vaga dela até o reenvio: com o teto de
+    /// compilação em 1, uma onda fresca não sai por cima da órfã na mesma
+    /// rodada em que ela é reenviada — a vaga é gravada pela cópia no envio,
     /// e o reenvio a reocupa mesmo antes de outra onda tentar.
     /// Só roda no Linux: fora dele nenhum processo é dado como morto, então
     /// onda órfã não existe para ser provada.
@@ -1843,7 +1841,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        let blocked = mustard_core::io::wave_prompt::copy_path(root, "x", 1);
+        let blocked = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
         std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
         std::fs::write(&blocked, b"no caminho da copia").unwrap();
         let held = round(root, "x", None);
@@ -2066,7 +2064,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 99);
+        let copy = mustard_core::io::wave_prompt::slot_path(root, "x", 98);
         std::fs::create_dir_all(&copy).unwrap();
         let mut orphaned = Command::new("sleep")
             .arg("30")

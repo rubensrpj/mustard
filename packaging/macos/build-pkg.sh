@@ -13,19 +13,16 @@
 # same shape the .deb installs. Layout, mirroring the Linux package:
 #
 #   /usr/local/mustard/bin/        os binários do CLI
-#   /usr/local/mustard/templates/  a carga do `mustard init`
 #
 # (/usr/local, not /usr/lib: /usr is protected by SIP on macOS.)
 #
 # CUIDADO com o invariante que sustenta esses symlinks: current_exe() NÃO
 # resolve symlink sozinho. No macOS o _NSGetExecutablePath devolve "a path",
 # não "a real path" (dyld(3)), e a doc do Rust não garante nenhum dos dois
-# comportamentos. Quem resolve é o resolve_templates_dir, que CANONICALIZA o
-# caminho do executável antes de procurar o templates/ ao lado dele. Sem essa
-# canonicalização o `mustard init` chamado pelo nome procura em
-# /usr/local/bin/templates e morre — foi exatamente o defeito de 2026-07-29.
-# Este comentário afirmava o contrário e foi o que legitimou o layout: não
-# reintroduzir a premissa de que o symlink se resolve sozinho.
+# comportamentos. Quem procura algo ao lado do executável tem de
+# CANONICALIZAR o caminho antes; sem isso, o programa chamado pelo nome
+# procura em /usr/local/bin — foi o defeito de 2026-07-29. Não reintroduzir a
+# premissa de que o symlink se resolve sozinho.
 #
 # Binários UNIVERSAIS (Intel x86_64 + Apple Silicon arm64 via `lipo`): um único
 # .pkg roda nos dois tipos de Mac.
@@ -64,7 +61,7 @@ echo "==> [2/4] montando a raiz do pacote"
 PKGROOT="$DIST/_pkgroot"
 rm -rf "$PKGROOT"
 BIN="$PKGROOT$PREFIX/bin"
-mkdir -p "$BIN" "$PKGROOT$PREFIX/templates"
+mkdir -p "$BIN"
 
 for b in $CLI_BINS; do
   lipo -create -output "$BIN/$b" \
@@ -92,9 +89,6 @@ done
 lipo -create -output "$BIN/rtk" "$RTK_DIR/x86_64/rtk" "$RTK_DIR/aarch64/rtk"
 echo "    rtk: v$RTK_VERSION (universal)"
 chmod 0755 "$BIN"/*
-
-# templates um nível acima -> <exe>/../templates resolve (igual ao .deb)
-cp -R "$REPO/apps/cli/templates/." "$PKGROOT$PREFIX/templates/"
 
 # O passo do plugin, o MESMO script que o .deb embarca. Fora de bin/ de
 # propósito: bin/ vira symlinks no PATH (postinstall), e este não é um comando

@@ -288,13 +288,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("close.review_copy_failed", Locale::EnUs) => {
             "The reviewer's copy `{copy}` could not be created, and the spec did not close: {detail}"
         }
+        // As cópias da obra que o fechamento ou o descarte não conseguiram
+        // tirar. A obra segue: o aviso só diz o que ficou e como tirar.
         ("close.review_copy_kept", Locale::PtBr) => {
-            "A obra fechou, mas a cópia do revisor `{copy}` ficou: {detail}. Apague-a com \
-             `git worktree remove --force {copy}`."
+            "Estas cópias da obra ficaram no disco: {copies}. O git disse: {detail}. Apague cada uma \
+             com `git worktree remove --force <cópia>` e depois rode `git worktree prune`."
         }
         ("close.review_copy_kept", Locale::EnUs) => {
-            "The work closed, but the reviewer's copy `{copy}` stayed: {detail}. Delete it with \
-             `git worktree remove --force {copy}`."
+            "These copies of the work stayed on disk: {copies}. Git said: {detail}. Delete each one \
+             with `git worktree remove --force <copy>`, then run `git worktree prune`."
         }
         ("close.final_review", Locale::PtBr) => {
             "A máquina passou: antes do pull request, despache ao agente de teste dedicado o pedido \
@@ -410,16 +412,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Copying it over from the main folder would swap that version for the one there. Only a \
              file git ignores, like `.env`, goes into the list. Nothing was written."
         }
-        ("round.copy_kept", Locale::PtBr) => {
-            "A cópia da onda {wave}, {copy}, ficou no disco: {files} mudou nela e não estava na \
-             entrega. Leve o que servir ao repositório principal e apague a cópia com \
-             `git worktree remove --force {copy}`."
-        }
-        ("round.copy_kept", Locale::EnUs) => {
-            "Wave {wave}'s copy, {copy}, stayed on disk: {files} changed in it and was not in the \
-             delivery. Bring what is useful to the main repository and delete the copy with \
-             `git worktree remove --force {copy}`."
-        }
         // O gasto da obra inteira (`apps/rt/src/commands/spec_events/pages/copy.rs`).
         ("round.spend.line", Locale::PtBr) => {
             "Gasto total: {waves} tokens de onda + {caller} tokens de quem despachou = {total} tokens \
@@ -444,6 +436,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("stuck.reason.waiting_loop", Locale::EnUs) => "waiting loop",
         ("stuck.reason.deleted_copy", Locale::PtBr) => "cópia de onda apagada",
         ("stuck.reason.deleted_copy", Locale::EnUs) => "deleted wave copy",
+        ("stuck.reason.idle_copy", Locale::PtBr) => "cópia sem onda em andamento",
+        ("stuck.reason.idle_copy", Locale::EnUs) => "copy with no wave running",
         // O bloco de retomada, no aviso antes de compactar (`PreCompact`) e
         // no início da sessão depois do resumo.
         ("conversation_size.block", Locale::PtBr) => {
@@ -1354,7 +1348,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             167,
-            0xbb4c_a634_7faf_fcf7,
+            0x67f9_4044_e075_d48b,
         );
     }
 
@@ -1477,7 +1471,7 @@ mod tests {
             ("close.server_command_not_declared", &["{key}"][..]),
             ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
             ("close.review_copy_failed", &["{copy}", "{detail}"][..]),
-            ("close.review_copy_kept", &["{copy}", "{detail}"][..]),
+            ("close.review_copy_kept", &["{copies}", "{detail}"][..]),
             ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
@@ -1498,10 +1492,10 @@ mod tests {
             ("pr.merge_settled", &["{spec}", "{phase}", "{pr}"][..]),
             ("reopen.same_pr", &[][..]),
             ("reopen.pr_closed", &["{pr}"][..]),
-            ("round.copy_kept", &["{wave}", "{copy}", "{files}"][..]),
             ("stuck.ended", &["{list}"][..]),
             ("stuck.reason.waiting_loop", &[][..]),
             ("stuck.reason.deleted_copy", &[][..]),
+            ("stuck.reason.idle_copy", &[][..]),
             (
                 "conversation_size.block",
                 &["{spec}", "{phase}", "{delivered}", "{running}", "{returned}", "{stuck}", "{missing}",
@@ -1569,10 +1563,13 @@ mod tests {
             ("prompt.skill.stale", &[][..]),
             ("prompt.skill.read", &[][..]),
             ("prompt.execution.copy", &["{copy}", "{root}"][..]),
-            ("prompt.execution.build_dir", &["{dir}"][..]),
             ("prompt.review.copy", &["{copy}", "{root}", "{commit}"][..]),
             ("prompt.review.cleanup", &["{copy}"][..]),
             ("prompt.execution.prepare", &["{command}"][..]),
+            ("prompt.execution.prepare_new", &["{command}"][..]),
+            ("prompt.execution.prepare_reused", &["{command}", "{files}"][..]),
+            ("prompt.execution.prepare_same", &["{command}"][..]),
+            ("prompt.execution.prepare_more", &["{n}", "{diff}"][..]),
             ("prompt.review.local_files", &["{files}", "{root}"][..]),
             ("page.wave.prompt", &["{n}"][..]),
             ("page.wave.prompt.summary", &["{lines}"][..]),

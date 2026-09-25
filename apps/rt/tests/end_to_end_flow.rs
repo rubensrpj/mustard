@@ -449,7 +449,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(second.get("reviews").is_none(), "{second}");
-    assert!(!copy.exists(), "the copy is removed once the round takes the change back: {second}");
+    assert!(copy.join(".git").is_file(), "the copy stays for the next wave once the round takes the change back: {second}");
     assert_eq!(std::fs::read_to_string(project.root.join("src/main.rs")).unwrap(), "fn main() {\n    println!(\"olá\");\n}\n");
 
     // O fechamento roda o lint e o critério e pede o agente de teste
@@ -465,6 +465,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
     assert!(closed.get("review").is_none(), "{closed}");
+    assert!(!copy.exists() && !copy.parent().expect("the folder of the work").exists(), "closing removes the copies of the work: {closed}");
     let pr_line = format!("mustard-rt run pr-open --base dev --head feature/{SPEC} --spec {SPEC}");
     assert_eq!(closed["command"], json!(pr_line), "{closed}");
 
@@ -691,7 +692,10 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
         "agreed": agreed_all_met(project)});
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
-    assert!(!copy.exists(), "the copy and the submodule copy inside it are removed: {second}");
+    assert!(
+        copy.join(".git").is_file() && copy.join(SUB).join(".git").is_file(),
+        "the copy and the submodule copy inside it stay for the next wave: {second}"
+    );
 
     // O commit sai dentro do submódulo, na branch de mesmo nome, e o do
     // principal leva o ponteiro novo junto com o arquivo dele.
@@ -715,6 +719,9 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     let verdict = json!({"final": true, "result": "approved", "text": "Mudaram.", "agreed": agreed_all_met(project)});
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
+    assert!(!copy.exists(), "closing removes the copy of the work: {closed}");
+    let inner = copy.join(SUB).to_string_lossy().replace('\\', "/");
+    assert!(!git_out(&sub, &["worktree", "list", "--porcelain"]).contains(&inner), "git no longer lists the submodule copy: {closed}");
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
     project.run(&argv)

@@ -57,7 +57,7 @@ macOS
 O que cada instalador faz
 -------------------------
 - LINUX:   o apt instala o CLI em /usr/lib/mustard/bin (atalhos em /usr/bin).
-- WINDOWS: instala os binários (com os templates) na pasta do programa e
+- WINDOWS: instala os binários na pasta do programa e
            adiciona o CLI ao PATH.
 - macOS:   instala tudo em /usr/local/mustard e cria os atalhos no PATH
            (/usr/local/bin). Não há .app.
@@ -69,7 +69,7 @@ Como usar depois
 ----------------
 - Prepare um projeto:  cd <projeto> && mustard init
 - Instale o plugin DENTRO do Claude Code (o instalador do sistema traz só os
-  binários e os templates; os comandos /mustard:* e os hooks vêm do plugin).
+  binários; os comandos /mustard:* e os hooks vêm do plugin).
   Abra o Claude Code no projeto e digite:
       /plugin marketplace add rubensrpj/mustard
       /plugin install mustard@mustard-local

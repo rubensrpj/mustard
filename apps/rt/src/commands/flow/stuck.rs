@@ -1,18 +1,24 @@
 //! `stuck` — os processos que um agente deixou presos, sem ninguém mais
 //! olhando para eles: um laço de espera ([`crate::hooks::bash::waiting`],
-//! reaproveitado aqui pelo texto do comando em vez do proposto pelo Bash) ou
-//! um comando cujo diretório de trabalho é a cópia de uma onda que
-//! [`super::round::commit::close_copies`] já apagou. Uma leitura só os acha
-//! e encerra cada um, chamada no início da sessão, em cada rodada e no
-//! fechamento; a resposta de cada uma diz quais encerrou.
+//! reaproveitado aqui pelo texto do comando em vez do proposto pelo Bash), um
+//! comando cujo diretório de trabalho é uma cópia de onda já apagada, ou um
+//! comando parado numa vaga sem onda em andamento — a vaga fica no disco de
+//! uma onda para a seguinte, e o que a onda anterior deixou rodando nela não
+//! tem mais dono. Uma leitura só os acha e encerra cada um, chamada no início
+//! da sessão, em cada rodada e no fechamento; a resposta de cada uma diz
+//! quais encerrou.
 //!
 //! A leitura é a lista de processos do sistema operacional — `/proc`, só no
 //! Linux —, restrita aos do mesmo usuário [`current_uid`]. Num sistema sem
 //! essa lista (`/proc` ausente, ou fora do Linux) a função não acha nada e
 //! não falha: a resposta segue como se não houvesse processo nenhum.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::io::spec_events as store;
+use mustard_core::io::wave_prompt::{final_copy_path, is_slot_of, recorded_copy};
 use mustard_core::platform::i18n::{translate, Locale};
 
 #[cfg(target_os = "linux")]
@@ -28,7 +34,7 @@ pub(crate) struct Ended {
 
 /// A leitura de um processo do sistema, restrita ao que a função de baixo
 /// nível precisa: o comando (para reconhecer o laço) e o diretório de
-/// trabalho (para reconhecer a cópia apagada).
+/// trabalho (para reconhecer a cópia apagada e a vaga sem onda).
 pub(crate) struct Snapshot {
     pid: u32,
     argv: Vec<String>,
@@ -36,7 +42,7 @@ pub(crate) struct Snapshot {
 }
 
 /// Acha os processos presos do usuário atual e encerra cada um, com o sinal
-/// de término comum (`SIGTERM`). Só toca o que casa uma das duas razões; todo
+/// de término comum (`SIGTERM`). Só toca o que casa uma das razões; todo
 /// outro processo, inclusive este mesmo, fica como está. As cópias das ondas
 /// moram na pasta das cópias do projeto, fora dele
 /// ([`mustard_core::io::wave_prompt::copies_dir`]); ela é lida já resolvida
@@ -45,10 +51,11 @@ pub(crate) struct Snapshot {
 pub(crate) fn end_stuck_processes(root: &Path) -> Vec<Ended> {
     let copies = mustard_core::io::wave_prompt::copies_dir(root);
     let copies = std::fs::canonicalize(&copies).unwrap_or(copies);
+    let busy = busy_slots(root, &copies);
     system_processes()
         .into_iter()
         .filter(|proc| proc.pid != std::process::id())
-        .filter_map(|proc| reason_of(&proc, root, &copies).map(|reason| (proc.pid, reason)))
+        .filter_map(|proc| reason_of(&proc, root, &copies, &busy).map(|reason| (proc.pid, reason)))
         .filter(|(pid, _)| terminate(*pid))
         .map(|(pid, reason)| Ended { pid, reason })
         .collect()
@@ -70,11 +77,17 @@ pub(crate) fn report_line(ended: &[Ended], lang: Locale) -> Option<String> {
 /// Por que `proc` está preso, ou `None` quando não está: o comando que ele
 /// roda é um laço de espera com a pasta de trabalho dentro de `root` ou das
 /// cópias dele (`copies`) — o que deixa de fora o mesmo laço rodando num
-/// outro projeto do usuário —, ou o diretório de trabalho dele fica na pasta
+/// outro projeto do usuário —; o diretório de trabalho dele fica na pasta
 /// das cópias do projeto e já não existe no disco — o kernel, no Linux,
 /// mantém o link de `cwd` apontando para o caminho apagado, às vezes com
-/// ` (deleted)` no fim.
-fn reason_of(proc: &Snapshot, root: &Path, copies: &Path) -> Option<&'static str> {
+/// ` (deleted)` no fim —; ou o diretório de trabalho fica numa vaga viva que
+/// não está em `busy`, as vagas com trabalho de cada spec.
+fn reason_of(
+    proc: &Snapshot,
+    root: &Path,
+    copies: &Path,
+    busy: &BTreeMap<String, BTreeSet<String>>,
+) -> Option<&'static str> {
     if let Some(cwd) = proc.cwd.as_ref()
         && (cwd.starts_with(root) || cwd.starts_with(copies))
         && let Some(script) = shell_script(&proc.argv)
@@ -85,7 +98,53 @@ fn reason_of(proc: &Snapshot, root: &Path, copies: &Path) -> Option<&'static str
     let cwd = proc.cwd.as_ref()?;
     let shown = cwd.to_string_lossy();
     let clean = Path::new(shown.strip_suffix(" (deleted)").unwrap_or(&shown));
-    (clean.starts_with(copies) && !clean.exists()).then_some("deleted_copy")
+    if clean.starts_with(copies) && !clean.exists() {
+        return Some("deleted_copy");
+    }
+    let (spec, slot) = crate::hooks::observe::wave_alive_observer::slot_of_copy(copies, clean)?;
+    let held = busy.get(&spec).is_some_and(|slots| slots.contains(&slot));
+    (!held && is_slot_folder(copies, &spec, &slot)).then_some("idle_copy")
+}
+
+/// `<copies>/<spec>/<slot>` é uma vaga viva: a pasta da spec não é ela mesma
+/// uma cópia do git — o endereço antigo, uma cópia por onda direto na pasta
+/// das cópias, nunca conta como vaga — e a da vaga é, com o `.git` em
+/// arquivo, como o git grava a cópia ligada ao projeto.
+fn is_slot_folder(copies: &Path, spec: &str, slot: &str) -> bool {
+    let spec_dir = copies.join(spec);
+    !spec_dir.join(".git").exists() && spec_dir.join(slot).join(".git").is_file()
+}
+
+/// As vagas com trabalho de cada spec que tem pasta sob `copies`, pelo nome:
+/// a cópia gravada em cada envio aberto de onda — a órfã inclusive, que a
+/// rodada reenvia na mesma vaga — e, com a revisão final aberta, a vaga
+/// dela. A spec sem registro no projeto não tem vaga com trabalho.
+fn busy_slots(root: &Path, copies: &Path) -> BTreeMap<String, BTreeSet<String>> {
+    let Ok(entries) = std::fs::read_dir(copies) else { return BTreeMap::new() };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .map(|spec| {
+            let log = store::spec_file(root, &spec).ok().and_then(|path| store::read(&path).ok().flatten());
+            let held = log.map(|log| held_slots(root, &spec, &log)).unwrap_or_default();
+            (spec, held)
+        })
+        .collect()
+}
+
+/// As vagas com trabalho da spec `spec`, lida em `log`, pelo nome.
+fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<String> {
+    let name = |copy: &Path| copy.file_name().map(|name| name.to_string_lossy().into_owned());
+    let mut held: BTreeSet<String> = crate::commands::flow::round::open_sends(log)
+        .keys()
+        .filter_map(|wave| recorded_copy(log, *wave))
+        .filter(|copy| is_slot_of(root, spec, &copy.path))
+        .filter_map(|copy| name(Path::new(&copy.path)))
+        .collect();
+    if crate::commands::flow::round::open_review(log).is_some() {
+        held.extend(name(&final_copy_path(root, spec, log)));
+    }
+    held
 }
 
 /// O trecho de `argv` que um shell recebeu por `-c`: `["sh", "-c", "while …
@@ -289,7 +348,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         crate::commands::flow::round::copies_leave_with_the_test(root);
-        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1);
+        let copy = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
         std::fs::create_dir_all(&copy).expect("copy dir");
         let outside = tempdir().expect("tempdir for the other project");
 
@@ -352,7 +411,7 @@ mod tests {
     /// projeto fica de fora.
     #[test]
     fn a_process_in_a_deleted_outside_copy_is_stuck() {
-        use mustard_core::io::wave_prompt::copy_path;
+        use mustard_core::io::wave_prompt::slot_path;
 
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
@@ -360,9 +419,9 @@ mod tests {
         for project in [root, other.path()] {
             crate::commands::flow::round::copies_leave_with_the_test(project);
         }
-        let copy = copy_path(root, "x", 1);
-        let live = copy_path(root, "x", 2);
-        let foreign = copy_path(other.path(), "x", 1);
+        let copy = slot_path(root, "x", 0);
+        let live = slot_path(root, "x", 1);
+        let foreign = slot_path(other.path(), "x", 0);
         let project = std::fs::canonicalize(root).expect("the project folder");
         assert!(!copy.starts_with(root) && !copy.starts_with(&project), "the copy lives outside the project: {copy:?}");
         for folder in [&copy, &live, &foreign] {
@@ -394,6 +453,75 @@ mod tests {
 
         let _ = foreign_orphan.kill();
         let _ = foreign_orphan.wait();
+    }
+
+    /// A spec `x` com o plano de duas ondas e o pedido aberto da onda 2,
+    /// gravado na vaga b; a onda 1 já foi entregue. Linhas escritas direto no
+    /// arquivo de eventos, como a rodada as deixa.
+    fn spec_with_wave_two_running(root: &Path) {
+        use mustard_core::io::wave_prompt::{shown, slot_path};
+        let folder = root.join(".claude").join("spec").join("x");
+        std::fs::create_dir_all(&folder).expect("spec folder");
+        let at = "2026-09-25T10:00:00-03:00";
+        let lines = [
+            serde_json::json!({"v": 1, "id": 1, "at": at, "type": "message", "author": "user", "text": "o objetivo"}),
+            serde_json::json!({"v": 1, "id": 2, "at": at, "type": "wave", "author": "assistant", "n": 1,
+                "text": "Onda 1.", "done_when": "A suíte passa.", "origin": 1}),
+            serde_json::json!({"v": 1, "id": 3, "at": at, "type": "wave", "author": "assistant", "n": 2,
+                "text": "Onda 2.", "done_when": "A suíte passa.", "origin": 1}),
+            serde_json::json!({"v": 1, "id": 4, "at": at, "type": "send", "author": "binary", "wave": 1,
+                "role": "wave", "text": "pedido", "copy": shown(&slot_path(root, "x", 0))}),
+            serde_json::json!({"v": 1, "id": 5, "at": at, "type": "delivered", "author": "assistant", "wave": 1,
+                "text": "entregue"}),
+            serde_json::json!({"v": 1, "id": 6, "at": at, "type": "send", "author": "binary", "wave": 2,
+                "role": "wave", "text": "pedido", "copy": shown(&slot_path(root, "x", 1))}),
+        ];
+        let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+        std::fs::write(folder.join("spec.ndjson"), text).expect("spec file");
+    }
+
+    /// A vaga fica no disco de uma onda para a seguinte. O processo parado
+    /// numa vaga sem onda em andamento — a da onda já entregue — é
+    /// encerrado, pela vaga sem onda; o da vaga com o pedido aberto de outra
+    /// onda fica. A cópia no endereço antigo, uma por onda direto na pasta
+    /// das cópias, não é vaga e também fica.
+    #[test]
+    fn a_process_in_a_slot_with_no_wave_running_is_stuck() {
+        use mustard_core::io::wave_prompt::{copies_dir, slot_path};
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        crate::commands::flow::round::copies_leave_with_the_test(root);
+        spec_with_wave_two_running(root);
+        let free = slot_path(root, "x", 0);
+        let held = slot_path(root, "x", 1);
+        let old = copies_dir(root).join("x-3");
+        for copy in [&free, &held, &old] {
+            std::fs::create_dir_all(copy.join("src")).expect("copy dir");
+            std::fs::write(copy.join(".git"), "gitdir: /nowhere\n").expect("the copy's git link");
+        }
+
+        let mut idle = spawn(Command::new("sleep").arg("32").current_dir(free.join("src")));
+        let mut working = spawn(Command::new("sleep").arg("33").current_dir(held.join("src")));
+        let mut legacy = spawn(Command::new("sleep").arg("34").current_dir(old.join("src")));
+        wait_until_spawned(idle.id(), "sleep");
+        wait_until_spawned(working.id(), "sleep");
+        wait_until_spawned(legacy.id(), "sleep");
+
+        let ended = end_stuck_processes(root);
+        assert!(gone(&mut idle), "the command left in the slot with no wave running must be ended");
+        assert!(working.try_wait().ok().flatten().is_none(), "the slot of the running wave is left alone");
+        assert!(legacy.try_wait().ok().flatten().is_none(), "a copy at the old address is not a slot");
+        let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
+        assert!(reasons.contains(&(idle.id(), "idle_copy")), "{reasons:?}");
+        assert!(!reasons.iter().any(|(pid, _)| *pid == working.id() || *pid == legacy.id()), "{reasons:?}");
+        let line = report_line(&ended, Locale::PtBr).expect("a line for the ended process");
+        assert!(line.contains("sem onda"), "{line}");
+
+        for child in [&mut working, &mut legacy] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     /// Sem processo nenhum encerrado, a linha da resposta não existe: o

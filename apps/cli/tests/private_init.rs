@@ -1,12 +1,13 @@
-//! `mustard init --private` installs
-//! privately and seeds no `.github/` pull-request template into the host
-//! repository.
+//! `mustard init` installs privately and seeds no `.github/` pull-request
+//! template into the host repository.
 //!
 //! ## Why this drives the real binary
 //!
-//! The `.github/` copy fires on a condition that lives OUTSIDE the flag — the
-//! project having a GitHub remote — so the only honest proof is a full install
-//! against a repository that really has one, driven end to end.
+//! The installer used to copy a `.github/` template on a condition that lived
+//! OUTSIDE any flag — the project having a GitHub remote. The copy and the
+//! folder of molds it read are gone, so the honest proof is still a full
+//! install against a repository that really has such a remote, driven end to
+//! end, showing that nothing lands in `.github/`.
 //!
 //! Running the binary as a child process also keeps the best-effort installers
 //! honest: a PATH shim (see [`tool_shims`]) answers the two `--version` probes
@@ -15,9 +16,9 @@
 //!
 //! ## A hazard this header used to describe, now removed at the source
 //!
-//! This comment once gave a second reason: `init_with_templates` opened with the
-//! RTK hard gate (`probe_rtk` → `process::exit(1)`), and `cfg!(test)` — which
-//! neutralises it for the unit tests inside `init.rs` — is FALSE for an
+//! This comment once gave a second reason: the library entry point opened with
+//! the RTK hard gate (`probe_rtk` → `process::exit(1)`), and `cfg!(test)` —
+//! which neutralises it for the unit tests inside `init.rs` — is FALSE for an
 //! integration test, which links the crate as an ordinary dependency. A missing
 //! RTK would take the whole test binary down on a bare CI runner.
 //!
@@ -28,44 +29,29 @@
 //! it and no library caller can be killed by it.
 //!
 //! Moving the gate alone was not enough, and the second half is worth recording
-//! because it nearly shipped. While the gate exited at the top of
-//! `init_with_templates`, the best-effort installers below it (the rtk and the
-//! ripgrep ones) could only run with the tools ALREADY present — their
-//! install branches were unreachable from `init`. Removing the exit made them
-//! live for library callers, and a shimmed-PATH run of that other crate's test
-//! caught it spawning `sh -c "curl … | sh"` twice. Both now sit beside the gate
-//! in `cli::dispatch`, for the same reason: putting software on the operator's
+//! because it nearly shipped. While the gate exited at the top of the library
+//! entry point, the best-effort installers below it (the rtk and the ripgrep
+//! ones) could only run with the tools ALREADY present — their install branches
+//! were unreachable from `init`. Removing the exit made them live for library
+//! callers, and a shimmed-PATH run of that other crate's test caught it
+//! spawning `sh -c "curl … | sh"` twice. Both now sit beside the gate in
+//! `cli::dispatch`, for the same reason: putting software on the operator's
 //! machine is an environment act, and a library call must never take it.
 //!
-//! So an in-process `init_with_templates` no longer exits the process and no
-//! longer installs anything. This test drives the binary for the reasons above,
-//! not for either of those. The gate itself is pinned by
-//! `apps/cli/tests/rtk_gate.rs`.
+//! So an in-process `init` no longer exits the process and no longer installs
+//! anything. This test drives the binary for the reasons above, not for either
+//! of those. The gate itself is pinned by `apps/cli/tests/rtk_gate.rs`.
 //!
-//! The test carries its own CONTROL: the same fixture, installed shared, must
-//! produce `.github/pull_request_template.md`. Without it a green run would
-//! prove nothing — an install that failed early also writes no `.github/`.
+//! A run that failed early would also write no `.github/`, so the test asserts
+//! the install succeeded and really was private before trusting the absence.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use tempfile::tempdir;
 
-/// The project-root path the CLI seeds from `templates/.github/`.
-const PR_TEMPLATE: &str = ".github/pull_request_template.md";
-
-/// Build the `templates/` payload the install is pointed at: just the
-/// `.github/` scaffolding, which is all `init` still reads from there (the
-/// harness seeds are compiled-in core constants).
-fn fake_templates(root: &Path) -> PathBuf {
-    let templates = root.join("templates");
-    std::fs::create_dir_all(templates.join(".github")).expect("templates/.github");
-    std::fs::write(templates.join(PR_TEMPLATE), "## What changed\n").expect("PR template");
-    templates
-}
-
 /// A fresh git repository whose `origin` points at github.com — the condition
-/// that makes the `.github/` copy fire.
+/// that used to make the `.github/` copy fire.
 fn git_project_with_github_remote(root: &Path, name: &str) -> PathBuf {
     let project = root.join(name);
     std::fs::create_dir_all(&project).expect("project dir");
@@ -104,14 +90,13 @@ fn tool_shims(root: &Path) -> PathBuf {
     bin
 }
 
-/// Run the real `mustard init` in `project`, with the fixture templates and the
-/// tool shims in place. `extra` carries the flags under test.
+/// Run the real `mustard init` in `project`, with the tool shims in place. `extra` carries the flags under test.
 ///
 /// `home` is a PARAMETER, never the operator's own: everything the install
 /// writes outside the project resolves from `$HOME`, so a child that inherited
 /// the real one would leave permanent traces in `~/.claude/` on every
 /// `cargo test`, each naming a temporary directory deleted seconds later.
-fn run_init(project: &Path, templates: &Path, shims: &Path, home: &Path, extra: &[&str]) -> Output {
+fn run_init(project: &Path, shims: &Path, home: &Path, extra: &[&str]) -> Output {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut entries = vec![shims.to_path_buf()];
     entries.extend(std::env::split_paths(&path));
@@ -123,7 +108,6 @@ fn run_init(project: &Path, templates: &Path, shims: &Path, home: &Path, extra: 
         .args(extra)
         .current_dir(project)
         .env("PATH", joined)
-        .env("MUSTARD_TEMPLATES_DIR", templates)
         // The home every out-of-project write resolves from. Both spellings,
         // because the resolution reads `USERPROFILE` on Windows and `HOME`
         // everywhere else — and this test is NOT unix-gated, so setting only one
@@ -159,32 +143,17 @@ fn exclude_body(project: &Path) -> String {
     std::fs::read_to_string(&path).unwrap_or_default()
 }
 
-/// `mustard init --private` installs privately and seeds no `.github/`
-/// pull-request template into the host repository.
+/// A bare `mustard init` installs privately and seeds no `.github/`
+/// pull-request template into the host repository, even with a github.com
+/// origin.
 #[test]
 fn init_private_seeds_no_github_template() {
     let work = tempdir().expect("temp dir");
-    let templates = fake_templates(work.path());
     let shims = tool_shims(work.path());
     // The child's `$HOME`: everything `init` writes outside the project lands
     // here, where the tempdir takes it away again.
     let home = work.path().join("home");
     std::fs::create_dir_all(&home).expect("isolated home");
-
-    // CONTROL — both conditions that MAKE the seed happen are present, so a
-    // missing `.github/` below can only be the install refusing it.
-    //
-    // The control used to be a shared install of the same fixture. There is no
-    // longer any argv that produces one — the mode is unconditional — so the
-    // control moved to the two preconditions the seeder reads: the template has
-    // to exist in the source tree, and the project has to have a github.com
-    // origin. Without this, a fixture with no template at all would satisfy the
-    // criterion by accident, which is the exact shape of failure this unit hit
-    // three times.
-    assert!(
-        templates.join(".github").join("pull_request_template.md").is_file(),
-        "fixture broken: the source template must exist, or nothing could be seeded anyway",
-    );
 
     // THE CRITERION — a BARE `mustard init` is private and writes no `.github/`
     // at all. No flag: the operator who most needs this mode is the one who
@@ -197,10 +166,10 @@ fn init_private_seeds_no_github_template() {
         .expect("git config");
     assert!(
         String::from_utf8_lossy(&remote.stdout).contains("github.com"),
-        "fixture broken: the seeder only fires on a github.com origin",
+        "fixture broken: the old seeder only fired on a github.com origin",
     );
 
-    let out = run_init(&private, &templates, &shims, &home, &[]);
+    let out = run_init(&private, &shims, &home, &[]);
     assert_ok("private init", &out);
     assert!(
         !private.join(".github").exists(),

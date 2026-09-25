@@ -1,8 +1,7 @@
 //! O pedido de cada onda, montado do disco: o arquivo de eventos da spec, o
 //! banco de lições, os arquivos das skills que as tarefas nomeiam, os
-//! comandos de compilar, testar e preparar a cópia que o projeto declara, os
-//! arquivos locais dele e o mapa do projeto, que diz se ele tem uma parte
-//! Rust.
+//! comandos de compilar, testar e preparar a cópia que o projeto declara e os
+//! arquivos locais dele.
 //!
 //! A regra de escrever o pedido mora em `domain::wave_prompt`, sem disco;
 //! aqui ficam só as leituras. Os dois leitores do pedido — o passo do plano,
@@ -23,7 +22,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
-use crate::domain::project_map::{check_skill, file_history, has_rust_part, tests_for, MapRefusal, ProjectMap};
+use crate::domain::project_map::{check_skill, file_history, tests_for, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{self, tasks_text, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
@@ -70,7 +69,7 @@ pub struct Flight {
 pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Flight) -> Vec<WavePrompt> {
     let bank = lesson_bank(root);
     let map = crate::io::project_map::read(root).ok();
-    let base = Execution { rust: has_rust_part(map.as_ref()), ..project_execution(root) };
+    let base = project_execution(root);
     let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, flight, lang };
     log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
 }
@@ -177,20 +176,56 @@ pub fn copies_dir(root: &Path) -> PathBuf {
     base.join(format!("{name}-{code:08x}"))
 }
 
-/// A pasta da cópia separada do agente da onda `wave` da spec `spec`, na
-/// pasta das cópias do projeto ([`copies_dir`]). Quem a cria é a rodada.
+/// A pasta das cópias da spec `spec`, dentro da pasta das cópias do projeto
+/// ([`copies_dir`]): cada vaga da obra mora nela, e o fechamento e o
+/// descarte a apagam inteira.
 #[must_use]
-pub fn copy_path(root: &Path, spec: &str, wave: u64) -> PathBuf {
-    copies_dir(root).join(format!("{spec}-{wave}"))
+pub fn spec_copies_dir(root: &Path, spec: &str) -> PathBuf {
+    copies_dir(root).join(spec)
 }
 
-/// A pasta da cópia separada do revisor final da spec `spec`, ao lado das
-/// cópias das ondas. Quem a cria, no commit de [`final_review_commit`], e a
-/// apaga no fim é o fechamento (`mustard-rt run close`), pela mesma porta das
-/// cópias de onda; o pedido do revisor só diz onde ela está.
+/// O nome da vaga de número `slot`, contado do zero: `a` a `z` e, daí em
+/// diante, o número dela contado do um (`27`, `28`…).
 #[must_use]
-pub fn final_copy_path(root: &Path, spec: &str) -> PathBuf {
-    copies_dir(root).join(format!("{spec}-final-review"))
+pub fn slot_name(slot: usize) -> String {
+    match u8::try_from(slot).ok().filter(|n| *n < 26) {
+        Some(n) => char::from(b'a' + n).to_string(),
+        None => (slot + 1).to_string(),
+    }
+}
+
+/// A pasta da vaga de número `slot` da spec `spec`: a cópia fixa que passa de
+/// uma onda para a seguinte, com a compilação dentro dela. Quem a cria e a
+/// zera é a rodada.
+#[must_use]
+pub fn slot_path(root: &Path, spec: &str, slot: usize) -> PathBuf {
+    spec_copies_dir(root, spec).join(slot_name(slot))
+}
+
+/// A cópia `copy`, como o envio a grava, é uma vaga da spec `spec`: mora
+/// direto na pasta das cópias dela. O endereço antigo, `<spec>-<onda>` ao
+/// lado das outras specs, não é vaga.
+#[must_use]
+pub fn is_slot_of(root: &Path, spec: &str, copy: &str) -> bool {
+    let parent = Path::new(copy).parent().map(shown);
+    parent.as_deref() == Some(shown(&spec_copies_dir(root, spec)).as_str())
+}
+
+/// A pasta da cópia do revisor final da spec `spec`: a vaga do último envio
+/// de onda que gravou uma vaga desta spec, que já tem a compilação da obra.
+/// Sem envio assim — a obra solo, ou só envios com o endereço antigo —, a
+/// vaga `a`. Quem a prepara, no commit de [`final_review_commit`], é o
+/// fechamento (`mustard-rt run close`); o pedido do revisor só diz onde ela
+/// está.
+#[must_use]
+pub fn final_copy_path(root: &Path, spec: &str, log: &SpecLog) -> PathBuf {
+    log.visible()
+        .into_iter()
+        .rev()
+        .filter(|e| e.event_type == "send" && e.str_field("role") != Some("review"))
+        .filter_map(|e| e.str_field("copy"))
+        .find(|copy| is_slot_of(root, spec, copy))
+        .map_or_else(|| slot_path(root, spec, 0), PathBuf::from)
 }
 
 /// O commit em que o revisor final confere a obra: o mais novo que a spec
@@ -255,14 +290,9 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         fixing.iter().filter_map(|n| verdicts.get(n).and_then(|v| v.last().copied())).collect()
     };
     let commit = final_review_commit(root, log);
-    let last_sent = log.last_by_wave("send").into_iter().max_by_key(|(_, id)| *id).map(|(n, _)| n);
     let execution = Execution {
         commit,
-        copy: Some(WaveCopy {
-            path: shown(&final_copy_path(root, spec)),
-            build_dir: last_sent.and_then(|n| recorded_copy(log, n)).and_then(|copy| copy.build_dir),
-        }),
-        rust: has_rust_part(crate::io::project_map::read(root).ok().as_ref()),
+        copy: Some(WaveCopy { path: shown(&final_copy_path(root, spec, log)), reused: None }),
         ..project_execution(root)
     };
     let material = Material {
@@ -280,20 +310,16 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
     wave_prompt::write_final_review(&material, lang)
 }
 
-/// A cópia gravada no envio mais novo da onda `wave`, com a pasta de
-/// compilação dele. `None` quando esse envio não criou cópia.
+/// A cópia gravada no envio mais novo da onda `wave`. `None` quando esse
+/// envio não criou cópia. O envio antigo que gravou também uma pasta de
+/// compilação à parte é lido do mesmo jeito: só a cópia conta.
 #[must_use]
 pub fn recorded_copy(log: &SpecLog, wave: u64) -> Option<WaveCopy> {
     let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
     let path = sent.str_field("copy")?.to_string();
-    Some(WaveCopy { path, build_dir: sent.str_field("build_dir").map(str::to_string) })
+    Some(WaveCopy { path, reused: None })
 }
 
-/// O mapa do projeto marca alguma parte dele como `cargo`? Só então os
-/// pedidos mandam compilar na pasta de compilação da cópia, com o nome do
-/// Cargo. Sem mapa, o Mustard não sabe que o projeto é Rust, e a frase fica
-/// fora; a pasta continua escolhida, porque é ela a vaga das ondas que rodam
-/// juntas.
 /// Um caminho como o pedido e o envio gravado o mostram: sempre com barras
 /// normais, que o terminal e o controle de versão aceitam nos três sistemas.
 #[must_use]
@@ -665,6 +691,7 @@ fn examples_changed_after(log: &SpecLog, map: Option<&ProjectMap>, name: &str) -
 mod tests {
     use super::*;
     use crate::domain::spec_events::{parse_log, render_line, stamp};
+    use crate::domain::wave_prompt::Reuse;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -988,7 +1015,7 @@ mod tests {
             events.push(("task", json!({"wave": n, "text": "Somar", "files": [{"path": format!("src/{n}.rs")}]})));
         }
         let log = log_of(&events);
-        let copy = WaveCopy { path: "/c/tres".into(), build_dir: None };
+        let copy = WaveCopy { path: "/c/tres".into(), reused: None };
         let in_copy = Flight { running: [3].into(), copies: [(3, copy)].into(), ..Flight::default() };
         for (lang, items, wave_line, before_starting, final_line) in [
             (
@@ -1071,7 +1098,7 @@ mod tests {
             ("task", json!({"wave": 1, "text": "Trocar o texto. Ele diz como ler.", "files": [{"path": "src/b.rs"}]})),
             ("delivered", json!({"wave": 1, "text": "A lista saiu.", "files": ["src/a.rs"]})),
         ]);
-        let copy = WaveCopy { path: "/c/um".into(), build_dir: Some("/t/a".into()) };
+        let copy = WaveCopy { path: "/c/um".into(), reused: None };
         let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
@@ -1473,8 +1500,8 @@ mod tests {
 
     /// O pedido da onda que sai agora traz a cópia que a rodada escolheu; o da
     /// onda em andamento, a cópia gravada no envio dela, e o da onda que não
-    /// está fora não fala de cópia. O projeto é Rust: o mapa marca a raiz
-    /// como `cargo`.
+    /// está fora não fala de cópia. O envio antigo, que gravava também uma
+    /// pasta de compilação à parte, ainda é lido: só a cópia dele vale.
     #[test]
     fn the_request_carries_the_copy_the_round_chose_or_recorded() {
         let dir = tempdir().unwrap();
@@ -1491,43 +1518,37 @@ mod tests {
                        "author": "binary", "copy": "/c/um", "build_dir": "/t/a"}),
             ),
         ]);
-        let chosen = WaveCopy { path: "/c/dois".into(), build_dir: Some("/t/b".into()) };
+        let chosen = WaveCopy { path: "/c/dois".into(), reused: None };
         let flight = Flight { running: [1, 2].into(), copies: [(2, chosen)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
-        let rule = |key: &str, from: &str, to: &str| crate::platform::i18n::translate(key, Locale::PtBr).replace(from, to);
-        assert!(built[0].text.contains(&rule("prompt.execution.build_dir", "{dir}", "/t/a")), "{}", built[0].text);
-        assert!(built[0].text.contains("`/c/um`"), "{}", built[0].text);
-        assert!(built[1].text.contains("`/c/dois`") && built[1].text.contains("CARGO_TARGET_DIR=/t/b"), "{}", built[1].text);
+        assert_eq!(recorded_copy(&log, 1), Some(WaveCopy { path: "/c/um".into(), reused: None }));
+        assert!(built[0].text.contains("`/c/um`") && !built[0].text.contains("/t/a"), "{}", built[0].text);
+        assert!(built[1].text.contains("`/c/dois`"), "{}", built[1].text);
         assert!(built[0].text.contains(&format!("--root {} --spec teste", shown(root))), "{}", built[0].text);
 
         let still = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        assert!(!still[0].text.contains("/c/um") && !still[0].text.contains("CARGO_TARGET_DIR"), "{}", still[0].text);
+        assert!(!still[0].text.contains("/c/um"), "{}", still[0].text);
         assert!(!still[0].text.contains("--root"), "sem cópia, o agente lê a spec de onde está: {}", still[0].text);
     }
 
     /// Os pedidos que a rodada monta — o da onda e o da revisão final — num
-    /// projeto sem mapa, num só com parte Node, num com
-    /// uma parte Node e uma Rust e num só Rust. A onda tem a cópia e a pasta
-    /// de compilação que a rodada escolheu nos quatro, mas só os dois com
-    /// parte `cargo` no mapa trazem a frase da pasta e citam o Cargo e a
-    /// pasta `target/copias`; a cópia aparece em todos.
+    /// projeto sem mapa, num só com parte Node, num com uma parte Node e uma
+    /// Rust e num só Rust: nenhum cita pasta de compilação à parte, o Cargo
+    /// ou a variável dele. A compilação mora dentro da cópia, e a cópia
+    /// aparece em todos. O envio antigo com a pasta gravada não a traz de
+    /// volta.
     #[test]
-    fn the_build_folder_rule_goes_only_to_rust_projects() {
+    fn no_request_names_a_build_folder_in_any_project() {
         let node = json!({"name": "web", "dir": "web", "kind": "npm", "code_files": 3});
         let rust = json!({"name": "api", "dir": "api", "kind": "cargo", "code_files": 3});
-        for (map, cites) in [
-            (None, false),
-            (Some(json!([node])), false),
-            (Some(json!([node, rust])), true),
-            (Some(json!([rust])), true),
-        ] {
+        for map in [None, Some(json!([node])), Some(json!([node, rust])), Some(json!([rust]))] {
             let dir = tempdir().unwrap();
             let root = dir.path();
             if let Some(projects) = &map {
                 write_map(root, &json!({"projects": projects}));
             }
             let folder = shown(&root.join("target").join("copias").join("a"));
-            let copy = shown(&copy_path(root, "teste", 1));
+            let copy = shown(&slot_path(root, "teste", 0));
             let log = log_of(&[
                 ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
                 ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
@@ -1541,15 +1562,50 @@ mod tests {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let built = prompts(root, "teste", &log, lang, &flight);
                 let last = final_review(root, "teste", &log, lang);
-                let sentence = crate::platform::i18n::translate("prompt.execution.build_dir", lang).replace("{dir}", &folder);
                 for (what, text) in [("wave", &built[0].text), ("final", &last)] {
-                    assert_eq!(text.contains(&sentence), cites, "{map:?} {lang:?} {what}: {text}");
-                    assert_eq!(text.contains("Cargo"), cites, "{map:?} {lang:?} {what}: {text}");
-                    assert_eq!(text.contains("target/copias"), cites, "{map:?} {lang:?} {what}: {text}");
+                    assert!(text.contains(&format!("`{copy}`")), "{map:?} {lang:?} {what}: {text}");
+                    for word in ["CARGO_TARGET_DIR", "Cargo", "target/copias", &folder] {
+                        assert!(!text.contains(word), "{map:?} {lang:?} {what} cita {word}: {text}");
+                    }
                 }
-                assert!(built[0].text.contains(&format!("`{copy}`")), "{map:?} {lang:?}: {}", built[0].text);
             }
         }
+    }
+
+    /// O revisor final trabalha na vaga do último envio de onda que gravou
+    /// uma vaga desta spec, a que já tem a compilação da obra. O envio de
+    /// revisão e o envio com o endereço antigo (`<spec>-<onda>`) não contam.
+    /// Sem envio de onda com vaga — a obra solo —, a vaga `a`.
+    #[test]
+    fn the_final_review_uses_the_slot_of_the_last_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let slot = |n: usize| shown(&slot_path(root, "teste", n));
+        let send = |wave: u64, copy: &str| {
+            ("send", json!({"wave": wave, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1],
+                            "mustard": "0", "author": "binary", "copy": copy}))
+        };
+        let old = shown(&copies_dir(root).join("teste-3"));
+        let review = ("send", json!({"role": "review", "text": "p", "lines": 1, "chars": 1, "mustard": "0",
+                                      "author": "binary", "copy": slot(2)}));
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            send(1, &slot(0)),
+            send(2, &slot(1)),
+            send(3, &old),
+            review,
+        ]);
+        assert_eq!(shown(&final_copy_path(root, "teste", &log)), slot(1));
+        assert!(final_review(root, "teste", &log, Locale::PtBr).contains(&format!("`{}`", slot(1))));
+
+        let solo = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))]);
+        assert_eq!(shown(&final_copy_path(root, "teste", &solo)), slot(0));
+        let other_spec = log_of(&[send(1, &shown(&slot_path(root, "outra", 3)))]);
+        assert_eq!(shown(&final_copy_path(root, "teste", &other_spec)), slot(0));
+        assert_eq!(slot_name(0), "a");
+        assert_eq!(slot_name(25), "z");
+        assert_eq!(slot_name(26), "27");
+        assert_eq!(slot_path(root, "teste", 1), copies_dir(root).join("teste").join("b"));
     }
 
     /// Num projeto que declara o preparo (`npm ci`) e os arquivos locais, o
@@ -1574,23 +1630,24 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
-            let copy = WaveCopy { path: "/c/um".into(), build_dir: Some("/t/a".into()) };
+            let copy = WaveCopy { path: "/c/um".into(), reused: None };
             let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let t = |key: &str| crate::platform::i18n::translate(key, lang);
-                let prepare = t("prompt.execution.prepare").replace("{command}", "npm ci");
+                let new_copy = t("prompt.execution.prepare_new").replace("{command}", "npm ci");
+                let review = t("prompt.execution.prepare").replace("{command}", "npm ci");
                 let build = t("prompt.execution.build").replace("{command}", "npm run build");
                 let local = t("prompt.review.local_files")
                     .replace("{files}", "`.env`, `apps/api/.env.local`")
                     .replace("{root}", &shown(root));
                 let wave = prompts(root, "teste", &log, lang, &flight).remove(0).text;
                 let last = final_review(root, "teste", &log, lang);
-                for (what, text) in [("wave", &wave), ("final", &last)] {
-                    assert_eq!(text.contains(&prepare), cites, "{config} {lang:?} {what}: {text}");
+                for (what, text, prepare) in [("wave", &wave, &new_copy), ("final", &last, &review)] {
+                    assert_eq!(text.contains(prepare.as_str()), cites, "{config} {lang:?} {what}: {text}");
                     assert_eq!(text.contains("npm ci"), cites, "{config} {lang:?} {what}: {text}");
                     assert_eq!(text.contains("git checkout --"), cites, "{config} {lang:?} {what}: {text}");
                     if cites {
-                        let (at, built_at) = (text.find(&prepare).unwrap(), text.find(&build).unwrap());
+                        let (at, built_at) = (text.find(prepare.as_str()).unwrap(), text.find(&build).unwrap());
                         assert!(at < built_at, "o preparo vem antes de compilar: {lang:?} {what}: {text}");
                     }
                     assert!(!text.contains("fora.env"), "{lang:?} {what}: {text}");
@@ -1599,6 +1656,48 @@ mod tests {
                 assert!(!wave.contains(".env"), "a cópia da onda já recebe os arquivos da rodada: {lang:?}: {wave}");
             }
         }
+    }
+
+    /// A vaga nova pede o preparo sempre. A reaproveitada lista os arquivos
+    /// que mudaram desde o último uso dela e pede o preparo só se um deles
+    /// declara dependências, sem dizer quais são: o agente julga pela lista.
+    /// Sem nada mudado, ela manda não preparar de novo. A lista longa para no
+    /// teto e diz quantos faltam, com o comando que lista todos.
+    #[test]
+    fn a_reused_copy_lists_the_changed_files_and_prepares_only_when_needed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), json!({"prepareCommand": "npm ci"}).to_string()).unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+        ]);
+        let with = |reused: Option<Reuse>| {
+            let copy = WaveCopy { path: "/c/a".into(), reused };
+            let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
+            prompts(root, "teste", &log, Locale::PtBr, &flight).remove(0).text
+        };
+        let t = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr).replace("{command}", "npm ci");
+        let reuse = |changed: Vec<String>| Some(Reuse { since: "abc1234".into(), changed });
+
+        let fresh = with(None);
+        assert!(fresh.contains(&t("prompt.execution.prepare_new")), "{fresh}");
+
+        let listed = with(reuse(vec!["package.json".into(), "src/a.ts".into()]));
+        let line = t("prompt.execution.prepare_reused").replace("{files}", "`package.json`, `src/a.ts`");
+        assert!(listed.contains(&line), "{listed}");
+        assert!(!listed.contains(&t("prompt.execution.prepare_new")), "{listed}");
+
+        let same = with(reuse(Vec::new()));
+        assert!(same.contains(&t("prompt.execution.prepare_same")), "{same}");
+
+        let many: Vec<String> = (0..45).map(|n| format!("src/{n}.ts")).collect();
+        let long = with(reuse(many));
+        let more = crate::platform::i18n::translate("prompt.execution.prepare_more", Locale::PtBr)
+            .replace("{n}", "5")
+            .replace("{diff}", "git diff --name-only abc1234 HEAD");
+        assert!(long.contains("`src/39.ts`, ") && long.contains(&more), "{long}");
+        assert!(!long.contains("`src/40.ts`"), "{long}");
     }
 
     /// A skill que a tarefa nomeia e que não está no disco é recusada, com o

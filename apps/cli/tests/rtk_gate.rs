@@ -3,7 +3,7 @@
 //!
 //! ## Why this test exists
 //!
-//! The gate used to sit inside `init_with_templates`, which returns `Result<()>`
+//! The gate used to sit inside the library `init`, which returns a `Result`
 //! — so a library caller could be killed by `process::exit(1)` instead of
 //! getting an error. It moved to the binary's dispatch arm, and the move was
 //! reviewed with two findings this file answers:
@@ -90,11 +90,6 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
 /// `USERPROFILE` rides along because home resolution reads that variable on
 /// Windows and `HOME` everywhere else. Isolating one spelling isolates one
 /// platform.
-///
-/// `CARGO_MANIFEST_DIR` hands on the package folder `cargo test` gave this
-/// process, which the cleared environment would drop: the binary has no
-/// `templates/` beside it, and that folder is where it finds the installer's
-/// molds, read at run time. Every install run in this file passes it.
 fn run_init(project: &Path, bin: &Path, home: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_mustard"))
         .args(["init", "--yes"])
@@ -103,7 +98,6 @@ fn run_init(project: &Path, bin: &Path, home: &Path) -> std::process::Output {
         .env("PATH", bin)
         .env("HOME", home)
         .env("USERPROFILE", home)
-        .env("CARGO_MANIFEST_DIR", manifest_dir::manifest_dir())
         .output()
         .expect("the mustard binary runs")
 }
@@ -267,7 +261,6 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
         .env("PATH", &bin)
         .env("HOME", &home)
         .env("USERPROFILE", &home)
-        .env("CARGO_MANIFEST_DIR", manifest_dir::manifest_dir())
         .output()
         .expect("the mustard binary runs");
 
@@ -293,7 +286,7 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
 /// because it measures the acts instead of matching their spelling.
 ///
 /// Why a ratchet at all: review measured that restoring the installer calls
-/// into `init_with_templates` left the entire suite green,
+/// into the library `init` left the entire suite green,
 /// including this file's other two tests. A revert of the fix was invisible.
 #[test]
 fn the_library_half_of_init_calls_no_environment_installer() {
@@ -380,12 +373,11 @@ fn answering_cancel_leaves_the_machine_untouched() {
     // Second run, interactive: one arrow-down moves from the Merge default to
     // Cancel, then Enter.
     let script = format!(
-        "cd {} && env -i PATH={} HOME={} USERPROFILE={} CARGO_MANIFEST_DIR={} {} init",
+        "cd {} && env -i PATH={} HOME={} USERPROFILE={} {} init",
         project.display(),
         bin.display(),
         home.display(),
         home.display(),
-        manifest_dir::manifest_dir().display(),
         env!("CARGO_BIN_EXE_mustard"),
     );
     let mut child = Command::new("script")
@@ -438,7 +430,6 @@ fn the_binary_never_writes_under_the_home_claude_dir() {
         .env("PATH", &bin)
         .env("HOME", &home)
         .env("USERPROFILE", &home)
-        .env("CARGO_MANIFEST_DIR", manifest_dir::manifest_dir())
         .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
         .output()
         .expect("the mustard binary runs");

@@ -83,3 +83,107 @@ fn clean_path_exit_codes() {
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert!(!copy.exists(), "a checked scratch copy is removed");
 }
+
+/// `git` em `dir`, com identidade de teste; o comando tem de passar.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// A obra `spec` do projeto `root`, levada passo a passo do fluxo até a fase
+/// `phase`.
+fn work(root: &Path, spec: &str, phase: &str) {
+    const STEPS: &[&str] = &["survey", "plan", "approved", "running", "closed"];
+    let path = mustard_core::io::spec_events::spec_file(root, spec).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for step in STEPS {
+        let mut fields = serde_json::json!({"phase": step, "author": "binary"});
+        if *step == "survey" {
+            fields["branch"] = serde_json::json!(format!("feature/{spec}"));
+            fields["base"] = serde_json::json!("dev");
+        }
+        if *step == "approved" {
+            fields["witness"] = serde_json::json!({"question": "Aprovar?", "answer": "Aprovar"});
+        }
+        mustard_core::io::spec_events::write(&path, "state", fields.as_object().cloned().unwrap(), &[]).unwrap();
+        if *step == phase {
+            return;
+        }
+    }
+}
+
+/// Na pasta de um projeto, a limpeza lista a cópia da obra fechada e deixa a
+/// da obra aberta, com o motivo; sem a opção de apagar, nada sai. Com
+/// `--apply`, a da obra fechada sai — pasta e registro no git — e a da obra
+/// aberta, a pasta principal e o que ela compilou ficam.
+#[test]
+fn clean_in_a_project_removes_the_copy_of_a_closed_work_and_keeps_the_open_one() {
+    let base = tempfile::tempdir().unwrap();
+    let temp = base.path().join("tmp");
+    let home = base.path().join("home");
+    let root = base.path().join("obra");
+    for dir in [&temp, &home, &root] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    git(&root, &["init", "-q", "."]);
+    fs::write(root.join("mustard.json"), b"{}").unwrap();
+    fs::write(root.join(".gitignore"), "target/\n.claude/\n").unwrap();
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "semente"]);
+    let built = root.join("target").join("debug").join("mustard");
+    fs::create_dir_all(built.parent().unwrap()).unwrap();
+    fs::write(&built, "compilado").unwrap();
+    work(&root, "fechada", "closed");
+    work(&root, "aberta", "running");
+    let copies = mustard_core::io::wave_prompt::copies_dir(&root);
+    let closed = mustard_core::io::wave_prompt::slot_path(&root, "fechada", 0);
+    let open = mustard_core::io::wave_prompt::slot_path(&root, "aberta", 0);
+    for slot in [&closed, &open] {
+        git(&root, &["worktree", "add", "-q", "--detach", &slot.to_string_lossy()]);
+        fs::create_dir_all(slot.join("target")).unwrap();
+        fs::write(slot.join("target").join("compilado"), "x").unwrap();
+    }
+    let clean = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["run", "clean"])
+            .args(args)
+            .current_dir(&root)
+            .env("TMPDIR", &temp)
+            .env("TMP", &temp)
+            .env("TEMP", &temp)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("MUSTARD_SESSION_ID", "scratch-gc-copies-test")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let shown = |path: &Path| mustard_core::io::wave_prompt::shown(path);
+    let spec_folder = |spec: &str| shown(&copies.join(spec));
+
+    let listed = clean(&[]);
+    let section = &listed["copies"];
+    assert_eq!(section["candidates"][0]["path"], serde_json::json!(spec_folder("fechada")), "{listed}");
+    assert_eq!(section["candidates"][0]["reason"], serde_json::json!("spec closed"), "{listed}");
+    assert_eq!(section["kept"][0]["path"], serde_json::json!(spec_folder("aberta")), "{listed}");
+    assert_eq!(section["kept"][0]["reason"], serde_json::json!("spec still open: running"), "{listed}");
+    assert!(closed.join("target").join("compilado").is_file(), "sem a opção de apagar, nada sai");
+
+    let applied = clean(&["--apply"]);
+    assert_eq!(applied["copies"]["removed"], serde_json::json!([spec_folder("fechada")]), "{applied}");
+    assert!(!copies.join("fechada").exists(), "a cópia da obra fechada saiu: {applied}");
+    assert!(!git(&root, &["worktree", "list", "--porcelain"]).contains(&shown(&closed)), "{applied}");
+    assert!(open.join("target").join("compilado").is_file(), "a cópia da obra aberta fica");
+    assert_eq!(fs::read_to_string(&built).unwrap(), "compilado", "a compilação principal fica");
+    assert!(root.join("mustard.json").is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+
+    // A cópia que ficou mora fora da pasta temporária do teste.
+    let _ = fs::remove_dir_all(&copies);
+}

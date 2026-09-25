@@ -3,7 +3,7 @@
 //!
 //! ## Why this file exists
 //!
-//! Four reviews in a row found the same shape: `init_with_templates` is a
+//! Four reviews in a row found the same shape: the library `init` is a
 //! `Result`-returning library function that took environment acts — first
 //! `process::exit(1)` through the RTK gate, then `sh -c "curl … | sh"` through
 //! an rtk installer, then `$HOME/.claude/settings.json` through a global
@@ -30,9 +30,9 @@
 //! 5. **Calibrate the instrument.** The log was read through
 //!    `unwrap_or_default()` and asserted empty — a broken rig and a clean run
 //!    were the same answer. The log must now be non-empty.
-//! 6. **Cover every public door.** Only `init_with_templates` was driven;
-//!    restoring the acts into the sibling `init` — the entry point its own doc
-//!    advertises — was green. Both are driven now.
+//! 6. **Cover every public door.** The library once had two entry points and
+//!    only one was driven; restoring the acts into the other was green. It has
+//!    a single one now, `init`, driven both installing and in dry-run.
 //!
 //! ## O QUE ESTA TRAVA AINDA NAO PEGA — medido, nao suposto
 //!
@@ -66,7 +66,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mustard_cli::commands::init::{InitOptions, InitOutcome, init, init_with_templates};
+use mustard_cli::commands::init::{InitOptions, InitOutcome, init};
 
 /// Set on the child: run the probe instead of the assertions.
 const PROBE_ENV: &str = "MUSTARD_LIB_PURITY_PROBE";
@@ -78,18 +78,6 @@ const SHIMMED: &[&str] = &[
     "sh", "bash", "zsh", "curl", "wget", "cargo", "rustup", "scoop", "choco", "winget", "brew",
     "apt", "apt-get", "yum", "dnf", "pacman", "apk", "npm", "pnpm", "yarn", "pip", "pip3",
 ];
-
-/// The minimal payload `init` seeds from.
-fn fake_templates(root: &Path) -> PathBuf {
-    let templates = root.join("templates");
-    fs::create_dir_all(templates.join("mustard")).expect("mkdir templates");
-    fs::write(templates.join("mustard/orchestrator.md"), "# Orchestrator Rules\n")
-        .expect("write orchestrator");
-    fs::write(templates.join("settings.json"), r#"{"env":{"MUSTARD_TEST":"1"}}"#)
-        .expect("write settings");
-    fs::write(templates.join(".gitignore"), "spec/*/.events/\n").expect("write gitignore");
-    templates
-}
 
 /// Shims that answer and record. `git` is the real one: `init` reads repository
 /// state, and faking it would take paths the product never takes.
@@ -133,7 +121,7 @@ fn shim_dir(root: &Path, log: &Path) -> PathBuf {
     dir
 }
 
-/// The child half: drive BOTH public entry points, nothing else. A no-op in a
+/// The child half: drive the public entry point, nothing else. A no-op in a
 /// normal run.
 #[test]
 fn library_probe_child() {
@@ -141,26 +129,17 @@ fn library_probe_child() {
         return;
     };
     let work = PathBuf::from(work);
-    let templates = fake_templates(&work);
     let opts = InitOptions { yes: true, ..InitOptions::default() };
 
-    // Door 1: the explicit-templates entry point.
-    let first = init_with_templates(&work.join("project"), &templates, &opts)
-        .expect("init_with_templates runs");
+    // Everything the install seeds is compiled in: no folder of molds is
+    // pointed at, and none is looked up.
+    let first = init(&work.join("project"), &opts).expect("init runs");
     assert_eq!(first, InitOutcome::Installed, "a seeded project reports Installed");
 
-    // Door 2: `init`, which its own doc calls "the library entry point".
-    // Restoring the acts HERE was green before this call existed.
-    // `MUSTARD_TEMPLATES_DIR` is how the parent points it at the fixture
-    // without a process-global default.
-    let second = init(&work.join("project-two"), &opts).expect("init runs");
-    assert_eq!(second, InitOutcome::Installed, "the second door also installs");
-
-    // Door 1 again, in dry-run: pins that `DryRun` is not `Installed` at the
+    // The same door in dry-run: pins that `DryRun` is not `Installed` at the
     // library level, where no terminal is needed to reach it.
-    let dry = init_with_templates(
-        &work.join("project-three"),
-        &templates,
+    let dry = init(
+        &work.join("project-dry"),
         &InitOptions { yes: true, dry_run: true, ..InitOptions::default() },
     )
     .expect("a dry run runs");
@@ -168,7 +147,7 @@ fn library_probe_child() {
 }
 
 /// A library call must leave the machine exactly as it found it — whatever the
-/// call is spelled like, whichever door it comes through.
+/// call is spelled like.
 #[test]
 #[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
 fn a_library_init_touches_nothing_outside_the_project() {
@@ -177,7 +156,7 @@ fn a_library_init_touches_nothing_outside_the_project() {
     let home = work.join("home");
     let log = work.join("spawn.log");
     fs::create_dir_all(&home).expect("mkdir home");
-    for name in ["project", "project-two", "project-three"] {
+    for name in ["project", "project-dry"] {
         let project = work.join(name);
         fs::create_dir_all(&project).expect("mkdir project");
         Command::new("git")
@@ -197,7 +176,6 @@ fn a_library_init_touches_nothing_outside_the_project() {
         .env("PATH", &bin)
         .env("HOME", &home)
         .env("TERM", "xterm-256color")
-        .env("MUSTARD_TEMPLATES_DIR", work.join("templates"))
         .output()
         .expect("the probe child runs");
 
@@ -208,9 +186,8 @@ fn a_library_init_touches_nothing_outside_the_project() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        work.join("project").join(".claude").exists()
-            && work.join("project-two").join(".claude").exists(),
-        "both doors must actually have installed, or this proves nothing"
+        work.join("project").join(".claude").exists(),
+        "the install must actually have happened, or this proves nothing"
     );
 
     // 1. `$HOME` must be untouched ENTIRELY — not one enumerated path.

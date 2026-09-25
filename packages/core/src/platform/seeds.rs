@@ -12,10 +12,8 @@
 //! Moving the files to `packages/core/templates/` and embedding them with
 //! `include_str!` makes the core the single source of truth: both the CLI
 //! (`mustard init`) and the runtime (`mustard-rt run upsert`) consume the same
-//! constants, and no installed-layout `templates/` directory is required for
-//! these seeds. The CLI's `MUSTARD_TEMPLATES_DIR` / `resolve_templates_dir`
-//! machinery remains only for the payloads that stay CLI-side (`.github/`
-//! scaffolding, `.artifacts.json`).
+//! constants, and no installed-layout `templates/` directory is required:
+//! the installer looks up no folder of molds at all.
 //!
 //! The seeding logic that consumes these constants lives in
 //! [`crate::platform::project_seed`].

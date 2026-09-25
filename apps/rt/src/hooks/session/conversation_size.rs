@@ -138,9 +138,11 @@ mod tests {
         crit
     }
 
-    /// A pasta da cópia da onda `wave`, como a rodada a grava no envio.
+    /// A vaga da onda `wave`, como a rodada a grava no envio: a onda n na
+    /// n-ésima vaga.
     fn copy_of(root: &Path, wave: u64) -> String {
-        mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copy_path(root, "x", wave))
+        let slot = usize::try_from(wave).unwrap() - 1;
+        mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::slot_path(root, "x", slot))
     }
 
     /// A chamada de ferramenta de quem conduz, com a transcrição `transcript`.

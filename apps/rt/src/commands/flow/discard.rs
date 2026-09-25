@@ -8,6 +8,9 @@
 //! segunda, com esse código e depois do sim do usuário, faz. O código vem do
 //! que seria tirado, então um sim nunca serve para outro descarte.
 //!
+//! As cópias da obra, com o que compilaram, saem junto, e a prévia as
+//! lista.
+//!
 //! A pasta da spec é arquivada por padrão, ao lado das outras, e só é apagada
 //! quando quem chama pede: nada fica pela metade, e nada some sem se pedir.
 //! A spec arquivada continua no índice, com a fase descartada: dá para achar
@@ -83,6 +86,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
         "spec": spec,
         "folder": crate::commands::spec_events::pages::relative(&project.root, &folder),
         "action": if opts.delete { "deleted" } else { "archived" },
+        "copies": crate::commands::flow::round::spec_copies(&project.root, &spec),
     });
     let code = token(&spec, &branch, opts.remote, opts.delete);
 
@@ -123,6 +127,15 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     // abandonada. A do servidor só com a opção.
     let git = (!branch.is_empty())
         .then(|| crate::commands::git_delete::delete_with(&opts.root, &branch, opts.remote));
+
+    // As cópias da obra saem com ela, com o que compilaram, antes de a pasta
+    // da spec sair do lugar. A cópia que não sai vira aviso, sem derrubar o
+    // descarte.
+    let copies_left = if phase_written {
+        crate::commands::flow::round::remove_spec_copies(&project.root, &spec)
+    } else {
+        Vec::new()
+    };
 
     // O descarte é um marco, como o fechamento: a cópia para o banco da
     // página sai aqui, com a fase descartada na linha da spec da página do
@@ -168,6 +181,9 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     if !(moved && index_done) {
         out["reason"] = json!("discard-incomplete");
         out["hint"] = json!(translate("discard.incomplete", lang));
+    }
+    if let Some(hint) = crate::commands::flow::close::copies_kept_hint(&copies_left, lang) {
+        spec_events::pages::push_warning(&mut out, "copies-kept", &hint);
     }
     if let Some(prepared) = &prepared {
         let then = translate("discard.done", lang).to_string();
@@ -267,6 +283,65 @@ mod tests {
         assert_eq!(record_open(&work, spec, &branch, "dev"), Ok(true));
         assert!(mustard_core::io::spec_index::rebuild(&work).is_ok());
         (work, server)
+    }
+
+    /// Um projeto git com a spec aberta, duas vagas de cópia dela, cada uma
+    /// com o que compilou, e o que a pasta principal compilou em `target`,
+    /// que o git ignora. Devolve as vagas.
+    fn project_with_copies(root: &Path, spec: &str) -> Vec<PathBuf> {
+        git(root, &["init", "-q", "."]);
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "semente"]);
+        std::fs::create_dir_all(root.join("target").join("debug")).unwrap();
+        std::fs::write(root.join("target").join("debug").join("mustard"), "compilado").unwrap();
+        assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
+        assert!(mustard_core::io::spec_index::rebuild(root).is_ok());
+        crate::commands::flow::round::copies_leave_with_the_test(root);
+        let slots: Vec<PathBuf> = (0..2).map(|n| mustard_core::io::wave_prompt::slot_path(root, spec, n)).collect();
+        for slot in &slots {
+            git(root, &["worktree", "add", "-q", "--detach", &slot.to_string_lossy()]);
+            std::fs::create_dir_all(slot.join("target")).unwrap();
+            std::fs::write(slot.join("target").join("compilado"), "x").unwrap();
+        }
+        slots
+    }
+
+    /// As cópias da obra saem com o descarte, com o que compilaram: a prévia
+    /// as lista e não apaga nenhuma; o descarte confirmado tira cada vaga e a
+    /// pasta das cópias da obra, e o git não as lista mais. A pasta principal
+    /// e o que ela compilou ficam.
+    #[test]
+    fn discarding_removes_every_copy_of_the_work_and_the_preview_removes_none() {
+        use mustard_core::io::wave_prompt::{shown, spec_copies_dir};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let slots = project_with_copies(root, "x");
+        let listed: Vec<String> = slots.iter().map(|slot| shown(slot)).collect();
+
+        let preview = discard(root, "x", None, false, false);
+        assert_eq!(preview["leaving"]["copies"], json!(listed), "{preview}");
+        assert!(slots.iter().all(|slot| slot.join("target").join("compilado").is_file()), "a prévia não apaga cópia");
+
+        let code = preview["token"].as_str().unwrap_or_default().to_string();
+        let done = discard(root, "x", Some(&code), false, false);
+        assert_eq!(done["ok"], json!(true), "{done}");
+        assert_eq!(done["discarded"]["copies"], json!(listed), "{done}");
+        let warnings = done["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().all(|w| w["reason"] != json!("copies-kept")), "{done}");
+        assert!(slots.iter().all(|slot| !slot.exists()), "o descarte tirou as vagas: {done}");
+        assert!(!spec_copies_dir(root, "x").exists(), "o descarte tirou a pasta das cópias da obra: {done}");
+        let out = std::process::Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(root)
+            .output()
+            .expect("git");
+        let registered = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(listed.iter().all(|slot| !registered.contains(slot.as_str())), "{registered}");
+        let built = root.join("target").join("debug").join("mustard");
+        assert_eq!(std::fs::read_to_string(built).unwrap(), "compilado", "a compilação principal fica");
+        assert!(root.join("mustard.json").is_file() && root.join(".git").is_dir(), "a pasta principal fica");
     }
 
     /// `true` quando o servidor ainda carrega a branch.
