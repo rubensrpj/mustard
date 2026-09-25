@@ -532,8 +532,9 @@ impl SpecLog {
     }
 
     /// As ondas do plano cuja última revisão final reprovou, cada uma com o
-    /// número dessa reprovação. A rodada, o fechamento e o pedido leem
-    /// daqui. Um veredito sem o campo final não conta: só o veredito final
+    /// número dessa reprovação. A rodada e o fechamento leem daqui; o pedido
+    /// da revisão recorta as ondas só pelo veredito final mais novo. Um
+    /// veredito sem o campo final não conta: só o veredito final
     /// do agente de teste dedicado pode pôr uma onda em modo de conserto.
     #[must_use]
     pub fn last_rejected(&self) -> BTreeMap<u64, u64> {

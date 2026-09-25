@@ -258,15 +258,19 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// encaixe no resto, sem repetir o que o veredito já concluiu. É o mesmo
 /// pedido quando o veredito aponta uma onda: ele aparece uma vez só, na parte
 /// do que mudou, sem parte de conserto à parte. Nesse caso, as ondas e as
-/// entregas do pedido ficam restritas às ondas reprovadas, que já entregaram
-/// o conserto (o fechamento só chega aqui depois disso: veja
-/// [`crate::domain::spec_events::SpecLog::last_rejected`]). Os requisitos
-/// acordados continuam todos no pedido, porque o veredito responde por cada
-/// um.
+/// entregas do pedido ficam restritas à onda reprovada, que já entregou o
+/// conserto (o fechamento só chega aqui depois disso: veja
+/// [`crate::domain::spec_events::SpecLog::last_rejected`]), e o parágrafo do
+/// que olhar da revisão de volta diz esse recorte. O recorte sai do mesmo
+/// veredito que abre a revisão de volta ([`wave_prompt::last_final_rejection`]):
+/// ele nunca acontece sem ela. Uma onda reprovada antes de um veredito final
+/// mais novo não recorta o pedido. Os requisitos acordados continuam todos no
+/// pedido, porque o veredito responde por cada um.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> String {
     let planned = log.planned_waves();
-    let fixing: BTreeSet<u64> = log.last_rejected().into_keys().filter(|n| planned.contains(n)).collect();
+    let fixing: BTreeSet<u64> =
+        wave_prompt::last_final_rejection(log).and_then(SpecEvent::wave).filter(|n| planned.contains(n)).into_iter().collect();
     let scope: &BTreeSet<u64> = if fixing.is_empty() { &planned } else { &fixing };
     let visible = log.block(BlockQuery::Block(Block::Waves));
     let block: Vec<&SpecEvent> = visible
@@ -1760,6 +1764,106 @@ mod tests {
             assert!(last.contains(t("prompt.final.look_again")), "{lang:?}: {last}");
             assert_eq!(part_lines(&last, t("prompt.part.waves")), [format!("- `waves`: {}, {}", code(3), code(4))], "{last}");
             assert_eq!(part_lines(&last, t("prompt.part.each_delivered")), [format!("- `waves`: {}", code(11))], "{last}");
+        }
+    }
+
+    /// Até onde vai a obra de duas ondas de [`two_waves_reviewed`].
+    enum Reviewed {
+        /// Nenhum veredito final ainda.
+        First,
+        /// O veredito final reprovou a onda 1, e o conserto dela entrou.
+        WaveRejected,
+        /// O veredito final reprovou a obra sem apontar onda.
+        WorkRejected,
+        /// Depois do conserto da onda 1, um veredito final aprovou a obra.
+        ApprovedAfter,
+    }
+
+    /// Uma obra de duas ondas entregues e comitadas, com os vereditos finais
+    /// que `reviewed` pede. Cada reprovação vem com o conserto entregue e
+    /// comitado depois dela.
+    fn two_waves_reviewed(reviewed: &Reviewed) -> SpecLog {
+        let commit = |sha: &str, waves: Value| ("commit", json!({"sha": sha, "title": "t", "waves": waves, "files": ["src/a.rs"]}));
+        let mut events = vec![
+            ("rule", json!({"text": "Do projeto", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true"})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+            ("wave", json!({"n": 2, "text": "A outra", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 2, "text": "Subtrair", "files": [{"path": "src/b.rs"}]})),
+            ("delivered", json!({"wave": 1, "text": "Feito", "files": ["src/a.rs"]})),
+            ("delivered", json!({"wave": 2, "text": "Feita", "files": ["src/b.rs"]})),
+            commit("aaa1111", json!([1, 2])),
+        ];
+        if matches!(reviewed, Reviewed::First) {
+            return log_of(&events);
+        }
+        let mut rejected = json!({"final": true, "result": "rejected", "text": "Falta o teste",
+                                  "agreed": [{"item": 1, "met": false, "text": "falta"}]});
+        if !matches!(reviewed, Reviewed::WorkRejected) {
+            rejected["wave"] = json!(1);
+        }
+        events.push(("verdict", rejected));
+        events.push(("delivered", json!({"wave": 1, "text": "Consertado", "files": ["src/a.rs"]})));
+        events.push(commit("bbb2222", json!([1])));
+        if matches!(reviewed, Reviewed::ApprovedAfter) {
+            let approved = json!({"final": true, "result": "approved", "text": "Pronta", "agreed": [{"item": 1, "met": true}]});
+            events.push(("verdict", approved));
+        }
+        log_of(&events)
+    }
+
+    /// A revisão de volta de um veredito que reprovou uma onda diz, no
+    /// parágrafo do que olhar, que as ondas e as entregas do pedido trazem só
+    /// essa onda, e as partes trazem só ela. A primeira revisão não diz o
+    /// recorte e traz as duas ondas. O veredito que reprovou a obra sem
+    /// apontar onda traz as duas ondas na revisão de volta. Um veredito final
+    /// que aprovou depois da reprovação de uma onda faz a revisão seguinte
+    /// conferir a obra inteira, sem recorte e sem a frase dele. Nos dois
+    /// idiomas.
+    #[test]
+    fn a_review_after_a_rejected_wave_says_it_carries_only_that_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let t = |key: &str| crate::platform::i18n::translate(key, lang);
+            let recorte = match lang {
+                Locale::PtBr => {
+                    "Se ele reprovou uma onda, as partes das ondas e das entregas trazem só essa onda; senão, \
+                     trazem todas as ondas."
+                }
+                Locale::EnUs => {
+                    "If it rejected one wave, the waves and deliveries parts carry only that wave; otherwise, \
+                     they carry every wave."
+                }
+            };
+            // Se a parte das ondas traz a onda 1 e a onda 2.
+            let wave_codes = |log: &SpecLog, text: &str| -> Vec<bool> {
+                let codes = log.codes();
+                let listed = part_lines(text, t("prompt.part.waves")).concat();
+                [3, 5].iter().map(|id| listed.contains(codes[id].as_str())).collect()
+            };
+
+            let log = two_waves_reviewed(&Reviewed::WaveRejected);
+            let again = final_review(root, "teste", &log, lang);
+            assert!(again.contains(recorte), "{lang:?}: a revisão de volta diz o recorte: {again}");
+            assert_eq!(again.matches(recorte).count(), 1, "o recorte é dito uma vez só: {again}");
+            assert_eq!(wave_codes(&log, &again), [true, false], "só a onda reprovada: {again}");
+
+            let log = two_waves_reviewed(&Reviewed::First);
+            let first = final_review(root, "teste", &log, lang);
+            assert!(!first.contains(recorte), "{lang:?}: a primeira revisão não diz recorte: {first}");
+            assert_eq!(wave_codes(&log, &first), [true, true], "{first}");
+
+            let log = two_waves_reviewed(&Reviewed::WorkRejected);
+            let whole = final_review(root, "teste", &log, lang);
+            assert!(whole.contains(t("prompt.final.look_again")), "{lang:?}: {whole}");
+            assert_eq!(wave_codes(&log, &whole), [true, true], "a obra reprovada traz todas as ondas: {whole}");
+
+            let log = two_waves_reviewed(&Reviewed::ApprovedAfter);
+            let after = final_review(root, "teste", &log, lang);
+            assert!(after.contains(t("prompt.final.look")) && !after.contains(recorte), "{lang:?}: {after}");
+            assert_eq!(wave_codes(&log, &after), [true, true], "depois da aprovação, a obra inteira: {after}");
         }
     }
 

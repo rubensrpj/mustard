@@ -86,9 +86,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.final.title", Locale::PtBr) => "{spec} — agente de teste dedicado",
         ("prompt.final.title", Locale::EnUs) => "{spec} — dedicated test agent",
         ("prompt.final.fixed", Locale::PtBr) => {
-            "**O que é isto.** O pedido do agente de teste dedicado desta spec, com a obra inteira, \
-             montado pelo binário a partir dela. Nenhum texto vem copiado: cada parte traz só os \
-             códigos dos itens, em sequência, numa linha por bloco da spec.\n\n\
+            "**O que é isto.** O pedido do agente de teste dedicado desta spec, montado pelo binário a \
+             partir dela. Nenhum texto vem copiado: cada parte traz só os códigos dos itens, em \
+             sequência, numa linha por bloco da spec.\n\n\
              **O que devolver.** O veredito com `\"final\":true`, gravado por `mustard-rt run write \
              verdict`. O pedido traz os requisitos acordados inteiros da spec, dono ou não de onda. \
              Responda por cada item em `agreed`, com o código em `item` e `met` dizendo se está \
@@ -97,9 +97,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              gravado."
         }
         ("prompt.final.fixed", Locale::EnUs) => {
-            "**What this is.** The dedicated test agent's request for this spec, with the whole \
-             work, assembled by the binary from it. No text is copied in: each part carries only \
-             the items' codes, in sequence, one line per spec block.\n\n\
+            "**What this is.** The dedicated test agent's request for this spec, assembled by the \
+             binary from it. No text is copied in: each part carries only the items' codes, in \
+             sequence, one line per spec block.\n\n\
              **What to return.** The verdict with `\"final\":true`, recorded through `mustard-rt run \
              write verdict`. The request carries the spec's whole agreed requirements, owned by a \
              wave or not. Answer for each item in `agreed`, with the code in `item` and `met` \
@@ -122,20 +122,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // A revisão que volta depois de uma reprovação confere só o que mudou
         // e o encaixe disso no resto. Para o que não mudou, vale a conclusão
-        // anterior; o veredito continua respondendo por todo o combinado.
+        // anterior; o veredito continua respondendo por todo o combinado. É o
+        // único lugar que diz o recorte: quando o veredito reprovou uma onda,
+        // as ondas e as entregas do pedido trazem só ela.
         ("prompt.final.look_again", Locale::PtBr) => {
             "**O que olhar.** Esta revisão volta depois de um veredito que reprovou. A parte do que \
              mudou lista esse veredito, os commits e os itens gravados ou regravados depois dele. Ela \
-             lista também os itens que ele deu como não atendidos. Confira essa parte e como ela se \
-             encaixa no resto da obra. Para os outros requisitos acordados, repita a conclusão do \
-             veredito anterior. Aponte só; não conserte."
+             lista também os itens que ele deu como não atendidos. Se ele reprovou uma onda, as partes \
+             das ondas e das entregas trazem só essa onda; senão, trazem todas as ondas. Confira essa \
+             parte e como ela se encaixa no resto da obra. Para os outros requisitos acordados, repita \
+             a conclusão do veredito anterior. Aponte só; não conserte."
         }
         ("prompt.final.look_again", Locale::EnUs) => {
             "**What to look at.** This review comes back after a verdict that rejected the work. The \
              part on what changed lists that verdict, the commits and the items recorded or \
-             re-recorded after it. It also lists the items that verdict marked as not met. Check that \
-             part and how it fits the rest of the work. For the other agreed requirements, repeat \
-             the previous verdict's conclusion. Point it out only; do not fix it."
+             re-recorded after it. It also lists the items that verdict marked as not met. If it \
+             rejected one wave, the waves and deliveries parts carry only that wave; otherwise, they \
+             carry every wave. Check that part and how it fits the rest of the work. For the other \
+             agreed requirements, repeat the previous verdict's conclusion. Point it out only; do not \
+             fix it."
         }
         ("prompt.part.since_verdict", Locale::PtBr) => "O que mudou desde o veredito anterior",
         ("prompt.part.since_verdict", Locale::EnUs) => "What changed since the previous verdict",
@@ -391,7 +396,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             48,
-            0x56a0_9c73_8916_ec8f,
+            0xe658_c2ef_753f_3268,
         );
     }
 }
