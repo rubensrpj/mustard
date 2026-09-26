@@ -326,7 +326,7 @@ mod tests {
     fn an_ordinary_message_carries_no_text() {
         let dir = project_with_injectables_on("sem-texto");
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
-        for prompt in ["uma mensagem comum", "e agora?", "/mustard:feature x", "/grill-me"] {
+        for prompt in ["uma mensagem comum", "e agora?", "/mustard:feature x", "/outra-skill"] {
             let verdict = PromptEntry.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
             assert_eq!(verdict, Verdict::Allow, "{prompt}");
         }
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn no_message_carries_the_old_writing_paragraph() {
         for config in [PT_PROJECT, r#"{"language":{"text":"en-US"}}"#, "{}"] {
-            for prompt in ["uma mensagem comum", "/mustard:pr merge", "/grill-me"] {
+            for prompt in ["uma mensagem comum", "/mustard:pr merge", "/outra-skill"] {
                 let (_dir, verdict) = verdict_after_error(config, prompt, PT_ERROR);
                 let context = context_of(verdict);
                 for old in ["ONE idea per sentence", "in the language they write in"] {

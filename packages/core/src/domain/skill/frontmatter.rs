@@ -304,8 +304,8 @@ pub enum SkillFrontmatterError {
     #[error("description too short ({0} chars, min 50)")]
     DescriptionTooShort(usize),
     /// `description` longer than the recommended maximum. Mustard tolerates
-    /// up to 1500 chars to accommodate richer foundation skills (e.g. `hallmark`
-    /// at ~1150). Claude Code recommends ≤1024 but does not enforce it.
+    /// up to 1500 chars to accommodate richer skills whose description runs
+    /// past 1024. Claude Code recommends ≤1024 but does not enforce it.
     #[error("description too long ({0} chars, max 1500)")]
     DescriptionTooLong(usize),
 }
@@ -359,7 +359,7 @@ pub fn validate(
         errors.push(SkillFrontmatterError::DescriptionTooShort(desc_chars));
     } else if desc_chars > 1500 {
         // 1500 is Mustard's tolerance — Claude Code recommends ≤1024 but does
-        // not enforce. `hallmark` foundation skill ships at ~1150 chars.
+        // not enforce.
         errors.push(SkillFrontmatterError::DescriptionTooLong(desc_chars));
     }
     if strict {

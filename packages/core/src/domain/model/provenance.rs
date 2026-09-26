@@ -29,7 +29,7 @@ pub struct ArtifactManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactRecord {
-    /// Stable identifier, e.g. `skill:design-craft`, `tool:rtk`.
+    /// Stable identifier, e.g. `skill:sample-skill`, `tool:rtk`.
     pub id: String,
     /// Which kind of artifact this is.
     pub category: ArtifactCategory,
@@ -89,7 +89,7 @@ pub enum ArtifactSource {
     },
     /// Vendored from the skills directory registry.
     SkillsDirectory {
-        /// Registry slug, e.g. `nutlope/hallmark`.
+        /// Registry slug, e.g. `acme/sample-skill`.
         slug: String,
     },
     /// An external tool installed from a Cargo crate.
@@ -113,20 +113,20 @@ mod tests {
             "schemaVersion": 1,
             "artifacts": [
                 {
-                    "id": "skill:design-craft",
+                    "id": "skill:sample-manual",
                     "category": "skill",
                     "source": {"kind": "manual"},
                     "version": null,
                     "vendoredAt": "2026-05-19",
-                    "path": "skills/design-craft",
+                    "path": "skills/sample-manual",
                     "checksum": null
                 },
                 {
-                    "id": "skill:hallmark",
+                    "id": "skill:sample-registry",
                     "category": "skill",
-                    "source": {"kind": "skills-directory", "slug": "nutlope/hallmark"},
+                    "source": {"kind": "skills-directory", "slug": "acme/sample-registry"},
                     "vendoredAt": "2026-05-19",
-                    "path": "skills/hallmark"
+                    "path": "skills/sample-registry"
                 },
                 {
                     "id": "tool:rtk",
