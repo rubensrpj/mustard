@@ -96,7 +96,7 @@ pub use domain::spec::{
 // `domain/config.rs`.
 pub use domain::config::{
     glob_matches, Amend, Commands, GateModes, GitConfig, Injectable, Language, LanguageConfig,
-    ProjectConfig, RolePattern, Runtime, Subprojects, BUILD_COMMAND_FALLBACK,
+    ProjectConfig, Runtime, Subprojects, BUILD_COMMAND_FALLBACK,
 };
 // Agnostic build/test/lint/type-check command detection (`detect_commands` for
 // `init`, `detect_commands_for_unit` for the per-subproject `scan` pass). See

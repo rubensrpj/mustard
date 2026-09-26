@@ -10,8 +10,9 @@
 //! terminou: sem ela, nada é gravado. Nenhuma gravação daqui falha para quem
 //! chama — uma recusa ou um erro de disco vira "nada gravado".
 //!
-//! A mensagem e a resposta são gravadas já sem segredo: cada trecho com cara
-//! de chave, token ou senha sai como "…", a mesma marca do expurgo. O
+//! A mensagem, com a testemunha quando há, e a resposta são gravadas já sem
+//! segredo: cada trecho com cara de chave, token ou senha sai como "…", a
+//! mesma marca do expurgo. O
 //! segredo colado na conversa nunca entra no arquivo da spec, e o expurgo
 //! fica só como reserva.
 
@@ -102,7 +103,9 @@ pub(crate) fn record_message(root: &Path, session: Option<&str>, text: &str) -> 
 /// pergunta, a opção que ele clicou e, quando a pergunta decide uma mudança,
 /// o código dela ao lado da resposta. É o registro que o fluxo lê como o
 /// "sim" do usuário — pelo código, nunca pela frase mostrada —, e só a
-/// testemunha o grava.
+/// testemunha o grava. O texto, a pergunta e a opção vão sem os segredos,
+/// como a mensagem: a nota digitada ao lado da opção pode trazer uma senha
+/// ou uma chave. O código da mudança vai como veio.
 pub(crate) fn record_witnessed_message(
     root: &Path,
     session: Option<&str>,
@@ -114,11 +117,11 @@ pub(crate) fn record_witnessed_message(
     if text.trim().is_empty() {
         return None;
     }
-    let mut witness = json!({ "question": question, "answer": answer });
+    let mut witness = json!({ "question": without_secrets(question), "answer": without_secrets(answer) });
     if let Some(code) = change {
         witness["change"] = json!(code);
     }
-    let fields = json!({ "author": "user", "text": text, "witness": witness });
+    let fields = json!({ "author": "user", "text": without_secrets(text), "witness": witness });
     record(root, session, "message", draft(fields))
 }
 
@@ -433,6 +436,77 @@ mod tests {
         hook_event(root, "Stop", json!({ "last_assistant_message": text }));
         assert_eq!(events_of(root, "comum", "message")[0]["text"], json!(text));
         assert_eq!(events_of(root, "comum", "response")[0]["text"], json!(text));
+    }
+
+    /// A resposta a uma pergunta com as opções da mudança, pelo despachante
+    /// inteiro, como o gancho do fim de uma ferramenta a roda: o menu `options`,
+    /// o clique em `option`, a nota `notes` escrita ao lado e o código da
+    /// mudança no cabeçalho.
+    fn answer_choice(root: &Path, question: &str, code: &str, options: &[&str], option: &str, notes: &str) {
+        use mustard_core::domain::model::contract::{HookInput, Trigger};
+        let options: Vec<Value> = options.iter().map(|label| json!({ "label": label })).collect();
+        let input = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            tool_name: Some("AskUserQuestion".to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            tool_input: json!({ "questions": [{ "question": question, "header": code, "options": options }] }),
+            raw: json!({ "tool_response": {
+                "answers": { question: option },
+                "annotations": { question: { "notes": notes } },
+            } }),
+            ..HookInput::default()
+        };
+        let _ = crate::dispatch::run_event(Some(Trigger::PostToolUse), &input);
+    }
+
+    /// Uma senha e um token do GitHub inventados, montados aqui de pedaços.
+    fn typed_secrets() -> (String, String) {
+        (["S3nh4", "F0rte", "2024"].concat(), format!("ghp_{}", "a1".repeat(18)))
+    }
+
+    /// A nota digitada ao lado da opção clicada numa pergunta da mudança,
+    /// com uma senha escrita como atribuição e um token do GitHub, é gravada
+    /// com "…" no lugar de cada um, e nenhum dos dois fica em campo nenhum da
+    /// linha. A testemunha continua com a pergunta, a opção e o código da
+    /// mudança como vieram.
+    #[test]
+    fn a_note_typed_beside_the_clicked_option_is_recorded_without_the_secret() {
+        let dir = project_on("escolha");
+        let root = dir.path();
+        let (password, token) = typed_secrets();
+        let question = "A onda 2 precisa da 1 antes. Posso mudar o plano?";
+        let code = "onda-2-abc123";
+        let notes = format!("a senha: {password} e o token {token}");
+        answer_choice(root, question, code, &["Aceitar", "Recusar"], "Aceitar", &notes);
+
+        let message = &events_of(root, "escolha", "message")[0];
+        assert_eq!(message["text"], json!(format!("{question}\nAceitar\na senha: … e o token …")));
+        assert_eq!(message["witness"], json!({ "question": question, "answer": "Aceitar", "change": code }));
+        for line in file_lines(root, "escolha") {
+            assert!(!line.contains(&password) && !line.contains(&token), "a secret reached the file: {line}");
+        }
+    }
+
+    /// A pergunta que repete o token e a opção clicada que o traz vão para a
+    /// testemunha sem ele; o código da mudança fica igual.
+    #[test]
+    fn the_witness_question_and_option_that_carry_a_secret_are_recorded_without_it() {
+        let dir = project_on("opcao");
+        let root = dir.path();
+        let (_, token) = typed_secrets();
+        let question = format!("Uso o token {token} na onda 2?");
+        let option = format!("Usar o token {token}");
+        let code = "onda-2-abc123";
+        answer_choice(root, &question, code, &["Aceitar", "Recusar", &option], &option, "");
+
+        let message = &events_of(root, "opcao", "message")[0];
+        assert_eq!(message["text"], json!("Uso o token … na onda 2?\nUsar o token …"));
+        let witness = json!({ "question": "Uso o token … na onda 2?", "answer": "Usar o token …", "change": code });
+        assert_eq!(message["witness"], witness);
+        for line in file_lines(root, "opcao") {
+            assert!(!line.contains(&token), "the token reached the file: {line}");
+        }
     }
 
     /// A chamada de um passo grava o comando, o resultado e, na recusa, a

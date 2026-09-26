@@ -305,15 +305,6 @@ impl Runtime {
     }
 }
 
-/// One `{ pattern, role }` role-classification override.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RolePattern {
-    /// Substring (or simple `*` glob) tested against the file path.
-    pub pattern: String,
-    /// The role assigned on the first matching pattern.
-    pub role: String,
-}
-
 /// One `inject` declaration: an instruction file the session hooks splice into
 /// the agent's window as `additionalContext` on a given trigger.
 ///
@@ -363,8 +354,11 @@ pub struct Commands {
 /// snake_case command keys are still accepted on read via `alias`.
 ///
 /// The language keys that came before `language` (`specLang`, `lang`) and the
-/// `tone` key are no longer part of the schema. A file that still carries them
-/// keeps loading: they land in [`ProjectConfig::extra`] like any unknown key,
+/// `tone` key are no longer part of the schema, nor are the three keys that
+/// described the architecture in words (`architecture`, `rolePatterns`,
+/// `waveLayerOrder`): the rules come from the import graph of the code as it
+/// is, never from a declared text. A file that still carries any of them keeps
+/// loading: they land in [`ProjectConfig::extra`] like any unknown key,
 /// preserved on write and read by nobody.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -419,8 +413,6 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_ext: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub architecture: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_active_specs: Option<u64>,
     /// Quantas ondas saem na mesma rodada, que é quantas compilam ao mesmo
     /// tempo. Ausente ⇒ o padrão do binário; a máquina com mais memória põe
@@ -437,20 +429,10 @@ pub struct ProjectConfig {
     /// [`ProjectConfig::rtk`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rtk: Option<bool>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub role_patterns: Vec<RolePattern>,
     /// Declared context injections (`[{on, file, once}]`) — see [`Injectable`].
     /// Consumed through the normalising [`ProjectConfig::injectables`] accessor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inject: Vec<Injectable>,
-    /// Optional architectural layer order for the deterministic wave fallback
-    /// used when the import DAG has no depth (all-net-new features, no edges to
-    /// order by). Roles are scheduled in this order — each wave depends on the
-    /// previous; roles not listed fall to the tail (lexically). Empty/absent → a
-    /// documented default. Project-overridable so a non-standard architecture
-    /// sets its own dependency direction (keeps the wave engine agnostic).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wave_layer_order: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Subprojects::is_empty")]
     pub subprojects: Subprojects,
@@ -580,17 +562,6 @@ impl ProjectConfig {
         }
     }
 
-    /// Architecture-style override, trimmed + lowercased; `None` when blank.
-    #[must_use]
-    pub fn architecture(&self) -> Option<String> {
-        let raw = self.architecture.as_deref()?.trim();
-        if raw.is_empty() {
-            None
-        } else {
-            Some(raw.to_ascii_lowercase())
-        }
-    }
-
     /// Hard cap on concurrent active specs; `None` falls back to the built-in
     /// default. `0` is honoured literally (freeze new starts).
     #[must_use]
@@ -617,23 +588,6 @@ impl ProjectConfig {
     #[must_use]
     pub fn rtk(&self) -> bool {
         self.rtk != Some(false)
-    }
-
-    /// Ordered role-classification overrides; `pattern` lowercased, entries with
-    /// a blank `pattern` or `role` skipped (fail-open).
-    #[must_use]
-    pub fn role_patterns(&self) -> Vec<RolePattern> {
-        self.role_patterns
-            .iter()
-            .filter_map(|rp| {
-                let pattern = rp.pattern.trim();
-                let role = rp.role.trim();
-                if pattern.is_empty() || role.is_empty() {
-                    return None;
-                }
-                Some(RolePattern { pattern: pattern.to_lowercase(), role: role.to_string() })
-            })
-            .collect()
     }
 
     /// `amend.drift_threshold` as a `u32`; `None` when absent or out of range.
@@ -1086,18 +1040,32 @@ mod tests {
         );
     }
 
+    /// Os três campos que descreviam a arquitetura em texto saíram do esquema:
+    /// a regra vem do grafo de importações do código. Um `mustard.json` antigo
+    /// que ainda os traga continua sendo lido sem erro, o resto da
+    /// configuração vem igual e os três ficam guardados como chave
+    /// desconhecida, lidos por ninguém e mantidos na gravação.
     #[test]
-    fn role_patterns_lowercased_and_filtered() {
-        let cfg = ProjectConfig {
-            role_patterns: vec![
-                RolePattern { pattern: "Controllers".into(), role: "api".into() },
-                RolePattern { pattern: " ".into(), role: "x".into() },
-            ],
-            ..Default::default()
-        };
-        let got = cfg.role_patterns();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].pattern, "controllers");
+    fn the_old_architecture_keys_are_kept_but_never_read() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"buildCommand":"make","maxActiveSpecs":3,"architecture":"Clean",
+                "rolePatterns":[{"pattern":"Controllers","role":"api"}],
+                "waveLayerOrder":["domain","api"]}"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.unreadable, "the old keys never make the file unreadable");
+        assert_eq!(cfg.build_command.as_deref(), Some("make"), "the rest of the config still loads");
+        assert_eq!(cfg.max_active_specs(), Some(3), "the rest of the config still loads");
+        for key in ["architecture", "rolePatterns", "waveLayerOrder"] {
+            assert!(cfg.extra.contains_key(key), "{key} survives as an unknown key");
+        }
+        cfg.write(dir.path()).unwrap();
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(raw["architecture"], "Clean", "the file keeps what was written");
+        assert_eq!(raw["waveLayerOrder"], serde_json::json!(["domain", "api"]));
     }
 
     #[test]
