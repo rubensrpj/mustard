@@ -77,11 +77,10 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
         .collect();
     absent.extend(nested_absent(event, spec.name));
     // A sobra sem título ou sem detalhe tem recusa própria, com o campo que
-    // falta na primeira sobra incompleta: a rodada grava cada sobra pelo
-    // título e pelo detalhe — a que quebra vira tarefa da spec, a cosmética
-    // vira pendência passada ao projeto e a sem tipo vira pendência da spec
-    // —, e a mensagem diz qual dos dois falta. Faltando também outro campo, a
-    // recusa de sempre cita todos de uma vez.
+    // falta na primeira sobra incompleta: a rodada grava cada sobra como
+    // tarefa da spec, pelo título e pelo detalhe, e a mensagem diz qual dos
+    // dois falta. Faltando também outro campo, a recusa de sempre cita todos
+    // de uma vez.
     if let Some(field) = leftover_field_missing(&absent) {
         return Err(Refusal::LeftoverFieldMissing { field });
     }
@@ -183,8 +182,7 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("task", "files", &["path"]),
     ("skill", "examples", &["path", "why"]),
     ("send", "skills", &["name", "sha"]),
-    // A sobra que a onda relata vira tarefa da spec, pendência passada ao
-    // projeto ou pendência da spec, conforme o tipo: sem título ou sem
+    // A sobra que a onda relata vira tarefa da spec: sem título ou sem
     // detalhe, não há o que abrir.
     ("delivered", "leftovers", &["title", "detail"]),
     ("delivered", "proofs", &["criterion", "proof"]),

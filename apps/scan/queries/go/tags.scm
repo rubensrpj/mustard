@@ -15,9 +15,9 @@
 (const_spec (identifier) @name) @definition.const
 (const_spec (identifier) @name value: (_) @value) @definition.const
 
-; Members — receiver methods and struct fields. Member kinds feed the digest's
-; domain-term index only: the miner's significance gate (mine.rs) is kind-based
-; and never sees them. The method tag follows the upstream tree-sitter-go
+; Members — receiver methods and struct fields. Member kinds reach the map with
+; the file's other declarations: the miner's significance gate (mine.rs) is
+; kind-based and never sees them. The method tag follows the upstream tree-sitter-go
 ; tags.scm (MIT) — see queries/README.md.
 (method_declaration name: (field_identifier) @name) @definition.method
 (field_declaration name: (field_identifier) @name) @definition.field

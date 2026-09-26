@@ -35,9 +35,10 @@ kind produzido está declarado. É essa a rede que pega um pattern que parou de
 compilar contra a versão da gramática (o motor descarta pattern ruim em
 silêncio, por design).
 
-Kinds de membro (`method`, `property`, `field`, `enum_member`) alimentam só o
-índice de termos do digest; a allowlist `is_significant` (mine.rs) é por kind
-e não os inclui — a mineração de papéis continua cega a membros.
+Kinds de membro (`method`, `property`, `field`, `enum_member`) chegam ao mapa
+junto com as outras declarações do arquivo; a allowlist `is_significant`
+(mine.rs) é por kind e não os inclui — a mineração de papéis continua cega a
+membros.
 
 ## Proveniência e licença
 

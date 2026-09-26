@@ -37,9 +37,9 @@
 (trait_item body: (declaration_list (function_item name: (identifier) @name) @definition.method))
 (trait_item body: (declaration_list (function_signature_item name: (identifier) @name) @definition.method))
 
-; Members — struct fields and enum variants. Member kinds feed the digest's
-; domain-term index only: the miner's significance gate (mine.rs) never treats
-; them as units.
+; Members — struct fields and enum variants. Member kinds reach the map with
+; the file's other declarations: the miner's significance gate (mine.rs) never
+; treats them as units.
 (field_declaration name: (field_identifier) @name) @definition.field
 (enum_variant name: (identifier) @name) @definition.enum_member
 

@@ -17,13 +17,13 @@ The project's thesis is **minimum AI, maximum determinism**: everything statisti
 ```mermaid
 flowchart LR
     repo[("Repository")] -->|"census at the base gate (Rust, no AI)"| model[("grain.model.json")]
-    model -->|digest| anchors["~12 anchors<br/>(anchor files)"]
+    model -->|map| anchors["files it points at"]
     anchors -->|"AI reads only these"| work["feature/bugfix pipeline"]
 ```
 
 1. The **census** mines the repository into a durable model (`grain.model.json`) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
-2. The flow's commands consume that model through a **digest** and read only the ~12 anchors the digest points at.
-3. Result: **context economy** — the digest finds *where to look*; it does not replace reading.
+2. The flow's commands query that model through the **map** (`mustard-rt run map`) and read only the files it points at.
+3. Result: **context economy** — the map finds *where to look*; it does not replace reading.
 
 > The harness's real weight is not the commands but the **re-injection of ceremony into the context on every turn**. Routing therefore always picks the **cheapest path that serves** — the full pipeline is the exception that must justify itself (≥2 layers/subprojects **or** a new entity), never the default.
 
@@ -133,7 +133,7 @@ Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `cha
 
 | Path | Crate/App | Stack | Role |
 |---|---|---|---|
-| `apps/rt` | `mustard-rt` | Rust | **Deterministic core** — scan-digest, events, gates, hooks, pipeline commands. The engine. |
+| `apps/rt` | `mustard-rt` | Rust | **Deterministic core** — scan, map, events, gates, hooks, pipeline commands. The engine. |
 | `apps/scan` | `scan` | Rust | Repository miner → `grain.model.json`. |
 | `apps/cli` | `mustard` | Rust | Install & scaffold — `init`, grammars, git-flow, fonts. |
 | `packages/core` | `core` | Rust | Shared types and logic (e.g. `ProjectConfig`). |
@@ -204,7 +204,7 @@ mustard.json  project configuration
 
 - **[MUSTARD-COMMANDS.md](MUSTARD-COMMANDS.md)** — visual reference for each command and its flow (Mermaid diagrams).
 - **Install tutorials** — `packaging/installer/TUTORIAL-{WINDOWS,MACOS,LINUX}.md` (also attached to every release).
-- **[docs/](docs/)** — architecture redesigns (agnostic index/digest, multi-signal stack detection, plugin validation).
+- **[docs/](docs/)** — architecture redesigns (agnostic index, multi-signal stack detection, plugin validation).
 
 ---
 

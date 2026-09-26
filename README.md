@@ -17,13 +17,13 @@ A tese do projeto é **mínimo de IA, máximo de determinismo**: tudo que pode s
 ```mermaid
 flowchart LR
     repo[("Repositório")] -->|"varredura no porteiro de base (Rust, sem IA)"| model[("grain.model.json")]
-    model -->|digest| anchors["~12 anchors<br/>(arquivos-âncora)"]
+    model -->|mapa| anchors["arquivos apontados"]
     anchors -->|"IA lê só estes"| work["pipeline de feature/bugfix"]
 ```
 
 1. A **varredura** minera o repositório para um modelo durável (`grain.model.json`) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices*, contratos e *touchpoints*. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
-2. Os comandos do fluxo consomem esse modelo via **digest** e leem apenas as ~12 *anchors* que o digest aponta.
-3. Resultado: **economia de contexto** — o digest acha *onde olhar*, não substitui ler.
+2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e leem apenas os arquivos que ele aponta.
+3. Resultado: **economia de contexto** — o mapa acha *onde olhar*, não substitui ler.
 
 > O peso real do harness não são os comandos, e sim a **reinjeção da cerimônia no contexto a cada turno**. Por isso o roteamento escolhe sempre o **caminho mais barato que serve** — o pipeline completo é a exceção que precisa se justificar (≥2 camadas/subprojetos **ou** entidade nova), não o default.
 
@@ -133,7 +133,7 @@ Mudanças no meio do caminho são auto-registradas (`change-requests.ndjson` + `
 
 | Caminho | Crate/App | Stack | Papel |
 |---|---|---|---|
-| `apps/rt` | `mustard-rt` | Rust | **Núcleo determinístico** — scan-digest, eventos, gates, hooks, comandos do pipeline. É o motor. |
+| `apps/rt` | `mustard-rt` | Rust | **Núcleo determinístico** — scan, mapa, eventos, gates, hooks, comandos do pipeline. É o motor. |
 | `apps/scan` | `scan` | Rust | Minerador do repositório → `grain.model.json`. |
 | `apps/cli` | `mustard` | Rust | Instalação e *scaffold* — `init`, gramáticas, git-flow, fontes. |
 | `packages/core` | `core` | Rust | Tipos e lógica compartilhados (ex.: `ProjectConfig`). |
@@ -204,7 +204,7 @@ mustard.json  configuração do projeto
 
 - **[MUSTARD-COMMANDS.md](MUSTARD-COMMANDS.md)** — referência visual de cada comando e seu fluxo (diagramas Mermaid).
 - **Tutoriais de instalação** — `packaging/installer/TUTORIAL-{WINDOWS,MACOS,LINUX}.md` (também anexados a cada release).
-- **[docs/](docs/)** — redesenhos arquiteturais (índice/digest agnóstico, detecção de stack multissinal, validação do plugin).
+- **[docs/](docs/)** — redesenhos arquiteturais (índice agnóstico, detecção de stack multissinal, validação do plugin).
 
 ---
 

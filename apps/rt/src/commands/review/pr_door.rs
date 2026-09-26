@@ -23,10 +23,10 @@
 //!   number, title, whether the provider calls it mergeable, whether it is a
 //!   draft, and the head branch its unit lives on.
 //! - **`pr-review`** — resolves the PR to its unit and prints the review brief:
-//!   the spec the unit belongs to, the subproject its tasks' files name, and the
-//!   SAME skill shelf the implementer was dispatched with — so "reviewed
-//!   against the project patterns" means the very molds the work was written
-//!   to, never a second list that can drift. `--verdict` no longer records
+//!   the spec the unit belongs to, the subproject its tasks' files name, and
+//!   that subproject's skill shelf. The shelf is the reviewer's alone: a wave
+//!   is never handed the shelf, only the skills its tasks name, each by the
+//!   path of its file. `--verdict` no longer records
 //!   anything: it refuses at the door and says the round records each wave's
 //!   verdict in the spec file. The merge step reads those verdicts from the
 //!   spec's `spec.ndjson`, one per wave.
@@ -483,8 +483,8 @@ pub(crate) struct PrReviewReport {
     pub spec_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subproject: Option<String>,
-    /// The subproject's skill shelf, verbatim — the same block the implementer
-    /// was dispatched with.
+    /// The subproject's skill shelf, verbatim. Only the reviewer gets it: the
+    /// wave gets just the skills its tasks name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub patterns: Option<String>,
 }
@@ -2268,9 +2268,9 @@ mod tests {
         assert_eq!(spec_of_branch("feature_x", &bases), None, "a name of neither shape");
     }
 
-    /// The brief points at the spec and hands back the SAME shelf the
-    /// implementer got, and records nothing on the way: the verdicts
-    /// `pr-merge` reads are the ones the round writes into the spec.
+    /// The brief points at the spec and hands back the skill shelf of the
+    /// subproject the tasks touch, and records nothing on the way: the
+    /// verdicts `pr-merge` reads are the ones the round writes into the spec.
     #[test]
     fn pr_review_brief_names_the_spec_and_records_nothing() {
         let dir = tempdir().expect("tempdir");
@@ -2311,7 +2311,7 @@ mod tests {
         );
         assert!(
             brief.patterns.unwrap_or_default().contains("rt-demo-pattern"),
-            "the review reads the implementer's own shelf"
+            "the review reads the shelf of the subproject the tasks touch"
         );
         assert!(
             !root.join(".claude").join("spec").join("my-unit").join("review").exists(),

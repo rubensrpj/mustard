@@ -50,6 +50,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # "apagando" and "apagou" land on the same search term. Pure Rust, no build
 # script; the 1.2 line was already in the lock file through another crate.
 rust-stemmers = "1.2"
+# The project map as one SQLite file, one table per block
+# (`mustard-core::io::map_db`). `bundled` compiles SQLite from C inside the
+# build, with FTS5 on, so no system library is needed on Linux or Windows;
+# the build already compiles C for tree-sitter. No vector extension: a vector
+# is a plain BLOB column. The 0.40 line (libsqlite3-sys 0.38) is the one the
+# proof of concept measured.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 #

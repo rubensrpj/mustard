@@ -49,20 +49,6 @@ fn scan_fixture(name: &str, label: &str) -> (tempfile::TempDir, serde_json::Valu
     (temp, v)
 }
 
-/// Run the digest command over an already-written `grain.model.json` (so the
-/// digest is a projection of the model, never a re-scan of the repo) and
-/// return the parsed digest JSON.
-fn digest_of_model(dir: &std::path::Path) -> serde_json::Value {
-    let model = dir.join("grain.model.json");
-    let digest = dir.join("digest.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["digest", model.to_str().unwrap(), "--out", digest.to_str().unwrap()])
-        .output()
-        .expect("run digest over model");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_str(&std::fs::read_to_string(&digest).expect("read digest")).expect("valid digest JSON")
-}
-
 /// The detection's signals as plain strings.
 fn signals(detection: &serde_json::Value) -> Vec<&str> {
     detection["signals"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect()
@@ -80,7 +66,7 @@ fn assert_confidence(detection: &serde_json::Value, expected: f32) {
 
 #[test]
 fn stack_detection_e2e_laravel_converges_three_signal_classes_at_high_confidence() {
-    let (dir, v) = scan_fixture("php_laravel", "laravel");
+    let (_dir, v) = scan_fixture("php_laravel", "laravel");
 
     // Exactly one stack detected — no invented detections from the rest of
     // the built-in registry.
@@ -115,18 +101,6 @@ fn stack_detection_e2e_laravel_converges_three_signal_classes_at_high_confidence
     assert_eq!(unit_stacks.len(), 1, "root unit detects exactly laravel: {unit_stacks:?}");
     assert_eq!(unit_stacks[0]["name"], "laravel");
     assert_confidence(&unit_stacks[0], CONFIDENCE_THREE_CLASSES);
-
-    // DIGEST copies the model's detections verbatim (a projection of the
-    // model, never a re-inference): same array, byte-for-byte as JSON values.
-    let digest = digest_of_model(dir.path());
-    let digest_stacks = digest["detected_stacks"].as_array().expect("digest carries detected_stacks");
-    assert_eq!(digest_stacks.len(), 1, "digest carries laravel: {digest_stacks:?}");
-    assert_eq!(digest_stacks[0]["name"], "laravel");
-    assert_eq!(
-        digest["detected_stacks"], v["detected_stacks"],
-        "digest must copy the model's detected_stacks verbatim"
-    );
-
 }
 
 #[test]

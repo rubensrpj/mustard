@@ -6,8 +6,8 @@
 //!
 //! The model lands at `<root>/.claude/grain.model.json` (the durable product,
 //! re-run when the codebase changes). Downstream commands consume it through the
-//! [`mustard_core::Scan`] client (`digest --query`, `spec`), never by reading
-//! source. No skills or agents are produced; with `--full`, the one file
+//! project map (`run map`) and the [`mustard_core::Scan`] client (`facts`),
+//! never by reading source. No skills or agents are produced; with `--full`, the one file
 //! written per subproject is its `.claude/scan-map.md`.
 //!
 //! A cada vez que roda, o scan também lê o banco de lições e aponta o que

@@ -1,18 +1,14 @@
 //! ranking — pure, domain-agnostic BM25 relevance arithmetic.
 //!
-//! The single home for the Okapi BM25 score shape, shared by every consumer
-//! that ranks documents by a query without re-implementing the math:
-//! - the scan crate's `digest` (per-term sample ranking over the repo model),
-//! - the rt crate's capability ranking (`commands/agent/render/capabilities.rs`),
-//!   and
-//! - the memory search (`domain::search`), which ranks the lessons and the
-//!   spec events by their `search` field against a request.
+//! The single home for the Okapi BM25 score shape, so no consumer
+//! re-implements the math. Its consumer is the search (`domain::search`),
+//! which ranks the lessons, the spec events and the files of the project map
+//! against a request.
 //!
 //! Fixed-point integer arithmetic (scores ×1024): floats never enter a
 //! comparison, so every ranking is byte-stable across runs and platforms. The
-//! tuning constants `k1`/`b` are NOT embedded here — they are passed in (each
-//! ×1024), so each caller owns its tuning: scan reads `ranking.toml`; a simple
-//! consumer uses the classic 1.2 / 0.75 defaults via [`bm25_x1024_default`].
+//! tuning constants `k1`/`b` are passed in (each ×1024); the search uses the
+//! classic 1.2 / 0.75 defaults via [`bm25_x1024_default`].
 //! Nothing here knows a language, framework, file name or document kind.
 
 /// Fixed-point scale: scores and ratios carry 10 fractional bits.
@@ -60,8 +56,7 @@ pub fn bm25_x1024(tf: usize, dl: usize, avgdl_x1024: u64, k1_x1024: u64, b_x1024
     (tf * (SCALE + k1_x1024) * SCALE) / denom_x1024.max(1)
 }
 
-/// [`bm25_x1024`] with the classic 1.2 / 0.75 tuning — the convenience a simple
-/// consumer (no `ranking.toml`) uses.
+/// [`bm25_x1024`] with the classic 1.2 / 0.75 tuning.
 #[must_use]
 pub fn bm25_x1024_default(tf: usize, dl: usize, avgdl_x1024: u64) -> u64 {
     bm25_x1024(tf, dl, avgdl_x1024, DEFAULT_K1_X1024, DEFAULT_B_X1024)
@@ -81,20 +76,6 @@ pub fn idf_x1024(df: usize, n_docs: usize) -> u64 {
     let n = n_docs.max(1);
     let df = df.clamp(1, n);
     log2_x1024(n as u64 + 1).saturating_sub(log2_x1024(df as u64 + 1))
-}
-
-/// Domain-specificity ×1024 of a term: its term frequency times its inverse
-/// document frequency — the classic TF·IDF, fixed-point. `count` is the term's
-/// total occurrences (saturated into the ×1024 multiply so a flood cannot
-/// overflow), `df` the number of documents it appears in, `n_docs` the corpus
-/// size. The product PEAKS IN THE MIDDLE of the frequency range: it demotes the
-/// ubiquitous term (high `df` → `idf_x1024` tends to 0) AND the hapax (low
-/// `count` → small TF), so the discriminative mid-frequency vocabulary scores
-/// highest. Reuses [`idf_x1024`] for the corpus-rarity factor — no tuning knob,
-/// float-free and byte-stable like every primitive here.
-#[must_use]
-pub fn domain_specificity_x1024(count: usize, df: usize, n_docs: usize) -> u64 {
-    (count as u64).saturating_mul(idf_x1024(df, n_docs))
 }
 
 /// Fixed-point (×1024) base-2 logarithm of `x`: `floor(log2 x)` from the integer
@@ -173,20 +154,5 @@ mod tests {
         // panics nor underflows, it saturates at the ubiquitous floor.
         assert_eq!(idf_x1024(5 * n, n), idf_x1024(n, n));
         assert_eq!(idf_x1024(0, n), idf_x1024(1, n));
-    }
-
-    #[test]
-    fn domain_specificity_peaks_in_the_mid_frequency() {
-        let n = 1000;
-        // Ubiquitous term (high df, "type"/"response" style): high count but
-        // near-zero idf → low specificity.
-        let ubiquitous = domain_specificity_x1024(900, 900, n);
-        // Mid-frequency term with a reasonable count ("tenant"/"category"
-        // style): both factors substantial → the discriminative peak.
-        let mid = domain_specificity_x1024(60, 40, n);
-        // Hapax (df == 1, count low): high idf but tiny tf → low specificity.
-        let hapax = domain_specificity_x1024(1, 1, n);
-        assert!(mid > ubiquitous, "mid-frequency outscores the ubiquitous term: {mid} vs {ubiquitous}");
-        assert!(mid > hapax, "mid-frequency outscores the hapax: {mid} vs {hapax}");
     }
 }

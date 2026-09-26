@@ -32,6 +32,9 @@ rust-stemmers = { workspace = true }
 # `at` field of each spec event: the person removes "the messages from 21:03 to
 # 21:10" in the clock they read, never in UTC.
 chrono = { workspace = true }
+# The project map as one SQLite file (`io::map_db`). Version and the bundled
+# SQLite live in the workspace table.
+rusqlite = { workspace = true }
 [dev-dependencies]
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.

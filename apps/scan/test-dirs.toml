@@ -27,7 +27,7 @@
 # merely contain "test" (e.g. `contest`) can never match, by the
 # component-boundary rule above.
 #
-# Like stopwords.toml, this is DATA embedded at compile time (include_str!):
+# Like generated-markers.toml, this is DATA embedded at compile time (include_str!):
 # tuning the list is a data change, never a logic change in src/.
 
 # Inline test markers: a source file whose content carries one of these

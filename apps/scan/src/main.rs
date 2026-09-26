@@ -2,23 +2,19 @@
 //! rich, language-agnostic model. Framework- and language-agnostic.
 //!
 //! Pipeline: ingest -> extract -> graph -> mine -> condense. Fully deterministic
-//! and blind to any framework/language. `scan` writes the model; the other
-//! subcommands only project it.
+//! and blind to any framework/language. `scan` writes the model; `facts`
+//! only projects it.
 
 mod classify;
 mod condense;
-mod digest;
 mod facts;
 mod extract;
 mod graph;
 mod ingest;
 mod manifests;
-mod matching;
 mod mine;
 mod model;
-mod rank;
 mod refresh;
-mod stemmers;
 mod testmap;
 
 use anyhow::Result;
@@ -51,25 +47,6 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Emit a small capability digest of the model, sized for a language model
-    /// to read: contracts, hubs, projects and a domain-term index. It is the
-    /// searchable surface a decomposition or feature step queries instead of
-    /// reading source.
-    ///
-    /// With `--query`, returns only the slice of the digest matching the terms,
-    /// a few kB instead of the whole catalog. It is the cheap lookup a
-    /// `feature` does per interaction to research the repo without reading
-    /// source files.
-    Digest {
-        path: PathBuf,
-        /// Comma/space-separated domain terms to look up (any term matches;
-        /// terms under 3 characters are ignored), e.g. "tenant,receivable".
-        /// Empty = full digest.
-        #[arg(long, default_value = "")]
-        query: String,
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
     /// Emit the small, stable facts the orchestrator consumes, as JSON: the
     /// subproject list and the known declaration names. So a consumer never
     /// has to parse the (large) model itself. `path` is a project dir to scan, or a
@@ -79,27 +56,6 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// One-shot research bundle for the `feature` flow: parse the model once and
-    /// return the per-query digest and the full domain-term index (the
-    /// non-strong vocabulary menu). These are the two projections `feature`
-    /// used to fetch with separate spawns, each re-parsing the model. `--query` carries the
-    /// digest terms. Byte-stable JSON `{digest, terms}`.
-    FeatureBundle {
-        path: PathBuf,
-        /// Comma/space-separated digest query terms (the `digest --query` input).
-        #[arg(long, default_value = "")]
-        query: String,
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-}
-
-/// The `feature-bundle` output — the two projections `feature` consumes,
-/// serialized together from ONE model parse (borrowed, so nothing is cloned).
-#[derive(serde::Serialize)]
-struct FeatureBundleOut<'a> {
-    digest: &'a digest::QueryResult,
-    terms: &'a [digest::TermD],
 }
 
 /// Load a model: scan a project directory, or read a prebuilt grain.model.json.
@@ -107,7 +63,7 @@ fn load_model(path: &Path) -> Result<ProjectModel> {
     if path.extension().and_then(|e| e.to_str()) == Some("json") {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     } else {
-        // As projeções (digest/facts) querem só o modelo.
+        // A projeção (facts) quer só o modelo.
         Ok(analyze(path, None)?.model)
     }
 }
@@ -149,22 +105,6 @@ fn main() -> Result<()> {
                 );
             }
         }
-        Command::Digest { path, query, out } => {
-            let model = load_model(&path)?;
-            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let json = if terms.is_empty() {
-                serde_json::to_string_pretty(&digest::build(&model))?
-            } else {
-                serde_json::to_string_pretty(&digest::query(&model, &terms))?
-            };
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &json)?;
-                    println!("digest written to {} ({} bytes)", p.display(), json.len());
-                }
-                None => println!("{json}"),
-            }
-        }
         Command::Facts { path, out } => {
             let model = load_model(&path)?;
             let json = serde_json::to_string_pretty(&facts::build(&model))?;
@@ -172,23 +112,6 @@ fn main() -> Result<()> {
                 Some(p) => {
                     std::fs::write(&p, &json)?;
                     println!("facts written to {} ({} bytes)", p.display(), json.len());
-                }
-                None => println!("{json}"),
-            }
-        }
-        Command::FeatureBundle { path, query, out } => {
-            let model = load_model(&path)?;
-            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let digest = digest::query(&model, &terms);
-            // The full domain-term index (the non-strong vocabulary menu) from the
-            // SAME parsed model — so `feature` never spawns a second `digest`.
-            let full = digest::build(&model);
-            let bundle = FeatureBundleOut { digest: &digest, terms: &full.terms };
-            let json = serde_json::to_string_pretty(&bundle)?;
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &json)?;
-                    println!("bundle written to {} ({} bytes)", p.display(), json.len());
                 }
                 None => println!("{json}"),
             }
@@ -249,7 +172,6 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
                 // sites and the citations are NOT cleared: they are what the file itself says,
                 // and a pass that did not read it again resolves the same
                 // declaration links from them.
-                kept.fan_in = 0;
                 kept.deps.clear();
                 kept.tests.clear();
                 modules.push(*kept);
@@ -259,8 +181,8 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
                     analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
                 // Machine-written class (generated/vendored/lockfile/minified) —
                 // additive provenance on the module. The model keeps the module
-                // fully visible to the miner; only the digest projection demotes
-                // by class.
+                // fully visible to the miner; the map leaves it out of its search
+                // and of its examples.
                 let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
                     .map(|c| (c.class, c.marker))
                     .unwrap_or_default();
@@ -274,7 +196,6 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
                     declarations: extracted.declarations,
                     file_class,
                     marker,
-                    fan_in: 0, // filled below, once the import graph is resolved
                     deps: Vec::new(),
                     tests: Vec::new(),
                     has_tests: testmap::has_inline_tests(&sf.content),
@@ -289,13 +210,6 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
 
     let packages = graph::packages(&ing.manifests);
     let graph = graph::build(&modules, &ing.go_module, &packages);
-    let degrees = &graph.1;
-    // Persist each module's fan-in (graph::build already computed the full
-    // degree map) — additive on the model, so digest projections rank anchors
-    // without re-deriving the graph.
-    for m in &mut modules {
-        m.fan_in = degrees.get(&m.path).map_or(0, |d| d.0);
-    }
     // The project files each module imports, from the same resolved edges the
     // graph counts — the answer to "who imports this file", read backwards.
     // Every resolved edge counts, a namespace import spread over several files
@@ -339,7 +253,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         }
         _ => (true, read_modules(root, None)?),
     };
-    let Read { ing, mut modules, packages, graph: (graph_stats, _, depth_by_path) } = read;
+    let Read { ing, mut modules, packages, graph: (graph_stats, depth_by_path) } = read;
 
     // The named edges between declarations: who calls or cites whom, in which
     // file and on which line. Read from the call sites and the citations every
@@ -646,7 +560,8 @@ mod tests {
     fn every_command_help_keeps_uppercase_inside_backticks() {
         use clap::CommandFactory;
         let tree = Cli::command();
-        assert!(tree.get_subcommands().count() >= 4, "the check reached every command");
+        let names: Vec<&str> = tree.get_subcommands().map(clap::Command::get_name).collect();
+        assert_eq!(names, ["scan", "facts"], "the check reached every command");
         let defects = tree_defects(&tree);
         assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
     }

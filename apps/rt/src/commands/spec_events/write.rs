@@ -603,9 +603,8 @@ pub fn record(
 /// como critérios os itens que as tarefas dela cobrem, e a tarefa que não
 /// cobre nenhum só seria recusada depois, quando a rodada formasse a onda. A
 /// tarefa que o programa grava fica de fora: a do item combinado não cumprido
-/// cobre o item, a da sobra que quebra cobre os critérios da onda que a
-/// apontou, e a da onda de conserto nasce com a onda já gravada, com os
-/// critérios da obra.
+/// cobre o item, a da sobra cobre os critérios da onda que a apontou, e a da
+/// onda de conserto nasce com a onda já gravada, com os critérios da obra.
 fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<TaskDeclaration> {
     let mut missing = Vec::new();
     let what = draft.get("text").and_then(Value::as_str).is_none_or(|text| text.trim().is_empty());

@@ -43,7 +43,7 @@ pub enum ScanCmd {
     /// `tests --file`, `slice --file --name <declaration>` (the declaration's
     /// own lines, without opening the file), `users --name <declaration>` (who
     /// uses it, as `file:line:caller`; `--file` keeps the one declared in that
-    /// file), `search --query`, `summary` (the session-start digest, up to
+    /// file), `search --query`, `summary` (the session-start summary, up to
     /// 3 kB) or `skill --path <SKILL.md>` (every cited path exists and the
     /// skill stays under 500 lines). Reads
     /// `.claude/grain.model.json`; prints JSON and exits 1 on a refusal.

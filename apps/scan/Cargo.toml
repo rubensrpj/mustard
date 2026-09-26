@@ -52,10 +52,6 @@ anyhow = "1"
 # detection is data, not a hardcoded list of filenames. The 1.x line matches
 # mustard-core's pin; the `toml::Value` read surface is unchanged from 0.8.
 toml = "1"
-# Snowball stemmers (pure Rust, MIT) for tier-3 of the match ladder. Which
-# NATURAL languages exist is data mirrored in src/stemmers.rs (the approved
-# carve-out module) — the engine itself has no per-language behavior.
-rust-stemmers = "1.2"
 # Stack inference engine + the StackDetection contract live in mustard-core
 # (registry-driven: stacks are DATA in core's stacks.toml, never logic here).
 # Same apps→packages direction as rt/cli; tree-sitter pins are coordinated

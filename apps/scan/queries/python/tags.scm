@@ -30,9 +30,9 @@
   body: (block (function_definition name: (identifier) @name) @definition.method))
 
 ; Members — class-level attributes (`name = ""` / `name: str = ""` in a class
-; body), the closest Python syntax has to a field declaration. Member kinds feed
-; the digest's domain-term index only: the miner's significance gate (mine.rs)
-; never treats them as units.
+; body), the closest Python syntax has to a field declaration. Member kinds
+; reach the map with the file's other declarations: the miner's significance
+; gate (mine.rs) never treats them as units.
 (class_definition
   body: (block
     (expression_statement

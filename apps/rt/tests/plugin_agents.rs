@@ -435,19 +435,29 @@ fn o_molde_da_onda_poe_na_tarefa_o_arquivo_que_a_mudanca_exige() {
 /// mesma onda o que a própria mudança deixou sem uso, com o teste que só
 /// existia para ele; num arquivo de outra onda em andamento, o agente não
 /// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
-/// grava, com o `kind` que diz se ela quebra algo ou é só cosmética.
+/// grava, só com o título e o detalhe: toda sobra vai ao backlog da spec, e o
+/// molde não pede mais que o agente diga se ela quebra algo ou é cosmética.
 #[test]
 fn a_fronteira_manda_tirar_o_que_a_mudanca_deixou_sem_uso() {
     for (lang, said) in [
-        ("pt-BR", ["deixa sem uso", "com o teste só dele", "sai na mesma onda", "outra onda em andamento, não edite"]),
-        ("en-US", ["leaves unused", "with the test only it had", "goes in the same wave", "another running wave, do not edit"]),
+        (
+            "pt-BR",
+            ["deixa sem uso", "com o teste só dele", "sai na mesma onda", "outra onda em andamento, não edite", "backlog da spec"],
+        ),
+        (
+            "en-US",
+            ["leaves unused", "with the test only it had", "goes in the same wave", "another running wave, do not edit", "spec backlog"],
+        ),
     ] {
         let name = "wave";
         let body = template(lang, name);
         let boundary = section(&body, wave_headers(lang).0);
-        let kinds = ["\"leftovers\":[{\"title\"", "\"detail\"", "\"kind\":\"breaks\"", "`cosmetic`"];
-        for phrase in said.iter().chain(&kinds) {
+        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\"}]`";
+        for phrase in said.iter().chain(std::iter::once(&field)) {
             assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
+        }
+        for gone in ["\"kind\"", "`kind`", "breaks", "cosmetic"] {
+            assert!(!body.contains(gone), "the {lang} `{name}` agent still sorts the leftover by `{gone}`:{boundary}");
         }
     }
 }

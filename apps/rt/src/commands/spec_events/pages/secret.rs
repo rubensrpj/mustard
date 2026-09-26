@@ -11,8 +11,10 @@
 //!   formas comuns: `senha: …`, `a senha é …`, `senha do banco: …`,
 //!   `DB_PASSWORD=…`, `GITHUB_TOKEN=…`, `"password": "…"`, `client_secret=…`;
 //! - o valor que só um segredo tem naquele lugar: a senha dentro de um
-//!   endereço (`esquema://usuário:senha@host`, com ou sem o usuário) e o token
-//!   depois de `Bearer`.
+//!   endereço (`esquema://usuário:senha@host`, com ou sem o usuário), o token
+//!   depois de `Bearer` e a chave colada ao próprio prefixo (`apikey_…`,
+//!   `token-…`, `sk_…`), sem nome nem sinal antes, como ela sai do painel
+//!   que a gera.
 //!
 //! Nas duas últimas, o valor só conta quando parece de verdade: não é um
 //! marcador (`<senha>`, `${TOKEN}`, `****`), um código de item, uma data, um
@@ -46,12 +48,16 @@ const SHAPES: &[&str] = &[
 /// `SecretKey`, `AccountKey`, `ENCRYPTION_KEY`).
 const NAMES: &str = r"password|passwd|pwd|senha|secret|segredo|token|key|chave";
 
+/// Os prefixos com que uma chave sai colada, por `_` ou `-`, do painel que a
+/// gera: `apikey_…`, `api-key-…`, `token_…`, `secret-…`, `sk_…`, `pk_…`.
+const KEY_PREFIXES: &str = r"api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|auth[_-]?key|access[_-]?token|auth[_-]?token|api[_-]?token|apikey|key|token|secret|sk|pk|rk";
+
 /// As palavras que um exemplo põe no lugar da senha de um endereço.
 const EXAMPLE_WORDS: &[&str] = &["senha", "password", "pass", "pwd", "secret", "token", "user", "usuário", "usuario"];
 
 /// As formas em que o valor vem no grupo `v` e só conta se parecer de
 /// verdade, cada uma dizendo se o valor precisa de letra e número.
-fn valued_patterns() -> [(String, bool); 3] {
+fn valued_patterns() -> [(String, bool); 4] {
     [
         // A atribuição: o nome, com prefixo e com aspa, até duas palavras de
         // ligação (`senha do banco`), o sinal e o valor, com ou sem aspa.
@@ -66,6 +72,14 @@ fn valued_patterns() -> [(String, bool); 3] {
         (r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]*:(?P<v>[^\s:/@]{4,})@".to_string(), false),
         // O token do cabeçalho de autorização.
         (r"(?i)\bbearer\s+(?P<v>[A-Za-z0-9._~+/=-]{16,})".to_string(), true),
+        // A chave colada ao prefixo: o prefixo, `_` ou `-` e pelo menos 20
+        // letras e números seguidos, que podem continuar em outros pedaços
+        // separados por `_` ou `-` (`apikey_<36>_<64>`). O valor é tudo depois
+        // do prefixo, então o trecho achado leva a chave inteira.
+        (
+            format!(r"(?i)\b(?:{KEY_PREFIXES})[_-](?P<v>[A-Za-z0-9]{{20,}}(?:[_-][A-Za-z0-9]+)*)"),
+            true,
+        ),
     ]
 }
 
@@ -326,6 +340,63 @@ mod tests {
             "a chave primária é id_cliente",
             "the key is required",
             "keyboard: abnt2-br",
+        ];
+        for text in ordinary {
+            assert!(!looks_like_secret(text), "false positive: {text}");
+        }
+    }
+
+    /// Uma chave inventada no formato de uma chave de verdade colada sozinha
+    /// numa mensagem: `apikey_`, 36 letras e números em hexadecimal, `_` e
+    /// mais 64.
+    fn pasted_key() -> (String, String, String) {
+        let (head, tail) = ("0a1b2c3d4e5f".repeat(3), "9f8e7d6c5b4a3210".repeat(4));
+        (format!("apikey_{head}_{tail}"), head, tail)
+    }
+
+    /// A chave colada ao próprio prefixo, sozinha ou no meio da frase, casa
+    /// inteira depois do prefixo: os dois pedaços da chave saem no mesmo
+    /// trecho. Casa também com os outros prefixos, em maiúscula e com `-`.
+    #[test]
+    fn a_key_glued_to_its_prefix_is_found_whole() {
+        let (key, head, tail) = pasted_key();
+        assert_eq!(head.len(), 36);
+        assert_eq!(tail.len(), 64);
+        assert_eq!(secret_excerpts(&key), vec![format!("{head}_{tail}")]);
+        assert_eq!(secret_excerpts(&format!("a chave do Jev é essa: {key}.")), vec![format!("{head}_{tail}")]);
+        let found = [
+            "api_key_a1b2c3d4e5f6a7b8c9d0e1f2",
+            "API-KEY-a1b2c3d4e5f6a7b8c9d0e1f2",
+            "token_Zx9Qw8Er7Ty6Ui5Op4As3Df2",
+            "secret-a1b2c3d4e5f6a7b8c9d0e1f2g3",
+            "SK_a1b2c3d4e5f6a7b8c9d0e1f2",
+            "pk-a1b2c3d4e5f6a7b8c9d0e1f2-x9",
+            "key_a1b2c3d4e5f6a7b8c9d0e1f2",
+            "access_token_a1b2c3d4e5f6a7b8c9d0e1f2",
+        ];
+        for text in found {
+            assert!(looks_like_secret(text), "not found: {text}");
+        }
+    }
+
+    /// O que se parece com a chave colada sem ser chave não casa: o hash de
+    /// um commit, curto ou inteiro, sem prefixo; o código de um item; o
+    /// caminho de arquivo com o nome de um prefixo; a data; a leitura de uma
+    /// variável de ambiente; o nome de função ou de variável com um prefixo
+    /// no começo; e o prefixo seguido de pedaço curto.
+    #[test]
+    fn what_only_looks_like_a_glued_key_is_not_a_secret() {
+        let ordinary = [
+            "o commit 13b27dc3 fechou a onda",
+            "o commit 13b27dc3a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d9 fechou a onda",
+            "MSTD-TASK-0092 e MSTD-DEC-0086",
+            "apps/rt/src/commands/spec_events/pages/secret.rs:41",
+            "packages/core/src/key_store.rs e src/token-counter/main.rs",
+            "2026-09-26T09:12:18-03:00",
+            "token_env = process.env.API_TOKEN_2026",
+            "secret_excerpts, key_value_store e token_budget_v2",
+            "sk-curto, pk_live_abc e token-2fa",
+            "api_key = process.env.API_KEY",
         ];
         for text in ordinary {
             assert!(!looks_like_secret(text), "false positive: {text}");

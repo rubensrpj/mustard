@@ -1,7 +1,7 @@
 //! Deterministic scan-map generator for subprojects — no AI, no source reads.
 //!
 //! Invoked by `scan::run` (`--full`) after `grain.model.json` is written. It
-//! writes one file per unit, `.claude/scan-map.md` (kind + size + the digest
+//! writes one file per unit, `.claude/scan-map.md` (kind + size + the map
 //! pointer + detected `## Commands`), capped by [`SCAN_MAP_HARD_CAP_BYTES`] as
 //! a guard against a runaway generator. That file is Mustard's and stays out
 //! of git. No `CLAUDE.md` (nor `CLAUDE.local.md`) is ever read or written:
@@ -38,7 +38,7 @@ pub struct OversizedEntry {
 }
 
 /// Render the mustard-owned `.claude/scan-map.md` for a unit: a terse
-/// orientation map (kind + size + the digest pointer) plus the `## Commands`
+/// orientation map (kind + size + the map pointer) plus the `## Commands`
 /// section — and only when the caller passes NON-DEFAULT commands (it zeroes
 /// the conventional language defaults, so `render_commands` omits the
 /// section). The dependency `## Stack` was dropped on purpose: a dep list is

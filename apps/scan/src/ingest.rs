@@ -280,11 +280,11 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
 }
 
 /// Conventional test/fixture directory segments. DATA, not logic: the list
-/// lives in `test-dirs.toml` next to `stopwords.toml` (embedded at compile
-/// time, justified in its header) — tuning which trees count as test trees is
-/// a data change, never a code change. Parsed once per process; a malformed
-/// embedded file is a programmer error caught by any test run, same contract
-/// as `digest::stopwords`.
+/// lives in `test-dirs.toml` (embedded at compile time, justified in its
+/// header) — tuning which trees count as test trees is a data change, never a
+/// code change. Parsed once per process; a malformed embedded file is a
+/// programmer error caught by any test run, same contract as
+/// `classify::catalog` over generated-markers.toml.
 fn test_dir_segments() -> &'static BTreeSet<String> {
     static SET: OnceLock<BTreeSet<String>> = OnceLock::new();
     SET.get_or_init(|| {

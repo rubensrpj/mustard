@@ -5,11 +5,8 @@
 //! it shells out to the grain binary and consumes its JSON/Markdown:
 //!
 //! - `grain scan <root> --out <model.json>` — the durable model (run once/repo).
-//! - `grain digest <model> --query "<terms>"` — the cheap per-interaction lookup
-//!   a `feature` does to research the repo without reading files.
-//! - `grain spec <model> --entity … [--like …] [--ops …] [--invariant …]` — the
-//!   deterministic implementation-spec DRAFT (English; localized to the
-//!   project's `mustard.json` text language only at the lapidation step).
+//! - `grain facts <model>` — the subproject list and the known declaration
+//!   names, so Mustard never parses the model's own schema.
 //!
 //! The boundary is a TOOL (process + JSON/MD), not a library link: no shared
 //! build, no tree-sitter version coupling, grain stays standalone. This module
@@ -17,7 +14,7 @@
 //! framework-specific — grain is itself fully data-driven.
 //!
 //! Fail-open: spawning or parsing failures return [`Error`]; callers degrade
-//! (e.g. treat a digest miss as "no precedent found, confirm by reading").
+//! (e.g. an empty subproject list when the tool is missing).
 
 use std::path::Path;
 use std::process::Command;
@@ -42,250 +39,6 @@ impl Default for Scan {
     fn default() -> Self {
         Self { binary: DEFAULT_BINARY.to_string() }
     }
-}
-
-/// The FULL capability digest — grain's `digest <model>` output with NO
-/// `--query` (the searchable catalog, not a per-query slice). Mustard owns its
-/// own view and only deserializes the fields it consumes: today the domain-term
-/// index ([`Self::terms`]), the proactive-lexicon `enrich` input. The published
-/// term list is already discriminative-rank ordered + capped by the scan tool.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Digest {
-    /// Domain-term index (token + occurrence count + sample files), ordered by
-    /// the scan tool's discriminative rank. Defaulted so an older scan binary
-    /// (or a model that mined no vocabulary) degrades to an empty list.
-    #[serde(default)]
-    pub terms: Vec<DigestTerm>,
-    /// Recurring structural role affixes the scan tool mined (suffix/prefix/
-    /// folder/nested + the count of distinct entities each pairs with). Consumed
-    /// by the proactive lexicon `enrich` to DEMOTE structural type-glue affixes
-    /// so domain vocabulary survives the candidate cap. Defaulted so a model from
-    /// an older scan binary (no `roles` field) degrades to an empty list.
-    #[serde(default)]
-    pub roles: Vec<DigestRole>,
-}
-
-/// One row of the digest's role index ([`Digest::roles`]): a recurring affix,
-/// the convention it forms (`suffix` | `prefix` | `folder` | `nested`), the
-/// number of distinct entities it pairs with, and the directory it concentrates
-/// in. Same shape grain's `RoleD` serializes; Mustard owns its own (read-only)
-/// view and only deserializes the fields it consumes.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DigestRole {
-    pub affix: String,
-    /// The convention the affix forms: `suffix` | `prefix` | `folder` | `nested`.
-    /// Defaulted so a partial / older payload still deserialises.
-    #[serde(default)]
-    pub kind: String,
-    /// Distinct entities the affix pairs with — its structural recurrence.
-    #[serde(default)]
-    pub count: usize,
-    /// The directory the affix concentrates in (module organisation hint).
-    #[serde(default)]
-    pub common_dir: String,
-}
-
-/// One row of the digest's domain-term index ([`Digest::terms`]): the mined
-/// code token, its (machine-class-demoted) occurrence count, and a few sample
-/// files where the vocabulary lives. Same shape grain's `TermD` serializes.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DigestTerm {
-    pub term: String,
-    #[serde(default)]
-    pub count: usize,
-    /// Domain specificity ×1024 (TF·IDF, `ranking::domain_specificity_x1024`):
-    /// the discriminative-power signal that peaks at mid frequency. Defaulted to
-    /// 0 so a model from an older scan binary (no field) still deserialises — a
-    /// consumer sorting by it then sees a flat 0 and falls back to scan's order.
-    #[serde(default)]
-    pub specificity_x1024: u64,
-    #[serde(default)]
-    pub samples: Vec<String>,
-    /// One-sentence business-action summary for the declaration that anchors
-    /// this term. Written by `enrich-purpose --apply`; absent on older models
-    /// (serde default = None). Additive: consumers that do not use it are
-    /// unaffected.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
-}
-
-/// The focused slice of the digest matching some domain terms — grain's
-/// `digest --query` output. Mirrors grain's schema; Mustard owns its own view.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DigestQuery {
-    #[serde(default)]
-    pub query: Vec<String>,
-    /// Stacks the scanned model carries (inferred at scan time, copied verbatim
-    /// into every `digest --query` payload — hit or miss). Same contract type
-    /// as [`Project::detected_stacks`]; defaulted so payloads from an older
-    /// scan binary (without the field) keep deserialising.
-    #[serde(default)]
-    pub detected_stacks: Vec<StackDetection>,
-    #[serde(default)]
-    pub matched_terms: Vec<TermHit>,
-    #[serde(default)]
-    pub terms_omitted: usize,
-    #[serde(default)]
-    pub slices: Vec<SliceHit>,
-    /// Slices that matched but were trimmed by the per-query cap — scan's
-    /// additive mirror of `terms_omitted` (no silent loss). `0` from an older
-    /// scan binary without the field.
-    #[serde(default)]
-    pub slices_omitted: usize,
-    #[serde(default)]
-    pub contracts: Vec<ContractHit>,
-    #[serde(default)]
-    pub hubs: Vec<Hub>,
-    #[serde(default)]
-    pub touchpoints: Vec<Touchpoint>,
-    /// Real files to read next (anchor candidates), hubs first.
-    #[serde(default)]
-    pub files: Vec<String>,
-    /// Audit trail for [`Self::files`], additive and same order: per anchor,
-    /// the fixed-point selection score and the matched terms that carried it.
-    /// Defaulted so payloads from an older scan binary (without the field)
-    /// keep deserialising.
-    #[serde(default)]
-    pub files_detail: Vec<FileDetail>,
-    /// Legacy flag: `true` when every view came back empty. Kept for payloads
-    /// from older scan binaries; [`Self::report`] is the truth — a non-miss
-    /// answer can still be `weak`.
-    #[serde(default)]
-    pub miss: bool,
-    /// Honest per-term match report (scan's tier ladder): what each request
-    /// term matched, at which tier, in which language, and where — plus the
-    /// aggregate `matched k/n` and a reason. Defaulted so payloads from an
-    /// older scan binary (without the field) keep deserialising; an empty
-    /// `reason` means "old binary, fall back to `miss`".
-    #[serde(default)]
-    pub report: DigestReport,
-    /// Concern split: when the query's concepts form ≥2 disconnected groups
-    /// (no shared module, no import bridge), scan returns one [`ConcernHit`]
-    /// per group, each with its OWN ranked `files`/`files_detail` restricted to
-    /// that concern. Empty for a single-concern query (the flat [`Self::files`]
-    /// already IS that one concern). Defaulted so payloads from an older scan
-    /// binary (without the field) keep deserialising.
-    #[serde(default)]
-    pub concerns: Vec<ConcernHit>,
-}
-
-/// One concern of a multi-concern `digest --query` answer — a connected group
-/// of the query's concepts with its own ranked anchors. Mirrors scan's
-/// `ConcernD`; Mustard owns its own view. A consumer reads `files` per concern
-/// instead of the blended [`DigestQuery::files`] when a request mixes concerns.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ConcernHit {
-    /// The concern's concept tokens joined with '+' (sorted asc).
-    pub label: String,
-    /// The query concepts in this concern (sorted asc).
-    #[serde(default)]
-    pub concepts: Vec<String>,
-    /// Files to read for THIS concern, ranked over its concepts only.
-    #[serde(default)]
-    pub files: Vec<String>,
-    /// Audit trail for [`Self::files`], same order (parallel to
-    /// [`DigestQuery::files_detail`]).
-    #[serde(default)]
-    pub files_detail: Vec<FileDetail>,
-    /// This concern's strength on its own evidence: `strong` (a concept hit
-    /// exact/fold), `weak` (derived tiers only), `none` (no anchor surfaced).
-    #[serde(default)]
-    pub reason: String,
-}
-
-/// The aggregate match report of a `digest --query` answer. Reasons:
-/// `none` (nothing matched — treat as net-new, confirm by reading),
-/// `generated_only` (matches live only in machine-written modules —
-/// regenerate, never edit them), `weak` (under half the terms matched, or
-/// only stem/lexicon-derived matches — re-query in the code's vocabulary or
-/// explore), `strong` (solid precedent). Empty = payload predates the report.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct DigestReport {
-    #[serde(default)]
-    pub matched: usize,
-    #[serde(default)]
-    pub total: usize,
-    #[serde(default)]
-    pub reason: String,
-    /// `true` when a `weak` answer is weak ONLY because no term hit exact/fold,
-    /// yet a CURATED lexicon bridge (seed or the project's own overlay) carried
-    /// a non-thin query (`matched*2 >= total`) — the request vocabulary
-    /// translated onto the code's. The consumer keeps the planning fields (with
-    /// a caveat) instead of forcing a re-query; speculative `stem`-only weakness
-    /// stays `false`. Defaulted `false` for payloads that predate the marker.
-    #[serde(default)]
-    pub bridged: bool,
-    #[serde(default)]
-    pub terms: Vec<TermReport>,
-}
-
-/// One request term's outcome on scan's match ladder: the tier that carried
-/// it (`exact` | `fold` | `stem` | `lexicon` | `none`), the natural-language
-/// evidence (stemmer language / lexicon pair label; empty for exact/fold)
-/// and the top sample files where the matched vocabulary lives.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TermReport {
-    pub term: String,
-    #[serde(default)]
-    pub tier: String,
-    #[serde(default)]
-    pub lang: String,
-    #[serde(default)]
-    pub files: Vec<String>,
-}
-
-/// One anchor's audit row (parallel to [`DigestQuery::files`]): the fixed-point
-/// BM25F relevance score (`score_x1024`, scan's integer scale — never a float,
-/// so the value is byte-stable) and the matched index terms that carried the
-/// file (by declaration or path/filename field).
-#[derive(Debug, Clone, Deserialize)]
-pub struct FileDetail {
-    pub file: String,
-    #[serde(default)]
-    pub score_x1024: u64,
-    #[serde(default)]
-    pub terms: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TermHit {
-    pub term: String,
-    pub count: usize,
-    #[serde(default)]
-    pub samples: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SliceHit {
-    pub label: String,
-    pub recurrence: usize,
-    #[serde(default)]
-    pub entities: Vec<String>,
-    /// Real file paths that exemplify this slice (the reference-implementation
-    /// files to mirror), passed through verbatim from the scan digest's
-    /// per-slice `exemplar_files`. `default` so an older scan payload without
-    /// the field still deserializes (empty).
-    #[serde(default)]
-    pub exemplar_files: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ContractHit {
-    pub name: String,
-    pub implementors: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Hub {
-    pub module: String,
-    pub degree: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Touchpoint {
-    pub module: String,
-    pub fan_out: usize,
-    pub breadth: usize,
 }
 
 /// One compilation unit from grain's model (`grain.model.json` `projects[]`) —
@@ -383,27 +136,6 @@ pub fn mark_own_git_roots(repo_root: &Path, projects: &mut [Project]) {
     }
 }
 
-/// The one-shot `feature-bundle` payload — the digest and the full domain-term
-/// index (the non-strong vocabulary menu), both from ONE `scan` spawn / ONE
-/// model parse. Replaces the digest_query + digest spawn fan-out `feature` used
-/// to do (each of which re-parsed the whole model).
-#[derive(Debug, Clone)]
-pub struct FeatureBundle {
-    /// The per-query digest (the shape [`Scan::digest_query`] returns).
-    pub digest: DigestQuery,
-    /// The FULL domain-term index (same as [`Scan::digest`]'s `terms`) — the
-    /// non-strong `vocabulary` menu.
-    pub terms: Vec<DigestTerm>,
-}
-
-/// Wire shape of the `feature-bundle` stdout (`{digest, terms}`).
-#[derive(Deserialize)]
-struct FeatureBundleWire {
-    digest: DigestQuery,
-    #[serde(default)]
-    terms: Vec<DigestTerm>,
-}
-
 impl Scan {
     /// A client for the grain binary at `binary` (a name on `PATH` or a path).
     #[must_use]
@@ -435,30 +167,6 @@ impl Scan {
         parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
-    /// Read the model's FULL capability digest (`grain digest <model>`, no
-    /// `--query`) — the whole catalog, including the discriminative-ranked
-    /// domain-term index. Used by the proactive `enrich` flow to learn the
-    /// code's vocabulary; the per-query [`Self::digest_query`] is the cheap
-    /// research lookup instead.
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn digest(&self, model: &Path) -> Result<Digest> {
-        let out = self.run(&digest_args(model))?;
-        Ok(serde_json::from_str(&out)?)
-    }
-
-    /// Look up the model's digest by domain term(s) (`grain digest --query`).
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn digest_query(&self, model: &Path, terms: &[String]) -> Result<DigestQuery> {
-        let out = self.run(&digest_query_args(model, terms))?;
-        Ok(serde_json::from_str(&out)?)
-    }
-
     /// Read the model's FACTS (subproject list + known declaration names) via
     /// `scan facts <model>` — so Mustard never parses the model's own schema.
     ///
@@ -468,20 +176,6 @@ impl Scan {
     pub fn facts(&self, model: &Path) -> Result<ModelFacts> {
         let out = self.run(&facts_args(model))?;
         Ok(serde_json::from_str(&out)?)
-    }
-
-    /// Fetch the one-shot [`FeatureBundle`] (`scan feature-bundle`): the digest
-    /// and the full term index from ONE spawn / ONE model parse — the collapse
-    /// of the digest_query + digest fan-out. `query_terms` are the digest terms.
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn feature_bundle(&self, model: &Path, query_terms: &[String]) -> Result<FeatureBundle> {
-        let out = self.run(&feature_bundle_args(model, query_terms))?;
-        let json = out.find('{').map_or(out.as_str(), |i| &out[i..]);
-        let wire: FeatureBundleWire = serde_json::from_str(json)?;
-        Ok(FeatureBundle { digest: wire.digest, terms: wire.terms })
     }
 
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
@@ -527,30 +221,8 @@ fn parse_scan_report(stdout: &str) -> Result<ScanReport> {
     serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan report: {e}")))
 }
 
-fn digest_args(model: &Path) -> Vec<String> {
-    vec!["digest".to_string(), model.to_string_lossy().into_owned()]
-}
-
-fn digest_query_args(model: &Path, terms: &[String]) -> Vec<String> {
-    vec![
-        "digest".to_string(),
-        model.to_string_lossy().into_owned(),
-        "--query".to_string(),
-        terms.join(","),
-    ]
-}
-
 fn facts_args(model: &Path) -> Vec<String> {
     vec!["facts".to_string(), model.to_string_lossy().into_owned()]
-}
-
-fn feature_bundle_args(model: &Path, query_terms: &[String]) -> Vec<String> {
-    vec![
-        "feature-bundle".to_string(),
-        model.to_string_lossy().into_owned(),
-        "--query".to_string(),
-        query_terms.join(","),
-    ]
 }
 
 #[cfg(test)]
@@ -572,12 +244,6 @@ mod tests {
         assert_eq!(report.read, vec!["src/b.rs".to_string()]);
         assert_eq!(report.files, 3);
         assert!(parse_scan_report("not json").is_err());
-    }
-
-    #[test]
-    fn digest_query_joins_terms() {
-        let a = digest_query_args(&PathBuf::from("m.json"), &["tenant".into(), "charge".into()]);
-        assert_eq!(a, vec!["digest", "m.json", "--query", "tenant,charge"]);
     }
 
     #[test]
@@ -656,137 +322,5 @@ mod tests {
         assert!(projects[0].own_git_root, "a `.git` FILE marks a nested git root");
         assert!(!projects[1].own_git_root, "a plain subproject is not a nested git root");
         assert!(!projects[2].own_git_root, "the superproject root `.` is never flagged");
-    }
-
-
-    #[test]
-    fn digest_query_detected_stacks_serde_compat() {
-        // An old payload without `detected_stacks` still deserialises (default).
-        let old = r#"{"query":["tenant"],"matched_terms":[],"terms_omitted":0,"miss":true}"#;
-        let q: DigestQuery = serde_json::from_str(old).expect("old payload without detected_stacks");
-        assert!(q.detected_stacks.is_empty());
-        assert!(q.miss);
-
-        // A new payload carrying the field round-trips into the contract type.
-        let new = r#"{"query":["page"],"detected_stacks":[{"name":"nextjs","confidence":0.65,"signals":["dep:next","path:next.config.js"]}],"files":["pages/index.tsx"],"miss":false}"#;
-        let q: DigestQuery = serde_json::from_str(new).expect("payload with detected_stacks");
-        assert_eq!(q.detected_stacks.len(), 1);
-        assert_eq!(q.detected_stacks[0].name, "nextjs");
-        assert_eq!(q.detected_stacks[0].signals, vec!["dep:next", "path:next.config.js"]);
-        assert_eq!(q.files, vec!["pages/index.tsx"]);
-    }
-
-    #[test]
-    fn digest_query_deserializes_grain_output() {
-        // The REAL shape the scan binary emits since the tier-ladder redesign:
-        // `report` with per-term {term, tier, lang, files} + matched k/n +
-        // reason, alongside the legacy `miss` flag.
-        let json = r#"{"query":["tenant","cancelado"],"matched_terms":[{"term":"tenant","count":242,"samples":["a.cs"]}],"terms_omitted":0,"slices":[],"contracts":[],"hubs":[{"module":"ICurrentTenant.cs","degree":738}],"touchpoints":[],"files":["ICurrentTenant.cs"],"miss":false,"report":{"matched":2,"total":2,"reason":"strong","terms":[{"term":"tenant","tier":"exact","lang":"","files":["a.cs"]},{"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["b.cs"]}]}}"#;
-        let q: DigestQuery = serde_json::from_str(json).expect("valid grain digest json");
-        assert_eq!(q.matched_terms.len(), 1);
-        assert_eq!(q.matched_terms[0].count, 242);
-        assert_eq!(q.hubs[0].module, "ICurrentTenant.cs");
-        assert!(!q.miss);
-        assert_eq!(q.report.matched, 2);
-        assert_eq!(q.report.total, 2);
-        assert_eq!(q.report.reason, "strong");
-        assert_eq!(q.report.terms.len(), 2);
-        assert_eq!(q.report.terms[0].tier, "exact");
-        assert_eq!(q.report.terms[1].tier, "lexicon");
-        assert_eq!(q.report.terms[1].lang, "pt-en");
-        assert_eq!(q.report.terms[1].files, vec!["b.cs"]);
-    }
-
-    #[test]
-    fn digest_query_report_serde_compat_with_old_payloads() {
-        // A payload from an OLDER scan binary (no `report`) keeps
-        // deserialising; the defaulted report's empty reason is the caller's
-        // "fall back to `miss`" signal.
-        let old = r#"{"query":["tenant"],"matched_terms":[],"terms_omitted":0,"miss":true}"#;
-        let q: DigestQuery = serde_json::from_str(old).expect("old payload without report");
-        assert!(q.miss);
-        assert_eq!(q.report.reason, "");
-        assert_eq!(q.report.total, 0);
-        assert!(q.report.terms.is_empty());
-        assert!(!q.report.bridged, "the bridged marker defaults false for payloads that predate it");
-    }
-
-    #[test]
-    fn digest_query_deserializes_bridged_marker() {
-        // The scan binary flags a `weak` answer a CURATED lexicon bridge carried
-        // (no exact/fold hit, non-thin) with `report.bridged: true`. The consumer
-        // (feature) reads it to keep the planning fields instead of withholding.
-        let json = r#"{"query":["cancelado"],"matched_terms":[{"term":"cancel","count":3,"samples":["b.cs"]}],"files":["b.cs"],"miss":false,"report":{"matched":1,"total":1,"reason":"weak","bridged":true,"terms":[{"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["b.cs"]}]}}"#;
-        let q: DigestQuery = serde_json::from_str(json).expect("valid bridged digest json");
-        assert_eq!(q.report.reason, "weak");
-        assert!(q.report.bridged, "the curated-bridge marker round-trips from the scan binary's JSON");
-    }
-
-    #[test]
-    fn digest_query_concerns_serde_compat() {
-        // An OLD payload without `concerns` keeps deserialising — empty.
-        let old = r#"{"query":["tenant"],"files":["a.cs"],"miss":false}"#;
-        let q: DigestQuery = serde_json::from_str(old).expect("old payload without concerns");
-        assert!(q.concerns.is_empty(), "single-concern / old binary → no split");
-
-        // A multi-concern payload round-trips: each concern carries its own
-        // label, concepts and ranked files restricted to that concern.
-        let new = r#"{"query":["tenant","export"],"files":["t.cs","e.cs"],"miss":false,"concerns":[{"label":"tenant","concepts":["tenant"],"files":["t.cs"],"files_detail":[{"file":"t.cs","score_x1024":2048,"terms":["tenant"]}],"reason":"strong"},{"label":"export","concepts":["export"],"files":["e.cs"],"files_detail":[{"file":"e.cs","score_x1024":1024,"terms":["export"]}],"reason":"weak"}]}"#;
-        let q: DigestQuery = serde_json::from_str(new).expect("payload with concerns");
-        assert_eq!(q.concerns.len(), 2);
-        assert_eq!(q.concerns[0].label, "tenant");
-        assert_eq!(q.concerns[0].concepts, vec!["tenant"]);
-        assert_eq!(q.concerns[0].files, vec!["t.cs"]);
-        assert_eq!(q.concerns[0].files_detail[0].score_x1024, 2048);
-        assert_eq!(q.concerns[0].reason, "strong");
-        assert_eq!(q.concerns[1].label, "export");
-        assert_eq!(q.concerns[1].reason, "weak");
-    }
-
-    #[test]
-    fn digest_roles_serde_compat() {
-        // An OLD payload (scan binary predating the roles index in the FULL
-        // digest) without `roles` keeps deserialising — empty, never an error.
-        let old = r#"{"terms":[{"term":"payable","count":12}]}"#;
-        let d: Digest = serde_json::from_str(old).expect("old payload without roles");
-        assert!(d.roles.is_empty(), "old binary / no roles → empty list");
-        assert_eq!(d.terms.len(), 1);
-
-        // A NEW payload carrying the roles index round-trips: each role keeps its
-        // affix, kind and structural-recurrence count.
-        let new = r#"{"terms":[{"term":"payable","count":12}],"roles":[
-            {"affix":"Handler","kind":"suffix","count":24,"common_dir":"src/handlers"},
-            {"affix":"Repository","kind":"suffix","count":9,"common_dir":""}]}"#;
-        let d: Digest = serde_json::from_str(new).expect("payload with roles");
-        assert_eq!(d.roles.len(), 2);
-        assert_eq!(d.roles[0].affix, "Handler");
-        assert_eq!(d.roles[0].kind, "suffix");
-        assert_eq!(d.roles[0].count, 24);
-        assert_eq!(d.roles[0].common_dir, "src/handlers");
-        assert_eq!(d.roles[1].affix, "Repository");
-        assert_eq!(d.roles[1].count, 9);
-    }
-
-    #[test]
-    fn digest_query_files_detail_and_slices_omitted_serde_compat() {
-        // An OLD payload (scan binary predating lote 1) without
-        // `files_detail`/`slices_omitted` keeps deserialising — both default.
-        let old = r#"{"query":["payable"],"files":["src/a.rs"],"miss":false}"#;
-        let q: DigestQuery = serde_json::from_str(old).expect("old payload");
-        assert!(q.files_detail.is_empty());
-        assert_eq!(q.slices_omitted, 0);
-
-        // The NEW payload shape (per-anchor audit + capped-slices count)
-        // round-trips into the contract type, parallel to `files`.
-        let new = r#"{"query":["payable"],"slices":[{"label":"List","recurrence":3}],"slices_omitted":2,"files":["src/a.rs","src/b.rs"],"files_detail":[{"file":"src/a.rs","score_x1024":2048,"terms":["payable","nature"]},{"file":"src/b.rs","score_x1024":0,"terms":[]}],"miss":false,"report":{"matched":2,"total":2,"reason":"strong","terms":[]}}"#;
-        let q: DigestQuery = serde_json::from_str(new).expect("payload with files_detail");
-        assert_eq!(q.slices_omitted, 2);
-        assert_eq!(q.files_detail.len(), 2);
-        assert_eq!(q.files_detail[0].file, "src/a.rs");
-        assert_eq!(q.files_detail[0].score_x1024, 2048);
-        assert_eq!(q.files_detail[0].terms, vec!["payable", "nature"]);
-        // Touchpoint-tail anchor: honest score 0, no terms.
-        assert_eq!(q.files_detail[1].score_x1024, 0);
-        assert!(q.files_detail[1].terms.is_empty());
     }
 }

@@ -40,10 +40,9 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// Catalog cap for `top_fan_in` / `top_fan_out`. The digest filters these BY
-/// QUERY VOCABULARY, so the catalog must be wide enough for a domain-specific
-/// hub to exist in it at all — 8 global slots starved every query on a large
-/// monorepo. Bounded: ~a few KB of model.
+/// Catalog cap for `top_fan_in` / `top_fan_out`: a bounded list (~a few KB of
+/// model) ordered strongest first. The map's session summary reads the first
+/// hubs of `top_fan_in`.
 const TOP_DEGREE_CAP: usize = 64;
 
 /// Longest dependency chain below an SCC = its emergent depth (`L0` = innermost).
@@ -105,13 +104,9 @@ pub fn resolve_edges(modules: &[Module], go_module: &Option<String>, packages: &
     edges
 }
 
-/// O que uma varredura do grafo produz: as estatísticas gerais, o grau de cada
-/// módulo como `(entrada, saída)`, e o tamanho de cada um.
-pub type GraphBuild = (
-    GraphStats,
-    HashMap<String, (usize, usize)>,
-    HashMap<String, usize>,
-);
+/// O que uma varredura do grafo produz: as estatísticas gerais e a camada de
+/// cada módulo.
+pub type GraphBuild = (GraphStats, HashMap<String, usize>);
 
 pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String, String)]) -> GraphBuild {
     let mut g: DiGraph<String, ()> = DiGraph::new();
@@ -156,14 +151,9 @@ pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String
     let units = |x: u64| (((x + 512) >> 10) as usize).max(1);
     let mut fan_in: Vec<(u64, NodeDegree)> = Vec::new();
     let mut fan_out: Vec<(u64, NodeDegree)> = Vec::new();
-    let mut degree_map: HashMap<String, (usize, usize)> = HashMap::new();
     for n in g.node_indices() {
         let wi = win.get(&n).copied().unwrap_or(0);
         let wo = wout.get(&n).copied().unwrap_or(0);
-        degree_map.insert(
-            g[n].clone(),
-            (if wi > 0 { units(wi) } else { 0 }, if wo > 0 { units(wo) } else { 0 }),
-        );
         if wi > 0 {
             fan_in.push((wi, NodeDegree { module: g[n].clone(), degree: units(wi) }));
         }
@@ -177,10 +167,6 @@ pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String
     fan_out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.module.cmp(&b.1.module)));
     let mut fan_in: Vec<NodeDegree> = fan_in.into_iter().map(|(_, d)| d).collect();
     let mut fan_out: Vec<NodeDegree> = fan_out.into_iter().map(|(_, d)| d).collect();
-    // 64, not 8: the digest filters this catalog BY QUERY VOCABULARY — with
-    // only 8 global slots a large monorepo never surfaces the hub of any
-    // specific domain (every domain-scoped query comes back with zero hubs).
-    // Still bounded; a few KB on the model.
     fan_in.truncate(TOP_DEGREE_CAP);
     fan_out.truncate(TOP_DEGREE_CAP);
 
@@ -240,7 +226,7 @@ pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String
         layers,
         touchpoints,
     };
-    (stats, degree_map, depth_by_path)
+    (stats, depth_by_path)
 }
 
 /// A name declared by more declarations than this is a common word (`new`,

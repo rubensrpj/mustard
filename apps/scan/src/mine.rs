@@ -239,10 +239,11 @@ const UNIT_CALLABLE_KINDS: &[&str] = &["function", "const"];
 
 /// Whether a declaration is an architectural UNIT — the thing roles are mined
 /// from. Everything else is a MEMBER (`method`, `field`, `property`,
-/// `enum_member`): it lives inside a unit and feeds the digest's term index
-/// only. The distinction is drawn upstream, by each query set's generic
-/// `@definition.<kind>` vocabulary, and applied here identically for every one
-/// of them — this function knows no dialect and must never learn one.
+/// `enum_member`): it lives inside a unit and reaches the map with the rest of
+/// the file's declarations, never as a role. The distinction is drawn
+/// upstream, by each query set's generic `@definition.<kind>` vocabulary, and
+/// applied here identically for every one of them — this function knows no
+/// dialect and must never learn one.
 fn is_significant(d: &Decl, module_path: &str, sole: bool) -> bool {
     if d.name.len() < 3 {
         return false;

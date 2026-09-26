@@ -41,8 +41,8 @@
 //! apontando as voltas desde o último envio — também na onda que o conserto
 //! fecha, o que pede a revisão dela de novo —, grava a versão nova do critério
 //! com a prova nova, formata só os arquivos da rodada, faz o commit com a
-//! mensagem montada do resumo e grava cada sobra como pendência da spec, pela
-//! mesma porta do `pending --add`. O `--report` leva só o que o orquestrador
+//! mensagem montada do resumo e grava cada sobra como tarefa da spec, no
+//! backlog. O `--report` leva só o que o orquestrador
 //! escreve: a linha `<USAGE>{"wave":1}</USAGE>`, que marca que o agente da
 //! onda terminou, a `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>`. O consumo de
 //! cada onda assumida — o modelo, os passos e os tokens do agente dela — e o

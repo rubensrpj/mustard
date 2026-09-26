@@ -6,5 +6,6 @@ pub mod spec_events;
 pub mod spec_index;
 pub mod lessons;
 pub mod project_map;
+pub mod map_db;
 pub mod wave_prompt;
 pub mod transcript;

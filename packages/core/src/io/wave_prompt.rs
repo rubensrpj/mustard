@@ -13,8 +13,10 @@
 //! agente da onda lê no disco. O texto ainda é lido aqui porque é nele que a
 //! conferência acontece — a skill que cita um caminho que não existe ou passa
 //! do tamanho máximo é recusada — e porque o "quando usar" da linha sai da
-//! descrição do frontmatter. A skill cujo exemplo mudou no git depois dela
-//! sai marcada como a revisar.
+//! descrição do frontmatter. O caminho recomendado é o absoluto, no projeto
+//! principal: a pasta das skills fica fora do git e não chega à cópia da
+//! onda. A skill cujo arquivo citado mudou no git depois do arquivo dela sai
+//! marcada como a revisar.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -22,7 +24,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
-use crate::domain::project_map::{check_skill, file_history, tests_for, MapRefusal, ProjectMap};
+use crate::domain::project_map::{check_skill, cited_paths, file_history, tests_for, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{self, tasks_text, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
@@ -479,7 +481,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let mut bad_skills = Vec::new();
     let mut stale_skills = Vec::new();
     for name in &named {
-        let Some((text, path)) = read_skill(root, &files, name) else {
+        let Some((text, file)) = read_skill(root, &files, name) else {
             bad_skills.push((name.clone(), MapRefusal::SkillMissingPaths { paths: vec![skill_file(name)] }));
             continue;
         };
@@ -487,11 +489,11 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             bad_skills.push((name.clone(), refusal));
             continue;
         }
-        let stale = examples_changed_after(log, map, name);
+        let stale = cited_changed_after(map, &text, &file);
         if stale {
             stale_skills.push(name.clone());
         }
-        skills.push(Skill { name: name.clone(), when: when_to_use(&text), path, stale });
+        skills.push(Skill { name: name.clone(), when: when_to_use(&text), path: shown(&file), stale });
     }
 
     let material = Material {
@@ -561,9 +563,11 @@ fn skill_file(name: &str) -> String {
 
 /// O arquivo de uma skill, procurado nas pastas dos arquivos da onda e, por
 /// último, na raiz do projeto: a skill mora no subprojeto em que a tarefa
-/// mexe. Devolve o texto, que a conferência lê, e o caminho do arquivo a
-/// partir da raiz do projeto, que é o que o pedido recomenda.
-fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, String)> {
+/// mexe. Devolve o texto, que a conferência lê, e o caminho absoluto do
+/// arquivo no projeto principal, que é o que o pedido recomenda: a pasta das
+/// skills fica fora do git, então a cópia da onda não a tem, e o agente só a
+/// abre de primeira pelo projeto principal.
+fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, PathBuf)> {
     let mut folders: Vec<PathBuf> = Vec::new();
     for file in files {
         let mut folder = root.join(file);
@@ -579,17 +583,11 @@ fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, Stri
     for folder in folders {
         let path = folder.join(".claude").join("skills").join(name).join("SKILL.md");
         if let Ok(text) = std::fs::read_to_string(&path) {
-            return Some((text, from_root(root, &path)));
+            let absolute = std::path::absolute(&path).unwrap_or(path);
+            return Some((text, absolute));
         }
     }
     None
-}
-
-/// Um caminho a partir da raiz do projeto, sempre com barras normais: o
-/// pedido é lido por gente e por agente, e a barra invertida do Windows não
-/// serve para nenhum dos dois.
-fn from_root(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
 /// Quando usar a skill, tirado da descrição do frontmatter dela e reduzido a
@@ -667,30 +665,32 @@ fn decl_lines(map: Option<&ProjectMap>, path: &str, name: &str) -> Option<Vec<(u
     (!ranges.is_empty()).then_some(ranges)
 }
 
-/// Algum exemplo que a skill usou mudou no git depois de ela ter sido
-/// gravada?
-fn examples_changed_after(log: &SpecLog, map: Option<&ProjectMap>, name: &str) -> bool {
+/// Algum arquivo que a skill cita mudou no git depois do próprio arquivo
+/// dela? A skill vale pelo que estava no código quando foi escrita: a data
+/// do arquivo dela é a da última escrita, e a de cada arquivo citado é a do
+/// commit mais novo que o mudou, pelo histórico do mapa. O citado pode trazer
+/// só o fim do caminho, como a conferência aceita; a pasta citada não conta,
+/// porque não tem commit próprio. Sem mapa, ou sem a data do arquivo da
+/// skill, não há marca.
+fn cited_changed_after(map: Option<&ProjectMap>, text: &str, skill: &Path) -> bool {
     let Some(map) = map else { return false };
-    let Some(event) = log
-        .visible()
-        .into_iter()
-        .rfind(|e| e.event_type == "skill" && e.str_field("name") == Some(name))
-    else {
-        return false;
-    };
-    let Ok(at) = chrono::DateTime::parse_from_rfc3339(event.at()) else {
-        return false;
-    };
-    let written = at.timestamp();
-    event
-        .fields
-        .get("examples")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
+    let Some(written) = modified_at(skill) else { return false };
+    cited_paths(text)
         .iter()
-        .filter_map(|example| example.get("path").and_then(Value::as_str))
+        .filter(|cited| !cited.ends_with('/'))
+        .flat_map(|cited| {
+            let tail = format!("/{cited}");
+            map.history.paths.iter().filter(move |path| *path == cited || path.ends_with(&tail))
+        })
         .any(|path| file_history(&map.history, path).is_some_and(|h| h.last_at > written))
+}
+
+/// A data da última escrita de um arquivo, em segundos desde 1970, a mesma
+/// régua das datas de commit do histórico do mapa.
+fn modified_at(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).and_then(|meta| meta.modified()).ok()?;
+    let seconds = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    i64::try_from(seconds).ok()
 }
 
 #[cfg(test)]
@@ -738,27 +738,39 @@ mod tests {
         std::fs::write(crate::io::project_map::model_path(root), model.to_string()).unwrap();
     }
 
-    /// A skill que a tarefa nomeia entra no pedido pelo caminho do arquivo e
-    /// pelo quando usar da descrição dela, sem o texto; e ela é procurada no
-    /// subprojeto em que a tarefa mexe.
+    /// O caminho do arquivo da skill como o pedido o escreve: absoluto, no
+    /// projeto principal `root`, com barras normais.
+    fn skill_path_in(root: &Path, subproject: &str, name: &str) -> String {
+        shown(&root.join(subproject).join(".claude").join("skills").join(name).join("SKILL.md"))
+    }
+
+    /// A skill que a tarefa nomeia entra no pedido pelo caminho absoluto do
+    /// arquivo no projeto principal, que existe mesmo com a onda saindo numa
+    /// cópia fora dele, e pelo quando usar da descrição dela, sem o texto; e
+    /// ela é procurada no subprojeto em que a tarefa mexe. O caminho nunca é o
+    /// da cópia: a pasta das skills fica fora do git e não chega lá.
     #[test]
-    fn the_skill_a_task_names_reaches_the_request_by_path_and_never_by_text() {
+    fn the_skill_reaches_the_request_by_the_absolute_path_in_the_main_project() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        let elsewhere = tempdir().unwrap();
+        let copy = shown(&elsewhere.path().join("copia"));
         write_skill(
             root,
             "apps/rt",
             "somar",
             "---\nname: somar\ndescription: Use ao somar dois números no motor.\n---\n\n# Somar\n\nUm passo por linha.\n",
         );
-        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default());
+        let chosen = WaveCopy { path: copy.clone(), reused: None };
+        let flight = Flight { running: [1].into(), copies: [(1, chosen)].into(), ..Flight::default() };
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &flight);
         assert_eq!(built.len(), 1);
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
-        assert!(
-            built[0].text.contains("`apps/rt/.claude/skills/somar/SKILL.md`"),
-            "{}",
-            built[0].text
-        );
+        let path = skill_path_in(root, "apps/rt", "somar");
+        assert!(Path::new(&path).is_absolute() && Path::new(&path).is_file(), "{path}");
+        assert!(built[0].text.contains(&format!("— `{path}`")), "{}", built[0].text);
+        assert!(!built[0].text.contains("`apps/rt/.claude/skills/somar/SKILL.md`"), "{}", built[0].text);
+        assert!(!built[0].text.contains(&format!("{copy}/apps/rt/.claude")), "{}", built[0].text);
         assert!(built[0].text.contains("Use ao somar dois números no motor."), "{}", built[0].text);
         assert!(!built[0].text.contains("Um passo por linha."), "{}", built[0].text);
     }
@@ -772,11 +784,8 @@ mod tests {
         write_skill(root, "apps/rt", "somar", "# Somar\n\nUm passo por linha.\n");
         let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
-        assert!(
-            built[0].text.contains("- **somar** — `apps/rt/.claude/skills/somar/SKILL.md`"),
-            "{}",
-            built[0].text
-        );
+        let path = skill_path_in(root, "apps/rt", "somar");
+        assert!(built[0].text.contains(&format!("- **somar** — `{path}`")), "{}", built[0].text);
     }
 
     /// A skill que cita um caminho que não existe, e a que passa do tamanho
@@ -1501,42 +1510,76 @@ mod tests {
         assert_eq!(shown.len(), 6, "{shown:?}");
     }
 
-    /// A skill cujo arquivo de exemplo mudou no git depois dela sai marcada
-    /// como a revisar; a que não mudou não sai marcada.
-    #[test]
-    fn a_skill_whose_example_changed_after_it_is_marked_for_review() {
-        let written = chrono::DateTime::parse_from_rfc3339("2026-09-15T10:00:00-03:00").unwrap().timestamp();
-        for (moved, marked) in [(written + 3_600, true), (written - 3_600, false)] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            write_skill(root, "apps/rt", "somar", "# O molde\n\nUm passo por linha.\n");
+    /// Uma skill que cita dois arquivos — o segundo escrito como `cited` —,
+    /// com a data do próprio arquivo em `written` (segundos desde 1970), num
+    /// projeto cujo mapa guarda um commit em `moved` que mudou o segundo
+    /// citado, e com o mapa só quando `with_map`; devolve o pedido da onda.
+    /// Nenhum evento `skill` é gravado: a marca sai só das datas.
+    fn request_with_skill_written_at(written: i64, moved: i64, with_map: bool, cited: &str) -> WavePrompt {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(root.join("apps/rt/src/exemplo.rs"), "fn dois() {}\n").unwrap();
+        write_skill(
+            root,
+            "apps/rt",
+            "somar",
+            &format!("# O molde\n\nExemplos usados: `apps/rt/src/a.rs` e `{cited}`.\n"),
+        );
+        let skill = root.join("apps/rt/.claude/skills/somar/SKILL.md");
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(written).unwrap());
+        std::fs::File::options().write(true).open(&skill).unwrap().set_modified(at).unwrap();
+        if with_map {
             write_map(
                 root,
                 &json!({
+                    "modules": [{"path": "apps/rt/src/a.rs"}, {"path": "apps/rt/src/exemplo.rs"}],
                     "history": {
-                        "paths": ["apps/rt/src/exemplo.rs"],
-                        "commits": [{"id": "abc1234", "at": moved, "changed": [0]}],
+                        "paths": ["apps/rt/src/a.rs", "apps/rt/src/exemplo.rs"],
+                        "commits": [
+                            {"id": "abc1234", "at": written - 7_200, "changed": [0]},
+                            {"id": "def5678", "at": moved, "changed": [1]},
+                        ],
                     }
                 }),
             );
-            let mut events = vec![
-                ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
-                (
-                    "task",
-                    json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}], "skill": "somar"}),
-                ),
-            ];
-            events.push((
-                "skill",
-                json!({"name": "somar", "action": "create", "text": "O molde", "sha": "3f9a1c2e",
-                       "examples": [{"path": "apps/rt/src/exemplo.rs", "why": "mesma pasta"}]}),
-            ));
-            let built = prompts(root, "teste", &log_of(&events), Locale::PtBr, &Flight::default());
-            assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
-            assert_eq!(built[0].stale_skills.is_empty(), !marked, "mudou em {moved}");
-            let review = crate::platform::i18n::translate("prompt.skill.stale", Locale::PtBr);
-            assert_eq!(built[0].text.contains(&format!("**somar** ({review})")), marked);
-            assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
+        }
+        prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default()).remove(0)
+    }
+
+    /// O pedido marca a skill como a revisar pelo que diz a linha dela: `true`
+    /// quando o nome sai seguido da marca.
+    fn marked_for_review(prompt: &WavePrompt) -> bool {
+        let review = crate::platform::i18n::translate("prompt.skill.stale", Locale::PtBr);
+        prompt.text.contains(&format!("**somar** ({review})"))
+    }
+
+    /// A skill cujo arquivo citado teve commit depois da data do arquivo
+    /// dela sai marcada como a revisar, também quando a citação traz só o fim
+    /// do caminho e a linha: a data vem do próprio arquivo, sem precisar de
+    /// nenhum registro da skill na spec.
+    #[test]
+    fn a_skill_whose_cited_file_changed_after_it_is_marked_for_review() {
+        let written = 1_789_000_000;
+        let built = request_with_skill_written_at(written, written + 3_600, true, "src/exemplo.rs:12");
+        assert!(built.bad_skills.is_empty(), "{:?}", built.bad_skills);
+        assert_eq!(built.stale_skills, ["somar"]);
+        assert!(marked_for_review(&built), "{}", built.text);
+    }
+
+    /// A skill mais nova que os commits de todos os arquivos que ela cita sai
+    /// sem a marca; sem o mapa do projeto, não há histórico e também não há
+    /// marca.
+    #[test]
+    fn a_skill_newer_than_its_cited_files_or_without_a_map_is_not_marked() {
+        let written = 1_789_000_000;
+        for (moved, with_map) in [(written - 3_600, true), (written + 3_600, false)] {
+            let built = request_with_skill_written_at(written, moved, with_map, "apps/rt/src/exemplo.rs");
+            assert!(built.bad_skills.is_empty(), "{:?}", built.bad_skills);
+            assert!(built.stale_skills.is_empty(), "commit em {moved}, mapa {with_map}: {:?}", built.stale_skills);
+            assert!(!marked_for_review(&built), "{}", built.text);
+            assert!(built.text.contains("skills/somar/SKILL.md"), "{}", built.text);
         }
     }
 

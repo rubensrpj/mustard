@@ -9,10 +9,16 @@
 //! Só se grava numa spec atual, que tem arquivo de eventos e ainda não
 //! terminou: sem ela, nada é gravado. Nenhuma gravação daqui falha para quem
 //! chama — uma recusa ou um erro de disco vira "nada gravado".
+//!
+//! A mensagem e a resposta são gravadas já sem segredo: cada trecho com cara
+//! de chave, token ou senha sai como "…", a mesma marca do expurgo. O
+//! segredo colado na conversa nunca entra no arquivo da spec, e o expurgo
+//! fica só como reserva.
 
 use std::path::Path;
 use std::time::Instant;
 
+use mustard_core::domain::spec_events::PURGED_MARK;
 use mustard_core::domain::spec_state::{last_user_message, PhaseWriter, SpecState, State};
 use serde_json::{json, Map, Value};
 
@@ -69,11 +75,26 @@ fn draft(fields: Value) -> Map<String, Value> {
     }
 }
 
-/// A mensagem do usuário, como ele a escreveu.
+/// O texto como ele vai para o arquivo da spec: cada trecho com cara de
+/// segredo sai como "…". O mais longo sai primeiro, para o trecho que mora
+/// dentro de outro não deixar sobra. O campo de busca é calculado deste texto
+/// na gravação, então também não leva o segredo.
+fn without_secrets(text: &str) -> String {
+    let mut excerpts = super::pages::secret::secret_excerpts(text);
+    excerpts.sort_by_key(|excerpt| std::cmp::Reverse(excerpt.len()));
+    let mut out = text.to_string();
+    for excerpt in excerpts {
+        out = out.replace(&excerpt, PURGED_MARK);
+    }
+    out
+}
+
+/// A mensagem do usuário, como ele a escreveu, sem os segredos.
 pub(crate) fn record_message(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
     }
+    let text = without_secrets(text);
     record(root, session, "message", draft(json!({ "author": "user", "text": text })))
 }
 
@@ -106,14 +127,15 @@ pub(crate) fn record_witnessed_message(
 /// gravada nela: a resposta vai sem `reply_to`, e o sim à sugestão feita ali
 /// acha a resposta que respondeu. A resposta que a regra das pendências
 /// barrou também passa por aqui, e o complemento que o bloqueio pediu vem
-/// depois dela, ligado à mesma mensagem.
+/// depois dela, ligado à mesma mensagem. A resposta que repete um segredo é
+/// gravada sem ele, como a mensagem.
 pub(crate) fn record_response(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
     }
     let spec = conversation_spec(root, session)?;
     let log = DiskSpecState::new(root).log(&spec)?;
-    let mut fields = json!({ "author": "assistant", "text": text });
+    let mut fields = json!({ "author": "assistant", "text": without_secrets(text) });
     if let Some(asked) = last_user_message(&log) {
         fields["reply_to"] = json!(asked.id);
     }
@@ -182,6 +204,7 @@ mod tests {
     use super::*;
     use crate::commands::spec_events::write::record_open;
     use crate::shared::spec_state::stand_on_spec_branch;
+    use mustard_core::platform::i18n::Locale;
 
     /// Um projeto com a spec `spec` aberta e o checkout na branch dela.
     fn project_on(spec: &str) -> tempfile::TempDir {
@@ -312,6 +335,104 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Uma chave inventada no formato de uma chave de verdade: `apikey_`, 36
+    /// letras e números em hexadecimal, `_` e mais 64. Devolve a chave e os
+    /// dois pedaços dela.
+    fn pasted_key() -> (String, String, String) {
+        let (head, tail) = ("0a1b2c3d4e5f".repeat(3), "9f8e7d6c5b4a3210".repeat(4));
+        (format!("apikey_{head}_{tail}"), head, tail)
+    }
+
+    /// Um evento do Claude Code na sessão `s1` do projeto em `root`, pelo
+    /// despachante inteiro, como o `mustard-rt on <evento>` o roda.
+    fn hook_event(root: &Path, name: &str, raw: Value) {
+        use mustard_core::domain::model::contract::{HookInput, Trigger};
+        let input = HookInput {
+            hook_event_name: Some(name.to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            raw,
+            ..HookInput::default()
+        };
+        let _ = crate::dispatch::run_event(Trigger::from_event_name(name), &input);
+    }
+
+    /// As linhas do arquivo de eventos da spec, como estão no disco: o campo
+    /// de busca vai junto.
+    fn file_lines(root: &Path, spec: &str) -> Vec<String> {
+        let path = mustard_core::io::spec_events::spec_file(root, spec).expect("spec file");
+        std::fs::read_to_string(path).expect("events").lines().map(str::to_string).collect()
+    }
+
+    /// A chave colada sozinha na mensagem, pelo gancho da mensagem, e a
+    /// resposta que a repete, pelo gancho do fim do turno, são gravadas com
+    /// "…" no lugar da chave. Nenhum pedaço dela fica em campo nenhum da
+    /// linha, nem no de busca.
+    #[test]
+    fn a_pasted_key_is_recorded_as_the_mark_in_the_message_and_the_answer() {
+        let dir = project_on("chave");
+        let root = dir.path();
+        let (key, head, tail) = pasted_key();
+        hook_event(root, "UserPromptSubmit", json!({ "prompt": key }));
+        hook_event(root, "Stop", json!({ "last_assistant_message": format!("Recebi a chave {key}; não a guarde.") }));
+
+        let message = &events_of(root, "chave", "message")[0];
+        assert_eq!(message["text"], json!("apikey_…"));
+        let response = &events_of(root, "chave", "response")[0];
+        assert_eq!(response["text"], json!("Recebi a chave apikey_…; não a guarde."));
+        let lines = file_lines(root, "chave");
+        let spoken: Vec<&String> =
+            lines.iter().filter(|line| line.contains(r#""type":"message""#) || line.contains(r#""type":"response""#)).collect();
+        assert_eq!(spoken.len(), 2, "{lines:?}");
+        for line in lines {
+            assert!(!line.contains(&head) && !line.contains(&tail), "a piece of the key reached the file: {line}");
+        }
+    }
+
+    /// A página da spec, preparada depois da conversa com a chave colada,
+    /// leva a mensagem com a marca no lugar da chave, e a chave em lugar
+    /// nenhum dos arquivos que vão para o banco dela.
+    #[test]
+    fn the_spec_page_never_carries_a_pasted_key() {
+        let dir = project_on("pagina");
+        let root = dir.path();
+        let (key, head, tail) = pasted_key();
+        hook_event(root, "UserPromptSubmit", json!({ "prompt": format!("use esta: {key}") }));
+        let prepared = crate::commands::spec_events::pages::copy::prepare(root, "pagina", Locale::PtBr)
+            .expect("the page copy is prepared");
+        assert!(prepared.withheld.is_empty(), "the clean message is not held back: {:?}", prepared.withheld);
+        let mut texts = Vec::new();
+        let mut folders = vec![root.join(".claude/spec/pagina/copy")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).expect("the copy folder").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else {
+                    texts.push(std::fs::read_to_string(&path).unwrap_or_default());
+                }
+            }
+        }
+        assert!(texts.iter().any(|text| text.contains("use esta: apikey_…")), "the message goes to the page");
+        for text in &texts {
+            assert!(!text.contains(&head) && !text.contains(&tail), "a piece of the key reached the page: {text}");
+        }
+    }
+
+    /// O hash de um commit, curto ou inteiro, o código de um item e o
+    /// caminho de um arquivo continuam gravados como o usuário os escreveu.
+    #[test]
+    fn a_commit_hash_an_item_code_and_a_path_are_recorded_as_written() {
+        let dir = project_on("comum");
+        let root = dir.path();
+        let text = "o commit 13b27dc3 e o 13b27dc3a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d9 fecharam a MSTD-TASK-0092 \
+                    em apps/rt/src/commands/spec_events/pages/secret.rs:41";
+        hook_event(root, "UserPromptSubmit", json!({ "prompt": text }));
+        hook_event(root, "Stop", json!({ "last_assistant_message": text }));
+        assert_eq!(events_of(root, "comum", "message")[0]["text"], json!(text));
+        assert_eq!(events_of(root, "comum", "response")[0]["text"], json!(text));
     }
 
     /// A chamada de um passo grava o comando, o resultado e, na recusa, a

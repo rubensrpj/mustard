@@ -27,7 +27,7 @@ use super::commit::{
     head, join_copies, make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file,
     write_joined, UNMADE_SHA,
 };
-use super::leftovers::{leftover_task, leftovers_of, open_leftovers, Leftover, LeftoverKind};
+use super::leftovers::{leftover_task, leftovers_of, Leftover};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{change_accepted, replan_code};
 use super::usage::{measure_usage, Caller, Usage};
@@ -63,8 +63,8 @@ pub(crate) struct WaveReport {
     /// As ondas que este conserto fecha.
     pub fixes: Vec<u64>,
     pub replan: Option<String>,
-    /// As sobras, cada uma com o título, o detalhe e o que ela é: a rodada
-    /// as grava quando assume a volta ([`Leftover`]).
+    /// As sobras, cada uma com o título e o detalhe: a rodada grava cada uma
+    /// como tarefa da spec quando assume a volta ([`Leftover`]).
     pub leftovers: Vec<Leftover>,
     /// A resposta por cada item combinado que o pedido da onda levou, como a
     /// onda a gravou: o item, pelo código ou pelo número, e se foi cumprido.
@@ -124,10 +124,9 @@ pub(crate) struct Taken {
 /// repositório principal sem gravar nada, e só então grava a junção, formata
 /// os arquivos da rodada e faz o commit; depois grava os vereditos, a entrega
 /// oficial de cada onda, com `replaces` para as voltas dela, a versão nova de
-/// cada critério com prova nova e o commit, a tarefa de cada sobra que
-/// quebra e a pendência de cada sobra que não quebra, e apaga as cópias. O
-/// git, que pode recusar, roda antes da primeira gravação na spec, e a
-/// recusa dele devolve o disco e o índice do
+/// cada critério com prova nova, o commit e a tarefa de cada sobra, e apaga
+/// as cópias. O git, que pode recusar, roda antes da primeira gravação na
+/// spec, e a recusa dele devolve o disco e o índice do
 /// repositório principal ao que eram: a chamada corrigida depois de uma
 /// recusa junta e grava tudo uma vez só, e o commit de outra onda nunca leva
 /// nada da recusada. A entrega que a junção segura por conflito fica de fora,
@@ -374,12 +373,6 @@ fn take_returns(
     // backlog soltas, sem a onda que as levou, ainda sob a trava.
     recorded.extend(return_cut_batches(start, spec, log, cut).map_err(RoundRefusal::Refused)?);
     drop(held_lock);
-    // Cada sobra das voltas assumidas que não quebra nada vira pendência, com
-    // a entrega oficial já gravada: a cosmética passa ao projeto, e a sem
-    // `kind` fica da spec, com a pergunta de destino.
-    let (opened, not_opened) = open_leftovers(start, spec, &report.waves, lang);
-    recorded.extend(opened);
-    warnings.extend(not_opened);
     // O mapa acompanha o commit, antes de a onda seguinte pedir a sugestão de
     // skill e de arquivos parecidos: sem isso, ela apontaria o que este
     // commit acabou de apagar.
@@ -483,8 +476,8 @@ fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
 /// relativo ao repositório —, o resumo do commit, as provas, as ondas que o
 /// conserto fecha, a mudança de plano e as sobras. Arquivo entregue pede o
 /// resumo do commit, a não ser na mudança de plano, e o resumo nunca tem cara
-/// de código de commit. O `kind` de uma sobra, quando vem, é `breaks` ou
-/// `cosmetic`; outro valor é recusado.
+/// de código de commit. O `kind` que uma sobra de volta antiga ainda traga é
+/// ignorado.
 fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveReport, RoundRefusal> {
     let text = |key: &str| {
         fields.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
@@ -522,7 +515,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         .filter_map(|p| Some((p.get("criterion").filter(|c| !c.is_null())?.clone(), field(p, "proof")?)))
         .collect();
     let fixes = listed("fixes").iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect();
-    let leftovers = leftovers_of(&listed("leftovers")).map_err(RoundRefusal::Refused)?;
+    let leftovers = leftovers_of(&listed("leftovers"));
     Ok(WaveReport {
         wave,
         delivered,
@@ -948,8 +941,8 @@ struct CheckedReport {
     /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
     agreed_tasks: Vec<Map<String, Value>>,
     /// Uma tarefa nova no backlog por item combinado que a entrega de uma
-    /// onda marcou `met:false` e por sobra que quebra, com a onda que a
-    /// apontou: também sem onda própria, para a rodada seguinte formar o lote.
+    /// onda marcou `met:false` e por sobra, com a onda que a apontou: também
+    /// sem onda própria, para a rodada seguinte formar o lote.
     wave_tasks: Vec<(u64, Map<String, Value>)>,
 }
 
@@ -974,8 +967,8 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// gravação, contra a spec, sem gravar nada: a linha sem campo obrigatório
 /// nunca deixa gravada a que veio antes dela, e nada é recusado depois do
 /// commit. O entregou vai também em cada onda que o conserto fecha, e o item
-/// combinado que a entrega não cumpriu e a sobra que quebra viram tarefa no
-/// backlog, pela mesma conferência das tarefas que nascem do veredito.
+/// combinado que a entrega não cumpriu e cada sobra viram tarefa no backlog,
+/// pela mesma conferência das tarefas que nascem do veredito.
 fn check_reports(
     start: &Path,
     root: &Path,
@@ -1044,7 +1037,7 @@ fn check_reports(
         }
     }
     for wave in &report.waves {
-        for leftover in wave.leftovers.iter().filter(|l| l.kind == Some(LeftoverKind::Breaks)) {
+        for leftover in &wave.leftovers {
             wave_tasks.push((wave.wave, leftover_task(root, check.log(), wave.wave, leftover)));
         }
     }
@@ -1132,8 +1125,7 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// Grava o que [`check_reports`] conferiu, pela mesma porta de gravação das
 /// outras: primeiro os vereditos, que julgam entregas já gravadas; depois o
 /// entregou de cada onda, a tarefa de cada item combinado que ela não cumpriu
-/// e de cada sobra que quebra, e a versão nova de cada critério com prova
-/// nova.
+/// e de cada sobra, e a versão nova de cada critério com prova nova.
 /// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando. A entrada de cada entregou leva o texto, os arquivos e as provas
 /// que a própria onda mandou: quem conduz a obra confere a entrega pela
@@ -3577,29 +3569,40 @@ mod tests {
         assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
     }
 
-    /// Cada sobra da volta assumida vira pendência da spec, pela porta do
-    /// `pending --add`, ligada à spec do checkout; a sobra com o título de
-    /// uma pendência aberta devolve a aberta, sem duplicar. A sobra sem
-    /// título é recusada na gravação, com o texto combinado, e nada é
-    /// gravado.
+    /// Toda sobra da volta assumida vira tarefa da spec, no backlog e sem
+    /// onda, sem pergunta: a sem `kind`, a `cosmetic`, a `breaks` e a de um
+    /// `kind` que a volta antiga ainda traga, que é aceita e fica sem ele. A
+    /// tarefa leva o título, o detalhe, o autor da onda e o arquivo que o
+    /// detalhe cita e que existe. A lista de pendências do projeto não ganha
+    /// item nenhum, nem com a sobra que repete o título de uma pendência já
+    /// aberta, e o fechamento não ganha pendência nova a perguntar. A sobra sem
+    /// título é recusada na gravação, com o texto combinado, e nada é gravado.
     #[test]
-    fn a_sobra_relatada_pela_onda_vira_pendencia_da_spec() {
+    fn every_leftover_becomes_a_spec_task_and_the_pending_list_gains_nothing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/c.rs"), "fn tres() {}\n").unwrap();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         git_at(root, &["checkout", "-q", "-b", "feature/x"]);
         round(root, "x", None);
-        let add = |title: &str| {
-            pending_at(&PendingOpts {
-                root: root.to_path_buf(),
-                add: true,
-                title: Some(title.to_string()),
-                detail: Some("Já estava aberta.".to_string()),
-                ..PendingOpts::default()
-            })
+        let open = pending_at(&PendingOpts {
+            root: root.to_path_buf(),
+            add: true,
+            title: Some("A busca ignora acento".to_string()),
+            detail: Some("Já estava aberta.".to_string()),
+            ..PendingOpts::default()
+        });
+        assert_eq!(open["ok"], json!(true), "{open}");
+        let ledger = || {
+            let listed = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+            (listed["open"].clone(), listed["closed"].clone())
         };
-        let open = add("A busca ignora acento");
-        let open_id = open["id"].as_str().unwrap_or_else(|| panic!("{open}")).to_string();
+        let born = || -> Vec<String> {
+            crate::commands::event::pending::open_pending_born_in(root, "x").into_iter().map(|p| p.title).collect()
+        };
+        let (ledger_before, born_before) = (ledger(), born());
+        assert_eq!(born_before, ["A busca ignora acento"], "a aberta antes da volta nasceu na spec");
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
         let before = spec_lines(root);
@@ -3613,120 +3616,57 @@ mod tests {
         );
         assert_eq!(spec_lines(root), before, "nada foi gravado: {untitled}");
 
+        let cites = "Sem o índice, `src/c.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
         let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
                 {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
-                {"title": "a busca ignora ACENTO", "detail": "Achei de novo."},
-            ]}));
-        assert_eq!(wrote["ok"], json!(true), "{wrote}");
-        let out = round(root, "x", None);
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let opened: Vec<&Value> =
-            out["recorded"].as_array().map(|all| all.iter().filter(|r| r["type"] == json!("pending")).collect()).unwrap_or_default();
-        assert_eq!(opened.len(), 2, "{out}");
-        let new_id = opened[0]["id"].as_str().unwrap_or_default().to_string();
-        assert_ne!(new_id, open_id, "{out}");
-        assert!(opened[0]["question"].as_str().unwrap_or_default().contains("O log não gira"), "{out}");
-        assert_eq!((opened[1]["id"].as_str(), opened[1]["open"].as_bool()), (Some(open_id.as_str()), Some(true)), "{out}");
-
-        let listed = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
-        let titles: Vec<String> = listed["open"]
-            .as_array()
-            .map(|all| all.iter().filter_map(|i| i["title"].as_str().map(str::to_string)).collect())
-            .unwrap_or_default();
-        assert_eq!(titles, ["A busca ignora acento", "O log não gira"], "{listed}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let number: u64 = new_id.trim_start_matches("P-").parse().unwrap();
-        assert!(
-            log.visible().iter().any(|e| e.event_type == "deferred" && e.int("pending") == Some(number)),
-            "a pendência nova fica ligada à spec"
-        );
-    }
-
-    /// A volta de uma onda com três sobras, assumida pela rodada: a que
-    /// quebra vira tarefa da spec no backlog, com o arquivo que o detalhe
-    /// cita e que existe, sem pergunta; a cosmética vira pendência do
-    /// projeto, na lista de depois, com a onda que a apontou e sem pergunta;
-    /// a sem `kind` vira pendência da spec com a pergunta de destino. A volta
-    /// com um `kind` de outro valor é recusada na gravação, e nada é gravado.
-    #[test]
-    fn a_breaking_leftover_becomes_a_task_and_a_cosmetic_one_goes_to_the_later_list_without_a_question() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/c.rs"), "fn tres() {}\n").unwrap();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
-        round(root, "x", None);
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
-
-        let before = spec_lines(root);
-        let odd = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
-            "commit": "a soma sai", "leftovers": [
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
-                {"title": "Depois eu vejo", "detail": "Talvez.", "kind": "later"},
-            ]}));
-        assert_eq!(odd["reason"], json!("invalid-value"), "{odd}");
-        let hint = odd["hint"].as_str().unwrap_or_default();
-        for said in ["leftovers[2].kind", "breaks", "cosmetic"] {
-            assert!(hint.contains(said), "a recusa não diz `{said}`: {odd}");
-        }
-        assert_eq!(spec_lines(root), before, "nada foi gravado: {odd}");
-
-        let breaks = "Sem o índice, `src/c.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
-        let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
-            "commit": "a soma sai", "leftovers": [
-                {"title": "A leitura para sem o índice", "detail": breaks, "kind": "breaks"},
                 {"title": "O nome da variável confunde", "detail": "Um nome mais claro.", "kind": "cosmetic"},
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
+                {"title": "A leitura para sem o índice", "detail": cites, "kind": "breaks"},
+                {"title": "a busca ignora ACENTO", "detail": "Achei de novo.", "kind": "later"},
             ]}));
-        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        assert_eq!(wrote["ok"], json!(true), "a volta com `kind` de qualquer valor é aceita: {wrote}");
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         let recorded = |kind: &str| -> Vec<Value> {
             out["recorded"].as_array().into_iter().flatten().filter(|r| r["type"] == json!(kind)).cloned().collect()
         };
+        assert!(recorded("pending").is_empty(), "a rodada não abre pendência: {out}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let tasks = recorded("task");
-        assert_eq!(tasks.len(), 1, "{out}");
-        assert_eq!(tasks[0]["wave"], json!(1), "{out}");
-        let task = log.get(tasks[0]["id"].as_u64().unwrap()).unwrap_or_else(|| panic!("{out}"));
-        assert_eq!(task.wave(), None, "a tarefa fica no backlog, sem onda: {:?}", task.fields);
-        assert_eq!(task.fields["title"], json!("A leitura para sem o índice"), "{:?}", task.fields);
-        assert_eq!(task.fields["text"], json!(breaks), "{:?}", task.fields);
-        assert_eq!(task.fields["files"], json!([{"path": "src/c.rs"}]), "{:?}", task.fields);
-        assert_eq!(task.fields["depends_on"], json!([]), "{:?}", task.fields);
-        assert_eq!(task.fields["author"], json!("wave"), "{:?}", task.fields);
-
-        let pendings = recorded("pending");
-        assert_eq!(pendings.len(), 2, "{out}");
-        let (cosmetic, unsorted) = (&pendings[0], &pendings[1]);
-        assert!(cosmetic.get("question").is_none(), "a cosmética não pergunta: {out}");
-        assert_eq!(cosmetic["owner"], json!("project"), "{out}");
-        assert!(unsorted["question"].as_str().unwrap_or_default().contains("O log não gira"), "{out}");
-
-        let listed = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
-        let item = |title: &str| {
-            listed["open"].as_array().into_iter().flatten().find(|i| i["title"] == json!(title)).cloned()
-        };
-        assert!(item("A leitura para sem o índice").is_none(), "a que quebra não vira pendência: {listed}");
-        let later = item("O nome da variável confunde").unwrap_or_else(|| panic!("{listed}"));
-        assert_eq!(later["owner"], json!("project"), "{listed}");
-        assert_eq!(later["later"], json!("cosmética, apontada pela onda 1"), "{listed}");
-        let asked: Vec<String> = crate::commands::event::pending::open_pending_born_in(root, "x")
-            .into_iter()
-            .map(|p| p.title)
+        let tasks: Vec<SpecEvent> = recorded("task")
+            .iter()
+            .map(|r| {
+                assert_eq!(r["wave"], json!(1), "{out}");
+                log.get(r["id"].as_u64().unwrap()).cloned().unwrap_or_else(|| panic!("{out}"))
+            })
             .collect();
-        assert_eq!(asked, ["O log não gira"], "só a sem `kind` espera a pergunta de destino: {listed}");
+        let titles: Vec<&str> = tasks.iter().filter_map(|t| t.fields["title"].as_str()).collect();
+        assert_eq!(
+            titles,
+            ["O log não gira", "O nome da variável confunde", "A leitura para sem o índice", "a busca ignora ACENTO"],
+            "{out}"
+        );
+        for task in &tasks {
+            assert_eq!(task.wave(), None, "a tarefa fica no backlog, sem onda: {:?}", task.fields);
+            assert_eq!(task.fields["depends_on"], json!([]), "{:?}", task.fields);
+            assert_eq!(task.fields["author"], json!("wave"), "{:?}", task.fields);
+            assert!(!task.fields.contains_key("kind"), "o `kind` da volta fica de fora: {:?}", task.fields);
+        }
+        assert_eq!(tasks[1].fields["text"], json!("Um nome mais claro."), "{:?}", tasks[1].fields);
+        assert_eq!(tasks[2].fields["text"], json!(cites), "{:?}", tasks[2].fields);
+        assert_eq!(tasks[2].fields["files"], json!([{"path": "src/c.rs"}]), "{:?}", tasks[2].fields);
+        assert_eq!(tasks[0].fields["files"], json!([]), "{:?}", tasks[0].fields);
+
+        assert_eq!(ledger(), ledger_before, "a lista de pendências do projeto não ganha item");
+        assert_eq!(born(), born_before, "nenhuma pendência nova espera a pergunta do fechamento");
     }
 
-    /// A sobra que quebra, apontada por uma onda com critério, vira tarefa
-    /// que cobre os critérios dessa onda; na rodada seguinte, a onda do
+    /// A sobra apontada por uma onda com critério vira tarefa que cobre os
+    /// critérios dessa onda; na rodada seguinte, a onda do
     /// conserto nasce do backlog com esses critérios e com a prova deles no
     /// pronta-quando, e sai no despacho sem recusa.
     #[test]
-    fn the_fix_task_of_a_breaking_leftover_covers_the_criteria_of_the_wave_that_found_it() {
+    fn the_fix_task_of_a_leftover_covers_the_criteria_of_the_wave_that_found_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -3740,7 +3680,7 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
         let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
-                {"title": "A leitura para sem o índice", "detail": "Sem o índice, `src/c.rs` para.", "kind": "breaks"},
+                {"title": "A leitura para sem o índice", "detail": "Sem o índice, `src/c.rs` para."},
             ]}));
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
         let out = round(root, "x", None);
@@ -3751,7 +3691,7 @@ mod tests {
             .flatten()
             .find(|r| r["type"] == json!("task"))
             .and_then(|r| r["id"].as_u64())
-            .unwrap_or_else(|| panic!("a sobra que quebra não virou tarefa: {out}"));
+            .unwrap_or_else(|| panic!("a sobra não virou tarefa: {out}"));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let task = log.get(task_id).unwrap();
         assert_eq!(task.fields["covers"], json!([crit]), "a tarefa cobre os critérios da onda 1: {:?}", task.fields);
@@ -3774,9 +3714,9 @@ mod tests {
         assert_eq!(fix.fields["order"], json!([task_id]), "{:?}", fix.fields);
     }
 
-    /// A sobra que quebra, apontada por uma onda sem critério, vira tarefa
-    /// sem `covers`; a de uma onda com critério leva os da versão atual da
-    /// onda, não os da versão que ela substituiu.
+    /// A sobra apontada por uma onda sem critério vira tarefa sem `covers`;
+    /// a de uma onda com critério leva os da versão atual da onda, não os da
+    /// versão que ela substituiu.
     #[test]
     fn the_fix_task_follows_the_current_criteria_of_the_wave_and_goes_without_covers_when_it_has_none() {
         let dir = tempdir().unwrap();
@@ -3793,7 +3733,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n"),
         );
-        let leftover = Leftover { title: "Quebra".into(), detail: "Sem índice.".into(), kind: Some(LeftoverKind::Breaks) };
+        let leftover = Leftover { title: "Quebra".into(), detail: "Sem índice.".into() };
         let task = leftover_task(dir.path(), &log, 1, &leftover);
         assert_eq!(task.get("covers"), Some(&json!([1, 2])), "{task:?}");
         let task = leftover_task(dir.path(), &log, 2, &leftover);

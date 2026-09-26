@@ -118,9 +118,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
         // Trackable `## Checklist` item label (`spec_draft::build_checklist`).
         // `first_task` is the single hand-trackable task the draft seeds; the
-        // draft no longer materialises per-anchor `touch_file` items (a digest
-        // anchor is a READ candidate, never an implementation target — seeding
-        // write-tracking from it baked lexical noise into the artifact).
+        // draft no longer materialises per-anchor `touch_file` items (a file
+        // the map points at is a READ candidate, never an implementation
+        // target — seeding write-tracking from it baked lexical noise into the
+        // artifact).
         ("checklist.first_task", Locale::PtBr) => "T1 — primeira tarefa rastreável.",
         ("checklist.first_task", Locale::EnUs) => "T1 — first trackable task.",
 

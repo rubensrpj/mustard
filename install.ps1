@@ -146,7 +146,7 @@ if (-not $SkipBuild) {
     Write-Host "    CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR (shared cache — later runs are incremental)"
     try {
         # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
-        # (Scan::locate), and the digest/facts projections depend on it.
+        # (Scan::locate), and the facts projection depends on it.
         Install-Bin $ScanExe      (Join-Path $Root 'apps\scan')      'scan'
         Install-Bin $RtExe        (Join-Path $Root 'apps\rt')        'mustard-rt'
         Install-Bin $MustardExe   (Join-Path $Root 'apps\cli')       'mustard'

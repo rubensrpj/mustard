@@ -1,9 +1,7 @@
 # Snowball English stop-word list, vendored as DATA.
 # Source: https://snowballstem.org/algorithms/english/stop.txt (BSD-3-Clause).
 # Comments were stripped; one word per line. Lines starting with # are ignored.
-# These are NATURAL-language function words filtered from QUERY tokens only —
-# the identifier-glue list stays in stopwords.toml. A new language is one file
-# here plus one data row in src/stemmers.rs (the approved carve-out mirror).
+# These are NATURAL-language function words, filtered from query tokens only.
 i
 me
 my

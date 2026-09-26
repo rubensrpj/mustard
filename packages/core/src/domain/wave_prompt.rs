@@ -73,10 +73,12 @@ pub struct Skill {
     pub name: String,
     /// Quando usar, na própria descrição da skill.
     pub when: String,
-    /// O caminho do arquivo, a partir da raiz do projeto.
+    /// O caminho absoluto do arquivo no projeto principal, com barras
+    /// normais: a pasta das skills fica fora do git, e a cópia da onda não a
+    /// tem.
     pub path: String,
-    /// `true` quando um dos exemplos que a skill usa mudou depois dela: o
-    /// pedido a marca como a revisar.
+    /// `true` quando um dos arquivos que a skill cita teve commit depois da
+    /// data do arquivo dela: o pedido a marca como a revisar.
     pub stale: bool,
 }
 
@@ -1919,8 +1921,8 @@ mod tests {
     }
 
     /// Cada skill nomeada entra no pedido como uma linha — nome, quando usar e
-    /// o caminho do arquivo —, sem o texto dela, e a skill cujo exemplo mudou
-    /// depois dela sai marcada como a revisar.
+    /// o caminho do arquivo —, sem o texto dela, e a skill cujo arquivo
+    /// citado mudou depois dela sai marcada como a revisar.
     #[test]
     fn a_named_skill_is_recommended_by_path_and_a_stale_one_is_marked() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
@@ -1929,19 +1931,19 @@ mod tests {
             Skill {
                 name: "add-run-command".into(),
                 when: "acrescentar um comando run".into(),
-                path: "apps/rt/.claude/skills/add-run-command/SKILL.md".into(),
+                path: "/home/ana/loja/apps/rt/.claude/skills/add-run-command/SKILL.md".into(),
                 stale: false,
             },
             Skill {
                 name: "add-hook-rule".into(),
                 when: "acrescentar uma regra de gancho".into(),
-                path: ".claude/skills/add-hook-rule/SKILL.md".into(),
+                path: "/home/ana/loja/.claude/skills/add-hook-rule/SKILL.md".into(),
                 stale: true,
             },
         ];
         let prompt = build(&m, Locale::PtBr);
         assert!(
-            prompt.text.contains("`apps/rt/.claude/skills/add-run-command/SKILL.md`"),
+            prompt.text.contains("`/home/ana/loja/apps/rt/.claude/skills/add-run-command/SKILL.md`"),
             "{}",
             prompt.text
         );

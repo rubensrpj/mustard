@@ -18,9 +18,9 @@
 (struct_declaration name: (identifier) @name) @definition.struct
 (enum_declaration name: (identifier) @name) @definition.enum
 
-; Members — methods, properties, fields, enum members. Member kinds feed the
-; digest's domain-term index only: the miner's significance gate (mine.rs)
-; is kind-based and never sees them. Derived from the upstream
+; Members — methods, properties, fields, enum members. Member kinds reach the
+; map with the file's other declarations: the miner's significance gate
+; (mine.rs) is kind-based and never sees them. Derived from the upstream
 ; tree-sitter-c-sharp tags.scm (MIT) — see queries/README.md.
 (method_declaration name: (identifier) @name) @definition.method
 (property_declaration name: (identifier) @name) @definition.property

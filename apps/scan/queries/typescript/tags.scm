@@ -39,8 +39,8 @@
   (#not-match? @value "=>"))
 
 ; Members — methods (class + interface), class fields, interface properties,
-; enum members. Member kinds feed the digest's domain-term index only: the
-; miner's significance gate (mine.rs) is kind-based and never sees them.
+; enum members. Member kinds reach the map with the file's other declarations:
+; the miner's significance gate (mine.rs) is kind-based and never sees them.
 ; Derived from the upstream tree-sitter-typescript tags.scm (MIT) — see
 ; queries/README.md. A plain enum member is the enum_body's own `name` field;
 ; an initialized one is an enum_assignment.

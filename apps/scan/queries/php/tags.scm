@@ -28,9 +28,9 @@
 (namespace_use_declaration type: _
   body: (namespace_use_group (namespace_use_clause [(qualified_name (name) @imported) (name) @imported])))
 
-; Members — methods, typed properties, enum cases. Member kinds feed the
-; digest's domain-term index only: the miner's significance gate (mine.rs) is
-; kind-based and never sees them. The method tag follows the upstream
+; Members — methods, typed properties, enum cases. Member kinds reach the map
+; with the file's other declarations: the miner's significance gate (mine.rs)
+; is kind-based and never sees them. The method tag follows the upstream
 ; tree-sitter-php tags.scm (MIT) — see queries/README.md.
 (method_declaration name: (name) @name) @definition.method
 (property_declaration (property_element name: (variable_name (name) @name))) @definition.property
