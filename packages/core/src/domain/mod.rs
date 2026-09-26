@@ -20,4 +20,5 @@ pub mod spec_state;
 pub mod survey;
 pub mod mustard_id;
 pub mod project_map;
+pub mod map_filter;
 pub mod wave_prompt;

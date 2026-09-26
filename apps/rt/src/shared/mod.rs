@@ -29,6 +29,9 @@
 //!   API over an injectable transport, the PAT from `AZURE_DEVOPS_EXT_PAT` or
 //!   the git credential vault, every URL derived from the `origin` remote —
 //!   and deliberately no merge operation.
+//! - [`jev`] — the map-search filter over the Jev paid service, behind the
+//!   core's `MapFilter` port: candidates in parallel groups, the core's cut,
+//!   and the machine-wide key that never leaves the `Authorization` header.
 //! - [`proc`] — signal-free, cross-platform process primitives (the liveness
 //!   probe) plus [`proc::run_shell_with_deadline`]
 //!   — the ONE shell-command runner that drains both pipes concurrently and
@@ -50,6 +53,10 @@ pub mod context;
 // O backlog ainda não tem chamador: o allow sai com o primeiro (próxima onda).
 #[allow(dead_code)]
 pub mod dag;
+// O filtro pago da busca do mapa: sem chamador até a busca o ligar; o allow
+// sai com o primeiro.
+#[allow(dead_code)]
+pub mod jev;
 // The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod paths;
 pub mod pr_azure;
