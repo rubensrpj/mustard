@@ -919,10 +919,20 @@ pub(super) fn run_entered_round(
 /// acabou de mudar — um corpo que descreve a rodada anterior é pior do que
 /// nenhum, e foi por isso que existiu um portão só para reparar que ele tinha
 /// envelhecido.
+///
+/// A ordem por extenso vai para a pasta da cópia antes de soltar a trava em
+/// que a cópia foi preparada: a rodada que roda ao mesmo tempo começa a
+/// preparação dela apagando essa pasta, e acharia ali o arquivo sendo
+/// gravado.
 fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, lang: Locale) {
-    let prepared = crate::commands::spec_events::pages::copy::prepare(root, spec, lang);
-    crate::commands::spec_events::pages::end_milestone(out, prepared.as_ref(), spec, "round", then, lang);
-    shorten_publish_order(root, spec, out, then, lang);
+    use crate::commands::spec_events::pages::{copy, end_milestone};
+    let prepared = copy::prepare_then(root, spec, lang, |prepared| {
+        end_milestone(out, Ok(prepared), spec, "round", then, lang);
+        shorten_publish_order(root, spec, out, then, lang);
+    });
+    if let Err(refusal) = prepared {
+        end_milestone(out, Err(&refusal), spec, "round", then, lang);
+    }
     if let Some(number) = rewrite_open_pr(root, spec) {
         out["pr"] = json!({ "number": number, "body": "rewritten" });
     }

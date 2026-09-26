@@ -109,9 +109,11 @@
 //! para ela.
 //!
 //! A preparação inteira — ler o arquivo de eventos, apagar a cópia anterior e
-//! gravar os arquivos novos — acontece com a trava do arquivo de eventos
+//! gravar os arquivos novos, inclusive a ordem por extenso que a rodada deixa
+//! na pasta ([`prepare_then`]) — acontece com a trava do arquivo de eventos
 //! presa: duas rodadas ao mesmo tempo nunca misturam os arquivos de uma com os
-//! da outra, e nenhuma gravação entra no meio.
+//! da outra, nenhuma gravação entra no meio, e a que apaga a pasta nunca acha
+//! nela um arquivo que a outra ainda está gravando.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -211,9 +213,27 @@ pub(crate) struct Target {
 /// A recusa do nome da spec, a da spec sem arquivo de eventos e a falha de
 /// gravação dos arquivos.
 pub(crate) fn prepare(root: &Path, spec: &str, lang: Locale) -> Result<Prepared, Refusal> {
+    prepare_then(root, spec, lang, |_| ()).map(|(prepared, ())| prepared)
+}
+
+/// [`prepare`], e depois `finish` com a cópia preparada, ainda com a trava
+/// do arquivo de eventos presa: o que mais vai para a pasta da cópia, como a
+/// ordem por extenso que a rodada deixa ali, entra no mesmo trecho que a
+/// apaga e a grava de novo. A preparação de outra rodada, que começa
+/// apagando a pasta, nunca acha ali um arquivo sendo gravado.
+///
+/// # Errors
+///
+/// As recusas de [`prepare`]; `finish` só roda quando a cópia foi preparada.
+pub(crate) fn prepare_then<R>(
+    root: &Path,
+    spec: &str,
+    lang: Locale,
+    finish: impl FnOnce(&Prepared) -> R,
+) -> Result<(Prepared, R), Refusal> {
     let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
     let spec_paths = paths.for_spec(spec.trim()).map_err(|_| Refusal::BadSpecName { spec: spec.to_string() })?;
-    prepare_in(root, spec, &spec_paths.spec_ndjson_path(), spec_paths.dir().join(FOLDER), lang)
+    prepare_in(root, spec, &spec_paths.spec_ndjson_path(), spec_paths.dir().join(FOLDER), lang, finish)
 }
 
 /// A cópia de um marco da spec `spec`, lida do arquivo de eventos
@@ -232,18 +252,20 @@ pub(crate) fn prepare_milestone_at(
     copy_folder: PathBuf,
     lang: Locale,
 ) -> Result<Prepared, Refusal> {
-    prepare_in(root, spec, spec_ndjson, copy_folder, lang)
+    prepare_in(root, spec, spec_ndjson, copy_folder, lang, |_| ()).map(|(prepared, ())| prepared)
 }
 
-/// O núcleo de [`prepare`] e [`prepare_milestone_at`]: lê `spec_ndjson` com a
-/// trava presa e grava os lotes em `copy_folder`.
-fn prepare_in(
+/// O núcleo de [`prepare_then`] e [`prepare_milestone_at`]: lê `spec_ndjson`
+/// com a trava presa, grava os lotes em `copy_folder` e roda `finish` antes
+/// de soltar a trava.
+fn prepare_in<R>(
     root: &Path,
     spec: &str,
     spec_ndjson: &Path,
     copy_folder: PathBuf,
     lang: Locale,
-) -> Result<Prepared, Refusal> {
+    finish: impl FnOnce(&Prepared) -> R,
+) -> Result<(Prepared, R), Refusal> {
     let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
     // O rtk roda antes da trava: ninguém espera por ele para gravar.
     let rtk = super::rtk_days(root);
@@ -255,8 +277,13 @@ fn prepare_in(
     let others =
         if template_project_url(&index).is_some() { other_project_logs(root, spec.trim()) } else { Vec::new() };
     let place = Place { root, spec: spec.trim(), folder: copy_folder, index };
-    store::with_locked_log(spec_ndjson, |log| build(&place, log, &rtk, &others, lang))?
-        .unwrap_or_else(|| Err(Refusal::NoSpecFile { spec: spec.trim().to_string() }))
+    store::with_locked_log(spec_ndjson, |log| {
+        build(&place, log, &rtk, &others, lang).map(|prepared| {
+            let finished = finish(&prepared);
+            (prepared, finished)
+        })
+    })?
+    .unwrap_or_else(|| Err(Refusal::NoSpecFile { spec: spec.trim().to_string() }))
 }
 
 /// Onde a cópia de uma spec é preparada.
@@ -1393,6 +1420,31 @@ mod tests {
             "origin": said}));
         crate::shared::spec_state::approve_in(&root.join(".claude/spec/x"));
         dir
+    }
+
+    /// O passo que fecha a preparação roda com a trava do arquivo de eventos
+    /// ainda presa: ali dentro, outro manipulador não consegue pegá-la, e
+    /// logo depois consegue. É nesse passo que a rodada grava a ordem por
+    /// extenso na pasta da cópia, que a preparação de outra rodada começa
+    /// apagando.
+    #[test]
+    fn the_step_that_closes_the_preparation_runs_with_the_lock_held() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        write(root, "message", json!({"author": "user", "text": "o objetivo"}));
+        let events = root.join(".claude").join("spec").join("x").join("spec.ndjson");
+        let free = || {
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(&events).expect("the event file");
+            file.try_lock().is_ok()
+        };
+
+        let (prepared, free_inside) =
+            prepare_then(root, "x", Locale::PtBr, |_| free()).expect("the copy is prepared");
+        assert!(!free_inside, "the closing step ran after the lock was released");
+        assert!(root.join(&prepared.folder).join(SPEC_RECORD).is_file(), "the copy is in its folder");
+        assert!(free(), "the lock is released once the preparation ends");
     }
 
     /// O que a conversa faz com a ordem de um marco: publica cada página que
