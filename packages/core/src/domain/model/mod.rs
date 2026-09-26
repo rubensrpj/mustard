@@ -13,8 +13,6 @@
 //!   hook module depends on it.
 //! - [`pipeline`] — `pipeline-state` types ([`pipeline::PipelineState`],
 //!   [`pipeline::Phase`], [`pipeline::Scope`]).
-//! - [`provenance`] — the managed-artifact manifest
-//!   ([`provenance::ArtifactManifest`], [`provenance::ArtifactRecord`]).
 //! - [`view`] — typed `ViewModels` for the SDD domain layer: `SpecView`,
 //!   `WaveView`, `QualityRollup`, `WorkspaceSummary`, and the `SpecReader`
 //!   filter/window types.
@@ -22,7 +20,6 @@
 pub mod contract;
 pub mod event;
 pub mod pipeline;
-pub mod provenance;
 pub mod view;
 
 
