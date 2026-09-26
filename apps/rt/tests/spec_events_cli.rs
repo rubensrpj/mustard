@@ -845,3 +845,80 @@ fn o_item_com_dono_pelos_arquivos_vai_no_pedido_da_onda_que_toca_neles() {
     assert!(prompt(1).contains(&decision), "a onda que toca a1.rs leva a decisão: {}", prompt(1));
     assert!(!prompt(2).contains(&decision), "a onda que não toca fica sem ela: {}", prompt(2));
 }
+
+/// Cada item forma uma fila de versões, e a versão nova só entra no fim dela.
+/// Com a versão 2 no lugar da 1, gravar outra versão sobre a 1 é recusado sem
+/// gravar nada, e a recusa diz a 2 pelo código e pelo número; sobre a 2
+/// passa. Pelo código, a gravação vai à vigente. Uma lista com um alvo já
+/// substituído é recusada. O arquivo antigo que já tem duas pontas no mesmo
+/// item continua sendo lido, com as duas.
+#[test]
+fn a_new_version_over_a_replaced_version_is_refused_and_names_the_current_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let decision = |text: &str, replaces: Option<Value>| {
+        let mut body = json!({"title": "Guardar a conta", "agent": "- conferir pelo teste", "text": text,
+            "keys": ["conta"], "why": "o usuário disse", "origin": msg});
+        if let Some(replaces) = replaces {
+            body["replaces"] = replaces;
+        }
+        body
+    };
+    let written = |body: &Value| {
+        let (code, out) = write_out(root, "decision", body);
+        assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "{out}");
+        (out["id"].as_u64().expect("o número"), out["code"].as_str().expect("o código").to_string())
+    };
+    let refused = |body: &Value, current: &str, why: &str| {
+        let before = event_lines(root);
+        let (code, out) = write_out(root, "decision", body);
+        assert_eq!((code, &out["reason"]), (Some(1), &json!("replaces-superseded")), "{why}: {out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(current), "{why}: a recusa diz a vigente {current}: {hint}");
+        assert_eq!(event_lines(root), before, "{why}: nada foi gravado");
+    };
+
+    let (v1, item) = written(&decision("A conta fica no arquivo.", None));
+    let (v2, same) = written(&decision("A conta fica no arquivo, revista.", Some(json!(v1))));
+    assert_eq!(same, item, "a versão nova guarda o código do item");
+    refused(&decision("A conta, pela versão velha.", Some(json!(v1))), &format!("{item} ({v2})"), "sobre a 1");
+    let (v3, _) = written(&decision("A conta, sobre a vigente.", Some(json!(v2))));
+
+    let (v4, _) = written(&decision("A conta, pelo código.", Some(json!(item))));
+    let agreed = read(root, "agreed");
+    let saved = agreed["events"].as_array().expect("events").iter().find(|e| e["id"] == json!(v4)).cloned();
+    assert_eq!(saved.map(|e| e["replaces"].clone()), Some(json!(v3)), "pelo código vai à vigente: {agreed}");
+
+    let (other, _) = written(&decision("Outra conta.", None));
+    refused(&decision("As duas contas.", Some(json!([other, v2]))), &format!("{item} ({v4})"), "lista com a 2");
+    written(&decision("As duas contas.", Some(json!([other, v4]))));
+
+    // O arquivo gravado antes da recusa, com duas versões sobre a mesma: a
+    // leitura mostra as duas pontas, sem recusar nada.
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let mut content = std::fs::read_to_string(&path).expect("the event file");
+    let last = content.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()?["id"].as_u64()).max();
+    let base = last.expect("o último número") + 1;
+    for (id, text, replaces) in [(base, "Base.", None), (base + 1, "Ponta um.", Some(base)), (base + 2, "Ponta dois.", Some(base))] {
+        let mut line = json!({"v": 1, "id": id, "code": "MSTD-DEC-0099", "at": "2026-09-26T08:00:00-03:00",
+            "type": "decision", "author": "assistant", "title": "Duas pontas", "agent": "- ler", "text": text,
+            "keys": ["k"], "why": "w", "origin": msg});
+        if let Some(old) = replaces {
+            line["replaces"] = json!(old);
+        }
+        content.push_str(&line.to_string());
+        content.push('\n');
+    }
+    std::fs::write(&path, content).expect("the old event file");
+    let agreed = read(root, "agreed");
+    let tips: Vec<u64> = agreed["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter(|e| e["code"] == json!("MSTD-DEC-0099"))
+        .filter_map(|e| e["id"].as_u64())
+        .collect();
+    assert_eq!(tips, vec![base + 1, base + 2], "as duas pontas seguem na leitura: {agreed}");
+}

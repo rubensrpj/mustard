@@ -86,8 +86,9 @@ pub struct Effects {
 }
 
 /// Confere o evento contra o arquivo como está: cada número que `replaces`
-/// aponta, um só ou a lista, existe e é do mesmo tipo; os alvos de `remove` e `purge` existem; o
-/// filtro de `remove` acha pelo menos um evento anterior.
+/// aponta, um só ou a lista, existe, é do mesmo tipo e é a versão vigente do
+/// item; os alvos de `remove` e `purge` existem; o filtro de `remove` acha
+/// pelo menos um evento anterior.
 ///
 /// No ponto do levantamento: o `closes` aponta um ponto aberto, por qualquer
 /// versão dele (a versão nova de um fechamento continua fechando o mesmo
@@ -116,6 +117,20 @@ pub fn check_against(
                 id: old,
                 found: previous.event_type.clone(),
                 event_type: event_type.to_string(),
+            });
+        }
+        // A versão nova só substitui a vigente: substituir uma versão que já
+        // tem sucessora dividiria o item em duas pontas, e cada leitura
+        // seguiria uma. A recusa diz a vigente, para quem grava reler e
+        // gravar por cima dela. Sem versão vigente, com o item fora da
+        // leitura, nada se divide.
+        if let Some(current) = log.current(old).filter(|current| current.id != old) {
+            return Err(Refusal::ReplacesSuperseded {
+                id: old,
+                current: log.codes().get(&current.id).map_or_else(
+                    || current.id.to_string(),
+                    |code| format!("{code} ({})", current.id),
+                ),
             });
         }
         // Basta uma versão substituída sem a forma para a emenda herdar a
@@ -342,5 +357,50 @@ mod tests {
             checked("remove", json!({"targets": ["R2"], "reason": "r"})).unwrap_err(),
             Refusal::InvalidValue { ref field, expected: Kind::Refs, .. } if field == "targets"
         ));
+    }
+
+    /// Com a versão 2 no lugar da 1, a versão nova sobre a 1 é recusada, e a
+    /// recusa diz a 2 pelo código e pelo número, nos dois idiomas; sobre a 2
+    /// passa. Na lista, basta um alvo já substituído para recusar. O tipo sem
+    /// código diz a vigente só pelo número, e o item que saiu inteiro da
+    /// leitura, sem versão vigente, não recusa.
+    #[test]
+    fn a_new_version_replaces_only_the_current_version_of_the_item() {
+        let log = parse_log(
+            &[
+                line(1, "rule", ",\"code\":\"MSTD-RULE-0001\""),
+                line(2, "rule", ",\"code\":\"MSTD-RULE-0001\",\"replaces\":1"),
+                line(3, "rule", ",\"code\":\"MSTD-RULE-0002\""),
+                line(4, "future_kind", ""),
+                line(5, "future_kind", ",\"replaces\":4"),
+                line(6, "rule", ",\"code\":\"MSTD-RULE-0003\""),
+                line(7, "rule", ",\"code\":\"MSTD-RULE-0003\",\"replaces\":6"),
+                line(8, "remove", ",\"targets\":[7],\"reason\":\"r\""),
+            ]
+            .concat(),
+        );
+        let over = |kind: &str, replaces: Value| {
+            check_against(&log, &obj(json!({"type": kind, "replaces": replaces})), 9)
+        };
+        let superseded = Refusal::ReplacesSuperseded { id: 1, current: "MSTD-RULE-0001 (2)".into() };
+
+        let refusal = over("rule", json!(1)).unwrap_err();
+        assert_eq!(refusal, superseded);
+        assert_eq!(refusal.reason(), "replaces-superseded");
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.contains("O evento 1 já foi substituído, e a versão vigente do item é MSTD-RULE-0001 (2)."), "{pt}");
+        let en = refusal.message(Locale::EnUs);
+        assert!(en.contains("Event 1 was already replaced, and the item's current version is MSTD-RULE-0001 (2)."), "{en}");
+        assert!(over("rule", json!(2)).is_ok(), "sobre a vigente passa");
+
+        assert_eq!(over("rule", json!([3, 1])).unwrap_err(), superseded, "um alvo substituído recusa a lista");
+        assert!(over("rule", json!([3, 2])).is_ok(), "a lista de vigentes passa");
+
+        assert_eq!(
+            over("future_kind", json!(4)).unwrap_err(),
+            Refusal::ReplacesSuperseded { id: 4, current: "5".into() },
+            "sem código, a vigente vai pelo número"
+        );
+        assert!(over("rule", json!(6)).is_ok(), "o item fora da leitura não tem vigente");
     }
 }

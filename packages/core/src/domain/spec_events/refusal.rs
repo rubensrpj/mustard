@@ -27,6 +27,11 @@ pub enum Refusal {
     /// pede: `found` é o tipo dele, `expected` o que o campo aceita.
     TargetOtherType { target: EventRef, found: String, expected: String },
     ReplacesOtherType { id: u64, found: String, event_type: String },
+    /// A versão nova aponta em `replaces` o evento `id`, que outra versão já
+    /// substituiu: gravá-la dividiria o item em duas pontas. `current` é a
+    /// versão vigente, pelo código e pelo número, ou só pelo número no tipo
+    /// sem código. Nada é gravado.
+    ReplacesSuperseded { id: u64, current: String },
     FilterMatchesNothing { event_type: String, from: String, to: String },
     UnknownBlock { found: String },
     BadSpecName { spec: String },
@@ -270,6 +275,7 @@ impl Refusal {
             Self::UnknownTarget { .. } => "unknown-target",
             Self::TargetOtherType { .. } => "target-other-type",
             Self::ReplacesOtherType { .. } => "replaces-other-type",
+            Self::ReplacesSuperseded { .. } => "replaces-superseded",
             Self::FilterMatchesNothing { .. } => "filter-matches-nothing",
             Self::UnknownBlock { .. } => "unknown-block",
             Self::BadSpecName { .. } => "bad-spec-name",
@@ -410,6 +416,10 @@ impl Refusal {
                     ("{found}", found.clone()),
                     ("{type}", event_type.clone()),
                 ],
+            ),
+            Self::ReplacesSuperseded { id, current } => fill(
+                "spec_events.replaces_superseded",
+                &[("{id}", id.to_string()), ("{current}", current.clone())],
             ),
             Self::FilterMatchesNothing { event_type, from, to } => fill(
                 "spec_events.filter_matches_nothing",

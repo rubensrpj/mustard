@@ -438,6 +438,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Event {id} is a {found}, and the new version came as {type}; it must have the same \
              type. Nothing was written."
         }
+        ("spec_events.replaces_superseded", Locale::PtBr) => {
+            "O evento {id} já foi substituído, e a versão vigente do item é {current}. Uma versão \
+             nova substitui só a vigente: releia-a e grave a versão nova por cima dela, com \
+             replaces apontando para ela. Nada foi gravado."
+        }
+        ("spec_events.replaces_superseded", Locale::EnUs) => {
+            "Event {id} was already replaced, and the item's current version is {current}. A new \
+             version replaces only the current one: read it again and write the new version over \
+             it, with replaces pointing at it. Nothing was written."
+        }
         ("spec_events.filter_matches_nothing", Locale::PtBr) => {
             "Nenhum evento {type} entre {from} e {to}. Nada foi gravado."
         }
@@ -841,8 +851,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            112,
-            0x7e22_93ac_f2ae_5820,
+            113,
+            0x981b_78e3_30d6_841f,
         );
     }
 
@@ -912,6 +922,7 @@ mod tests {
             ("spec_events.binary_only_field", &["{field}"][..]),
             ("spec_events.unknown_field", &["{type}", "{field}", "{fields}"][..]),
             ("spec_events.replaces_other_type", &["{id}", "{found}", "{type}"][..]),
+            ("spec_events.replaces_superseded", &["{id}", "{current}"][..]),
             ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
