@@ -14,6 +14,7 @@ mod ingest;
 mod manifests;
 mod mine;
 mod model;
+mod path_aliases;
 mod refresh;
 mod testmap;
 
@@ -149,6 +150,9 @@ struct Read {
     ing: ingest::Ingested,
     modules: Vec<Module>,
     packages: Vec<(String, String)>,
+    /// Os apelidos de pasta das configurações do projeto, lidos uma vez e
+    /// usados tanto nas importações quanto nos vínculos entre declarações.
+    aliases: path_aliases::PathAliases,
     graph: graph::GraphBuild,
 }
 
@@ -209,13 +213,14 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
     }
 
     let packages = graph::packages(&ing.manifests);
-    let graph = graph::build(&modules, &ing.go_module, &packages);
+    let aliases = path_aliases::PathAliases::load(&ing.root, &ing.walk_paths);
+    let graph = graph::build(&modules, &ing.go_module, &packages, &aliases);
     // The project files each module imports, from the same resolved edges the
     // graph counts — the answer to "who imports this file", read backwards.
     // Every resolved edge counts, a namespace import spread over several files
     // included: it is still an import of each of them.
     let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); modules.len()];
-    for (from, to, _) in graph::resolve_edges(&modules, &ing.go_module, &packages) {
+    for (from, to, _) in graph::resolve_edges(&modules, &ing.go_module, &packages, &aliases) {
         deps[from].insert(to);
     }
     let paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();
@@ -224,7 +229,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
         named.sort();
         m.deps = named;
     }
-    Ok(Read { ing, modules, packages, graph })
+    Ok(Read { ing, modules, packages, aliases, graph })
 }
 
 /// Deterministic stages (no synthesis, no AI): produce the project model, and
@@ -253,13 +258,13 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         }
         _ => (true, read_modules(root, None)?),
     };
-    let Read { ing, mut modules, packages, graph: (graph_stats, depth_by_path) } = read;
+    let Read { ing, mut modules, packages, aliases, graph: (graph_stats, depth_by_path) } = read;
 
     // The named edges between declarations: who calls or cites whom, in which
     // file and on which line. Read from the call sites and the citations every
     // module carries, so a pass that read only what changed links the same
     // declarations a full pass does.
-    graph::link_declarations(&mut modules, &ing.go_module, &packages, &ing.manifests);
+    graph::link_declarations(&mut modules, &ing.go_module, &packages, &ing.manifests, &aliases);
     let mined = mine::mine(&modules);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 

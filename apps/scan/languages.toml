@@ -35,6 +35,29 @@
 #                 the text; a self-closing tag with a value leaves the value
 #                 (`<see cref="Base"/>` reads `Base`). A `<...>` not named here
 #                 stays as written. Without the field, the comment is kept as is.
+#   import_extensions OPTIONAL — as extensões que o import da língua escreve no
+#                 lugar da do próprio arquivo (o import cita `x.js` para o
+#                 arquivo `x.ts`). O caminho importado só perde a última parte
+#                 depois do ponto quando ela é uma de `extensions` ou uma
+#                 destas; qualquer outro ponto é parte do nome
+#                 (`./order.service` cita `order.service.<ext>`, nunca
+#                 `order.<ext>`).
+#   alias_config  OPTIONAL — o nome do arquivo de configuração que declara os
+#                 apelidos de pasta dos imports da língua. O arquivo é JSON e
+#                 aceita comentário e vírgula sobrando. Cada arquivo lê o mais
+#                 próximo, subindo as pastas; o scan lê o projeto inteiro de
+#                 novo sempre que um arquivo com esse nome muda. As três chaves
+#                 abaixo apontam lugares dentro dele, em caminho com pontos:
+#   alias_base    OPTIONAL — a pasta de onde se leem os imports não relativos,
+#                 relativa à configuração que a declara;
+#   alias_paths   OPTIONAL — o objeto que liga um padrão de import (no máximo
+#                 um `*`) às pastas que ele representa, lidas a partir de
+#                 `alias_base` quando existe, senão da configuração que o
+#                 declara;
+#   alias_extends OPTIONAL — o caminho, ou a lista deles, das configurações de
+#                 que esta herda: a última da lista vence, e o próprio arquivo
+#                 vence todas. Só se segue caminho relativo dentro do projeto;
+#                 nome de pacote fica de fora.
 
 [[language]]
 name = "csharp"
@@ -53,12 +76,22 @@ name = "typescript"
 extensions = ["ts", "mts", "cts"]
 dir = "typescript"
 grammar = "grammar_ts::LANGUAGE_TYPESCRIPT"
+import_extensions = ["js", "mjs", "cjs", "jsx"]
+alias_config = "tsconfig.json"
+alias_base = "compilerOptions.baseUrl"
+alias_paths = "compilerOptions.paths"
+alias_extends = "extends"
 
 [[language]]
 name = "tsx"
 extensions = ["tsx"]
 dir = "typescript"
 grammar = "grammar_ts::LANGUAGE_TSX"
+import_extensions = ["js", "jsx", "mjs", "cjs"]
+alias_config = "tsconfig.json"
+alias_base = "compilerOptions.baseUrl"
+alias_paths = "compilerOptions.paths"
+alias_extends = "extends"
 
 [[language]]
 name = "python"

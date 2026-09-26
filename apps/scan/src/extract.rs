@@ -99,6 +99,53 @@ pub fn extensions(lang: &str) -> &'static [&'static str] {
     LANG_EXTENSIONS.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, exts)| *exts)
 }
 
+/// As extensões que o import da língua escreve no lugar da do próprio arquivo
+/// — dado do registro (`import_extensions` em languages.toml). Vazio quando a
+/// língua não declara nenhuma.
+pub fn import_extensions(lang: &str) -> &'static [&'static str] {
+    LANG_IMPORT_EXTENSIONS.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, exts)| *exts)
+}
+
+/// O valor de um campo de texto do registro para a língua; vazio sem o campo.
+fn text_field(table: &'static [(&'static str, &'static str)], lang: &str) -> &'static str {
+    table.iter().find(|(name, _)| *name == lang).map_or("", |(_, value)| *value)
+}
+
+/// O nome do arquivo de configuração dos apelidos de pasta da língua
+/// (`alias_config` em languages.toml); vazio quando a língua não tem.
+pub fn alias_config(lang: &str) -> &'static str {
+    text_field(LANG_ALIAS_CONFIG, lang)
+}
+
+/// A chave, em caminho com pontos, da pasta base dos imports não relativos
+/// (`alias_base` em languages.toml).
+pub fn alias_base(lang: &str) -> &'static str {
+    text_field(LANG_ALIAS_BASE, lang)
+}
+
+/// A chave, em caminho com pontos, do objeto de apelidos de pasta
+/// (`alias_paths` em languages.toml).
+pub fn alias_paths(lang: &str) -> &'static str {
+    text_field(LANG_ALIAS_PATHS, lang)
+}
+
+/// A chave, em caminho com pontos, da herança entre configurações
+/// (`alias_extends` em languages.toml).
+pub fn alias_extends(lang: &str) -> &'static str {
+    text_field(LANG_ALIAS_EXTENDS, lang)
+}
+
+/// As línguas que declaram arquivo de configuração de apelidos de pasta.
+pub fn alias_languages() -> impl Iterator<Item = &'static str> {
+    LANG_ALIAS_CONFIG.iter().filter(|(_, file)| !file.is_empty()).map(|(name, _)| *name)
+}
+
+/// Todos os nomes de arquivo de configuração de apelidos que o registro
+/// declara, sem repetição.
+pub fn alias_config_names() -> BTreeSet<&'static str> {
+    alias_languages().map(alias_config).collect()
+}
+
 /// Build one [`Analyzer`] per language declared in the registry. A language
 /// whose grammar/queries fail to compile is skipped with a warning rather than
 /// aborting the whole run.

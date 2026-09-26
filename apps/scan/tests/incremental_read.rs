@@ -108,3 +108,33 @@ fn a_second_pass_reads_only_the_changed_file_and_leaves_git_clean() {
     assert_eq!(git(&dir, &["status", "--porcelain"]), "");
 
 }
+
+/// Mudar só o arquivo de configuração dos apelidos de pasta faz a passada
+/// seguinte ler o projeto inteiro: o import que o apelido novo liga está num
+/// arquivo que não mudou, e ele passa a apontar para a pasta nova.
+#[test]
+fn changing_only_the_alias_configuration_reads_everything_again() {
+    let temp = tempfile::Builder::new().prefix("scan-incremental-alias-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
+    git(&dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+
+    write(&dir, "tsconfig.json", "{ \"compilerOptions\": { \"paths\": { \"@app/*\": [\"src/a/*\"] } } }\n");
+    write(&dir, "src/a/pedido.ts", "export const total = 1;\n");
+    write(&dir, "src/b/pedido.ts", "export const total = 2;\n");
+    write(&dir, "src/usa.ts", "import { total } from '@app/pedido';\n\nexport const x = total;\n");
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "first"]);
+    assert_eq!(scan(&dir, &[])["full"], json!(true));
+
+    write(&dir, "tsconfig.json", "{ \"compilerOptions\": { \"paths\": { \"@app/*\": [\"src/b/*\"] } } }\n");
+    git(&dir, &["commit", "-q", "-am", "second"]);
+    let second = scan(&dir, &[]);
+    assert_eq!(second["full"], json!(true), "{second}");
+    assert!(second["read"].as_array().unwrap().contains(&json!("src/usa.ts")), "{second}");
+
+    let model: Value = serde_json::from_slice(&std::fs::read(model_of(&dir)).unwrap()).unwrap();
+    let usa = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/usa.ts")).unwrap();
+    assert_eq!(usa["deps"], json!(["src/b/pedido.ts"]), "{usa}");
+}

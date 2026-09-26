@@ -28,7 +28,10 @@ use crate::model::{Module, ProjectModel};
 pub(crate) const FORMAT: &str = concat!(env!("CARGO_PKG_VERSION"), "+map-", env!("SCAN_MAP_DIGEST"));
 
 /// Files whose change alters how every other file is classified: when one of
-/// them changed, everything is read again.
+/// them changed, everything is read again. Os arquivos de configuração de
+/// apelidos de pasta que o registro declara entram pela mesma porta (ver
+/// [`only_or_full`]): um apelido novo liga citações que a passada anterior
+/// deixou fora do mapa.
 const GLOBAL_INPUTS: &[&str] = &[".gitattributes", ".editorconfig"];
 
 /// What a pass has to read.
@@ -142,11 +145,15 @@ pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>) -> Plan {
 }
 
 /// `Plan::Only(changed)`, unless a file whose change alters how every other
-/// file is classified is in it — then the whole project is read again.
+/// file is classified is in it — then the whole project is read again. O
+/// mesmo vale para um arquivo de configuração de apelidos de pasta, com o
+/// nome vindo do registro: a citação que só o apelido novo liga saiu do
+/// módulo na passada anterior, e só a leitura do arquivo a traz de volta.
 fn only_or_full(changed: BTreeSet<String>) -> Plan {
+    let alias_configs = crate::extract::alias_config_names();
     let global = changed.iter().any(|p| {
         let name = p.rsplit('/').next().unwrap_or(p);
-        GLOBAL_INPUTS.contains(&name)
+        GLOBAL_INPUTS.contains(&name) || alias_configs.contains(name)
     });
     if global {
         Plan::Full

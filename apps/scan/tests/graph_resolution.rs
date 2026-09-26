@@ -11,6 +11,10 @@
 //!     plus `graph_rust_external_std/`: an EXTERNAL `use std::collections::HashMap;`
 //!     beside an internal `src/collections.rs` — must yield ZERO edges (the
 //!     root-alias branch only runs for declared aliases like `crate`).
+//!     E `graph_typescript_aliases/`: import com ponto no nome
+//!     (`./pedido.service`), import com a extensão de saída
+//!     (`./pedido.service.js`) e apelido de pasta (`@app/pedido`) declarado na
+//!     configuração herdada pela da raiz e redeclarado numa subpasta.
 //!
 //! Characterization baseline (recorded on the code BEFORE the resolution fix):
 //! csharp, typescript and go already produced edges; python, rust and php
@@ -176,4 +180,54 @@ fn graph_resolution_php_cascade_layers_hubs_touchpoints() {
     let touchpoints = g["touchpoints"].as_array().unwrap();
     assert!(!touchpoints.is_empty(), "touchpoints must not be empty: {g}");
     assert_eq!(touchpoints[0]["breadth"].as_u64(), Some(2), "top hub spans two dirs: {touchpoints:?}");
+}
+
+/// Os arquivos do projeto que um módulo importa, como o mapa os grava.
+fn deps_of(v: &serde_json::Value, path: &str) -> Vec<String> {
+    let module = v["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .find(|m| m["path"] == path)
+        .unwrap_or_else(|| panic!("{path} está no mapa"));
+    module["deps"]
+        .as_array()
+        .map(|deps| deps.iter().map(|d| d.as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Um import sem extensão cujo nome tem ponto (`./pedido.service`) liga ao
+/// arquivo com esse nome inteiro, e não ao arquivo que só tem o começo dele
+/// (`pedido.ts`, ao lado): o ponto do meio é parte do nome.
+#[test]
+fn a_dotted_import_links_to_the_file_with_the_whole_name() {
+    let v = scan_fixture_labeled("dotted", "graph_typescript_aliases");
+    assert_eq!(deps_of(&v, "src/app/checkout.ts"), vec!["src/app/pedido.service.ts".to_string()]);
+}
+
+/// O import que escreve a extensão de saída no lugar da do arquivo
+/// (`./pedido.service.js` para `pedido.service.ts`) segue ligando ao arquivo
+/// certo.
+#[test]
+fn an_import_written_with_the_output_extension_still_links() {
+    let v = scan_fixture_labeled("output-ext", "graph_typescript_aliases");
+    assert_eq!(deps_of(&v, "src/app/esm.ts"), vec!["src/app/pedido.service.ts".to_string()]);
+}
+
+/// O apelido de pasta declarado numa configuração herdada pela da raiz
+/// (`@app/*` para `src/app/*`, com comentário e vírgula sobrando no arquivo)
+/// liga `@app/pedido` a `src/app/pedido.ts`.
+#[test]
+fn a_folder_alias_inherited_through_extends_links_to_the_right_file() {
+    let v = scan_fixture_labeled("alias", "graph_typescript_aliases");
+    assert_eq!(deps_of(&v, "src/usa_apelido.ts"), vec!["src/app/pedido.ts".to_string()]);
+}
+
+/// A configuração mais próxima de quem importa vence a da raiz: em `pkg/`,
+/// `@app/pedido` é `pkg/lib/pedido.ts`, e não o `src/app/pedido.ts` que a
+/// raiz daria.
+#[test]
+fn the_nearest_configuration_wins_over_the_root_one() {
+    let v = scan_fixture_labeled("nearest", "graph_typescript_aliases");
+    assert_eq!(deps_of(&v, "pkg/usa.ts"), vec!["pkg/lib/pedido.ts".to_string()]);
 }

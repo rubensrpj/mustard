@@ -63,6 +63,22 @@ fn main() {
     let mut scope_table = String::new();
     scope_table.push_str("pub(crate) static LANG_NAMESPACE_SCOPE: &[(&str, &str)] = &[\n");
 
+    // (name, import_extensions) — as extensões OPCIONAIS que o import da
+    // língua escreve no lugar da do próprio arquivo. Sem o campo, lista vazia:
+    // o caminho importado só perde a extensão quando ela é da própria língua.
+    let mut import_ext_table = String::new();
+    import_ext_table.push_str("pub(crate) static LANG_IMPORT_EXTENSIONS: &[(&str, &[&str])] = &[\n");
+
+    // (name, alias_config), (name, alias_base), (name, alias_paths) e
+    // (name, alias_extends) — o arquivo de configuração OPCIONAL dos apelidos
+    // de pasta e as três chaves lidas nele. Sem o campo, texto vazio: a
+    // língua não tem apelido de pasta e a leitura nem começa.
+    let alias_fields = ["alias_config", "alias_base", "alias_paths", "alias_extends"];
+    let mut alias_field_tables: Vec<String> = alias_fields
+        .iter()
+        .map(|field| format!("pub(crate) static LANG_{}: &[(&str, &str)] = &[\n", field.to_ascii_uppercase()))
+        .collect();
+
     for lang in languages {
         let tbl = lang.as_table().expect("each [[language]] must be a table");
         let name = str_field(tbl, "name");
@@ -97,6 +113,24 @@ fn main() {
                     .collect()
             })
             .unwrap_or_default();
+        let import_extensions: Vec<String> = tbl
+            .get("import_extensions")
+            .map(|v| {
+                v.as_array()
+                    .expect("language.import_extensions must be an array")
+                    .iter()
+                    .map(|e| e.as_str().expect("import extension must be a string").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let alias_values: Vec<String> = alias_fields
+            .iter()
+            .map(|field| {
+                tbl.get(*field)
+                    .map(|v| v.as_str().unwrap_or_else(|| panic!("language.{field} must be a string")).to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
         let namespace_scope = tbl
             .get("namespace_scope")
             .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
@@ -120,6 +154,7 @@ fn main() {
             .collect::<Vec<_>>()
             .join(", ");
         let tags = doc_tags.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
+        let import_exts = import_extensions.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(", ");
 
         writeln!(
             body,
@@ -129,6 +164,11 @@ fn main() {
         writeln!(ext_table, "    ({name:?}, &[{exts}]),").expect("the generated table is a String, which never fails to write");
         writeln!(alias_table, "    ({name:?}, &[{aliases}]),").expect("the generated table is a String, which never fails to write");
         writeln!(scope_table, "    ({name:?}, {namespace_scope:?}),").expect("the generated table is a String, which never fails to write");
+        writeln!(import_ext_table, "    ({name:?}, &[{import_exts}]),")
+            .expect("the generated table is a String, which never fails to write");
+        for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
+            writeln!(table, "    ({name:?}, {value:?}),").expect("the generated table is a String, which never fails to write");
+        }
     }
 
     body.push_str("    ]\n}\n");
@@ -138,6 +178,12 @@ fn main() {
     body.push_str(&alias_table);
     scope_table.push_str("];\n");
     body.push_str(&scope_table);
+    import_ext_table.push_str("];\n");
+    body.push_str(&import_ext_table);
+    for table in &mut alias_field_tables {
+        table.push_str("];\n");
+        body.push_str(table);
+    }
 
     let out_path = Path::new(&out_dir).join("langs_generated.rs");
     fs::write(&out_path, body).expect("write langs_generated.rs");

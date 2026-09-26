@@ -23,7 +23,13 @@
 //!     when the import names a TYPE inside a namespace (the
 //!     fully-qualified-name shape);
 //!   * module-prefixed path — strip a declared module prefix, match a directory;
-//!   * file path — resolve a relative/path-ish import to a module file;
+//!   * apelido de pasta — um import não relativo lido pelos apelidos da
+//!     configuração mais próxima de quem importa (`crate::path_aliases`),
+//!     só para a língua que o registro dá arquivo de apelidos;
+//!   * file path — resolve a relative/path-ish import to a module file. The
+//!     path loses its last dotted part only when that part is an extension of
+//!     the importer's language, or one its imports write in place of it
+//!     (registry data): any other dot is part of the file's name;
 //!   * root-alias path — only for imports whose first segment is one of the
 //!     importer language's declared `root_aliases` (registry data): drop the
 //!     alias segment and probe the tail against the importer's ancestor dirs.
@@ -36,6 +42,7 @@
 //!     Imports that resolve to nothing internal are treated as external deps.
 
 use crate::model::{Decl, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
+use crate::path_aliases::PathAliases;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -77,12 +84,17 @@ fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> u
 /// personalized-PageRank ranker (`pagerank`) consume, so the two can never see
 /// a different graph. Output sorted → byte-stable. Nothing switches on a
 /// language name.
-pub fn resolve_edges(modules: &[Module], go_module: &Option<String>, packages: &[(String, String)]) -> Vec<(usize, usize, u64)> {
+pub fn resolve_edges(
+    modules: &[Module],
+    go_module: &Option<String>,
+    packages: &[(String, String)],
+    aliases: &PathAliases,
+) -> Vec<(usize, usize, u64)> {
     let mut pos: HashMap<&str, usize> = HashMap::with_capacity(modules.len());
     for (i, m) in modules.iter().enumerate() {
         pos.insert(m.path.as_str(), i);
     }
-    let resolver = Resolver::new(modules, go_module, packages);
+    let resolver = Resolver::new(modules, go_module, packages, aliases);
 
     // The strongest evidence per (src, dst) pair wins; re-imports never inflate.
     let mut edge_w: HashMap<(usize, usize), u64> = HashMap::new();
@@ -108,7 +120,12 @@ pub fn resolve_edges(modules: &[Module], go_module: &Option<String>, packages: &
 /// cada módulo.
 pub type GraphBuild = (GraphStats, HashMap<String, usize>);
 
-pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String, String)]) -> GraphBuild {
+pub fn build(
+    modules: &[Module],
+    go_module: &Option<String>,
+    packages: &[(String, String)],
+    aliases: &PathAliases,
+) -> GraphBuild {
     let mut g: DiGraph<String, ()> = DiGraph::new();
     for m in modules {
         g.add_node(m.path.clone());
@@ -119,7 +136,7 @@ pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String
     // `NodeIndex::new(i)`. The published degree is specificity-weighted (see the
     // resolver): a bucket-broadcast target keeps its 1/N share instead of a
     // minted full count, so real hubs rank above diffuse glue.
-    let resolved = resolve_edges(modules, go_module, packages);
+    let resolved = resolve_edges(modules, go_module, packages, aliases);
     let mut edge_w: HashMap<(NodeIndex, NodeIndex), u64> = HashMap::new();
     for &(a, b, w) in &resolved {
         edge_w.insert((NodeIndex::new(a), NodeIndex::new(b)), w);
@@ -285,8 +302,9 @@ pub fn link_declarations(
     go_module: &Option<String>,
     packages: &[(String, String)],
     manifests: &[crate::model::Manifest],
+    aliases: &PathAliases,
 ) {
-    let (calls, uses, linked) = resolve_declaration_links(modules, go_module, packages, manifests);
+    let (calls, uses, linked) = resolve_declaration_links(modules, go_module, packages, manifests, aliases);
     for (m, linked) in modules.iter_mut().zip(linked) {
         m.cites = std::mem::take(&mut m.cites)
             .into_iter()
@@ -324,6 +342,7 @@ fn resolve_declaration_links(
     go_module: &Option<String>,
     packages: &[(String, String)],
     manifests: &[crate::model::Manifest],
+    aliases: &PathAliases,
 ) -> (CallsByDecl, UsesByDecl, LinkedCites) {
     let index = |kinds: &[&str]| {
         let mut by_name: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
@@ -372,7 +391,7 @@ fn resolve_declaration_links(
             all
         })
         .collect();
-    let globals = global_sight(modules, go_module, packages, manifests);
+    let globals = global_sight(modules, go_module, packages, manifests, aliases);
     // The names a qualifier can give a file: its own name and its folder's.
     let own_names: Vec<[String; 2]> = modules
         .iter()
@@ -463,12 +482,13 @@ fn global_sight(
     go_module: &Option<String>,
     packages: &[(String, String)],
     manifests: &[crate::model::Manifest],
+    aliases: &PathAliases,
 ) -> GlobalSight {
     let mut sight = GlobalSight { groups: Vec::new(), seen_by: vec![Vec::new(); modules.len()] };
     if modules.iter().all(|m| m.global_imports.is_empty()) {
         return sight;
     }
-    let resolver = Resolver::new(modules, go_module, packages);
+    let resolver = Resolver::new(modules, go_module, packages, aliases);
     let manifest_dirs: Vec<String> = manifests.iter().map(|m| parent_dir(&m.path)).collect();
     for g in modules.iter().filter(|g| !g.global_imports.is_empty()) {
         let scope = manifest_dirs
@@ -532,12 +552,20 @@ struct Resolver<'a> {
     module_paths: HashSet<&'a str>,
     go_module: &'a Option<String>,
     packages: &'a [(String, String)],
-    /// What each `(package, rest)` pair resolved to, once asked.
-    package_hits: RefCell<HashMap<(String, String), Vec<String>>>,
+    /// Os apelidos de pasta das configurações do projeto.
+    aliases: &'a PathAliases,
+    /// O que cada trio `(língua, pacote, resto)` resolveu, uma vez perguntado:
+    /// a língua de quem importa decide que extensão sai do resto.
+    package_hits: RefCell<HashMap<(String, String, String), Vec<String>>>,
 }
 
 impl<'a> Resolver<'a> {
-    fn new(modules: &'a [Module], go_module: &'a Option<String>, packages: &'a [(String, String)]) -> Self {
+    fn new(
+        modules: &'a [Module],
+        go_module: &'a Option<String>,
+        packages: &'a [(String, String)],
+        aliases: &'a PathAliases,
+    ) -> Self {
         let mut ns_index: HashMap<&str, HashMap<String, Vec<String>>> = HashMap::new();
         let mut dir_index: HashMap<String, Vec<String>> = HashMap::new(); // dir -> module paths
         for m in modules {
@@ -560,6 +588,7 @@ impl<'a> Resolver<'a> {
             module_paths: modules.iter().map(|m| m.path.as_str()).collect(),
             go_module,
             packages,
+            aliases,
             package_hits: RefCell::new(HashMap::new()),
         }
     }
@@ -568,6 +597,7 @@ impl<'a> Resolver<'a> {
     /// nothing inside the project: an external dependency.
     fn resolve(&self, imp: &str, importer: &Module) -> Vec<String> {
         let from = importer.path.as_str();
+        let lang = importer.language.as_str();
         let (stem_index, dir_index, module_paths) = (&self.stem_index, &self.dir_index, &self.module_paths);
         // Try every resolution shape; whichever applies wins. No language switch.
         // Lookups run on the canonical segment form so no shape ever cares which
@@ -617,15 +647,25 @@ impl<'a> Resolver<'a> {
                 return v.clone();
             }
         }
+        // 2b) Apelido de pasta: um import não relativo lido pelos apelidos e
+        //     pela pasta base da configuração mais próxima de quem importa. Só
+        //     o arquivo que existe responde; o que não cai em nenhum segue para
+        //     os passos de baixo como antes.
+        for cand in self.aliases.candidates(from, lang, imp) {
+            let hits = exact_path_candidate(&cand, lang, stem_index, module_paths);
+            if !hits.is_empty() {
+                return hits;
+            }
+        }
         // 3) File path: a relative or path-ish import resolved to a module file.
         //    The canonical form means dotted / `::` module paths take this branch
         //    too — they are paths spelled with another separator.
         if cleaned.starts_with('.') {
             let joined = join_relative(from, cleaned);
-            return resolve_path_candidate(&joined, stem_index, dir_index, module_paths);
+            return resolve_path_candidate(&joined, lang, stem_index, dir_index, module_paths);
         }
         if cleaned.contains('/') || file_path {
-            let hits = resolve_path_candidate(cleaned, stem_index, dir_index, module_paths);
+            let hits = resolve_path_candidate(cleaned, lang, stem_index, dir_index, module_paths);
             if !hits.is_empty() {
                 return hits;
             }
@@ -650,7 +690,7 @@ impl<'a> Resolver<'a> {
                 let mut dir = parent_dir(from);
                 loop {
                     let cand = if dir.is_empty() { t.clone() } else { format!("{dir}/{t}") };
-                    let hits = resolve_path_candidate(&cand, stem_index, dir_index, module_paths);
+                    let hits = resolve_path_candidate(&cand, lang, stem_index, dir_index, module_paths);
                     if !hits.is_empty() {
                         return hits;
                     }
@@ -674,21 +714,22 @@ impl<'a> Resolver<'a> {
         for cut in (1..segments.len()).rev() {
             let name = fold_package(&segments[..cut].join("/"));
             if self.packages.iter().any(|(n, _)| *n == name) {
-                return self.in_package(name, segments[cut..].join("/"));
+                return self.in_package(lang, name, segments[cut..].join("/"));
             }
         }
         Vec::new()
     }
 
     /// The files `tail` names inside the declared package `name` (resolution
-    /// shape 5). It depends on nothing but the two, and a package's module is
-    /// imported by many files, so each answer is kept for the next import.
-    fn in_package(&self, name: String, tail: String) -> Vec<String> {
-        let key = (name, tail);
+    /// shape 5), for an importer of language `lang`. It depends on nothing but
+    /// the three, and a package's module is imported by many files, so each
+    /// answer is kept for the next import.
+    fn in_package(&self, lang: &str, name: String, tail: String) -> Vec<String> {
+        let key = (lang.to_string(), name, tail);
         if let Some(hits) = self.package_hits.borrow().get(&key) {
             return hits.clone();
         }
-        let (name, tail) = &key;
+        let (_, name, tail) = &key;
         let (stem_index, dir_index, module_paths) = (&self.stem_index, &self.dir_index, &self.module_paths);
         let dirs: Vec<&String> = self.packages.iter().filter(|(n, _)| n == name).map(|(_, d)| d).collect();
         let mut tails = vec![tail.clone()];
@@ -702,13 +743,13 @@ impl<'a> Resolver<'a> {
             tails.iter().find_map(|t| {
                 bases.iter().find_map(|base| {
                     let cand = if base.is_empty() { t.clone() } else { format!("{base}/{t}") };
-                    let hits = resolve_path_candidate(&cand, stem_index, dir_index, module_paths);
+                    let hits = resolve_path_candidate(&cand, lang, stem_index, dir_index, module_paths);
                     (!hits.is_empty()).then_some(hits)
                 })
             })
         });
         let hits = probed.unwrap_or_else(|| {
-            let ending = format!("/{}", strip_ext(tail));
+            let ending = format!("/{}", strip_import_ext(tail, lang));
             let mut hits: Vec<String> = stem_index
                 .iter()
                 .filter(|(stem, _)| stem.ends_with(&ending) && dirs.iter().any(|d| is_under(stem, d)))
@@ -750,27 +791,21 @@ pub fn packages(manifests: &[crate::model::Manifest]) -> Vec<(String, String)> {
     out
 }
 
+/// The project files a path candidate names, for an importer of language
+/// `lang`: the exact candidates first ([`exact_path_candidate`]), then any
+/// module whose path ends with it.
 fn resolve_path_candidate(
     cand: &str,
+    lang: &str,
     stem_index: &HashMap<String, Vec<String>>,
     dir_index: &HashMap<String, Vec<String>>,
     module_paths: &HashSet<&str>,
 ) -> Vec<String> {
-    let cand = normalize(cand);
-    if module_paths.contains(cand.as_str()) {
-        return vec![cand];
+    let exact = exact_path_candidate(cand, lang, stem_index, module_paths);
+    if !exact.is_empty() {
+        return exact;
     }
-    let stem = strip_ext(&cand);
-    if let Some(v) = stem_index.get(&stem) {
-        return v.clone();
-    }
-    // directory import -> index file
-    for index in ["index", "main", "mod"] {
-        let probe = format!("{stem}/{index}");
-        if let Some(v) = stem_index.get(&probe) {
-            return v.clone();
-        }
-    }
+    let stem = strip_import_ext(&normalize(cand), lang);
     // package-suffix shape: match any module whose path ends with the candidate
     let mut suffix_matches: Vec<String> = stem_index
         .iter()
@@ -782,6 +817,35 @@ fn resolve_path_candidate(
         return suffix_matches;
     }
     let _ = dir_index;
+    Vec::new()
+}
+
+/// Os arquivos que um caminho candidato cita sem adivinhar: o próprio
+/// arquivo, o arquivo de mesmo nome sem a extensão ou o arquivo de índice da
+/// pasta. A extensão só sai quando é da língua de quem importa ou uma das que
+/// o import dela escreve no lugar (dado do registro), de modo que
+/// `x/pedido.service` cita `x/pedido.service.<ext>` e nunca `x/pedido.<ext>`.
+fn exact_path_candidate(
+    cand: &str,
+    lang: &str,
+    stem_index: &HashMap<String, Vec<String>>,
+    module_paths: &HashSet<&str>,
+) -> Vec<String> {
+    let cand = normalize(cand);
+    if module_paths.contains(cand.as_str()) {
+        return vec![cand];
+    }
+    let stem = strip_import_ext(&cand, lang);
+    if let Some(v) = stem_index.get(&stem) {
+        return v.clone();
+    }
+    // directory import -> index file
+    for index in ["index", "main", "mod"] {
+        let probe = format!("{stem}/{index}");
+        if let Some(v) = stem_index.get(&probe) {
+            return v.clone();
+        }
+    }
     Vec::new()
 }
 
@@ -802,9 +866,26 @@ fn is_test_path(p: &str) -> bool {
     l.split('/').any(|s| matches!(s, "test" | "tests" | "__tests__" | "mocks" | "fixtures" | "spec" | "specs"))
 }
 
+/// The path without its last dotted part: the extension of a project file,
+/// whatever it is — the stem the index keeps each module under.
 fn strip_ext(path: &str) -> String {
     match path.rfind('.') {
         Some(i) if !path[i..].contains('/') => path[..i].to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// O caminho importado sem a extensão, quando a última parte depois do ponto
+/// é uma extensão da língua `lang` ou uma das que o import dela escreve no
+/// lugar (dado do registro). Qualquer outro ponto é parte do nome e fica.
+fn strip_import_ext(path: &str, lang: &str) -> String {
+    let known = |ext: &str| {
+        crate::extract::extensions(lang).contains(&ext) || crate::extract::import_extensions(lang).contains(&ext)
+    };
+    match path.rfind('.') {
+        Some(i) if i > 0 && !path[i..].contains('/') && !path[..i].ends_with('/') && known(&path[i + 1..]) => {
+            path[..i].to_string()
+        }
         _ => path.to_string(),
     }
 }
