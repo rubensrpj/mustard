@@ -21,6 +21,7 @@
 //! descartada.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
@@ -145,15 +146,24 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     // O descarte é um marco, como o fechamento: a cópia para o banco da
     // página sai aqui, com a fase descartada na linha da spec da página do
     // projeto. Onde os lotes nascem segue a pasta da spec: ao apagar, ela não
-    // sobrevive ao marco, então a cópia nasce antes, na pasta temporária do
-    // sistema; ao arquivar, ela sobrevive, então a cópia nasce depois de
-    // mover, lendo o arquivo de eventos já na pasta arquivada — os caminhos
-    // da resposta apontam para lá.
+    // sobrevive ao marco, então a cópia nasce antes, numa pasta só deste
+    // descarte, fora do projeto ([`discard_copy_folder`]); ao arquivar, ela
+    // sobrevive, então a cópia nasce depois de mover, lendo o arquivo de
+    // eventos já na pasta arquivada — os caminhos da resposta apontam para lá.
     let ndjson = folder.join("spec.ndjson");
     let (moved, index_done, prepared) = if opts.delete {
         let prepared = phase_written.then(|| {
-            let temp = std::env::temp_dir().join("mustard-copy").join(&spec);
-            crate::commands::spec_events::pages::copy::prepare_milestone_at(&project.root, &spec, &ndjson, temp, lang)
+            discard_copy_folder(&project.root, &spec)
+                .map_err(|e| Refusal::Io { detail: e.to_string() })
+                .and_then(|copy| {
+                    crate::commands::spec_events::pages::copy::prepare_milestone_at(
+                        &project.root,
+                        &spec,
+                        &ndjson,
+                        copy,
+                        lang,
+                    )
+                })
         });
         let removed = std::fs::remove_dir_all(&folder).is_ok();
         (removed, mustard_core::io::spec_index::drop_line(&project.root, &spec).is_ok(), prepared)
@@ -211,6 +221,46 @@ fn archive(spec: &str, folder: &Path) -> Option<PathBuf> {
     }
     std::fs::rename(folder, &target).ok()?;
     Some(target)
+}
+
+/// A pasta, dentro da pasta das cópias do projeto
+/// ([`mustard_core::io::wave_prompt::copies_dir`]), em que nasce a cópia da
+/// página de cada descarte que apaga a spec. O ponto do começo a separa das
+/// pastas das cópias das obras, que levam o nome de uma spec.
+const DISCARD_COPIES: &str = ".discard-copy";
+
+/// Por quanto tempo a cópia da página de um descarte fica depois dele. Os
+/// lotes saem logo depois da resposta; o dia de folga cobre outro descarte
+/// do mesmo projeto feito antes de os lotes do primeiro saírem.
+const DISCARD_COPY_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A pasta só deste descarte para a cópia da página da spec `spec`, que vai
+/// ser apagada: fora do projeto, na pasta das cópias dele, com o nome da
+/// spec e uma marca única da chamada. Dois descartes nunca dividem a pasta,
+/// nem em dois projetos com uma spec de mesmo nome, nem na mesma spec
+/// apagada duas vezes. Ela fica depois do comando, porque os lotes saem
+/// depois da resposta; antes de criá-la, sai a de cada descarte anterior do
+/// projeto que não muda há mais de [`DISCARD_COPY_KEPT`].
+fn discard_copy_folder(root: &Path, spec: &str) -> std::io::Result<PathBuf> {
+    let place = mustard_core::io::wave_prompt::copies_dir(root).join(DISCARD_COPIES);
+    sweep_old_discard_copies(&place);
+    std::fs::create_dir_all(&place)?;
+    tempfile::Builder::new().prefix(&format!("{spec}-")).tempdir_in(&place).map(tempfile::TempDir::keep)
+}
+
+/// Tira de `place` a pasta de cada cópia de descarte que não muda há mais de
+/// [`DISCARD_COPY_KEPT`]. Link não é seguido, e a pasta que não sai fica para
+/// o próximo descarte, sem derrubar este.
+fn sweep_old_discard_copies(place: &Path) {
+    let Ok(entries) = std::fs::read_dir(place) else { return };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let old = meta.modified().ok().and_then(|at| now.duration_since(at).ok()).is_some_and(|age| age > DISCARD_COPY_KEPT);
+        if meta.is_dir() && old {
+            let _ = mustard_core::io::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// O código do descarte: ele muda com a spec, a branch e as duas escolhas, e
@@ -480,8 +530,8 @@ mod tests {
     /// O descarte deixa a linha da spec na página do projeto com a fase
     /// descartada, arquivando ou apagando a pasta: a cópia nasce depois de
     /// mover, lendo o arquivo já na pasta arquivada, ou antes de apagar,
-    /// gravando os lotes na pasta temporária do sistema, e cada arquivo que a
-    /// resposta cita existe e é JSON válido nos dois casos. A resposta não
+    /// gravando os lotes na pasta que a resposta diz, fora do projeto, e cada
+    /// arquivo que a resposta cita existe e é JSON válido nos dois casos. A resposta não
     /// pede o registro da cópia, porque a spec descartada é terminal. A ajuda
     /// do comando de revisão de pull request não cita mais a seção de
     /// arquivos do formato antigo. E uma cópia gravada com o último item
@@ -508,20 +558,22 @@ mod tests {
 
         // O descarte apagado.
         project(root, "y");
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         let code = discard(root, "y", None, true, false)["token"].as_str().unwrap_or_default().to_string();
         let done = discard(root, "y", Some(&code), true, false);
         assert_eq!(done["ok"], json!(true), "{done}");
         assert_eq!(done["copy"]["project"]["record"]["phase"], json!("discarded"), "{done}");
         assert!(!root.join(".claude/spec/y").exists(), "the folder is gone");
-        let temp = std::env::temp_dir().join("mustard-copy").join("y");
+        let copy = copy_folder_of(root, &done);
+        assert!(!copy.starts_with(root), "{copy:?}: the copy is outside the project");
         let deleted_batches = batches_of(&done);
         assert!(!deleted_batches.is_empty(), "{done}");
         for batch in &deleted_batches {
             let path = absolute(root, batch);
-            assert!(path.starts_with(&temp), "{path:?}: not in the temp copy folder");
+            assert!(path.starts_with(&copy), "{path:?}: not in the copy folder of the answer");
             assert_files_exist_and_parse(root, batch);
         }
-        std::fs::remove_dir_all(&temp).ok();
+        std::fs::remove_dir_all(&copy).ok();
 
         // A ajuda do comando de revisão de pull request.
         let tree = crate::commands::RunCmd::augment_subcommands(Command::new("run"));
@@ -544,6 +596,88 @@ mod tests {
         let after = store::read(&log_path).unwrap().unwrap();
         let recorded = after.events.iter().rev().find(|e| e.event_type == "copy").expect("the copy is in the file");
         assert_eq!(recorded.int("last"), Some(max), "{recorded:?}");
+    }
+
+    /// Abre a spec `spec` no projeto `root` e a descarta apagando a pasta, pelo
+    /// caminho de quem usa: a prévia e o sim com o código dela. Devolve a
+    /// pasta da cópia da página que a resposta diz e cada lote dela, com o
+    /// conteúdo de agora. A pasta das cópias do projeto sai no fim do teste.
+    fn deleted(root: &Path, spec: &str) -> (PathBuf, Vec<(PathBuf, String)>) {
+        project(root, spec);
+        crate::commands::flow::round::copies_leave_with_the_test(root);
+        let code = discard(root, spec, None, true, false)["token"].as_str().unwrap_or_default().to_string();
+        let done = discard(root, spec, Some(&code), true, false);
+        assert_eq!(done["ok"], json!(true), "{done}");
+        let copy = copy_folder_of(root, &done);
+        let batches: Vec<(PathBuf, String)> = batches_of(&done)
+            .iter()
+            .map(|batch| {
+                let path = absolute(root, batch);
+                let content = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+                (path, content)
+            })
+            .collect();
+        assert!(!batches.is_empty(), "{done}");
+        (copy, batches)
+    }
+
+    /// Cada descarte que apaga a spec prepara a cópia da página numa pasta só
+    /// dele, fora do projeto: dois projetos com uma spec de mesmo nome, e a
+    /// mesma spec apagada de novo no primeiro projeto, dão três pastas
+    /// diferentes. Depois dos três, os lotes de cada descarte continuam lá,
+    /// com o conteúdo que tinham logo depois dele: nenhum descarte apagou nem
+    /// trocou os lotes de outro.
+    #[test]
+    fn each_deleting_discard_prepares_the_page_copy_in_a_folder_of_its_own() {
+        let first = tempdir().unwrap();
+        let second = tempdir().unwrap();
+        let runs = [deleted(first.path(), "x"), deleted(second.path(), "x"), deleted(first.path(), "x")];
+        let folders: Vec<&PathBuf> = runs.iter().map(|(copy, _)| copy).collect();
+        assert_ne!(folders[0], folders[1], "two projects share the copy folder");
+        assert_ne!(folders[0], folders[2], "two discards of the same spec share the copy folder");
+        assert_ne!(folders[1], folders[2], "two projects share the copy folder");
+        for (copy, batches) in &runs {
+            assert!(!copy.starts_with(first.path()) && !copy.starts_with(second.path()), "{copy:?}: inside a project");
+            for (path, content) in batches {
+                assert!(path.starts_with(copy), "{path:?}: not in {copy:?}");
+                let now = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+                assert_eq!(&now, content, "{path:?}: another discard changed the batch");
+            }
+        }
+        for (copy, _) in &runs {
+            std::fs::remove_dir_all(copy).ok();
+        }
+    }
+
+    /// A cópia da página de um descarte fica depois dele, e sai no próximo
+    /// descarte que apaga uma spec do mesmo projeto quando não muda há mais
+    /// de um dia: a de um dia e um minuto sai, a de um dia menos um minuto
+    /// fica, e a do descarte novo nasce.
+    #[test]
+    fn a_page_copy_older_than_a_day_leaves_at_the_next_deleting_discard() {
+        use crate::commands::maint::scratch_gc::set_mtime;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (old, _) = deleted(root, "a");
+        let (recent, _) = deleted(root, "b");
+        let now = SystemTime::now();
+        set_mtime(&old, now - DISCARD_COPY_KEPT - Duration::from_secs(60));
+        set_mtime(&recent, now - DISCARD_COPY_KEPT + Duration::from_secs(60));
+
+        let (new, _) = deleted(root, "c");
+        assert!(!old.exists(), "{old:?}: the copy older than a day stayed");
+        assert!(recent.is_dir(), "{recent:?}: the copy younger than a day left");
+        assert!(new.is_dir(), "{new:?}: the new copy is missing");
+        for copy in [&recent, &new] {
+            std::fs::remove_dir_all(copy).ok();
+        }
+    }
+
+    /// A pasta da cópia da página que a resposta `report` de um descarte diz.
+    fn copy_folder_of(root: &Path, report: &Value) -> PathBuf {
+        let folder = report["copy"]["folder"].as_str().unwrap_or_default();
+        assert!(!folder.is_empty(), "{report}");
+        absolute(root, folder)
     }
 
     /// Os lotes que a cópia da spec e a do projeto da resposta `report` de um

@@ -864,7 +864,7 @@ pub(crate) fn backdate_tree(root: &Path, hours: u64) {
 /// basta ao dono (`futimens`); no Windows a pasta só abre com
 /// `FILE_FLAG_BACKUP_SEMANTICS`, e mudar a data pede `FILE_WRITE_ATTRIBUTES`.
 #[cfg(test)]
-fn set_mtime(path: &Path, when: SystemTime) {
+pub(crate) fn set_mtime(path: &Path, when: SystemTime) {
     let mut opts = std::fs::OpenOptions::new();
     opts.read(true);
     #[cfg(windows)]
