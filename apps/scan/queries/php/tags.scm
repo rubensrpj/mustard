@@ -28,10 +28,10 @@
 (namespace_use_declaration type: _
   body: (namespace_use_group (namespace_use_clause [(qualified_name (name) @imported) (name) @imported])))
 
-; Members — methods, typed properties, enum cases. Member kinds reach the map
-; with the file's other declarations: the miner's significance gate (mine.rs)
-; is kind-based and never sees them. The method tag follows the upstream
-; tree-sitter-php tags.scm (MIT) — see queries/README.md.
+; Membros — métodos, propriedades tipadas, casos de enum. Os kinds de membro
+; chegam ao mapa com as outras declarações do arquivo, e o grafo lista cada um
+; sob o tipo dono dele. A tag de método segue o tags.scm do tree-sitter-php
+; (MIT) — veja queries/README.md.
 (method_declaration name: (name) @name) @definition.method
 (property_declaration (property_element name: (variable_name (name) @name))) @definition.property
 (enum_case name: (name) @name) @definition.enum_member

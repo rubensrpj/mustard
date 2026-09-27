@@ -41,7 +41,7 @@ impl Default for Scan {
     }
 }
 
-/// One compilation unit from grain's model (`grain.model.json` `projects[]`) —
+/// One compilation unit from the map (the `projects` table of `.claude/grain.db`) —
 /// the subproject list. Replaces the deleted sync-detect discovery: grain mines
 /// the same build-manifest set deterministically.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -148,12 +148,26 @@ impl Scan {
     /// [`DEFAULT_BINARY`] on `PATH`. Fail-open: any probe error → the fallback.
     #[must_use]
     pub fn locate() -> Self {
-        let sibling = std::env::current_exe().ok().and_then(|exe| {
-            let dir = exe.parent()?;
-            let cand = dir.join(if cfg!(windows) { "scan.exe" } else { "scan" });
-            cand.is_file().then(|| cand.to_string_lossy().into_owned())
-        });
-        Self { binary: sibling.unwrap_or_else(|| DEFAULT_BINARY.to_string()) }
+        Self::located_from(std::env::current_exe().ok().as_deref())
+    }
+
+    /// [`Self::locate`] for the executable at `exe`. A test binary runs from
+    /// `deps/`, one folder below the programs of the same build: there the
+    /// folder above is searched too, before `PATH`, so a test never runs the
+    /// installed scan in place of the one compiled with it.
+    fn located_from(exe: Option<&Path>) -> Self {
+        let name = if cfg!(windows) { "scan.exe" } else { "scan" };
+        let dir = exe.and_then(Path::parent);
+        let up = dir.filter(|dir| dir.file_name().is_some_and(|n| n == "deps")).and_then(Path::parent);
+        let found = dir.into_iter().chain(up).map(|dir| dir.join(name)).find(|cand| cand.is_file());
+        Self { binary: found.map_or_else(|| DEFAULT_BINARY.to_string(), |cand| cand.to_string_lossy().into_owned()) }
+    }
+
+    /// `true` when this is the scan compiled with the running program, found
+    /// by [`Self::locate`], and not the name looked up on `PATH`.
+    #[must_use]
+    pub fn is_compiled_alongside(&self) -> bool {
+        self.binary != DEFAULT_BINARY
     }
 
     /// Mine `root` into the model file at `out` (`grain scan`). With a model
@@ -244,6 +258,39 @@ mod tests {
         assert_eq!(report.read, vec!["src/b.rs".to_string()]);
         assert_eq!(report.files, 3);
         assert!(parse_scan_report("not json").is_err());
+    }
+
+    /// O programa de teste roda de `deps/`, uma pasta abaixo dos programas da
+    /// mesma compilação: o scan de cima é achado; sem ele, sobra o nome puro,
+    /// procurado no `PATH`. Ao lado do programa, vale o de lá.
+    #[test]
+    fn a_test_binary_in_deps_finds_the_scan_one_folder_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = if cfg!(windows) { "scan.exe" } else { "scan" };
+        let deps = dir.path().join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let exe = deps.join("x");
+        std::fs::write(&exe, "").unwrap();
+
+        let without = Scan::located_from(Some(&exe));
+        assert_eq!(without.binary, DEFAULT_BINARY);
+        assert!(!without.is_compiled_alongside());
+
+        let up = dir.path().join(name);
+        std::fs::write(&up, "").unwrap();
+        let found = Scan::located_from(Some(&exe));
+        assert_eq!(found.binary, up.to_string_lossy());
+        assert!(found.is_compiled_alongside());
+
+        let beside = deps.join(name);
+        std::fs::write(&beside, "").unwrap();
+        assert_eq!(Scan::located_from(Some(&exe)).binary, beside.to_string_lossy());
+
+        // Fora de `deps/`, a pasta de cima não conta.
+        let other = dir.path().join("bin");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(Scan::located_from(Some(&other.join("x"))).binary, DEFAULT_BINARY);
+        assert_eq!(Scan::located_from(None).binary, DEFAULT_BINARY);
     }
 
     #[test]

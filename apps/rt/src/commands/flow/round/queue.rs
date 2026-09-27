@@ -2369,8 +2369,9 @@ mod tests {
     }
 
     /// O mapa do projeto acompanha o commit atual antes de montar o pedido:
-    /// enquanto o commit gravado no mapa bate com o do checkout, a
-    /// ferramenta do scan não roda de novo; um commit feito fora da rodada —
+    /// enquanto o commit e a listagem do git gravados no mapa batem com os do
+    /// checkout, a ferramenta do scan não roda de novo; um commit feito fora
+    /// da rodada —
     /// à mão, ou um pull — muda as linhas de uma função, e o pedido seguinte
     /// sai com as linhas novas, sem que a própria rodada precise de um
     /// commit dela para reler o mapa. A onda fica retida por um teto de
@@ -2392,23 +2393,27 @@ mod tests {
                 "files": [{"path": "src/a.rs"}], "depends_on": [], "must_read": ["src/a.rs#soma"], "origin": said}));
         });
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":0}"#).unwrap();
+        // O que a instalação grava no projeto fica fora do git: a spec que a
+        // rodada escreve não muda a listagem.
+        std::fs::write(root.join(".git/info/exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
 
         // O mapa já foi lido no commit atual (a "semente"), com a função em
-        // 3-5.
+        // 3-5, e guarda a listagem do git de agora.
         let head_v1 = git_text(root, &["rev-parse", "HEAD"]);
+        let listing = mustard_core::io::project_map::listing(root).expect("o projeto está no git").digest();
         mustard_core::io::project_map::write_text(
             root,
             &json!({
                 "modules": [{"path": "src/a.rs",
                     "declarations": [{"kind": "function", "name": "soma", "line": 3, "end_line": 5}]}],
-                "state": {"head": head_v1},
+                "state": {"head": head_v1, "listing": listing},
             })
             .to_string(),
         )
         .unwrap();
 
         // O teto está em zero: nenhuma onda sai, mas o mapa já é conferido.
-        // O commit não mudou: a ferramenta do scan não roda.
+        // Nada mudou: a ferramenta do scan não roda.
         fn mine_untouched(
             _: &Path,
             _: &Path,

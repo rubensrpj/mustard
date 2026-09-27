@@ -1,6 +1,6 @@
 //! Deterministic scan-map generator for subprojects — no AI, no source reads.
 //!
-//! Invoked by `scan::run` (`--full`) after `grain.model.json` is written. It
+//! Invoked by `scan::run` (`--full`) after `.claude/grain.db` is written. It
 //! writes one file per unit, `.claude/scan-map.md` (kind + size + the map
 //! pointer + detected `## Commands`), capped by [`SCAN_MAP_HARD_CAP_BYTES`] as
 //! a guard against a runaway generator. That file is Mustard's and stays out

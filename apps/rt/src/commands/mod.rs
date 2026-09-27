@@ -9,7 +9,7 @@
 //!
 //! Each ported script is its own submodule. (The early `sync-detect` /
 //! `sync-registry` scanner ports were since removed — subproject discovery now
-//! comes from grain's `grain.model.json` via the scan tool.)
+//! comes from the map `.claude/grain.db` the scan tool writes.)
 //!
 //! ## Layout — one clap enum per family, no god-enum
 //!

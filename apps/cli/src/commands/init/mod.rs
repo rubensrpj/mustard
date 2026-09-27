@@ -438,7 +438,7 @@ mod tests {
         );
 
         // init seeds no entity-registry — the repo model is grain's
-        // `.claude/grain.model.json`, produced on demand by `mustard-rt run scan`.
+        // `.claude/grain.db`, produced on demand by `mustard-rt run scan`.
         assert!(!claude.join("entity-registry.json").exists());
     }
 

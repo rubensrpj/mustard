@@ -3750,6 +3750,12 @@ mod tests {
     /// pronta-quando, e sai no despacho sem recusa.
     #[test]
     fn the_fix_task_of_a_leftover_covers_the_criteria_of_the_wave_that_found_it() {
+        // A onda do conserto nasce do mapa que o scan grava: com o scan de
+        // outra versão, o do `PATH`, ela não se forma. A falha diz o conserto.
+        assert!(
+            Scan::locate().is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();

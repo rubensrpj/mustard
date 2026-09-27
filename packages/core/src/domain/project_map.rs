@@ -1,7 +1,7 @@
 //! `project_map` — o mapa do projeto que o scan grava, e as perguntas curtas
 //! que se fazem a ele.
 //!
-//! O scan grava o mapa em `.claude/grain.model.json`: cada arquivo de código
+//! O scan grava o mapa em `.claude/grain.db`: cada arquivo de código
 //! com as importações resolvidas (`deps`), os testes que o cobrem (`tests`) e
 //! o histórico do git (`history`). Ninguém lê o arquivo inteiro: quem precisa
 //! pergunta, e recebe uma resposta curta:
@@ -298,6 +298,48 @@ pub struct MapDecl {
     /// Cada uso da declaração no projeto: o arquivo, a linha e a declaração
     /// de onde parte a chamada. Vazio num mapa antigo, sem o campo.
     pub used_by: Vec<UseSite>,
+    /// Os donos da declaração, do mais interno para o mais externo: as
+    /// declarações do mesmo arquivo cuja faixa contém a dela e, depois, o
+    /// tipo escrito fora dela (o do bloco `impl` do Rust, o receptor do
+    /// método do Go). Só os nomes.
+    pub owner: Vec<String>,
+    /// O contrato que a declaração cumpre por onde foi escrita: o traço de
+    /// `impl Traço for Tipo`. Só os nomes.
+    pub contract: Vec<String>,
+    /// Num tipo, as declarações que o têm como dono mais interno, os métodos
+    /// primeiro.
+    pub members: Vec<DeclAt>,
+    /// Num método, o método de mesmo nome do contrato que ele cumpre.
+    pub implements: Vec<DeclAt>,
+    /// Num método de contrato, os métodos que o cumprem.
+    pub implemented_by: Vec<DeclAt>,
+}
+
+/// Uma declaração apontada por uma ligação do mapa: o arquivo, a linha em que
+/// ela começa e o nome dela. O scan a grava num texto só,
+/// `arquivo:linha:nome`, como grava o uso.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeclAt {
+    pub file: String,
+    pub line: usize,
+    pub name: String,
+}
+
+impl Serialize for DeclAt {
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        out.collect_str(&format_args!("{}:{}:{}", self.file, self.line, self.name))
+    }
+}
+
+impl<'de> Deserialize<'de> for DeclAt {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let text = String::deserialize(input)?;
+        let wrong = || D::Error::custom(format!("a declaration reads `file:line:name`, not `{text}`"));
+        let (head, name) = text.rsplit_once(':').ok_or_else(wrong)?;
+        let (file, line) = head.rsplit_once(':').ok_or_else(wrong)?;
+        Ok(Self { file: file.to_string(), line: line.parse().map_err(|_| wrong())?, name: name.to_string() })
+    }
 }
 
 /// Um uso de uma declaração: o arquivo em que a chamada está escrita, a linha
@@ -610,30 +652,77 @@ pub struct DeclUsers {
 /// no arquivo pedido, ou no mapa inteiro, que a recusa cita pelo caminho dele
 /// ([`MAP_FILE`](crate::io::project_map::MAP_FILE)).
 pub fn users(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<DeclUsers>, MapRefusal> {
+    Ok(named_in(map, file, name)?
+        .into_iter()
+        .map(|(m, d)| DeclUsers {
+            file: m.path.clone(),
+            kind: d.kind.clone(),
+            name: d.name.clone(),
+            line: d.line,
+            end_line: d.end_line.max(d.line),
+            used_by: d.used_by.clone(),
+        })
+        .collect())
+}
+
+/// Cada declaração chamada `name`, com o arquivo dela, em ordem de caminho e
+/// de linha; com `file`, só as desse arquivo. As recusas são as de [`users`].
+fn named_in<'m>(
+    map: &'m ProjectMap,
+    file: Option<&str>,
+    name: &str,
+) -> Result<Vec<(&'m MapModule, &'m MapDecl)>, MapRefusal> {
     let name = name.trim();
     let modules: Vec<&MapModule> = match file {
         Some(file) => vec![map.known(file)?],
         None => map.modules.iter().collect(),
     };
-    let mut found: Vec<DeclUsers> = modules
-        .iter()
-        .flat_map(|m| {
-            m.declarations.iter().filter(|d| d.name == name).map(|d| DeclUsers {
-                file: m.path.clone(),
-                kind: d.kind.clone(),
-                name: d.name.clone(),
-                line: d.line,
-                end_line: d.end_line.max(d.line),
-                used_by: d.used_by.clone(),
-            })
-        })
-        .collect();
+    let mut found: Vec<(&MapModule, &MapDecl)> =
+        modules.iter().flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(move |d| (*m, d))).collect();
     if found.is_empty() {
         let file = modules.first().filter(|_| file.is_some()).map_or_else(|| crate::io::project_map::MAP_FILE.to_string(), |m| m.path.clone());
         return Err(MapRefusal::UnknownDeclaration { file, name: name.to_string() });
     }
-    found.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    found.sort_by(|a, b| (&a.0.path, a.1.line).cmp(&(&b.0.path, b.1.line)));
     Ok(found)
+}
+
+/// O que o mapa liga a uma declaração: os donos dela, os membros quando ela é
+/// um tipo e as implementações quando ela é um método.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclRelations {
+    pub file: String,
+    pub kind: String,
+    pub name: String,
+    pub line: u64,
+    /// Do mais interno para o mais externo; o contrato escrito com o dono,
+    /// como o traço do `impl Traço for Tipo`, vem por último.
+    pub owners: Vec<String>,
+    /// Num tipo, os membros, os métodos primeiro.
+    pub members: Vec<DeclAt>,
+    /// Num método, o método do contrato que ele cumpre.
+    pub implements: Vec<DeclAt>,
+    /// Num método de contrato, os métodos que o cumprem.
+    pub implemented_by: Vec<DeclAt>,
+}
+
+/// Os donos, os membros e as implementações de cada declaração chamada
+/// `name`, em ordem de caminho e de linha. Com `file`, só as desse arquivo.
+/// As recusas são as de [`users`].
+pub fn relations(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<DeclRelations>, MapRefusal> {
+    Ok(named_in(map, file, name)?
+        .into_iter()
+        .map(|(m, d)| DeclRelations {
+            file: m.path.clone(),
+            kind: d.kind.clone(),
+            name: d.name.clone(),
+            line: d.line,
+            owners: d.owner.iter().chain(&d.contract).cloned().collect(),
+            members: d.members.clone(),
+            implements: d.implements.clone(),
+            implemented_by: d.implemented_by.clone(),
+        })
+        .collect())
 }
 
 /// O trecho de `text` da linha `line` à linha `end_line`, contadas a partir de

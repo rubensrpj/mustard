@@ -22,12 +22,25 @@ lacuna sozinho.
 | `@definition.<kind>` | Uma declaração; o sufixo `<kind>` vira `Decl.kind` literalmente. |
 | `@name` | O nome da `@definition.*` do mesmo pattern. |
 | `@supertype` | Um tipo-base, interface ou trait; o motor o liga, pelo nome, à declaração de mesmo `@name`, mesmo quando capturado num nó separado dela. |
+| `@owner` | O tipo dono escrito fora da `@definition.*` do mesmo pattern: o tipo do bloco `impl` do Rust, o receptor do método do Go. Só o nome, limpo como o do `@supertype`; o corpo em volta não é lido. Vai para `Decl.owner` depois das declarações do mesmo arquivo cuja faixa contém a dela, que são os donos dela sem captura nenhuma, da mais interna para a mais externa (a mesma faixa não conta). |
+| `@owner.contract` | O contrato que a `@definition.*` do mesmo pattern cumpre por onde foi escrita: o traço de `impl Traço for Tipo`. Vai para `Decl.contract`. |
 | `@decoration` | Um atributo ou anotação: o cabeçalho da declaração começa depois dele, o comentário acima passa por cima dele, e nada dentro dele vira chamada nem citação. |
 | `@body` | O corpo que a gramática põe ao lado da declaração, e não dentro dela: a declaração termina onde o corpo termina. |
 | `@value` | O valor dado à declaração: o cabeçalho para onde ele começa, e o `=` que sobra no fim sai (`export const PRECOS = { ... }` fica `export const PRECOS`). |
 | `@doc` | A documentação que a linguagem escreve dentro da declaração, e não em cima dela (a docstring do Python); o texto da captura já vem sem as aspas. O motor a junta à declaração do mesmo pattern, e o comentário de cima, quando existe, vale mais. |
 
 Qualquer outro nome de captura é ignorado.
+
+Do dono de cada declaração o grafo tira as ligações, refeitas do projeto
+inteiro a cada passada: os membros de um tipo (`class`, `struct`, `record`,
+`interface`, `trait`, `enum`, `type`) são as declarações cujo dono mais interno
+é ele, os métodos primeiro, e no enum só `enum_member`, `method`, `function`,
+`constant` e `const`; o método com o nome de um método do contrato o implementa
+(`Decl.implements`, e do outro lado `Decl.implemented_by`). O contrato é o
+`@owner.contract`; sem ele, quando o tipo dono contém o método, os
+`@supertype` do dono. Um nome de tipo repetido no projeto vale o do mesmo
+arquivo; senão, o de caminho com mais pastas em comum no começo; empatado, a
+ligação não entra.
 
 ## kinds-manifest.toml
 
@@ -39,9 +52,8 @@ compilar contra a versão da gramática (o motor descarta pattern ruim em
 silêncio, por design).
 
 Kinds de membro (`method`, `property`, `field`, `enum_member`) chegam ao mapa
-junto com as outras declarações do arquivo; a allowlist `is_significant`
-(mine.rs) é por kind e não os inclui — a mineração de papéis continua cega a
-membros.
+junto com as outras declarações do arquivo, e o grafo lista cada um sob o tipo
+dono dele (veja `@owner` acima).
 
 ## Proveniência e licença
 

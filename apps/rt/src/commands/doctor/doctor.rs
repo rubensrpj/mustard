@@ -24,7 +24,7 @@
 //!   reachable from cwd (consumer project).
 //! - **state health** — orphan `.pipeline-states/` files (no matching active
 //!   spec), expired `closed-followup` state files, missing
-//!   `grain.model.json`. WARN per anomaly.
+//!   `grain.db`. WARN per anomaly.
 //! - **nerd-font** — at least one Nerd Font detected in the OS font
 //!   directories. WARN with install hint (`mustard install-nerd-font`) when
 //!   absent. Powerline statusline themes require this; without it the

@@ -21,8 +21,8 @@ mod testmap;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
-use mustard_core::io::project_map as store;
-use std::collections::{BTreeSet, HashSet};
+use mustard_core::io::project_map::{self as store, Listing};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -171,8 +171,8 @@ struct Read {
 
 /// Walk the project and read every file `reuse` does not keep from the
 /// previous map (all of them without one), then resolve what each module
-/// imports.
-fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
+/// imports. Each module carries the blob `listing` gives its path.
+fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Listing>) -> Result<Read> {
     use mustard_core::domain::vocabulary::stacks::code_signals;
 
     let mut ing = ingest::ingest(root, reuse)?;
@@ -181,54 +181,62 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
     // once; they beat the marker catalog in both directions.
     let overrides = classify::Overrides::load(&ing.root);
 
-    let mut modules: Vec<Module> = Vec::with_capacity(ing.files.len());
-    for walked in std::mem::take(&mut ing.files) {
-        match walked {
-            ingest::Walked::Kept(mut kept) => {
-                // Recomputed below from the whole set of modules. The call
-                // sites and the citations are NOT cleared: they are what the file itself says,
-                // and a pass that did not read it again resolves the same
-                // declaration links from them.
-                kept.deps.clear();
-                kept.test_deps.clear();
-                kept.tests.clear();
-                modules.push(*kept);
-            }
-            ingest::Walked::Fresh(sf) => {
-                let extracted =
-                    analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
-                // Machine-written class (generated/vendored/lockfile/minified) —
-                // additive provenance on the module. The model keeps the module
-                // fully visible to the miner; the map leaves it out of its search
-                // and of its examples.
-                let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
-                    .map(|c| (c.class, c.marker))
-                    .unwrap_or_default();
-                let module = Module {
-                    path: sf.rel_path.clone(),
-                    language: sf.language,
-                    loc: sf.loc,
-                    imports: extracted.imports,
-                    global_imports: extracted.global_imports,
-                    test_imports: extracted.test_imports,
-                    test_deps: Vec::new(),
-                    test_lines: extracted.test_lines,
-                    module_lines: extracted.module_lines,
-                    import_lines: extracted.import_lines,
-                    call_paths: extracted.call_paths,
-                    namespaces: extracted.namespaces,
-                    declarations: extracted.declarations,
-                    file_class,
-                    marker,
-                    deps: Vec::new(),
-                    tests: Vec::new(),
-                    has_tests: testmap::has_inline_tests(&sf.content),
-                    signals: code_signals(&sf.content),
-                    calls: extracted.calls,
-                    cites: extracted.cites,
-                };
-                modules.push(module);
-            }
+    // Cada arquivo lido agora é extraído em paralelo com os outros; o que a
+    // passada toma do mapa anterior só perde o que se recalcula abaixo.
+    let extracted = ingest::in_parallel(std::mem::take(&mut ing.files), |walked| match walked {
+        ingest::Walked::Kept(mut kept) => {
+            // Recomputed below from the whole set of modules. The call
+            // sites and the citations are NOT cleared: they are what the file itself says,
+            // and a pass that did not read it again resolves the same
+            // declaration links from them.
+            kept.deps.clear();
+            kept.test_deps.clear();
+            kept.tests.clear();
+            Some(*kept)
+        }
+        ingest::Walked::Fresh(sf) => {
+            let extracted = analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
+            // Machine-written class (generated/vendored/lockfile/minified) —
+            // additive provenance on the module. The model keeps the module
+            // fully visible to the miner; the map leaves it out of its search
+            // and of its examples.
+            let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
+                .map(|c| (c.class, c.marker))
+                .unwrap_or_default();
+            Some(Module {
+                path: sf.rel_path.clone(),
+                blob: String::new(),
+                language: sf.language,
+                loc: sf.loc,
+                imports: extracted.imports,
+                global_imports: extracted.global_imports,
+                test_imports: extracted.test_imports,
+                test_deps: Vec::new(),
+                test_lines: extracted.test_lines,
+                module_lines: extracted.module_lines,
+                import_lines: extracted.import_lines,
+                call_paths: extracted.call_paths,
+                namespaces: extracted.namespaces,
+                declarations: extracted.declarations,
+                file_class,
+                marker,
+                deps: Vec::new(),
+                tests: Vec::new(),
+                has_tests: testmap::has_inline_tests(&sf.content),
+                signals: code_signals(&sf.content),
+                calls: extracted.calls,
+                cites: extracted.cites,
+            })
+        }
+        // A caminhada lê todo arquivo que deixou para depois.
+        ingest::Walked::Pending(_) => None,
+    });
+    let mut modules: Vec<Module> = extracted.into_iter().flatten().collect();
+    // O blob do conteúdo lido, o de agora: o do arquivo tomado do mapa
+    // anterior é o mesmo que ele guardava.
+    if let Some(listing) = listing {
+        for module in &mut modules {
+            module.blob = listing.blobs.get(&module.path).cloned().unwrap_or_default();
         }
     }
 
@@ -267,10 +275,11 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     use mustard_core::domain::project_map::History;
     use mustard_core::domain::vocabulary::stacks::infer_stacks;
 
-    let plan = refresh::plan(root, previous);
+    let listing = store::listing(root);
+    let plan = refresh::plan(root, previous, listing.as_ref());
     let (full, read) = match (&plan, previous) {
         (refresh::Plan::Only(changed), Some(prev)) => {
-            let first = read_modules(root, Some(&ingest::Reuse::new(changed, prev)))?;
+            let first = read_modules(root, Some(&ingest::Reuse::new(changed, prev)), listing.as_ref())?;
             // A file that did not change is read again when what changed may
             // give its citations a link the previous map had no room for.
             let fresh: BTreeSet<String> = first.ing.read.iter().cloned().collect();
@@ -279,10 +288,10 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                 (false, first)
             } else {
                 let wider: BTreeSet<String> = changed.iter().cloned().chain(stale).collect();
-                (false, read_modules(root, Some(&ingest::Reuse::new(&wider, prev)))?)
+                (false, read_modules(root, Some(&ingest::Reuse::new(&wider, prev)), listing.as_ref())?)
             }
         }
-        _ => (true, read_modules(root, None)?),
+        _ => (true, read_modules(root, None, listing.as_ref())?),
     };
     let Read { ing, mut modules, packages, aliases, graph: (graph_stats, depth_by_path) } = read;
 
@@ -291,6 +300,9 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     // module carries, so a pass that read only what changed links the same
     // declarations a full pass does.
     graph::link_declarations(&mut modules, &ing.go_module, &packages, &ing.manifests, &aliases);
+    // Cada tipo com os membros dele e cada método com o do contrato que ele
+    // cumpre, refeitos do projeto inteiro como as ligações acima.
+    graph::link_members(&mut modules);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     // The git history: only the commits since the previous pass, when that
@@ -329,18 +341,14 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     let mut projects = build_projects(&ing.manifests, &modules);
     infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &modules);
 
-    // What the next pass needs to read only what changed: this commit and the
-    // files not committed now (the ones the walk visits).
-    let walked: HashSet<&str> = ing.walk_paths.iter().map(String::as_str).collect();
-    let dirty: Vec<String> =
-        refresh::dirty(&ing.root).unwrap_or_default().into_iter().filter(|p| walked.contains(p.as_str())).collect();
+    // What the next pass needs to read only what changed: this commit, the
+    // mark of what git lists now and the blob of each file that decides a
+    // reading without being code.
+    let manifest_paths: Vec<&str> = ing.manifests.iter().map(|m| m.path.as_str()).collect();
     let state = model::ScanState {
-        // Sem commit (fora do git, ou um repositório que ainda não tem
-        // nenhum), o selo é distinto do vazio: o vazio continua significando
-        // "nada para comparar, leia tudo de novo", reservado ao mapa de uma
-        // passada anterior a este selo existir.
-        head: head.unwrap_or_else(|| refresh::NO_COMMIT_HEAD.to_string()),
-        dirty,
+        head: head.unwrap_or_default(),
+        listing: listing.as_ref().map(Listing::digest).unwrap_or_default(),
+        inputs: listing.as_ref().map(|l| refresh::inputs(l, &manifest_paths, &ing.non_utf8)).unwrap_or_default(),
         non_utf8: ing.non_utf8,
     };
 

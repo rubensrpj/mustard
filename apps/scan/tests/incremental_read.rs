@@ -180,3 +180,129 @@ fn a_namespace_import_links_the_same_when_only_another_file_changed() {
     assert_eq!(scan(&dir, &["--all"])["full"], json!(true));
     assert_eq!(model::read_bytes(&map_folder(&dir)), stepped, "reading only what changed gives the same map");
 }
+
+/// Um projeto git com o mapa fora dele, como a instalação o deixa, e um
+/// commit com `files`.
+fn project(prefix: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
+    let temp = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    for (rel, body) in files {
+        write(dir, rel, body);
+    }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "first"]);
+    temp
+}
+
+/// A linha em que o mapa gravado diz que `name` começa em `file`, se ele a
+/// declara.
+fn line_of(dir: &Path, file: &str, name: &str) -> Option<u64> {
+    let model = model::read(&map_folder(dir));
+    let module = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!(file))?.clone();
+    module["declarations"].as_array()?.iter().find(|d| d["name"] == json!(name)).and_then(|d| d["line"].as_u64())
+}
+
+/// O mapa lido por partes é o mapa lido de uma vez.
+fn same_as_a_full_pass(dir: &Path) {
+    let stepped = model::read_bytes(&map_folder(dir));
+    assert_eq!(scan(dir, &["--all"])["full"], json!(true));
+    assert_eq!(model::read_bytes(&map_folder(dir)), stepped, "reading only what changed gives the same map");
+}
+
+/// Editar um arquivo sem commit e ler de novo dá a linha nova, relendo só
+/// ele; a passada seguinte, sem nada mudado, não relê nada.
+#[test]
+fn an_edit_without_commit_is_read_and_gives_the_new_line() {
+    let temp = project("scan-blob-edit-", &[("src/a.rs", "pub fn alpha() {}\n"), ("src/b.rs", "pub fn beta() {}\n")]);
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    assert_eq!(line_of(dir, "src/a.rs", "alpha"), Some(1));
+
+    write(dir, "src/a.rs", "// topo\n\npub fn alpha() {}\n");
+    let second = scan(dir, &[]);
+    assert_eq!(second["full"], json!(false), "{second}");
+    assert_eq!(second["read"], json!(["src/a.rs"]), "{second}");
+    assert_eq!(line_of(dir, "src/a.rs", "alpha"), Some(3));
+    assert_eq!(scan(dir, &[])["read"], json!([]), "nothing changed since");
+    same_as_a_full_pass(dir);
+}
+
+/// Trocar de branch dá as linhas da branch nova, relendo só o que nela é
+/// diferente.
+#[test]
+fn switching_branch_gives_the_lines_of_the_new_branch() {
+    let temp = project("scan-blob-branch-", &[("src/a.rs", "pub fn alpha() {}\n"), ("src/b.rs", "pub fn beta() {}\n")]);
+    let dir = temp.path();
+    git(dir, &["checkout", "-q", "-b", "other"]);
+    write(dir, "src/a.rs", "\n\n\npub fn alpha() {}\n");
+    git(dir, &["commit", "-q", "-am", "moved"]);
+    git(dir, &["checkout", "-q", "main"]);
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    assert_eq!(line_of(dir, "src/a.rs", "alpha"), Some(1));
+
+    git(dir, &["checkout", "-q", "other"]);
+    let there = scan(dir, &[]);
+    assert_eq!(there["read"], json!(["src/a.rs"]), "{there}");
+    assert_eq!(line_of(dir, "src/a.rs", "alpha"), Some(4));
+    same_as_a_full_pass(dir);
+}
+
+/// Voltar a branch um commit tira do mapa a função que só existia nele.
+#[test]
+fn moving_the_branch_back_one_commit_drops_what_only_it_had() {
+    let temp = project("scan-blob-back-", &[("src/a.rs", "pub fn alpha() {}\n")]);
+    let dir = temp.path();
+    write(dir, "src/a.rs", "pub fn alpha() {}\npub fn gamma() {}\n");
+    git(dir, &["commit", "-q", "-am", "gamma"]);
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    assert_eq!(line_of(dir, "src/a.rs", "gamma"), Some(2));
+
+    git(dir, &["reset", "-q", "--hard", "HEAD~1"]);
+    let back = scan(dir, &[]);
+    assert_eq!(back["read"], json!(["src/a.rs"]), "{back}");
+    assert_eq!(line_of(dir, "src/a.rs", "gamma"), None, "the function only the dropped commit had is gone");
+    assert_eq!(line_of(dir, "src/a.rs", "alpha"), Some(1));
+    same_as_a_full_pass(dir);
+}
+
+/// O arquivo com o mesmo conteúdo em outra branch não é relido: mudar de
+/// branch para uma em que o conteúdo foi e voltou lê zero arquivos.
+#[test]
+fn the_same_content_on_another_branch_is_not_read_again() {
+    let temp = project("scan-blob-same-", &[("src/a.rs", "pub fn alpha() {}\n"), ("src/b.rs", "pub fn beta() {}\n")]);
+    let dir = temp.path();
+    git(dir, &["checkout", "-q", "-b", "other"]);
+    write(dir, "src/a.rs", "pub fn alpha() { todo!() }\n");
+    git(dir, &["commit", "-q", "-am", "there"]);
+    write(dir, "src/a.rs", "pub fn alpha() {}\n");
+    git(dir, &["commit", "-q", "-am", "and back"]);
+    git(dir, &["checkout", "-q", "main"]);
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    git(dir, &["checkout", "-q", "other"]);
+    let there = scan(dir, &[]);
+    assert_eq!(there["full"], json!(false), "{there}");
+    assert_eq!(there["read"], json!([]), "{there}");
+    let model = model::read(&map_folder(dir));
+    assert_eq!(model["history"]["commits"].as_array().unwrap().len(), 3, "the history follows the branch");
+}
+
+/// Um repositório ainda sem commit lê só o que mudou, como qualquer outro:
+/// o conteúdo de cada arquivo tem blob mesmo antes do primeiro commit.
+#[test]
+fn a_repository_with_no_commit_yet_reads_only_what_changed() {
+    let temp = tempfile::Builder::new().prefix("scan-blob-no-commit-").tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    write(dir, "a.rs", "pub fn a() {}\n");
+    write(dir, "b.rs", "pub fn b() {}\n");
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    assert_eq!(scan(dir, &[])["read"], json!([]), "nothing changed");
+    write(dir, "b.rs", "pub fn b() {}\npub fn c() {}\n");
+    assert_eq!(scan(dir, &[])["read"], json!(["b.rs"]));
+}

@@ -14,7 +14,7 @@
 //! mostrar.
 //!
 //! A detecção de linguagem também é uma só, em [`detect_code_languages`]:
-//! quando o projeto já foi mapeado (`.claude/grain.model.json` existe), o
+//! quando o projeto já foi mapeado (`.claude/grain.db` existe), o
 //! registro de pilhas atribui a cada subprojeto a linguagem do framework que
 //! ele detectou ([`crate::domain::source_lang::detected_languages`]); sem
 //! mapa — o caso comum, porque `mustard init` roda antes de qualquer scan —

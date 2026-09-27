@@ -21,7 +21,7 @@ use super::CheckResult;
 ///
 /// Two findings, both about the file the whole harness reads: a spec folder
 /// with no event file at all (nothing states what it is), and an event file
-/// that cannot be read. Plus the repository model (`grain.model.json`) the
+/// that cannot be read. Plus the repository model (`.claude/grain.db`) the
 /// scan produces, which is not state but is the other thing whose absence
 /// makes every later answer worse.
 pub(super) fn check_state_health(claude_dir: &Path) -> CheckResult {

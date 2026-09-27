@@ -15,11 +15,20 @@
 (const_spec (identifier) @name) @definition.const
 (const_spec (identifier) @name value: (_) @value) @definition.const
 
-; Members — receiver methods and struct fields. Member kinds reach the map with
-; the file's other declarations: the miner's significance gate (mine.rs) is
-; kind-based and never sees them. The method tag follows the upstream tree-sitter-go
-; tags.scm (MIT) — see queries/README.md.
+; Membros — métodos com receptor e campos de struct. Os kinds de membro chegam
+; ao mapa com as outras declarações do arquivo, e o grafo lista cada um sob o
+; tipo dono dele. A tag de método segue o tags.scm do tree-sitter-go (MIT) —
+; veja queries/README.md.
 (method_declaration name: (field_identifier) @name) @definition.method
+; O método com receptor é escrito fora do corpo do tipo: o dono dele é o tipo
+; do receptor, com ou sem ponteiro e sem os argumentos de tipo.
+(method_declaration
+  receiver: (parameter_list (parameter_declaration type: [
+    (type_identifier) @owner
+    (pointer_type (type_identifier) @owner)
+    (generic_type type: (type_identifier) @owner)
+    (pointer_type (generic_type type: (type_identifier) @owner))]))
+  name: (field_identifier) @name) @definition.method
 (field_declaration name: (field_identifier) @name) @definition.field
 
 ; An interface method is a member like a receiver method; left uncaptured, its

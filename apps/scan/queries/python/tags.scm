@@ -43,10 +43,10 @@
 (class_definition
   body: (block (function_definition name: (identifier) @name) @definition.method))
 
-; Members — class-level attributes (`name = ""` / `name: str = ""` in a class
-; body), the closest Python syntax has to a field declaration. Member kinds
-; reach the map with the file's other declarations: the miner's significance
-; gate (mine.rs) never treats them as units.
+; Membros — atributos no corpo da classe (`name = ""` / `name: str = ""`), o
+; mais perto que o Python tem de uma declaração de campo. Os kinds de membro
+; chegam ao mapa com as outras declarações do arquivo, e o grafo lista cada um
+; sob o tipo dono dele.
 (class_definition
   body: (block
     (expression_statement

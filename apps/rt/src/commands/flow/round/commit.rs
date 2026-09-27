@@ -268,22 +268,18 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
     let _ = mine(root, &mustard_core::io::project_map::model_path(root));
 }
 
-/// O mapa fica atrasado do commit atual do checkout `root`: o mapa não
-/// existe, não se entende, ou o commit que ele leu por último não é o de
-/// agora — um commit à mão ou um pull mudaram o código fora da rodada.
-/// Quando fica, chama [`refresh_map`] com o mesmo `mine`, a releitura por
-/// partes que a rodada já faz depois de cada commit dela; sem git, sem mapa
-/// ou com o mapeador falhando, segue sem travar e sem aviso novo.
+/// A conferência do mapa com o conteúdo de agora, antes de toda resposta
+/// dele: quando o commit do checkout `root` ou o conteúdo de algum arquivo
+/// não é o da passada que gravou o mapa — um arquivo editado sem commit,
+/// uma troca de branch, um commit à mão ou um pull —, chama [`refresh_map`]
+/// com o mesmo `mine`, que relê só os arquivos de blob novo. Decide pelo
+/// estado gravado, sem ler o mapa inteiro. Sem git, sem mapa ou com o
+/// mapeador falhando, segue sem travar e sem aviso novo, e nunca cria o
+/// mapa.
 pub(crate) fn refresh_map_if_stale(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
-    let Ok(map) = mustard_core::io::project_map::read(root) else { return };
-    if map.state.head.is_empty() {
-        return;
+    if mustard_core::io::project_map::is_behind(root) {
+        refresh_map(root, mine);
     }
-    let Some(now) = git_exec::run(root, &["rev-parse", "HEAD"]).out() else { return };
-    if map.state.head == now.trim() {
-        return;
-    }
-    refresh_map(root, mine);
 }
 
 /// Os arquivos da rodada separados por repositório: os do principal e, por
@@ -910,7 +906,6 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use mustard_core::domain::project_map::{MapState, ProjectMap};
     use mustard_core::io::project_map;
     use mustard_core::io::spec_events as store;
     use tempfile::tempdir;
@@ -927,63 +922,73 @@ mod tests {
         }
     }
 
-    /// Sem mapa no disco, sem git no diretório e com um mapa cujo commit já
-    /// bate com o do checkout, a ferramenta do scan nunca roda por
-    /// [`refresh_map_if_stale`]; e, quando ela falha, a chamada não trava nem
-    /// propaga o erro.
+    /// Sem mapa no disco, sem git no diretório e com um mapa que já é o do
+    /// commit e do conteúdo de agora, a ferramenta do scan nunca roda por
+    /// [`refresh_map_if_stale`]; um arquivo editado sem commit, um commit à
+    /// mão e o mapa gravado sem a listagem a fazem rodar; e, quando ela
+    /// falha, a chamada não trava nem propaga o erro.
     #[test]
     fn a_stale_map_without_what_it_needs_never_breaks() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let calls = std::cell::Cell::new(0);
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        // O mapa gravado com o estado de uma passada: o commit e a marca da
+        // listagem que ela leu.
+        let map_at = |head: &str, listing: &str| {
+            project_map::write_text(root, &format!(r#"{{"state": {{"head": "{head}", "listing": "{listing}"}}}}"#)).unwrap();
+        };
 
-        // Sem mapa: nada a comparar, a ferramenta não roda.
+        // Sem mapa: nada a comparar, a ferramenta não roda, e nenhum mapa
+        // nasce.
         refresh_map_if_stale(root, &mine_counting(&calls));
         assert_eq!(calls.get(), 0, "sem mapa, a ferramenta não é chamada");
+        assert!(!project_map::model_path(root).exists(), "a conferência não cria mapa");
 
-        // Mapa sem o commit gravado (mapa antigo, de antes deste campo): idem.
-        let map_at = |head: &str| ProjectMap { state: MapState { head: head.to_string() }, ..ProjectMap::default() };
-        project_map::write(root, &map_at("")).unwrap();
-        refresh_map_if_stale(root, &mine_counting(&calls));
-        assert_eq!(calls.get(), 0, "sem o head gravado, a ferramenta não é chamada");
-
-        // Mapa com um commit gravado, mas fora de um repositório git: sem
-        // como comparar, a ferramenta não roda.
-        project_map::write(root, &map_at("abc123")).unwrap();
+        // Mapa fora de um repositório git: sem como comparar, a ferramenta
+        // não roda.
+        map_at("abc123", "x");
         refresh_map_if_stale(root, &mine_counting(&calls));
         assert_eq!(calls.get(), 0, "sem git, a ferramenta não é chamada");
 
-        // Um repositório git de verdade, com o mapa já no commit atual: a
-        // ferramenta segue sem rodar.
-        std::process::Command::new("git").args(["init", "-q"]).current_dir(root).output().expect("git init");
-        for args in [["config", "user.email"], ["config", "user.name"]] {
-            std::process::Command::new("git").args(args).arg("t").current_dir(root).output().expect("git config");
-        }
+        // Um repositório git de verdade, com o mapa já no commit e no
+        // conteúdo de agora: a ferramenta segue sem rodar. O próprio mapa,
+        // fora do git e sem regra que o ignore, não conta como mudança.
+        git(&["init", "-q"]);
         std::fs::write(root.join("a.txt"), "x").unwrap();
-        std::process::Command::new("git").args(["add", "-A"]).current_dir(root).output().expect("git add");
-        std::process::Command::new("git")
-            .args(["commit", "-q", "-m", "semente"])
-            .current_dir(root)
-            .output()
-            .expect("git commit");
-        let head = String::from_utf8_lossy(
-            &std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap().stdout,
-        )
-        .trim()
-        .to_string();
-        project_map::write(root, &map_at(&head)).unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "semente"]);
+        let now = project_map::listing(root).expect("dentro do git");
+        map_at(&now.head, &now.digest());
         refresh_map_if_stale(root, &mine_counting(&calls));
-        assert_eq!(calls.get(), 0, "o mapa já está no commit atual");
+        assert_eq!(calls.get(), 0, "o mapa já é o do commit e do conteúdo de agora");
 
-        // O commit andou fora da rodada e a ferramenta falha: a chamada
-        // tenta reler, mas o erro não trava nem propaga.
-        std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-q", "-m", "fora da rodada"])
-            .current_dir(root)
-            .output()
-            .expect("git commit");
+        // Um arquivo editado sem commit: a ferramenta relê, e a falha dela
+        // não trava nem propaga.
+        std::fs::write(root.join("a.txt"), "y").unwrap();
         refresh_map_if_stale(root, &mine_counting(&calls));
-        assert_eq!(calls.get(), 1, "o commit andou: a ferramenta é chamada, mesmo falhando");
+        assert_eq!(calls.get(), 1, "o conteúdo mudou sem commit: a ferramenta é chamada, mesmo falhando");
+
+        // O commit andou com o mesmo conteúdo: a história do mapa ficou para
+        // trás.
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        git(&["commit", "--allow-empty", "-q", "-m", "fora da rodada"]);
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 2, "o commit andou: a ferramenta é chamada");
+
+        // O mapa de antes da listagem, só com o commit: relê.
+        let now = project_map::listing(root).expect("dentro do git");
+        map_at(&now.head, "");
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 3, "o mapa sem a listagem é relido");
     }
 
     /// A mensagem do commit tem título e corpo dentro do teto e nunca traz o

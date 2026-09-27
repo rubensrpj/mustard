@@ -250,6 +250,13 @@ enum CapKind {
     CallPath,
     Name,
     Supertype,
+    /// O tipo dono escrito fora da declaração do mesmo pattern (o de um bloco
+    /// `impl`, o receptor de um método): vem depois dos donos que a contêm no
+    /// arquivo.
+    Owner,
+    /// O contrato que a declaração do mesmo pattern cumpre por onde foi
+    /// escrita (o traço de `impl Traço for Tipo`).
+    Contract,
     /// An attribute or decorator adorning a declaration: never code of it.
     Decoration,
     /// The body of a declaration that the grammar keeps beside it rather than
@@ -279,6 +286,8 @@ fn classify(cap: &str) -> CapKind {
         "call.path" => CapKind::CallPath,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
+        "owner" => CapKind::Owner,
+        "owner.contract" => CapKind::Contract,
         "decoration" => CapKind::Decoration,
         "body" => CapKind::Body,
         "value" => CapKind::Value,
@@ -373,6 +382,9 @@ impl Analyzer {
             let mut name_text: Option<String> = None;
             let mut name_byte = usize::MAX;
             let mut here_supers: Vec<String> = Vec::new();
+            // O dono e o contrato escritos fora da declaração deste match.
+            let mut here_owner: Vec<String> = Vec::new();
+            let mut here_contract: Vec<String> = Vec::new();
             let mut body_end: Option<usize> = None;
             let mut value_start: Option<usize> = None;
             let mut name_kind: &'static str = "";
@@ -457,6 +469,17 @@ impl Analyzer {
                                 here_supers.push(n);
                             }
                     }
+                    CapKind::Owner | CapKind::Contract => {
+                        if let Ok(t) = node.utf8_text(bytes)
+                            && let Some(n) = simple_type_name(t) {
+                                let into = if matches!(self.cap_kinds[cap.index as usize], CapKind::Owner) {
+                                    &mut here_owner
+                                } else {
+                                    &mut here_contract
+                                };
+                                into.push(n);
+                            }
+                    }
                     CapKind::TestBlock => {
                         test_blocks.insert((node.start_byte(), node.end_byte()));
                         out.test_lines.push((node.start_position().row + 1, node.end_position().row + 1));
@@ -498,6 +521,8 @@ impl Analyzer {
                     body_end: None,
                     value_start: None,
                     doc_inside: None,
+                    owner: Vec::new(),
+                    contract: Vec::new(),
                 });
                 // Two patterns may give the same declaration two kinds (a
                 // `const` field is a field too): the one written first in the
@@ -507,6 +532,15 @@ impl Analyzer {
                     header.pattern = m.pattern_index;
                 }
                 header.body_end = header.body_end.max(body_end);
+                // Two patterns may write the same declaration's owner and its
+                // contract apart: each name counts once.
+                for (into, names) in [(&mut header.owner, &here_owner), (&mut header.contract, &here_contract)] {
+                    for name in names {
+                        if !into.contains(name) {
+                            into.push(name.clone());
+                        }
+                    }
+                }
                 // Two patterns may give the same declaration: the earliest
                 // value and the earliest inner documentation win.
                 header.value_start = earliest(header.value_start, value_start);
@@ -567,9 +601,15 @@ impl Analyzer {
                     signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
                     calls: Vec::new(),
                     used_by: Vec::new(),
+                    owner: h.owner,
+                    contract: h.contract,
+                    members: Vec::new(),
+                    implements: Vec::new(),
+                    implemented_by: Vec::new(),
                 }
             })
             .collect();
+        owners_in_file(&mut out.declarations);
 
         // The call sites and the citations of the file, minus the
         // declaration headers themselves (`foo` in `fn foo(` is where it is
@@ -677,6 +717,42 @@ struct Header<'t> {
     /// The documentation written inside the declaration (where it starts, and
     /// its text), when a query marks it.
     doc_inside: Option<(usize, String)>,
+    /// O tipo dono escrito fora da declaração (`@owner`).
+    owner: Vec<String>,
+    /// O contrato que ela cumpre por onde foi escrita (`@owner.contract`).
+    contract: Vec<String>,
+}
+
+/// Os donos de cada declaração no próprio arquivo: as que têm a faixa (da
+/// primeira à última linha) contendo a dela, da mais interna para a mais
+/// externa, antes do dono escrito fora dela. A mesma faixa não conta. Em ordem
+/// de começo, e cada faixa aberta sai quando uma declaração começa depois do
+/// fim dela: nenhuma declaração seguinte cabe mais nela.
+fn owners_in_file(decls: &mut [Decl]) {
+    let mut order: Vec<usize> = (0..decls.len()).collect();
+    order.sort_by_key(|&i| (decls[i].line, std::cmp::Reverse(decls[i].end_line)));
+    let mut open: Vec<usize> = Vec::new();
+    let mut found: Vec<Vec<String>> = vec![Vec::new(); decls.len()];
+    for i in order {
+        let (line, end) = (decls[i].line, decls[i].end_line);
+        open.retain(|&o| decls[o].end_line >= line);
+        found[i] = open
+            .iter()
+            .rev()
+            .map(|&o| &decls[o])
+            .filter(|o| o.line <= line && end <= o.end_line && (o.line, o.end_line) != (line, end))
+            .map(|o| o.name.clone())
+            .collect();
+        open.push(i);
+    }
+    for (decl, mut owners) in decls.iter_mut().zip(found) {
+        for name in std::mem::take(&mut decl.owner) {
+            if !owners.contains(&name) {
+                owners.push(name);
+            }
+        }
+        decl.owner = owners;
+    }
 }
 
 /// Where the names of a statement that declares several are written: the

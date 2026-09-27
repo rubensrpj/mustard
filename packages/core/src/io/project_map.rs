@@ -16,14 +16,16 @@
 //! guarda não entra no banco. Quem grava entrega o mapa em JSON e quem lê o
 //! recebe de volta igual, sem saber das tabelas.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use rusqlite::types::{Value as Sql, ValueRef};
 use rusqlite::{params_from_iter, Connection};
 use serde_json::{Map, Value};
 
-use crate::domain::project_map::{MapRefusal, ProjectMap};
+use crate::domain::project_map::{
+    Commit, History, MapDecl, MapDegree, MapLanguage, MapModule, MapProject, MapRefusal, MapSkeleton, ProjectMap,
+};
 use crate::io::map_db::{self, Block, Kind, MapDb};
 use crate::platform::error::{Error, Result};
 
@@ -221,12 +223,16 @@ fn filled_by_the_scan(_: &Connection, _: &Path) -> Result<()> {
 }
 
 /// O censo: o estado da leitura, as pilhas, os projetos, as línguas, os
-/// manifestos e o esqueleto das pastas.
-pub const CENSUS: MapBlock = block!("census", version 1, {
+/// manifestos e o esqueleto das pastas. O estado guarda o commit lido, a
+/// marca da listagem do git daquela passada ([`Listing::digest`]) e o blob
+/// de cada arquivo que decide a releitura sem ser código: os manifestos, os
+/// que mudam a leitura de todos os outros e os que não se decodificaram.
+pub const CENSUS: MapBlock = block!("census", version 2, {
     "census" at Place::One => [
         "root" Text,
         "head" Text ["state", "head"],
-        "dirty" Json ["state", "dirty"],
+        "listing" Text ["state", "listing"],
+        "inputs" Json ["state", "inputs"],
         "non_utf8" Json ["state", "non_utf8"],
         "frameworks" Json,
         "detected_stacks" Json,
@@ -244,21 +250,25 @@ pub const CENSUS: MapBlock = block!("census", version 1, {
 });
 
 /// Os arquivos: o que a passada que não relê um arquivo toma do mapa para
-/// ele, fora as declarações e as ligações.
-pub const FILES: MapBlock = block!("files", version 1, {
+/// ele, fora as declarações e as ligações, e o blob do git do conteúdo que
+/// ela leu.
+pub const FILES: MapBlock = block!("files", version 2, {
     "files" at Place::Files => [
-        "path" Text, "language" Text, "loc" Int, "file_class" Text, "marker" Text, "has_tests" Flag,
+        "path" Text, "blob" Text, "language" Text, "loc" Int, "file_class" Text, "marker" Text, "has_tests" Flag,
         "namespaces" Json, "imports" Json, "global_imports" Json, "test_imports" Json,
         "test_lines" Json, "module_lines" Json, "import_lines" Json, "signals" Json
     ]
 });
 
 /// As declarações e os textos delas: o arquivo, o tipo, o nome, as linhas, a
-/// assinatura, a documentação e quem usa cada uma.
-pub const DECLS: MapBlock = block!("decls", version 1, {
+/// assinatura, a documentação e quem usa cada uma; o dono e o contrato
+/// escritos com ela; os membros de cada tipo e as implementações de cada
+/// método, que a passada refaz do projeto inteiro como refaz os usos.
+pub const DECLS: MapBlock = block!("decls", version 2, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
-        "signature" Text, "doc" Text, "supertypes" Json, "calls" Json, "used_by" Json
+        "signature" Text, "doc" Text, "supertypes" Json, "calls" Json, "used_by" Json,
+        "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
     ]
 });
 
@@ -400,6 +410,473 @@ fn plain_json(value: Sql) -> Value {
         Sql::Text(text) => Value::String(text),
         Sql::Blob(bytes) => Value::String(format!("<{} bytes>", bytes.len())),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Leitura por pergunta
+// ---------------------------------------------------------------------------
+
+/// O que uma pergunta ao mapa precisa ler. Cada uma lê só as tabelas dela,
+/// direto das linhas, sem montar o mapa inteiro: o [`ProjectMap`] que volta
+/// traz só as partes que a pergunta usa, e as perguntas de
+/// `domain::project_map` respondem dele o mesmo que responderiam do mapa
+/// inteiro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need<'a> {
+    /// Nada além de o mapa se abrir: só as recusas de mapa ausente e de
+    /// mapa ilegível.
+    Nothing,
+    /// O resumo do início da sessão: o caminho de cada arquivo, as línguas,
+    /// os subprojetos, os arquivos mais importados e a história.
+    Summary,
+    /// O terreno do início da sessão: os subprojetos e a camada de cada
+    /// pasta.
+    Terrain,
+    /// Os caminhos dos arquivos, e nada mais deles.
+    Paths,
+    /// Quem importa o arquivo: ele e os arquivos que o importam, com as
+    /// importações de cada um.
+    Importers(&'a str),
+    /// Os testes do arquivo: ele, com os testes que o cobrem e a marca dos
+    /// próprios testes.
+    Tests(&'a str),
+    /// As declarações com o nome, com o arquivo delas; com `file`, só as
+    /// desse arquivo, que vem mesmo sem nenhuma.
+    Declarations { file: Option<&'a str>, name: &'a str },
+    /// Os exemplos para uma tarefa: cada arquivo com o tamanho, a classe, os
+    /// testes e as importações, e a história. Com `words`, também os nomes
+    /// que cada arquivo declara, que a busca da pasta usa.
+    Examples { words: bool },
+}
+
+/// O mapa do projeto em `root` com só o que `need` pede, com as mesmas
+/// recusas de [`read`].
+pub fn read_for(root: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> {
+    let db = open_existing(&model_path(root))?;
+    part_of(db.conn(), need).map_err(unreadable)
+}
+
+fn part_of(conn: &Connection, need: Need<'_>) -> Result<ProjectMap> {
+    use crate::domain::project_map::clean_path;
+    let mut map = ProjectMap::default();
+    match need {
+        Need::Nothing => {}
+        Need::Summary => {
+            map.modules = file_rows(conn, &["path"], None)?.into_iter().map(module_of).collect::<Result<_>>()?;
+            map.languages = languages(conn)?;
+            map.projects = projects(conn)?;
+            map.graph.top_fan_in = fan_in(conn)?;
+            map.history = history(conn)?;
+        }
+        Need::Terrain => {
+            map.projects = projects(conn)?;
+            map.skeleton = skeleton(conn)?;
+        }
+        Need::Paths => {
+            map.modules = file_rows(conn, &["path"], None)?.into_iter().map(module_of).collect::<Result<_>>()?;
+        }
+        Need::Importers(file) => map.modules = importers(conn, &clean_path(file))?,
+        Need::Tests(file) => map.modules = tests_of(conn, &clean_path(file))?,
+        Need::Declarations { file, name } => {
+            map.modules = named(conn, file.map(clean_path).as_deref(), name.trim())?;
+        }
+        Need::Examples { words } => {
+            map.modules = example_modules(conn, words)?;
+            map.history = history(conn)?;
+        }
+    }
+    Ok(map)
+}
+
+/// O nome entre aspas de uma tabela declarada; a tabela que nenhum bloco
+/// declara é recusada.
+fn table_name(table: &str) -> Result<String> {
+    declared_table(table).map(|found| quoted(found.name))
+}
+
+fn declared_table(table: &str) -> Result<&'static Table> {
+    BLOCKS
+        .iter()
+        .flat_map(|block| block.tables)
+        .find(|found| found.name == table)
+        .ok_or_else(|| Error::Parse(format!("the map declares no table `{table}`")))
+}
+
+/// As colunas `columns` da tabela `table`, entre aspas e com o nome da
+/// tabela na frente, separadas por vírgula; a coluna que a tabela não
+/// declara é recusada.
+fn column_names(table: &str, columns: &[&str]) -> Result<String> {
+    let found = declared_table(table)?;
+    let names = columns
+        .iter()
+        .map(|column| {
+            if found.columns.iter().any(|declared| declared.name == *column) {
+                Ok(format!("{}.{}", quoted(found.name), quoted(column)))
+            } else {
+                Err(Error::Parse(format!("the map table `{table}` declares no column `{column}`")))
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(names.join(", "))
+}
+
+/// Uma linha lida, com as colunas pedidas na ordem em que se pediram.
+type Picked = Vec<Sql>;
+
+/// As colunas `columns` de cada linha de `table`, na ordem em que entraram,
+/// só das linhas que `filter` (o `WHERE`, com `params`) deixa.
+fn picked(conn: &Connection, table: &str, columns: &[&str], filter: &str, params: &[&str]) -> Result<Vec<Picked>> {
+    let name = table_name(table)?;
+    let filter = if filter.is_empty() { String::new() } else { format!(" WHERE {filter}") };
+    let sql = format!("SELECT {} FROM {name}{filter} ORDER BY {name}.rowid", column_names(table, columns)?);
+    let mut stmt = conn.prepare(&sql)?;
+    let width = columns.len();
+    let rows = stmt
+        .query_map(params_from_iter(params), |row| (0..width).map(|at| row.get::<_, Sql>(at)).collect::<rusqlite::Result<Picked>>())?
+        .collect::<rusqlite::Result<Vec<Picked>>>()?;
+    Ok(rows)
+}
+
+/// As colunas `columns` das linhas da tabela dos arquivos: de todas, ou só
+/// da do caminho `path`.
+fn file_rows(conn: &Connection, columns: &[&str], path: Option<&str>) -> Result<Vec<Picked>> {
+    match path {
+        None => picked(conn, "files", columns, "", &[]),
+        Some(path) => picked(conn, "files", columns, &format!("{} = ?1", column_names("files", &["path"])?), &[path]),
+    }
+}
+
+/// O texto de uma célula; vazio quando ela está vazia.
+fn text_cell(value: &Sql) -> String {
+    match value {
+        Sql::Text(text) => text.clone(),
+        _ => String::new(),
+    }
+}
+
+/// O número de uma célula; zero quando ela está vazia.
+fn int_cell(value: &Sql) -> i64 {
+    match value {
+        Sql::Integer(n) => *n,
+        _ => 0,
+    }
+}
+
+/// O valor guardado em JSON numa célula, lido como `T`; o padrão quando
+/// ela está vazia.
+fn json_cell<T: serde::de::DeserializeOwned + Default>(value: &Sql) -> Result<T> {
+    match value {
+        Sql::Text(text) => serde_json::from_str(text).map_err(|e| Error::Parse(format!("map cell holds broken JSON: {e}"))),
+        _ => Ok(T::default()),
+    }
+}
+
+/// O arquivo de uma linha que só traz o caminho.
+fn module_of(row: Picked) -> Result<MapModule> {
+    Ok(MapModule { path: row.first().map(text_cell).unwrap_or_default(), ..MapModule::default() })
+}
+
+fn languages(conn: &Connection) -> Result<Vec<MapLanguage>> {
+    picked(conn, "languages", &["language", "files", "loc"], "", &[])?
+        .iter()
+        .map(|row| Ok(MapLanguage { language: text_cell(&row[0]), files: int_cell(&row[1]) as usize, loc: int_cell(&row[2]) as usize }))
+        .collect()
+}
+
+fn projects(conn: &Connection) -> Result<Vec<MapProject>> {
+    picked(conn, "projects", &["name", "dir", "kind", "code_files"], "", &[])?
+        .iter()
+        .map(|row| {
+            Ok(MapProject {
+                name: text_cell(&row[0]),
+                dir: text_cell(&row[1]),
+                kind: text_cell(&row[2]),
+                code_files: int_cell(&row[3]) as usize,
+            })
+        })
+        .collect()
+}
+
+fn skeleton(conn: &Connection) -> Result<Vec<MapSkeleton>> {
+    picked(conn, "skeleton", &["dir", "role"], "", &[])?
+        .iter()
+        .map(|row| Ok(MapSkeleton { dir: text_cell(&row[0]), role: text_cell(&row[1]) }))
+        .collect()
+}
+
+fn fan_in(conn: &Connection) -> Result<Vec<MapDegree>> {
+    picked(conn, "fan_in", &["module", "degree"], "", &[])?
+        .iter()
+        .map(|row| Ok(MapDegree { module: text_cell(&row[0]), degree: int_cell(&row[1]) as usize }))
+        .collect()
+}
+
+fn history(conn: &Connection) -> Result<History> {
+    let paths = picked(conn, "history_paths", &["path"], "", &[])?.iter().map(|row| text_cell(&row[0])).collect();
+    let commits = picked(conn, "commits", &["id", "at", "added", "changed"], "", &[])?
+        .iter()
+        .map(|row| {
+            Ok(Commit { id: text_cell(&row[0]), at: int_cell(&row[1]), added: json_cell(&row[2])?, changed: json_cell(&row[3])? })
+        })
+        .collect::<Result<_>>()?;
+    Ok(History { paths, commits })
+}
+
+/// O arquivo `file` e os que o importam, na ordem do mapa, cada um com as
+/// importações dele.
+fn importers(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
+    let files = table_name("files")?;
+    let links = table_name("links")?;
+    let (path, link_path) = (column_names("files", &["path"])?, column_names("links", &["path"])?);
+    let deps = column_names("links", &["deps"])?;
+    let sql = format!(
+        "SELECT {path}, {deps} FROM {files} LEFT JOIN {links} ON {link_path} = {path} \
+         WHERE {path} = ?1 OR EXISTS (SELECT 1 FROM json_each({deps}) WHERE json_each.value = ?1) ORDER BY {files}.rowid"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([file], |row| Ok((row.get::<_, Sql>(0)?, row.get::<_, Sql>(1)?)))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (path, deps) = row?;
+        out.push(MapModule { path: text_cell(&path), deps: json_cell(&deps)?, ..MapModule::default() });
+    }
+    Ok(out)
+}
+
+/// O arquivo `file`, com a marca dos próprios testes e os testes que o
+/// cobrem.
+fn tests_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
+    let Some(row) = file_rows(conn, &["path", "has_tests"], Some(file))?.into_iter().next() else { return Ok(Vec::new()) };
+    let tests = picked(conn, "links", &["tests"], &format!("{} = ?1", column_names("links", &["path"])?), &[file])?;
+    Ok(vec![MapModule {
+        path: text_cell(&row[0]),
+        has_tests: int_cell(&row[1]) != 0,
+        tests: tests.first().map(|row| json_cell(&row[0])).transpose()?.unwrap_or_default(),
+        ..MapModule::default()
+    }])
+}
+
+/// As colunas de uma declaração que as perguntas pelo nome leem.
+const NAMED_COLUMNS: [&str; 13] = [
+    "file", "kind", "name", "line", "end_line", "doc", "signature", "used_by",
+    "owner", "contract", "members", "implements", "implemented_by",
+];
+
+/// A declaração de uma linha com as colunas de [`NAMED_COLUMNS`].
+fn named_decl(row: &Picked) -> Result<MapDecl> {
+    Ok(MapDecl {
+        kind: text_cell(&row[1]),
+        name: text_cell(&row[2]),
+        line: int_cell(&row[3]) as u64,
+        end_line: int_cell(&row[4]) as u64,
+        doc: text_cell(&row[5]),
+        signature: text_cell(&row[6]),
+        used_by: json_cell(&row[7])?,
+        owner: json_cell(&row[8])?,
+        contract: json_cell(&row[9])?,
+        members: json_cell(&row[10])?,
+        implements: json_cell(&row[11])?,
+        implemented_by: json_cell(&row[12])?,
+    })
+}
+
+/// As declarações chamadas `name`, cada uma no arquivo dela, na ordem do
+/// mapa. Com `file`, só as desse arquivo, que vem mesmo sem nenhuma; o
+/// arquivo que o mapa não tem não vem.
+fn named(conn: &Connection, file: Option<&str>, name: &str) -> Result<Vec<MapModule>> {
+    let decl_file = column_names("decls", &["file"])?;
+    let decl_name = column_names("decls", &["name"])?;
+    let Some(file) = file else {
+        let rows = picked(conn, "decls", &NAMED_COLUMNS, &format!("{decl_name} = ?1"), &[name])?;
+        let owners: BTreeSet<String> = rows.iter().map(|row| text_cell(&row[0])).collect();
+        let mut modules: Vec<MapModule> = Vec::new();
+        if !owners.is_empty() {
+            for row in file_rows(conn, &["path"], None)? {
+                if owners.contains(&text_cell(&row[0])) {
+                    modules.push(module_of(row)?);
+                }
+            }
+        }
+        for row in &rows {
+            let owner = text_cell(&row[0]);
+            if let Some(module) = modules.iter_mut().find(|module| module.path == owner) {
+                module.declarations.push(named_decl(row)?);
+            }
+        }
+        return Ok(modules);
+    };
+    let Some(row) = file_rows(conn, &["path"], Some(file))?.into_iter().next() else { return Ok(Vec::new()) };
+    let mut module = module_of(row)?;
+    for row in picked(conn, "decls", &NAMED_COLUMNS, &format!("{decl_file} = ?1 AND {decl_name} = ?2"), &[file, name])? {
+        module.declarations.push(named_decl(&row)?);
+    }
+    Ok(vec![module])
+}
+
+/// Cada arquivo com o que os exemplos leem dele: o tamanho, a classe, a
+/// marca dos próprios testes, as importações e os testes que o cobrem; com
+/// `words`, também os nomes que ele declara.
+fn example_modules(conn: &Connection, words: bool) -> Result<Vec<MapModule>> {
+    let mut modules: Vec<MapModule> = file_rows(conn, &["path", "loc", "file_class", "has_tests"], None)?
+        .iter()
+        .map(|row| MapModule {
+            path: text_cell(&row[0]),
+            loc: int_cell(&row[1]) as usize,
+            file_class: text_cell(&row[2]),
+            has_tests: int_cell(&row[3]) != 0,
+            ..MapModule::default()
+        })
+        .collect();
+    let mut at: HashMap<String, usize> = HashMap::new();
+    for (index, module) in modules.iter().enumerate() {
+        at.entry(module.path.clone()).or_insert(index);
+    }
+    for row in picked(conn, "links", &["path", "deps", "tests"], "", &[])? {
+        if let Some(&index) = at.get(&text_cell(&row[0])) {
+            modules[index].deps = json_cell(&row[1])?;
+            modules[index].tests = json_cell(&row[2])?;
+        }
+    }
+    if words {
+        for row in picked(conn, "decls", &["file", "name"], "", &[])? {
+            if let Some(&index) = at.get(&text_cell(&row[0])) {
+                modules[index].declarations.push(MapDecl { name: text_cell(&row[1]), ..MapDecl::default() });
+            }
+        }
+    }
+    Ok(modules)
+}
+
+// ---------------------------------------------------------------------------
+// O conteúdo do projeto, pelo git
+// ---------------------------------------------------------------------------
+
+/// Quantos caminhos vão numa chamada só ao git que calcula blobs.
+const HASH_BATCH: usize = 256;
+
+/// O modo que o índice do git dá a um submódulo.
+const SUBMODULE_MODE: &str = "160000";
+
+/// Cada arquivo do projeto como está agora, pelo git: o commit do checkout e
+/// o id do blob do conteúdo de cada arquivo, pelo caminho relativo à pasta
+/// lida. O arquivo comitado e intocado vem do índice; o mudado, o novo e o
+/// que só está no índice vêm do mesmo cálculo sobre o conteúdo de agora. O
+/// próprio mapa e o diário dele ficam de fora: senão cada gravação dele
+/// mudaria a listagem.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Listing {
+    /// O commit do checkout; vazio num repositório sem commit.
+    pub head: String,
+    /// O blob de cada arquivo, pelo caminho.
+    pub blobs: BTreeMap<String, String>,
+}
+
+impl Listing {
+    /// Uma marca curta e estável de todos os pares caminho e blob: duas
+    /// listagens com a mesma marca têm os mesmos arquivos com os mesmos
+    /// conteúdos.
+    #[must_use]
+    pub fn digest(&self) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for (path, blob) in &self.blobs {
+            for byte in path.bytes().chain([0]).chain(blob.bytes()).chain([0]) {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        format!("{hash:016x}-{}", self.blobs.len())
+    }
+}
+
+/// O git em `root`, com os caminhos escritos como são; `None` quando ele
+/// falha ou falta.
+fn git_out(root: &Path, args: &[&str]) -> Option<String> {
+    let mut full = vec!["-c", "core.quotePath=false"];
+    full.extend(args);
+    let run = crate::platform::git::run(root, &full);
+    run.ok.then_some(run.stdout)
+}
+
+/// O conteúdo do projeto em `root` agora, pelo git. `None` fora do git.
+#[must_use]
+pub fn listing(root: &Path) -> Option<Listing> {
+    let own = [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME].map(|name| format!("{MAP_DIR}/{name}"));
+    let blobs = blobs_under(root, &own)?;
+    let head = git_out(root, &["rev-parse", "--verify", "-q", "HEAD"]).map(|out| out.trim().to_string()).unwrap_or_default();
+    Some(Listing { head, blobs })
+}
+
+/// O blob de cada arquivo sob `root`, com os de dentro dos submódulos
+/// iniciados, pelo caminho relativo a `root`, fora os caminhos `skip`, que
+/// nem se calculam.
+fn blobs_under(root: &Path, skip: &[String]) -> Option<BTreeMap<String, String>> {
+    let staged = git_out(root, &["ls-files", "-s", "-z"])?;
+    let mut blobs = BTreeMap::new();
+    let mut nested = Vec::new();
+    for entry in staged.split('\0') {
+        let Some((meta, path)) = entry.split_once('\t') else { continue };
+        let mut parts = meta.split(' ');
+        let (Some(mode), Some(blob)) = (parts.next(), parts.next()) else { continue };
+        if mode == SUBMODULE_MODE {
+            nested.push(path.to_string());
+        } else if !skip.iter().any(|own| own == path) {
+            blobs.insert(path.to_string(), blob.to_string());
+        }
+    }
+    let prefix = git_out(root, &["rev-parse", "--show-prefix"])?.trim().to_string();
+    let status = git_out(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."])?;
+    let mut fresh = Vec::new();
+    let mut fields = status.split('\0');
+    while let Some(entry) = fields.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let (code, path) = entry.split_at(3);
+        // A troca de nome e a cópia trazem o caminho antigo no campo seguinte.
+        if code[..2].contains(['R', 'C']) {
+            let _ = fields.next();
+        }
+        // Os caminhos da situação partem do topo do repositório.
+        let Some(rel) = path.strip_prefix(prefix.as_str()) else { continue };
+        if skip.iter().any(|own| own == rel) {
+            blobs.remove(rel);
+        } else if root.join(rel).is_file() {
+            fresh.push(rel.to_string());
+        } else {
+            blobs.remove(rel);
+        }
+    }
+    for batch in fresh.chunks(HASH_BATCH) {
+        let mut args = vec!["hash-object", "--"];
+        args.extend(batch.iter().map(String::as_str));
+        let hashed = git_out(root, &args)?;
+        for (path, blob) in batch.iter().zip(hashed.lines()) {
+            blobs.insert(path.clone(), blob.trim().to_string());
+        }
+    }
+    for sub in nested {
+        let dir = root.join(&sub);
+        if !dir.join(".git").exists() {
+            continue;
+        }
+        for (path, blob) in blobs_under(&dir, &[]).unwrap_or_default() {
+            blobs.insert(format!("{sub}/{path}"), blob);
+        }
+    }
+    Some(blobs)
+}
+
+/// O mapa de `root` ficou atrás do conteúdo de agora: o commit do checkout
+/// ou algum arquivo mudou desde a passada que o gravou. Lê só o estado
+/// gravado, nunca o mapa inteiro. `false` sem mapa, com um mapa que não se
+/// lê e fora do git: não há com que comparar.
+#[must_use]
+pub fn is_behind(root: &Path) -> bool {
+    let Ok(db) = open_existing(&model_path(root)) else { return false };
+    let Ok(rows) = picked(db.conn(), "census", &["head", "listing"], "", &[]) else { return false };
+    let Some(now) = listing(root) else { return false };
+    let (head, digest) = rows.first().map_or_else(Default::default, |row| (text_cell(&row[0]), text_cell(&row[1])));
+    head != now.head || digest != now.digest()
 }
 
 /// O banco em `model`, que já tem de existir: sem o arquivo, a recusa de
@@ -944,7 +1421,7 @@ fn quoted(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::project_map::{MapModule, MapState};
+    use crate::domain::project_map::{DeclAt, MapModule, MapState};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -1016,6 +1493,54 @@ mod tests {
         assert_eq!(MAP_JOURNAL_FILE_NAME, format!("{MAP_FILE_NAME}-journal"));
     }
 
+    /// A listagem dá, pelo caminho relativo à pasta lida, o blob do que cada
+    /// arquivo guarda agora: o do índice para o intocado, o do conteúdo para
+    /// o editado e para o novo, nada para o apagado; o próprio mapa e o
+    /// diário dele ficam de fora, e a marca muda com o conteúdo.
+    #[test]
+    fn the_listing_gives_the_blob_of_what_each_file_holds_now() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        let git = |args: &[&str]| -> String {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        std::fs::write(repo.join("top.txt"), "fora\n").unwrap();
+        std::fs::write(repo.join("sub/a.txt"), "a\n").unwrap();
+        std::fs::write(repo.join("sub/gone.txt"), "g\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "first"]);
+        let root = repo.join("sub");
+
+        let first = listing(&root).expect("dentro do git");
+        assert_eq!(first.head, git(&["rev-parse", "HEAD"]));
+        assert_eq!(first.blobs.keys().collect::<Vec<_>>(), ["a.txt", "gone.txt"], "só o que mora na pasta lida");
+        assert_eq!(first.blobs["a.txt"], git(&["hash-object", "sub/a.txt"]));
+
+        std::fs::write(root.join("a.txt"), "a mudado\n").unwrap();
+        std::fs::write(root.join("new.txt"), "novo\n").unwrap();
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+        std::fs::create_dir_all(root.join(MAP_DIR)).unwrap();
+        std::fs::write(root.join(MAP_DIR).join(MAP_FILE_NAME), "mapa").unwrap();
+        std::fs::write(root.join(MAP_DIR).join(MAP_JOURNAL_FILE_NAME), "diário").unwrap();
+        let now = listing(&root).expect("dentro do git");
+        assert_eq!(now.blobs.keys().collect::<Vec<_>>(), ["a.txt", "new.txt"]);
+        assert_eq!(now.blobs["a.txt"], git(&["hash-object", "sub/a.txt"]));
+        assert_eq!(now.blobs["new.txt"], git(&["hash-object", "sub/new.txt"]));
+        assert_ne!(now.digest(), first.digest());
+        assert_eq!(now.digest(), listing(&root).unwrap().digest(), "a mesma listagem, a mesma marca");
+
+        assert_eq!(listing(tempdir().unwrap().path()), None, "fora do git não há listagem");
+    }
+
     /// Um mapa como o scan o grava: uma chave de cada jeito de guardar, em
     /// cada tabela, com lista vazia, chave que falta e chave que o banco não
     /// guarda.
@@ -1027,12 +1552,15 @@ mod tests {
             "frameworks": ["serde"],
             "skeleton": [{"dir": "src", "role": "L0"}],
             "modules": [
-                {"path": "src/a.rs", "language": "rust", "loc": 10, "imports": [], "namespaces": [],
+                {"path": "src/a.rs", "blob": "a1", "language": "rust", "loc": 10, "imports": [], "namespaces": [],
                  "test_lines": [[8, 10]], "import_lines": {"crate::b": [1]}, "has_tests": true,
                  "declarations": [
                     {"kind": "function", "name": "alpha", "line": 1, "end_line": 3, "supertypes": [],
                      "doc": "Soma um.", "signature": "fn alpha(s: &str) -> \"a\\b\"\n\t\u{1} ação", "used_by": ["src/b.rs:2:beta"]},
-                    {"kind": "struct", "name": "Alpha", "line": 5, "end_line": 6, "supertypes": ["Base"]}
+                    {"kind": "struct", "name": "Alpha", "line": 5, "end_line": 6, "supertypes": ["Base"],
+                     "members": ["src/a.rs:7:run"]},
+                    {"kind": "method", "name": "run", "line": 7, "end_line": 7, "owner": ["Alpha"], "contract": ["Base"],
+                     "implements": ["src/b.rs:3:run"], "implemented_by": ["src/c.rs:9:run"]}
                  ],
                  "deps": ["src/b.rs"], "calls": ["beta:2", "b.beta:4"], "call_paths": {"crate::b": ["beta:4"]}},
                 {"path": "src/b.rs", "language": "rust", "loc": 20, "imports": ["crate::a"], "namespaces": [],
@@ -1046,7 +1574,7 @@ mod tests {
                           "scripts": [], "detected_stacks": [{"stack": "rust", "confidence": 0.5}]}],
             "shared_contracts": [{"name": "Base", "implementors": 3}],
             "detected_stacks": [],
-            "state": {"head": "abc", "dirty": ["src/a.rs"]},
+            "state": {"head": "abc", "listing": "00ff-2", "inputs": {"Cargo.toml": "b1"}},
             "history": {"paths": ["src/a.rs", "src/b.rs"], "commits": [{"id": "c1", "at": 10, "added": [0, 1]}, {"id": "c2", "at": 20, "changed": [1]}]}
         })
     }
@@ -1074,6 +1602,19 @@ mod tests {
         // A leitura das perguntas vê o mesmo mapa.
         let read = read_at(&model).unwrap();
         assert_eq!(read.modules[0].declarations[0].used_by[0].file, "src/b.rs");
+        // O dono, o contrato e as ligações de membro e de implementação voltam
+        // com a declaração.
+        let run = &read.modules[0].declarations[2];
+        assert_eq!((run.owner.as_slice(), run.contract.as_slice()), (&["Alpha".to_string()][..], &["Base".to_string()][..]));
+        assert_eq!(read.modules[0].declarations[1].members[0], DeclAt { file: "src/a.rs".into(), line: 7, name: "run".into() });
+        assert_eq!(run.implements[0], DeclAt { file: "src/b.rs".into(), line: 3, name: "run".into() });
+        assert_eq!(run.implemented_by[0].file, "src/c.rs");
+        // A pergunta pelo nome lê as mesmas ligações só das colunas dela.
+        let asked = read_for(dir.path(), Need::Declarations { file: None, name: "run" }).unwrap();
+        assert_eq!(
+            serde_json::to_value(&asked.modules[0].declarations[0]).unwrap(),
+            serde_json::to_value(run).unwrap()
+        );
         assert_eq!(read.graph.top_fan_in[0].module, "src/b.rs");
         assert_eq!(read.history.commits.len(), 2);
     }

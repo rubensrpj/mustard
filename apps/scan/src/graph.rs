@@ -54,7 +54,7 @@
 //!     Nothing here switches on a language name, so a new language needs no change.
 //!     Imports that resolve to nothing internal are treated as external deps.
 
-use crate::model::{CallSite, Decl, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
+use crate::model::{CallSite, Decl, DeclAt, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
 use crate::path_aliases::PathAliases;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::RefCell;
@@ -622,6 +622,187 @@ fn enclosing(declarations: &[Decl], line: usize) -> Option<usize> {
         }
     }
     best
+}
+
+/// Os tipos que têm membros: a declaração liga ao dono mais interno dela só
+/// quando ele é um destes.
+const TYPE_KINDS: &[&str] = &["class", "struct", "record", "interface", "trait", "enum", "type"];
+
+/// No enum, só estes são membros: o campo de uma variante não é.
+const ENUM_MEMBER_KINDS: &[&str] = &["enum_member", "method", "function", "constant", "const"];
+
+/// O que implementa e o que é implementado: os métodos, que em algumas línguas
+/// o mapa grava como função.
+const METHOD_KINDS: &[&str] = &["method", "function"];
+
+/// Uma declaração do projeto: o arquivo e a posição dela nele.
+type DeclId = (usize, usize);
+
+/// As declarações que cada uma liga, pela posição.
+type Links = HashMap<DeclId, Vec<DeclId>>;
+
+/// O que se grava numa declaração: os membros, o que ela implementa e o que a
+/// implementa.
+#[derive(Default)]
+struct Linked {
+    members: Vec<DeclAt>,
+    implements: Vec<DeclAt>,
+    implemented_by: Vec<DeclAt>,
+}
+
+/// Os membros de cada tipo e as implementações de cada método, refeitos do
+/// zero a cada passada a partir do dono e do contrato que cada declaração traz
+/// do arquivo dela (`Decl::owner`, `Decl::contract`). A passada que releu só
+/// o que mudou liga o mesmo que a passada inteira: o dono escrito fora da
+/// declaração volta do mapa com o arquivo que não mudou.
+///
+/// - Membros de um tipo: as declarações cujo dono mais interno é ele. O dono
+///   que contém a declaração no arquivo é o dela; o escrito fora dela (o tipo
+///   do `impl`, o receptor) se acha pelo nome. No enum, só os tipos de
+///   [`ENUM_MEMBER_KINDS`]. Os métodos vêm primeiro.
+/// - Implementação: o método com o nome de um método do contrato. O contrato
+///   é o escrito com o dono (o traço de `impl Traço for Tipo`); sem ele, e
+///   quando o tipo dono contém o método, os tipos de que o dono parte
+///   (`Decl::supertypes`).
+/// - Um nome de tipo repetido no projeto vale o do mesmo arquivo; senão, o de
+///   caminho mais parecido (mais pastas em comum no começo); empatado, a
+///   ligação não entra.
+pub fn link_members(modules: &mut [Module]) {
+    let (members, implements) = resolve_members(modules);
+    let at = |modules: &[Module], (mi, di): DeclId| {
+        let d = &modules[mi].declarations[di];
+        DeclAt { file: modules[mi].path.clone(), line: d.line, name: d.name.clone() }
+    };
+    let mut linked: HashMap<DeclId, Linked> = HashMap::new();
+    for (ty, list) in &members {
+        linked.entry(*ty).or_default().members = list.iter().map(|&m| at(modules, m)).collect();
+    }
+    for (method, targets) in &implements {
+        for &target in targets {
+            linked.entry(*method).or_default().implements.push(at(modules, target));
+            linked.entry(target).or_default().implemented_by.push(at(modules, *method));
+        }
+    }
+    for (mi, m) in modules.iter_mut().enumerate() {
+        for (di, d) in m.declarations.iter_mut().enumerate() {
+            let Linked { members, mut implements, mut implemented_by } = linked.remove(&(mi, di)).unwrap_or_default();
+            implements.sort();
+            implements.dedup();
+            implemented_by.sort();
+            implemented_by.dedup();
+            d.members = members;
+            d.implements = implements;
+            d.implemented_by = implemented_by;
+        }
+    }
+}
+
+/// A faixa de `outer` contém a de `inner`, e não é a mesma.
+fn contains(outer: &Decl, inner: &Decl) -> bool {
+    outer.line <= inner.line
+        && inner.end_line <= outer.end_line
+        && (outer.line, outer.end_line) != (inner.line, inner.end_line)
+}
+
+/// Os membros de cada tipo, na ordem em que o mapa os lista, e o que cada
+/// método implementa. Separado de [`link_members`] para ler o projeto inteiro
+/// antes de escrever em qualquer declaração.
+fn resolve_members(modules: &[Module]) -> (Links, Links) {
+    let decl = |(mi, di): DeclId| &modules[mi].declarations[di];
+    let mut types: HashMap<&str, Vec<DeclId>> = HashMap::new();
+    let mut named: HashMap<(usize, &str), Vec<usize>> = HashMap::new();
+    for (mi, m) in modules.iter().enumerate() {
+        for (di, d) in m.declarations.iter().enumerate() {
+            if TYPE_KINDS.contains(&d.kind.as_str()) {
+                types.entry(d.name.as_str()).or_default().push((mi, di));
+            }
+            named.entry((mi, d.name.as_str())).or_default().push(di);
+        }
+    }
+    // O tipo chamado `name` visto do arquivo `from`: o do mesmo arquivo, ou o
+    // de caminho mais parecido; empatado, nenhum.
+    let pick = |name: &str, from: usize| -> Option<DeclId> {
+        let found = types.get(name)?;
+        let same: Vec<DeclId> = found.iter().copied().filter(|&(mi, _)| mi == from).collect();
+        if !same.is_empty() {
+            return (same.len() == 1).then(|| same[0]);
+        }
+        let shared = |&(mi, _): &DeclId| common_folders(&modules[from].path, &modules[mi].path);
+        let best = found.iter().map(shared).max()?;
+        let mut closest = found.iter().copied().filter(|id| shared(id) == best);
+        let first = closest.next()?;
+        closest.next().is_none().then_some(first)
+    };
+    // O dono mais interno de cada declaração, quando ele é um tipo: o do
+    // mesmo arquivo que a contém, ou o escrito fora dela, pelo nome.
+    let mut owner_of: HashMap<DeclId, DeclId> = HashMap::new();
+    for (mi, m) in modules.iter().enumerate() {
+        for (di, d) in m.declarations.iter().enumerate() {
+            let Some(name) = d.owner.first() else { continue };
+            let inside = named
+                .get(&(mi, name.as_str()))
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&oi| contains(&m.declarations[oi], d))
+                .min_by_key(|&oi| {
+                    let o = &m.declarations[oi];
+                    (o.end_line.saturating_sub(o.line), std::cmp::Reverse(o.line))
+                });
+            let owner = match inside {
+                Some(oi) => Some((mi, oi)).filter(|&id| TYPE_KINDS.contains(&decl(id).kind.as_str())),
+                None => pick(name, mi),
+            };
+            if let Some(owner) = owner
+                && owner != (mi, di)
+                && (decl(owner).kind != "enum" || ENUM_MEMBER_KINDS.contains(&d.kind.as_str()))
+            {
+                owner_of.insert((mi, di), owner);
+            }
+        }
+    }
+    let mut members: Links = HashMap::new();
+    for (&member, &owner) in &owner_of {
+        members.entry(owner).or_default().push(member);
+    }
+    for list in members.values_mut() {
+        list.sort_by_key(|&(mi, di)| {
+            let d = &modules[mi].declarations[di];
+            (!METHOD_KINDS.contains(&d.kind.as_str()), modules[mi].path.as_str(), d.line, di)
+        });
+    }
+    let mut implements: Links = HashMap::new();
+    for (&method, &owner) in &owner_of {
+        let d = decl(method);
+        if !METHOD_KINDS.contains(&d.kind.as_str()) {
+            continue;
+        }
+        let contracts: Vec<DeclId> = if !d.contract.is_empty() {
+            d.contract.iter().filter_map(|name| pick(name, method.0)).collect()
+        } else if owner.0 == method.0 && contains(decl(owner), d) {
+            decl(owner).supertypes.iter().filter_map(|name| pick(name, owner.0)).collect()
+        } else {
+            Vec::new()
+        };
+        for contract in contracts.into_iter().filter(|&c| c != owner) {
+            let same_name = members
+                .get(&contract)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&m| METHOD_KINDS.contains(&decl(m).kind.as_str()) && decl(m).name == d.name);
+            implements.entry(method).or_default().extend(same_name);
+        }
+    }
+    (members, implements)
+}
+
+/// Quantas pastas os dois caminhos têm em comum, a partir do começo.
+fn common_folders(a: &str, b: &str) -> usize {
+    fn folders(path: &str) -> impl Iterator<Item = &str> {
+        path.rsplit_once('/').map(|(dir, _)| dir).into_iter().flat_map(|dir| dir.split('/'))
+    }
+    folders(a).zip(folders(b)).take_while(|(x, y)| x == y).count()
 }
 
 fn build_stem_index(modules: &[Module]) -> HashMap<String, Vec<String>> {

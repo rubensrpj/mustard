@@ -45,6 +45,37 @@ pub struct SourceFile {
 pub(crate) enum Walked {
     Fresh(SourceFile),
     Kept(Box<Module>),
+    /// A ler ainda: só dentro da caminhada, que lê todos no fim dela.
+    Pending(Pending),
+}
+
+/// Um arquivo de código que a caminhada vai ler.
+pub(crate) struct Pending {
+    rel: String,
+    language: String,
+    path: PathBuf,
+    topdir: String,
+}
+
+/// `work` sobre cada item de `items`, dividido entre os núcleos da máquina,
+/// com as respostas na ordem dos itens.
+pub(crate) fn in_parallel<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    if threads < 2 || items.len() < 2 {
+        return items.into_iter().map(work).collect();
+    }
+    let per_thread = items.len().div_ceil(threads);
+    let mut chunks: Vec<Vec<T>> = Vec::new();
+    let mut items = items.into_iter().peekable();
+    while items.peek().is_some() {
+        chunks.push(items.by_ref().take(per_thread).collect());
+    }
+    let work = &work;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> =
+            chunks.into_iter().map(|chunk| scope.spawn(move || chunk.into_iter().map(work).collect::<Vec<R>>())).collect();
+        handles.into_iter().flat_map(|handle| handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
+    })
 }
 
 /// What an incremental pass may take from the previous map instead of reading
@@ -193,26 +224,8 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
                 non_utf8_paths.push(rel);
                 continue;
             }
-            let content = match fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => {
-                    non_utf8 += 1; // a code-extension file we couldn't decode
-                    non_utf8_paths.push(rel);
-                    continue;
-                }
-            };
-            read.push(rel.clone());
-            let loc = content.lines().filter(|l| !l.trim().is_empty()).count();
-            let entry = lang_counts.entry(lang.clone()).or_insert((0, 0));
-            entry.0 += 1;
-            entry.1 += loc;
-            *top_code.entry(topdir).or_default() += 1;
-            files.push(Walked::Fresh(SourceFile {
-                rel_path: rel,
-                language: lang,
-                loc,
-                content,
-            }));
+            // Lido depois da caminhada, junto com os outros, em paralelo.
+            files.push(Walked::Pending(Pending { rel, language: lang, path: path.to_path_buf(), topdir }));
         } else {
             // Seen but not mined: record its extension so the user can verify
             // nothing relevant was silently dropped.
@@ -224,6 +237,35 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
             *unsupported.entry(ext).or_default() += 1;
             *top_other.entry(topdir).or_default() += 1;
         }
+    }
+
+    // Os arquivos a ler, lidos todos de uma vez, e contados na ordem da
+    // caminhada, como se tivessem sido lidos nela.
+    let pending: Vec<Walked> = std::mem::take(&mut files);
+    let contents = in_parallel(pending, |walked| match walked {
+        Walked::Pending(file) => {
+            let content = fs::read_to_string(&file.path).ok();
+            (Walked::Pending(file), content)
+        }
+        other => (other, None),
+    });
+    for (walked, content) in contents {
+        let Walked::Pending(file) = walked else {
+            files.push(walked);
+            continue;
+        };
+        let Some(content) = content else {
+            non_utf8 += 1; // a code-extension file we couldn't decode
+            non_utf8_paths.push(file.rel);
+            continue;
+        };
+        read.push(file.rel.clone());
+        let loc = content.lines().filter(|l| !l.trim().is_empty()).count();
+        let entry = lang_counts.entry(file.language.clone()).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += loc;
+        *top_code.entry(file.topdir).or_default() += 1;
+        files.push(Walked::Fresh(SourceFile { rel_path: file.rel, language: file.language, loc, content }));
     }
 
     let mut languages: Vec<LanguageStat> = lang_counts

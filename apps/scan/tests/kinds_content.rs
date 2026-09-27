@@ -22,9 +22,10 @@
 //!
 //! The UNIT/MEMBER line every entry below encodes: a named type is a unit; a
 //! free (top-level) function is a unit; anything declared INSIDE a type — a
-//! method, a field, a property, an enum member — is a member. `mine.rs` mines
-//! roles from units only, so a dialect that files a member as `function`
-//! silently promotes helpers into architecture.
+//! method, a field, a property, an enum member — is a member. O kind é o que o
+//! mapa devolve com cada declaração, e o grafo o lê: um campo ou uma
+//! propriedade é lido, nunca chamado, e nenhuma chamada liga a ele; e os
+//! membros de um tipo saem com os métodos primeiro.
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;

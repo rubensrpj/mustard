@@ -175,6 +175,10 @@ pub struct SkeletonEntry {
 #[serde(default)]
 pub struct Module {
     pub path: String,
+    /// O id do blob do git do conteúdo que a passada leu; vazio fora do git.
+    /// A passada seguinte relê o arquivo só quando o blob de agora é outro.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub blob: String,
     pub language: String,
     pub loc: usize,
     pub imports: Vec<String>,
@@ -351,13 +355,18 @@ fn is_false(b: &bool) -> bool {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct ScanState {
-    /// The commit checked out at the last pass (empty outside git).
+    /// The commit checked out at the last pass (empty outside git and
+    /// before the first commit). It says where the history stopped.
     pub head: String,
-    /// The files that were not committed at the last pass: they are read
-    /// again even when git says nothing changed since, because they may have
-    /// been put back.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub dirty: Vec<String>,
+    /// A marca da listagem do git que a passada leu: a conferência antes de
+    /// cada pergunta ao mapa a compara com a de agora, sem ler o mapa.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub listing: String,
+    /// O blob de cada arquivo que decide a releitura sem ser código: os
+    /// manifestos, os que mudam a leitura de todos os outros e os que não se
+    /// decodificaram, pelo caminho.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, String>,
     /// Source files that could not be decoded, so an unchanged one is counted
     /// without being opened again.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -404,12 +413,35 @@ pub struct Decl {
     /// [`crate::graph::link_declarations`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub used_by: Vec<UseSite>,
+    /// Os donos da declaração, do mais interno para o mais externo: as
+    /// declarações do mesmo arquivo cuja faixa contém a dela e, depois, o
+    /// tipo escrito fora dela (`@owner`). Só os nomes, lidos com o arquivo:
+    /// voltam do mapa com o arquivo que não mudou.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owner: Vec<String>,
+    /// O contrato que a declaração cumpre por onde foi escrita
+    /// (`@owner.contract`), só os nomes, lidos com o arquivo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contract: Vec<String>,
+    /// Num tipo, as declarações que o têm como dono mais interno, os métodos
+    /// primeiro. Preenchido por [`crate::graph::link_members`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<DeclAt>,
+    /// Num método, o método de mesmo nome do contrato que ele cumpre.
+    /// Preenchido por [`crate::graph::link_members`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implements: Vec<DeclAt>,
+    /// Num método de contrato, os métodos que o cumprem. Preenchido por
+    /// [`crate::graph::link_members`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implemented_by: Vec<DeclAt>,
 }
 
-/// One use of a declaration, `file:line:from`. The type lives in the core,
-/// next to the map questions that read it, so the side that writes the map and
-/// the side that answers from it understand the same text.
-pub use mustard_core::domain::project_map::UseSite;
+/// One use of a declaration, `file:line:from`, and one declaration a link
+/// points to, `file:line:name`. The types live in the core, next to the map
+/// questions that read them, so the side that writes the map and the side that
+/// answers from it understand the same text.
+pub use mustard_core::domain::project_map::{DeclAt, UseSite};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]

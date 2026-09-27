@@ -32,10 +32,9 @@
 (trait_item name: (type_identifier) @name) @definition.trait
 (type_item name: (type_identifier) @name) @definition.type
 
-; Constants — `const` and `static`, the two Rust forms of a named value fixed
-; at compile time. Kept as one kind: neither is a callable or a type, and
-; `mine.rs::is_significant` leaves the kind out of both allowlists, so a
-; constant never becomes an architectural unit.
+; Constantes — `const` e `static`, as duas formas do Rust de um valor com nome
+; fixado na compilação. Um kind só para as duas: nenhuma é chamada nem é tipo,
+; e o grafo liga a constante só onde ela é citada, nunca como chamada.
 (const_item name: (identifier) @name) @definition.constant
 ; The value of a `const` is not its header: `pub const LIMITE: u32 = 10;`
 ; reads `pub const LIMITE: u32`.
@@ -52,12 +51,20 @@
 (source_file (function_item name: (identifier) @name) @definition.function)
 (mod_item body: (declaration_list (function_item name: (identifier) @name) @definition.function))
 (impl_item body: (declaration_list (function_item name: (identifier) @name) @definition.method))
+
+; O bloco `impl` não é declaração: o método e a constante escritos nele têm
+; como dono o tipo da linha do `impl`, e o de `impl Traço for Tipo` cumpre o
+; traço. Só a linha do `impl` é lida; o corpo dele não.
+(impl_item type: (_) @owner body: (declaration_list (function_item name: (identifier) @name) @definition.method))
+(impl_item trait: (_) @owner.contract body: (declaration_list (function_item name: (identifier) @name) @definition.method))
+(impl_item type: (_) @owner body: (declaration_list (const_item name: (identifier) @name) @definition.constant))
+(impl_item trait: (_) @owner.contract body: (declaration_list (const_item name: (identifier) @name) @definition.constant))
 (trait_item body: (declaration_list (function_item name: (identifier) @name) @definition.method))
 (trait_item body: (declaration_list (function_signature_item name: (identifier) @name) @definition.method))
 
-; Members — struct fields and enum variants. Member kinds reach the map with
-; the file's other declarations: the miner's significance gate (mine.rs) never
-; treats them as units.
+; Membros — campos de struct e variantes de enum. Os kinds de membro chegam ao
+; mapa com as outras declarações do arquivo, e o grafo lista cada um sob o
+; tipo dono dele.
 (field_declaration name: (field_identifier) @name) @definition.field
 (enum_variant name: (identifier) @name) @definition.enum_member
 

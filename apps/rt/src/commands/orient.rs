@@ -2,7 +2,7 @@
 //!
 //! ## Why this exists
 //!
-//! The `/scan` already mines the whole repo into `.claude/grain.model.json`:
+//! The `/scan` already mines the whole repo into `.claude/grain.db`:
 //! the subprojects, the kind of each, and the architectural layer of each.
 //! Without this projection that map is reduced to three counters and never
 //! handed back to the AI, so every request cold-starts with `grep`. This
@@ -34,7 +34,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use mustard_core::io::project_map;
+use mustard_core::domain::project_map::ProjectMap;
+use mustard_core::io::project_map::{self, Need};
 use mustard_core::{translate, SupportedLocale};
 
 // ===========================================================================
@@ -72,10 +73,11 @@ struct TerrainRow {
 /// byte-identical projection.
 #[must_use]
 pub fn compute_orientation(root: &Path) -> Orientation {
-    let Ok(model) = project_map::read(root) else {
-        return Orientation::default();
-    };
+    project_map::read_for(root, Need::Terrain).map_or_else(|_| Orientation::default(), |model| orientation_of(&model))
+}
 
+/// O terreno de um mapa já lido: só os subprojetos e as camadas dele contam.
+fn orientation_of(model: &ProjectMap) -> Orientation {
     // The architectural subprojects (skeleton-filtered).
     let skeleton: HashMap<&str, &str> =
         model.skeleton.iter().map(|s| (s.dir.as_str(), s.role.as_str())).collect();
@@ -288,6 +290,23 @@ mod tests {
 - (root) · npm · 12 arquivos — L2"
         );
         assert_eq!(rendered, expected);
+    }
+
+    /// O terreno lido só dos subprojetos e das camadas sai igual, byte a
+    /// byte, ao terreno lido do mapa inteiro, também com arquivos e história
+    /// no mapa.
+    #[test]
+    fn the_terrain_read_from_its_tables_matches_the_whole_map() {
+        let with_files = FIXTURE.replacen(
+            '{',
+            r#"{"modules": [{"path": "apps/rt/src/main.rs", "loc": 10}],
+                "history": {"paths": ["apps/rt/src/main.rs"], "commits": [{"id": "c1", "at": 1, "added": [0]}]},"#,
+            1,
+        );
+        let (_d, root) = seed(&with_files);
+        let now = render_terrain(&compute_orientation(&root), SupportedLocale::PtBr).expect("terrain");
+        let whole = render_terrain(&orientation_of(&project_map::read(&root).unwrap()), SupportedLocale::PtBr);
+        assert_eq!(Some(now), whole);
     }
 
     /// The aggregate-dir shape: `skeleton[]` records a parent dir

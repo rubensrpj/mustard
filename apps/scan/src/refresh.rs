@@ -1,25 +1,25 @@
 //! Incremental reading and the git history the map keeps.
 //!
-//! A pass reads again only what can have changed since the previous one: the
-//! files git says changed between the commit the previous pass read and the
-//! one checked out now, the files not committed now, and the files that were
-//! not committed then (they may have been put back since). Everything else is
-//! taken from the previous map as it was. Outside git, without a previous
-//! map, or when a part of the previous map the pass takes from was written by
-//! another scanner build — or came back empty because its format changed —,
-//! every file is read.
+//! A pass reads again only the files whose content changed since the
+//! previous one: each file carries the git blob id of the content the pass
+//! read, and a file whose blob now is the same is taken from the previous map
+//! as it was, on any branch, committed or not. Outside git, without a
+//! previous map, when a part of the previous map the pass takes from was
+//! written by another scanner build — or came back empty because its format
+//! changed —, or when a file that changes how every other one is read
+//! changed, every file is read.
 //!
 //! The history comes from the local repository (`git log`), never from the
 //! network: the first pass reads it whole, and the next ones read only the
 //! commits after the one the previous pass stopped at.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use mustard_core::platform::git as git_exec;
 
 use mustard_core::domain::project_map::{History, RawCommit, MAX_COMMITS};
-use mustard_core::io::project_map::{MapBlock, CENSUS, DECLS, FILES, GRAPH};
+use mustard_core::io::project_map::{Listing, MapBlock, CENSUS, DECLS, FILES, GRAPH};
 
 use crate::model::{Module, ProjectModel};
 
@@ -46,8 +46,8 @@ fn fresh(prev: &ProjectModel, block: &MapBlock) -> bool {
 /// Files whose change alters how every other file is classified: when one of
 /// them changed, everything is read again. Os arquivos de configuração de
 /// apelidos de pasta que o registro declara entram pela mesma porta (ver
-/// [`only_or_full`]): um apelido novo liga citações que a passada anterior
-/// deixou fora do mapa.
+/// [`rereads_everything`]): um apelido novo liga citações que a passada
+/// anterior deixou fora do mapa.
 const GLOBAL_INPUTS: &[&str] = &[".gitattributes", ".editorconfig"];
 
 /// What a pass has to read.
@@ -75,109 +75,70 @@ pub(crate) fn head(root: &Path) -> Option<String> {
     git(root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// Where `root` sits inside its repository (`apps/scan/`), empty at the top.
-fn prefix(root: &Path) -> Option<String> {
-    git(root, &["rev-parse", "--show-prefix"]).map(|s| s.trim().to_string())
-}
-
-/// The files under `root` that are not committed — changed, staged or new —
-/// relative to `root`, in name order.
-pub(crate) fn dirty(root: &Path) -> Option<Vec<String>> {
-    let prefix = prefix(root)?;
-    let out = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."])?;
-    let mut paths = BTreeSet::new();
-    let mut fields = out.split('\0');
-    while let Some(entry) = fields.next() {
-        if entry.len() < 4 {
-            continue;
-        }
-        let (code, path) = entry.split_at(3);
-        // A rename or a copy carries the old path in the next field.
-        if code[..2].contains(['R', 'C']) {
-            let _ = fields.next();
-        }
-        // The status paths are relative to the top of the repository.
-        if let Some(rel) = path.strip_prefix(prefix.as_str()) {
-            paths.insert(rel.to_string());
-        }
-    }
-    Some(paths.into_iter().collect())
-}
-
-/// The files under `root` that differ between two commits, relative to
-/// `root`. `None` when git cannot compare them (a commit that no longer
-/// exists, for one).
-fn changed_between(root: &Path, from: &str, to: &str) -> Option<Vec<String>> {
-    let out = git(root, &["diff", "--name-only", "-z", "--no-renames", "--relative", from, to])?;
-    Some(out.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
-}
-
 /// The scanned root as the map records it.
 pub(crate) fn canonical(root: &Path) -> String {
     root.canonicalize().unwrap_or_else(|_| root.to_path_buf()).to_string_lossy().to_string()
 }
 
-/// The `state.head` a pass writes when the repository has no commit at all —
-/// distinct from the empty string, which still means "nothing to compare
-/// against, read everything" (a map from before this constant existed, or a
-/// scanner build that never recorded a head). Without the distinction, a
-/// repository with zero commits paid a full read on every single pass: `head`
-/// is always absent there, so `plan` below saw `state.head.is_empty()`
-/// forever and never let a later pass read only what changed since.
-pub(crate) const NO_COMMIT_HEAD: &str = "no-commit";
-
-/// Decide what this pass reads, given the previous map.
-pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>) -> Plan {
-    let Some(prev) = prev else {
+/// Decide what this pass reads, given the previous map and what git says
+/// each file holds now (`None` outside git).
+pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>, listing: Option<&Listing>) -> Plan {
+    let (Some(prev), Some(listing)) = (prev, listing) else {
         return Plan::Full;
     };
-    let no_commit_before = prev.state.head == NO_COMMIT_HEAD;
     if !REUSED.iter().all(|block| fresh(prev, block))
-        || (prev.state.head.is_empty() && !no_commit_before)
         || prev.root != canonical(root)
+        || rereads_everything(&prev.state.inputs) != rereads_everything(&listing.blobs)
     {
         return Plan::Full;
     }
-    let now = head(root);
-    // Sem commit então: não há um "de" válido para comparar (`changed_between`
-    // exige duas revisões reais). Tudo que pode ter mudado já está coberto
-    // pelo que está aberto agora, unido ao que já estava aberto na passada
-    // anterior — o mesmo raciocínio do ramo comum, sem a metade comitada.
-    if no_commit_before {
-        let Some(open) = dirty(root) else {
-            return Plan::Full;
-        };
-        return only_or_full(open.into_iter().chain(prev.state.dirty.iter().cloned()).collect());
-    }
-    let Some(now) = now else {
-        return Plan::Full;
-    };
-    let Some(committed) = changed_between(root, &prev.state.head, &now) else {
-        return Plan::Full;
-    };
-    let Some(open) = dirty(root) else {
-        return Plan::Full;
-    };
-    let changed: BTreeSet<String> = committed.into_iter().chain(open).chain(prev.state.dirty.iter().cloned()).collect();
-    only_or_full(changed)
+    // Cada arquivo que a passada anterior guardou, com o blob do que ela leu:
+    // os de código, os manifestos e os que não se decodificaram. O blob vazio
+    // é o de um arquivo lido fora do git, que se relê sempre.
+    let stored_input = |path: &str| prev.state.inputs.get(path).map_or("", String::as_str);
+    let stored = prev
+        .modules
+        .iter()
+        .map(|m| (m.path.as_str(), m.blob.as_str()))
+        .chain(prev.manifests.iter().map(|m| (m.path.as_str(), stored_input(&m.path))))
+        .chain(prev.state.non_utf8.iter().map(|path| (path.as_str(), stored_input(path))));
+    let changed = stored
+        .filter(|(path, blob)| blob.is_empty() || listing.blobs.get(*path).map(String::as_str) != Some(*blob))
+        .map(|(path, _)| path.to_string())
+        .collect();
+    Plan::Only(changed)
 }
 
-/// `Plan::Only(changed)`, unless a file whose change alters how every other
-/// file is classified is in it — then the whole project is read again. O
-/// mesmo vale para um arquivo de configuração de apelidos de pasta, com o
-/// nome vindo do registro: a citação que só o apelido novo liga saiu do
-/// módulo na passada anterior, e só a leitura do arquivo a traz de volta.
-fn only_or_full(changed: BTreeSet<String>) -> Plan {
+/// Os arquivos de `blobs` que, mudando, aparecendo ou sumindo, fazem a
+/// passada ler tudo: os de [`GLOBAL_INPUTS`] e as configurações de apelidos
+/// de pasta, com o nome vindo do registro. A citação que só o apelido novo
+/// liga saiu do módulo na passada anterior, e só a leitura do arquivo a traz
+/// de volta.
+fn rereads_everything(blobs: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
     let alias_configs = crate::extract::alias_config_names();
-    let global = changed.iter().any(|p| {
-        let name = p.rsplit('/').next().unwrap_or(p);
-        GLOBAL_INPUTS.contains(&name) || alias_configs.contains(name)
-    });
-    if global {
-        Plan::Full
-    } else {
-        Plan::Only(changed)
+    blobs
+        .iter()
+        .filter(|(path, _)| {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            GLOBAL_INPUTS.contains(&name) || alias_configs.contains(name)
+        })
+        .map(|(path, blob)| (path.as_str(), blob.as_str()))
+        .collect()
+}
+
+/// O blob, pelo caminho, de cada arquivo que decide a releitura sem ser
+/// código: os de [`rereads_everything`], os manifestos `manifests` e os que
+/// não se decodificaram, `undecodable`. É o que a passada guarda para a
+/// seguinte comparar.
+pub(crate) fn inputs(listing: &Listing, manifests: &[&str], undecodable: &[String]) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> =
+        rereads_everything(&listing.blobs).into_iter().map(|(path, blob)| (path.to_string(), blob.to_string())).collect();
+    for path in manifests.iter().copied().chain(undecodable.iter().map(String::as_str)) {
+        if let Some(blob) = listing.blobs.get(path) {
+            out.insert(path.to_string(), blob.clone());
+        }
     }
+    out
 }
 
 /// The files a pass that read only what changed has to read again, so that
@@ -374,75 +335,95 @@ mod tests {
         REUSED.iter().map(|block| (block.name().to_string(), FORMAT.to_string())).collect()
     }
 
-    #[test]
-    fn without_a_previous_map_everything_is_read() {
-        assert_eq!(plan(Path::new("."), None), Plan::Full);
-        let other_build = ProjectModel {
-            state: crate::model::ScanState { head: "x".to_string(), ..Default::default() },
-            marks: REUSED.iter().map(|block| (block.name().to_string(), "0.0.0+old".to_string())).collect(),
-            ..Default::default()
-        };
-        assert_eq!(plan(Path::new("."), Some(&other_build)), Plan::Full);
+    /// A listagem do git com estes arquivos e blobs.
+    fn listing_of(files: &[(&str, &str)]) -> Listing {
+        Listing { head: String::new(), blobs: files.iter().map(|(path, blob)| (path.to_string(), blob.to_string())).collect() }
     }
 
-    /// Um repositório sem commit com o mapa anterior inteiro desta versão do
-    /// scan lê só o que estava aberto; basta um dos blocos reaproveitados sem
-    /// a marca desta versão — o que volta vazio quando o formato dele muda —
-    /// para a passada ler tudo de novo.
-    #[test]
-    fn a_block_not_filled_by_this_build_makes_the_pass_read_everything() {
-        let dir = tempfile::Builder::new().prefix("scan-refresh-stale-block-").tempdir().expect("pasta temporária");
-        let root = dir.path();
-        let _ = git_exec::run(root, &["init", "-q"]);
-        std::fs::write(root.join("a.rs"), "fn a() {}\n").expect("a.rs");
-        let prev = ProjectModel {
+    /// O mapa anterior desta versão do scan, com estes arquivos de código e
+    /// os blobs que ela leu.
+    fn previous(root: &Path, files: &[(&str, &str)]) -> ProjectModel {
+        ProjectModel {
             root: canonical(root),
-            state: crate::model::ScanState {
-                head: NO_COMMIT_HEAD.to_string(),
-                dirty: vec!["a.rs".to_string()],
-                ..Default::default()
-            },
+            modules: files
+                .iter()
+                .map(|(path, blob)| Module { path: path.to_string(), blob: blob.to_string(), ..Module::default() })
+                .collect(),
             marks: marked_by_this_build(),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn without_a_previous_map_or_outside_git_everything_is_read() {
+        let here = Path::new(".");
+        let now = listing_of(&[("a.rs", "1")]);
+        assert_eq!(plan(here, None, Some(&now)), Plan::Full);
+        let prev = previous(here, &[("a.rs", "1")]);
+        assert_eq!(plan(here, Some(&prev), Some(&now)), Plan::Only(BTreeSet::new()));
+        assert_eq!(plan(here, Some(&prev), None), Plan::Full, "fora do git não há blob para comparar");
+        let other_build = ProjectModel {
+            marks: REUSED.iter().map(|block| (block.name().to_string(), "0.0.0+old".to_string())).collect(),
+            ..prev
         };
-        assert_eq!(plan(root, Some(&prev)), Plan::Only(BTreeSet::from(["a.rs".to_string()])));
+        assert_eq!(plan(here, Some(&other_build), Some(&now)), Plan::Full);
+    }
+
+    /// Só se relê o arquivo cujo blob de agora não é o que a passada anterior
+    /// leu: o de código, o manifesto e o que não se decodificou. O lido fora
+    /// do git, sem blob, se relê sempre; o arquivo novo entra pela caminhada.
+    #[test]
+    fn only_the_files_whose_blob_changed_are_read() {
+        let here = Path::new(".");
+        let mut prev = previous(here, &[("a.rs", "1"), ("b.rs", "2"), ("c.rs", "")]);
+        prev.manifests.push(crate::model::Manifest { path: "Cargo.toml".to_string(), ..Default::default() });
+        prev.state.non_utf8 = vec!["latin.rs".to_string()];
+        prev.state.inputs = [("Cargo.toml", "9"), ("latin.rs", "7")].map(|(p, b)| (p.to_string(), b.to_string())).into();
+        let only = |files: &[&str]| Plan::Only(files.iter().map(|f| f.to_string()).collect());
+
+        let now = [("a.rs", "1"), ("b.rs", "3"), ("c.rs", "4"), ("d.rs", "5"), ("Cargo.toml", "9"), ("latin.rs", "7")];
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&now))), only(&["b.rs", "c.rs"]));
+
+        let mut touched = now;
+        touched[4] = ("Cargo.toml", "8");
+        touched[5] = ("latin.rs", "6");
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&touched))), only(&["Cargo.toml", "b.rs", "c.rs", "latin.rs"]));
+    }
+
+    /// Basta um dos blocos reaproveitados sem a marca desta versão — o que
+    /// volta vazio quando o formato dele muda — para a passada ler tudo de
+    /// novo.
+    #[test]
+    fn a_block_not_filled_by_this_build_makes_the_pass_read_everything() {
+        let here = Path::new(".");
+        let prev = previous(here, &[("a.rs", "1")]);
+        let now = listing_of(&[("a.rs", "2")]);
+        assert_eq!(plan(here, Some(&prev), Some(&now)), Plan::Only(BTreeSet::from(["a.rs".to_string()])));
         for block in REUSED {
             let mut stale = prev.clone();
             stale.marks.insert(block.name().to_string(), String::new());
-            assert_eq!(plan(root, Some(&stale)), Plan::Full, "{}", block.name());
+            assert_eq!(plan(here, Some(&stale), Some(&now)), Plan::Full, "{}", block.name());
             stale.marks.remove(block.name());
-            assert_eq!(plan(root, Some(&stale)), Plan::Full, "{}", block.name());
+            assert_eq!(plan(here, Some(&stale), Some(&now)), Plan::Full, "{}", block.name());
         }
     }
 
-    /// Um repositório sem nenhum commit não relê o projeto inteiro para
-    /// sempre: a passada seguinte, ainda sem commit, lê só o que a anterior já
-    /// tinha marcado como não comitado, pelo selo distinto do vazio que a
-    /// passada sem commit grava.
+    /// O arquivo que muda a leitura de todos os outros — o de atributos do
+    /// git, o do editor e a configuração dos apelidos de pasta — faz a
+    /// passada ler tudo quando muda, aparece ou some, em qualquer pasta.
     #[test]
-    fn a_repository_with_no_commit_yet_is_not_read_in_full_forever() {
-        // A pasta some quando o teste termina, também quando ele quebra.
-        let dir = tempfile::Builder::new().prefix("scan-refresh-no-commit-").tempdir().expect("pasta temporária");
-        let root = dir.path();
-        let _ = git_exec::run(root, &["init", "-q"]);
-        std::fs::write(root.join("a.rs"), "fn a() {}\n").expect("a.rs");
-        std::fs::write(root.join("b.rs"), "fn b() {}\n").expect("b.rs");
+    fn a_file_that_changes_every_reading_makes_the_pass_read_everything() {
+        let here = Path::new(".");
+        let mut prev = previous(here, &[("src/a.ts", "1")]);
+        let now = [("src/a.ts", "1"), ("web/.editorconfig", "5")];
+        prev.state.inputs = inputs(&listing_of(&now), &[], &[]);
+        assert_eq!(prev.state.inputs.len(), 1, "{:?}", prev.state.inputs);
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&now))), Plan::Only(BTreeSet::new()));
 
-        let prev = ProjectModel {
-            root: canonical(root),
-            state: crate::model::ScanState {
-                head: NO_COMMIT_HEAD.to_string(),
-                dirty: vec!["a.rs".to_string(), "b.rs".to_string()],
-                ..Default::default()
-            },
-            marks: marked_by_this_build(),
-            ..Default::default()
-        };
-        match plan(root, Some(&prev)) {
-            Plan::Only(changed) => {
-                assert_eq!(changed, BTreeSet::from(["a.rs".to_string(), "b.rs".to_string()]));
-            }
-            Plan::Full => panic!("sem commit também é um estado válido: devia ler só o não comitado, não tudo de novo"),
-        }
+        let changed = [("src/a.ts", "1"), ("web/.editorconfig", "6")];
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&changed))), Plan::Full, "mudou");
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&now[..1]))), Plan::Full, "sumiu");
+        let alias = [("src/a.ts", "1"), ("web/.editorconfig", "5"), ("tsconfig.json", "8")];
+        assert_eq!(plan(here, Some(&prev), Some(&listing_of(&alias))), Plan::Full, "a configuração de apelidos apareceu");
     }
 }

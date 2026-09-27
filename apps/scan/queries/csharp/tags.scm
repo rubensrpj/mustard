@@ -18,10 +18,10 @@
 (struct_declaration name: (identifier) @name) @definition.struct
 (enum_declaration name: (identifier) @name) @definition.enum
 
-; Members — methods, properties, fields, enum members. Member kinds reach the
-; map with the file's other declarations: the miner's significance gate
-; (mine.rs) is kind-based and never sees them. Derived from the upstream
-; tree-sitter-c-sharp tags.scm (MIT) — see queries/README.md.
+; Membros — métodos, propriedades, campos, membros de enum. Os kinds de membro
+; chegam ao mapa com as outras declarações do arquivo, e o grafo lista cada um
+; sob o tipo dono dele. Derivado do tags.scm do tree-sitter-c-sharp (MIT) —
+; veja queries/README.md.
 (method_declaration name: (identifier) @name) @definition.method
 (property_declaration name: (identifier) @name) @definition.property
 ; A `const` is a constant, not a field. Its pattern comes before the field's

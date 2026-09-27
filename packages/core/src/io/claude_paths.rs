@@ -28,7 +28,7 @@
 //! ├── CLAUDE.md
 //! ├── settings.json
 //! ├── mustard.json
-//! ├── grain.model.json
+//! ├── grain.db
 //! ├── pipeline-config.md
 //! ├── .cache/
 //! │   ├── detect.json

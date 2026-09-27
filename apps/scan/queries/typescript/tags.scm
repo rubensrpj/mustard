@@ -38,12 +38,12 @@
     (variable_declarator name: (identifier) @name value: (_) @value)) @definition.const)
   (#not-match? @value "=>"))
 
-; Members — methods (class + interface), class fields, interface properties,
-; enum members. Member kinds reach the map with the file's other declarations:
-; the miner's significance gate (mine.rs) is kind-based and never sees them.
-; Derived from the upstream tree-sitter-typescript tags.scm (MIT) — see
-; queries/README.md. A plain enum member is the enum_body's own `name` field;
-; an initialized one is an enum_assignment.
+; Membros — métodos (de classe e de interface), campos de classe, propriedades
+; de interface, membros de enum. Os kinds de membro chegam ao mapa com as
+; outras declarações do arquivo, e o grafo lista cada um sob o tipo dono dele.
+; Derivado do tags.scm do tree-sitter-typescript (MIT) — veja
+; queries/README.md. O membro de enum simples é o próprio campo `name` do
+; enum_body; o inicializado é um enum_assignment.
 (method_definition name: (_) @name) @definition.method
 (method_signature name: (_) @name) @definition.method
 (abstract_method_signature name: (_) @name) @definition.method
