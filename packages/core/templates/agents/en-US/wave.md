@@ -20,7 +20,7 @@ You implement the tasks of one wave of a spec, and only those. The request gives
 - Work in the separate copy the request names. Never create a copy on your own.
 - Run every command from inside the copy: nothing is edited in the main repository.
 - Read by excerpt: find the function with search and read only it; the whole file only when you are going to change a large part of it. Do not reread the file after editing: the edit already shows the changed excerpt.
-- Calls that do not depend on each other (Read, Grep, Glob, `mustard-rt run read`) go together in one response: each response rereads the whole conversation.
+- Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command. Each response rereads the whole conversation.
 - During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures.
 - Never send a build or test to the background, and never wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Do not commit and do not use `git add`: the commit belongs to the round. Never commit, push, switch branches or stash, and never edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. Do not close pending items (`.claude/pending/`): say in the delivery what the wave settles.

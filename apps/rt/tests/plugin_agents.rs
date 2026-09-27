@@ -370,21 +370,34 @@ fn section<'a>(body: &'a str, header: &str) -> &'a str {
 }
 
 /// A orientação sobre ferramentas do molde da onda, nos dois idiomas, pede
-/// num item só que as chamadas que não dependem uma da outra — ler, buscar,
-/// listar e ler a spec pelo binário — saiam juntas numa resposta, porque
-/// cada resposta relê a conversa inteira do agente.
+/// num item só que as leituras que não dependem uma da outra — ler, buscar,
+/// listar, ler a spec pelo binário ou ler pelo terminal — saiam juntas: em
+/// várias chamadas numa resposta ou em vários trechos num comando só do
+/// terminal, porque cada resposta relê a conversa inteira do agente.
 #[test]
 fn the_wave_agent_asks_for_independent_reads_together_in_one_response() {
     for (lang, header, said) in [
         (
             "pt-BR",
             "## Orientação sobre ferramentas",
-            ["não dependem uma da outra", "(Read, Grep, Glob, `mustard-rt run read`)", "saem juntas numa resposta", "relê a conversa inteira"],
+            [
+                "não dependem uma da outra",
+                "várias chamadas numa resposta",
+                "(Read, Grep, Glob, `mustard-rt run read` ou o terminal)",
+                "vários trechos num comando só do terminal",
+                "relê a conversa inteira",
+            ],
         ),
         (
             "en-US",
             "## Tool guidance",
-            ["do not depend on each other", "(Read, Grep, Glob, `mustard-rt run read`)", "go together in one response", "rereads the whole conversation"],
+            [
+                "do not depend on each other",
+                "several calls in one response",
+                "(Read, Grep, Glob, `mustard-rt run read` or the terminal)",
+                "several excerpts in a single terminal command",
+                "rereads the whole conversation",
+            ],
         ),
     ] {
         let body = template(lang, "wave");

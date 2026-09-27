@@ -20,7 +20,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido traz o
 - Trabalhe na cópia separada que o pedido indica. Nunca crie cópia por conta própria.
 - Rode cada comando de dentro da cópia: nada se edita no repositório principal.
 - Leia por trecho: ache a função com a busca e leia só ela; o arquivo inteiro, só quando for mudar boa parte dele. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
-- Chamadas que não dependem uma da outra (Read, Grep, Glob, `mustard-rt run read`) saem juntas numa resposta: cada resposta relê a conversa inteira.
+- Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal. Cada resposta relê a conversa inteira.
 - Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
 - Não comite e não use `git add`: o commit é da rodada. Nunca comite, envie ao servidor, troque de branch ou use o stash, e nunca edite os `spec.*`, o `mustard.json` nem o `.claude/` dele. Antes de apagar ou mover algo no git, prove que nada se perde; sem prova, pare e diga o motivo. Não feche pendência (`.claude/pending/`): diga na entrega o que a onda resolve.
