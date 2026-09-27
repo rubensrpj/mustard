@@ -10,6 +10,9 @@
 //! função que o corpo chama. A leitura que reaproveita o arquivo sem relê-lo
 //! sabe o mesmo que a leitura inteira.
 
+#[path = "support/model.rs"]
+mod model;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -39,15 +42,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// Roda o scan e devolve o mapa gravado e o relato da passada.
 fn scan(dir: &Path) -> (Value, Value) {
-    let model = dir.join(".claude").join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
-        .output()
-        .expect("run scan");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let report: Value = serde_json::from_str(stdout.lines().last().unwrap_or("{}")).expect("o relato é uma linha JSON");
-    (serde_json::from_str(&std::fs::read_to_string(&model).unwrap()).unwrap(), report)
+    model::scan(dir, &dir.join(".claude"), &[])
 }
 
 const MAIN: &str = "mod conta;\nmod medida;\nmod regra;\nmod taxa;\n\n\

@@ -5,17 +5,16 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
 
 use std::path::Path;
-use std::process::Command;
 
+/// Uma leitura inteira de `root`, com o mapa gravado na pasta `out`: os bytes
+/// do mapa, como estão no disco.
 fn full_read(root: &Path, out: &Path) -> Vec<u8> {
-    let run = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", root.to_str().unwrap(), "--out", out.to_str().unwrap(), "--all", "--json"])
-        .output()
-        .expect("run scan");
-    assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
-    std::fs::read(out).expect("read map")
+    model::scan(root, out, &["--all"]);
+    model::read_bytes(out)
 }
 
 #[test]
@@ -23,9 +22,9 @@ fn two_full_reads_of_the_same_tree_give_the_same_bytes() {
     let root = manifest_dir::manifest_dir().join("tests").join("fixtures");
     let temp = tempfile::Builder::new().prefix("scan-byte-stable-").tempdir().unwrap();
     let dir = temp.path().to_path_buf();
-    let first = full_read(&root, &dir.join("first.json"));
+    let first = full_read(&root, &dir.join("first"));
     for round in 0..3 {
-        let again = full_read(&root, &dir.join(format!("again-{round}.json")));
+        let again = full_read(&root, &dir.join(format!("again-{round}")));
         assert!(first == again, "full read {round} gave different bytes");
     }
 }

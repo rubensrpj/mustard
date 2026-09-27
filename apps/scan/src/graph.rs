@@ -54,7 +54,7 @@
 //!     Nothing here switches on a language name, so a new language needs no change.
 //!     Imports that resolve to nothing internal are treated as external deps.
 
-use crate::model::{Decl, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
+use crate::model::{CallSite, Decl, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
 use crate::path_aliases::PathAliases;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::RefCell;
@@ -334,7 +334,11 @@ pub(crate) const CITED_KINDS: &[&str] =
 /// is another namespace; in a language whose namespaces nest, a file also sees
 /// the namespaces above its own. A qualified name (`q::name`, `q.name`) also reaches the declarations
 /// of a file of the same language whose name or folder is `q` — `crate::preco::total(`
-/// and `model.User{}` need no import. A name no file in sight declares is an
+/// and `model.User{}` need no import. A chamada escrita por um caminho que
+/// nomeia arquivo do projeto (`Module::call_paths`, resolvido pelo mesmo passo
+/// que o põe em `deps`) liga só às declarações desses arquivos: o próprio
+/// arquivo só entra quando o caminho o nomeia (`super::valor()` dentro de um
+/// módulo do arquivo). A name no file in sight declares is an
 /// outside call — `.join(` of the
 /// standard library, a field read as `x.kind()` — and is simply dropped, never
 /// tied to every declaration of that name across the project. The links of
@@ -443,6 +447,12 @@ fn resolve_declaration_links(
         })
         .collect();
     let globals = global_sight(modules, go_module, packages, manifests, aliases);
+    // O caminho escrito antes do nome chamado se resolve como o import que ele
+    // é: o resolvedor só é montado quando algum arquivo tem um.
+    let resolver = modules
+        .iter()
+        .any(|m| !m.call_paths.is_empty())
+        .then(|| Resolver::new(modules, go_module, packages, aliases));
     // The names a qualifier can give a file: its own name and its folder's.
     let own_names: Vec<[String; 2]> = modules
         .iter()
@@ -470,6 +480,13 @@ fn resolve_declaration_links(
                     && (declared[mi].iter().any(|ns| in_sight[src].contains(ns))
                         || (!qualifier.is_empty() && own_names[mi].iter().any(|n| n == qualifier))))
         };
+        // Cada chamada escrita por um caminho do projeto, com os caminhos.
+        let mut through: BTreeMap<&CallSite, Vec<&str>> = BTreeMap::new();
+        for (path, written) in &m.call_paths {
+            for call in written {
+                through.entry(call).or_default().push(path.as_str());
+            }
+        }
         let sites = m
             .calls
             .iter()
@@ -479,10 +496,17 @@ fn resolve_declaration_links(
             let is_call = cite_at.is_none();
             let Some(all) = by_name.get(site.name.as_str()) else { continue };
             let from = enclosing(&m.declarations, site.line);
+            let named = match (&resolver, through.get(site)) {
+                (Some(resolver), Some(paths)) if is_call => path_files(resolver, m, site.line, paths),
+                _ => None,
+            };
             let chosen: Vec<(usize, usize)> = all
                 .iter()
                 .copied()
-                .filter(|&(mi, _)| sees(mi, &site.qualifier))
+                .filter(|&(mi, _)| match &named {
+                    Some(files) => files.contains(modules[mi].path.as_str()),
+                    None => sees(mi, &site.qualifier),
+                })
                 // A type named inside its own body is not a use of it.
                 .filter(|&(mi, di)| is_call || !(mi == src && from == Some(di)))
                 .collect();
@@ -515,6 +539,17 @@ fn resolve_declaration_links(
         }
     }
     (calls, uses, linked)
+}
+
+/// Os arquivos que os caminhos escritos antes de uma chamada na linha `line`
+/// de `m` nomeiam, resolvidos como imports escritos ali, dentro de tantos
+/// módulos do arquivo quanto a linha. `None` quando nenhum nomeia arquivo do
+/// projeto: a chamada liga então como qualquer outra.
+fn path_files(resolver: &Resolver, m: &Module, line: usize, paths: &[&str]) -> Option<HashSet<String>> {
+    let nested = m.module_depth(line);
+    let files: HashSet<String> =
+        paths.iter().flat_map(|path| resolver.resolve(path, m, Reach::Used, nested)).collect();
+    (!files.is_empty()).then_some(files)
 }
 
 /// The files the global imports put in sight: each file that writes one gives

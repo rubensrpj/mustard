@@ -4,6 +4,9 @@
 //! any `CLAUDE.md`. The project carries the exclude rules a Mustard install
 //! writes, so the map stays out of git.
 
+#[path = "support/model.rs"]
+mod model;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -20,20 +23,14 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn model_of(dir: &Path) -> PathBuf {
-    dir.join(".claude").join("grain.model.json")
+/// A pasta do projeto onde o scan grava o mapa.
+fn map_folder(dir: &Path) -> PathBuf {
+    dir.join(".claude")
 }
 
+/// Roda o scan sobre o projeto e devolve o relato da passada.
 fn scan(dir: &Path, extra: &[&str]) -> Value {
-    let model = model_of(dir);
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
-        .args(extra)
-        .output()
-        .expect("run scan");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str(stdout.lines().last().unwrap_or("{}")).expect("the report is one JSON line")
+    model::scan(dir, &map_folder(dir), extra).1
 }
 
 fn write(dir: &Path, rel: &str, body: &str) {
@@ -77,9 +74,9 @@ fn a_second_pass_reads_only_the_changed_file_and_leaves_git_clean() {
     assert_eq!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), "# Demo\n");
 
     // The map read in steps is the map read at once.
-    let stepped = std::fs::read(model_of(&dir)).unwrap();
+    let stepped = model::read_bytes(&map_folder(&dir));
     assert_eq!(scan(&dir, &["--all"])["full"], json!(true));
-    assert_eq!(std::fs::read(model_of(&dir)).unwrap(), stepped, "reading only what changed gives the same map");
+    assert_eq!(model::read_bytes(&map_folder(&dir)), stepped, "reading only what changed gives the same map");
 
     // A change not committed is read, and read again once it is undone.
     let original = std::fs::read_to_string(dir.join("src/a.rs")).unwrap();
@@ -87,9 +84,9 @@ fn a_second_pass_reads_only_the_changed_file_and_leaves_git_clean() {
     assert_eq!(scan(&dir, &[])["read"], json!(["src/a.rs"]));
     write(&dir, "src/a.rs", &original);
     assert_eq!(scan(&dir, &[])["read"], json!(["src/a.rs"]), "a file put back is read again");
-    let undone = std::fs::read(model_of(&dir)).unwrap();
+    let undone = model::read_bytes(&map_folder(&dir));
     scan(&dir, &["--all"]);
-    assert_eq!(std::fs::read(model_of(&dir)).unwrap(), undone);
+    assert_eq!(model::read_bytes(&map_folder(&dir)), undone);
 
     // The map keeps the history and what each file imports.
     let model: Value = serde_json::from_slice(&undone).unwrap();
@@ -134,7 +131,7 @@ fn changing_only_the_alias_configuration_reads_everything_again() {
     assert_eq!(second["full"], json!(true), "{second}");
     assert!(second["read"].as_array().unwrap().contains(&json!("src/usa.ts")), "{second}");
 
-    let model: Value = serde_json::from_slice(&std::fs::read(model_of(&dir)).unwrap()).unwrap();
+    let model: Value = model::read(&map_folder(&dir));
     let usa = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/usa.ts")).unwrap();
     assert_eq!(usa["deps"], json!(["src/b/pedido.ts"]), "{usa}");
 }
@@ -167,7 +164,7 @@ fn a_namespace_import_links_the_same_when_only_another_file_changed() {
     assert_eq!(scan(&dir, &[])["full"], json!(true));
 
     let deps_of_uso = || -> Value {
-        let model: Value = serde_json::from_slice(&std::fs::read(model_of(&dir)).unwrap()).unwrap();
+        let model: Value = model::read(&map_folder(&dir));
         model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/Services/Uso.cs")).unwrap()["deps"]
             .clone()
     };
@@ -179,7 +176,7 @@ fn a_namespace_import_links_the_same_when_only_another_file_changed() {
     assert_eq!(second["read"], json!(["src/Outro.cs"]), "{second}");
     assert_eq!(deps_of_uso(), json!(declaring), "a pass that did not read Uso.cs keeps its links");
 
-    let stepped = std::fs::read(model_of(&dir)).unwrap();
+    let stepped = model::read_bytes(&map_folder(&dir));
     assert_eq!(scan(&dir, &["--all"])["full"], json!(true));
-    assert_eq!(std::fs::read(model_of(&dir)).unwrap(), stepped, "reading only what changed gives the same map");
+    assert_eq!(model::read_bytes(&map_folder(&dir)), stepped, "reading only what changed gives the same map");
 }

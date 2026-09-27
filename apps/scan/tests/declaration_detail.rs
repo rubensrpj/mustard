@@ -4,14 +4,12 @@
 //! linha. A varredura é a de verdade, num projeto de mentira gravado em disco,
 //! e a conferência é feita no mapa gravado.
 
+#[path = "support/model.rs"]
+mod model;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
-
-fn model_of(dir: &Path) -> PathBuf {
-    dir.join(".claude").join("grain.model.json")
-}
 
 fn write(dir: &Path, rel: &str, body: &str) {
     let path = dir.join(rel);
@@ -21,14 +19,7 @@ fn write(dir: &Path, rel: &str, body: &str) {
 
 /// Varre `dir` e devolve o mapa gravado.
 fn scan(dir: &Path) -> Value {
-    let model = model_of(dir);
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
-        .output()
-        .expect("run scan");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let text = std::fs::read_to_string(&model).expect("the map was written");
-    serde_json::from_str(&text).expect("the map is JSON")
+    model::scan(dir, &dir.join(".claude"), &[]).0
 }
 
 /// Um projeto de mentira: uma função documentada em português, e outro arquivo

@@ -2,6 +2,9 @@
 //! orchestrator FACTS (`projects` + `entities`) as JSON — the exact shape
 //! `mustard-core`'s `ModelFacts` deserializes. Guards the scan↔mustard boundary.
 
+#[path = "support/model.rs"]
+mod model;
+
 use std::process::Command;
 
 #[test]
@@ -11,13 +14,11 @@ fn facts_cli_emits_projects_and_entities() {
     // extraction so the test is fully deterministic.
     let temp = tempfile::Builder::new().prefix("scan-facts-it-").tempdir().unwrap();
     let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    std::fs::write(
-        &model,
+    let model = model::write(
+        &dir,
         r#"{"modules":[{"declarations":[{"name":"Invoice"},{"name":"User"},{"name":"User"}]}],
             "projects":[{"name":"demo","dir":"apps/demo","kind":"node","code_files":3}]}"#,
-    )
-    .unwrap();
+    );
 
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["facts", model.to_str().unwrap()])

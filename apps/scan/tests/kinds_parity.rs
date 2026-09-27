@@ -18,32 +18,24 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::process::Command;
 
 /// A committed fixture root, resolved from the crate manifest dir.
 fn fixture(name: &str) -> PathBuf {
     manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
-/// Scan a fixture into a temp `grain.model.json` and return the parsed value.
+/// Scan a fixture into a temp map and return the parsed value.
 /// Mirrors `graph_resolution.rs::scan_fixture_labeled`: a per-call temp dir
 /// (label + fixture name + pid) so parallel tests scanning the same fixture
 /// never yank each other's dir.
 fn scan_fixture_labeled(label: &str, name: &str) -> serde_json::Value {
     let temp = tempfile::Builder::new().prefix(&format!("scan-kinds-{}-{}-", label, name)).tempdir().unwrap();
-    let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    v
+    model::scan(&fixture(name), temp.path(), &[]).0
 }
 
 /// Every `declarations[].kind` the scanned model carries, deduplicated.

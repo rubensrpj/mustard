@@ -2,6 +2,9 @@
 //! recusados como comando desconhecido, mesmo sobre um modelo válido, e o
 //! `facts` sobre o mesmo modelo continua respondendo.
 
+#[path = "support/model.rs"]
+mod model;
+
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -15,10 +18,8 @@ fn model_in(dir: &Path) -> String {
     let project = dir.join("project");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("invoice.ts"), "export class Invoice {}\n").unwrap();
-    let model = dir.join("grain.model.json");
-    let out = scan(&["scan", project.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"]);
-    assert!(out.status.success(), "scan: {}", String::from_utf8_lossy(&out.stderr));
-    model.to_string_lossy().into_owned()
+    model::scan(&project, dir, &[]);
+    model::path_in(dir).to_string_lossy().into_owned()
 }
 
 #[test]

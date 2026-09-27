@@ -181,6 +181,14 @@ pub struct Module {
     /// qualquer módulo do arquivo.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub import_lines: BTreeMap<String, Vec<usize>>,
+    /// Cada caminho do projeto escrito antes do nome numa chamada, o que virou
+    /// import (`super::super::x` em `super::super::x::valor()`), com as
+    /// chamadas escritas por ele fora do trecho de teste, no mesmo formato de
+    /// [`Module::calls`]. A chamada que está aqui liga só às declarações dos
+    /// arquivos que o caminho nomeia. Guardados com o módulo, para que a
+    /// passada que não relê o arquivo ligue igual.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub call_paths: BTreeMap<String, Vec<CallSite>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     /// Machine-written class, when one applies: "generated" | "vendored" |

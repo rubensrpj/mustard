@@ -36,9 +36,11 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -56,14 +58,13 @@ fn write(dir: &Path, rel: &str, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
+/// A pasta do projeto onde o scan grava o mapa.
+fn pasta_do_mapa(dir: &Path) -> PathBuf {
+    dir.join(".claude")
+}
+
 fn scan(dir: &Path) -> Value {
-    let model = dir.join(".claude").join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_str(&std::fs::read_to_string(&model).unwrap()).unwrap()
+    model::scan(dir, &pasta_do_mapa(dir), &[]).0
 }
 
 /// Uma linguagem do projeto: o arquivo que chama, o texto da chamada da
@@ -703,17 +704,8 @@ fn git(dir: &Path, args: &[&str]) {
 /// Uma leitura do scan, com os argumentos a mais: o mapa, os bytes dele e se
 /// a leitura foi inteira.
 fn ler(dir: &Path, extra: &[&str]) -> (Value, Vec<u8>, bool) {
-    let model = dir.join(".claude").join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
-        .args(extra)
-        .output()
-        .expect("run scan");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let relato: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or("{}"))
-        .expect("o relato é uma linha de JSON");
-    let bytes = std::fs::read(&model).unwrap();
-    (serde_json::from_slice(&bytes).unwrap(), bytes, relato["full"] == Value::Bool(true))
+    let (mapa, relato) = model::scan(dir, &pasta_do_mapa(dir), extra);
+    (mapa, model::read_bytes(&pasta_do_mapa(dir)), relato["full"] == Value::Bool(true))
 }
 
 #[test]
@@ -855,7 +847,7 @@ fn a_pasta_do_projeto_de_teste_some_mesmo_quando_o_teste_falha() {
         let dir = temp.path().to_path_buf();
         write(&dir, "src/lib.rs", "pub fn total() -> u32 {\n    1\n}\n");
         let map = scan(&dir);
-        assert!(dir.join(".claude").join("grain.model.json").is_file(), "o scan grava o mapa na pasta");
+        assert!(model::path_in(&pasta_do_mapa(&dir)).is_file(), "o scan grava o mapa na pasta");
         envia.send(dir).unwrap();
         assert!(map["modules"].as_array().unwrap().is_empty(), "esta conferência quebra de propósito");
     });

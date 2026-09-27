@@ -28,9 +28,10 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
 
 use std::collections::BTreeSet;
-use std::process::Command;
 
 /// Scan a committed fixture into a temp model and return every
 /// `(declaration name, kind)` pair it produced, deduplicated and sorted.
@@ -41,17 +42,7 @@ use std::process::Command;
 fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
     let root = manifest_dir::manifest_dir().join("tests").join("fixtures").join(fixture_dir);
     let temp = tempfile::Builder::new().prefix(&format!("scan-content-{}-", fixture_dir)).tempdir().unwrap();
-    let tmp = temp.path().to_path_buf();
-    let model = tmp.join("grain.model.json");
-
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", root.to_str().expect("fixture path"), "--out", model.to_str().expect("model path")])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "scan failed: {}", String::from_utf8_lossy(&out.stderr));
-
-    let text = std::fs::read_to_string(&model).expect("read model");
-    let v: serde_json::Value = serde_json::from_str(&text).expect("valid model JSON");
+    let (v, _) = model::scan(&root, temp.path(), &[]);
     v["modules"]
         .as_array()
         .expect("model.modules")

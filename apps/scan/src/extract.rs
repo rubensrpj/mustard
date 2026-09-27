@@ -51,6 +51,10 @@ pub(crate) struct Extracted {
     /// As linhas de cada import que o arquivo escreve ao menos uma vez dentro
     /// de um desses módulos, todas elas.
     pub import_lines: BTreeMap<String, Vec<usize>>,
+    /// Cada caminho do projeto escrito antes do nome numa chamada
+    /// (`@call.path` que virou import), com as chamadas escritas por ele, fora
+    /// do trecho de teste.
+    pub call_paths: BTreeMap<String, Vec<CallSite>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     pub calls: Vec<CallSite>,
@@ -410,7 +414,10 @@ impl Analyzer {
                             let first = first_segment(&path, separators);
                             if aliases.contains(&first) || parent == Some(first) {
                                 import_spans.insert((node.start_byte(), node.end_byte()));
-                                here_imports.push(Written::at(path, false, node));
+                                // O nome chamado é o nó nomeado logo depois do
+                                // caminho, lido como a chamada dele é lida.
+                                let call = node.next_named_sibling().and_then(|n| called_site(n, bytes, separators));
+                                here_imports.push(Written { call, ..Written::at(path, false, node) });
                             }
                         }
                     }
@@ -586,11 +593,17 @@ impl Analyzer {
         }
         out.import_lines = import_lines;
         // O import escrito dentro de um trecho de teste é do teste, e fica à
-        // parte dos do arquivo.
-        for Written { text, global, byte, .. } in written {
+        // parte dos do arquivo. O caminho de chamada fora dele guarda as
+        // chamadas escritas por ele.
+        for Written { text, global, byte, call, .. } in written {
             if test_blocks.iter().any(|&(start, end)| (start..end).contains(&byte)) {
                 out.test_imports.push(text);
-            } else if global {
+                continue;
+            }
+            if let Some(site) = call {
+                out.call_paths.entry(text.clone()).or_default().push(site);
+            }
+            if global {
                 out.global_imports.push(text);
             } else {
                 out.imports.push(text);
@@ -602,6 +615,10 @@ impl Analyzer {
         out.global_imports.dedup();
         out.test_imports.sort();
         out.test_imports.dedup();
+        for sites in out.call_paths.values_mut() {
+            sites.sort();
+            sites.dedup();
+        }
         out.test_lines.sort();
         out.test_lines.dedup();
         out.module_lines.sort();
@@ -613,19 +630,32 @@ impl Analyzer {
 }
 
 /// Um import como foi escrito no arquivo: o texto já limpo, se ele vale para
-/// mais arquivos que o que o escreve, e o byte e a linha em que começa.
+/// mais arquivos que o que o escreve, o byte e a linha em que começa e, quando
+/// é o caminho de uma chamada, a chamada escrita por ele.
 #[derive(Clone)]
 struct Written {
     text: String,
     global: bool,
     byte: usize,
     line: usize,
+    call: Option<CallSite>,
 }
 
 impl Written {
     fn at(text: String, global: bool, node: Node) -> Written {
-        Written { text, global, byte: node.start_byte(), line: node.start_position().row + 1 }
+        Written { text, global, byte: node.start_byte(), line: node.start_position().row + 1, call: None }
     }
+}
+
+/// A chamada do nome no nó, como [`use_sites`] a lê: o nome, a linha e o
+/// qualificador escrito antes dele. `None` quando o nó não é um nome.
+fn called_site(node: Node, bytes: &[u8], separators: &[&str]) -> Option<CallSite> {
+    let name = node.utf8_text(bytes).ok().filter(|text| is_identifier(text))?;
+    Some(CallSite {
+        name: name.to_string(),
+        line: node.start_position().row + 1,
+        qualifier: qualifier_before(node, bytes, separators),
+    })
 }
 
 /// A declaration as the query gave it, before the supertypes captured

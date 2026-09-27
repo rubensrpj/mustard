@@ -32,6 +32,9 @@
 //!     próprio arquivo (`mod interno { }` de `src/a.rs`) e dentro do trecho de
 //!     teste, que sai do módulo antes de subir pasta, também na passada que
 //!     reaproveita o arquivo sem relê-lo.
+//!     E `graph_rust_call_path/`: `valor` declarado em `src/a.rs` e em
+//!     `src/x.rs`, chamado de `src/a.rs` por `super::super::x::valor()`, por
+//!     `super::valor()` dentro de um módulo do arquivo e sem caminho.
 //!
 //! Characterization baseline (recorded on the code BEFORE the resolution fix):
 //! csharp, typescript and go already produced edges; python, rust and php
@@ -45,6 +48,8 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -54,22 +59,13 @@ fn fixture(name: &str) -> PathBuf {
     manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
-/// Scan a fixture into a temp `grain.model.json` and return the parsed value.
+/// Scan a fixture into a temp map and return the parsed value.
 /// Mirrors `php_laravel_fixture.rs`: a per-CALL temp dir (label + fixture name
 /// + pid) so parallel tests scanning the same fixture never yank each other's
 ///   dir (the per-language test and the non-regression test share fixtures).
 fn scan_fixture_labeled(label: &str, name: &str) -> serde_json::Value {
     let temp = tempfile::Builder::new().prefix(&format!("scan-graph-{}-{}-", label, name)).tempdir().unwrap();
-    let dir = temp.path().to_path_buf();
-    let model = dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", fixture(name).to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON");
-    v
+    model::scan(&fixture(name), temp.path(), &[]).0
 }
 
 /// Per-language entry point: the test fn name doubles as the temp-dir label.
@@ -523,25 +519,16 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 /// Roda o scan dentro do projeto e devolve o mapa gravado e o relato da
 /// passada.
 fn scan_in_place(dir: &std::path::Path) -> (serde_json::Value, serde_json::Value) {
-    let model = dir.join(".claude").join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
-        .output()
-        .expect("run scan");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let report = serde_json::from_str(stdout.lines().last().unwrap_or("{}")).expect("o relato é uma linha JSON");
-    (serde_json::from_str(&std::fs::read_to_string(&model).unwrap()).unwrap(), report)
+    model::scan(dir, &dir.join(".claude"), &[])
 }
 
-/// A passada que reaproveita `src/a.rs` sem relê-lo sabe o mesmo que a
-/// leitura inteira: os módulos do arquivo e as linhas dos imports escritos
-/// neles ficam no mapa.
-#[test]
-fn a_pass_that_keeps_the_file_knows_the_same_modules_of_the_file() {
-    let temp = tempfile::Builder::new().prefix("scan-graph-rs-inner-reuse-").tempdir().unwrap();
+/// Duas passadas sobre a fixture `name` num projeto do git: a leitura inteira
+/// e, depois de mudar só `src/main.rs`, a que reaproveita os outros arquivos
+/// sem relê-los. Devolve o mapa de cada uma.
+fn full_and_kept_pass(name: &str) -> (serde_json::Value, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-graph-reuse-{name}-")).tempdir().unwrap();
     let dir = temp.path();
-    copy_tree(&fixture("graph_rust_inner_module"), dir);
+    copy_tree(&fixture(name), dir);
     git(dir, &["init", "-q"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
@@ -555,10 +542,92 @@ fn a_pass_that_keeps_the_file_knows_the_same_modules_of_the_file() {
     git(dir, &["commit", "-q", "-am", "segundo"]);
     let (second, report) = scan_in_place(dir);
     assert_eq!(report["read"], serde_json::json!(["src/main.rs"]), "só o que mudou é relido: {report}");
+    (first, second)
+}
 
+/// A passada que reaproveita `src/a.rs` sem relê-lo sabe o mesmo que a
+/// leitura inteira: os módulos do arquivo e as linhas dos imports escritos
+/// neles ficam no mapa.
+#[test]
+fn a_pass_that_keeps_the_file_knows_the_same_modules_of_the_file() {
+    let (first, second) = full_and_kept_pass("graph_rust_inner_module");
     for v in [&first, &second] {
         assert_super_inside_a_module_stays_in_the_file(v);
         assert_second_super_inside_a_module_climbs_one_folder(v);
         assert_super_of_the_test_block_stays_in_the_file(v);
+    }
+}
+
+/// Os arquivos cuja declaração `name` tem `site` entre quem a usa, em ordem.
+fn holders_of(v: &serde_json::Value, name: &str, site: &str) -> Vec<String> {
+    let mut holders: Vec<String> = v["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .filter(|m| {
+            m["declarations"].as_array().is_some_and(|decls| {
+                decls.iter().any(|d| {
+                    d["name"] == name && d["used_by"].as_array().is_some_and(|used| used.iter().any(|u| u == site))
+                })
+            })
+        })
+        .map(|m| m["path"].as_str().unwrap().to_string())
+        .collect();
+    holders.sort();
+    holders
+}
+
+/// A chamada escrita por um caminho que nomeia um arquivo liga só às
+/// declarações dele: `super::super::x::valor()`, na linha 15 de `src/a.rs`, é
+/// o `valor` de `src/x.rs`, e não o `valor` homônimo do próprio arquivo.
+fn assert_a_call_by_a_path_links_only_to_the_file_it_names(v: &serde_json::Value) {
+    assert_eq!(holders_of(v, "valor", "src/a.rs:15:longe"), vec!["src/x.rs".to_string()]);
+}
+
+/// O próprio arquivo só entra quando o caminho o nomeia: `super::valor()`
+/// dentro de `mod interno`, na linha 11 de `src/a.rs`, é o `valor` de
+/// `src/a.rs`, e não o de `src/x.rs`, que o arquivo também importa.
+fn assert_a_path_to_the_file_itself_links_only_to_the_file(v: &serde_json::Value) {
+    assert_eq!(holders_of(v, "valor", "src/a.rs:11:perto"), vec!["src/a.rs".to_string()]);
+}
+
+/// A chamada sem caminho segue ligando a toda declaração à vista: `valor()`,
+/// na linha 6 de `src/a.rs`, é o `valor` do próprio arquivo e o de
+/// `src/x.rs`, que o arquivo importa.
+fn assert_a_call_without_a_path_still_links_to_every_one_in_sight(v: &serde_json::Value) {
+    assert_eq!(
+        holders_of(v, "valor", "src/a.rs:6:soma"),
+        vec!["src/a.rs".to_string(), "src/x.rs".to_string()]
+    );
+}
+
+#[test]
+fn a_call_by_a_path_links_only_to_the_file_it_names() {
+    let v = scan_fixture_labeled("rs-path-only", "graph_rust_call_path");
+    assert_a_call_by_a_path_links_only_to_the_file_it_names(&v);
+}
+
+#[test]
+fn a_path_to_the_file_itself_links_only_to_the_file() {
+    let v = scan_fixture_labeled("rs-path-itself", "graph_rust_call_path");
+    assert_a_path_to_the_file_itself_links_only_to_the_file(&v);
+}
+
+#[test]
+fn a_call_without_a_path_still_links_to_every_one_in_sight() {
+    let v = scan_fixture_labeled("rs-no-path", "graph_rust_call_path");
+    assert_a_call_without_a_path_still_links_to_every_one_in_sight(&v);
+}
+
+/// A passada que reaproveita `src/a.rs` sem relê-lo liga as chamadas por
+/// caminho como a leitura inteira: os caminhos e as chamadas escritas por
+/// eles ficam no mapa.
+#[test]
+fn a_pass_that_keeps_the_file_links_the_calls_by_path_the_same() {
+    let (first, second) = full_and_kept_pass("graph_rust_call_path");
+    for v in [&first, &second] {
+        assert_a_call_by_a_path_links_only_to_the_file_it_names(v);
+        assert_a_path_to_the_file_itself_links_only_to_the_file(v);
+        assert_a_call_without_a_path_still_links_to_every_one_in_sight(v);
     }
 }

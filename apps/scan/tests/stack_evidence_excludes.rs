@@ -16,9 +16,10 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use mustard_core::domain::vocabulary::stacks::CONFIDENCE_TWO_CLASSES;
 
@@ -43,17 +44,11 @@ fn copy_tree(src: &Path, dst: &Path) {
     }
 }
 
-/// Scan a root into a temp `grain.model.json` and return the parsed value.
+/// Scan a root into a temp map and return the parsed value.
 /// Mirrors `stack_detection_e2e.rs`: a temp dir owned by the test, removed at
 /// the end.
 fn scan_root(root: &Path, out_dir: &Path) -> serde_json::Value {
-    let model = out_dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", root.to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over parent fixture");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON")
+    model::scan(root, out_dir, &[]).0
 }
 
 #[test]
