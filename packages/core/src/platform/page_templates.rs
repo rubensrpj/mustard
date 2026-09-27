@@ -113,7 +113,7 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 /// cada mudança no molde montado (o template ou o catálogo dele): é ela, e
 /// não a versão do Mustard, que manda publicar de novo a página já
 /// publicada. A trava dos testes falha quando o molde muda sem ela subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 4;
+pub const SPEC_LAYOUT_VERSION: u32 = 5;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
@@ -375,8 +375,8 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 4, "6de0feb78831cb06"),
-        ("spec", Locale::EnUs, 4, "2062ab4c171a17fd"),
+        ("spec", Locale::PtBr, 5, "9cf3f97aa1868629"),
+        ("spec", Locale::EnUs, 5, "4036da2252242932"),
         ("project", Locale::PtBr, 2, "5c7b4eee3a7b2603"),
         ("project", Locale::EnUs, 2, "4d85adda20bd8de6"),
     ];

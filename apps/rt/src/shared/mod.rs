@@ -49,7 +49,8 @@ pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
 /// for why there used to be two, and what they disagreed about. Also the
 /// backlog: the same peel over a task graph instead of a wave graph, plus
-/// readiness and file-capacity packing into dispatch batches.
+/// readiness, packing into dispatch batches under a work cap (tasks and
+/// files), and the waiting task that joins the batch it depends on.
 // O backlog ainda não tem chamador: o allow sai com o primeiro (próxima onda).
 #[allow(dead_code)]
 pub mod dag;

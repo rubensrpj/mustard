@@ -612,7 +612,9 @@ pub(super) fn run_entered_round(
     super::commit::refresh_map_if_stale(root, mine);
 
     // O backlog forma os lotes das tarefas prontas nas duas leituras: a de
-    // entrada (`log_on_entry`) e a feita agora, já com a trava presa. O
+    // entrada (`log_on_entry`) e a feita agora, já com a trava presa. O lote
+    // leva também, depois delas, a tarefa do backlog nas duas leituras que
+    // espera só por tarefas dele e divide arquivo com ele. O
     // binário grava a onda e as tarefas dela, com autor próprio, e só depois
     // a rodada lê as ondas que existem — as novas e as já entregues. A
     // tarefa que o corte de uma onda de lote acabou de devolver solta, no

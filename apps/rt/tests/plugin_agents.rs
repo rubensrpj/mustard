@@ -430,17 +430,35 @@ fn o_molde_da_onda_poe_na_tarefa_o_arquivo_que_a_mudanca_exige() {
 /// existia para ele; num arquivo de outra onda em andamento, o agente não
 /// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
 /// grava, só com o título e o detalhe: toda sobra vai ao backlog da spec, e o
-/// molde não pede mais que o agente diga se ela quebra algo ou é cosmética.
+/// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
+/// sobra que só muda comentário, documentação ou texto de ajuda leva a marca
+/// de limpeza, que a rodada segura para o fim da obra.
 #[test]
 fn a_fronteira_manda_tirar_o_que_a_mudanca_deixou_sem_uso() {
     for (lang, said) in [
         (
             "pt-BR",
-            ["deixa sem uso", "com o teste só dele", "sai na mesma onda", "outra onda em andamento, não edite", "backlog da spec"],
+            [
+                "deixa sem uso",
+                "com o teste só dele",
+                "sai na mesma onda",
+                "outra onda em andamento, não edite",
+                "backlog da spec",
+                "só muda comentário, documentação ou texto de ajuda",
+                "`\"cleanup\":true`",
+            ],
         ),
         (
             "en-US",
-            ["leaves unused", "with the test only it had", "goes in the same wave", "another running wave, do not edit", "spec backlog"],
+            [
+                "leaves unused",
+                "with the test only it had",
+                "goes in the same wave",
+                "another running wave, do not edit",
+                "spec backlog",
+                "only changes a comment, documentation or help text",
+                "`\"cleanup\":true`",
+            ],
         ),
     ] {
         let name = "wave";

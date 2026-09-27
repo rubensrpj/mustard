@@ -537,6 +537,11 @@ pub const TYPES: &[TypeSpec] = &[
             // vazia quando não depende de nenhuma. Alimenta a ordem das
             // ondas (topológica) e, como `files`, é obrigatória na gravação.
             opt("depends_on", Kind::Refs),
+            // A tarefa de limpeza: nasceu de uma sobra que só muda
+            // comentário, documentação ou texto de ajuda, e a rodada a segura
+            // até o fim da obra, para sair junto das outras numa onda só.
+            // Ausente é tarefa comum.
+            opt("cleanup", Kind::Bool),
         ],
     ),
     ty(
@@ -643,8 +648,10 @@ pub const TYPES: &[TypeSpec] = &[
             // As ondas que um conserto fecha.
             opt("fixes", Kind::Ints),
             // O que o agente achou fora da tarefa e não é dele consertar, cada
-            // sobra com título e detalhe (`title`, `detail`): vira pendência
-            // da spec quando a rodada assume a volta.
+            // sobra com título e detalhe (`title`, `detail`): vira tarefa da
+            // spec quando a rodada assume a volta. A sobra que só muda
+            // comentário, documentação ou texto de ajuda leva a marca
+            // `cleanup`, que a tarefa herda.
             opt("leftovers", Kind::Objects),
             // A resposta por cada item combinado que o pedido da onda levou,
             // como a do veredito final (`item`, `met`): o item que não vem

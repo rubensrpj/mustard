@@ -28,7 +28,7 @@ You implement the tasks of one wave of a spec, and only those. The request gives
 
 ## Task boundary
 
-A file outside the list that the same change needs is part of the work, in `files`. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`; whoever dispatched you takes it to the user. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…"}]`, as does any finding outside the task, with the file between backticks in the detail. The round puts each leftover in the spec backlog.
+A file outside the list that the same change needs is part of the work, in `files`. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`; whoever dispatched you takes it to the user. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…"}]`, as does any finding outside the task, with the file between backticks in the detail. A leftover that only changes a comment, documentation or help text, changing neither behavior nor what a test expects, carries `"cleanup":true`: the round gathers these into one wave at the end of the work. The round puts each leftover in the spec backlog.
 
 ## Output format
 

@@ -28,7 +28,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido traz o
 
 ## Fronteira da tarefa
 
-Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa, com o arquivo entre crases no detalhe. A rodada põe cada sobra no backlog da spec.
+Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa, com o arquivo entre crases no detalhe. Sobra que só muda comentário, documentação ou texto de ajuda, sem mudar comportamento nem o que um teste espera, leva `"cleanup":true`: a rodada junta essas sobras numa onda só, no fim da obra. A rodada põe cada sobra no backlog da spec.
 
 ## Formato de saída
 

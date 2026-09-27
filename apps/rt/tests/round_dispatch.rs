@@ -6,8 +6,10 @@
 //! O backlog despachado pelo binário de verdade, numa pasta temporária: seis
 //! tarefas com dependência e arquivo compartilhado, e os lotes que a rodada
 //! grava, como onda de autor `binary`, sempre saem os mesmos — quem
-//! compartilha arquivo cai junto, ninguém divide arquivo entre lotes, e a
-//! capacidade de cinco arquivos fecha o primeiro lote antes do segundo abrir.
+//! compartilha arquivo cai junto, ninguém divide arquivo entre lotes, a
+//! tarefa que espera só por tarefas do lote e divide arquivo com ele entra
+//! depois delas, e o teto de trabalho do lote, em tarefas e em arquivos,
+//! fecha o lote.
 //!
 //! Move a prova que antes vivia só como teste de unidade do módulo do grafo
 //! (`apps/rt/src/shared/dag.rs`): o critério fala em despacho pelo binário,
@@ -242,11 +244,12 @@ fn o_backlog_vira_sempre_os_mesmos_lotes() {
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
 
-    // O mesmo grafo do teste puro: 1 e 5 dividem `b.rs`; 4 é a maior parte,
-    // sozinha; 2 não compartilha arquivo com ninguém; 3 espera 1, 6 espera 4.
+    // 1 e 5 dividem `b.rs`; 4 é a maior parte, sozinha; 2 não compartilha
+    // arquivo com ninguém; 3 espera 1 e divide `b.rs` com ela; 6 espera 4,
+    // mas não divide arquivo com o lote.
     let t1 = backlog_task(&project, crit_id, said, &["a.rs", "b.rs"], &[]);
     let t2 = backlog_task(&project, crit_id, said, &["c.rs"], &[]);
-    let t3 = backlog_task(&project, crit_id, said, &["d.rs"], &[t1]);
+    let t3 = backlog_task(&project, crit_id, said, &["b.rs", "d.rs"], &[t1]);
     let t4 = backlog_task(&project, crit_id, said, &["e.rs", "f.rs", "g.rs"], &[]);
     let t5 = backlog_task(&project, crit_id, said, &["b.rs"], &[]);
     let t6 = backlog_task(&project, crit_id, said, &["h.rs"], &[t4]);
@@ -262,27 +265,19 @@ fn o_backlog_vira_sempre_os_mesmos_lotes() {
     let after = project.log();
     let waves: Vec<_> =
         after.visible().into_iter().filter(|e| e.event_type == "wave" && e.str_field("author") == Some("binary")).collect();
-    assert_eq!(waves.len(), 2, "1, 4 e 5 num lote, 2 sozinho no outro; 3 e 6 esperam dependência aberta: {waves:?}");
+    assert_eq!(waves.len(), 1, "as cinco cabem no teto de um lote só: {waves:?}");
 
-    let order_of = |w: &mustard_core::domain::spec_events::SpecEvent| -> BTreeSet<u64> {
-        w.fields.get("order").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect()
-    };
-    let big = waves.iter().find(|w| order_of(w).len() == 3).expect("o lote de três tarefas");
-    let small = waves.iter().find(|w| order_of(w).len() == 1).expect("o lote de uma tarefa só");
+    let order = waves[0].ints("order");
+    assert_eq!(
+        order.iter().copied().collect::<BTreeSet<u64>>(),
+        BTreeSet::from([t1, t2, t3, t4, t5]),
+        "1, 2, 4 e 5 prontas, e 3, que espera só a 1 e divide `b.rs` com ela: {order:?}"
+    );
+    let at = |task: u64| order.iter().position(|id| *id == task).expect("a tarefa está no lote");
+    assert!(at(t1) < at(t3), "a 3 entra depois da 1, de que depende: {order:?}");
 
-    assert_eq!(order_of(big), BTreeSet::from([t1, t4, t5]), "1, 4 e 5 dividem arquivo ou cabem juntos até a capacidade de 5");
-    assert_eq!(order_of(small), BTreeSet::from([t2]), "2 não compartilha arquivo com a parte de 1, 4 e 5");
-
-    // 3 e 6 esperam a dependência aberta: nenhuma das duas ondas os leva.
-    assert!(!order_of(big).contains(&t3) && !order_of(small).contains(&t3), "3 espera 1, ainda aberta");
-    assert!(!order_of(big).contains(&t6) && !order_of(small).contains(&t6), "6 espera 4, ainda aberta");
-
-    // A capacidade de 5 arquivos fecha o lote maior antes do menor abrir: o
-    // lote com mais arquivos distintos (1, 4 e 5, com 5 arquivos ao todo)
-    // sai antes do lote com menos (2, com 1 arquivo só).
-    let big_n = big.int("n").expect("wave n");
-    let small_n = small.int("n").expect("wave n");
-    assert!(big_n < small_n, "o lote maior abre antes do menor: {big_n} vs {small_n}");
+    // A 6 espera a 4, que está no lote, mas não divide arquivo com ele.
+    assert_eq!(after.current(t6).and_then(|t| t.wave()), None, "a 6 fica no backlog, sem onda");
 }
 
 /// Uma tarefa solta no backlog, sem onda própria, forma um lote sozinha: o
@@ -543,16 +538,16 @@ fn a_tarefa_com_curinga_sai_sozinha_e_espera_a_onda_em_andamento() {
 }
 
 /// Um padrão cruza com todo arquivo que ele casa: `src/**` e `src/a.rs`
-/// caem no mesmo lote mesmo passando da capacidade de cinco arquivos, e com
-/// `src/**` em andamento a tarefa de `src/b.rs` espera, enquanto a de
-/// `docs/` sai.
+/// caem no mesmo lote, e com `src/**` em andamento a tarefa de `src/b.rs`
+/// vai para um lote só dela e espera, enquanto a de `docs/`, que caberia no
+/// mesmo lote, sai no seu.
 #[test]
 fn a_tarefa_com_curinga_sai_sozinha_e_o_padrao_junta_com_o_arquivo_que_casa() {
     let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
     let (project, crit, said, tasks) = backlog_project(&[&own, &["src/**"]]);
     let (_, out) = dispatch_ready(&project);
     let joined = wave_of(&project, tasks[0]).expect("a tarefa de src/a.rs vira onda");
-    assert_eq!(wave_of(&project, tasks[1]), Some(joined), "src/** junta com src/a.rs, acima da capacidade");
+    assert_eq!(wave_of(&project, tasks[1]), Some(joined), "src/** junta com src/a.rs, que ele casa");
     assert_eq!(out, vec![joined]);
 
     let inside = seed_backlog_task(&project, crit, said, &["src/b.rs"]);
@@ -561,6 +556,6 @@ fn a_tarefa_com_curinga_sai_sozinha_e_o_padrao_junta_com_o_arquivo_que_casa() {
     let (_, out) = dispatch_ready(&project);
     let inside_wave = wave_of(&project, inside).expect("src/b.rs vira lote");
     let outside_wave = wave_of(&project, outside).expect("docs vira lote");
-    assert_ne!(inside_wave, outside_wave, "os dois não cabem juntos na capacidade de cinco");
+    assert_ne!(inside_wave, outside_wave, "src/b.rs, presa a src/** em andamento, não leva docs junto");
     assert_eq!(out, vec![outside_wave], "src/b.rs espera src/** em andamento; docs, que ele não casa, sai");
 }

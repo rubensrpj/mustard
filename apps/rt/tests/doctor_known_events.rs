@@ -150,7 +150,7 @@ fn as_sobras_da_economia_antiga_nao_existem_mais() {
         ("apps/rt/src/commands/flow/plan.rs", "mais de três tarefas ou mais de três provas"),
         ("apps/rt/src/hooks/observe/wave_alive_observer.rs", "pausa aos 200 mil"),
         ("apps/rt/src/commands/git_settle.rs", "stays true only when WE removed it"),
-        // A capacidade do lote é fixa: nenhuma rodada a corrige, e o teto de
+        // O teto do lote é fixo: nenhuma rodada o corrige, e o teto de
         // turnos que teria sido corrigido do mesmo jeito saiu.
         ("apps/rt/src/shared/dag.rs", "do jeito que já\n/// corrigiram o teto de turnos"),
         ("apps/rt/src/shared/dag.rs", "as primeiras rodadas de despacho a corrigem"),

@@ -17,6 +17,7 @@ use mustard_core::io::wave_prompt::{lesson_bank, wave_lessons};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use super::leftovers::is_cleanup;
 use super::report::tagged;
 use super::stops::waves_replanned;
 use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
@@ -821,17 +822,31 @@ pub(crate) fn backlog_left(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
+/// `true` quando a limpeza ainda espera ([`is_cleanup`]): há onda do plano
+/// por terminar — em andamento, por sair ou com conserto pendente
+/// ([`first_unfinished`]) — ou tarefa do backlog (`left`) que não é
+/// limpeza. A limpeza sai numa onda só, no fim da obra, quando nada mais
+/// resta a fazer.
+fn cleanup_waits(log: &SpecLog, running: &BTreeMap<u64, u64>, left: &BTreeSet<u64>) -> bool {
+    first_unfinished(log, running).is_some()
+        || left.iter().filter_map(|id| log.get(*id)).any(|task| !is_cleanup(task))
+}
+
 /// As tarefas do backlog ([`backlog_left`]) que já estão prontas — todas as
 /// dependências entregues ou aprovadas —, na ordem em que o motor do backlog
 /// as empacota. Vazia quando o backlog está vazio ou quando toda tarefa dele
-/// ainda espera uma dependência.
+/// ainda espera uma dependência. A limpeza só entra quando nada mais resta
+/// ([`cleanup_waits`]): até lá ela não forma lote, e o próximo passo da
+/// rodada não a oferece.
 pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
     let left = backlog_left(log);
+    let held = cleanup_waits(log, &running, &left);
     crate::shared::dag::ready_tasks(&backlog_population(log, &done_waves))
         .into_iter()
         .filter(|id| left.contains(id))
+        .filter(|id| !held || !log.get(*id).is_some_and(is_cleanup))
         .collect()
 }
 
@@ -861,9 +876,19 @@ pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
 /// recusa na conferência não deixa onda gravada sem as tarefas dela.
 ///
 /// A prontidão e o empacotamento são o mesmo motor de [`crate::shared::dag`]
-/// que já prova, sozinho, o desempate e a régua de arquivos: esta função só
-/// lê a spec, monta a população de tarefas e grava o que ele decidiu.
+/// que já prova, sozinho, o desempate e o teto de trabalho do lote: esta
+/// função só lê a spec, monta a população de tarefas e grava o que ele
+/// decidiu. Além das prontas, o motor recebe as tarefas que esperam
+/// (`waiting`): a que espera só por tarefas do mesmo lote, ou já entregues, e
+/// divide arquivo com ele entra no lote, depois delas. E recebe os arquivos
+/// das ondas do plano ainda abertas (`busy`): a parte que cruza um deles vai
+/// para um lote só dela, que espera a onda aberta sem segurar outra parte.
 /// `Ok(vec![])` sem tarefa pronta no backlog.
+///
+/// A limpeza ([`is_cleanup`]) nunca entra num lote comum: sai da ordem e da
+/// espera, para a dependente que entra no lote nunca a puxar. Quando ela está
+/// pronta — no fim da obra, ver [`backlog_ready`] —, todas as limpezas saem
+/// num lote só, depois dos outros e fora do teto do lote.
 ///
 /// `run_round_with_mine` (`apps/rt/src/commands/flow/round/answer.rs`) chama
 /// esta função antes de formar a lista de ondas prontas: quem decide as
@@ -881,27 +906,52 @@ pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
 /// estava pronta na entrada —, e todo o resto (o número da onda nova, a
 /// versão de cada tarefa, o lote já formado a atualizar) sai de `locked`:
 /// a tarefa que a outra rodada já empacotou tem, ali, a onda dela, e não
-/// volta a sair numa onda com o mesmo número.
+/// volta a sair numa onda com o mesmo número. A tarefa que espera segue a
+/// mesma regra das duas leituras: só entra a que está no backlog nas duas.
 ///
 /// # Errors
 ///
 /// A recusa da conferência, antes de qualquer gravação, ou a da primeira
 /// gravação que falhar.
 pub(crate) fn dispatch_backlog(start: &Path, spec: &str, on_entry: &SpecLog, locked: &SpecLog) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
-    use crate::shared::dag::{pack_batches, BACKLOG_CAPACITY};
+    use crate::shared::dag::{pack_batches, Batch, BATCH_CAP};
 
     let log = locked;
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
     let by_id: BTreeMap<u64, &SpecEvent> =
         log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
+    let cleanup = |id: &u64| by_id.get(id).is_some_and(|task| is_cleanup(task));
     let population = backlog_population(log, &done_waves);
-    let ready_on_entry: BTreeSet<u64> =
-        backlog_ready(on_entry).into_iter().filter_map(|id| log.current(id)).map(|task| task.id).collect();
-    let order: Vec<u64> = backlog_ready(log).into_iter().filter(|id| ready_on_entry.contains(id)).collect();
+    // A versão vigente, em `locked`, do que a leitura de entrada via.
+    let in_locked = |ids: BTreeSet<u64>| -> BTreeSet<u64> {
+        ids.into_iter().filter_map(|id| log.current(id)).map(|task| task.id).collect()
+    };
+    let ready_on_entry = in_locked(backlog_ready(on_entry).into_iter().collect());
+    let (tidy, order): (Vec<u64>, Vec<u64>) =
+        backlog_ready(log).into_iter().filter(|id| ready_on_entry.contains(id)).partition(|id| cleanup(id));
+    let left_on_entry = in_locked(backlog_left(on_entry));
+    let waiting: Vec<u64> = backlog_left(log)
+        .into_iter()
+        .filter(|id| left_on_entry.contains(id) && !order.contains(id) && !cleanup(id))
+        .collect();
+    // O arquivo de cada onda do plano que ainda não terminou: em andamento,
+    // por sair ou com conserto pendente.
+    let graph = wave_graph(log);
+    let busy: BTreeSet<String> = log
+        .planned_waves()
+        .into_iter()
+        .filter(|n| !done_waves.contains(n))
+        .flat_map(|n| graph.files.get(&n).cloned().unwrap_or_default())
+        .collect();
     let mut writes: Vec<(&str, Map<String, Value>)> =
         stale_batch_revisions(log).into_iter().map(|revised| ("wave", revised)).collect();
-    let batches = if order.is_empty() { Vec::new() } else { pack_batches(&population, &order, BACKLOG_CAPACITY) };
+    let mut batches =
+        if order.is_empty() { Vec::new() } else { pack_batches(&population, &order, &waiting, &busy, BATCH_CAP) };
+    if !tidy.is_empty() {
+        let files = tidy.iter().filter_map(|id| by_id.get(id)).flat_map(|task| task_files(task)).collect();
+        batches.push(Batch { tasks: tidy, files });
+    }
 
     // O número segue o maior já gravado, com a onda de lote que ficou vazia
     // incluída: ela saiu do plano, mas o número dela não volta a nascer.
@@ -3072,5 +3122,109 @@ mod tests {
             let log = store::read(&path).unwrap().unwrap();
             assert!(log.visible().iter().all(|e| e.event_type != "wave"), "{case}: nenhuma onda gravada");
         }
+    }
+
+    /// Uma tarefa de limpeza do backlog — nasceu de uma sobra que só muda
+    /// comentário —, gravada pela porta do modelo, num arquivo só.
+    fn cleanup_task(root: &Path, said: u64, crit: u64, text: &str, file: &str) -> u64 {
+        id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}], "depends_on": [],
+            "covers": [crit], "origin": said, "cleanup": true})))
+    }
+
+    /// A spec `x` como está no arquivo agora.
+    fn spec_now(root: &Path) -> SpecLog {
+        store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
+    }
+
+    /// A ordem gravada na onda `n` da spec `x`.
+    fn wave_order(root: &Path, n: u64) -> Vec<u64> {
+        let log = spec_now(root);
+        let wave = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(n));
+        wave.map(|w| w.ints("order")).unwrap_or_default()
+    }
+
+    /// Com uma tarefa comum e uma limpeza prontas no backlog, a rodada solta
+    /// só a comum: a limpeza segue no backlog, sem onda.
+    #[test]
+    fn a_limpeza_fica_no_backlog_enquanto_ha_outra_tarefa_por_fazer() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let normal = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let tidy = cleanup_task(root, said, crit, "Acertar o comentário de dois.", "src/b.rs");
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert_eq!(wave_order(root, 1), vec![normal], "a onda 1 leva só a tarefa comum");
+        assert_eq!(spec_now(root).current(tidy).and_then(SpecEvent::wave), None, "a limpeza segue sem onda");
+    }
+
+    /// A limpeza espera a onda da tarefa comum terminar. Com a onda 1 no ar,
+    /// a rodada não forma onda; a que assume a entrega da 1 não solta nada e
+    /// manda rodar de novo; a seguinte solta a limpeza sozinha na onda 2, e
+    /// entregue a 2 a rodada manda fechar.
+    #[test]
+    fn entregue_a_tarefa_normal_a_limpeza_sai_na_rodada_seguinte() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let normal = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let tidy = cleanup_task(root, said, crit, "Acertar o comentário de dois.", "src/b.rs");
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        assert_eq!(wave_order(root, 1), vec![normal], "{first}");
+
+        let idle = round(root, "x", None);
+        assert_eq!(idle["ok"], json!(true), "{idle}");
+        let formed: Vec<Value> = every_line_of(root, "wave").iter().map(|w| w["n"].clone()).collect();
+        assert_eq!(formed, vec![json!(1)], "com a onda 1 no ar, nenhuma onda nova: {idle}");
+
+        let assumed = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(assumed["ok"], json!(true), "{assumed}");
+        assert_eq!(waves_in(&assumed, "dispatch"), Vec::<u64>::new(), "{assumed}");
+        assert_eq!(assumed["command"], json!("mustard-rt run round --spec x"), "{assumed}");
+
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![2], "a limpeza sai na onda 2: {again}");
+        assert_eq!(wave_order(root, 2), vec![tidy], "a onda 2 leva só a limpeza");
+
+        let done = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
+        assert_eq!(done["command"], json!("mustard-rt run close --spec x"), "{done}");
+    }
+
+    /// Uma limpeza a mais que o teto de tarefas do lote, cada uma num
+    /// arquivo próprio: todas saem juntas numa onda só.
+    #[test]
+    fn as_limpezas_saem_juntas_numa_onda_mesmo_passando_do_teto_do_lote() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let tidy: Vec<u64> = (1..=crate::shared::dag::BATCH_CAP.tasks + 1)
+            .map(|n| cleanup_task(root, said, crit, &format!("Acertar o comentário {n}."), &format!("src/c{n}.rs")))
+            .collect();
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log), Ok(vec![1]), "uma onda só");
+        assert_eq!(wave_order(root, 1), tidy, "a onda 1 leva todas as limpezas");
+    }
+
+    /// Com a onda da tarefa comum entregue e a limpeza ainda no backlog, o
+    /// fechamento recusa pelo backlog que não esvaziou.
+    #[test]
+    fn o_fechamento_recusa_com_limpeza_por_fazer() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        cleanup_task(root, said, crit, "Acertar o comentário de dois.", "src/b.rs");
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let assumed = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(assumed["ok"], json!(true), "{assumed}");
+
+        assert_eq!(
+            crate::commands::flow::close::finished_refusal(&spec_now(root)),
+            Some(("backlog-not-empty".into(), None)),
+            "{assumed}"
+        );
     }
 }

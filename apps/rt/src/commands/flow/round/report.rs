@@ -478,7 +478,8 @@ fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
 /// conserto fecha, a mudança de plano e as sobras. Arquivo entregue pede o
 /// resumo do commit, a não ser na mudança de plano, e o resumo nunca tem cara
 /// de código de commit. O `kind` que uma sobra de volta antiga ainda traga é
-/// ignorado.
+/// ignorado; a marca de limpeza (`cleanup`) de cada sobra é lida, e a que não
+/// é sim nem não recusa a volta inteira, sem gravar nada.
 fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveReport, RoundRefusal> {
     let text = |key: &str| {
         fields.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
@@ -516,7 +517,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         .filter_map(|p| Some((p.get("criterion").filter(|c| !c.is_null())?.clone(), field(p, "proof")?)))
         .collect();
     let fixes = listed("fixes").iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect();
-    let leftovers = leftovers_of(&listed("leftovers"));
+    let leftovers = leftovers_of(&listed("leftovers")).map_err(RoundRefusal::Refused)?;
     Ok(WaveReport {
         wave,
         delivered,
@@ -3747,6 +3748,59 @@ mod tests {
         assert_eq!(born(), born_before, "nenhuma pendência nova espera a pergunta do fechamento");
     }
 
+    /// A volta traz duas sobras, uma marcada como limpeza. Assumida a volta,
+    /// a tarefa da marcada leva a marca, e a da outra não leva o campo.
+    #[test]
+    fn a_sobra_marcada_como_limpeza_vira_tarefa_marcada_e_a_sem_marca_nao() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
+        round(root, "x", None);
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a soma sai", "leftovers": [
+                {"title": "O comentário da soma diz dois", "detail": "A soma é de três.", "cleanup": true},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
+            ]}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let tasks: Vec<SpecEvent> = out["recorded"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["type"] == json!("task"))
+            .map(|r| log.get(r["id"].as_u64().unwrap()).cloned().unwrap_or_else(|| panic!("{out}")))
+            .collect();
+        assert_eq!(tasks.len(), 2, "{out}");
+        assert_eq!(tasks[0].fields.get("cleanup"), Some(&json!(true)), "{:?}", tasks[0].fields);
+        assert!(!tasks[1].fields.contains_key("cleanup"), "{:?}", tasks[1].fields);
+    }
+
+    /// A marca de limpeza que não é sim nem não recusa a volta na gravação,
+    /// citando a sobra pelo número dela na lista, e nada é gravado.
+    #[test]
+    fn a_marca_de_limpeza_que_nao_e_sim_nem_nao_e_recusada_na_gravacao() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
+        round(root, "x", None);
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let before = spec_lines(root);
+
+        let refused = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a soma sai", "leftovers": [
+                {"title": "O comentário da soma diz dois", "detail": "A soma é de três.", "cleanup": "sim"},
+            ]}));
+        assert_eq!(refused["reason"], json!("invalid-value"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains("leftovers[1].cleanup"), "{refused}");
+        assert_eq!(spec_lines(root), before, "nada foi gravado: {refused}");
+    }
+
     /// A sobra apontada por uma onda com critério vira tarefa que cobre os
     /// critérios dessa onda; na rodada seguinte, a onda do
     /// conserto nasce do backlog com esses critérios e com a prova deles no
@@ -3825,7 +3879,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n"),
         );
-        let leftover = Leftover { title: "Quebra".into(), detail: "Sem índice.".into() };
+        let leftover = Leftover { title: "Quebra".into(), detail: "Sem índice.".into(), cleanup: false };
         let task = leftover_task(dir.path(), &log, 1, &leftover);
         assert_eq!(task.get("covers"), Some(&json!([1, 2])), "{task:?}");
         let task = leftover_task(dir.path(), &log, 2, &leftover);
