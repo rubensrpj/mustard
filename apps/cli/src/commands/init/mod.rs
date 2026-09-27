@@ -263,17 +263,17 @@ pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
     Ok(InitOutcome::Installed)
 }
 
-/// Acerta a busca velha das specs e do banco de lições de `project`, pela
-/// mesma função da atualização pelo plugin
+/// Põe o campo de busca que falta nas linhas das specs e do banco de lições
+/// de `project`, pela mesma função da atualização pelo plugin
 /// ([`mustard_core::io::spec_index::refresh_search`]), e diz em `out` quantas
-/// linhas acertou. A falha vira um aviso com o comando que refaz a busca
-/// depois, e a instalação segue. Uma escrita em `out` que falha é descartada.
+/// linhas o ganharam. A falha vira um aviso com o comando que o põe depois,
+/// e a instalação segue. Uma escrita em `out` que falha é descartada.
 fn refresh_search(project: &Path, out: &mut impl Write) {
     match mustard_core::io::spec_index::refresh_search(project) {
         Ok(0) => {}
         Ok(lines) => {
             let noun = if lines == 1 { "line" } else { "lines" };
-            let _ = writeln!(out, "  recomputed the search of {lines} {noun} an older Mustard wrote");
+            let _ = writeln!(out, "  filled the search of {lines} {noun} an older Mustard wrote without it");
         }
         Err(failed) => {
             let _ = writeln!(out, "  warning: {failed}");
@@ -575,13 +575,14 @@ mod tests {
         );
     }
 
-    /// Uma versão anterior gravou uma decisão numa spec e uma lição no banco
-    /// com a busca de outra regra. A instalação recalcula as duas: só o
-    /// `search` delas muda, a palavra do título passa a entrar na busca, e a
-    /// instalação seguinte não tem mais o que acertar.
+    /// Uma versão anterior gravou uma decisão numa spec com a busca de outra
+    /// regra, outra decisão sem busca nenhuma e uma lição no banco sem busca.
+    /// A instalação põe o campo só onde ele falta: a busca de outra regra
+    /// fica byte a byte, a linha sem busca ganha as palavras do título e do texto, e a
+    /// instalação seguinte não tem mais o que pôr.
     #[test]
-    fn an_install_recomputes_the_stale_search_of_the_specs_and_the_lessons_once() {
-        use mustard_core::domain::spec_events::{refresh_search_lines, search_terms};
+    fn an_install_fills_the_missing_search_of_the_specs_and_the_lessons_once() {
+        use mustard_core::domain::spec_events::refresh_search_lines;
         use serde_json::{json, Map, Value};
 
         let work = tempdir().unwrap();
@@ -601,8 +602,12 @@ mod tests {
         let mut spec = fs::read_to_string(&events).unwrap();
         spec.push_str(
             "{\"v\":1,\"id\":2,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
-             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1,\
+             \"title\":\"Somar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1,\
              \"search\":\"fatur som centav\"}\n",
+        );
+        spec.push_str(
+            "{\"v\":1,\"id\":3,\"at\":\"2026-09-11T10:02:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura arredonda centavos.\",\"keys\":[\"soma\"],\"origin\":1}\n",
         );
         fs::write(&events, &spec).unwrap();
         let bank = paths.lessons_path();
@@ -611,29 +616,29 @@ mod tests {
         mustard_core::io::lessons::write_at(&bank, object(lesson), None, at).unwrap();
         let lessons = fs::read_to_string(&bank).unwrap();
         let (head, _) = lessons.trim_end().rsplit_once(",\"search\":").unwrap();
-        fs::write(&bank, format!("{head},\"search\":\"velho\"}}\n")).unwrap();
-        let stale = |text: &str| refresh_search_lines(text).1;
-        assert_eq!((stale(&spec), stale(&fs::read_to_string(&bank).unwrap())), (1, 1), "the fixture carries stale lines");
+        fs::write(&bank, format!("{head}}}\n")).unwrap();
+        let missing = |text: &str| refresh_search_lines(text).1;
+        assert_eq!((missing(&spec), missing(&fs::read_to_string(&bank).unwrap())), (1, 1), "the fixture lacks two fields");
 
         let opts = InitOptions { yes: true, ..InitOptions::default() };
         assert_eq!(init(&project, &opts).unwrap(), InitOutcome::Installed);
 
         let fixed = fs::read_to_string(&events).unwrap();
-        assert_eq!(stale(&fixed), 0, "the install left a stale search in the spec:\n{fixed}");
+        assert_eq!(missing(&fixed), 0, "the install left a line without search in the spec:\n{fixed}");
         let (before, after): (Vec<&str>, Vec<&str>) = (spec.lines().collect(), fixed.lines().collect());
         assert_eq!(after.len(), before.len(), "{fixed}");
         assert_eq!(after[0], before[0], "the line with today's search stays byte for byte");
+        assert_eq!(after[1], before[1], "the search of another rule stays byte for byte");
         let parse = |line: &str| object(serde_json::from_str(line).unwrap());
-        let (mut old, mut new) = (parse(before[1]), parse(after[1]));
+        let (old, mut new) = (parse(before[2]), parse(after[2]));
         let search = new.remove("search").unwrap();
         let words: Vec<&str> = search.as_str().unwrap().split(' ').collect();
-        assert!(search_terms("arredondar").iter().all(|root| words.contains(&root.as_str())), "{search}");
-        old.remove("search");
-        assert_eq!(old, new, "only the search field of the old line changed");
-        assert_eq!(fs::read_to_string(&bank).unwrap(), lessons, "the lesson's search is today's again");
+        assert!(words.contains(&"arredondar") && words.contains(&"arredonda"), "{search}");
+        assert_eq!(old, new, "only the search field was added to the line without it");
+        assert_eq!(fs::read_to_string(&bank).unwrap(), lessons, "the lesson got its search");
 
         assert_eq!(init(&project, &opts).unwrap(), InitOutcome::Installed);
-        assert_eq!(fs::read_to_string(&events).unwrap(), fixed, "a second install has nothing left to fix");
+        assert_eq!(fs::read_to_string(&events).unwrap(), fixed, "a second install has nothing left to fill");
     }
 
     /// Quando a busca não pode ser refeita — aqui, o índice das specs é uma

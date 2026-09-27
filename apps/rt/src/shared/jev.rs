@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use mustard_core::domain::map_filter::{
     FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, cut,
 };
-use mustard_core::domain::project_map::split_identifier;
+use mustard_core::domain::normalize::split_identifier;
 use serde_json::{Map, Value, json};
 
 // ---------------------------------------------------------------------------

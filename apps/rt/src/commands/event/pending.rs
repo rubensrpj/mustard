@@ -53,7 +53,8 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::search::{query_terms, SearchIndex};
+use mustard_core::domain::normalize::{Languages, Normalizer};
+use mustard_core::domain::search::SearchIndex;
 use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
 use mustard_core::domain::text;
@@ -454,10 +455,10 @@ fn number(id: &str) -> Option<u64> {
     id.strip_prefix("P-").and_then(|n| n.parse().ok())
 }
 
-/// As pendências abertas que o seletor pega, na ordem da lista. Recusa, com o
-/// arquivo intacto, quando nenhuma casa, e quando um número pedido não é de
-/// uma pendência aberta.
-fn select(ledger: &Ledger, selector: &Selector, lang: Locale) -> Result<Vec<String>, Value> {
+/// As pendências abertas que o seletor pega, na ordem da lista; o termo casa
+/// nas línguas `languages`. Recusa, com o arquivo intacto, quando nenhuma
+/// casa, e quando um número pedido não é de uma pendência aberta.
+fn select(ledger: &Ledger, selector: &Selector, lang: Locale, languages: &Languages) -> Result<Vec<String>, Value> {
     let open = || ledger.items.iter().filter(|i| i.status == Status::Open);
     let chosen: Vec<String> = match selector {
         Selector::Ids(ids) => {
@@ -472,11 +473,15 @@ fn select(ledger: &Ledger, selector: &Selector, lang: Locale) -> Result<Vec<Stri
             open().filter(|i| ids.contains(&i.id)).map(|i| i.id.clone()).collect()
         }
         Selector::Term(term) => {
-            let docs: Vec<(u64, String)> = open()
-                .filter_map(|i| Some((number(&i.id)?, search_field(Some(&format!("{} {}", i.title, i.detail)), &[]))))
+            let mut normalizer = Normalizer::new(languages);
+            let docs: Vec<(u64, Vec<Vec<String>>)> = open()
+                .filter_map(|i| {
+                    let search = search_field(Some(&format!("{} {}", i.title, i.detail)), &[]);
+                    Some((number(&i.id)?, normalizer.forms(&search)))
+                })
                 .collect();
-            let hits = SearchIndex::build(docs.iter().map(|(n, search)| (*n, search.as_str())))
-                .top(&query_terms(term), docs.len());
+            let total = docs.len();
+            let hits = SearchIndex::build(docs).top(&normalizer.query(term), total);
             let found: Vec<String> = hits.iter().map(|hit| format!("P-{}", hit.id)).collect();
             open().filter(|i| found.contains(&i.id)).map(|i| i.id.clone()).collect()
         }
@@ -775,7 +780,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             // Duas chamadas: a primeira mostra o que sairia e devolve o código;
             // a segunda, com o código e depois do sim do usuário, tira
             // exatamente aquele conjunto. Se a lista mudou, nada sai.
-            let chosen = match select(&ledger, &selector, lang) {
+            let chosen = match select(&ledger, &selector, lang, &Languages::of_project(&project)) {
                 Ok(ids) => ids,
                 Err(refusal) => return refusal,
             };

@@ -50,7 +50,7 @@ pub use message::{check_message, pr_message, MessageRefusal, MESSAGE_BODY_MAX, M
 pub use purge::{purge_excerpts, purge_lines};
 pub use read::{parse_log, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter};
 pub use refusal::{ItemPart, Refusal, TaskDeclaration, TASK_TITLE_MAX};
-pub use search::{found_by, refresh_search_lines, search_field, search_terms};
+pub use search::{found_by, refresh_search_lines, search_field};
 pub use types::{
     type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, TypeSpec, DELIVERED_MAX_CHARS, METRIC_TYPES,
     PHASES, TYPES, WORK_KINDS,

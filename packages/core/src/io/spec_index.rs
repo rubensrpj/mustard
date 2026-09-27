@@ -3,9 +3,10 @@
 //! Quem grava um evento numa pasta de spec do projeto refaz a linha daquela
 //! spec no índice dentro da mesma gravação (`io::spec_events`), sem custo de
 //! tokens. O [`rebuild`] refaz o índice inteiro a partir dos arquivos de
-//! eventos, quando ele falta ou diverge, e recalcula o campo `search` das
-//! linhas dos arquivos de eventos e do banco de lições; as duas portas de
-//! instalação o chamam por [`refresh_search`]. O [`divergence`] só lê
+//! eventos, quando ele falta ou diverge, e põe o campo `search` nas linhas
+//! dos arquivos de eventos e do banco de lições que ainda não o têm; o campo
+//! já gravado fica como está. As duas portas de instalação o chamam por
+//! [`refresh_search`]. O [`divergence`] só lê
 //! e diz onde o índice difere do que os arquivos de eventos dariam.
 //!
 //! As travas são pegas sempre na mesma ordem: primeiro a da spec, depois a do
@@ -134,9 +135,9 @@ pub struct Rebuilt {
     pub index: PathBuf,
     /// Quantas specs entraram no índice.
     pub specs: usize,
-    /// Quantas linhas dos arquivos de eventos tiveram o `search` recalculado.
+    /// Quantas linhas dos arquivos de eventos ganharam o `search` que faltava.
     pub search_updated: usize,
-    /// Quantas linhas do banco de lições tiveram o `search` recalculado.
+    /// Quantas linhas do banco de lições ganharam o `search` que faltava.
     pub lessons_search_updated: usize,
     /// As pastas de `.claude/spec/` que ficaram fora: sem arquivo de eventos
     /// (o formato antigo) ou com um nome que não serve para spec.
@@ -146,7 +147,7 @@ pub struct Rebuilt {
 /// Refaz o índice inteiro do projeto `root` a partir dos arquivos de eventos.
 ///
 /// Para cada spec, viva ou arquivada, em ordem de nome: pega a trava do
-/// arquivo de eventos, recalcula o `search` das linhas (e reescreve o arquivo
+/// arquivo de eventos, põe o `search` nas linhas sem ele (e reescreve o arquivo
 /// só se algo mudou), refaz a linha dela no índice e solta a trava. Por
 /// último, só com a trava do índice, tira as linhas de specs que não existem
 /// mais e as que não se entendem, e garante a linha do projeto: com o
@@ -210,8 +211,8 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
     Ok(out)
 }
 
-/// A busca velha que [`refresh_search`] não conseguiu refazer. O texto diz o
-/// motivo e o comando que refaz a busca depois.
+/// A busca que [`refresh_search`] não conseguiu pôr. O texto diz o motivo e
+/// o comando que a põe depois.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchNotRefreshed {
     /// Por que o [`rebuild`] recusou, em inglês.
@@ -220,16 +221,18 @@ pub struct SearchNotRefreshed {
 
 impl std::fmt::Display for SearchNotRefreshed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the search of the specs was not recomputed ({}); run `mustard-rt run index` in the project", self.reason)
+        write!(f, "the missing search of the specs was not filled ({}); run `mustard-rt run index` in the project", self.reason)
     }
 }
 
-/// Acerta, uma vez, a busca que uma versão anterior do Mustard gravou com
-/// outra regra, nas specs e no banco de lições de `root` ([`rebuild`]), e
-/// devolve quantas linhas acertou. As duas portas de instalação chamam esta
-/// função depois de semear o projeto: `mustard init`, pelo terminal, e
-/// `mustard-rt run upsert`, pelo plugin. É a única hora em que a busca velha
-/// se acerta, porque a gravação comum numa spec só acrescenta a linha nova.
+/// Põe, uma vez, o campo `search` nas linhas das specs e do banco de lições
+/// de `root` que ainda não o têm ([`rebuild`]), e devolve quantas linhas o
+/// ganharam. O campo já gravado, mesmo por outra regra, fica como está: a
+/// busca tira as formas de cada palavra na hora de ler. As duas portas de
+/// instalação chamam esta função depois de semear o projeto: `mustard init`,
+/// pelo terminal, e `mustard-rt run upsert`, pelo plugin. É a única hora em
+/// que o campo que falta se põe, porque a gravação comum numa spec só
+/// acrescenta a linha nova.
 ///
 /// Um projeto sem a pasta das specs não tem o que acertar: nada é criado nele
 /// e a resposta é zero.
@@ -237,8 +240,7 @@ impl std::fmt::Display for SearchNotRefreshed {
 /// # Errors
 ///
 /// [`SearchNotRefreshed`] quando o [`rebuild`] recusa. Quem instala mostra o
-/// aviso e segue: a busca velha só deixa de achar a linha antiga pela palavra
-/// nova.
+/// aviso e segue: a linha sem o campo só deixa de ser achada pela busca.
 pub fn refresh_search(root: &Path) -> Result<usize, SearchNotRefreshed> {
     let Ok(paths) = ClaudePaths::for_project(root) else { return Ok(0) };
     if !paths.spec_dir().is_dir() {
@@ -282,8 +284,8 @@ pub struct Divergence {
     /// que não se entende (veja `domain::spec_index::diff`). Vazio quando o
     /// índice não existe.
     pub diverged: Vec<String>,
-    /// Quantas linhas, nos arquivos de eventos e no banco de lições, têm o
-    /// `search` calculado por outro redutor.
+    /// Quantas linhas, nos arquivos de eventos e no banco de lições, estão
+    /// sem o campo `search`.
     pub stale_search: usize,
 }
 
@@ -514,10 +516,10 @@ mod tests {
         assert_eq!(quiet, Divergence { specs: 2, index_exists: true, diverged: Vec::new(), stale_search: 0 });
     }
 
-    /// Um `search` calculado por outro redutor é recalculado; as outras
-    /// linhas do arquivo de eventos ficam byte a byte.
+    /// A linha sem `search` o ganha; a que tem um `search` de outra regra e
+    /// as outras linhas do arquivo de eventos ficam byte a byte.
     #[test]
-    fn rebuilding_recomputes_a_stale_search_and_leaves_the_other_lines_untouched() {
+    fn rebuilding_fills_a_missing_search_and_leaves_the_other_lines_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         two_specs(root);
@@ -525,13 +527,17 @@ mod tests {
         let original = std::fs::read_to_string(&path).unwrap();
         let rule = original.lines().find(|l| l.contains("\"type\":\"rule\"")).unwrap().to_string();
         let (head, _) = rule.rsplit_once(",\"search\":").unwrap();
-        let stale = format!("{head},\"search\":\"redutor antigo\"}}");
-        std::fs::write(&path, original.replace(&rule, &stale)).unwrap();
+        let missing = format!("{head}}}");
+        let context = original.lines().find(|l| l.contains("\"type\":\"context\"")).unwrap().to_string();
+        let (head, _) = context.rsplit_once(",\"search\":").unwrap();
+        let old_rule = format!("{head},\"search\":\"redutor antigo\"}}");
+        let written = original.replace(&context, &old_rule);
+        std::fs::write(&path, written.replace(&rule, &missing)).unwrap();
         assert_eq!(divergence(root).unwrap().stale_search, 1);
 
         let rebuilt = rebuild(root).unwrap();
         assert_eq!(rebuilt.search_updated, 1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "only the stale line changed back");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written, "only the line without the field changed");
         assert_eq!(divergence(root).unwrap().stale_search, 0);
     }
 
@@ -645,10 +651,10 @@ mod tests {
         assert!(line_of(root, "busca").get("phase").is_none(), "the live spec of the same name wins");
     }
 
-    /// O `index` recalcula também o `search` desatualizado do banco de
-    /// lições, e o `divergence` o conta.
+    /// O `index` põe também o `search` que falta no banco de lições, e o
+    /// `divergence` conta a lição sem ele.
     #[test]
-    fn rebuilding_recomputes_a_stale_lesson_search() {
+    fn rebuilding_fills_a_missing_lesson_search() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         two_specs(root);
@@ -657,7 +663,7 @@ mod tests {
         crate::io::lessons::write_at(&bank, obj(lesson), None, &at("11:00")).unwrap();
         let original = std::fs::read_to_string(&bank).unwrap();
         let (head, _) = original.trim_end().rsplit_once(",\"search\":").unwrap();
-        std::fs::write(&bank, format!("{head},\"search\":\"velho\"}}\n")).unwrap();
+        std::fs::write(&bank, format!("{head}}}\n")).unwrap();
         assert_eq!(divergence(root).unwrap().stale_search, 1);
 
         let rebuilt = rebuild(root).unwrap();

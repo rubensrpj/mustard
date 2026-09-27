@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::search;
 use mustard_core::domain::spec_events::{search_field, SpecEvent};
 
@@ -61,16 +62,16 @@ pub(crate) fn skills_on_disk(root: &Path, tasks: &[&SpecEvent]) -> Vec<(String, 
 
 /// A skill que serve mais forte para o texto de uma tarefa, entre as skills
 /// no disco (`on_disk`): a que casa mais forte, pela mesma busca do recorte
-/// dos itens. `None` quando nenhuma casa.
-pub(crate) fn best_skill(on_disk: &[(String, String)], text: &str) -> Option<String> {
-    matching_skills(on_disk, text).into_iter().next()
+/// dos itens, nas línguas `languages`. `None` quando nenhuma casa.
+pub(crate) fn best_skill(on_disk: &[(String, String)], text: &str, languages: &Languages) -> Option<String> {
+    matching_skills(on_disk, text, languages).into_iter().next()
 }
 
 /// Todas as skills, entre as skills no disco (`on_disk`), cujo "quando usar"
-/// casa com o texto de uma tarefa, da mais forte para a mais fraca. Vazio
-/// quando nenhuma casa.
-pub(crate) fn matching_skills(on_disk: &[(String, String)], text: &str) -> Vec<String> {
+/// casa com o texto de uma tarefa, nas línguas `languages`, da mais forte
+/// para a mais fraca. Vazio quando nenhuma casa.
+pub(crate) fn matching_skills(on_disk: &[(String, String)], text: &str, languages: &Languages) -> Vec<String> {
     let reduced: Vec<String> = on_disk.iter().map(|(_, when)| search_field(Some(when), &[])).collect();
     let docs = reduced.iter().enumerate().map(|(i, when)| (i as u64, when.as_str()));
-    search::search(docs, text).into_iter().filter_map(|hit| on_disk.get(hit.id as usize)).map(|(name, _)| name.clone()).collect()
+    search::search(docs, text, languages).into_iter().filter_map(|hit| on_disk.get(hit.id as usize)).map(|(name, _)| name.clone()).collect()
 }

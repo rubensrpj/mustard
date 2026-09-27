@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{Hidden, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, State};
@@ -581,7 +582,7 @@ pub(crate) fn check_return(
     // A entrega presta conta de cada item combinado que o pedido levou, como
     // o veredito final presta de todo o combinado: faltar algum recusa, com
     // os códigos. O pedido sem item combinado não exige o campo.
-    let expected = request_agreed(&log, wave);
+    let expected = request_agreed(&log, wave, &project.languages);
     let (_, missing) = settle_agreed(&log, &mut draft.clone(), &expected, "wave").map_err(RoundRefusal::Refused)?;
     if !missing.is_empty() {
         return Err(RoundRefusal::Refused(Refusal::DeliveryAgreedMissing { wave, missing }));
@@ -692,12 +693,12 @@ fn settle_agreed(
 /// gravado entre o envio e a volta não é cobrado, porque o pedido não o
 /// levou. O que o pedido levou e ganhou versão nova depois é cobrado pela
 /// versão de agora, pelo mesmo código; o que saiu da spec depois, não.
-pub(super) fn request_agreed(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
+pub(super) fn request_agreed<'a>(log: &'a SpecLog, wave: u64, languages: &Languages) -> Vec<&'a SpecEvent> {
     let sent = dispatched_at(log, wave).unwrap_or(u64::MAX);
     let then = SpecLog { events: log.events.iter().filter(|e| e.id <= sent).cloned().collect(), ..SpecLog::default() };
     let then_codes = then.codes();
     let carried: Vec<&String> =
-        agreed_prompt::dispatch_items(&then, wave, None).iter().filter_map(|item| then_codes.get(&item.id)).collect();
+        agreed_prompt::dispatch_items(&then, wave, None, languages).iter().filter_map(|item| then_codes.get(&item.id)).collect();
     let codes = log.codes();
     let agreed = agreed_prompt::all_agreed(log);
     carried

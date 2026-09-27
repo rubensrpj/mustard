@@ -45,8 +45,8 @@ ureq = { version = "3.3", features = ["json"] }
 tar = "0.4.46"
 flate2 = "1.1.9"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-# Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::spec_events` reduces
-# each word of an event to its root with the Portuguese stemmer, so "apagar",
+# Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::normalize` reduces
+# each word to its root in every language the project declares, so "apagar",
 # "apagando" and "apagou" land on the same search term. Pure Rust, no build
 # script; the 1.2 line was already in the lock file through another crate.
 rust-stemmers = "1.2"

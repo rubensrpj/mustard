@@ -1,25 +1,22 @@
 //! `search` — a busca por palavras sobre o campo `search` dos eventos e das
-//! lições.
+//! lições, sobre os arquivos do mapa e sobre as skills.
 //!
-//! O `search` de cada linha já vem reduzido pelo binário (minúsculas, raiz de
-//! cada palavra, sem acento, sem repetição). A busca monta, a cada consulta, um
-//! índice invertido em memória: para cada raiz, os documentos que a têm. A nota
-//! de cada documento é o BM25 de `domain::ranking`, somado termo a termo e
-//! pesado pela raridade do termo, e voltam só as respostas mais fortes.
-//!
-//! O pedido passa pelo mesmo redutor do `search` (`spec_events::search_terms`),
-//! então "apagando" acha a lição gravada com a chave "apagar". As palavras
-//! funcionais de português e de inglês ("a", "de", "the") saem do pedido: sem
-//! isso, o "a" de "apagando a pasta" casaria qualquer texto com um "a".
+//! A pergunta e cada documento chegam em palavras, cada uma com as suas
+//! formas, pela normalização do projeto (`domain::normalize`), nas línguas
+//! dele. A busca monta, a cada consulta, um índice invertido em memória: para
+//! cada forma, os documentos que a têm. A nota de cada documento é o BM25 de
+//! `domain::ranking`, pesado pela raridade da forma: cada palavra da pergunta
+//! soma a forma que casa mais forte no documento, nunca a soma das formas, e o
+//! tamanho do documento conta palavras, não formas. Voltam só as respostas
+//! mais fortes.
 //!
 //! Função pura: sem disco e sem relógio. A mesma entrada dá sempre a mesma
 //! resposta, na mesma ordem.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::ranking::{avgdl_x1024, bm25_x1024_default, idf_x1024, SCALE};
-use crate::domain::spec_events::search_terms;
-use crate::domain::text::{self, FUNCTION_WORDS_EN, FUNCTION_WORDS_PT};
 
 /// Quantas respostas a busca devolve.
 pub const TOP: usize = 5;
@@ -31,35 +28,43 @@ pub struct Hit {
     pub score: u64,
 }
 
-/// O índice invertido em memória, montado sobre o campo `search` de cada
-/// documento.
+/// O índice invertido em memória, montado sobre as palavras de cada
+/// documento, cada uma com as suas formas.
 #[derive(Debug, Clone, Default)]
 pub struct SearchIndex {
     /// O número de cada documento, na ordem recebida.
     ids: Vec<u64>,
-    /// Quantas raízes o `search` de cada documento tem.
+    /// Quantas palavras cada documento tem.
     lens: Vec<usize>,
-    /// Raiz -> (posição do documento, quantas vezes a raiz aparece nele).
+    /// Forma -> (posição do documento, quantas palavras dele têm a forma).
     postings: BTreeMap<String, Vec<(usize, usize)>>,
     /// O tamanho médio dos documentos, ×1024.
     avgdl: u64,
 }
 
 impl SearchIndex {
-    /// Monta o índice. Cada documento é o número dele e o campo `search`, que
-    /// já vem reduzido e é quebrado por espaço.
+    /// Monta o índice. Cada documento é o número dele e as palavras dele, cada
+    /// uma com as suas formas; a palavra com as mesmas formas de outra conta
+    /// uma vez.
     #[must_use]
-    pub fn build<'a>(docs: impl IntoIterator<Item = (u64, &'a str)>) -> Self {
+    pub fn build(docs: impl IntoIterator<Item = (u64, Vec<Vec<String>>)>) -> Self {
         let mut index = Self::default();
-        for (pos, (id, search)) in docs.into_iter().enumerate() {
+        for (pos, (id, words)) in docs.into_iter().enumerate() {
+            let mut seen: HashSet<&[String]> = HashSet::new();
             let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
             let mut len = 0usize;
-            for root in search.split(' ').filter(|w| !w.is_empty()) {
-                *counts.entry(root).or_insert(0) += 1;
+            for word in &words {
+                if word.is_empty() || !seen.insert(word.as_slice()) {
+                    continue;
+                }
                 len += 1;
+                let forms: BTreeSet<&str> = word.iter().map(String::as_str).collect();
+                for form in forms {
+                    *counts.entry(form).or_insert(0) += 1;
+                }
             }
-            for (root, tf) in counts {
-                index.postings.entry(root.to_string()).or_default().push((pos, tf));
+            for (form, tf) in counts {
+                index.postings.entry(form.to_string()).or_default().push((pos, tf));
             }
             index.ids.push(id);
             index.lens.push(len);
@@ -68,24 +73,38 @@ impl SearchIndex {
         index
     }
 
-    /// As `limit` respostas mais fortes para as raízes `terms`: nota
-    /// decrescente e, no empate, o número menor primeiro. Só entra documento
-    /// que casa com pelo menos um termo.
+    /// As `limit` respostas mais fortes para as palavras da pergunta `query`,
+    /// cada uma com as suas formas: nota decrescente e, no empate, o número
+    /// menor primeiro. Só entra documento que casa com pelo menos uma palavra.
     ///
-    /// Cada termo pesa `1 + IDF`: todo casamento conta, e o termo raro conta
-    /// mais. O IDF sozinho daria zero a um termo presente em todos os
-    /// documentos, e uma lição sozinha no banco nunca seria achada.
+    /// Cada palavra soma a nota da forma que casa mais forte no documento. A
+    /// forma pesa `1 + IDF`: todo casamento conta, e a forma rara conta mais.
+    /// O IDF sozinho daria zero a uma forma presente em todos os documentos, e
+    /// uma lição sozinha no banco nunca seria achada.
     #[must_use]
-    pub fn top(&self, terms: &[String], limit: usize) -> Vec<Hit> {
+    pub fn top(&self, query: &[Vec<String>], limit: usize) -> Vec<Hit> {
         let n = self.ids.len();
         let mut scores = vec![0u64; n];
-        let unique: BTreeSet<&str> = terms.iter().map(String::as_str).collect();
-        for term in unique {
-            let Some(postings) = self.postings.get(term) else { continue };
-            let weight = SCALE.saturating_add(idf_x1024(postings.len(), n));
-            for &(pos, tf) in postings {
-                let bm25 = bm25_x1024_default(tf, self.lens[pos], self.avgdl);
-                scores[pos] = scores[pos].saturating_add(weight.saturating_mul(bm25) / SCALE);
+        let mut best = vec![0u64; n];
+        let mut touched: Vec<usize> = Vec::new();
+        let words: BTreeSet<BTreeSet<&str>> =
+            query.iter().map(|word| word.iter().map(String::as_str).collect()).collect();
+        for word in words {
+            for form in word {
+                let Some(postings) = self.postings.get(form) else { continue };
+                let weight = SCALE.saturating_add(idf_x1024(postings.len(), n));
+                for &(pos, tf) in postings {
+                    let bm25 = bm25_x1024_default(tf, self.lens[pos], self.avgdl);
+                    let score = weight.saturating_mul(bm25) / SCALE;
+                    if best[pos] == 0 {
+                        touched.push(pos);
+                    }
+                    best[pos] = best[pos].max(score);
+                }
+            }
+            for pos in touched.drain(..) {
+                scores[pos] = scores[pos].saturating_add(best[pos]);
+                best[pos] = 0;
             }
         }
         let mut hits: Vec<Hit> = scores
@@ -100,26 +119,22 @@ impl SearchIndex {
     }
 }
 
-/// As raízes de um pedido para a busca: as de `search_terms`, sobre o pedido
-/// já sem as palavras funcionais de português e de inglês — cortadas pelo
-/// texto delas, antes do radical, para não confundir a raiz de uma com a de
-/// uma palavra de conteúdo parecida (a raiz de "some" nunca é a de "somar").
-/// Um pedido só com palavras funcionais vira vazio.
+/// Quantas palavras da pergunta `query` têm alguma forma no documento `doc`.
 #[must_use]
-pub fn query_terms(query: &str) -> Vec<String> {
-    let lower = query.to_lowercase();
-    let kept: Vec<&str> =
-        text::words(&lower).filter(|w| !FUNCTION_WORDS_PT.contains(w) && !FUNCTION_WORDS_EN.contains(w)).collect();
-    if kept.is_empty() {
-        return Vec::new();
-    }
-    search_terms(&kept.join(" "))
+pub fn shared_words(query: &[Vec<String>], doc: &[Vec<String>]) -> usize {
+    let forms: HashSet<&str> = doc.iter().flatten().map(String::as_str).collect();
+    let words: BTreeSet<BTreeSet<&str>> =
+        query.iter().map(|word| word.iter().map(String::as_str).collect()).collect();
+    words.into_iter().filter(|word| word.iter().any(|form| forms.contains(form))).count()
 }
 
-/// Monta o índice e devolve as [`TOP`] respostas mais fortes para o pedido.
+/// Monta o índice sobre o campo `search` de cada documento e devolve as
+/// [`TOP`] respostas mais fortes para o pedido, nas línguas `languages`.
 #[must_use]
-pub fn search<'a>(docs: impl IntoIterator<Item = (u64, &'a str)>, query: &str) -> Vec<Hit> {
-    SearchIndex::build(docs).top(&query_terms(query), TOP)
+pub fn search<'a>(docs: impl IntoIterator<Item = (u64, &'a str)>, query: &str, languages: &Languages) -> Vec<Hit> {
+    let mut normalizer = Normalizer::new(languages);
+    let docs: Vec<(u64, Vec<Vec<String>>)> = docs.into_iter().map(|(id, field)| (id, normalizer.forms(field))).collect();
+    SearchIndex::build(docs).top(&normalizer.query(query), TOP)
 }
 
 #[cfg(test)]
@@ -127,7 +142,7 @@ mod tests {
     use super::*;
     use crate::domain::spec_events::search_field;
 
-    /// O `search` como o binário grava: as raízes do texto e das chaves.
+    /// O `search` como o binário grava: as palavras do texto e das chaves.
     fn doc(text: &str, keys: &[&str]) -> String {
         search_field(Some(text), keys)
     }
@@ -136,8 +151,17 @@ mod tests {
         hits.iter().map(|h| h.id).collect()
     }
 
+    fn languages() -> Languages {
+        Languages::new(["pt-BR", "en-US"])
+    }
+
     fn found(docs: &[(u64, String)], query: &str) -> Vec<Hit> {
-        search(docs.iter().map(|(id, s)| (*id, s.as_str())), query)
+        search(docs.iter().map(|(id, s)| (*id, s.as_str())), query, &languages())
+    }
+
+    /// Um documento de palavras com uma forma só cada.
+    fn single(words: &str) -> Vec<Vec<String>> {
+        words.split(' ').map(|word| vec![word.to_string()]).collect()
     }
 
     /// A lição gravada com a chave "apagar" é achada por "apagando a pasta",
@@ -179,14 +203,14 @@ mod tests {
     #[test]
     fn a_rare_term_outweighs_a_common_one() {
         let docs = [
-            (1, "trav comum".to_string()),
-            (2, "cofr outro".to_string()),
-            (3, "comum mais".to_string()),
-            (4, "comum menos".to_string()),
-            (5, "comum ainda".to_string()),
+            (1, single("trav comum")),
+            (2, single("cofr outro")),
+            (3, single("comum mais")),
+            (4, single("comum menos")),
+            (5, single("comum ainda")),
         ];
-        let index = SearchIndex::build(docs.iter().map(|(id, s)| (*id, s.as_str())));
-        let hits = index.top(&["comum".to_string(), "cofr".to_string()], TOP);
+        let index = SearchIndex::build(docs);
+        let hits = index.top(&[vec!["comum".to_string()], vec!["cofr".to_string()]], TOP);
         assert_eq!(hits[0].id, 2, "the rare term wins: {hits:?}");
         assert!(hits[0].score > hits[1].score, "{hits:?}");
     }
@@ -194,7 +218,7 @@ mod tests {
     #[test]
     fn function_words_alone_find_nothing() {
         let docs = [(1, doc("A pasta de testes é para o time.", &["pasta"]))];
-        assert!(query_terms("a de para o the of").is_empty());
+        assert!(Normalizer::new(&languages()).query("a de para o the of").is_empty());
         assert!(found(&docs, "a de para o").is_empty());
     }
 
@@ -228,5 +252,37 @@ mod tests {
         assert_eq!(ids(&first), [3, 6, 9]);
         assert!(first.windows(2).all(|w| w[0].score == w[1].score), "{first:?}");
         assert_eq!(first, found(&docs, "apagando a pasta"));
+    }
+
+    /// Cada palavra da pergunta soma só a forma que casa mais forte: o
+    /// documento que tem as duas formas da palavra empata com o que tem uma
+    /// só, e perde para o que casa duas palavras.
+    #[test]
+    fn a_word_of_the_question_counts_its_best_form_never_the_sum_of_its_forms() {
+        let forms = |list: &[&str]| -> Vec<String> { list.iter().map(|f| f.to_string()).collect() };
+        let docs = [
+            (1, vec![forms(&["usuari", "usuario"]), forms(&["outr"])]),
+            (2, vec![forms(&["usuari"]), forms(&["grav"])]),
+            (3, vec![forms(&["usuario"]), forms(&["mais"])]),
+        ];
+        let index = SearchIndex::build(docs);
+        let word = forms(&["usuari", "usuario"]);
+        let hits = index.top(std::slice::from_ref(&word), TOP);
+        assert_eq!(ids(&hits), [1, 2, 3], "{hits:?}");
+        assert!(hits.windows(2).all(|w| w[0].score == w[1].score), "two forms weigh as the best one: {hits:?}");
+        let both = index.top(&[word, forms(&["grav"])], TOP);
+        assert_eq!(ids(&both)[0], 2, "two words beat two forms of one word: {both:?}");
+    }
+
+    /// O tamanho do documento conta palavras, e não formas: a palavra com
+    /// três formas pesa no tamanho como a palavra com uma.
+    #[test]
+    fn the_length_of_a_document_counts_words_not_forms() {
+        let many = vec![vec!["a1".to_string(), "a2".to_string(), "a3".to_string()], vec!["alvo".to_string()]];
+        let one = vec![vec!["b1".to_string()], vec!["alvo".to_string()]];
+        let index = SearchIndex::build([(1, many), (2, one)]);
+        let hits = index.top(&[vec!["alvo".to_string()]], TOP);
+        assert_eq!(ids(&hits), [1, 2], "{hits:?}");
+        assert_eq!(hits[0].score, hits[1].score, "same number of words, same score: {hits:?}");
     }
 }

@@ -35,6 +35,7 @@ use serde_json::Value;
 
 use crate::domain::config::Language;
 use crate::domain::lessons::{applies_to, same_file, text_only, tied_to_wave, Scope};
+use crate::domain::normalize::Languages;
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
 use crate::domain::spec_events::{type_spec, Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
@@ -516,9 +517,9 @@ impl Candidates<'_> {
 /// ([`tied_to_wave`]): as palavras-chave dele casam com o texto das tarefas
 /// dela, ou o texto dele cita um arquivo que ela mexe. O que não serve a
 /// onda nenhuma não é candidato de nenhuma, e continua na lista da revisão
-/// final ([`all_agreed`]).
+/// final ([`all_agreed`]). As palavras são cortadas nas línguas `languages`.
 #[must_use]
-pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
+pub fn candidates<'a>(log: &'a SpecLog, wave: u64, languages: &Languages) -> Candidates<'a> {
     let owners = owners(log);
     let done = done_by(log, wave);
     let files = wave_files(log, wave);
@@ -532,7 +533,7 @@ pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
             Some(Owner::Project | Owner::Waves(_) | Owner::Files(_)) => {}
         }
     }
-    out.unowned = tied_to_wave(unowned, &tasks_text(log, wave), &files);
+    out.unowned = tied_to_wave(unowned, &tasks_text(log, wave), &files, languages);
     out
 }
 
@@ -696,12 +697,17 @@ pub fn choice_for(log: &SpecLog, wave: u64, fresh: Option<&Choice>) -> Option<Ch
 /// ([`Step::Dispatch`]), sem os itens do projeto todo que a escolha tirou e
 /// com os sem dono que ela pôs. A escolha é a de [`choice_for`], e vale só
 /// dentro dos grupos de agora: o item que as tarefas da onda passaram a fazer
-/// vai sempre.
+/// vai sempre. As palavras são cortadas nas línguas `languages`.
 #[must_use]
-pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -> Vec<&'a SpecEvent> {
+pub fn dispatch_items<'a>(
+    log: &'a SpecLog,
+    wave: u64,
+    fresh: Option<&Choice>,
+    languages: &Languages,
+) -> Vec<&'a SpecEvent> {
     let base = log.step(&Step::Dispatch { wave });
     let Some(choice) = choice_for(log, wave, fresh) else { return base };
-    let choice = choice.within(&candidates(log, wave));
+    let choice = choice.within(&candidates(log, wave, languages));
     let removed: BTreeSet<u64> = choice.removed.iter().map(|(id, _)| *id).collect();
     let mut out: Vec<&SpecEvent> = base.into_iter().filter(|item| !removed.contains(&item.id)).collect();
     for (id, _) in &choice.added {
@@ -2090,10 +2096,10 @@ mod tests {
         assert_eq!(ids(&agreed_for(&log, 1)), [2], "só o item que a tarefa da onda faz");
         let dispatched = ids(&log.step(&Step::Dispatch { wave: 1 }));
         assert!(!dispatched.contains(&1) && dispatched.contains(&2), "{dispatched:?}");
-        assert!(candidates(&log, 1).project.is_empty(), "{:?}", ids(&candidates(&log, 1).project));
+        assert!(candidates(&log, 1, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).project.is_empty(), "{:?}", ids(&candidates(&log, 1, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).project));
         for n in 2..=4 {
             assert!(ids(&agreed_for(&log, n)).contains(&1), "a onda {n} recebe o item do projeto");
-            assert_eq!(ids(&candidates(&log, n).project), [1, 2], "a onda {n} julga os itens do projeto");
+            assert_eq!(ids(&candidates(&log, n, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).project), [1, 2], "a onda {n} julga os itens do projeto");
         }
     }
 
@@ -2134,8 +2140,8 @@ mod tests {
         ]);
         assert_eq!(ids(&unowned(&log)), [1, 2, 3, 4], "os quatro continuam sem dono");
 
-        assert_eq!(ids(&candidates(&log, 1).unowned), [1], "a onda 1 casa a palavra-chave do primeiro");
-        assert_eq!(ids(&candidates(&log, 2).unowned), [2], "a onda 2 mexe no arquivo que o segundo cita");
+        assert_eq!(ids(&candidates(&log, 1, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).unowned), [1], "a onda 1 casa a palavra-chave do primeiro");
+        assert_eq!(ids(&candidates(&log, 2, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).unowned), [2], "a onda 2 mexe no arquivo que o segundo cita");
         assert!(ids(&all_agreed(&log)).contains(&3), "o que não serve continua na revisão final");
     }
 
@@ -2160,7 +2166,7 @@ mod tests {
             ("task", json!({"wave": 1, "text": "O limite do texto passa a valer", "files": [{"path": "src/gravar.rs"}]})),
         ]);
         assert_eq!(ids(&unowned(&log)), [1, 2, 3], "os três continuam sem dono");
-        assert_eq!(ids(&candidates(&log, 1).unowned), [1], "só o que cita solto o arquivo da onda");
+        assert_eq!(ids(&candidates(&log, 1, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).unowned), [1], "só o que cita solto o arquivo da onda");
         assert!(cited_paths("O texto da entrega tem o limite de hoje (TETO, src/gravar.rs:269).").is_empty());
     }
 
@@ -2221,7 +2227,7 @@ mod tests {
             let n = wave["n"].as_u64().unwrap();
             let (judged, added) = (numbers(&wave["judged"]), numbers(&wave["added"]));
             assert_eq!(judged, all, "onda {n}: a rodada mostrou os 25");
-            let found = candidates(&log, n);
+            let found = candidates(&log, n, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"]));
             let got: BTreeSet<u64> = found.unowned.iter().map(|e| e.id).collect();
             let lost: BTreeSet<u64> = added.difference(&got).copied().collect();
             if n == 3 {

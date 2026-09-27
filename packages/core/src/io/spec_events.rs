@@ -122,9 +122,9 @@ pub fn write_at(
 /// existe, versão nova de outro tipo, filtro de remoção que não pega nada e
 /// expurgo cujo trecho não aparece no alvo. O expurgo reescreve o arquivo com
 /// o trecho dos alvos trocado por "…"; as outras gravações só acrescentam uma
-/// linha, mesmo quando uma linha do arquivo tem o `search` de outra regra: a
-/// busca velha se acerta na instalação ([`crate::io::spec_index::rebuild`]),
-/// não aqui. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
+/// linha, mesmo quando uma linha do arquivo está sem o `search`: o campo que
+/// falta se põe na instalação ([`crate::io::spec_index::rebuild`]), não
+/// aqui. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
 /// [`write_guarded`] recebe também a procura de segredo. Um nome de código citado num fato que
 /// o mapa do projeto (o da última de `cite_roots`) não confirma só avisa, em
 /// [`Written::citation_warnings`]. O `last` de uma gravação `copy` que aponta
@@ -506,6 +506,7 @@ pub(crate) fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::normalize::Languages;
     use crate::domain::spec_events::{Block, BlockQuery, EventRef, Hidden, SkipReason, Step, TYPES};
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
@@ -670,7 +671,8 @@ mod tests {
         assert!(rule_line.contains(r#""search":"#), "{rule_line}");
         let log = spec.log();
         let rule = log.get(spec.ids["rule"]).unwrap();
-        assert!(rule.matches(&model::search_terms("apagando"), None), "the stem of the key matches");
+        let found = model::found_by(log.events.iter().collect(), "apagando", &log.codes(), &Languages::new(["pt-BR"]));
+        assert!(found.iter().any(|e| e.id == rule.id), "the stem of the key matches");
         assert!(!rule.shown().contains("search"));
     }
 
@@ -722,7 +724,7 @@ mod tests {
         for event in log.step(&Step::Dispatch { wave: 2 }) {
             assert_ne!(event.block(), Some(Block::Conversation), "{}", event.shown());
         }
-        assert_eq!(got(Step::Question { term: "Contoso".into() }), spec.ids(&["response"]));
+        assert_eq!(got(Step::Question { term: "Contoso".into(), languages: Languages::new(["pt-BR", "en-US"]) }), spec.ids(&["response"]));
     }
 
     #[test]
@@ -827,12 +829,12 @@ mod tests {
         assert_eq!(put(&path, &[], "message", &at("10:03"), json!({"author": "user", "text": "três"})).id, 41);
     }
 
-    /// A linha gravada antes de a busca levar o título continua com o
-    /// `search` velho depois de uma gravação comum: a gravação só acrescenta a
-    /// linha nova no fim, sem reler nem reescrever as outras, e a busca velha
-    /// fica para a instalação acertar, uma vez só.
+    /// A linha gravada sem o `search` continua sem ele depois de uma gravação
+    /// comum: a gravação só acrescenta a linha nova no fim, sem reler nem
+    /// reescrever as outras, e o campo que falta fica para a instalação pôr,
+    /// uma vez só.
     #[test]
-    fn a_write_only_appends_even_when_an_older_line_has_a_stale_search() {
+    fn a_write_only_appends_even_when_an_older_line_has_no_search() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         seed_message(&path);
@@ -840,17 +842,16 @@ mod tests {
         let mut content = std::fs::read_to_string(&path).unwrap();
         content.push_str(
             "{\"v\":1,\"id\":3,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
-             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1,\
-             \"search\":\"fatur som centav\"}\n",
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1}\n",
         );
         std::fs::write(&path, &content).unwrap();
-        assert_eq!(model::refresh_search_lines(&content).1, 1, "the third line carries a stale search");
+        assert_eq!(model::refresh_search_lines(&content).1, 1, "the third line has no search");
 
         put(&path, &[], "message", &at("10:02"), json!({"author": "user", "text": "depois"}));
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.starts_with(&content), "a write rewrote the lines before it:\n{after}");
         assert_eq!(after.lines().count(), content.lines().count() + 1, "{after}");
-        assert_eq!(model::refresh_search_lines(&after).1, 1, "the stale search waits for the install");
+        assert_eq!(model::refresh_search_lines(&after).1, 1, "the missing search waits for the install");
     }
 
     fn git(dir: &Path, args: &[&str]) {

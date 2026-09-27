@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::domain::spec_index::title_of;
@@ -227,8 +228,8 @@ impl TaskHint {
 /// As sugestões de skill e de arquivos parecidos, por tarefa da onda `wave`,
 /// que a rodada mostra ao orquestrador antes do envio: a mesma busca que o
 /// plano usa na conferência ([`skill_search`]), e o mapa que o scan mantém em
-/// dia depois de cada commit.
-fn task_hints(root: &Path, log: &SpecLog, wave: u64) -> Vec<TaskHint> {
+/// dia depois de cada commit, nas línguas `languages`.
+fn task_hints(root: &Path, log: &SpecLog, wave: u64, languages: &Languages) -> Vec<TaskHint> {
     log.block(BlockQuery::Wave(wave))
         .into_iter()
         .filter(|e| e.event_type == "task")
@@ -236,9 +237,9 @@ fn task_hints(root: &Path, log: &SpecLog, wave: u64) -> Vec<TaskHint> {
             let text = task.str_field("text").unwrap_or_default();
             let named = task.str_field("skill").is_some_and(|s| !s.trim().is_empty());
             let on_disk = skill_search::skills_on_disk(root, std::slice::from_ref(&task));
-            let matched = if named { Vec::new() } else { skill_search::matching_skills(&on_disk, text) };
+            let matched = if named { Vec::new() } else { skill_search::matching_skills(&on_disk, text, languages) };
             let area = if named { Vec::new() } else { on_disk };
-            let files = crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS);
+            let files = crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS, languages);
             TaskHint { task: task.id, matched, area, files }
         })
         .collect()
@@ -253,16 +254,24 @@ fn task_hints(root: &Path, log: &SpecLog, wave: u64) -> Vec<TaskHint> {
 /// escolha gravada no envio anterior dela, se essa escolha julgou cada
 /// candidato de agora. Sem escolha, a onda não sai, e a resposta traz os
 /// candidatos e as sugestões dela ao orquestrador, cada um com o título. Nada
-/// é recusado, e nenhum agente é aberto para isso.
-pub(super) fn analyse(root: &Path, log: &SpecLog, ready: &[u64], given: &[AnalysisLine], lang: Locale) -> Analysed {
+/// é recusado, e nenhum agente é aberto para isso. As buscas cortam as
+/// palavras nas línguas `languages`.
+pub(super) fn analyse(
+    root: &Path,
+    log: &SpecLog,
+    ready: &[u64],
+    given: &[AnalysisLine],
+    lang: Locale,
+    languages: &Languages,
+) -> Analysed {
     let replanned = waves_replanned(log);
     let codes = log.codes();
     let bank = lesson_bank(root);
     let mut out = Analysed { go: Vec::new(), choices: BTreeMap::new(), asked: Vec::new(), warnings: Vec::new() };
     for wave in ready.iter().copied() {
-        let mut found = candidates(log, wave);
-        found.lessons = bank.as_ref().map(|bank| wave_lessons(bank, log, wave)).unwrap_or_default();
-        let hints = task_hints(root, log, wave);
+        let mut found = candidates(log, wave, languages);
+        found.lessons = bank.as_ref().map(|bank| wave_lessons(bank, log, wave, languages)).unwrap_or_default();
+        let hints = task_hints(root, log, wave, languages);
         if found.is_empty() && hints.iter().all(TaskHint::is_empty) {
             out.go.push(wave);
             continue;
@@ -695,9 +704,10 @@ fn ready_in_order(
 }
 
 /// Os itens que o pedido de uma onda leva: os números de tudo que entrou
-/// nele, com a escolha do orquestrador antes do envio (`choice`).
-pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> Vec<u64> {
-    dispatch_items(log, wave, choice).into_iter().map(|e| e.id).collect()
+/// nele, com a escolha do orquestrador antes do envio (`choice`), nas
+/// línguas `languages`.
+pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>, languages: &Languages) -> Vec<u64> {
+    dispatch_items(log, wave, choice, languages).into_iter().map(|e| e.id).collect()
 }
 
 // ---------------------------------------------------------------------------

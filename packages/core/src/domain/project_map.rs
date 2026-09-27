@@ -29,8 +29,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::ast::is_test_path;
-use crate::domain::search::{query_terms, SearchIndex, TOP};
-use crate::domain::spec_events::search_field;
+use crate::domain::normalize::{Languages, Normalizer};
+use crate::domain::search::{SearchIndex, TOP};
 use crate::platform::i18n::{translate, Locale};
 
 /// Um commit que muda mais arquivos do que isto não conta para "muda junto":
@@ -649,52 +649,33 @@ pub struct Found {
     pub score: u64,
 }
 
-/// O nome quebrado nas palavras dele: `ProcessadorPagamento`,
-/// `processador_pagamento` e `processador-pagamento` viram
-/// `processador pagamento`.
-#[must_use]
-pub fn split_identifier(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 8);
-    let mut prev: Option<char> = None;
-    for c in name.chars() {
-        if matches!(c, '_' | '-' | '.' | '/' | ':') {
-            out.push(' ');
-        } else {
-            if c.is_uppercase() && prev.is_some_and(|p| p.is_lowercase() || p.is_ascii_digit()) {
-                out.push(' ');
-            }
-            out.push(c);
-        }
-        prev = Some(c);
-    }
-    out
-}
-
-/// O texto de busca de um arquivo: as palavras do caminho e dos nomes que ele
-/// declara, pela mesma preparação do campo `search` das specs.
-fn search_text(m: &MapModule) -> String {
-    let mut text = split_identifier(&m.path);
+/// As palavras de busca de um arquivo, cada uma com as suas formas: as do
+/// caminho e as dos nomes que ele declara, pela normalização de toda busca.
+fn search_words(m: &MapModule, normalizer: &mut Normalizer) -> Vec<Vec<String>> {
+    let mut text = m.path.clone();
     for decl in &m.declarations {
         text.push(' ');
-        text.push_str(&split_identifier(&decl.name));
+        text.push_str(&decl.name);
     }
-    search_field(Some(&text), &[])
+    normalizer.forms(&text)
 }
 
 /// Os arquivos que mais casam com as palavras do pedido, os 5 mais fortes,
-/// pelo BM25 de `domain::search`. Arquivo escrito por máquina fica de fora.
+/// pelo BM25 de `domain::search`, nas línguas `languages`. Arquivo escrito
+/// por máquina fica de fora.
 #[must_use]
-pub fn search(map: &ProjectMap, query: &str) -> Vec<Found> {
-    let docs: Vec<(u64, String)> = map
+pub fn search(map: &ProjectMap, query: &str, languages: &Languages) -> Vec<Found> {
+    let mut normalizer = Normalizer::new(languages);
+    let docs: Vec<(u64, Vec<Vec<String>>)> = map
         .modules
         .iter()
         .enumerate()
         .filter(|(_, m)| m.file_class.is_empty())
-        .map(|(i, m)| (i as u64, search_text(m)))
+        .map(|(i, m)| (i as u64, search_words(m, &mut normalizer)))
         .collect();
-    let index = SearchIndex::build(docs.iter().map(|(id, text)| (*id, text.as_str())));
+    let index = SearchIndex::build(docs);
     index
-        .top(&query_terms(query), TOP)
+        .top(&normalizer.query(query), TOP)
         .into_iter()
         .filter_map(|hit| map.modules.get(hit.id as usize).map(|m| Found { path: m.path.clone(), score: hit.score }))
         .collect()
@@ -703,21 +684,23 @@ pub fn search(map: &ProjectMap, query: &str) -> Vec<Found> {
 /// Quantos achados da busca pesam na escolha da pasta.
 const FOLDER_HITS: usize = 50;
 
-/// A pasta que mais casa com as palavras de uma tarefa: a soma das notas dos
-/// arquivos achados, pasta a pasta, sobre os achados mais fortes. Teste e
-/// arquivo escrito por máquina não contam. `None` quando nada casa.
+/// A pasta que mais casa com as palavras de uma tarefa, nas línguas
+/// `languages`: a soma das notas dos arquivos achados, pasta a pasta, sobre
+/// os achados mais fortes. Teste e arquivo escrito por máquina não contam.
+/// `None` quando nada casa.
 #[must_use]
-pub fn best_folder(map: &ProjectMap, task: &str) -> Option<String> {
-    let docs: Vec<(u64, String)> = map
+pub fn best_folder(map: &ProjectMap, task: &str, languages: &Languages) -> Option<String> {
+    let mut normalizer = Normalizer::new(languages);
+    let docs: Vec<(u64, Vec<Vec<String>>)> = map
         .modules
         .iter()
         .enumerate()
         .filter(|(_, m)| is_example_material(m))
-        .map(|(i, m)| (i as u64, search_text(m)))
+        .map(|(i, m)| (i as u64, search_words(m, &mut normalizer)))
         .collect();
-    let index = SearchIndex::build(docs.iter().map(|(id, text)| (*id, text.as_str())));
+    let index = SearchIndex::build(docs);
     let mut by_folder: BTreeMap<&str, u64> = BTreeMap::new();
-    for hit in index.top(&query_terms(task), FOLDER_HITS) {
+    for hit in index.top(&normalizer.query(task), FOLDER_HITS) {
         if let Some(m) = map.modules.get(hit.id as usize) {
             *by_folder.entry(folder_of(&m.path)).or_insert(0) += hit.score;
         }
@@ -1274,7 +1257,7 @@ mod tests {
     #[test]
     fn a_task_in_a_real_sized_tree_lands_in_the_command_folder_with_its_main_imports() {
         let map = real_sized_tree();
-        let folder = best_folder(&map, "adicionar um comando run").expect("a folder matches");
+        let folder = best_folder(&map, "adicionar um comando run", &languages()).expect("a folder matches");
         assert!(folder.starts_with("apps/rt/src/commands/"), "the folder is summed, not the first hit: {folder}");
         let got = examples(&map, "apps/rt/src/commands/spec/novo.rs", Locale::PtBr);
         assert_eq!(
@@ -1337,8 +1320,13 @@ mod tests {
         pay.declarations = vec![decl("ProcessadorPagamento")];
         let other = module("src/usuarios/cadastro.rs", 40, &[]);
         let map = ProjectMap { modules: vec![other, pay], ..ProjectMap::default() };
-        let found = search(&map, "processar os pagamentos");
+        let found = search(&map, "processar os pagamentos", &languages());
         assert_eq!(found.first().map(|f| f.path.as_str()), Some("src/pagamentos/processador_pagamento.rs"));
+    }
+
+    /// As línguas de um projeto com o texto em português e o código em inglês.
+    fn languages() -> Languages {
+        Languages::new(["pt-BR", "en-US"])
     }
 
     #[test]
@@ -1456,13 +1444,6 @@ mod tests {
         assert!(!map_knows(&map, "main/model/"), "um pedaço do nome da pasta não conta");
         let refused = check_skill("Veja `domain/modelo/`.", |p| map_knows(&map, p)).unwrap_err();
         assert_eq!(refused, MapRefusal::SkillMissingPaths { paths: vec!["domain/modelo/".to_string()] });
-    }
-
-    #[test]
-    fn identifiers_split_into_their_words() {
-        assert_eq!(split_identifier("ProcessadorPagamento"), "Processador Pagamento");
-        assert_eq!(split_identifier("processador_pagamento"), "processador pagamento");
-        assert_eq!(split_identifier("apps/rt/work-branch.rs"), "apps rt work branch rs");
     }
 
     #[test]

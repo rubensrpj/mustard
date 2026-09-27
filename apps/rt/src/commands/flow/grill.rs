@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{
     found_by, Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog, WORK_KINDS,
 };
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{self, Sources};
 use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
@@ -197,6 +198,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         map: map.as_ref(),
         condensed,
         lang,
+        languages: &project.languages,
     });
 
     let codes = log.codes();
@@ -237,7 +239,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     // fica, muda ou sai. O que o motivo não toca fica como está, e nada é
     // perguntado de novo.
     if let Some(reason) = return_reason(&log) {
-        let touched = touched_by(&log, reason, &codes);
+        let touched = touched_by(&log, reason, &codes, &project.languages);
         if !touched.is_empty() {
             report["reason"] = json!(reason);
             report["touched"] = json!(touched);
@@ -280,14 +282,14 @@ fn return_reason(log: &SpecLog) -> Option<&str> {
 
 /// Os itens que o motivo da volta toca, do mais forte para o menos forte:
 /// o combinado, a especificação, os critérios e as ondas, pela mesma busca por
-/// nota que a leitura por termo usa. Cada um sai com o código, o tipo e o
-/// começo do texto, que é o que o usuário precisa para dizer se ele fica, muda
-/// ou sai.
-fn touched_by(log: &SpecLog, reason: &str, codes: &BTreeMap<u64, String>) -> Vec<Value> {
+/// nota que a leitura por termo usa, nas línguas `languages`. Cada um sai
+/// com o código, o tipo e o começo do texto, que é o que o usuário precisa
+/// para dizer se ele fica, muda ou sai.
+fn touched_by(log: &SpecLog, reason: &str, codes: &BTreeMap<u64, String>, languages: &Languages) -> Vec<Value> {
     let blocks = [Block::Agreed, Block::Specification, Block::Criteria, Block::Waves];
     let items: Vec<&SpecEvent> =
         blocks.iter().flat_map(|block| log.block(BlockQuery::Block(*block))).collect();
-    found_by(items, reason, codes)
+    found_by(items, reason, codes, languages)
         .into_iter()
         .map(|event| {
             json!({

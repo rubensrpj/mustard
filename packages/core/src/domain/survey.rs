@@ -38,7 +38,8 @@ use serde_json::{Map, Value};
 use crate::domain::citation::cited_names;
 use crate::domain::lessons;
 use crate::domain::project_map::{importers, ProjectMap};
-use crate::domain::search::{query_terms, SearchIndex, TOP};
+use crate::domain::normalize::{Languages, Normalizer};
+use crate::domain::search::{shared_words, SearchIndex, TOP};
 use crate::domain::spec_events::{search_field, Refusal, SpecEvent, SpecLog, WORK_KINDS};
 use crate::domain::spec_index::{title_of, IndexLine};
 use crate::domain::spec_state::{original_of, State};
@@ -69,8 +70,8 @@ pub const BLOCKS: &[&str] = &[
 /// Quantos lembretes o levantamento traz no total.
 pub const MAX_REMINDERS: usize = 3;
 
-/// O casamento forte: quantas raízes do objetivo, no mínimo, uma mensagem
-/// antiga ou uma spec anterior precisa ter para entrar. Com uma raiz só,
+/// O casamento forte: quantas palavras do objetivo, no mínimo, uma mensagem
+/// antiga ou uma spec anterior precisa ter para entrar. Com uma palavra só,
 /// qualquer palavra comum ("pasta", "spec") traria lembrete e spec anterior.
 pub const STRONG_ROOTS: usize = 2;
 
@@ -684,24 +685,31 @@ impl Reminder {
 /// não viraram registro ([`unrouted_messages`]) com casamento forte
 /// ([`STRONG_ROOTS`]), as `max` de nota maior pelo BM25, somando as specs. No
 /// empate, o nome da spec e depois o número da mensagem. As respostas do
-/// assistente nunca entram.
+/// assistente nunca entram. As palavras são cortadas nas línguas
+/// `languages`.
 #[must_use]
-pub fn reminders<'a>(prior: impl IntoIterator<Item = (&'a str, &'a SpecLog)>, goal: &str, max: usize) -> Vec<Reminder> {
-    let terms = query_terms(goal);
+pub fn reminders<'a>(
+    prior: impl IntoIterator<Item = (&'a str, &'a SpecLog)>,
+    goal: &str,
+    max: usize,
+    languages: &Languages,
+) -> Vec<Reminder> {
+    let mut normalizer = Normalizer::new(languages);
+    let terms = normalizer.query(goal);
     if terms.is_empty() || max == 0 {
         return Vec::new();
     }
-    let mut candidates: Vec<(&str, u64, &str, String)> = Vec::new();
+    let mut candidates: Vec<(&str, u64, &str, Vec<Vec<String>>)> = Vec::new();
     for (name, log) in prior {
         for message in unrouted_messages(log) {
             let Some(text) = message.str_field("text").map(str::trim).filter(|t| !t.is_empty()) else {
                 continue;
             };
             let search = message.str_field("search").map_or_else(|| search_field(Some(text), &[]), str::to_string);
-            candidates.push((name, message.id, text, search));
+            candidates.push((name, message.id, text, normalizer.forms(&search)));
         }
     }
-    let index = SearchIndex::build(candidates.iter().enumerate().map(|(i, c)| (doc_id(i), c.3.as_str())));
+    let index = SearchIndex::build(candidates.iter().enumerate().map(|(i, c)| (doc_id(i), c.3.clone())));
     let mut found: Vec<Reminder> = index
         .top(&terms, candidates.len())
         .into_iter()
@@ -828,6 +836,8 @@ pub struct Sources<'a> {
     pub condensed: bool,
     /// O idioma dos rótulos.
     pub lang: Locale,
+    /// As línguas em que as palavras das buscas são cortadas.
+    pub languages: &'a Languages,
 }
 
 /// A lista de pontos do levantamento: as lacunas do tipo, as lições que
@@ -850,7 +860,7 @@ pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
     list.extend(lesson_points(sources));
     list.extend(prior_spec_points(sources));
     let prior = sources.prior.iter().filter(|(name, _)| name != sources.current).map(|(name, log)| (name.as_str(), log));
-    place(&mut list, reminders(prior, sources.goal, MAX_REMINDERS));
+    place(&mut list, reminders(prior, sources.goal, MAX_REMINDERS, sources.languages), sources.languages);
     if sources.condensed {
         for item in &mut list {
             item.block = CONDENSED.to_string();
@@ -914,7 +924,7 @@ fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
     };
     let asked: Vec<&SpecEvent> =
         lessons::kept(bank).into_iter().filter(|lesson| lesson.event_type != lessons::PROJECT_RULE).collect();
-    lessons::matching_among(&asked, sources.goal)
+    lessons::matching_among(&asked, sources.goal, sources.languages)
         .into_iter()
         .filter_map(|hit| {
             let lesson = bank.get(hit.id)?;
@@ -936,15 +946,25 @@ fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
 /// dela como lacuna, e as regras, as decisões e os erros dela que casam como
 /// fatos.
 fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
-    let terms = query_terms(sources.goal);
-    let lines: Vec<&IndexLine> = sources.index.iter().filter(|line| line.name != sources.current).collect();
-    let index = SearchIndex::build(lines.iter().enumerate().map(|(i, line)| (doc_id(i), line.search.as_str())));
-    index
+    let mut normalizer = Normalizer::new(sources.languages);
+    let terms = normalizer.query(sources.goal);
+    let lines: Vec<(&IndexLine, Vec<Vec<String>>)> = sources
+        .index
+        .iter()
+        .filter(|line| line.name != sources.current)
+        .map(|line| (line, normalizer.forms(&line.search)))
+        .collect();
+    let index = SearchIndex::build(lines.iter().enumerate().map(|(i, (_, words))| (doc_id(i), words.clone())));
+    let strong_lines: Vec<&IndexLine> = index
         .top(&terms, lines.len())
         .into_iter()
-        .filter_map(|hit| lines.get(doc_pos(hit.id)).copied())
-        .filter(|line| strong(&terms, &line.search))
+        .filter_map(|hit| lines.get(doc_pos(hit.id)))
+        .filter(|(_, words)| strong(&terms, words))
+        .map(|(line, _)| *line)
         .take(TOP)
+        .collect();
+    strong_lines
+        .into_iter()
         .map(|line| {
             let goal = line.goal.as_deref().map(str::trim).filter(|g| !g.is_empty());
             let log = sources.prior.iter().find(|(name, _)| *name == line.name).map(|(_, log)| log);
@@ -953,7 +973,7 @@ fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
                 gap: goal.map_or_else(|| line.name.clone(), |goal| format!("{}: {goal}", line.name)),
                 from: FROM_PRIOR_SPEC,
                 key: None,
-                facts: prior_facts(&line.name, goal, log, &terms),
+                facts: prior_facts(&line.name, goal, log, &terms, &mut normalizer),
                 reminders: Vec::new(),
             }
         })
@@ -964,13 +984,21 @@ fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
 /// casam com o objetivo, até [`PRIOR_FACTS`], cada um pelo título e pelo
 /// comando que lê o item. Sem nenhum, o objetivo dela, pelo comando que lê a
 /// especificação.
-fn prior_facts(name: &str, goal: Option<&str>, log: Option<&SpecLog>, terms: &[String]) -> Vec<Fact> {
+fn prior_facts(
+    name: &str,
+    goal: Option<&str>,
+    log: Option<&SpecLog>,
+    terms: &[Vec<String>],
+    normalizer: &mut Normalizer,
+) -> Vec<Fact> {
     let mut facts = Vec::new();
     if let Some(log) = log {
         let items: Vec<&SpecEvent> =
             log.visible().into_iter().filter(|e| PRIOR_FACT_TYPES.contains(&e.event_type.as_str())).collect();
         let codes = log.codes();
-        let index = SearchIndex::build(items.iter().map(|e| (e.id, e.str_field("search").unwrap_or_default())));
+        let index = SearchIndex::build(
+            items.iter().map(|e| (e.id, normalizer.forms(e.str_field("search").unwrap_or_default()))).collect::<Vec<_>>(),
+        );
         for hit in index.top(terms, PRIOR_FACTS) {
             let Some(item) = log.get(hit.id) else { continue };
             let (Some(text), Some(code)) = (title_of(item), codes.get(&item.id)) else { continue };
@@ -987,19 +1015,21 @@ fn prior_facts(name: &str, goal: Option<&str>, log: Option<&SpecLog>, terms: &[S
 
 /// Põe cada lembrete no ponto da lista cujo texto (a lacuna e os fatos) casa
 /// melhor com ele, sem passar de [`MAX_REMINDERS`] num ponto; sem casamento,
-/// no primeiro ponto com lugar.
-fn place(list: &mut [Proposed], found: Vec<Reminder>) {
-    let docs: Vec<String> = list
+/// no primeiro ponto com lugar. As palavras são cortadas nas línguas
+/// `languages`.
+fn place(list: &mut [Proposed], found: Vec<Reminder>, languages: &Languages) {
+    let mut normalizer = Normalizer::new(languages);
+    let docs: Vec<Vec<Vec<String>>> = list
         .iter()
         .map(|item| {
             let facts: Vec<&str> = item.facts.iter().map(|fact| fact.text.as_str()).collect();
-            search_field(Some(&item.gap), &facts)
+            normalizer.forms(&search_field(Some(&item.gap), &facts))
         })
         .collect();
-    let index = SearchIndex::build(docs.iter().enumerate().map(|(i, doc)| (doc_id(i), doc.as_str())));
+    let index = SearchIndex::build(docs.into_iter().enumerate().map(|(i, doc)| (doc_id(i), doc)));
     let has_room = |list: &[Proposed], at: usize| list.get(at).is_some_and(|item| item.reminders.len() < MAX_REMINDERS);
     for reminder in found {
-        let ranked = index.top(&query_terms(&reminder.text), list.len());
+        let ranked = index.top(&normalizer.query(&reminder.text), list.len());
         let target = ranked
             .iter()
             .map(|hit| doc_pos(hit.id))
@@ -1011,16 +1041,10 @@ fn place(list: &mut [Proposed], found: Vec<Reminder>) {
     }
 }
 
-/// Quantas raízes do pedido, sem repetir, o `search` tem.
-fn shared_roots(terms: &[String], search: &str) -> usize {
-    let roots: BTreeSet<&str> = search.split(' ').filter(|w| !w.is_empty()).collect();
-    let terms: BTreeSet<&str> = terms.iter().map(String::as_str).collect();
-    terms.into_iter().filter(|term| roots.contains(term)).count()
-}
-
-/// O casamento forte: pelo menos [`STRONG_ROOTS`] raízes do pedido em comum.
-fn strong(terms: &[String], search: &str) -> bool {
-    shared_roots(terms, search) >= STRONG_ROOTS
+/// O casamento forte: pelo menos [`STRONG_ROOTS`] palavras do pedido com
+/// alguma forma no documento.
+fn strong(terms: &[Vec<String>], doc: &[Vec<String>]) -> bool {
+    shared_words(terms, doc) >= STRONG_ROOTS
 }
 
 /// O texto como se compara: minúsculo, sem acento e com um espaço só entre
@@ -1096,8 +1120,12 @@ mod tests {
             map: None,
             condensed: false,
             lang: Locale::PtBr,
+            languages: &LANGUAGES,
         }
     }
+
+    /// As línguas de um projeto que escreve em português e programa em inglês.
+    static LANGUAGES: std::sync::LazyLock<Languages> = std::sync::LazyLock::new(|| Languages::new(["pt-BR", "en-US"]));
 
     fn reminders_in(list: &[Proposed]) -> Vec<&Reminder> {
         list.iter().flat_map(|item| item.reminders.iter()).collect()
@@ -1262,7 +1290,7 @@ mod tests {
             ev(2, "message", json!({"author": "user", "text": "O merge com pendência demorou."})),
         ]);
         let prior = [("antiga".to_string(), old)];
-        let found = reminders(prior.iter().map(|(n, l)| (n.as_str(), l)), GOAL, MAX_REMINDERS);
+        let found = reminders(prior.iter().map(|(n, l)| (n.as_str(), l)), GOAL, MAX_REMINDERS, &LANGUAGES);
         let ids: Vec<u64> = found.iter().map(|r| r.message).collect();
         assert_eq!(ids, [2], "{found:?}");
     }

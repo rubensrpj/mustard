@@ -58,13 +58,13 @@
 //! version for the main folder's — with the same check the copy runs
 //! ([`crate::commands::flow::round::local_file_ignored`]).
 //!
-//! Once the files are written, the search an older Mustard wrote under
-//! another rule, in the specs and in the lesson bank, is recomputed once, by
-//! the same core function `mustard init` calls
-//! (`mustard_core::io::spec_index::refresh_search`); a project without the
-//! specs folder gets nothing created. A failure is a warning in the report,
-//! `searchWarning`, naming the command that recomputes it later; it never
-//! stops the upsert.
+//! Once the files are written, the lines of the specs and of the lesson bank
+//! that have no search field get it, once, by the same core function
+//! `mustard init` calls (`mustard_core::io::spec_index::refresh_search`); a
+//! field already written stays as it is, and a project without the specs
+//! folder gets nothing created. A failure is a warning in the report,
+//! `searchWarning`, naming the command that fills it later; it never stops
+//! the upsert.
 //!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
 //! `UpsertReport` flattened, with `pluginRefresh`, `codeToolWarnings`, on a
@@ -214,8 +214,9 @@ struct Report {
     /// the project involves has its program and its plugin, or that it
     /// involves none.
     code_tool_warnings: Vec<String>,
-    /// O aviso de que a busca velha das specs não foi refeita, com o comando
-    /// que a refaz depois ([`mustard_core::io::spec_index::refresh_search`]).
+    /// O aviso de que o campo de busca que falta nas specs não foi posto, com
+    /// o comando que o põe depois
+    /// ([`mustard_core::io::spec_index::refresh_search`]).
     /// Presente só quando a busca falhou.
     #[serde(skip_serializing_if = "Option::is_none")]
     search_warning: Option<String>,
@@ -287,7 +288,7 @@ pub fn run(opts: &UpsertOpts) {
 }
 
 /// The whole door, short of printing: seed the project, record the person's
-/// answers, recompute the stale search of the specs, set up the code tools of
+/// answers, fill the missing search of the specs, set up the code tools of
 /// every language it involves, refresh the plugin.
 ///
 /// `runner` runs the code-tool commands and `refresh` performs the plugin
@@ -1352,13 +1353,13 @@ mod tests {
         assert!(!mustard_json(js.path()).contains_key("buildOutput"), "nothing detected, nothing written");
     }
 
-    /// Uma versão anterior gravou numa spec uma decisão com a busca de outra
-    /// regra. A atualização pelo plugin a recalcula, como a instalação pelo
-    /// terminal: só o `search` da linha velha muda, a resposta não traz aviso
-    /// e a atualização seguinte não tem mais o que acertar. O `.git/config`
-    /// fica byte a byte como estava.
+    /// Uma versão anterior gravou numa spec uma decisão sem o campo de busca.
+    /// A atualização pelo plugin o põe, como a instalação pelo terminal: só a
+    /// linha sem ele muda, ganhando o campo, a resposta não traz aviso e a
+    /// atualização seguinte não tem mais o que pôr. O `.git/config` fica byte
+    /// a byte como estava.
     #[test]
-    fn the_upsert_recomputes_the_stale_search_of_the_specs_once() {
+    fn the_upsert_fills_the_missing_search_of_the_specs_once() {
         use mustard_core::domain::spec_events::refresh_search_lines;
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1373,29 +1374,28 @@ mod tests {
         let mut spec = std::fs::read_to_string(&events).expect("the spec");
         spec.push_str(
             "{\"v\":1,\"id\":2,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
-             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1,\
-             \"search\":\"fatur som centav\"}\n",
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1}\n",
         );
-        std::fs::write(&events, &spec).expect("the stale line");
-        let stale = |text: &str| refresh_search_lines(text).1;
-        assert_eq!(stale(&spec), 1, "the fixture carries one stale line");
+        std::fs::write(&events, &spec).expect("the line without search");
+        let missing = |text: &str| refresh_search_lines(text).1;
+        assert_eq!(missing(&spec), 1, "the fixture has one line without search");
 
         let report = upsert_json(root, &UpsertOpts::default());
         assert!(report.get("searchWarning").is_none(), "{report:#}");
         let fixed = std::fs::read_to_string(&events).expect("the spec");
-        assert_eq!(stale(&fixed), 0, "the upsert left a stale search:\n{fixed}");
+        assert_eq!(missing(&fixed), 0, "the upsert left a line without search:\n{fixed}");
         let (before, after): (Vec<&str>, Vec<&str>) = (spec.lines().collect(), fixed.lines().collect());
         assert_eq!(after.len(), before.len(), "{fixed}");
         assert_eq!(after[0], before[0], "the line with today's search stays byte for byte");
         let parse = |line: &str| -> serde_json::Map<String, serde_json::Value> {
             serde_json::from_str(line).expect("a JSON line")
         };
-        let (mut old, mut new) = (parse(before[1]), parse(after[1]));
-        assert_ne!(new.remove("search"), old.remove("search"), "the old line got today's search");
-        assert_eq!(old, new, "only the search field of the old line changed");
+        let (old, mut new) = (parse(before[1]), parse(after[1]));
+        assert!(new.remove("search").is_some(), "the old line got its search");
+        assert_eq!(old, new, "only the search field was added to the old line");
 
         upsert_json(root, &UpsertOpts::default());
-        assert_eq!(std::fs::read_to_string(&events).expect("the spec"), fixed, "a second upsert has nothing to fix");
+        assert_eq!(std::fs::read_to_string(&events).expect("the spec"), fixed, "a second upsert has nothing to fill");
         assert_eq!(
             std::fs::read(root.join(".git").join("config")).expect("the git config"),
             git_config,
@@ -1431,7 +1431,7 @@ mod tests {
         let report = upsert_json(root, &UpsertOpts::default());
 
         let warning = report["searchWarning"].as_str().unwrap_or_else(|| panic!("a warning: {report:#}"));
-        assert!(warning.starts_with("the search of the specs was not recomputed ("), "{warning}");
+        assert!(warning.starts_with("the missing search of the specs was not filled ("), "{warning}");
         assert!(warning.ends_with("; run `mustard-rt run index` in the project"), "{warning}");
         assert!(root.join(".claude").join("settings.local.json").is_file(), "the seeding happened");
         assert!(report["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")), "{report:#}");

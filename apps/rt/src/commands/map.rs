@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, MapRefusal, ProjectMap};
 use mustard_core::io::project_map as store;
 use mustard_core::platform::i18n::Locale;
@@ -81,13 +82,13 @@ fn required(value: Option<&str>, question: Question, flag: &str) -> Result<Strin
 pub(crate) fn map_at(opts: &MapOpts) -> Value {
     let project = crate::commands::spec_events::project(&opts.root);
     let lang = project.lang;
-    match answer(opts, &project.root, lang) {
+    match answer(opts, &project.root, lang, &project.languages) {
         Ok(report) => report,
         Err(refusal) => refused(&refusal, lang),
     }
 }
 
-fn answer(opts: &MapOpts, root: &Path, lang: Locale) -> Result<Value, MapRefusal> {
+fn answer(opts: &MapOpts, root: &Path, lang: Locale, languages: &Languages) -> Result<Value, MapRefusal> {
     let question = opts.question;
     if question == Question::Skill {
         return skill(opts, root);
@@ -112,7 +113,7 @@ fn answer(opts: &MapOpts, root: &Path, lang: Locale) -> Result<Value, MapRefusal
         }
         Question::Search => {
             let query = required(opts.query.as_deref(), question, "--query")?;
-            let files: Vec<Value> = project_map::search(&map, &query)
+            let files: Vec<Value> = project_map::search(&map, &query, languages)
                 .into_iter()
                 .map(|found| json!({ "path": found.path, "score": found.score }))
                 .collect();
@@ -124,7 +125,7 @@ fn answer(opts: &MapOpts, root: &Path, lang: Locale) -> Result<Value, MapRefusal
         }
         Question::Slice => slice(opts, &map, root),
         Question::Users => users(opts, &map, lang),
-        Question::Examples => examples(opts, &map, lang),
+        Question::Examples => examples(opts, &map, lang, languages),
         Question::Skill => skill(opts, root),
     }
 }
@@ -195,13 +196,13 @@ fn users(opts: &MapOpts, map: &ProjectMap, lang: Locale) -> Result<Value, MapRef
 }
 
 /// Os exemplos para o alvo de `--file`; sem ele, para a pasta do arquivo que
-/// a busca acha para `--task`.
-fn examples(opts: &MapOpts, map: &ProjectMap, lang: Locale) -> Result<Value, MapRefusal> {
+/// a busca acha para `--task`, nas línguas `languages`.
+fn examples(opts: &MapOpts, map: &ProjectMap, lang: Locale, languages: &Languages) -> Result<Value, MapRefusal> {
     let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
     let task = opts.task.as_deref().map(str::trim).filter(|t| !t.is_empty());
     let target = match (file, task) {
         (Some(file), _) => project_map::clean_path(file),
-        (None, Some(task)) => match project_map::best_folder(map, task) {
+        (None, Some(task)) => match project_map::best_folder(map, task, languages) {
             Some(folder) => folder,
             None => {
                 return Ok(json!({
@@ -257,10 +258,11 @@ fn examples(opts: &MapOpts, map: &ProjectMap, lang: Locale) -> Result<Value, Map
 /// Os arquivos que o mapa sugere para uma tarefa descrita em palavras, do
 /// mais forte para o menos forte. Vazio quando não há mapa gravado ou quando
 /// nada casa: quem pergunta decide o que fazer com a lista, porque o mapa não
-/// preenche a tarefa sozinho.
-pub(crate) fn suggested_files(root: &Path, task: &str, limit: usize) -> Vec<String> {
+/// preenche a tarefa sozinho. A busca corta as palavras nas línguas
+/// `languages`.
+pub(crate) fn suggested_files(root: &Path, task: &str, limit: usize, languages: &Languages) -> Vec<String> {
     let Ok(map) = store::read(root) else { return Vec::new() };
-    project_map::search(&map, task).into_iter().take(limit).map(|found| found.path).collect()
+    project_map::search(&map, task, languages).into_iter().take(limit).map(|found| found.path).collect()
 }
 
 /// A pasta que a skill descreve: a de cima do `.claude` onde ela mora.
@@ -345,6 +347,37 @@ mod tests {
 
     fn ask(root: &Path, question: Question) -> MapOpts {
         MapOpts { root: root.to_path_buf(), question, file: None, task: None, query: None, path: None, name: None }
+    }
+
+    /// Num projeto que escreve em português e programa em inglês, a busca do
+    /// mapa corta a pergunta também como inglês: "users" acha o arquivo que
+    /// declara `UserRepository`. Com o código declarado em português, a mesma
+    /// pergunta não acha nada, porque o português não tira o plural de
+    /// "users".
+    #[test]
+    fn users_finds_user_repository_when_the_project_codes_in_english() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            store::model_path(dir.path()),
+            r#"{"modules": [
+              {"path": "src/storage.rs", "loc": 40, "declarations": [{"name": "UserRepository"}]},
+              {"path": "src/billing.rs", "loc": 40, "declarations": [{"name": "Payment"}]}
+            ]}"#,
+        )
+        .unwrap();
+        let config = dir.path().join("mustard.json");
+        let mut opts = ask(dir.path(), Question::Search);
+        opts.query = Some("users".to_string());
+
+        std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "en-US"}}"#).unwrap();
+        let report = map_at(&opts);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["files"], json!([{"path": "src/storage.rs", "score": report["files"][0]["score"]}]), "{report}");
+
+        std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "pt-BR"}}"#).unwrap();
+        let report = map_at(&opts);
+        assert_eq!(report["files"], json!([]), "{report}");
     }
 
     #[test]

@@ -1262,6 +1262,7 @@ fn unrecorded_points(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Ve
         map: map.as_ref(),
         condensed: survey::condensed(log),
         lang,
+        languages: &mustard_core::domain::normalize::Languages::of_project(root),
     });
     let origin = goal.and_then(|g| g.int("origin"));
     survey::missing(log, &list).into_iter().map(|item| item.to_value(origin)).collect()

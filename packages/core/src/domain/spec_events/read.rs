@@ -9,7 +9,8 @@ use serde_json::{Map, Value};
 use crate::platform::i18n::{translate, Locale};
 
 use super::check::GIVES_BACK_FIELD;
-use super::search::{found_by, roots};
+use super::search::found_by;
+use crate::domain::normalize::Languages;
 use super::{shown_line, type_spec, Block, BlockQuery, METRIC_TYPES, PURGED_FIELD};
 
 /// Um evento lido do arquivo.
@@ -74,21 +75,6 @@ impl SpecEvent {
     #[must_use]
     pub fn wave(&self) -> Option<u64> {
         wave_of(&self.event_type, |field| self.int(field))
-    }
-
-    /// `true` quando o evento tem todas as raízes do termo, somando as do
-    /// `search` e as do código do item (`code`, o que a leitura dá a ele): o
-    /// `search` não guarda o código, e sem ele um item não seria achado pelo
-    /// próprio código que a página mostra. `None` olha só o `search`.
-    #[must_use]
-    pub fn matches(&self, terms: &[String], code: Option<&str>) -> bool {
-        if terms.is_empty() {
-            return true;
-        }
-        let code_roots = code.map(|c| roots([c])).unwrap_or_default();
-        let mut words: BTreeSet<&str> = self.str_field("search").unwrap_or_default().split(' ').collect();
-        words.extend(code_roots.iter().map(String::as_str));
-        terms.iter().all(|t| words.contains(t.as_str()))
     }
 
     /// A linha como a leitura mostra, sem o `search`.
@@ -224,8 +210,9 @@ pub enum Step {
     Review { wave: u64 },
     /// Fechar: o estado e os critérios.
     Close,
-    /// Tirar uma dúvida: a conversa, filtrada pelo termo.
-    Question { term: String },
+    /// Tirar uma dúvida: a conversa, filtrada pelo termo, cortado nas
+    /// línguas do projeto.
+    Question { term: String, languages: Languages },
 }
 
 /// O arquivo lido: os eventos em ordem e as linhas puladas.
@@ -607,11 +594,11 @@ impl SpecLog {
                 pick(&mut picked,self.block(BlockQuery::Block(Block::State)));
                 pick(&mut picked,self.block(BlockQuery::Block(Block::Criteria)));
             }
-            Step::Question { term } => {
+            Step::Question { term, languages } => {
                 let codes = self.codes();
                 pick(
                     &mut picked,
-                    found_by(self.block(BlockQuery::Block(Block::Conversation)), term, &codes),
+                    found_by(self.block(BlockQuery::Block(Block::Conversation)), term, &codes, languages),
                 );
             }
             Step::Review { wave } => {

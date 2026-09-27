@@ -161,11 +161,12 @@ fn review_lessons(root: &Path, model_path: Option<&Path>, result: &mut Value) {
         lessons::citing_missing_paths(&bank, |cited: &str, inside: Option<&str>| path_found(root, map, cited, inside))
     });
     let leaving: Vec<u64> = missing.iter().map(|m| m.id).collect();
-    let similar = lessons::similar(&bank, &leaving);
+    let config = mustard_core::ProjectConfig::load(&home);
+    let similar = lessons::similar(&bank, &leaving, &mustard_core::domain::normalize::Languages::of(&config));
     if similar.is_empty() && missing.is_empty() {
         return;
     }
-    let lang = mustard_core::ProjectConfig::load(&home).language().text_or_default();
+    let lang = config.language().text_or_default();
     result["lessons"] = json!({
         "similar": similar,
         "missing_paths": missing.iter().map(|m| json!({ "id": m.id, "paths": m.paths })).collect::<Vec<_>>(),

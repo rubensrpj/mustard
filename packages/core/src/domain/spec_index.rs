@@ -477,7 +477,7 @@ pub fn write_warning(refusal: &Refusal, lang: Locale) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::spec_events::{normalize, parse_log, search_terms, stamp};
+    use crate::domain::spec_events::{normalize, parse_log, stamp};
     use serde_json::json;
 
     fn obj(value: Value) -> Map<String, Value> {
@@ -546,7 +546,7 @@ mod tests {
         assert!(cut.starts_with("A página é publicada") && cut.ends_with('…'), "{cut}");
         let search: Vec<&str> = got["search"].as_str().unwrap().split(' ').collect();
         for word in ["enxuto", "teste", "unidades"] {
-            assert!(search.contains(&search_terms(word)[0].as_str()), "{word}: {search:?}");
+            assert!(search.contains(&word), "{word}: {search:?}");
         }
         assert!(line.ends_with(&format!(r#","updated":"{}","search":"{}"}}"#, at("08:45"), got["search"].as_str().unwrap())));
     }

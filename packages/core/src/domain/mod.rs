@@ -10,6 +10,7 @@ pub mod model;
 pub mod ast;
 pub mod ranking;
 pub mod search;
+pub mod normalize;
 pub mod lessons;
 pub mod clarity;
 pub mod text;

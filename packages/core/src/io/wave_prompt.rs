@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
+use crate::domain::normalize::Languages;
 use crate::domain::project_map::{check_skill, cited_paths, file_history, tests_for, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{self, tasks_text, wave_files, Choice, Execution, Material, Skill, WaveCopy};
@@ -72,7 +73,18 @@ pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Fl
     let bank = lesson_bank(root);
     let map = crate::io::project_map::read(root).ok();
     let base = project_execution(root);
-    let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, flight, lang };
+    let languages = Languages::of_project(root);
+    let context = Context {
+        root,
+        spec,
+        log,
+        bank: bank.as_ref(),
+        map: map.as_ref(),
+        base: &base,
+        flight,
+        lang,
+        languages: &languages,
+    };
     log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
 }
 
@@ -138,7 +150,7 @@ pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
 /// que a rodada mostra ao orquestrador antes do envio, e as que o pedido
 /// leva, menos as que a escolha dele tirou.
 #[must_use]
-pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a SpecEvent> {
+pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64, languages: &Languages) -> Vec<&'a SpecEvent> {
     let files = wave_files(log, wave);
     let skills = skills_named(log, wave);
     let mut found: Vec<&SpecEvent> = Vec::new();
@@ -150,7 +162,7 @@ pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64) -> Vec<&'a 
             }
         }
     }
-    serving_wave(related_to_tasks(found, &tasks_text(log, wave)), &files, &skills)
+    serving_wave(related_to_tasks(found, &tasks_text(log, wave), languages), &files, &skills)
 }
 
 /// A pasta das cópias separadas do projeto do checkout principal `root`,
@@ -359,10 +371,11 @@ pub fn request_items<'a>(
     bank: Option<&'a SpecLog>,
     wave: u64,
     fresh: Option<&Choice>,
+    languages: &Languages,
 ) -> RequestItems<'a> {
     let choice = wave_prompt::choice_for(log, wave, fresh);
     let fix: BTreeSet<u64> = wave_prompt::fix_lines(log, wave).iter().map(|e| e.id).collect();
-    let items = wave_prompt::dispatch_items(log, wave, choice.as_ref())
+    let items = wave_prompt::dispatch_items(log, wave, choice.as_ref(), languages)
         .into_iter()
         .filter(|e| match e.event_type.as_str() {
             "send" | "step" => false,
@@ -371,7 +384,7 @@ pub fn request_items<'a>(
         })
         .collect();
     let lessons = bank
-        .map(|bank| wave_lessons(bank, log, wave))
+        .map(|bank| wave_lessons(bank, log, wave, languages))
         .unwrap_or_default()
         .into_iter()
         .filter(|lesson| !choice.as_ref().is_some_and(|choice| choice.removes_lesson(lesson.id)))
@@ -390,16 +403,18 @@ struct Context<'a> {
     base: &'a Execution,
     flight: &'a Flight,
     lang: Locale,
+    /// As línguas em que as palavras das buscas são cortadas.
+    languages: &'a Languages,
 }
 
 fn one(context: &Context, wave: u64) -> WavePrompt {
-    let Context { root, spec, log, bank, map, lang, .. } = *context;
+    let Context { root, spec, log, bank, map, lang, languages, .. } = *context;
     // O que a montagem escolhe, com a escolha do orquestrador antes do envio:
     // a que a rodada traz agora ou a gravada no envio da onda.
     let fresh = context.flight.choices.get(&wave);
     // Os itens e as lições saem da mesma conta que a leitura do pedido usa,
     // e por isso as duas nunca discordam.
-    let RequestItems { items: read, lessons } = request_items(log, bank, wave, fresh);
+    let RequestItems { items: read, lessons } = request_items(log, bank, wave, fresh, languages);
     let of_type = |name: &str| -> Vec<&SpecEvent> {
         read.iter().copied().filter(|e| e.event_type == name).collect()
     };
@@ -1369,7 +1384,7 @@ mod tests {
         ]);
 
         let bank = crate::io::lessons::read(&path.join("lessons.ndjson")).unwrap().unwrap();
-        let by_text = crate::domain::lessons::matching(&bank, STATUS_BAR_TASK);
+        let by_text = crate::domain::lessons::matching(&bank, STATUS_BAR_TASK, &Languages::new(["pt-BR", "en-US"]));
         assert!(by_text.iter().any(|hit| hit.id == 1), "pelo texto inteiro, a lição do envio entraria: {by_text:?}");
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
@@ -1439,7 +1454,7 @@ mod tests {
                 ("task", json!({"wave": n, "text": wave["text"], "files": paths})),
             ]);
 
-            let got: BTreeSet<u64> = wave_lessons(&bank, &log, n).iter().map(|l| l.id).collect();
+            let got: BTreeSet<u64> = wave_lessons(&bank, &log, n, &Languages::new(["pt-BR", "en-US"])).iter().map(|l| l.id).collect();
             let avoided: BTreeSet<u64> = arrived.difference(&got).copied().collect();
             assert!(got.is_subset(&arrived), "onda {n}: {got:?} fora de {arrived:?}");
             let lost: Vec<&u64> = kept.difference(&got).collect();

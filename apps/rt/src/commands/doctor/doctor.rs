@@ -36,7 +36,7 @@
 //!   this project may not use at all.
 //! - **spec-index** — o índice das specs (`.claude/spec/index.ndjson`) contra
 //!   os arquivos de eventos: índice que falta, linha que falta, sobra ou
-//!   difere, e campo `search` calculado por outro redutor. Só lê e acusa, com
+//!   difere, e linha sem o campo `search`. Só lê e acusa, com
 //!   WARN e a mensagem no idioma do projeto, que manda rodar
 //!   `mustard-rt run index`.
 //! - **switches** — as escolhas do `mustard.json` contra as configurações

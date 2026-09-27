@@ -445,7 +445,7 @@ mod tests {
         let mut body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let agreed: Vec<Value> =
-            report::request_agreed(&log, wave).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+            report::request_agreed(&log, wave, &mustard_core::domain::normalize::Languages::of_project(root)).iter().map(|item| json!({"item": item.id, "met": true})).collect();
         if !agreed.is_empty() {
             body["agreed"] = json!(agreed);
         }

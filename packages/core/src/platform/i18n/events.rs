@@ -663,12 +663,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `mustard-rt run index` to rebuild it."
         }
         ("spec_index.stale_search", Locale::PtBr) => {
-            "{count} linha(s) dos arquivos de eventos e do banco de lições têm o campo search \
-             calculado por outro redutor. Rode `mustard-rt run index` para recalculá-lo."
+            "{count} linha(s) dos arquivos de eventos e do banco de lições estão sem o campo \
+             search. Rode `mustard-rt run index` para pô-lo."
         }
         ("spec_index.stale_search", Locale::EnUs) => {
-            "{count} line(s) of the event files and the lesson bank have a search field computed \
-             by another stemmer. Run `mustard-rt run index` to recompute it."
+            "{count} line(s) of the event files and the lesson bank have no search field. Run \
+             `mustard-rt run index` to fill it."
         }
         ("spec_events.spec_required", Locale::PtBr) => {
             "Falta a spec: o tipo {type} é gravado no arquivo de eventos de uma spec. Passe \
@@ -852,7 +852,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             113,
-            0x981b_78e3_30d6_841f,
+            0x0525_550a_dde2_0707,
         );
     }
 

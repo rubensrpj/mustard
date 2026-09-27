@@ -167,7 +167,7 @@ fn is_wave_link(s: &str) -> bool {
 
 /// O índice das specs do projeto `root` contra os arquivos de eventos. Só lê:
 /// sem spec, não há o que conferir; índice que falta, linha que diverge e
-/// `search` calculado por outro redutor viram WARN, cada um com a mensagem no
+/// linha sem o campo `search` viram WARN, cada um com a mensagem no
 /// idioma `lang`, que manda rodar `mustard-rt run index`. Um erro de leitura
 /// também é WARN: a conferência nunca derruba o `doctor`.
 pub(super) fn check_spec_index(root: &Path, lang: Locale) -> CheckResult {

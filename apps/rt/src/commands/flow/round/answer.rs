@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
 use mustard_core::domain::wave_prompt::{estimate_tokens, token_cap_message, wave_files};
@@ -668,8 +669,10 @@ pub(super) fn run_entered_round(
     // A escolha antes do envio, antes da cópia: a onda com item do projeto
     // todo, item sem dono ou lição a julgar só sai com a escolha do
     // orquestrador; sem ela, a resposta traz os candidatos dela, e a onda fica
-    // para a rodada que trouxer a escolha.
-    let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &log, &ready, &given, lang);
+    // para a rodada que trouxer a escolha. As buscas da escolha e do pedido
+    // cortam as palavras nas mesmas línguas do projeto.
+    let languages = Languages::of_project(root);
+    let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &log, &ready, &given, lang, &languages);
     warnings.extend(ignored);
     let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, false, lang);
     warnings.extend(not_copied);
@@ -715,7 +718,7 @@ pub(super) fn run_entered_round(
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
         // Os itens que ficaram, e à parte a escolha do orquestrador: o que
         // saiu e o que entrou, cada um com o motivo.
-        draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave))));
+        draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave), &languages)));
         if let Some(choice) = flight.choices.get(wave) {
             draft.insert("analysis".into(), choice.to_value());
         }

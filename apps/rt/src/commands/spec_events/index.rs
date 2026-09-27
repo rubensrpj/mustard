@@ -1,13 +1,13 @@
 //! `mustard-rt run index` — refaz o índice das specs
 //! (`.claude/spec/index.ndjson` do checkout principal) a partir dos arquivos
-//! de eventos e recalcula o campo `search` das linhas, quando o índice falta
-//! ou diverge.
+//! de eventos e põe o campo `search` nas linhas que ainda não o têm, quando
+//! o índice falta ou diverge. O campo já gravado fica como está.
 //!
 //! Cada `write` já refaz a linha da spec dele; este é o conserto inteiro, o
 //! que o `doctor` manda rodar quando acusa divergência. Página nenhuma é
 //! escrita: a página do projeto lê o banco de dados dela. A saída diz o
-//! índice, relativo ao projeto, quantas specs entraram, quantas linhas tiveram
-//! o `search` recalculado e as pastas que ficaram fora (sem arquivo de
+//! índice, relativo ao projeto, quantas specs entraram, quantas linhas
+//! ganharam o `search` e as pastas que ficaram fora (sem arquivo de
 //! eventos):
 //!
 //! ```text
@@ -66,9 +66,9 @@ mod tests {
         write_at(&path, event_type, draft, &[], "2026-09-11T10:00:00-03:00").unwrap();
     }
 
-    /// O relatório conta as specs, as linhas cujo `search` foi recalculado e
-    /// as pastas do formato antigo que ficaram fora; a segunda rodada não
-    /// tem o que recalcular.
+    /// O relatório conta as specs, as linhas que ganharam o `search` e as
+    /// pastas do formato antigo que ficaram fora; a segunda rodada não tem o
+    /// que pôr.
     #[test]
     fn index_reports_the_specs_and_the_search_lines_it_fixed() {
         let dir = tempdir().unwrap();
@@ -80,9 +80,9 @@ mod tests {
         let events = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
         let raw = std::fs::read_to_string(&events).unwrap();
         let note = raw.lines().nth(1).unwrap();
-        let mut stale: Map<String, Value> = serde_json::from_str(note).unwrap();
-        stale.insert("search".into(), json!("redutor antigo"));
-        std::fs::write(&events, raw.replace(note, &Value::Object(stale).to_string())).unwrap();
+        let mut missing: Map<String, Value> = serde_json::from_str(note).unwrap();
+        missing.remove("search");
+        std::fs::write(&events, raw.replace(note, &Value::Object(missing).to_string())).unwrap();
 
         let report = index_at(&IndexOpts { root: root.to_path_buf() });
         assert_eq!(

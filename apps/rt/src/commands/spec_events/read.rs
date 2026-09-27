@@ -37,6 +37,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::kept;
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{found_by, shown_line, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
@@ -91,13 +92,13 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
     let codes = log.codes();
     let term = opts.term.as_deref().unwrap_or_default();
     let events: Vec<String> = match reading {
-        Reading::Dispatch(wave) => dispatch_lines(&project.root, &log, wave, term, &codes),
+        Reading::Dispatch(wave) => dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages),
         Reading::Block(query) => {
             // O pedido de cada envio é o texto maior da spec: a lista das
             // ondas e o painel mostram o envio sem ele, e só a leitura de uma
             // onda o traz inteiro.
             let brief = matches!(query, BlockQuery::Block(Block::Waves | Block::Metrics));
-            found_by(log.block(query), term, &codes).into_iter().map(|e| shown_with_code(e, &codes, brief)).collect()
+            found_by(log.block(query), term, &codes, &project.languages).into_iter().map(|e| shown_with_code(e, &codes, brief)).collect()
         }
     };
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
@@ -114,19 +115,27 @@ enum Reading {
 /// ([`request_items`], com a escolha gravada no envio): primeiro os itens da
 /// spec, cada um com o código, depois as lições do banco do projeto `root`,
 /// pelo número delas. Com `term`, um código de item acha só aquele item, e
-/// qualquer outro termo passa pela busca por nota nos itens e nas lições. A
-/// onda que o plano não tem não tem pedido: a lista vem vazia.
-fn dispatch_lines(root: &Path, log: &SpecLog, wave: u64, term: &str, codes: &BTreeMap<u64, String>) -> Vec<String> {
+/// qualquer outro termo passa pela busca por nota nos itens e nas lições,
+/// nas línguas `languages`. A onda que o plano não tem não tem pedido: a
+/// lista vem vazia.
+fn dispatch_lines(
+    root: &Path,
+    log: &SpecLog,
+    wave: u64,
+    term: &str,
+    codes: &BTreeMap<u64, String>,
+    languages: &Languages,
+) -> Vec<String> {
     if !log.planned_waves().contains(&wave) {
         return Vec::new();
     }
     let bank = lesson_bank(root);
-    let found = request_items(log, bank.as_ref(), wave, None);
+    let found = request_items(log, bank.as_ref(), wave, None, languages);
     let mut lines: Vec<String> =
-        found_by(found.items, term, codes).into_iter().map(|e| shown_with_code(e, codes, false)).collect();
+        found_by(found.items, term, codes, languages).into_iter().map(|e| shown_with_code(e, codes, false)).collect();
     // A lição não tem código de item, e o número dela no banco pode ser o de
     // um item da spec: ela passa só pela busca, nunca pelos códigos da spec.
-    lines.extend(found_by(found.lessons, term, &BTreeMap::new()).into_iter().map(|lesson| shown_line(&lesson.fields)));
+    lines.extend(found_by(found.lessons, term, &BTreeMap::new(), languages).into_iter().map(|lesson| shown_line(&lesson.fields)));
     lines
 }
 
@@ -278,6 +287,21 @@ mod tests {
         let got = events(&read_at(&opts(root, "conversation", Some("apagar"))).unwrap());
         assert_eq!(got.len(), 1);
         assert_eq!(got[0]["text"], json!("apagando a pasta"));
+    }
+
+    /// Com a língua do texto em espanhol, a busca na spec corta as palavras
+    /// como espanhol: "correr" acha a mensagem que diz "corriendo", que o
+    /// português e o inglês não ligariam.
+    #[test]
+    fn a_spanish_project_cuts_the_spec_search_as_spanish() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"language": {"text": "es-ES"}}"#).unwrap();
+        put(root, "message", json!({"author": "user", "text": "sigue corriendo la prueba"}));
+        put(root, "message", json!({"author": "user", "text": "otro asunto"}));
+        let got = events(&read_at(&opts(root, "conversation", Some("correr"))).unwrap());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0]["text"], json!("sigue corriendo la prueba"));
     }
 
     /// Uma frase inteira não exige que o item tenha todas as palavras: a

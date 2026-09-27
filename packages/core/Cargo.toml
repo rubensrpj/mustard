@@ -25,8 +25,8 @@ aho-corasick = "1.1"
 # `toml::from_str` (deserialize), which is unchanged across the 0.8 -> 1.0
 # transition. The dep is crate-local because `vocabulary` is the only consumer.
 toml = "1"
-# The Portuguese stemmer behind the `search` field of the spec event file
-# (`domain::spec_events`). Version lives in the workspace table.
+# The Snowball stemmers behind every word search, one per language the
+# project declares (`domain::normalize`). Version lives in the workspace table.
 rust-stemmers = { workspace = true }
 # Local date and time with the offset (`2026-09-11T21:03:12-03:00`) for the
 # `at` field of each spec event: the person removes "the messages from 21:03 to

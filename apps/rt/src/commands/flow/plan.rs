@@ -54,6 +54,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::MapRefusal;
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
@@ -356,6 +357,7 @@ fn check(
     let mut out: Vec<PlanFinding> = Vec::new();
     let codes = log.codes();
     let code_of = |event: &SpecEvent| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
+    let languages = Languages::of_project(root);
 
     // Nenhum ponto do levantamento aberto.
     let open = open_points(log);
@@ -411,7 +413,7 @@ fn check(
         if files.is_empty() && !says_it_touches_no_file(text) {
             out.push(PlanFinding::TaskWithoutFile {
                 task: code.clone(),
-                files: crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS).join(", "),
+                files: crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS, &languages).join(", "),
             });
         }
         for (path, new) in &files {
@@ -482,7 +484,7 @@ fn check(
             continue;
         }
         let text = task.str_field("text").unwrap_or_default();
-        match best_skill(&on_disk, text) {
+        match best_skill(&on_disk, text, &languages) {
             Some(name) => {
                 out.push(PlanFinding::TaskCouldNameASkill { task: code_of(task), skill: name });
             }
