@@ -3,7 +3,7 @@
 //! The plugin's bootstrap door: everything the harness needs in a project —
 //! `.claude/settings.local.json`, Mustard's own texts (the session map under
 //! `.claude/mustard/`, the two page templates under `.claude/mustard/pages/`
-//! and the three agents under `.claude/agents/mustard/`),
+//! and the two agents under `.claude/agents/mustard/`),
 //! `.claude/.gitignore`, and the project-root `mustard.json` — is seeded by
 //! `mustard_core::upsert_project`, idempotently.
 //! The settings file is the LOCAL one because the install is always

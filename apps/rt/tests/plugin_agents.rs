@@ -5,8 +5,8 @@
 
 //! Os textos de agente do Mustard, pelo binário de verdade.
 //!
-//! O projeto recebe exatamente três agentes — `mustard-wave`,
-//! `mustard-review` e `mustard-skill` —, no idioma do
+//! O projeto recebe exatamente dois agentes — `mustard-wave` e
+//! `mustard-review` —, no idioma do
 //! `language.text`; os dois idiomas existem como molde do produto; nenhum
 //! texto manda criar cópia do projeto por conta própria, e os de onda e de
 //! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
@@ -127,7 +127,7 @@ fn template(lang: &str, name: &str) -> String {
         .unwrap_or_else(|e| panic!("the {lang} `{name}` template is missing: {e}"))
 }
 
-/// O projeto recebe exatamente os três agentes, no idioma do
+/// O projeto recebe exatamente os dois agentes, no idioma do
 /// `language.text`; os dois idiomas existem como molde; e o
 /// plugin não entrega agente nenhum, porque entregaria os dois idiomas. Os
 /// textos que o instalador escreve trazem as duas guardas desta obra: provar
@@ -142,10 +142,10 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
         let agents = files_under(&root.join(".claude/agents"));
         assert_eq!(
             agents,
-            ["mustard/review.md", "mustard/skill.md", "mustard/wave.md"],
+            ["mustard/review.md", "mustard/wave.md"],
             "the {lang} project got another set of agent texts",
         );
-        for name in ["wave", "review", "skill"] {
+        for name in ["wave", "review"] {
             let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
             assert_eq!(installed, template(lang, name), "the {lang} project got another text for `{name}`");
             assert_ne!(installed, template(other, name), "the {lang} and {other} `{name}` texts are the same");
@@ -226,29 +226,41 @@ fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
 
 /// O nome de cada agente do Mustard leva o prefixo do Mustard, e um projeto
 /// que já tem um agente chamado `review` fica com os dois: o dele, intocado,
-/// e o `mustard-review`. Uma instalação antiga, com os nomes sem prefixo e
-/// com o agente de onda de tarefa única, é migrada pela instalação seguinte,
-/// que tira esse agente, e a rodada manda cada pedido ao agente pelo nome com
-/// prefixo.
+/// e o `mustard-review`. Uma instalação antiga, com os nomes sem prefixo,
+/// com o agente de onda de tarefa única e com o que escrevia skills, é
+/// migrada pela instalação seguinte, que tira esses dois agentes e diz isso,
+/// e a rodada manda cada pedido ao agente pelo nome com prefixo.
 #[test]
 fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_same_name() {
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#);
     let own = "---\nname: review\ndescription: O revisor do próprio projeto.\n---\n\nRevise.\n";
     std::fs::write(root.join(".claude/agents/review.md"), own).unwrap();
-    // A instalação antiga: os três agentes do Mustard sem o prefixo.
-    for name in ["wave", "review", "skill"] {
+    // A instalação antiga: os dois agentes do Mustard sem o prefixo.
+    for name in ["wave", "review"] {
         let path = root.join(format!(".claude/agents/mustard/{name}.md"));
         let old = std::fs::read_to_string(&path).unwrap().replacen(&format!("name: mustard-{name}"), &format!("name: {name}"), 1);
         std::fs::write(&path, old).unwrap();
     }
-    // …e o agente de onda de tarefa única, que foi juntado ao de onda.
-    std::fs::write(root.join(".claude/agents/mustard/wave-solo.md"), "---\nname: mustard-wave-solo\n---\n\nUma tarefa.\n")
+    // …o agente de onda de tarefa única, que foi juntado ao de onda, e o que
+    // escrevia skills, cuja receita o programa monta sozinho.
+    for retired in ["wave-solo", "skill"] {
+        std::fs::write(
+            root.join(format!(".claude/agents/mustard/{retired}.md")),
+            format!("---\nname: {retired}\n---\n\nO molde antigo.\n"),
+        )
         .unwrap();
+    }
 
     let report = rt(&root, &home, &["run", "upsert"], None);
     assert!(report.get("error").is_none(), "{report}");
-    assert!(!root.join(".claude/agents/mustard/wave-solo.md").exists(), "the retired agent stayed: {report}");
+    for retired in ["wave-solo", "skill"] {
+        assert!(!root.join(format!(".claude/agents/mustard/{retired}.md")).exists(), "the retired `{retired}` agent stayed: {report}");
+        assert!(
+            report.to_string().contains(&format!(".claude/agents/mustard/{retired}.md (retired agent)")),
+            "the update does not say it took out `{retired}`: {report}",
+        );
+    }
 
     assert_eq!(std::fs::read_to_string(root.join(".claude/agents/review.md")).unwrap(), own, "the project's agent changed");
     let mut names: Vec<String> = files_under(&root.join(".claude/agents"))
@@ -261,7 +273,7 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
     names.sort();
     assert_eq!(
         names,
-        ["mustard-review", "mustard-skill", "mustard-wave", "review"],
+        ["mustard-review", "mustard-wave", "review"],
         "two agents share a name",
     );
 
@@ -309,7 +321,7 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
     }
 }
 
-/// Os três moldes — onda, revisão e skill —
+/// Os dois moldes — onda e revisão —
 /// declaram o modelo opus com o esforço xhigh, nos dois idiomas: cada agente
 /// sabe o próprio modelo e o próprio esforço, sem herdar o da sessão em
 /// silêncio. Teto de idas e voltas não anda junto: o molde de onda não traz
@@ -319,7 +331,7 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
     for lang in ["pt-BR", "en-US"] {
-        for name in ["wave", "review", "skill"] {
+        for name in ["wave", "review"] {
             let text = template(lang, name);
             assert!(text.contains("\nmodel: opus\n"), "the {lang} `{name}` agent does not declare the opus model:\n{text}");
             assert!(text.contains("\neffort: xhigh\n"), "the {lang} `{name}` agent does not declare the xhigh effort:\n{text}");
@@ -329,24 +341,6 @@ fn each_agent_template_declares_its_own_model_and_effort() {
 
         let wave = template(lang, "wave");
         assert!(wave.len() as u64 > 3_072, "the {lang} wave agent is not over the old byte cap, so it proves nothing");
-    }
-}
-
-/// A skill que o agente de skill escreve nasce com o esforço no cabeçalho: o
-/// molde dele, nos dois idiomas, manda pôr `effort: xhigh` ao lado de `name`
-/// e `description`.
-#[test]
-fn the_skill_agent_asks_for_the_effort_in_the_skill_it_writes() {
-    for lang in ["pt-BR", "en-US"] {
-        let skill = template(lang, "skill");
-        let header = skill
-            .lines()
-            .find(|line| line.contains("`name: <") && line.contains("`description:"))
-            .unwrap_or_else(|| panic!("o molde {lang} não descreve o cabeçalho da skill gravada:\n{skill}"));
-        assert!(
-            header.contains("`effort: xhigh`"),
-            "the {lang} skill agent does not ask for the effort in the skill it writes: {header}"
-        );
     }
 }
 
@@ -692,7 +686,7 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
 }
 
 /// Nenhum texto de agente manda criar cópia do projeto por conta própria —
-/// nem os três que o projeto recebe, em cada idioma, nem as instruções fixas
+/// nem os dois que o projeto recebe, em cada idioma, nem as instruções fixas
 /// que o binário monta no pedido da onda e da revisão —; os de onda e de
 /// revisão mandam trabalhar na cópia separada que o pedido indica. O pedido
 /// que a rodada monta,
@@ -704,7 +698,7 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
 fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_without_a_build_folder() {
     for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let mut texts: Vec<(String, String)> =
-            ["wave", "review", "skill"].iter().map(|name| (format!("{lang} {name}"), template(lang, name))).collect();
+            ["wave", "review"].iter().map(|name| (format!("{lang} {name}"), template(lang, name))).collect();
         for key in FIXED_PARTS {
             texts.push((format!("{lang} {key}"), translate(key, text).to_string()));
         }

@@ -1,6 +1,6 @@
 //! The static seeds: Mustard's own texts — the session map under
 //! `.claude/mustard/`, the two page templates under `.claude/mustard/pages/`
-//! and the three agents under `.claude/agents/mustard/` —,
+//! and the two agents under `.claude/agents/mustard/` —,
 //! the `.claude/.gitignore` rule list, and the project-root `mustard.json`,
 //! with the migrations that bring an older `inject` list onto the session map.
 
@@ -35,7 +35,7 @@ const AGENTS_DIR: &str = "agents/mustard";
 
 /// Os textos do Mustard no projeto, a partir de `.claude/`, com o corpo no
 /// idioma `text`: o mapa do início da sessão, os dois templates das páginas (a
-/// da spec e a do projeto) e os três agentes, nessa ordem.
+/// da spec e a do projeto) e os dois agentes, nessa ordem.
 ///
 /// Os dois idiomas são molde do produto; o projeto recebe só o do
 /// `language.text`. O caminho não muda com o idioma, então trocar o idioma e
@@ -456,8 +456,9 @@ fn retire_router_parts(root: &Path, claude_dir: &Path) -> bool {
 
 /// Os agentes que instalações antigas semeavam em [`AGENTS_DIR`] e que o
 /// Mustard não entrega mais: o de onda de tarefa única, juntado ao agente de
-/// onda, que recebe toda onda.
-const RETIRED_AGENTS: [&str; 1] = ["wave-solo"];
+/// onda, que recebe toda onda, e o que escrevia skills, cuja receita o
+/// programa monta sozinho a partir do histórico do projeto.
+const RETIRED_AGENTS: [&str; 2] = ["wave-solo", "skill"];
 
 /// Apaga de [`AGENTS_DIR`] o arquivo órfão de cada agente de
 /// [`RETIRED_AGENTS`]. A pasta é só do Mustard: o agente do projeto com o
@@ -842,7 +843,7 @@ mod tests {
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(agents.len(), 3, "{agents:?}");
+        assert_eq!(agents.len(), 2, "{agents:?}");
     }
 
     /// O mapa é declarado no início da sessão, o único evento que entrega

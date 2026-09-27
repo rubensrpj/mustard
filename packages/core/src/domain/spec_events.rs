@@ -63,8 +63,9 @@ pub use crate::domain::citation::file_citation;
 /// A versão do formato de cada linha. O leitor entende as anteriores.
 pub const FORMAT_VERSION: u64 = 1;
 
-/// Quem pode ter produzido um evento.
-pub const AUTHORS: &[&str] = &["user", "assistant", "hook", "binary", "wave", "review", "skill"];
+/// Quem pode gravar um evento. Só a gravação confere o autor: a linha antiga
+/// com um autor que saiu, como o agente que escrevia skills, continua lida.
+pub const AUTHORS: &[&str] = &["user", "assistant", "hook", "binary", "wave", "review"];
 
 /// Quem grava pelo comando `write` sem dizer quem é: o assistente.
 pub const DEFAULT_AUTHOR: &str = "assistant";
@@ -109,6 +110,32 @@ mod tests {
 
     pub(super) fn line(id: u64, event_type: &str, extra: &str) -> String {
         format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-09-12T10:00:00-03:00\",\"type\":\"{event_type}\"{extra}}}\n")
+    }
+
+    /// O agente que escrevia skills saiu: a gravação nova recusa o autor e o
+    /// papel dele, e a spec antiga, que tem o envio e a nota desse agente,
+    /// continua lida inteira, sem linha pulada.
+    #[test]
+    fn a_spec_antiga_com_o_agente_de_skill_continua_lida_e_a_gravacao_nova_o_recusa() {
+        let send = |role: &str| {
+            json!({"author": "binary", "wave": 1, "role": role, "text": "pedido", "lines": 1, "chars": 6, "mustard": "0.2.0"})
+        };
+        assert_eq!(checked("send", send("wave")), Ok(()));
+        let refused = checked("send", send("skill")).unwrap_err();
+        assert!(format!("{refused:?}").contains("role"), "{refused:?}");
+        let note = |author: &str| json!({"author": author, "text": "t", "keys": ["k"]});
+        assert_eq!(checked("note", note("review")), Ok(()));
+        let refused = checked("note", note("skill")).unwrap_err();
+        assert!(format!("{refused:?}").contains("author"), "{refused:?}");
+
+        let old = line(1, "send", r#","author":"binary","wave":1,"role":"skill","text":"pedido","lines":1,"chars":6,"mustard":"0.1.0""#)
+            + &line(2, "note", r#","author":"skill","text":"t","keys":["k"]"#);
+        let log = parse_log(&old);
+        assert!(log.skipped.is_empty(), "{:?}", log.skipped);
+        assert_eq!(log.events.iter().map(|e| (e.id, e.str_field("role"), e.str_field("author"))).collect::<Vec<_>>(), [
+            (1, Some("skill"), Some("binary")),
+            (2, None, Some("skill")),
+        ]);
     }
 
     /// Uma spec de teste com 8 ondas e 40 critérios abre um pull request: o

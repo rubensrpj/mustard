@@ -99,9 +99,6 @@ enum PlanFinding {
     TaskWithoutFile { task: String, files: String },
     /// Uma tarefa sem skill para a qual já existe uma skill que serve.
     TaskCouldNameASkill { task: String, skill: String },
-    /// Uma tarefa sem skill cujo trabalho se repete no projeto: o plano
-    /// precisa da tarefa que faz a skill dela nascer.
-    SkillToBeBorn { task: String },
     /// O comando de compilar ou de testar que o projeto ainda não declarou
     /// no `mustard.json`, pelo nome do campo (`buildCommand`/`testCommand`).
     CommandNotDeclared { field: &'static str },
@@ -117,7 +114,6 @@ impl PlanFinding {
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
             | Self::TaskCouldNameASkill { .. }
-            | Self::SkillToBeBorn { .. }
             | Self::CommandNotDeclared { .. } => false,
         }
     }
@@ -139,7 +135,6 @@ impl PlanFinding {
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
             Self::TaskCouldNameASkill { .. } => "task-could-name-a-skill".into(),
-            Self::SkillToBeBorn { .. } => "skill-to-be-born".into(),
             Self::CommandNotDeclared { .. } => "command-not-declared".into(),
         }
     }
@@ -183,7 +178,6 @@ impl PlanFinding {
             Self::TaskCouldNameASkill { task, skill } => {
                 fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())])
             }
-            Self::SkillToBeBorn { task } => fill("plan.skill_to_be_born", &[("{task}", task.clone())]),
             Self::CommandNotDeclared { field } => {
                 fill("plan.command_not_declared", &[("{field}", (*field).to_string())])
             }
@@ -473,25 +467,17 @@ fn check(
             }
         }
     }
-    // A skill nasce por demanda e é escolhida pela tarefa: a tarefa que não
-    // nomeia skill ganha o nome da que já existe e serve; quando nenhuma
-    // serve e o trabalho dela se repete no projeto, o plano precisa da tarefa
-    // que faz a skill nascer. Como as outras conferências das tarefas, esta
-    // olha só as ondas que ainda vêm.
+    // A skill é escolhida pela tarefa: a tarefa que não nomeia skill ganha o
+    // nome da que já existe e serve. Como as outras conferências das
+    // tarefas, esta olha só as ondas que ainda vêm.
     let on_disk = skills_on_disk(root, &tasks);
     for task in &ahead {
         if task.str_field("skill").is_some_and(|s| !s.trim().is_empty()) {
             continue;
         }
         let text = task.str_field("text").unwrap_or_default();
-        match best_skill(&on_disk, text, &languages) {
-            Some(name) => {
-                out.push(PlanFinding::TaskCouldNameASkill { task: code_of(task), skill: name });
-            }
-            None if repeats_in_the_project(root, task) => {
-                out.push(PlanFinding::SkillToBeBorn { task: code_of(task) });
-            }
-            None => {}
+        if let Some(name) = best_skill(&on_disk, text, &languages) {
+            out.push(PlanFinding::TaskCouldNameASkill { task: code_of(task), skill: name });
         }
     }
 
@@ -507,14 +493,6 @@ fn check(
         }
     }
     out
-}
-
-/// `true` quando o trabalho de uma tarefa se repete no projeto: o mapa acha
-/// arquivos do mesmo tipo dos que ela mexe. É o sinal de que vale uma skill.
-fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
-    let Some((target, _)) = declared_files(task).into_iter().next() else { return false };
-    let Ok(map) = mustard_core::io::project_map::read(root) else { return false };
-    !mustard_core::domain::project_map::examples(&map, &target, Locale::PtBr).picks.is_empty()
 }
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
@@ -921,10 +899,9 @@ mod tests {
     }
 
     /// A tarefa que não nomeia skill ganha o nome da skill que já existe e
-    /// serve para ela; a que não tem skill nenhuma que sirva, e cujo trabalho
-    /// se repete no projeto, pede a tarefa que faz a skill nascer.
+    /// serve para ela.
     #[test]
-    fn the_plan_names_the_skill_that_serves_and_asks_for_the_one_that_is_missing() {
+    fn the_plan_names_the_skill_that_serves() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");

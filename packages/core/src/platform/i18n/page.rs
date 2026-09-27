@@ -839,8 +839,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.value.wave", Locale::EnUs) => "wave agent",
         ("page.value.review", Locale::PtBr) => "revisor",
         ("page.value.review", Locale::EnUs) => "reviewer",
-        ("page.value.skill", Locale::PtBr) => "autor de skill",
-        ("page.value.skill", Locale::EnUs) => "skill author",
         ("page.value.approved", Locale::PtBr) => "aprovada",
         ("page.value.approved", Locale::EnUs) => "approved",
         ("page.value.rejected", Locale::PtBr) => "reprovada",
@@ -897,8 +895,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.author.wave", Locale::EnUs) => "wave agent",
         ("page.author.review", Locale::PtBr) => "revisor",
         ("page.author.review", Locale::EnUs) => "reviewer",
-        ("page.author.skill", Locale::PtBr) => "autor de skill",
-        ("page.author.skill", Locale::EnUs) => "skill author",
 
         ("page.metrics.col.measure", Locale::PtBr) => "Medida",
         ("page.metrics.col.measure", Locale::EnUs) => "Measure",
@@ -1018,8 +1014,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            389,
-            0xf3d5_8469_3247_6e02,
+            387,
+            0x0302_859c_4575_20d2,
         );
     }
 

@@ -82,7 +82,7 @@ pub fn assert_each_language_under_budget() {
         let read: Vec<&PathBuf> =
             files.iter().filter(|p| language_of(p).is_none_or(|own| own == lang)).collect();
         let own = read.iter().filter(|p| language_of(p) == Some(lang)).count();
-        assert!(own >= 5, "{lang} has only {own} texts of its own: the map, the style and three agents");
+        assert!(own >= 4, "{lang} has only {own} texts of its own: the map, the style and two agents");
         let total: u64 = read.iter().map(|p| bytes(p)).sum();
         assert!(
             total < LANGUAGE_BUDGET,

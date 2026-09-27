@@ -302,7 +302,7 @@ const RUN_RESULTS: &[&str] = &["pass", "fail"];
 const CRITERION_FORMS: &[&str] =
     &["ubiquitous", "event_driven", "state_driven", "optional_feature", "unwanted_behavior"];
 const SKILL_ACTIONS: &[&str] = &["create", "change", "drop"];
-const ROLES: &[&str] = &["wave", "review", "skill"];
+const ROLES: &[&str] = &["wave", "review"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];

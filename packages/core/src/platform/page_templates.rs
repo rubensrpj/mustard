@@ -113,11 +113,11 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 /// cada mudança no molde montado (o template ou o catálogo dele): é ela, e
 /// não a versão do Mustard, que manda publicar de novo a página já
 /// publicada. A trava dos testes falha quando o molde muda sem ela subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 2;
+pub const SPEC_LAYOUT_VERSION: u32 = 3;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
-pub const PROJECT_LAYOUT_VERSION: u32 = 1;
+pub const PROJECT_LAYOUT_VERSION: u32 = 2;
 
 /// O template da página da spec, com o catálogo no idioma `lang`.
 #[must_use]
@@ -375,10 +375,10 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 2, "071cb504af3bb320"),
-        ("spec", Locale::EnUs, 2, "c9cff3704eb98ca3"),
-        ("project", Locale::PtBr, 1, "5679d4353f9b2605"),
-        ("project", Locale::EnUs, 1, "30bdfad32f90648a"),
+        ("spec", Locale::PtBr, 3, "16b67358417152f4"),
+        ("spec", Locale::EnUs, 3, "d25f8bf9f33328db"),
+        ("project", Locale::PtBr, 2, "5c7b4eee3a7b2603"),
+        ("project", Locale::EnUs, 2, "4d85adda20bd8de6"),
     ];
 
     /// Confere o carimbo `built` do molde `page` em `lang` contra a linha

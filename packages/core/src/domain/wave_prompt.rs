@@ -569,8 +569,7 @@ pub struct Choice {
 
 /// O que o orquestrador decidiu, para uma tarefa, entre a skill e os arquivos
 /// parecidos que a rodada sugeriu antes do envio: as skills que ele confirmou
-/// ou trocou, os arquivos que ele manteve como leitura, e se ele marcou que
-/// nenhuma skill serve e vale nascer uma nova.
+/// ou trocou e os arquivos que ele manteve como leitura.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskChoice {
     /// O número da tarefa, na spec.
@@ -579,8 +578,6 @@ pub struct TaskChoice {
     pub skills: Vec<String>,
     /// Os arquivos de leitura confirmados, além dos que a tarefa já cita.
     pub files: Vec<String>,
-    /// `true` quando o orquestrador marcou que vale nascer uma skill nova.
-    pub new_skill: bool,
 }
 
 impl Choice {
@@ -621,7 +618,7 @@ impl Choice {
         let tasks: Vec<Value> = self
             .tasks
             .iter()
-            .map(|t| serde_json::json!({ "task": t.task, "skills": t.skills, "files": t.files, "new_skill": t.new_skill }))
+            .map(|t| serde_json::json!({ "task": t.task, "skills": t.skills, "files": t.files }))
             .collect();
         serde_json::json!({
             "judged": self.judged,
@@ -664,7 +661,6 @@ impl Choice {
                     task: entry.get("task")?.as_u64()?,
                     skills: strings(entry, "skills"),
                     files: strings(entry, "files"),
-                    new_skill: entry.get("new_skill").and_then(Value::as_bool).unwrap_or(false),
                 })
             })
             .collect();
@@ -1660,6 +1656,23 @@ mod tests {
         assert!(choice.judged_lessons.is_empty(), "sem o campo, nenhuma lição julgada: {choice:?}");
         assert!(choice.removed_lessons.is_empty(), "sem o campo, nenhuma lição tirada: {choice:?}");
         assert!(choice.tasks.is_empty(), "{choice:?}");
+    }
+
+    /// O envio gravado quando a escolha por tarefa ainda marcava a skill a
+    /// nascer continua lido: a tarefa sai com as skills e os arquivos dela, e
+    /// a escolha gravada de novo não leva mais a marca.
+    #[test]
+    fn from_value_reads_an_old_send_that_marked_a_skill_to_be_born() {
+        let old = json!({
+            "judged": [], "removed": [], "added": [],
+            "tasks": [{"task": 7, "skills": ["somar"], "files": ["src/a.rs"], "new_skill": true}],
+        });
+        let choice = Choice::from_value(&old).expect("o envio antigo se lê");
+        assert_eq!(
+            choice.tasks,
+            vec![TaskChoice { task: 7, skills: vec!["somar".to_string()], files: vec!["src/a.rs".to_string()] }],
+        );
+        assert_eq!(choice.to_value()["tasks"], json!([{"task": 7, "skills": ["somar"], "files": ["src/a.rs"]}]));
     }
 
     /// O pedido leva, de cada item, o código e o título, numa linha com o

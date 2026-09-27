@@ -376,7 +376,6 @@ fn chosen(
             task: task_id,
             skills: strings("skills"),
             files: strings("files"),
-            new_skill: entry.get("new_skill").and_then(Value::as_bool).unwrap_or(false),
         });
     }
     Choice { judged: found.ids(), removed, added, judged_lessons: found.lesson_ids(), removed_lessons, tasks }
@@ -2340,7 +2339,7 @@ mod tests {
         let task_id = codes.iter().find(|(_, code)| **code == task_code).map(|(id, _)| *id).unwrap();
         assert_eq!(
             sent.fields["analysis"]["tasks"],
-            json!([{"task": task_id, "skills": ["calculadora"], "files": ["src/calculadora_nova.rs"], "new_skill": false}]),
+            json!([{"task": task_id, "skills": ["calculadora"], "files": ["src/calculadora_nova.rs"]}]),
             "the choice is recorded on the send"
         );
     }

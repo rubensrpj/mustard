@@ -3,7 +3,7 @@
 //! ## Why these live in the core
 //!
 //! The files Mustard lays down in a project (`.claude/settings.json`, the
-//! session map under `.claude/mustard/`, the three agents under
+//! session map under `.claude/mustard/`, the two agents under
 //! `.claude/agents/mustard/` and the `.claude/.gitignore`) used to ship only as loose files under
 //! `apps/cli/templates/`, reachable solely by the `mustard` CLI through a
 //! `templates/` directory lookup. That made the CLI the only possible
@@ -46,33 +46,31 @@ pub fn session_map(text: Locale) -> &'static str {
     }
 }
 
-/// Os nomes dos três agentes do Mustard: o de onda, que recebe toda onda,
-/// de uma tarefa ou de várias, o que revisa e o que escreve uma skill. O nome
-/// do arquivo é o nome com `.md`.
-pub const AGENT_NAMES: [&str; 3] = ["wave", "review", "skill"];
+/// Os nomes dos dois agentes do Mustard: o de onda, que recebe toda onda,
+/// de uma tarefa ou de várias, e o que revisa. O nome do arquivo é o nome
+/// com `.md`.
+pub const AGENT_NAMES: [&str; 2] = ["wave", "review"];
 
-const AGENTS_PT_BR: [&str; 3] = [
+const AGENTS_PT_BR: [&str; 2] = [
     include_str!("../../templates/agents/pt-BR/wave.md"),
     include_str!("../../templates/agents/pt-BR/review.md"),
-    include_str!("../../templates/agents/pt-BR/skill.md"),
 ];
-const AGENTS_EN_US: [&str; 3] = [
+const AGENTS_EN_US: [&str; 2] = [
     include_str!("../../templates/agents/en-US/wave.md"),
     include_str!("../../templates/agents/en-US/review.md"),
-    include_str!("../../templates/agents/en-US/skill.md"),
 ];
 
 /// O texto de cada agente no idioma `text`, na ordem de [`AGENT_NAMES`]:
 /// `(nome, corpo)`. Os dois idiomas são molde do produto; o projeto recebe
-/// só os três do `language.text`. `wave` fica no índice 0 e `review` no
+/// só os dois do `language.text`. `wave` fica no índice 0 e `review` no
 /// índice 1, como o resto do código já assume.
 #[must_use]
-pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 3] {
+pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 2] {
     let bodies = match text {
         Locale::PtBr => AGENTS_PT_BR,
         Locale::EnUs => AGENTS_EN_US,
     };
-    [(AGENT_NAMES[0], bodies[0]), (AGENT_NAMES[1], bodies[1]), (AGENT_NAMES[2], bodies[2])]
+    [(AGENT_NAMES[0], bodies[0]), (AGENT_NAMES[1], bodies[1])]
 }
 
 /// The `.claude/.gitignore` seed covering the ephemeral harness state
@@ -159,8 +157,8 @@ mod tests {
             "the sentence that keeps names in English is not pointed out",
         );
         assert_eq!(
-            lines_fixing_a_language("agents/en-US/skill.md", "Text in the project's text language; code and names in English."),
-            vec!["agents/en-US/skill.md:1: Text in the project's text language; code and names in English.".to_string()],
+            lines_fixing_a_language("agents/en-US/review.md", "Text in the project's text language; code and names in English."),
+            vec!["agents/en-US/review.md:1: Text in the project's text language; code and names in English.".to_string()],
             "the English sentence that fixes the names is not pointed out",
         );
 

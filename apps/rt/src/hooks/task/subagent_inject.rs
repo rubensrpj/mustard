@@ -12,11 +12,11 @@
 //! lê, o despacho é barrado, e o motivo diz o que falta. O gancho
 //! nunca manda o agente ler um arquivo no lugar do pedido.
 //!
-//! Um despacho sem bilhete a um agente do Mustard (`mustard-wave`,
-//! `mustard-review` ou `mustard-skill`), num projeto com `mustard.json`, ganha
-//! no topo a linha dos dois idiomas do projeto, lida da configuração: é assim
-//! que a skill e as revisões cujo texto o orquestrador escreve recebem o
-//! idioma dos nomes. O texto que já traz a linha, como o pedido da rodada,
+//! Um despacho sem bilhete a um agente do Mustard (`mustard-wave` ou
+//! `mustard-review`), num projeto com `mustard.json`, ganha no topo a linha
+//! dos dois idiomas do projeto, lida da configuração: é assim que os
+//! consertos e as revisões cujo texto o orquestrador escreve recebem o idioma
+//! dos nomes. O texto que já traz a linha, como o pedido da rodada,
 //! passa como veio. Qualquer outro despacho sem bilhete é uma tarefa
 //! qualquer e também passa como veio: o gancho não escolhe skill, não injeta
 //! memória e não avalia a volta do agente.
@@ -375,8 +375,8 @@ mod tests {
         std::fs::write(root.join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
         let line = translate("prompt.languages", Locale::PtBr).replace("{text}", "pt-BR").replace("{code}", "pt-BR");
 
-        let skill = rewritten(dispatch_to(root, "mustard-skill", "Escreva a skill de testes."));
-        assert_eq!(skill, format!("{line}\n\nEscreva a skill de testes."));
+        let fix = rewritten(dispatch_to(root, "mustard-wave", "Conserte o teste da soma."));
+        assert_eq!(fix, format!("{line}\n\nConserte o teste da soma."));
 
         let round = assembled(root);
         assert_eq!(round.matches(&line).count(), 1, "{round}");
@@ -396,7 +396,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         assert_eq!(dispatch(root, "Investigue o gancho.\nSKILL: foo"), Verdict::Allow);
-        assert_eq!(dispatch_to(root, "mustard-skill", "Escreva a skill de testes."), Verdict::Allow);
+        assert_eq!(dispatch_to(root, "mustard-wave", "Conserte o teste da soma."), Verdict::Allow);
         let input = HookInput {
             tool_name: Some("Task".to_string()),
             tool_input: json!({ "prompt": "MUSTARD-WAVE: x 1" }),

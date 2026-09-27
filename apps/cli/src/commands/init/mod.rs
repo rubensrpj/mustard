@@ -23,7 +23,7 @@
 //!      enablement is NOT planted (user-scope choice);
 //!    - `mustard/session-map.md`, `mustard/pages/*.html` and
 //!      `agents/mustard/*.md` — the session map, the two page templates and
-//!      the three agents, always rewritten, in the language of
+//!      the two agents, always rewritten, in the language of
 //!      `language.text`;
 //!    - `.gitignore` — covers the ephemeral harness state;
 //!
@@ -175,7 +175,7 @@ pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
         println!("    settings.local.json — reduced seed, rtk's hook per mustard.json#rtk, Claude Code's signature off");
         println!("    mustard/session-map.md — the session map, delivered at session start per mustard.json#inject");
         println!("    mustard/pages/*.html — the spec page and project page templates, in the project's text language");
-        println!("    agents/mustard/*.md — the mustard-wave, mustard-review and mustard-skill agents, in the project's text language");
+        println!("    agents/mustard/*.md — the mustard-wave and mustard-review agents, in the project's text language");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would list what an older Mustard left in CLAUDE.md files and .claude/settings.json (nothing leaves without a yes)");
         println!(
@@ -346,7 +346,7 @@ mod tests {
             claude.join("mustard").join("session-map.md").exists(),
             ".claude/mustard/session-map.md seeded"
         );
-        for name in ["wave.md", "review.md", "skill.md"] {
+        for name in ["wave.md", "review.md"] {
             assert!(claude.join("agents/mustard").join(name).exists(), "agent {name} seeded");
         }
         assert!(
@@ -662,9 +662,9 @@ mod tests {
     }
 
     /// A instalação sobre um projeto de uma versão antiga, que ainda tem o
-    /// agente de onda de tarefa única, tira esse arquivo e deixa os três
-    /// agentes de hoje; o agente do projeto com o mesmo nome, fora da pasta do
-    /// Mustard, fica intocado.
+    /// agente de onda de tarefa única e o que escrevia skills, tira os dois
+    /// arquivos e deixa os dois agentes de hoje; o agente do projeto com o
+    /// mesmo nome, fora da pasta do Mustard, fica intocado.
     #[test]
     fn an_install_over_an_older_project_removes_the_retired_single_task_wave_agent() {
         let work = tempdir().unwrap();
@@ -672,6 +672,7 @@ mod tests {
         let claude = project.join(".claude");
         fs::create_dir_all(claude.join("agents/mustard")).unwrap();
         fs::write(claude.join("agents/mustard/wave-solo.md"), "---\nname: mustard-wave-solo\n---\n").unwrap();
+        fs::write(claude.join("agents/mustard/skill.md"), "O molde antigo.\n").unwrap();
         let own = "---\nname: wave-solo\n---\n\nO agente do projeto.\n";
         fs::write(claude.join("agents/wave-solo.md"), own).unwrap();
 
@@ -683,7 +684,7 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         agents.sort();
-        assert_eq!(agents, ["review.md", "skill.md", "wave.md"], "the install left another set of agents");
+        assert_eq!(agents, ["review.md", "wave.md"], "the install left another set of agents");
         assert_eq!(fs::read_to_string(claude.join("agents/wave-solo.md")).unwrap(), own, "the project's agent changed");
     }
 

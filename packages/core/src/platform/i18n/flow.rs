@@ -96,14 +96,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("plan.task_could_name_a_skill", Locale::EnUs) => {
             "Task {task} names no skill, and skill {skill} fits it. Name it in the task."
         }
-        ("plan.skill_to_be_born", Locale::PtBr) => {
-            "O trabalho da tarefa {task} se repete no projeto e nenhuma skill serve para ela. \
-             Inclua no plano a tarefa que cria a skill dela."
-        }
-        ("plan.skill_to_be_born", Locale::EnUs) => {
-            "The work of task {task} repeats across the project and no skill fits it. \
-             Add to the plan the task that creates its skill."
-        }
         ("plan.no_suggestion", Locale::PtBr) => "nada — o mapa não achou arquivo para esta tarefa",
         ("plan.no_suggestion", Locale::EnUs) => "nothing — the map found no file for this task",
         ("plan.command_not_declared", Locale::PtBr) => {
@@ -1412,8 +1404,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            174,
-            0x8880_f529_2e83_2943,
+            173,
+            0x9d08_485f_aa35_166b,
         );
     }
 
@@ -1502,7 +1494,6 @@ mod tests {
             ("plan.contract_without_criterion", &["{code}"][..]),
             ("plan.task_without_file", &["{task}", "{files}"][..]),
             ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
-            ("plan.skill_to_be_born", &["{task}"][..]),
             ("plan.no_suggestion", &[][..]),
             ("plan.finding.label", &[][..]),
             ("discard.preview", &["{spec}", "{branch}", "{remote}", "{what}", "{token}"][..]),
