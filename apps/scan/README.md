@@ -1,182 +1,181 @@
-# grain
+# scan
 
-Aprende o **veio** (grain) de um codebase a partir do que **se repete** e o expõe
-como um **modelo rico** (o mapa `grain.db`, um banco SQLite) — e, por tarefa, uma **spec de
-implementação autossuficiente**. **Agnóstico a framework e a linguagem** — não
-conhece React, .NET, GraphQL nem nada. Ele descobre as convenções do *seu* projeto.
-
-## A ideia
-
-Uma convenção é, por definição, uma **repetição**. Um time só tem "um jeito de
-fazer CRUD" porque fez igual em `Order`, `Product`, `Customer`. Então grain não
-pergunta *"isto é GraphQL?"* (catálogo do que eu previ) — pergunta *"o que se
-repete com a mesma forma?"* (descoberta). A segunda não precisa conhecer
-framework nenhum.
+Lê um projeto e grava o **mapa** dele: um banco SQLite (`grain.db`) com o censo
+do projeto, os arquivos, as declarações, o grafo de dependências e a história do
+git. **Agnóstico a framework e a linguagem** — não conhece React, .NET, GraphQL
+nem nada. Tudo o que é próprio de uma linguagem, de um sistema de build ou de um
+gerador de código é **dado** (tabelas e consultas embutidas no binário), nunca
+lógica em `src/`.
 
 ## Como funciona (o pipeline)
 
 ```
-ingest → extract → graph → condense → grain.db → [grain spec]
-└──────────────── tudo determinístico, cego a framework e linguagem ──────────────┘
+ingest → extract → graph → condense → grain.db
+└────── tudo determinístico, cego a framework e linguagem ──────┘
 ```
 
-O coração são **dois mineradores**, ambos sem regex de framework:
+1. **Varredura** (`ingest.rs`). Percorre a árvore respeitando o `.gitignore`,
+   pula as pastas de build e de dependência listadas em `manifests.toml`
+   (`skip_dirs`), detecta a linguagem de cada arquivo pela extensão, conta as
+   linhas e lê os manifestos de build.
+2. **Extração por consulta** (`extract.rs`). Um motor tree-sitter só roda as
+   consultas `.scm` de cada linguagem e tira de cada arquivo os imports, os
+   namespaces, as declarações, as chamadas e as citações (ver abaixo).
+3. **Grafo** (`graph.rs`). Liga os imports aos arquivos do projeto, conta as
+   arestas, acha as camadas e liga as declarações entre si.
+4. **Esqueleto** (`condense.rs`). As 25 pastas (até o segundo nível) com mais
+   arquivos, cada uma com a camada média dos arquivos dela.
 
-1. **Papéis por frequência de nome** (`mine.rs`). Tokeniza todo nome
-   (`CreateOrderHandler` → `[Create, Order, Handler]`). Um afixo que se emparelha
-   com **muitos restos distintos** é um papel — `Repository` aparece com `Order`,
-   `Product`, `Customer`. **Sufixo-primeiro**: o que sobra depois de remover o
-   papel é a *entidade*. Isso resolve o problema de confundir entidade com papel,
-   e acha `*Controller`, `*Resolver`, `*Store`, `*Bloc`, prefixo `use*` — o que
-   existir no seu repo.
+Depois disso o scan junta os testes de cada arquivo, a história do git, as
+pilhas detectadas e o estado da leitura, e grava tudo no banco.
 
-2. **Slices recorrentes + clustering** (`mine.rs`). Agrupa símbolos por entidade
-   → um *slice* (corte vertical). Em vez de exigir formas idênticas (o que
-   fragmentaria o CRUD em dezenas de variações), **clusteriza entidades por
-   similaridade de forma (Jaccard)**. Cada cluster vira **uma** convenção com um
-   **núcleo** (papéis presentes na maioria) + **opcionais** (recorrem, mas não em
-   todas). Daí saem: a *regra* "da entidade ao slice completo" (passos do núcleo
-   ordenados por dependência, opcionais marcados), e **três exemplares reais por
-   complexidade** — simples, médio e complexo — pra o agente copiar o gabarito do
-   tamanho do que precisa criar.
-
-**Camadas emergentes (sem vocabulário).** O grafo de dependências define a
-estratificação: condensa ciclos num DAG e a profundidade de cada módulo é o
-maior encadeamento de dependências (L0 = mais dependido / mais interno). Não há
-lista de "domain/application/infra" cravada — os tiers saem da direção real dos
-imports. A única quebra de direção que a topologia prova sem nomear camada é um
-**ciclo de dependência**, então é isso que ele conta.
-
-**Papéis também saem das pastas e de classes aninhadas.** Além do sufixo do nome
-de arquivo, o grain detecta (a) **nomes de pasta que recorrem** sob muitos pais
-distintos (`DTOs/`, `Mappers/`, `Services/` sob cada módulo) — aí a entidade vem
-da pasta-mãe; e (b) **classes de nome único que recorrem** em muitos módulos
-(ex.: um `Validator` aninhado dentro do próprio arquivo de DTO). Um layout que
-centraliza um tipo (`Domain/Entities`) tem pai único e cai naturalmente na
-mineração por sufixo — o grain se adapta ao layout sem ser avisado de qual é.
-
-**Extração via tree-sitter, genérica e plugável.** A Layer 2 é **um único motor
+**Extração via tree-sitter, genérica e plugável.** A extração é **um único motor
 tree-sitter** (`extract.rs`), agnóstico por construção: ele não conhece nenhuma
 linguagem nem nome de nó de gramática. Cada linguagem é **dado** — uma linha em
-`languages.toml` (nome, extensões, gramática) + arquivos de query `.scm` sob
-`queries/<lang>/`. As queries usam um vocabulário de captura genérico, listado
-inteiro em [`queries/README.md`](queries/README.md#capturas); o motor
-só entende essas capturas e devolve o mesmo `Decl`/`Extracted` que o minerador
-(Layer 4) já consome. Assim captura aninhamento real, genéricos, listas de base
-multilinha e **`supertypes`** — `class X : Base, IFoo` (C#), `impl Trait for T`
-(Rust), `extends`/`implements` (TS), `class Foo(Base)` (Python) — sem um `impl`
-por linguagem no código. Um nome-base que muitas entidades estendem é um contrato
-compartilhado, detectado por frequência, sem catálogo. **Detecção de linguagem**
-também é dado: vem da tabela de extensões do mesmo registro, não de um `match`.
+`languages.toml` (nome, extensões, gramática) + arquivos de consulta `.scm` sob
+`queries/<dir>/`. As consultas usam um vocabulário de captura genérico, listado
+inteiro em [`queries/README.md`](queries/README.md#capturas); o motor só
+entende essas capturas e devolve a mesma forma para toda linguagem. De cada
+declaração fica o tipo, o nome, as linhas de começo e de fim, os **supertipos**
+— `class X : Base, IFoo` (C#), `impl Trait for T` (Rust), `extends`/`implements`
+(TS), `class Foo(Base)` (Python) —, a documentação (o comentário escrito acima
+dela ou, na linguagem que a escreve dentro, a docstring) e a assinatura (o
+cabeçalho, sem o corpo). De cada arquivo ficam também as
+chamadas e as citações de nomes, com a linha, e os trechos de teste escritos
+dentro dele. **Detecção de linguagem** também é dado: vem da tabela de extensões
+do mesmo registro, não de um `match`.
 
-**Consciência de projeto.** Cada manifesto (`.csproj`, `package.json`, `go.mod`…)
-vira um projeto; cada arquivo é atribuído ao projeto de prefixo mais longo.
+**Grafo e camadas emergentes (sem vocabulário).** Os imports são resolvidos para
+os arquivos do projeto por formas genéricas (namespace, caminho de arquivo,
+apelido de pasta da configuração do projeto, pacote do próprio workspace, entre
+outras), e o que é próprio de uma linguagem nessas formas vem do registro; o
+que não resolve para nada interno é dependência externa. O grafo define a
+estratificação: condensa ciclos num DAG e a profundidade de cada arquivo é o
+maior encadeamento de dependências (L0 = mais dependido / mais interno). Não há
+lista de "domain/application/infra" cravada — as camadas saem da direção real
+dos imports. A única quebra de direção que a topologia prova sem nomear camada é
+um **ciclo de dependência**, e o resumo impresso diz se há um. Do grafo saem
+ainda os arquivos mais importados (fan-in) e os **pontos de registro**: arquivos
+que importam de muitas pastas (container de injeção, menu, arquivo que
+reexporta), onde se mexe ao acrescentar algo.
 
-**Relatório de cobertura.** Todo `scan`/`forge` imprime o que foi lido por
-diretório de topo, quais pastas de build foram puladas (`bin`, `obj`…) e quais
-extensões foram vistas mas não mineradas (`.sql`, `.json`…) — resposta
-verificável para "li todos os diretórios?".
+**Declarações ligadas.** Cada declaração guarda quais declarações do projeto ela
+chama e cada lugar que a usa, com o arquivo, a linha e a declaração de onde a
+chamada parte. Um nome só se liga às declarações que o arquivo que o escreve
+enxerga — as do próprio arquivo, as dos arquivos que ele importa, as que um
+import global da linguagem põe à vista e as do mesmo namespace na mesma
+linguagem. A chamada escrita num trecho de teste é do teste e não conta como
+uso.
 
-**Nada de catálogo embutido.** O grain não conhece framework, sufixo nem
-estrutura de pasta. Os papéis saem da frequência de nomes; os caminhos da regra
-são **abstraídos por entidade** — ele remove o token da entidade de *qualquer*
-caminho, então um projeto que aninha por feature vira `…/<Name>s/Services/` e um
-que centraliza fica `…/Entities/`, sem nenhuma suposição. Até as "dependências"
-são lidas cruas do manifesto do projeto, não mapeadas por uma lista minha. Um
-repositório de exemplo (`sample/`) acompanha o código apenas para demonstração
-— ele não é base de nada.
+**Testes de cada arquivo** (`testmap.rs`). Um arquivo é coberto pelo teste que o
+importa e pelo teste que muda junto com ele no git. O arquivo que traz o próprio
+teste (um marcador de `test-dirs.toml`) diz isso sozinho, e cobre o que o trecho
+de teste dele importa.
 
-Como o agrupamento é por nome de entidade, grain correlaciona **através da
-stack**: o slice do `Order` junta o `OrderController` (C#) e o `OrderList` (React)
-porque é a mesma entidade — algo que nenhum detector hardcoded faria.
+**Consciência de projeto.** Cada manifesto (`.csproj`, `package.json`, `go.mod`…,
+registrados em `manifests.toml`) vira um projeto; cada arquivo é atribuído ao
+projeto de prefixo mais longo, e dois manifestos na mesma pasta viram um projeto
+só. As dependências e os scripts de build de cada projeto são lidos crus dos
+manifestos dele, sem lista de framework; as dependências mais frequentes, na
+ordem em que o manifesto as escreve no empate, viram a lista de frameworks do
+projeto.
 
-As convenções são nomeadas pelo **vocabulário do próprio repo** — ex.:
-*"DTO+Service+Repository+EndPoint slice"*. Honesto e determinístico; o Rust nunca
-enumera framework. Qualquer nome semântico/prosa fica a cargo de quem consome o
-modelo (a etapa de IA), não do grain.
+**Pilhas detectadas.** As pilhas do projeto, e as de cada subprojeto, saem da
+convergência de três evidências — as dependências dos manifestos, os caminhos
+dos arquivos e as assinaturas no código —, pelo registro de pilhas do
+`mustard-core`. A evidência que mora sob uma pasta de teste ou de fixture
+(`test-dirs.toml`) não conta: ela diz o que o projeto testa, não o que ele é.
+
+**Arquivos escritos por máquina** (`classify.rs`). Cada arquivo gerado,
+vendorizado, lockfile ou minificado é marcado, com o marcador que decidiu. O
+catálogo é dado (`generated-markers.toml`), e o `.gitattributes`
+(`linguist-generated`) e o `.editorconfig` (`generated_code`) do próprio
+repositório vencem o catálogo nos dois sentidos. A marca não tira o arquivo do
+mapa; quem lê o mapa é que o deixa fora da busca e dos exemplos.
+
+**História.** Os commits vêm do repositório local (`git log`), nunca da rede:
+cada commit com a data e os arquivos que ele criou e mudou. A primeira passada lê
+a história inteira; as seguintes, só os commits novos.
+
+**Leitura incremental.** Com um mapa anterior do mesmo projeto no `--out`, o
+scan relê só os arquivos que mudaram desde a passada anterior e toma o resto do
+mapa como estava; o resultado é o mesmo mapa que uma leitura completa daria. Só
+os blocos do banco que mudaram se regravam, numa transação só, e sem nada mudado
+o arquivo fica intocado. Um mapa gravado por um scan compilado de outras fontes
+(outro motor, outras consultas ou outras tabelas de dados) é relido inteiro.
+`--all` relê tudo.
+
+**Relatório de cobertura.** Todo `scan` imprime o que foi lido por diretório de
+topo, quais pastas de build foram puladas (`bin`, `obj`…) e quais extensões
+foram vistas mas não lidas (`.sql`, `.json`…) — resposta verificável para "li
+todos os diretórios?".
+
+**Nada de catálogo embutido.** O scan não conhece framework nem gerador. O que
+nomeia uma linguagem, um sistema de build ou um gerador mora nas tabelas de
+dados (`languages.toml`, `manifests.toml`, `test-dirs.toml`,
+`generated-markers.toml`) e nas consultas de `queries/`; `src/` só tem o motor
+genérico.
 
 ## Build
 
 ```bash
-cargo build --release   # offline, determinístico
+cargo build --release -p scan   # na raiz do repositório
 ```
 
-> Requer Rust estável recente (verificado no 1.95) e um compilador C — as
-> gramáticas do tree-sitter são compiladas pelo crate `cc` (no Windows, as
-> ferramentas C++ do Visual Studio; em Linux/macOS, gcc/clang). Não há rede em
-> tempo de execução: gramáticas e queries são embutidas no binário em tempo de
-> build (ver `build.rs`).
+> Compila com o Rust fixado em `rust-toolchain.toml`, na raiz, e requer um
+> compilador C — as gramáticas do tree-sitter são compiladas pelo crate `cc` (no
+> Windows, as ferramentas C++ do Visual Studio; em Linux/macOS, gcc/clang). Não
+> há rede em tempo de execução: gramáticas e consultas são embutidas no binário
+> em tempo de build (ver `build.rs`).
 
 ## Uso
 
 ```bash
-# o produto: minera e grava o modelo (o banco SQLite do mapa)
-grain scan ./meu-projeto --out grain.db
+# lê o projeto e grava o mapa (o banco SQLite)
+scan scan ./meu-projeto --out grain.db
 
-# por tarefa: compila uma SPEC de implementação autossuficiente a partir do modelo
-#   --entity: a entidade a criar    --like: entidade existente a espelhar
-#   --ops:    operações além do CRUD base (ex.: approve)
-grain spec ./meu-projeto --entity Invoice --like Order --ops create,approve --out invoice.spec.md
-# (aceita um diretório p/ escanear OU um grain.db pronto)
+# relê todos os arquivos, ignorando o mapa anterior
+scan scan ./meu-projeto --out grain.db --all
+
+# uma linha JSON com o que foi lido, no lugar do resumo
+scan scan ./meu-projeto --out grain.db --json
+
+# os fatos pequenos, em JSON: os subprojetos e os nomes declarados
+scan facts grain.db
+# (aceita o banco pronto OU um diretório, que ele lê na hora)
 ```
 
-> Tudo é determinístico e offline; **grain nunca chama um modelo**. A `spec` nasce
-> como **rascunho hipotético** (banner "não verificado no código" + bifurcação +
-> âncoras a ler); a etapa de IA que a lapida — ler os âncoras + resolver a
-> bifurcação — vive no **consumidor** (ex.: o orquestrador), não no grain.
+Depois de gravar o banco, o scan apaga o mapa de antes dele (`grain.model.json`)
+na mesma pasta.
 
-### A SPEC traz, por papel
-folder-alvo (`<Name>` → sua entidade) · `implementa` (contrato) · `espelhe` (arquivo
-real) · **exemplos básico/médio/complexo** (links de código) · colaboradores —
-tudo **inline** (não depende de skills externas). Mais: a **bifurcação** (entidade
-nova vs variante/tipo de uma existente), os **âncoras a ler** (capados), os **pontos
-de registro** (DI/menu) e os **scripts/codegen** dos projetos envolvidos, e os
-**critérios de aceite** (o gate).
-
-## Usando de dentro do Claude Code
-
-`grain scan` te dá o mapa do repo; `grain spec <dir> --entity X --like Y` te dá o
-molde da tarefa. O consumidor (uma sessão/orquestrador) lê os **âncoras** que a spec
-aponta, resolve a **bifurcação**, e então implementa seguindo o molde — criando os
-mesmos arquivos, nas mesmas pastas, no formato das entidades existentes.
-
-## Sintonia
-
-Em `mine.rs`:
-- `MIN_ROLE_PARTNERS` (default 2): com quantas entidades distintas um afixo
-  precisa aparecer pra virar papel.
-- `JACCARD_MERGE` (default 0.5): quão parecidas duas entidades precisam ser pra
-  caírem na mesma convenção. Mais alto → convenções mais específicas (separa
-  REST de GraphQL, por ex.); mais baixo → mais consolidação.
-- `MIN_CLUSTER` (default 2): mínimo de entidades pra um cluster virar convenção.
-
-Repos maiores toleram thresholds mais altos (menos ruído).
+Tudo é determinístico e offline; **o scan nunca chama um modelo de IA**.
 
 ## Linguagens
 
-Entregue funcionando: **C#, TypeScript/TSX, Python, Rust, Go**. Adicionar mais é
-trivial — a language-pack do tree-sitter cobre centenas. Nada de linguagem está
-cravado no código: a detecção e a extração são puramente **dados**.
+Entregue funcionando: **C#, TypeScript/TSX, Python, Rust, Go, PHP, Dart**.
+Adicionar mais é trivial — a language-pack do tree-sitter cobre centenas. Nada
+de linguagem está cravado no código: a detecção e a extração são puramente
+**dados**.
 
-### Adicionar uma linguagem nova (só dados/queries)
+### Adicionar uma linguagem nova (só dados/consultas)
 
-Nenhuma mudança na **lógica** do grain é necessária — `src/` não contém nome de
+Nenhuma mudança na **lógica** do scan é necessária — `src/` não contém nome de
 linguagem, extensão nem nó de gramática. O fluxo:
 
-1. **Query** — crie `queries/<lang>/tags.scm` (e, opcional, `supertypes.scm`)
+1. **Consulta** — crie `queries/<dir>/tags.scm` (e, opcional, `supertypes.scm`)
    usando o vocabulário de captura genérico, listado inteiro, com o que cada
    captura faz, em [`queries/README.md`](queries/README.md#capturas).
 
    Exemplo (C#): `(class_declaration name: (identifier) @name (base_list (_) @supertype)) @definition.class`.
 
-   Convenções de framework (Drizzle, GraphQL, ORM…) **não** entram aqui: elas
-   *emergem* da mineração. O que você adiciona à query é só a **forma de sintaxe**
-   daquela linguagem (ex.: `export const X = call(...)`, decorators) — o grain
-   nunca "sabe" o que é Drizzle.
+   Convenções de framework (Drizzle, GraphQL, ORM…) **não** entram aqui. O que
+   você adiciona à consulta é só a **forma de sintaxe** daquela linguagem (ex.:
+   `export const X = call(...)`, decorators) — o scan nunca "sabe" o que é
+   Drizzle.
 
 2. **Registro** — adicione um `[[language]]` em `languages.toml`
-   (`name`, `extensions`, `dir`, `grammar`). A detecção por extensão sai daí
-   automaticamente.
+   (`name`, `extensions`, `dir`, `grammar`; os campos opcionais estão descritos
+   no começo do arquivo). A detecção por extensão sai daí automaticamente.
 
 3. **Gramática** — *só se a gramática ainda não estiver linkada*: adicione o crate
    ao `Cargo.toml` com um alias neutro (ex.:
@@ -184,12 +183,16 @@ linguagem, extensão nem nó de gramática. O fluxo:
    campo `grammar` da `languages.toml` para a constante `LanguageFn`
    (ex.: `grammar = "grammar_kt::LANGUAGE"`).
 
+4. **Paridade** — declare os tipos de declaração da consulta em
+   `queries/kinds-manifest.toml` e crie a fixture `tests/fixtures/graph_<dir>/`;
+   o teste de paridade (`tests/kinds_parity.rs`) acusa a lacuna sozinho.
+
 O `build.rs` lê `languages.toml` + `queries/` e embute tudo no binário; o motor
-genérico em `extract.rs` roda a query e devolve o mesmo `Decl`/`Extracted`. Se a
-gramática já estava linkada, é mudança 100% de dados; se for nova, recompila para
-linkar — mas **a lógica em `src/` não muda**. Padrões de query que não casarem com
-a versão da gramática são pulados individualmente (resiliência), nunca derrubam a
-linguagem inteira.
+genérico em `extract.rs` roda a consulta e devolve a mesma forma de sempre. Se a
+gramática já estava linkada, é mudança 100% de dados; se for nova, recompila
+para linkar — mas **a lógica em `src/` não muda**. Padrões de consulta que não
+casarem com a versão da gramática são pulados individualmente (resiliência),
+nunca derrubam a linguagem inteira.
 
 ### Auditoria de agnosticidade
 
@@ -198,40 +201,30 @@ grep -rinE 'csharp|typescript|"\.cs"|"\.rs"|class_declaration|base_list' src/
 # (sem resultados — nenhum vocabulário de linguagem na lógica)
 ```
 
-## Fluxo, IA e confiança
+O teste `tests/engine_is_language_blind.rs` faz a mesma conferência com todo
+nome e toda pasta que o `languages.toml` declara.
 
-O **produto é o `grain.db`** — o mapa minerado, um banco SQLite em blocos (censo,
-arquivos, declarações, grafo e história), que só regrava o bloco que mudou;
-`mustard-rt run map dump` o mostra tabela por tabela.
-Tudo no grain é **determinístico; o grain nunca chama IA**.
+## O mapa
 
-São só **dois comandos**:
-- `grain scan` → o modelo (o produto durável).
-- `grain spec` → um **rascunho HIPOTÉTICO e autossuficiente** por tarefa: o banner
-  *"não verificado no código"*, a **bifurcação a resolver** (a entidade é nova ou
-  uma **variante/tipo** de uma existente? — sinalizado pelos próprios módulos, ex.:
-  `*Type`/`*Assignment` indicam tabela de tipo / N:N), os **âncoras a ler** (um
-  punhado de arquivos, **capado**), e, por papel, o contrato + os 3 exemplos
-  (básico/médio/complexo) + colaboradores **inline** (não depende de skill externa).
+O **produto é o `grain.db`** — o mapa, um banco SQLite em blocos, cada bloco com
+as tabelas dele e a marca do scan que o gravou:
 
-> Geração de skills/agentes (.md) e o forge antigo foram **removidos** — eram
-> índice/wrapper raso e a spec autossuficiente os torna desnecessários. O par
-> **modelo + spec** basta.
+- **census** — a raiz, o estado da leitura, as dependências, as pilhas
+  detectadas, as pastas puladas, os projetos, as linguagens, os manifestos e o
+  esqueleto das pastas;
+- **files** — cada arquivo, com a linguagem, as linhas, a classe de arquivo
+  gerado, os namespaces, os imports e os trechos de teste;
+- **decls** — cada declaração, com o arquivo, o tipo, o nome, as linhas, a
+  assinatura, a documentação, os supertipos, o que ela chama e quem a usa;
+- **graph** — de cada arquivo, o que ele importa do projeto, os testes que o
+  cobrem, as chamadas e as citações; e os números do grafo: o tamanho, os mais
+  importados, as camadas e os pontos de registro;
+- **history** — os commits, cada um com a data e os arquivos que criou e mudou,
+  e a tabela dos caminhos que eles citam.
 
-A **IA entra em um lugar**: a **lapidação** — lê **apenas os âncoras** que o grain
-aponta (não o repositório), resolve a bifurcação e produz a **spec final**. Depois,
-o **subagente implementa**. Consumo é baixo por construção: o modelo (determinístico)
-encolhe o trabalho da IA a uma leitura focada + uma escrita escopada por projeto.
-
-> Por que o banner: a mineração por recorrência **não distingue** "entidade nova"
-> de "variante de uma existente" — ela vê que tudo tem Service/Repo/DTO e assume um
-> vertical novo. Por isso o plano nasce como **hipótese** e a leitura dos âncoras é
-> **obrigatória** antes de criar arquivos. É onde a acertividade salta.
-
-Fechamento (o gate): `grain verify <projeto> --entity X --like Y --ops …` recomputa os
-**critérios de aceite** (mesma seleção da `spec`) e confere, no projeto, se cada local
-exigido já tem arquivo da entidade — reportando `obrigatorios: N/M (%)`. Roda **depois**
-de implementar; é o que transforma "acho que tá pronto" em "passou o checklist".
+`mustard-rt run map dump` mostra o banco tabela por tabela. O comando `facts`
+projeta do mapa só o que o consumidor precisa (os subprojetos e os nomes
+declarados), para que ninguém leia o esquema do banco por conta própria.
 
 ## Licença
 
