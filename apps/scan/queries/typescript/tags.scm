@@ -56,3 +56,22 @@
 ; declaration it adorns: the engine passes over it to find the doc comment
 ; above, starts the header after it, and reads no call out of it.
 (decorator) @decoration
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(variable_declarator name: (identifier) @local)
+(object_pattern (shorthand_property_identifier_pattern) @local)
+(object_assignment_pattern left: (shorthand_property_identifier_pattern) @local)
+(pair_pattern value: (identifier) @local)
+(pair_pattern value: (assignment_pattern left: (identifier) @local))
+(array_pattern (identifier) @local)
+(required_parameter pattern: (identifier) @local)
+(optional_parameter pattern: (identifier) @local)
+(arrow_function parameter: (identifier) @local)
+(rest_pattern (identifier) @local)
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(string) @text
+(template_string) @text

@@ -212,9 +212,10 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     let extracted = ingest::in_parallel(std::mem::take(&mut ing.files), |walked| match walked {
         ingest::Walked::Kept(mut kept) => {
             // Recomputed below from the whole set of modules. The call
-            // sites and the citations are NOT cleared: they are what the file itself says,
-            // and a pass that did not read it again resolves the same
-            // declaration links from them.
+            // sites, the citations and the fixed texts are NOT cleared: they
+            // are what the file itself says, and a pass that did not read it
+            // again resolves the same declaration links from them and keeps
+            // the same texts.
             kept.deps.clear();
             kept.test_deps.clear();
             kept.tests.clear();
@@ -229,6 +230,11 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
             let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
                 .map(|c| (c.class, c.marker))
                 .unwrap_or_default();
+            // O texto fixo do arquivo de teste descreve o teste, e o do
+            // arquivo escrito por máquina fica fora da busca: nenhum dos dois
+            // se guarda.
+            let texts =
+                if file_class.is_empty() && !is_test_path(&sf.rel_path) { extracted.texts } else { Vec::new() };
             Some(Module {
                 path: sf.rel_path.clone(),
                 blob: String::new(),
@@ -242,6 +248,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 module_lines: extracted.module_lines,
                 import_lines: extracted.import_lines,
                 call_paths: extracted.call_paths,
+                brought: extracted.brought,
                 namespaces: extracted.namespaces,
                 declarations: extracted.declarations,
                 file_class,
@@ -252,6 +259,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 signals: code_signals(&sf.content),
                 calls: extracted.calls,
                 cites: extracted.cites,
+                texts,
             })
         }
         // A caminhada lê todo arquivo que deixou para depois.

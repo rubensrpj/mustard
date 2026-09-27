@@ -107,6 +107,7 @@
 //! manda publicá-las: a rodada é um dos marcos de publicação. Nenhum endereço
 //! é impresso na conversa.
 
+mod agreed;
 mod answer;
 mod commit;
 mod convert;

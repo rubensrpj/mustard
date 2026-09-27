@@ -95,3 +95,23 @@
 ; declaration it adorns: the engine passes over it to find the comment above
 ; and reads no call out of it.
 (decorator) @decoration
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(assignment left: (identifier) @local)
+(assignment left: (pattern_list (identifier) @local))
+(parameters (identifier) @local)
+(default_parameter name: (identifier) @local)
+(typed_parameter (identifier) @local)
+(typed_default_parameter name: (identifier) @local)
+(lambda_parameters (identifier) @local)
+(for_statement left: (identifier) @local)
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(string) @text
+
+; A string escrita sozinha no começo do módulo é a documentação dele, e não
+; texto fixo.
+(module . (expression_statement (string (string_content) @doc)))

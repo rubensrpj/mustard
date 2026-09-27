@@ -272,7 +272,10 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// suspeito, com as candidatas, e quantas chamadas do nome ficaram sem
 /// ligação por ele ser comum demais; o dono e o contrato
 /// escritos com ela; os membros de cada tipo e as implementações de cada
-/// método, que a passada refaz do projeto inteiro como refaz os usos.
+/// método, que a passada refaz do projeto inteiro como refaz os usos. Ao
+/// lado, os textos fixos de cada arquivo — as mensagens de log, as de erro e
+/// os outros textos escritos no código —, cada um com a linha, a marca e a
+/// declaração que o contém.
 ///
 /// Junto delas mora o índice da busca do mapa ([`crate::io::map_search`]):
 /// uma tabela FTS5 por nível — a declaração e o arquivo —, uma coluna por
@@ -281,31 +284,36 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// trigram, para o pedaço do nome; as línguas e as médias com que ele foi
 /// feito; e o índice do nome sem caixa. As listas saem antes das tabelas de
 /// que elas leem.
-pub const DECLS: MapBlock = block!("decls", version 4, {
+pub const DECLS: MapBlock = block!("decls", version 5, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
         "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
-    ]
+    ],
+    "texts" at Place::Files => ["path" Text, "texts" Json]
 }, index [
     "file_vocab", "decl_vocab", "file_fts", "decl_fts", "decl_trigram", "file_lengths", "decl_lengths", "search_meta"
 ] "CREATE INDEX decls_name_nocase ON decls(name COLLATE NOCASE);\
-   CREATE VIRTUAL TABLE file_fts USING fts5(name, path, doc, content='', contentless_delete=1, \
+   CREATE VIRTUAL TABLE file_fts USING fts5(name, path, doc, log, error, text, content='', contentless_delete=1, \
      tokenize='unicode61 remove_diacritics 2');\
-   CREATE VIRTUAL TABLE decl_fts USING fts5(name, path, signature, doc, content='', contentless_delete=1, \
-     tokenize='unicode61 remove_diacritics 2');\
+   CREATE VIRTUAL TABLE decl_fts USING fts5(name, path, signature, doc, log, error, text, content='', \
+     contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
    CREATE VIRTUAL TABLE file_vocab USING fts5vocab(file_fts, instance);\
    CREATE VIRTUAL TABLE decl_vocab USING fts5vocab(decl_fts, instance);\
    CREATE VIRTUAL TABLE decl_trigram USING fts5(name, file UNINDEXED, tokenize='trigram');\
-   CREATE TABLE file_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, doc INTEGER);\
-   CREATE TABLE decl_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, signature INTEGER, doc INTEGER);\
+   CREATE TABLE file_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, doc INTEGER, log INTEGER, \
+     error INTEGER, text INTEGER);\
+   CREATE TABLE decl_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, signature INTEGER, doc INTEGER, \
+     log INTEGER, error INTEGER, text INTEGER);\
    CREATE TABLE search_meta(key TEXT PRIMARY KEY, value);");
 
 /// O grafo: as importações resolvidas, os testes que cobrem cada arquivo, as
-/// chamadas e as citações com a linha, e os arquivos mais importados.
-pub const GRAPH: MapBlock = block!("graph", version 1, {
+/// chamadas e as citações com a linha, os nomes que cada import traz, e os
+/// arquivos mais importados.
+pub const GRAPH: MapBlock = block!("graph", version 2, {
     "links" at Place::Files => [
-        "path" Text, "deps" Json, "test_deps" Json, "tests" Json, "calls" Json, "cites" Json, "call_paths" Json
+        "path" Text, "deps" Json, "test_deps" Json, "tests" Json, "calls" Json, "cites" Json, "call_paths" Json,
+        "brought" Json
     ],
     "graph" at Place::One => ["nodes" Int ["graph", "nodes"], "edges" Int ["graph", "edges"]],
     "fan_in" at list(&["graph", "top_fan_in"]) => ["module" Text, "degree" Int],
@@ -1717,7 +1725,8 @@ mod tests {
                     {"kind": "method", "name": "run", "line": 7, "end_line": 7, "owner": ["Alpha"], "contract": ["Base"],
                      "implements": ["src/b.rs:3:run"], "implemented_by": ["src/c.rs:9:run"]}
                  ],
-                 "deps": ["src/b.rs"], "calls": ["beta:2", "b.beta:4"], "call_paths": {"crate::b": ["beta:4"]}},
+                 "deps": ["src/b.rs"], "calls": ["beta:2", "b.beta:4"], "call_paths": {"crate::b": ["beta:4"]},
+                 "brought": {"std::fs::{self}": ["fs"]}},
                 {"path": "src/b.rs", "language": "rust", "loc": 20, "imports": ["crate::a"], "namespaces": [],
                  "declarations": [], "file_class": "generated", "marker": "@generated"}
             ],
@@ -1865,8 +1874,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "links", "graph", "fan_in",
-                "layers", "touchpoints", "history_paths", "commits", "blocks"
+                "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "links", "graph",
+                "fan_in", "layers", "touchpoints", "history_paths", "commits", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];

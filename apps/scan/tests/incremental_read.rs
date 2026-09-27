@@ -181,6 +181,50 @@ fn a_namespace_import_links_the_same_when_only_another_file_changed() {
     assert_eq!(model::read_bytes(&map_folder(&dir)), stepped, "reading only what changed gives the same map");
 }
 
+/// O nome que o próprio código liga vence, também na passada que lê só o que
+/// mudou: a variável e o parâmetro chamados pelo nome da `fill` importada, o
+/// `fs` trazido da biblioteca antes de `remove_dir_all`, e o `Result` da
+/// língua escrito num arquivo que só traz o `Error` do projeto. Mudar só outro
+/// arquivo deixa as ligações de quem não foi relido como a leitura inteira.
+#[test]
+fn a_name_the_code_binds_itself_links_the_same_when_only_another_file_changed() {
+    let temp = project(
+        "scan-incremental-own-name-",
+        &[
+            ("src/a.rs", "pub fn fill() -> u32 {\n    1\n}\n"),
+            (
+                "src/b.rs",
+                "use crate::a::fill;\n\npub fn com_local() -> u32 {\n    let fill = |x: u32| x + 1;\n    fill(2)\n}\n\n\
+                 pub fn com_parametro(fill: fn() -> u32) -> u32 {\n    fill()\n}\n\n\
+                 pub fn vizinha() -> u32 {\n    fill()\n}\n",
+            ),
+            ("src/fs/mod.rs", "pub mod real;\n\npub fn remove_dir_all() -> u32 {\n    0\n}\n"),
+            ("src/fs/real.rs", "use std::fs::{self};\n\npub fn limpa() {\n    let _ = fs::remove_dir_all(\"x\");\n}\n"),
+            ("src/erro.rs", "pub type Result<T> = std::result::Result<T, Error>;\npub struct Error;\n"),
+            ("src/so_erro.rs", "use crate::erro::Error;\n\npub fn so_erro() -> Result<u32, Error> {\n    Ok(1)\n}\n"),
+            ("src/outro.rs", "pub fn outro() {}\n"),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    write(dir, "src/outro.rs", "pub fn outro() {}\npub fn mais() {}\n");
+    git(dir, &["commit", "-q", "-am", "second"]);
+    let second = scan(dir, &[]);
+    assert_eq!(second["read"], json!(["src/outro.rs"]), "{second}");
+
+    let used_by = |file: &str, name: &str| -> Value {
+        let model = model::read(&map_folder(dir));
+        let module = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!(file)).unwrap().clone();
+        let decl = module["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!(name)).unwrap().clone();
+        decl["used_by"].clone()
+    };
+    assert_eq!(used_by("src/a.rs", "fill"), json!(["src/b.rs:13:vizinha"]), "only the neighbour calls the import");
+    assert_eq!(used_by("src/fs/mod.rs", "remove_dir_all"), Value::Null, "fs came from outside the project");
+    assert_eq!(used_by("src/erro.rs", "Result"), Value::Null, "the language's Result is not the project's");
+    same_as_a_full_pass(dir);
+}
+
 /// Um projeto git com o mapa fora dele, como a instalação o deixa, e um
 /// commit com `files`.
 fn project(prefix: &str, files: &[(&str, &str)]) -> tempfile::TempDir {

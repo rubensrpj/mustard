@@ -799,11 +799,24 @@ pub fn lines_of(text: &str, line: u64, end_line: u64) -> String {
 // ---------------------------------------------------------------------------
 
 /// Um arquivo achado pela busca do mapa ([`crate::io::map_search`]), com a
-/// nota ×1024.
+/// nota ×1024 e o texto fixo dele que mais casa com a pergunta, quando algum
+/// casa.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
     pub path: String,
     pub score: u64,
+    pub text: Option<FoundText>,
+}
+
+/// Um texto fixo achado pela busca: a linha, a marca que o scan deu a ele
+/// (`log`, `error` ou `text`), o valor e o nome da declaração que contém a
+/// linha, vazio fora de toda declaração.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundText {
+    pub line: u64,
+    pub kind: String,
+    pub value: String,
+    pub owner: String,
 }
 
 /// As palavras de busca de um arquivo, cada uma com as suas formas: as do

@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::io::fs;
+use mustard_core::platform::code_tools::{code_tool_for_language, CodeTool, MachineRunner, ToolRunner};
 
 use super::{CheckResult, Status};
 
@@ -47,45 +48,28 @@ pub(super) fn check_claude_cli() -> CheckResult {
     )
 }
 
-/// Look up `binary` in the directories listed in the `PATH` environment
-/// variable. On Windows, also probes with the `.exe` suffix. Fail-open:
-/// any lookup error returns `false`.
-fn which(binary: &str) -> bool {
+/// Check that each detected language's code-tool program is present on
+/// `PATH` and answers — the table `packages/core/src/platform/code_tools.rs`
+/// shares with `mustard init`, so a language a plugin can drive here is the
+/// same one the install tried to set up, checked the same way, through the
+/// machine's runner.
+pub(super) fn lsp_check(project_dir: &Path) -> CheckResult {
     let path_var = std::env::var("PATH").unwrap_or_default();
-    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
-    for dir in path_var.split(sep) {
-        let candidate = std::path::Path::new(dir).join(binary);
-        if candidate.exists() {
-            return true;
-        }
-        // Windows: also try with .exe suffix.
-        #[cfg(target_os = "windows")]
-        {
-            let exe = std::path::Path::new(dir).join(format!("{binary}.exe"));
-            if exe.exists() {
-                return true;
-            }
-        }
-    }
-    false
+    lsp_verdict(project_dir, &MachineRunner::new(&path_var))
 }
 
-/// Check that each detected language's code-tool program is present on
-/// `PATH` — the table `packages/core/src/platform/code_tools.rs` shares with
-/// `mustard init`, so a language a plugin can drive here is the same one the
-/// install tried to set up.
-pub(super) fn lsp_check(project_dir: &Path) -> CheckResult {
+/// O veredito de [`lsp_check`] com quem roda os comandos (`runner`): o
+/// programa que falta e o que está no `PATH` sem responder à conferência da
+/// tabela ([`CodeTool::answers`]) viram aviso, com o comando que instala.
+fn lsp_verdict(project_dir: &Path, runner: &impl ToolRunner) -> CheckResult {
     let model_path = mustard_core::io::project_map::model_path(project_dir);
     let languages = mustard_core::platform::code_tools::detect_code_languages(project_dir, &model_path);
 
     // Only languages the catalog maps to a program, deduplicated by binary
     // (typescript + javascript both map to the same server).
-    let mapped: Vec<(&str, &str)> = languages
+    let mapped: Vec<(&str, &CodeTool)> = languages
         .iter()
-        .filter_map(|lang| {
-            mustard_core::platform::code_tools::code_tool_for_language(lang)
-                .map(|tool| (lang.as_str(), tool.program))
-        })
+        .filter_map(|lang| code_tool_for_language(lang).map(|tool| (lang.as_str(), tool)))
         .collect();
 
     if mapped.is_empty() {
@@ -95,16 +79,16 @@ pub(super) fn lsp_check(project_dir: &Path) -> CheckResult {
     let mut seen_bins: Vec<&str> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
 
-    for (lang, bin) in &mapped {
-        if seen_bins.contains(bin) {
+    for (_, tool) in &mapped {
+        let (bin, hint) = (tool.program, tool.install_cmd);
+        if seen_bins.contains(&bin) {
             continue;
         }
         seen_bins.push(bin);
-        if !which(bin) {
-            let hint = mustard_core::platform::code_tools::code_tool_for_language(lang)
-                .map(|tool| tool.install_cmd)
-                .unwrap_or_default();
+        if !runner.on_path(bin) {
             missing.push(format!("missing: {bin} (install: {hint})"));
+        } else if !tool.answers(runner) {
+            missing.push(format!("not answering: {bin} (install: {hint})"));
         }
     }
 
@@ -292,6 +276,52 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
         let result = lsp_check(dir.path());
         assert_ne!(result.status, Status::Skip, "{:?}", result.details);
+    }
+
+    /// Executor falso do diagnóstico: responde que cada programa de
+    /// `on_path` está no `PATH`, anota cada comando pedido e faz falhar o que
+    /// começa por `failing`.
+    struct Answering {
+        on_path: Vec<&'static str>,
+        failing: &'static str,
+        ran: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl ToolRunner for Answering {
+        fn on_path(&self, program: &str) -> bool {
+            self.on_path.contains(&program)
+        }
+
+        fn run(&self, program: &str, _: &[&str]) -> bool {
+            self.ran.borrow_mut().push(program.to_string());
+            self.on_path(program) && program != self.failing
+        }
+
+        fn found_off_path(&self, _: &str) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    /// O servidor de TypeScript no `PATH` cuja conferência falha — o
+    /// TypeScript que ele acha não traz o `tsserver.js` — vira aviso no
+    /// diagnóstico, com o comando que instala; com a conferência passando, o
+    /// diagnóstico fica verde.
+    #[test]
+    fn lsp_check_warns_when_the_program_is_present_but_does_not_answer() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).unwrap();
+        let tool = code_tool_for_language("typescript").unwrap();
+
+        let silent = Answering { on_path: vec!["typescript-language-server", "node"], failing: "node", ran: Default::default() };
+        let result = lsp_verdict(dir.path(), &silent);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        let expected = format!("not answering: typescript-language-server (install: {})", tool.install_cmd);
+        assert_eq!(result.details, vec![expected]);
+        assert_eq!(*silent.ran.borrow(), vec!["node"], "the check ran once");
+
+        let answering = Answering { on_path: vec!["typescript-language-server", "node"], failing: "", ran: Default::default() };
+        let result = lsp_verdict(dir.path(), &answering);
+        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
     }
 
     #[test]

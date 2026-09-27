@@ -527,12 +527,9 @@ fn resolve_declaration_links(
         })
         .collect();
     let globals = global_sight(modules, go_module, packages, manifests, aliases);
-    // O caminho escrito antes do nome chamado se resolve como o import que ele
-    // é: o resolvedor só é montado quando algum arquivo tem um.
-    let resolver = modules
-        .iter()
-        .any(|m| !m.call_paths.is_empty())
-        .then(|| Resolver::new(modules, go_module, packages, aliases));
+    // O caminho escrito antes do nome chamado, o import que traz nomes e o
+    // import com `*` se resolvem como o import que são.
+    let resolver = Resolver::new(modules, go_module, packages, aliases);
     // The names a qualifier can give a file: its own name and its folder's.
     let own_names: Vec<[String; 2]> = modules
         .iter()
@@ -562,6 +559,11 @@ fn resolve_declaration_links(
         let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
         let family = crate::extract::family(&m.language);
         let implicit_self = crate::extract::implicit_self(&m.language);
+        let Brought { outside, all: brought } = brought_names(&resolver, m);
+        // Os nomes que todo arquivo da língua vê sem import, e os arquivos que
+        // este importa com `*`, que podem declarar um deles.
+        let prelude = crate::extract::prelude(&m.language);
+        let globbed: HashSet<String> = if prelude.is_empty() { HashSet::new() } else { glob_files(&resolver, m) };
         // Na língua que liga o método por um separador próprio, o de nome
         // qualificado só junta caminho.
         let path_only = crate::extract::has_member_separators(&m.language);
@@ -603,6 +605,23 @@ fn resolve_declaration_links(
                 .filter(|&(mi, di)| !(member_out && MEMBER_KINDS.contains(&modules[mi].declarations[di].kind.as_str())))
                 .collect();
             let seen: Vec<DeclId> = all.iter().copied().filter(|&(mi, _)| sees(mi)).collect();
+            // O nome que um import de fora do projeto trouxe, escrito sozinho
+            // ou antes de outro nome, é de fora e não liga; o caminho do
+            // projeto escrito antes do nome vale antes dele.
+            let from_outside = match before {
+                Before::Name(q) => outside.contains(q),
+                Before::Nothing => outside.contains(site.name.as_str()),
+                Before::Itself | Before::Value => false,
+            };
+            // O nome da língua escrito sozinho só liga ao projeto quando o
+            // arquivo o declara, o traz pelo nome num import ou importa com
+            // `*` o arquivo que o declara.
+            let of_the_language = matches!(before, Before::Nothing)
+                && prelude.contains(&site.name.as_str())
+                && !(m.declarations.iter().any(|d| d.name == site.name)
+                    || brought.contains(site.name.as_str())
+                    || all.iter().any(|&(mi, _)| globbed.contains(&modules[mi].path)));
+            let not_ours = from_outside || of_the_language;
             // Estreita pelo que vem antes do nome: o arquivo que o
             // qualificador nomeia (só o que fica fora de todo tipo nele) ou
             // o tipo que ele nomeia, ou os membros do tipo em que a chamada
@@ -632,15 +651,13 @@ fn resolve_declaration_links(
                 (!kept.is_empty()).then_some((kept, provable))
             };
             let verdict = if is_call {
-                let named = match (&resolver, through.get(site)) {
-                    (Some(resolver), Some(paths)) => path_files(resolver, m, site.line, paths),
-                    _ => None,
-                };
+                let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths));
                 match (named, &before) {
                     (Some(files), _) => Verdict::of(
                         all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect(),
                         true,
                     ),
+                    (None, _) if not_ours => None,
                     (None, Before::Nothing) if !seen.is_empty() => Verdict::of(seen, true),
                     // Sem nada à vista, a família inteira da língua.
                     (None, Before::Nothing) => Verdict::of(
@@ -663,6 +680,7 @@ fn resolve_declaration_links(
                 // A citação só liga ao que o arquivo tem à vista, com o
                 // arquivo que o qualificador nomeia.
                 let pool: Vec<DeclId> = match before {
+                    _ if not_ours => Vec::new(),
                     Before::Name(q) => all.iter().copied().filter(|&(mi, _)| sees(mi) || named_by(mi, q)).collect(),
                     _ => seen,
                 };
@@ -727,6 +745,49 @@ fn path_files(resolver: &Resolver, m: &Module, line: usize, paths: &[&str]) -> O
     let files: HashSet<String> =
         paths.iter().flat_map(|path| resolver.resolve(path, m, Reach::Used, nested)).collect();
     (!files.is_empty()).then_some(files)
+}
+
+/// Os nomes que os imports de um arquivo trazem ([`Module::brought`]).
+struct Brought<'m> {
+    /// Os que só um import que não nomeia nada do projeto traz: são de fora.
+    outside: HashSet<&'m str>,
+    /// Todos, de qualquer import.
+    all: HashSet<&'m str>,
+}
+
+/// Os arquivos do projeto que um import de `m` nomeia, escrito em qualquer
+/// profundidade e em qualquer trecho, inteiro quando nomeia um namespace.
+fn import_files(resolver: &Resolver, m: &Module, imp: &str) -> Vec<String> {
+    let depths: BTreeSet<usize> = m.import_depths(imp, false).union(&m.import_depths(imp, true)).copied().collect();
+    depths.into_iter().flat_map(|nested| resolver.resolve(imp, m, Reach::Whole, nested)).collect()
+}
+
+/// Os nomes trazidos pelos imports de `m`, com os que vêm só de fora do
+/// projeto à parte.
+fn brought_names<'m>(resolver: &Resolver, m: &'m Module) -> Brought<'m> {
+    let mut brought = Brought { outside: HashSet::new(), all: HashSet::new() };
+    let mut inside: HashSet<&str> = HashSet::new();
+    for (imp, names) in &m.brought {
+        let names = names.iter().map(String::as_str);
+        brought.all.extend(names.clone());
+        if import_files(resolver, m, imp).is_empty() && resolver.outside(imp, m) {
+            brought.outside.extend(names);
+        } else {
+            inside.extend(names);
+        }
+    }
+    brought.outside.retain(|name| !inside.contains(name));
+    brought
+}
+
+/// Os arquivos do projeto que os imports com `*` de `m` nomeiam.
+fn glob_files(resolver: &Resolver, m: &Module) -> HashSet<String> {
+    m.imports
+        .iter()
+        .chain(&m.test_imports)
+        .filter(|imp| imp.trim_end().ends_with('*'))
+        .flat_map(|imp| import_files(resolver, m, imp))
+        .collect()
 }
 
 /// The files the global imports put in sight: each file that writes one gives
@@ -801,7 +862,7 @@ fn is_under(path: &str, dir: &str) -> bool {
 /// above it and has not ended yet. `None` when the line sits outside every
 /// declaration (top-level code). A declaration with no end line recorded
 /// covers only what starts after it, which is the best an older map allows.
-fn enclosing(declarations: &[Decl], line: usize) -> Option<usize> {
+pub(crate) fn enclosing(declarations: &[Decl], line: usize) -> Option<usize> {
     let mut best: Option<usize> = None;
     for (i, d) in declarations.iter().enumerate() {
         let covers = d.line <= line && (d.end_line == 0 || d.end_line >= line);
@@ -1025,6 +1086,8 @@ struct Resolver<'a> {
     module_paths: HashSet<&'a str>,
     /// Cada módulo pelo caminho: o que um arquivo do namespace declara.
     by_path: HashMap<&'a str, &'a Module>,
+    /// O nome de cada arquivo, sem a extensão, e o de cada pasta do projeto.
+    local_names: HashSet<String>,
     go_module: &'a Option<String>,
     packages: &'a [(String, String)],
     /// Os apelidos de pasta das configurações do projeto.
@@ -1062,6 +1125,14 @@ impl<'a> Resolver<'a> {
             dir_index,
             module_paths: modules.iter().map(|m| m.path.as_str()).collect(),
             by_path: modules.iter().map(|m| (m.path.as_str(), m)).collect(),
+            local_names: modules
+                .iter()
+                .flat_map(|m| {
+                    let dir = parent_dir(&m.path);
+                    let folders: Vec<String> = dir.split('/').filter(|s| !s.is_empty()).map(str::to_string).collect();
+                    folders.into_iter().chain([file_stem(&m.path)])
+                })
+                .collect(),
             go_module,
             packages,
             aliases,
@@ -1213,6 +1284,34 @@ impl<'a> Resolver<'a> {
             }
         }
         Vec::new()
+    }
+
+    /// O import que não nomeia nada do projeto, como `std::fs::{self}`: não é
+    /// relativo, não começa por um apelido da raiz, da pasta de cima, das
+    /// configurações ou do módulo declarado, nenhum começo dele é pacote do
+    /// projeto e a primeira parte não é nome de arquivo nem de pasta do
+    /// projeto. Quem chama já sabe que ele não resolve a arquivo nenhum; o
+    /// que parece do projeto e não resolve fica de dentro, por cautela.
+    fn outside(&self, imp: &str, importer: &Module) -> bool {
+        let lang = importer.language.as_str();
+        if self.separated_relative(imp, importer).is_some()
+            || !self.aliases.candidates(&importer.path, lang, imp).is_empty()
+            || self.go_module.as_deref().is_some_and(|module| imp.starts_with(module))
+        {
+            return false;
+        }
+        let canon = canon_segments(imp, lang);
+        let canon = canon.strip_prefix("package:").unwrap_or(&canon);
+        if canon.starts_with('.') {
+            return false;
+        }
+        let segments: Vec<&str> = canon.split('/').collect();
+        let first = segments.first().copied().unwrap_or_default();
+        let aliased = crate::extract::root_aliases(lang).contains(&first)
+            || crate::extract::parent_alias(lang) == Some(first);
+        let package = (1..=segments.len())
+            .any(|cut| self.packages.iter().any(|(name, _)| *name == fold_package(&segments[..cut].join("/"))));
+        !(aliased || package || self.local_names.contains(first))
     }
 
     /// Os arquivos de um namespace que a importação de `importer` alcança: com

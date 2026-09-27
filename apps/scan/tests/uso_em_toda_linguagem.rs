@@ -38,6 +38,11 @@
 //! o tipo escrito antes do método estreitam a ligação, e o nome declarado mais
 //! vezes que o teto só se conta.
 //!
+//! O nome que o próprio código liga a outra coisa vence a declaração do
+//! projeto de mesmo nome, no Rust, no TypeScript e no Python: a variável, o
+//! parâmetro e o nome tirado de desestruturação, o nome trazido por um import
+//! de fora do projeto e o nome que a língua põe em todo arquivo.
+//!
 //! E a pasta do projeto de teste some mesmo quando o teste quebra no meio, e
 //! nenhum teste do scan monta essa pasta à mão.
 
@@ -1113,6 +1118,110 @@ fn a_name_above_the_ceiling_is_only_counted() {
             "o comum de {dono} só conta a chamada"
         );
     }
+}
+
+/// O projeto em que o código liga um nome que o projeto também declara: em
+/// cada língua, `fill` declarada num arquivo e importada por outro, que a
+/// chama numa função vizinha, e chama pelo mesmo nome uma variável e um
+/// parâmetro. No Rust, a função chamada na mesma linha que dá o nome à
+/// variável (`let fill = fill();`); no TypeScript, a variável chamada numa
+/// função escrita dentro da que a liga. No Rust, `fs` trazido de fora por `use std::fs::{self}` ao lado
+/// da pasta `fs` do projeto, e o `Result` que o projeto declara, usado sem
+/// import, trazido pelo nome e trazido por `*`.
+fn projeto_do_nome_proprio() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("rs/src/a.rs", "pub fn fill() -> u32 {\n    1\n}\n"),
+        (
+            "rs/src/b.rs",
+            "use crate::a::fill;\n\npub fn com_local() -> u32 {\n    let fill = |x: u32| x + 1;\n    fill(2)\n}\n\n\
+             pub fn com_parametro(fill: fn() -> u32) -> u32 {\n    fill()\n}\n\n\
+             pub fn mesma_linha() -> u32 {\n    let fill = fill();\n    fill\n}\n\n\
+             pub fn vizinha() -> u32 {\n    fill()\n}\n",
+        ),
+        ("rs/src/fs/mod.rs", "pub mod real;\n\npub struct Disco;\n\npub fn remove_dir_all() -> u32 {\n    0\n}\n"),
+        (
+            "rs/src/fs/real.rs",
+            "use std::fs::{self};\nuse super::Disco;\n\npub fn limpa(_d: Disco) {\n    let _ = fs::remove_dir_all(\"x\");\n}\n",
+        ),
+        ("rs/src/erro.rs", "pub type Result<T> = std::result::Result<T, Error>;\npub struct Error;\n"),
+        ("rs/src/so_erro.rs", "use crate::erro::Error;\n\npub fn so_erro() -> Result<u32, Error> {\n    Ok(1)\n}\n"),
+        (
+            "rs/src/com_result.rs",
+            "use crate::erro::{Error, Result};\n\npub fn com_result() -> Result<u32> {\n    Err(Error)\n}\n",
+        ),
+        ("rs/src/com_glob.rs", "use crate::erro::*;\n\npub fn com_glob() -> Result<u32> {\n    Ok(1)\n}\n"),
+        ("ts/src/a.ts", "export function fill(): number {\n  return 1;\n}\n"),
+        (
+            "ts/src/b.ts",
+            "import { fill } from \"./a\";\n\nexport function comLocal(): number {\n  const fill = (x: number) => x + 1;\n  \
+             return fill(2);\n}\n\nexport function comParametro(fill: () => number): number {\n  return fill();\n}\n\n\
+             export function comDesestruturacao(x: { mutate: () => number }): number {\n  const { mutate: fill } = x;\n  \
+             return fill();\n}\n\nexport function comAninhada(x: { mutate: () => number }): number {\n  \
+             const { mutate: fill } = x;\n  function chama(): number {\n    return fill();\n  }\n  return chama();\n}\n\n\
+             export function vizinha(): number {\n  return fill();\n}\n",
+        ),
+        ("py/pkg/a.py", "def fill():\n    return 1\n"),
+        (
+            "py/pkg/b.py",
+            "from pkg.a import fill\n\n\ndef com_local():\n    fill = lambda x: x + 1\n    return fill(2)\n\n\n\
+             def com_parametro(fill):\n    return fill()\n\n\ndef vizinha():\n    return fill()\n",
+        ),
+    ]
+}
+
+/// O nome que o próprio código liga a outra coisa vence a declaração do
+/// projeto de mesmo nome. A variável, o parâmetro e o nome tirado de
+/// desestruturação, chamados dentro da função que os liga, também numa função
+/// escrita ali dentro, não são a `fill` importada: só a função vizinha a usa,
+/// e a linha que dá o nome à variável, que ainda chama a função. `fs::remove_dir_all()`, com `fs`
+/// trazido da biblioteca, não é a `remove_dir_all` da pasta `fs` do projeto.
+/// O `Result` escrito sozinho é o da língua, a menos que o arquivo o traga
+/// pelo nome ou por `*` do arquivo que o declara.
+#[test]
+fn a_name_the_code_binds_itself_wins_over_the_project_declaration() {
+    let temp = pasta_do_projeto("nome-proprio");
+    let dir = temp.path().to_path_buf();
+    let projeto = projeto_do_nome_proprio();
+    for (rel, corpo) in &projeto {
+        write(&dir, rel, corpo);
+    }
+    let map = scan(&dir);
+    let corpo = |arquivo: &str| projeto.iter().find(|(rel, _)| *rel == arquivo).unwrap().1;
+    let mut faltas: Vec<String> = Vec::new();
+    for (a, b, quem) in [
+        ("rs/src/a.rs", "rs/src/b.rs", &["mesma_linha", "vizinha"][..]),
+        ("ts/src/a.ts", "ts/src/b.ts", &["vizinha"][..]),
+        ("py/pkg/a.py", "py/pkg/b.py", &["vizinha"][..]),
+    ] {
+        let fill = usos_de(&map, a, "fill");
+        let mut provados = fill.provados.clone();
+        provados.sort();
+        let mut esperados: Vec<String> =
+            quem.iter().map(|f| format!("{b}:{}:{f}", linha_de(corpo(b), &format!("{f}()")) + 1)).collect();
+        esperados.sort();
+        if provados != esperados || !fill.suspeitos.is_empty() {
+            faltas.push(format!("a fill de {a} só é usada por {quem:?}: {:?} {:?}", fill.provados, fill.suspeitos));
+        }
+    }
+    let remove = usos_de(&map, "rs/src/fs/mod.rs", "remove_dir_all");
+    if !remove.provados.is_empty() || !remove.suspeitos.is_empty() || remove.comuns != 0 {
+        faltas.push(format!(
+            "fs::remove_dir_all, com fs trazido de fora, não liga: {:?} {:?}",
+            remove.provados, remove.suspeitos
+        ));
+    }
+    let result = usos_de(&map, "rs/src/erro.rs", "Result");
+    let quem = vec![
+        format!("rs/src/com_glob.rs:{}:com_glob", linha_de(corpo("rs/src/com_glob.rs"), "Result")),
+        format!("rs/src/com_result.rs:{}:com_result", linha_de(corpo("rs/src/com_result.rs"), "-> Result")),
+    ];
+    if result.provados != quem || !result.suspeitos.is_empty() {
+        faltas.push(format!(
+            "o Result do projeto só vale onde o arquivo o traz: {:?} {:?}",
+            result.provados, result.suspeitos
+        ));
+    }
+    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
 }
 
 /// Todos os arquivos de texto debaixo de `dir`, menos a pasta da compilação.

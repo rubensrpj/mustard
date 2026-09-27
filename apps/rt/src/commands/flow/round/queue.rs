@@ -822,6 +822,30 @@ pub(crate) fn backlog_left(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
+/// As tarefas ainda por entregar: a do backlog ([`backlog_left`]) e a de onda
+/// planejada que ainda não está entregue e aprovada. Não contam as das ondas
+/// em `returning` — a que volta agora e as que o conserto dela fecha —,
+/// porque a entrega as fecha agora.
+///
+/// É a leitura única de "tarefa ainda não entregue": a rodada a consulta
+/// antes de criar tarefa para um item combinado que a volta não cumpriu.
+pub(crate) fn tasks_not_delivered(log: &SpecLog, returning: &BTreeSet<u64>) -> BTreeSet<u64> {
+    let running = waves_in_progress(log);
+    let done_waves = waves_done(log, &running);
+    let planned = log.planned_waves();
+    let in_open_wave = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .filter(|t| t.wave().is_some_and(|w| planned.contains(&w) && !done_waves.contains(&w)))
+        .map(|t| t.id);
+    backlog_left(log)
+        .into_iter()
+        .chain(in_open_wave)
+        .filter(|id| log.get(*id).and_then(SpecEvent::wave).is_none_or(|w| !returning.contains(&w)))
+        .collect()
+}
+
 /// `true` quando a limpeza ainda espera ([`is_cleanup`]): há onda do plano
 /// por terminar — em andamento, por sair ou com conserto pendente
 /// ([`first_unfinished`]) — ou tarefa do backlog (`left`) que não é

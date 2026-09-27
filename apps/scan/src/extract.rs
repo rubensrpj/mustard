@@ -28,7 +28,7 @@
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.
 
-use crate::model::{CallSite, Decl, RECEIVER};
+use crate::model::{CallSite, Decl, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
@@ -55,10 +55,15 @@ pub(crate) struct Extracted {
     /// (`@call.path` que virou import), com as chamadas escritas por ele, fora
     /// do trecho de teste.
     pub call_paths: BTreeMap<String, Vec<CallSite>>,
+    /// De cada import, os nomes que ele traz ao arquivo (`@imported`),
+    /// ordenados e sem repetição.
+    pub brought: BTreeMap<String, Vec<String>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     pub calls: Vec<CallSite>,
     pub cites: Vec<CallSite>,
+    /// Os textos fixos do arquivo (`@text`), em ordem de linha.
+    pub texts: Vec<Text>,
 }
 
 /// One language as produced by `build.rs` from `languages.toml` + its `.scm`
@@ -203,6 +208,30 @@ pub fn implicit_self(lang: &str) -> bool {
     LANG_IMPLICIT_SELF.iter().any(|&(name, on)| name == lang && on)
 }
 
+/// O nome que, trazido por um import, traz o último nome escrito antes da
+/// lista que o contém (`import_self` em languages.toml). `None` sem o campo.
+fn import_self(lang: &str) -> Option<&'static str> {
+    Some(text_field(LANG_IMPORT_SELF, lang)).filter(|name| !name.is_empty())
+}
+
+/// Os nomes que todo arquivo da língua vê sem import (`prelude` em
+/// languages.toml). Vazio sem o campo.
+pub fn prelude(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_PRELUDE, lang)
+}
+
+/// As chamadas que escrevem no log (`log_calls` em languages.toml). Vazio
+/// sem o campo.
+fn log_calls(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_LOG_CALLS, lang)
+}
+
+/// O que lança ou devolve erro (`error_forms` em languages.toml). Vazio sem
+/// o campo.
+fn error_forms(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_ERROR_FORMS, lang)
+}
+
 /// A família da língua: as línguas que leem as mesmas consultas (`dir` em
 /// languages.toml) são a mesma, escrita em arquivos de extensões diferentes.
 /// Vazio para uma língua que o registro não tem.
@@ -309,6 +338,15 @@ enum CapKind {
     /// Um módulo com corpo escrito dentro do arquivo: o caminho escrito nele
     /// que começa pelo `parent_alias` da língua sai dele antes de subir pasta.
     InnerModule,
+    /// Um nome que o corpo de uma função liga (a variável, o parâmetro, o nome
+    /// novo de uma desestruturação): escrito sozinho depois, na mesma
+    /// declaração, ele é esse valor, e não a declaração do projeto de mesmo
+    /// nome.
+    Local,
+    /// Um literal de texto escrito no código: vira texto fixo do arquivo
+    /// quando tem cara de texto e não cai num import, num trecho de teste
+    /// nem numa documentação.
+    Text,
     Def(String),
     Ignore,
 }
@@ -330,6 +368,8 @@ fn classify(cap: &str) -> CapKind {
         "doc" => CapKind::Doc,
         "test_block" => CapKind::TestBlock,
         "inner_module" => CapKind::InnerModule,
+        "local" => CapKind::Local,
+        "text" => CapKind::Text,
         other => match other.strip_prefix("definition.") {
             Some(kind) => CapKind::Def(kind.to_string()),
             None => CapKind::Ignore,
@@ -403,6 +443,18 @@ impl Analyzer {
         // num trecho de teste ou num módulo do arquivo.
         let mut test_blocks: Spans = BTreeSet::new();
         let mut written: Vec<Written> = Vec::new();
+        // Cada nome que um import traz, com o nó em que foi escrito: só depois
+        // de todos os matches se sabe de que import ele é.
+        let mut imported_at: Vec<(Node, String)> = Vec::new();
+        // Cada nome que o corpo de uma função liga, com a linha e o byte em
+        // que foi escrito.
+        let mut locals: Vec<(usize, usize, String)> = Vec::new();
+        // Os literais de texto do arquivo e o que a documentação escrita
+        // dentro das declarações cobre: o literal que a contém não é texto
+        // fixo.
+        let mut literals: Vec<Node> = Vec::new();
+        let mut doc_spans: Spans = BTreeSet::new();
+        let self_name = import_self(&self.name);
 
         // O import relativo por separador da língua, quando ela o declara.
         let relative = relative_import(&self.name);
@@ -447,9 +499,23 @@ impl Analyzer {
                         import_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             let t = t.trim();
-                            if !t.is_empty() {
-                                brought.push(t.to_string());
+                            // O nome que traz o último nome antes da lista
+                            // (`self` em `use std::fs::{self}`) traz esse nome.
+                            let name = match self_name {
+                                Some(own) if t == own => name_before_list(node, bytes),
+                                _ => Some(t.to_string()).filter(|t| !t.is_empty()),
+                            };
+                            if let Some(name) = name {
+                                imported_at.push((node, name.clone()));
+                                brought.push(name);
                             }
+                        }
+                    }
+                    CapKind::Local => {
+                        if let Ok(t) = node.utf8_text(bytes)
+                            && is_identifier(t)
+                        {
+                            locals.push((node.start_position().row + 1, node.start_byte(), t.to_string()));
                         }
                     }
                     CapKind::CallPath => {
@@ -495,6 +561,7 @@ impl Analyzer {
                         value_start = Some(node.start_byte());
                     }
                     CapKind::Doc => {
+                        doc_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             doc_inside = Some((node.start_byte(), t.to_string()));
                         }
@@ -523,6 +590,7 @@ impl Analyzer {
                     CapKind::InnerModule => {
                         out.module_lines.push((node.start_position().row + 1, node.end_position().row + 1));
                     }
+                    CapKind::Text => literals.push(node),
                     CapKind::Def(kind) => {
                         def = Some((node, kind.as_str()));
                     }
@@ -647,6 +715,7 @@ impl Analyzer {
             })
             .collect();
         owners_in_file(&mut out.declarations);
+        out.texts = fixed_texts(&literals, bytes, &[&import_spans, &test_blocks, &doc_spans], &out.declarations, &self.name);
 
         // The call sites and the citations of the file, minus the
         // declaration headers themselves (`foo` in `fn foo(` is where it is
@@ -654,6 +723,27 @@ impl Analyzer {
         // decoration, an import or a namespace name.
         let quiet: Spans = decorations.union(&import_spans).copied().collect();
         (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at, &name_kinds, &self.name);
+        drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites]);
+
+        // Cada nome trazido é do import escrito no mesmo comando: o que fica
+        // dentro do nó mais próximo, subindo a partir do nome, que contém
+        // algum import. O caminho de uma chamada não traz nome.
+        let mut brought_by: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (node, name) in &imported_at {
+            let mut at = Some(*node);
+            while let Some(n) = at {
+                let (start, end) = (n.start_byte(), n.end_byte());
+                let mut inside = written.iter().filter(|w| w.call.is_none() && start <= w.byte && w.end <= end).peekable();
+                if inside.peek().is_some() {
+                    for w in inside {
+                        brought_by.entry(w.text.clone()).or_default().insert(name.clone());
+                    }
+                    break;
+                }
+                at = n.parent();
+            }
+        }
+        out.brought = brought_by.into_iter().map(|(import, names)| (import, names.into_iter().collect())).collect();
 
         // O import escrito ao menos uma vez dentro de um módulo do arquivo
         // guarda todas as linhas em que é escrito: é por elas que o grafo sabe
@@ -714,13 +804,77 @@ struct Written {
     text: String,
     global: bool,
     byte: usize,
+    /// O byte em que o import escrito termina.
+    end: usize,
     line: usize,
     call: Option<CallSite>,
 }
 
 impl Written {
     fn at(text: String, global: bool, node: Node) -> Written {
-        Written { text, global, byte: node.start_byte(), line: node.start_position().row + 1, call: None }
+        Written {
+            text,
+            global,
+            byte: node.start_byte(),
+            end: node.end_byte(),
+            line: node.start_position().row + 1,
+            call: None,
+        }
+    }
+}
+
+/// O último nome escrito antes da lista que contém o nó: `fs` em
+/// `use std::fs::{self}`. `None` quando não há nome antes dela.
+fn name_before_list(node: Node, bytes: &[u8]) -> Option<String> {
+    let list = node.parent()?;
+    let before = &bytes[..list.start_byte()];
+    let word = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80;
+    let end = before.iter().rposition(word)? + 1;
+    let start = before[..end].iter().rposition(|b| !word(b)).map_or(0, |i| i + 1);
+    std::str::from_utf8(&before[start..end]).ok().filter(|name| is_identifier(name)).map(str::to_string)
+}
+
+/// Tira de `sites` o uso de um nome que o corpo da declaração em volta liga.
+/// O nome escrito sozinho, numa linha depois daquela em que ele foi ligado —
+/// a variável, o parâmetro, o nome novo de uma desestruturação — e até o fim
+/// da declaração em volta dela (a de [`crate::graph::enclosing`]), também
+/// dentro de uma declaração escrita ali, é esse valor, e não a declaração do
+/// projeto de mesmo nome. Na própria linha do nome ligado, o uso fica: em
+/// `let hoje = hoje(None);` a chamada é da função, e o nome só vale depois. A
+/// mesma chamada numa declaração vizinha, sem o nome ligado, fica. O nome
+/// ligado que é o nome de uma declaração (`names_at`) não conta: é a própria
+/// declaração.
+fn drop_local_uses(
+    decls: &[Decl],
+    locals: &[(usize, usize, String)],
+    names_at: &BTreeSet<usize>,
+    sites: [&mut Vec<CallSite>; 2],
+) {
+    // Cada nome ligado, com a linha em que foi ligado e a última da
+    // declaração em volta (sem fim conhecido, até o fim do arquivo).
+    let mut bound: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+    for (line, byte, name) in locals {
+        if names_at.contains(byte) {
+            continue;
+        }
+        let Some(di) = crate::graph::enclosing(decls, *line) else { continue };
+        let last = match decls[di].end_line {
+            0 => usize::MAX,
+            end => end,
+        };
+        bound.entry(name.as_str()).or_default().push((*line, last));
+    }
+    if bound.is_empty() {
+        return;
+    }
+    for list in sites {
+        list.retain(|site| {
+            let local = site.qualifier.is_empty()
+                && bound
+                    .get(site.name.as_str())
+                    .is_some_and(|spans| spans.iter().any(|&(first, last)| first < site.line && site.line <= last));
+            !local
+        });
     }
 }
 
@@ -1043,6 +1197,150 @@ fn one_line(text: &str, max: usize) -> String {
     let Some((cut, _)) = joined.char_indices().nth(max) else { return joined };
     let cut = joined[..cut].rfind(' ').unwrap_or(cut);
     joined[..cut].trim_end().to_string()
+}
+
+/// O valor mais longo que se guarda de um texto fixo, em caracteres.
+const TEXT_MAX_CHARS: usize = 300;
+
+/// Quantos nós acima do literal a marca do texto é procurada: o bastante
+/// para passar dos argumentos, da chamada que monta o texto e da que o
+/// embrulha (`Err(Erro::Falta(format!("…")))`).
+const MARK_LEVELS: usize = 6;
+
+/// Quanto do trecho antes do filho, em bytes, a marca lê: o nome escrito logo
+/// antes dele cabe aqui, e o nó que começa mais longe não abre com a palavra
+/// que marca.
+const MARK_BEFORE_BYTES: usize = 256;
+
+/// Até quantos caracteres antes das aspas vai o prefixo de um literal
+/// (`r#"`, `$@"`, `rb'`).
+const QUOTE_PREFIX_MAX: usize = 3;
+
+/// Os textos fixos do arquivo, em ordem de linha: de cada literal que não
+/// cai em nenhum dos trechos de `skip` e tem cara de texto
+/// ([`reads_as_text`]), o valor, a linha, a declaração que a contém e a
+/// marca ([`mark_of`]) pelas chamadas de log e pelas formas de erro da
+/// língua `lang`.
+fn fixed_texts(literals: &[Node], bytes: &[u8], skip: &[&Spans], declarations: &[Decl], lang: &str) -> Vec<Text> {
+    let (logs, errors) = (log_calls(lang), error_forms(lang));
+    let overlaps = |node: &Node| {
+        skip.iter().flat_map(|spans| spans.iter()).any(|&(start, end)| start < node.end_byte() && node.start_byte() < end)
+    };
+    let mut texts: Vec<Text> = literals
+        .iter()
+        .filter(|node| !overlaps(node))
+        .filter_map(|node| {
+            let value = one_line(literal_value(node.utf8_text(bytes).ok()?), TEXT_MAX_CHARS);
+            if !reads_as_text(&value) {
+                return None;
+            }
+            let line = node.start_position().row + 1;
+            let owner = crate::graph::enclosing(declarations, line).map(|at| declarations[at].name.clone());
+            Some(Text { line, kind: mark_of(*node, bytes, logs, errors).to_string(), value, owner: owner.unwrap_or_default() })
+        })
+        .collect();
+    texts.sort();
+    texts.dedup();
+    texts
+}
+
+/// O valor de um literal de texto sem as aspas e o que vem antes delas
+/// (`r#"…"#`, `f'…'`, `@"…"`, `"""…"""`). O literal sem aspas perto do
+/// começo fica como foi escrito.
+fn literal_value(written: &str) -> &str {
+    let Some(open) = written.find(['"', '\'', '`']).filter(|&at| at <= QUOTE_PREFIX_MAX) else { return written };
+    let Some(quote) = written[open..].chars().next() else { return written };
+    let run = written[open..].chars().take_while(|&c| c == quote).count();
+    // Duas aspas seguidas só abrem o literal vazio; três ou mais abrem o de
+    // várias linhas, que fecha com as mesmas.
+    let count = if run >= 3 { run } else { 1 };
+    let body = &written[open + count * quote.len_utf8()..];
+    let body = if written[..open].contains('#') { body.trim_end_matches('#') } else { body };
+    body.strip_suffix(quote.to_string().repeat(count).as_str()).unwrap_or(body)
+}
+
+/// O valor tem cara de texto: duas palavras ou mais — palavra é o trecho
+/// entre espaços com duas letras ou mais —, ou forma de caminho ou chave:
+/// sem espaço nem aspas, com `/`, `.`, `_` ou `-`, e com dois pedaços de duas
+/// letras ou mais entre o que não é letra nem algarismo (`pedidos/novo`,
+/// `erro.pedido_ausente`).
+fn reads_as_text(value: &str) -> bool {
+    let has_letters = |piece: &str| piece.chars().filter(|c| c.is_alphabetic()).count() >= 2;
+    if value.split_whitespace().filter(|word| has_letters(word)).count() >= 2 {
+        return true;
+    }
+    !value.contains(char::is_whitespace)
+        && !value.contains(['"', '\'', '`'])
+        && value.contains(['/', '.', '_', '-'])
+        && value.split(|c: char| !c.is_alphanumeric()).filter(|piece| has_letters(piece)).count() >= 2
+}
+
+/// A marca de um texto fixo. Subindo a partir do literal, até
+/// [`MARK_LEVELS`] nós, o primeiro nó cujo nome ([`names_before`]) casa com
+/// uma das formas de erro `errors` dá [`TEXT_ERROR`], com uma das chamadas de
+/// log `logs` dá [`TEXT_LOG`]; sem nenhum, [`TEXT_PLAIN`].
+fn mark_of(literal: Node, bytes: &[u8], logs: &[&str], errors: &[&str]) -> &'static str {
+    let mut child = literal;
+    for _ in 0..MARK_LEVELS {
+        let Some(parent) = child.parent() else { break };
+        let names = names_before(&bytes[parent.start_byte()..child.start_byte()]);
+        for (entries, mark) in [(errors, TEXT_ERROR), (logs, TEXT_LOG)] {
+            if names.iter().any(|name| entries.iter().any(|entry| names_entry(name, entry))) {
+                return mark;
+            }
+        }
+        child = parent;
+    }
+    TEXT_PLAIN
+}
+
+/// Os nomes de um nó para a marca, lidos do trecho `before` que ele escreve
+/// antes do filho que leva ao literal: o caminho escrito logo antes do filho
+/// (`console.log` em `console.log("…")`, `tracing::info!`, `new Erro`) e,
+/// quando o trecho é curto e fica numa linha só, a palavra que abre o nó
+/// (`throw`, `raise`).
+fn names_before(before: &[u8]) -> Vec<String> {
+    let is_name = |c: char| c.is_alphanumeric() || c == '_';
+    let in_path = |c: char| is_name(c) || ".:$\\!>-?".contains(c);
+    let tail = String::from_utf8_lossy(&before[before.len().saturating_sub(MARK_BEFORE_BYTES)..]);
+    let tail = tail.trim_end();
+    let start = tail.char_indices().rev().take_while(|&(_, c)| in_path(c)).last().map_or(tail.len(), |(at, _)| at);
+    let mut names = vec![tail[start..].trim_start_matches(|c: char| !is_name(c)).to_string()];
+    if before.len() <= MARK_BEFORE_BYTES && !before.contains(&b'\n') {
+        names.push(String::from_utf8_lossy(before).chars().take_while(|&c| is_name(c)).collect());
+    }
+    names.retain(|name| !name.is_empty());
+    names
+}
+
+/// O nome casa com a entrada `entry` de `log_calls` ou de `error_forms`:
+/// inteiro, ou a partir do começo de uma das partes dele (`info!` em
+/// `tracing::info!`, `LogError` em `_logger.LogError`). O `*` da entrada casa
+/// com letras, algarismos, `_` e `.`.
+fn names_entry(name: &str, entry: &str) -> bool {
+    let is_name = |c: char| c.is_alphanumeric() || c == '_';
+    let mut before: Option<char> = None;
+    for (at, c) in name.char_indices() {
+        if is_name(c) && before.is_none_or(|b| !is_name(b)) && glob(entry, &name[at..]) {
+            return true;
+        }
+        before = Some(c);
+    }
+    false
+}
+
+/// O texto casa com a entrada inteira, e o `*` dela com letras, algarismos,
+/// `_` e `.`.
+fn glob(entry: &str, text: &str) -> bool {
+    match entry.split_once('*') {
+        None => entry == text,
+        Some((head, tail)) => {
+            text.len() >= head.len() + tail.len()
+                && text.starts_with(head)
+                && text.ends_with(tail)
+                && text[head.len()..text.len() - tail.len()].chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        }
+    }
 }
 
 /// Every call the file makes and every name it cites without calling.

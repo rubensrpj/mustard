@@ -34,3 +34,16 @@
 ; An interface method is a member like a receiver method; left uncaptured, its
 ; header was read as a call.
 (method_elem name: (field_identifier) @name) @definition.method
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(short_var_declaration left: (expression_list (identifier) @local))
+(var_spec name: (identifier) @local)
+(parameter_declaration name: (identifier) @local)
+(range_clause left: (expression_list (identifier) @local))
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(interpreted_string_literal) @text
+(raw_string_literal) @text

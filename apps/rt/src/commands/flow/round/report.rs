@@ -28,6 +28,7 @@ use super::commit::{
     head, join_copies, make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file,
     write_joined, UNMADE_SHA,
 };
+use super::agreed::{covered_codes, settle_agreed};
 use super::leftovers::{leftover_task, leftovers_of, Leftover};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{change_accepted, replan_code};
@@ -584,7 +585,8 @@ pub(crate) fn check_return(
     // o veredito final presta de todo o combinado: faltar algum recusa, com
     // os códigos. O pedido sem item combinado não exige o campo.
     let expected = request_agreed(&log, wave, &project.languages);
-    let (_, missing) = settle_agreed(&log, &mut draft.clone(), &expected, "wave").map_err(RoundRefusal::Refused)?;
+    let (_, missing) =
+        settle_agreed(&log, &mut draft.clone(), &expected, "wave", &mut BTreeSet::new()).map_err(RoundRefusal::Refused)?;
     if !missing.is_empty() {
         return Err(RoundRefusal::Refused(Refusal::DeliveryAgreedMissing { wave, missing }));
     }
@@ -616,9 +618,11 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
 /// O veredito como a rodada o grava: cada critério citado pelo número dele e,
 /// no veredito final, cada item do combinado também. A revisão final responde
 /// por todo o combinado vigente, item a item, em `agreed`: faltar algum, ou a
-/// lista inteira, é veredito malformado, e nada é gravado. O item que vem
-/// `met:false` força o resultado a reprovado e vira uma tarefa nova no
-/// backlog, cobrindo esse item: são essas tarefas que a função devolve.
+/// lista inteira, é veredito malformado, e nada é gravado. O item que não
+/// vem `met:true` força o resultado a reprovado, também quando nenhuma tarefa
+/// nasce, e vira uma tarefa nova no backlog, cobrindo esse item, se nenhuma
+/// tarefa ainda por entregar já o cobre: são essas tarefas que a função
+/// devolve.
 fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<Map<String, Value>>, Refusal> {
     if let Some(Value::Array(criteria)) = draft.get_mut("criteria") {
         for item in criteria.iter_mut() {
@@ -630,56 +634,21 @@ fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<M
     if draft.get("final") != Some(&Value::Bool(true)) {
         return Ok(Vec::new());
     }
-    let (tasks, missing) = settle_agreed(log, draft, &agreed_prompt::all_agreed(log), "review")?;
+    let mut covered = covered_codes(log, &BTreeSet::new());
+    let (tasks, missing) = settle_agreed(log, draft, &agreed_prompt::all_agreed(log), "review", &mut covered)?;
     if !missing.is_empty() {
         return Err(Refusal::AgreedItemsMissing { missing });
     }
-    if !tasks.is_empty() {
+    let unmet = draft
+        .get("agreed")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|item| item.get("met").and_then(Value::as_bool) != Some(true));
+    if unmet {
         draft.insert("result".into(), json!("rejected"));
     }
     Ok(tasks)
-}
-
-/// O que [`settle_agreed`] devolve: a tarefa de cada item não cumprido e o
-/// código de cada item esperado que ficou sem resposta.
-type SettledAgreed = (Vec<Map<String, Value>>, Vec<String>);
-
-/// A resposta `agreed` de uma volta — a entrega de uma onda ou o veredito
-/// final — resolvida contra os itens combinados que ela precisa responder
-/// (`expected`): cada item citado vira o número vigente dele, e o que não
-/// vem `met:true` vira uma tarefa nova no backlog, de autor `author`,
-/// cobrindo o item, com o que a resposta diz em `text` — sem ele, o texto do
-/// próprio item — e os arquivos que ela cita. Devolve essas tarefas e o
-/// código de cada item esperado que ficou sem resposta. O item citado que a
-/// spec não tem é recusado.
-fn settle_agreed(
-    log: &SpecLog,
-    draft: &mut Map<String, Value>,
-    expected: &[&SpecEvent],
-    author: &str,
-) -> Result<SettledAgreed, Refusal> {
-    let (mut answered, mut tasks) = (Vec::new(), Vec::new());
-    for item in draft.get_mut("agreed").and_then(Value::as_array_mut).into_iter().flatten() {
-        let id = agreed_item_id(log, item.get("item").unwrap_or(&Value::Null))?;
-        item["item"] = json!(id);
-        answered.push(id);
-        if item.get("met").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        let said = item.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
-        let text = said.or_else(|| log.get(id).and_then(|e| e.str_field("text"))).unwrap_or_default();
-        let files = item.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
-        let files: Vec<Value> = files.map(|f| json!({ "path": f })).collect();
-        let task = json!({ "text": text, "files": files, "depends_on": [], "covers": [id], "author": author });
-        tasks.extend(task.as_object().cloned());
-    }
-    let codes = log.codes();
-    let missing = expected
-        .iter()
-        .filter(|item| !answered.contains(&item.id))
-        .map(|item| codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string()))
-        .collect();
-    Ok((tasks, missing))
 }
 
 /// Os itens combinados que o pedido da onda `wave` levou: o que ele lê
@@ -908,7 +877,7 @@ fn criterion_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
 /// página mostra ou pelo número: ao contrário de [`criterion_id`], vale para
 /// qualquer tipo do bloco combinado (decisão, regra, contrato...). Um item
 /// que a spec não tem, ou que saiu da leitura, é recusado.
-fn agreed_item_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
+pub(super) fn agreed_item_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
     let unknown = || Refusal::UnknownTarget {
         target: mustard_core::domain::spec_events::EventRef::from_value(reference)
             .unwrap_or(mustard_core::domain::spec_events::EventRef::Code(reference.to_string())),
@@ -1010,6 +979,9 @@ fn check_reports(
     // outra rodada. A cópia na onda que o conserto fecha não substitui nada.
     let mut deliveries = Vec::new();
     let mut wave_tasks = Vec::new();
+    // Os itens que uma tarefa nascida nesta mesma rodada já cobre: a volta
+    // seguinte não cria outra para eles.
+    let mut covered_now: BTreeSet<String> = BTreeSet::new();
     for report in &report.waves {
         for wave in std::iter::once(report.wave).chain(report.fixes.iter().copied()) {
             let mut draft = Map::new();
@@ -1026,11 +998,19 @@ fn check_reports(
                 draft.insert("replaces".into(), returns);
             }
             // A resposta pelo combinado do pedido fica na entrega oficial,
-            // com cada item pelo número; o item não cumprido vira tarefa. A
-            // falta de resposta já foi recusada na gravação da volta.
+            // com cada item pelo número; o item não cumprido vira tarefa,
+            // a menos que uma tarefa ainda por entregar já o cubra. As da
+            // onda que volta e das que o conserto dela fecha não contam: a
+            // entrega as fecha agora. A falta de resposta já foi recusada
+            // na gravação da volta.
             if wave == report.wave && !report.agreed.is_empty() {
                 draft.insert("agreed".into(), json!(report.agreed));
-                let (tasks, _) = settle_agreed(check.log(), &mut draft, &[], "wave")?;
+                let returning: BTreeSet<u64> = std::iter::once(report.wave).chain(report.fixes.iter().copied()).collect();
+                let mut covered = covered_codes(check.log(), &returning);
+                covered.extend(covered_now.iter().cloned());
+                let known = covered.clone();
+                let (tasks, _) = settle_agreed(check.log(), &mut draft, &[], "wave", &mut covered)?;
+                covered_now.extend(covered.difference(&known).cloned());
                 wave_tasks.extend(tasks.into_iter().map(|task| (wave, task)));
             }
             draft.insert("author".into(), json!("wave"));
@@ -2725,6 +2705,170 @@ mod tests {
             log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).collect();
         assert_eq!(tasks.len(), 1, "one task, for the item not met: {tasks:?}");
         assert_eq!(tasks[0].str_field("text"), Some("A soma arredonda para baixo."), "{tasks:?}");
+    }
+
+    /// As tarefas vigentes da spec `x` que cobrem a primeira decisão dela, em
+    /// qualquer versão, pelo texto de cada uma.
+    fn tasks_covering_the_decision(root: &Path) -> Vec<String> {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        log.visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task")
+            .filter(|t| t.ints("covers").iter().any(|id| codes.get(id).map(String::as_str) == Some("MSTD-DEC-0001")))
+            .map(|t| t.str_field("text").unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// O número vigente do item de código `code` na spec `x`.
+    fn current_id(root: &Path, code: &str) -> u64 {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let ids: Vec<u64> = log.codes().into_iter().filter(|(_, c)| c == code).map(|(id, _)| id).collect();
+        ids.into_iter().filter(|id| log.visible().iter().any(|e| e.id == *id)).max().unwrap()
+    }
+
+    /// Uma tarefa no backlog da spec `x`, sem onda, cobrindo o item `item`.
+    fn backlog_task_covering(root: &Path, item: u64, origin: u64) {
+        let body = json!({"text": "A tarefa do backlog que já cobre a decisão.", "files": [{"path": "src/b.rs"}],
+            "depends_on": [], "covers": [item], "origin": origin});
+        assert_eq!(write(root, "x", "task", body)["ok"], json!(true));
+    }
+
+    /// A volta da onda 1 com a decisão não cumprida, e a rodada que a assume.
+    fn returned_unmet_and_taken(root: &Path) {
+        let answered = json!([{"item": "MSTD-DEC-0001", "met": false, "text": "Falta arredondar para baixo."}]);
+        let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": answered}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+    }
+
+    /// O item combinado que a volta não cumpriu, já coberto por uma tarefa
+    /// do backlog, não ganha outra tarefa: a do backlog segue sozinha, e a
+    /// entrega grava o item como veio, não cumprido e com o texto da onda.
+    #[test]
+    fn an_unmet_item_a_backlog_task_covers_gets_no_new_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = sent_with_a_decision(root);
+        let decision = current_id(root, "MSTD-DEC-0001");
+        backlog_task_covering(root, decision, said);
+        returned_unmet_and_taken(root);
+
+        let covering = tasks_covering_the_decision(root);
+        assert_eq!(covering, vec!["A tarefa do backlog que já cobre a decisão."], "no repeated task: {covering:?}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
+        let expected = json!([{"item": decision, "met": false, "text": "Falta arredondar para baixo."}]);
+        assert_eq!(official.fields["agreed"], expected, "the item stays in the delivery: {:?}", official.fields);
+    }
+
+    /// A tarefa que já foi entregue não cobre mais nada: o item que só ela
+    /// cobria e que a volta não cumpriu ganha tarefa nova no backlog.
+    #[test]
+    fn an_unmet_item_covered_only_by_a_delivered_task_gets_a_new_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], |said| {
+            let body = json!({"text": "A soma arredonda para baixo.", "why": "w", "waves": [1], "keys": ["k"],
+                "origin": said});
+            let decision = id_of(&write(root, "x", "decision", body));
+            let task = json!({"wave": 2, "text": "A tarefa entregue que cobria a decisão.",
+                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [decision], "origin": said});
+            assert_eq!(write(root, "x", "task", task)["ok"], json!(true));
+        });
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1, 2], "{sent}");
+        delivered(root, 2, "A onda 2 saiu.", &["src/b.rs"]);
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+        returned_unmet_and_taken(root);
+
+        let covering = tasks_covering_the_decision(root);
+        let expected = vec!["A tarefa entregue que cobria a decisão.", "Falta arredondar para baixo."];
+        assert_eq!(covering, expected, "the delivered task covers nothing now: {covering:?}");
+    }
+
+    /// O item que a volta não cumpriu e que nenhuma tarefa cobre ganha a
+    /// tarefa no backlog, com o texto da onda.
+    #[test]
+    fn an_unmet_item_no_task_covers_gets_a_new_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_a_decision(root);
+        returned_unmet_and_taken(root);
+        let covering = tasks_covering_the_decision(root);
+        assert_eq!(covering, vec!["Falta arredondar para baixo."], "{covering:?}");
+    }
+
+    /// A tarefa do backlog que cobre uma versão antiga do item cobre também a
+    /// de agora: a cobertura se lê pelo código, não pelo número do evento.
+    #[test]
+    fn a_backlog_task_on_an_older_version_of_the_item_still_covers_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = sent_with_a_decision(root);
+        let older = current_id(root, "MSTD-DEC-0001");
+        backlog_task_covering(root, older, said);
+        let newer = json!({"text": "A soma arredonda para baixo, sempre.", "why": "w", "waves": [1], "keys": ["k"],
+            "origin": said, "replaces": "MSTD-DEC-0001"});
+        assert_eq!(write(root, "x", "decision", newer)["ok"], json!(true));
+        assert_ne!(current_id(root, "MSTD-DEC-0001"), older, "the decision has a new version");
+        returned_unmet_and_taken(root);
+
+        let covering = tasks_covering_the_decision(root);
+        assert_eq!(covering, vec!["A tarefa do backlog que já cobre a decisão."], "no repeated task: {covering:?}");
+    }
+
+    /// A tarefa da própria onda que volta não conta como cobertura: a
+    /// entrega a fecha agora, e o item que a onda não cumpriu ganha tarefa
+    /// nova no backlog.
+    #[test]
+    fn the_returning_waves_own_task_does_not_cover_its_unmet_item() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let body = json!({"text": "A soma arredonda para baixo.", "why": "w", "waves": [1], "keys": ["k"],
+                "origin": said});
+            let decision = id_of(&write(root, "x", "decision", body));
+            let task = json!({"wave": 1, "text": "A tarefa da onda que cobre a decisão.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [decision], "origin": said});
+            assert_eq!(write(root, "x", "task", task)["ok"], json!(true));
+        });
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+        returned_unmet_and_taken(root);
+
+        let covering = tasks_covering_the_decision(root);
+        let expected = vec!["A tarefa da onda que cobre a decisão.", "Falta arredondar para baixo."];
+        assert_eq!(covering, expected, "the returning wave's task covers nothing: {covering:?}");
+    }
+
+    /// O veredito final com um item não cumprido, já coberto por uma tarefa
+    /// do backlog, não cria tarefa nova e fica reprovado mesmo assim.
+    #[test]
+    fn a_final_verdict_with_an_unmet_covered_item_creates_no_task_and_stays_rejected() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = sent_with_a_decision(root);
+        delivered(root, 1, "A soma saiu.", &["src/a.rs"]);
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+        backlog_task_covering(root, current_id(root, "MSTD-DEC-0001"), said);
+
+        seed_review(root);
+        let agreed = json!([{"item": "MSTD-DEC-0001", "met": false, "text": "Falta arredondar para baixo."}]);
+        let wrote = judged(root, json!({"result": "approved", "final": true, "text": "passou", "agreed": agreed,
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+
+        let covering = tasks_covering_the_decision(root);
+        assert_eq!(covering, vec!["A tarefa do backlog que já cobre a decisão."], "no repeated task: {covering:?}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let verdict = log.visible().into_iter().find(|e| e.event_type == "verdict").expect("the verdict");
+        assert_eq!(verdict.str_field("result"), Some("rejected"), "{:?}", verdict.fields);
     }
 
     /// A volta da onda 1 que cita um caminho dentro de uma cópia vizinha —

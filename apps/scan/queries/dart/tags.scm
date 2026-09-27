@@ -91,3 +91,13 @@
 ; declaration it adorns: the engine passes over it to find the doc comment
 ; above, starts the header after it, and reads no call out of it.
 (annotation) @decoration
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(initialized_variable_definition name: (identifier) @local)
+(formal_parameter name: (identifier) @local)
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(string_literal) @text

@@ -105,6 +105,21 @@ fn main() {
     let mut implicit_table = String::new();
     implicit_table.push_str("pub(crate) static LANG_IMPLICIT_SELF: &[(&str, bool)] = &[\n");
 
+    // (name, import_self) — o nome OPCIONAL que, trazido por um import, traz
+    // o último nome escrito antes da lista que o contém. Sem o campo, texto
+    // vazio: todo nome trazido é ele mesmo.
+    let mut import_self_table = String::new();
+    import_self_table.push_str("pub(crate) static LANG_IMPORT_SELF: &[(&str, &str)] = &[\n");
+
+    // (name, prelude), (name, log_calls) e (name, error_forms) — os nomes
+    // OPCIONAIS que todo arquivo vê sem import, as chamadas que escrevem log
+    // e as formas que lançam ou devolvem erro. Sem o campo, lista vazia.
+    let list_fields = ["prelude", "log_calls", "error_forms"];
+    let mut list_field_tables: Vec<String> = list_fields
+        .iter()
+        .map(|field| format!("pub(crate) static LANG_{}: &[(&str, &[&str])] = &[\n", field.to_ascii_uppercase()))
+        .collect();
+
     // (name, dir) — a família da língua: as que leem as mesmas consultas
     // (`dir`) são a mesma língua escrita em arquivos diferentes, e uma chamada
     // alcança as declarações da família inteira.
@@ -213,6 +228,15 @@ fn main() {
             tbl.get("parent_alias").is_none() || !parent_alias.is_empty(),
             "language.parent_alias of `{name}` must not be empty"
         );
+        let import_self = tbl
+            .get("import_self")
+            .map(|v| v.as_str().expect("language.import_self must be a string").to_string())
+            .unwrap_or_default();
+        assert!(
+            tbl.get("import_self").is_none() || !import_self.is_empty(),
+            "language.import_self of `{name}` must not be empty"
+        );
+        let list_values: Vec<Vec<String>> = list_fields.iter().map(|field| str_list(tbl, field)).collect();
         let namespace_scope = tbl
             .get("namespace_scope")
             .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
@@ -261,6 +285,12 @@ fn main() {
             .expect("the generated table is a String, which never fails to write");
         writeln!(implicit_table, "    ({name:?}, {implicit_self}),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(import_self_table, "    ({name:?}, {import_self:?}),")
+            .expect("the generated table is a String, which never fails to write");
+        for (table, values) in list_field_tables.iter_mut().zip(&list_values) {
+            writeln!(table, "    ({name:?}, &[{}]),", quoted_list(values))
+                .expect("the generated table is a String, which never fails to write");
+        }
         writeln!(family_table, "    ({name:?}, {dir:?}),").expect("the generated table is a String, which never fails to write");
         for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
             writeln!(table, "    ({name:?}, {value:?}),").expect("the generated table is a String, which never fails to write");
@@ -282,7 +312,11 @@ fn main() {
     body.push_str(&separators_table);
     parent_table.push_str("];\n");
     body.push_str(&parent_table);
-    for table in [&mut member_table, &mut self_table, &mut implicit_table, &mut family_table] {
+    for table in
+        [&mut member_table, &mut self_table, &mut implicit_table, &mut family_table, &mut import_self_table]
+            .into_iter()
+            .chain(list_field_tables.iter_mut())
+    {
         table.push_str("];\n");
         body.push_str(table);
     }

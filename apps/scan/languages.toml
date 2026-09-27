@@ -118,6 +118,29 @@
 #                 dentro da classe). Sem o campo, `false`: o nome sozinho
 #                 nunca alcança um método, um campo ou um membro de enum, e o
 #                 `Ok(` ou o `fechar()` escrito sem o objeto não liga a eles.
+#   import_self   OPTIONAL — o nome que, trazido por um import (`@imported`),
+#                 traz o último nome escrito antes da lista que o contém
+#                 (`self` em `use std::fs::{self, File}` traz `fs`). Sem o
+#                 campo, todo nome trazido é ele mesmo.
+#   prelude       OPTIONAL — os nomes que todo arquivo da língua vê sem
+#                 import (`Result`, `Option`). O nome escrito sozinho que está
+#                 aqui só liga a uma declaração do projeto quando o arquivo o
+#                 declara, o traz pelo nome num import ou importa com `*` o
+#                 arquivo que o declara; senão é o da língua e não liga. Sem o
+#                 campo, nenhum nome é da língua.
+#   log_calls     OPTIONAL — as chamadas que escrevem no log (`console.log`,
+#                 `println!`). O texto fixo (`@text`) escrito dentro de uma
+#                 delas ganha a marca log. Cada entrada casa com o nome escrito
+#                 antes do texto inteiro ou com o fim dele depois de um
+#                 separador (`info!` casa com `tracing::info!`), e o `*` casa
+#                 com qualquer nome (`console.*`). Vale o nome mais próximo do
+#                 texto que casa com este campo ou com `error_forms`. Sem o
+#                 campo, nenhum texto da língua é de log.
+#   error_forms   OPTIONAL — o que lança ou devolve erro: a palavra que abre o
+#                 comando (`throw`, `raise`) ou o nome escrito antes do texto
+#                 (`Err`, `*Exception`), casados como em `log_calls`. O texto
+#                 fixo escrito dentro de um deles ganha a marca erro. Sem o
+#                 campo, nenhum texto da língua é de erro.
 
 [[language]]
 name = "csharp"
@@ -132,6 +155,8 @@ doc_tags = [
     "para", "c", "code", "list", "item", "term", "description", "exception",
     "see", "seealso", "paramref", "typeparamref", "inheritdoc", "include",
 ]
+log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
+error_forms = ["throw", "*Exception"]
 
 [[language]]
 name = "typescript"
@@ -144,6 +169,8 @@ alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
 alias_paths = "compilerOptions.paths"
 alias_extends = "extends"
+log_calls = ["console.*", "logger.*", "Logger.*"]
+error_forms = ["throw", "*Error", "*Exception", "reject"]
 
 [[language]]
 name = "tsx"
@@ -156,6 +183,8 @@ alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
 alias_paths = "compilerOptions.paths"
 alias_extends = "extends"
+log_calls = ["console.*", "logger.*", "Logger.*"]
+error_forms = ["throw", "*Error", "*Exception", "reject"]
 
 [[language]]
 name = "python"
@@ -164,6 +193,8 @@ dir = "python"
 grammar = "grammar_py::LANGUAGE"
 relative_import = { separator = ".", package_file = "__init__" }
 self_receivers = ["self", "cls"]
+log_calls = ["print", "logging.*", "logger.*", "log.*"]
+error_forms = ["raise", "*Error", "*Exception"]
 
 [[language]]
 name = "rust"
@@ -175,6 +206,10 @@ parent_alias = "super"
 qualified_separators = ["::"]
 member_separators = ["."]
 self_receivers = ["self", "Self"]
+import_self = "self"
+prelude = ["Result", "Option", "Ok", "Err", "Some", "None", "Vec", "String", "Box"]
+log_calls = ["println!", "eprintln!", "print!", "eprint!", "info!", "warn!", "error!", "debug!", "trace!", "log!"]
+error_forms = ["Err", "panic!", "bail!", "anyhow!", "ensure!", "unreachable!", "unimplemented!", "todo!", "expect", "context", "with_context", "error"]
 
 [[language]]
 name = "go"
@@ -182,6 +217,8 @@ extensions = ["go"]
 dir = "go"
 grammar = "grammar_go::LANGUAGE"
 namespace_scope = "folder"
+log_calls = ["log.*", "fmt.Print*", "fmt.Fprint*", "slog.*"]
+error_forms = ["errors.New", "fmt.Errorf", "panic", "Error"]
 
 [[language]]
 name = "php"
@@ -190,6 +227,8 @@ dir = "php"
 grammar = "grammar_php::LANGUAGE_PHP"
 member_separators = ["->"]
 self_receivers = ["this", "self", "static"]
+log_calls = ["error_log", "Log::*", "logger->*", "logger"]
+error_forms = ["throw", "*Exception", "abort"]
 
 [[language]]
 name = "dart"
@@ -198,3 +237,5 @@ dir = "dart"
 grammar = "grammar_dart::LANGUAGE"
 self_receivers = ["this"]
 implicit_self = true
+log_calls = ["print", "debugPrint", "log", "logger.*"]
+error_forms = ["throw", "*Exception", "*Error"]

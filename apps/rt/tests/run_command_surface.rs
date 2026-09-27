@@ -407,7 +407,7 @@ fn o_despejo_do_mapa_traz_uma_entrada_por_tabela() {
     assert_eq!(
         names,
         [
-            "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "links", "graph",
+            "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "links", "graph",
             "fan_in", "layers", "touchpoints", "history_paths", "commits", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"

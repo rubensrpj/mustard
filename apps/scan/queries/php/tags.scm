@@ -40,3 +40,15 @@
 ; declaration it adorns: the engine starts the header after it and reads no
 ; call out of it.
 (attribute_list) @decoration
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(assignment_expression left: (variable_name (name) @local))
+(simple_parameter name: (variable_name (name) @local))
+(anonymous_function_use_clause (variable_name (name) @local))
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(string) @text
+(encapsed_string) @text

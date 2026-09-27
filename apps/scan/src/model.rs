@@ -246,6 +246,14 @@ pub struct Module {
     /// passada que não relê o arquivo ligue igual.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub call_paths: BTreeMap<String, Vec<CallSite>>,
+    /// De cada import do arquivo, como foi escrito, os nomes que ele traz
+    /// (`@imported`). O nome que um import de fora do projeto traz é de fora:
+    /// escrito sozinho ou antes de outro nome, não liga a nada do projeto. A
+    /// resolução é do projeto inteiro e se refaz a cada passada, por isso os
+    /// nomes ficam com o módulo, para que a passada que não relê o arquivo
+    /// ligue igual.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub brought: BTreeMap<String, Vec<String>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     /// Machine-written class, when one applies: "generated" | "vendored" |
@@ -292,7 +300,36 @@ pub struct Module {
     /// same way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cites: Vec<CallSite>,
+    /// Os textos fixos do arquivo (`@text`), fora os do trecho de teste, em
+    /// ordem de linha. O arquivo de teste e o escrito por máquina não guardam
+    /// nenhum. Guardados com o módulo, para que a passada que não relê o
+    /// arquivo guarde os mesmos. Written only when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<Text>,
 }
+
+/// Um texto fixo escrito no código: a linha, a marca — [`TEXT_LOG`],
+/// [`TEXT_ERROR`] ou [`TEXT_PLAIN`] —, o valor sem as aspas, numa linha, e o
+/// nome da declaração que contém a linha (vazio fora de toda declaração).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Text {
+    pub line: usize,
+    pub kind: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
+}
+
+/// A marca do texto escrito numa chamada de log (`log_calls` em
+/// languages.toml).
+pub const TEXT_LOG: &str = "log";
+
+/// A marca do texto escrito no que lança ou devolve erro (`error_forms` em
+/// languages.toml).
+pub const TEXT_ERROR: &str = "error";
+
+/// A marca de todo outro texto fixo.
+pub const TEXT_PLAIN: &str = "text";
 
 impl Module {
     /// A linha cai num trecho de teste do arquivo ([`Module::test_lines`]).

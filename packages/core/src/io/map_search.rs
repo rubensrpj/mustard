@@ -4,10 +4,12 @@
 //! O índice tem dois níveis, a declaração e o arquivo, com uma coluna por
 //! campo:
 //!
-//! - a declaração: o nome, o caminho do arquivo, a assinatura e a
-//!   documentação;
-//! - o arquivo: os nomes que ele declara, o caminho e a documentação das
-//!   declarações dele.
+//! - a declaração: o nome, o caminho do arquivo, a assinatura, a
+//!   documentação e os textos fixos escritos nela — as mensagens de log, as
+//!   de erro e os outros textos, um campo para cada marca;
+//! - o arquivo: os nomes que ele declara, o caminho, a documentação das
+//!   declarações dele e os textos fixos do arquivo inteiro, nos mesmos três
+//!   campos.
 //!
 //! Cada texto passa pela normalização de toda busca (`domain::normalize`),
 //! nas línguas do projeto, antes de entrar: o nome colado entra quebrado
@@ -18,7 +20,8 @@
 //! trigram, para o pedaço do nome. O arquivo escrito por máquina fica fora
 //! do índice.
 //!
-//! A busca devolve arquivos. A nota é o BM25F de `domain::search`, calculado
+//! A busca devolve arquivos, cada um com o texto fixo dele que mais casa com
+//! a pergunta, quando algum casa. A nota é o BM25F de `domain::search`, calculado
 //! aqui sobre as listas do banco: a lista de cada forma e o tamanho dos
 //! campos saem numa consulta só. Antes dela, cada forma da pergunta passa
 //! pelo tokenizador do índice, que tira os acentos que a normalização não
@@ -32,9 +35,10 @@ use std::path::Path;
 
 use rusqlite::types::{Value as Sql, ValueRef};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Statement};
+use serde::Deserialize;
 
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::project_map::{Found, MapRefusal};
+use crate::domain::project_map::{Found, FoundText, MapRefusal};
 use crate::domain::search::{bm25f, score_x1024, Fields, Posting};
 use crate::io::project_map::{model_path, open_existing, unreadable};
 use crate::platform::error::Result;
@@ -49,19 +53,50 @@ struct Level {
 }
 
 /// O nível dos arquivos: o que a busca devolve.
-const FILE_LEVEL: Level =
-    Level { fts: "file_fts", vocab: "file_vocab", lengths: "file_lengths", fields: &["name", "path", "doc"] };
+const FILE_LEVEL: Level = Level {
+    fts: "file_fts",
+    vocab: "file_vocab",
+    lengths: "file_lengths",
+    fields: &["name", "path", "doc", "log", "error", "text"],
+};
 
 /// O nível das declarações.
 const DECL_LEVEL: Level = Level {
     fts: "decl_fts",
     vocab: "decl_vocab",
     lengths: "decl_lengths",
-    fields: &["name", "path", "signature", "doc"],
+    fields: &["name", "path", "signature", "doc", "log", "error", "text"],
 };
 
+/// Os campos dos textos fixos, os últimos dos dois níveis, nesta ordem: cada
+/// texto entra no campo da marca que o scan deu a ele, e a marca que não é
+/// nenhuma destas entra no último.
+const TEXT_FIELDS: [&str; 3] = ["log", "error", "text"];
+
+/// Um texto fixo como o scan o grava, na tabela dos textos de cada arquivo.
+#[derive(Deserialize)]
+struct Written {
+    #[serde(default)]
+    line: u64,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    owner: String,
+}
+
+impl Written {
+    /// O campo do texto entre os de [`TEXT_FIELDS`].
+    fn field(&self) -> usize {
+        TEXT_FIELDS.iter().position(|kind| *kind == self.kind).unwrap_or(TEXT_FIELDS.len() - 1)
+    }
+}
+
 /// O peso de cada campo na nota: todos o mesmo, como na prova da busca que
-/// achou 119 dos 140 pontos da régua de perguntas.
+/// achou 119 dos 140 pontos da régua de perguntas. Os campos dos textos
+/// fixos entraram com o mesmo peso: nesta busca, a régua foi de 101 para
+/// 114 pontos com eles.
 const FIELD_WEIGHT: f64 = 1.0;
 
 /// A pergunta de uma palavra que procura o pedaço do nome tem pelo menos
@@ -133,12 +168,15 @@ pub(crate) fn forget(conn: &Connection) -> Result<()> {
 /// Os documentos dos dois níveis, lidos das tabelas do mapa, com as palavras
 /// já preparadas: cada arquivo que não é escrito por máquina e cada
 /// declaração dele. Cada texto se prepara uma vez: o caminho, uma vez por
-/// arquivo; os nomes e a documentação do arquivo são as palavras das
-/// declarações dele, sem repetir a palavra de mesmas formas — o mesmo que
-/// preparar o texto delas junto.
+/// arquivo; os nomes, a documentação e os textos fixos do arquivo são as
+/// palavras das declarações dele e dos textos dele, sem repetir a palavra de
+/// mesmas formas — o mesmo que preparar o texto delas junto. Cada texto fixo
+/// é também da declaração mais interna que contém a linha dele.
 fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>, Vec<Decl>)> {
     let mut files: Vec<Doc> = Vec::new();
-    let mut seen: Vec<[HashSet<Vec<String>>; 2]> = Vec::new();
+    // As palavras que o arquivo já tem nos nomes, na documentação e em cada
+    // campo dos textos.
+    let mut seen: Vec<[HashSet<Vec<String>>; 5]> = Vec::new();
     let mut at: HashMap<String, usize> = HashMap::new();
     let mut stmt = conn.prepare("SELECT rowid, path, file_class FROM files ORDER BY rowid")?;
     let mut rows = stmt.query([])?;
@@ -149,28 +187,110 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         let path = text(row, 1)?;
         let words = normalizer.forms(&path);
         at.insert(path, files.len());
-        files.push(Doc { id: row.get(0)?, fields: vec![Vec::new(), words, Vec::new()] });
+        let mut fields = vec![Vec::new(); FILE_LEVEL.fields.len()];
+        fields[1] = words;
+        files.push(Doc { id: row.get(0)?, fields });
         seen.push(Default::default());
     }
-    let mut decls = Vec::new();
-    let mut stmt = conn.prepare("SELECT rowid, file, name, signature, doc FROM decls ORDER BY rowid")?;
+    let mut rows_of: Vec<DeclRow> = Vec::new();
+    let mut stmt = conn.prepare("SELECT rowid, file, name, signature, doc, line, end_line FROM decls ORDER BY rowid")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let Some(&owner) = at.get(&text(row, 1)?) else { continue };
-        let name = text(row, 2)?;
-        let (name_words, doc_words) = (normalizer.forms(&name), normalizer.forms(&text(row, 4)?));
-        let file = &mut files[owner];
-        for (field, words, known) in [(0, &name_words, 0), (2, &doc_words, 1)] {
-            for word in words {
-                if seen[owner][known].insert(word.clone()) {
-                    file.fields[field].push(word.clone());
-                }
+        let line = |at: usize| -> Result<u64> { Ok(row.get::<_, Option<i64>>(at)?.unwrap_or(0).max(0) as u64) };
+        rows_of.push(DeclRow {
+            id: row.get(0)?,
+            owner,
+            name: text(row, 2)?,
+            signature: text(row, 3)?,
+            doc: text(row, 4)?,
+            lines: (line(5)?, line(6)?),
+            texts: vec![Vec::new(); TEXT_FIELDS.len()],
+        });
+    }
+    // Os textos de cada arquivo: as palavras vão para o arquivo e para a
+    // declaração dele que contém a linha.
+    let mut decls_of: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
+    for (at, row) in rows_of.iter().enumerate() {
+        decls_of[row.owner].push(at);
+    }
+    for (path, written) in written_texts(conn)? {
+        let Some(&owner) = at.get(&path) else { continue };
+        for written in written {
+            let words = normalizer.forms(&written.value);
+            let field = written.field();
+            add_new(&mut files[owner].fields[3 + field], &mut seen[owner][2 + field], &words);
+            if let Some(decl) = innermost(&rows_of, &decls_of[owner], written.line) {
+                rows_of[decl].texts[field].push(words);
             }
         }
-        let fields = vec![name_words, file.fields[1].clone(), normalizer.forms(&text(row, 3)?), doc_words];
-        decls.push(Decl { doc: Doc { id: row.get(0)?, fields }, name, file: file.id });
+    }
+    let mut decls = Vec::new();
+    for row in rows_of {
+        let (name_words, doc_words) = (normalizer.forms(&row.name), normalizer.forms(&row.doc));
+        let file = &mut files[row.owner];
+        add_new(&mut file.fields[0], &mut seen[row.owner][0], &name_words);
+        add_new(&mut file.fields[2], &mut seen[row.owner][1], &doc_words);
+        let mut fields = vec![name_words, file.fields[1].clone(), normalizer.forms(&row.signature), doc_words];
+        for texts in row.texts {
+            let mut words: Words = Vec::new();
+            add_new(&mut words, &mut HashSet::new(), &texts.concat());
+            fields.push(words);
+        }
+        decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id });
     }
     Ok((files, decls))
+}
+
+/// Uma declaração lida do mapa para o índice: o número dela, o arquivo, o
+/// nome, a assinatura, a documentação, a primeira e a última linha, e as
+/// palavras dos textos fixos que caem nela, por campo.
+struct DeclRow {
+    id: i64,
+    owner: usize,
+    name: String,
+    signature: String,
+    doc: String,
+    lines: (u64, u64),
+    texts: Vec<Vec<Words>>,
+}
+
+/// Acrescenta a `into` cada palavra de `words` que `seen` ainda não tem.
+fn add_new(into: &mut Words, seen: &mut HashSet<Vec<String>>, words: &Words) {
+    for word in words {
+        if seen.insert(word.clone()) {
+            into.push(word.clone());
+        }
+    }
+}
+
+/// Das declarações `of` um arquivo, a que contém a linha `line`: a mais
+/// interna, a que começa mais abaixo; empatadas, a última. A declaração sem a
+/// última linha gravada cobre só o que vem depois dela.
+fn innermost(rows: &[DeclRow], of: &[usize], line: u64) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for &at in of {
+        let (first, last) = rows[at].lines;
+        if first <= line && (last == 0 || last >= line) && best.is_none_or(|b| rows[b].lines.0 <= first) {
+            best = Some(at);
+        }
+    }
+    best
+}
+
+/// Os textos fixos de cada arquivo, como o scan os gravou. O arquivo cuja
+/// coluna não se lê fica sem eles.
+fn written_texts(conn: &Connection) -> Result<Vec<(String, Vec<Written>)>> {
+    let mut stmt = conn.prepare("SELECT path, texts FROM texts ORDER BY rowid")?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let written: Vec<Written> = serde_json::from_str(&text(row, 1)?).unwrap_or_default();
+        if !written.is_empty() {
+            out.push((text(row, 0)?, written));
+        }
+    }
+    Ok(out)
 }
 
 /// O texto da coluna `at`; vazio quando ela não guarda texto.
@@ -245,7 +365,9 @@ fn made_in(conn: &Connection, languages: &Languages) -> Result<bool> {
 }
 
 fn found(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
-    let by_words = by_words(conn, &FILE_LEVEL, &Normalizer::new(languages).query(query))?;
+    let mut normalizer = Normalizer::new(languages);
+    let words = normalizer.query(query);
+    let by_words = by_words(conn, &FILE_LEVEL, &words)?;
     let scores: HashMap<i64, f64> = by_words.iter().copied().collect();
     let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1")?;
     let mut out: Vec<Found> = Vec::new();
@@ -260,9 +382,36 @@ fn found(conn: &Connection, query: &str, languages: &Languages, limit: usize) ->
         if out.iter().any(|seen| seen.path == path) {
             continue;
         }
-        out.push(Found { path, score: score.map_or(0, score_x1024) });
+        out.push(Found { path, score: score.map_or(0, score_x1024), text: None });
+    }
+    let mut texts = conn.prepare("SELECT texts FROM texts WHERE path = ?1")?;
+    for found in &mut out {
+        found.text = best_text(&mut texts, &found.path, &words, &mut normalizer)?;
     }
     Ok(out)
+}
+
+/// O texto fixo do arquivo em `path` que mais casa com as palavras `words` da
+/// pergunta: o que tem mais delas, por alguma das formas; empatados, o de
+/// linha mais acima. `None` quando nenhum tem nenhuma.
+fn best_text(
+    texts: &mut Statement<'_>,
+    path: &str,
+    words: &[Vec<String>],
+    normalizer: &mut Normalizer,
+) -> Result<Option<FoundText>> {
+    let mut rows = texts.query([path])?;
+    let Some(row) = rows.next()? else { return Ok(None) };
+    let written: Vec<Written> = serde_json::from_str(&text(row, 0)?).unwrap_or_default();
+    let mut best: Option<(usize, Written)> = None;
+    for candidate in written {
+        let forms: HashSet<String> = normalizer.forms(&candidate.value).into_iter().flatten().collect();
+        let hits = words.iter().filter(|word| word.iter().any(|form| forms.contains(form))).count();
+        if hits > 0 && best.as_ref().is_none_or(|(most, _)| hits > *most) {
+            best = Some((hits, candidate));
+        }
+    }
+    Ok(best.map(|(_, w)| FoundText { line: w.line, kind: w.kind, value: w.value, owner: w.owner }))
 }
 
 /// A nota de cada documento do nível para as palavras da pergunta, cada uma

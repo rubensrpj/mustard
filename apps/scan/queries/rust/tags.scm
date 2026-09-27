@@ -73,3 +73,22 @@
 ; it, and reads no call out of it (`#[derive(Debug)]` calls nothing).
 (attribute_item) @decoration
 (inner_attribute_item) @decoration
+
+; O `self` de uma lista de import traz o último nome escrito antes dela (`fs`
+; em `use std::fs::{self}`).
+(use_list (self) @imported)
+
+; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
+; declaração, o mesmo nome escrito sozinho é deles.
+(let_declaration pattern: (identifier) @local)
+(let_declaration pattern: (tuple_pattern (identifier) @local))
+(parameter pattern: (identifier) @local)
+(closure_parameters (identifier) @local)
+(closure_parameters (parameter pattern: (identifier) @local))
+(for_expression pattern: (identifier) @local)
+
+; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
+; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
+; texto) e a declaração que o contém.
+(string_literal) @text
+(raw_string_literal) @text

@@ -655,7 +655,8 @@ pub const TYPES: &[TypeSpec] = &[
             opt("leftovers", Kind::Objects),
             // A resposta por cada item combinado que o pedido da onda levou,
             // como a do veredito final (`item`, `met`): o item que não vem
-            // cumprido vira tarefa no backlog quando a rodada assume a volta.
+            // cumprido vira tarefa no backlog quando a rodada assume a volta,
+            // se nenhuma tarefa ainda por entregar já o cobre.
             opt("agreed", Kind::Objects),
             RETURNED,
         ],

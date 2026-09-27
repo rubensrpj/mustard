@@ -229,6 +229,56 @@ fn the_binary_installs_the_code_tool_of_a_detected_language() {
     );
 }
 
+/// The TypeScript server on PATH whose check fails — the TypeScript it finds
+/// ships no `tsserver.js`, so it opens and answers nothing — counts as
+/// missing: through the REAL binary, with `npm`, `claude` and the server
+/// shimmed and a `node` that fails the check, the install puts the server
+/// back and brings `typescript@6` into the server's own folder, never
+/// installing `typescript` globally, and prints the warning with the command
+/// because the check still fails afterwards.
+#[test]
+#[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
+fn the_binary_brings_typescript_6_into_the_servers_folder() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log = tmp.path().join("spawn.log");
+    let bin = shim_dir(&log, true);
+    for (tool, exit) in [("npm", 0), ("claude", 0), ("typescript-language-server", 0), ("node", 1)] {
+        let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit {exit}\n", log.display());
+        let path = bin.join(tool);
+        fs::write(&path, script).expect("write shim");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        }
+    }
+    let project = fresh_repo(tmp.path());
+    fs::write(project.join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).expect("package.json");
+    fs::write(project.join("tsconfig.json"), "{}\n").expect("tsconfig.json");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+
+    let out = run_init(&project, &bin, &home);
+
+    assert!(out.status.success(), "the install must still succeed: {}", String::from_utf8_lossy(&out.stderr));
+    let spawned = fs::read_to_string(&log).unwrap_or_default();
+    let npm: Vec<&str> = spawned.lines().filter(|l| l.starts_with("npm ")).collect();
+    assert_eq!(
+        npm,
+        vec![
+            "npm install -g typescript-language-server",
+            "npm explore -g typescript-language-server -- npm install --global=false --prefix lib --no-save typescript@6",
+        ],
+        "log was:\n{spawned}"
+    );
+    assert_eq!(spawned.lines().filter(|l| l.starts_with("node -e ")).count(), 2, "checked before and after: {spawned}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("typescript-language-server is on PATH but does not answer - install manually: npm install -g"),
+        "the install must say the server does not answer: {stdout}"
+    );
+}
+
 /// What is in `home`, by name. The install may leave nothing there.
 fn home_entries(home: &Path) -> Vec<String> {
     fs::read_dir(home)

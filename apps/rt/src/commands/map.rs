@@ -159,7 +159,17 @@ fn answer_from(
             let query = after_the_map(required(opts.query.as_deref(), question, "--query"), read)?;
             let files: Vec<Value> = map_search::search(root, &query, languages, TOP)?
                 .into_iter()
-                .map(|found| json!({ "path": found.path, "score": found.score }))
+                .map(|found| {
+                    let mut file = json!({ "path": found.path, "score": found.score });
+                    // O texto fixo que casou vem com a linha e a declaração
+                    // onde nasce.
+                    if let Some(text) = found.text {
+                        file["text"] = json!({
+                            "line": text.line, "kind": text.kind, "value": text.value, "owner": text.owner
+                        });
+                    }
+                    file
+                })
                 .collect();
             Ok(json!({ "ok": true, "question": "search", "query": query, "files": files }))
         }
@@ -541,6 +551,32 @@ mod tests {
         assert_eq!(picks[0]["path"], json!("apps/rt/src/commands/pay/write.rs"));
         assert_eq!(picks[1]["path"], json!("apps/rt/src/commands/pay/read.rs"));
         assert_eq!(report["recipes"][0]["added"], json!("apps/rt/src/commands/pay/read.rs"));
+    }
+
+    /// A busca acha o arquivo pela mensagem que o usuário viu, e mostra o
+    /// texto que casou com a linha e a declaração onde ele nasce.
+    #[test]
+    fn the_search_answer_shows_the_matched_text_with_its_line_and_declaration() {
+        let dir = tempdir().unwrap();
+        store::write_text(
+            dir.path(),
+            r#"{"modules": [
+              {"path": "src/consulta.rs", "loc": 40, "declarations": [{"name": "carregar", "line": 1, "end_line": 9}],
+               "texts": [{"line": 2, "kind": "log", "value": "carregando o registro", "owner": "carregar"},
+                         {"line": 4, "kind": "error", "value": "pedido não encontrado", "owner": "carregar"}]},
+              {"path": "src/billing.rs", "loc": 40, "declarations": [{"name": "Payment"}]}
+            ]}"#,
+        )
+        .unwrap();
+        let mut opts = ask(dir.path(), Question::Search);
+        opts.query = Some("pedido não encontrado".to_string());
+        let report = answered(&opts);
+        assert_eq!(report["files"][0]["path"], json!("src/consulta.rs"), "{report}");
+        assert_eq!(
+            report["files"][0]["text"],
+            json!({"line": 4, "kind": "error", "value": "pedido não encontrado", "owner": "carregar"}),
+            "{report}"
+        );
     }
 
     #[test]

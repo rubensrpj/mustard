@@ -35,11 +35,50 @@ use crate::platform::harness::home_dir;
 /// O programa que um plugin de linguagem chama, e o comando que instala esse
 /// programa. `plugin` é `None` para uma linguagem que o catálogo oficial
 /// ainda não cobre — hoje, Dart.
+///
+/// `install_cmd` pode ter mais de um passo, separados por `&&`: a etapa roda
+/// um depois do outro, sem shell, e a pessoa pode colar a linha inteira no
+/// terminal. `check`, quando há, é o comando — o programa e os argumentos —
+/// que sai com sucesso só quando o programa responde: estar no `PATH` não
+/// basta para ele.
 pub struct CodeTool {
     pub plugin: Option<&'static str>,
     pub program: &'static str,
     pub install_cmd: &'static str,
+    pub check: Option<&'static [&'static str]>,
 }
+
+impl CodeTool {
+    /// `true` quando o programa responde, pela conferência da tabela; sem
+    /// conferência, estar no `PATH` basta, e nada roda.
+    pub fn answers(&self, runner: &impl ToolRunner) -> bool {
+        match self.check {
+            Some([program, args @ ..]) => runner.run(program, args),
+            _ => true,
+        }
+    }
+}
+
+/// A instalação do servidor de TypeScript. O servidor vai global, e o
+/// TypeScript 6 vai para dentro da pasta dele (`lib/node_modules`), onde ele
+/// o acha antes do global: o TypeScript 7 não traz o `tsserver.js` de que o
+/// servidor precisa, e com ele o servidor abre e responde vazio. O `tsc`
+/// global da pessoa fica como está. `npm explore` roda o segundo passo já na
+/// pasta do servidor, sem depender do shell para achar a pasta global.
+const TYPESCRIPT_INSTALL: &str = "npm install -g typescript-language-server && npm explore -g \
+    typescript-language-server -- npm install --global=false --prefix lib --no-save typescript@6";
+
+/// A conferência do servidor de TypeScript: o TypeScript que ele acha a
+/// partir do próprio `lib/cli.mjs`, como ele mesmo procura, traz o
+/// `tsserver.js` ao lado.
+const TYPESCRIPT_CHECK: &[&str] = &[
+    "node",
+    "-e",
+    "const{execSync:x}=require('child_process'),p=require('path'),f=require('fs'),m=require('module');\
+     const s=p.join(x('npm root -g').toString().trim(),'typescript-language-server','lib','cli.mjs');\
+     const t=m.createRequire(s).resolve('typescript');\
+     process.exit(f.existsSync(p.join(p.dirname(t),'tsserver.js'))?0:1)",
+];
 
 /// `(linguagem, ferramenta)` — DADO, não lógica. As chaves são os nomes que
 /// `apps/scan/languages.toml` e o registro de pilhas usam.
@@ -50,6 +89,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             plugin: Some("rust-analyzer-lsp"),
             program: "rust-analyzer",
             install_cmd: "rustup component add rust-analyzer",
+            check: None,
         },
     ),
     (
@@ -57,7 +97,8 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
         CodeTool {
             plugin: Some("typescript-lsp"),
             program: "typescript-language-server",
-            install_cmd: "npm install -g typescript-language-server typescript",
+            install_cmd: TYPESCRIPT_INSTALL,
+            check: Some(TYPESCRIPT_CHECK),
         },
     ),
     (
@@ -65,7 +106,8 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
         CodeTool {
             plugin: Some("typescript-lsp"),
             program: "typescript-language-server",
-            install_cmd: "npm install -g typescript-language-server typescript",
+            install_cmd: TYPESCRIPT_INSTALL,
+            check: Some(TYPESCRIPT_CHECK),
         },
     ),
     (
@@ -74,6 +116,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             plugin: Some("csharp-lsp"),
             program: "csharp-ls",
             install_cmd: "dotnet tool install --global csharp-ls",
+            check: None,
         },
     ),
     (
@@ -82,6 +125,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             plugin: Some("gopls-lsp"),
             program: "gopls",
             install_cmd: "go install golang.org/x/tools/gopls@latest",
+            check: None,
         },
     ),
     (
@@ -90,6 +134,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             plugin: Some("pyright-lsp"),
             program: "pyright-langserver",
             install_cmd: "npm install -g pyright",
+            check: None,
         },
     ),
     (
@@ -98,6 +143,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             plugin: Some("php-lsp"),
             program: "intelephense",
             install_cmd: "npm install -g intelephense",
+            check: None,
         },
     ),
 ];
@@ -249,6 +295,9 @@ pub enum CodeToolWarning {
     OffPath { language: String, program: &'static str, found_at: PathBuf },
     /// O programa não está no `PATH`, e a instalação não o trouxe.
     ProgramMissing { language: String, program: &'static str, install_cmd: &'static str },
+    /// O programa está no `PATH`, mas a conferência dele falha, mesmo depois
+    /// de a etapa rodar a instalação.
+    NotReady { language: String, program: &'static str, install_cmd: &'static str },
     /// `claude plugin install` não deu certo.
     PluginNotInstalled { language: String, plugin: String },
     /// `claude plugin enable` não deu certo.
@@ -270,6 +319,9 @@ impl fmt::Display for CodeToolWarning {
             Self::ProgramMissing { language, program, install_cmd } => {
                 write!(f, "{language}: {program} not found on PATH - install manually: {install_cmd}")
             }
+            Self::NotReady { language, program, install_cmd } => {
+                write!(f, "{language}: {program} is on PATH but does not answer - install manually: {install_cmd}")
+            }
             Self::PluginNotInstalled { language, plugin } => write!(
                 f,
                 "{language}: could not install the {plugin} plugin - run manually: claude plugin install {plugin}"
@@ -284,9 +336,10 @@ impl fmt::Display for CodeToolWarning {
 
 /// A etapa das ferramentas de código: para cada linguagem que
 /// [`detect_code_languages`] acha em `project_root`, confere se o programa da
-/// tabela já está no `PATH`; se não está e o gerenciador de pacotes com que o
-/// comando de instalação começa está, roda esse comando. Depois instala e liga
-/// o plugin do catálogo — `claude plugin install`/`enable` não falham por já
+/// tabela já está no `PATH` e responde ([`CodeTool::answers`]); se não, roda
+/// o comando de instalação ([`install`]). O programa que segue no `PATH` sem
+/// responder vira [`CodeToolWarning::NotReady`]. Depois instala e liga o
+/// plugin do catálogo — `claude plugin install`/`enable` não falham por já
 /// estar instalado. Linguagem sem entrada na tabela ganha só o aviso de que
 /// não há plugin.
 ///
@@ -304,29 +357,28 @@ pub fn ensure_code_tools(
             continue;
         };
 
-        if !runner.on_path(tool.program) {
-            let mut words = tool.install_cmd.split_whitespace();
-            if let Some(manager) = words.next()
-                && runner.on_path(manager)
-            {
-                let args: Vec<&str> = words.collect();
-                runner.run(manager, &args);
-            }
-        }
-
-        if !runner.on_path(tool.program) {
-            warnings.push(match runner.found_off_path(tool.program) {
-                Some(found_at) => CodeToolWarning::OffPath {
-                    language: language.clone(),
-                    program: tool.program,
-                    found_at,
-                },
-                None => CodeToolWarning::ProgramMissing {
+        if !(runner.on_path(tool.program) && tool.answers(runner)) {
+            install(tool.install_cmd, runner);
+            if !runner.on_path(tool.program) {
+                warnings.push(match runner.found_off_path(tool.program) {
+                    Some(found_at) => CodeToolWarning::OffPath {
+                        language: language.clone(),
+                        program: tool.program,
+                        found_at,
+                    },
+                    None => CodeToolWarning::ProgramMissing {
+                        language: language.clone(),
+                        program: tool.program,
+                        install_cmd: tool.install_cmd,
+                    },
+                });
+            } else if !tool.answers(runner) {
+                warnings.push(CodeToolWarning::NotReady {
                     language: language.clone(),
                     program: tool.program,
                     install_cmd: tool.install_cmd,
-                },
-            });
+                });
+            }
         }
 
         if let Some(plugin) = tool.plugin {
@@ -343,6 +395,21 @@ pub fn ensure_code_tools(
         }
     }
     warnings
+}
+
+/// Roda o comando de instalação `install_cmd` passo a passo: os passos se
+/// separam por `&&`, e cada um roda só quando o gerenciador com que ele
+/// começa está no `PATH` e o passo anterior deu certo. Nada aqui passa por
+/// shell: cada passo é o programa e as palavras que o seguem.
+fn install(install_cmd: &str, runner: &impl ToolRunner) {
+    for step in install_cmd.split("&&") {
+        let mut words = step.split_whitespace();
+        let Some(manager) = words.next() else { return };
+        let args: Vec<&str> = words.collect();
+        if !runner.on_path(manager) || !runner.run(manager, &args) {
+            return;
+        }
+    }
 }
 
 /// As pastas de ferramenta do usuário, sob a pasta pessoal, onde o executor
@@ -514,7 +581,7 @@ mod tests {
     /// num lado da divisa: o `csharp-ls` falta e o `dotnet` também, então nada
     /// se instala e sai o aviso com o comando; o `rust-analyzer` falta e o
     /// `rustup` está, então o comando roda; o `typescript-language-server` já
-    /// está, então o `npm` nem é chamado. O plugin de cada uma é instalado e
+    /// está e a conferência dele passa, então o `npm` nem é chamado. O plugin de cada uma é instalado e
     /// ligado — o de C# falha na instalação, vira aviso com o comando pronto,
     /// e a etapa segue para Rust e TypeScript.
     #[test]
@@ -529,7 +596,7 @@ mod tests {
         std::fs::write(project.path().join("App.csproj"), "<Project/>\n").unwrap();
         let model_path = crate::io::project_map::model_path(project.path());
 
-        let mut runner = FakeRunner::new(&["rustup", "npm", "claude", "typescript-language-server"]);
+        let mut runner = FakeRunner::new(&["rustup", "npm", "node", "claude", "typescript-language-server"]);
         runner.brings.push(("rustup", "rust-analyzer"));
         runner.failing.push("claude plugin install csharp-lsp@claude-plugins-official");
 
@@ -538,13 +605,14 @@ mod tests {
         assert_eq!(
             *runner.log.borrow(),
             vec![
-                "claude plugin install csharp-lsp@claude-plugins-official",
-                "claude plugin enable csharp-lsp@claude-plugins-official",
-                "rustup component add rust-analyzer",
-                "claude plugin install rust-analyzer-lsp@claude-plugins-official",
-                "claude plugin enable rust-analyzer-lsp@claude-plugins-official",
-                "claude plugin install typescript-lsp@claude-plugins-official",
-                "claude plugin enable typescript-lsp@claude-plugins-official",
+                "claude plugin install csharp-lsp@claude-plugins-official".to_string(),
+                "claude plugin enable csharp-lsp@claude-plugins-official".to_string(),
+                "rustup component add rust-analyzer".to_string(),
+                "claude plugin install rust-analyzer-lsp@claude-plugins-official".to_string(),
+                "claude plugin enable rust-analyzer-lsp@claude-plugins-official".to_string(),
+                TYPESCRIPT_CHECK.join(" "),
+                "claude plugin install typescript-lsp@claude-plugins-official".to_string(),
+                "claude plugin enable typescript-lsp@claude-plugins-official".to_string(),
             ]
         );
         assert_eq!(
@@ -602,6 +670,102 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// Um projeto TypeScript, sem mapa ainda: o `package.json` com o
+    /// `typescript` entre as dependências.
+    fn typescript_project() -> tempfile::TempDir {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).unwrap();
+        project
+    }
+
+    /// O servidor de TypeScript que falta é instalado global, e o TypeScript 6
+    /// vai para a pasta dele; nenhum comando da tabela instala o `typescript`
+    /// global, o que trocaria o `tsc` que a pessoa usa no próprio trabalho.
+    #[test]
+    fn o_servidor_de_typescript_ausente_ganha_o_typescript_6_na_pasta_dele() {
+        let project = typescript_project();
+        let model_path = crate::io::project_map::model_path(project.path());
+        let mut runner = FakeRunner::new(&["npm", "node", "claude"]);
+        runner.brings.push(("npm", "typescript-language-server"));
+
+        let warnings = ensure_code_tools(project.path(), &model_path, &runner);
+
+        assert_eq!(
+            *runner.log.borrow(),
+            vec![
+                "npm install -g typescript-language-server".to_string(),
+                "npm explore -g typescript-language-server -- npm install --global=false --prefix lib --no-save \
+                 typescript@6"
+                    .to_string(),
+                TYPESCRIPT_CHECK.join(" "),
+                "claude plugin install typescript-lsp@claude-plugins-official".to_string(),
+                "claude plugin enable typescript-lsp@claude-plugins-official".to_string(),
+            ]
+        );
+        assert_eq!(warnings, Vec::new());
+        for (language, tool) in CODE_TOOLS {
+            for step in tool.install_cmd.split("&&") {
+                let words: Vec<&str> = step.split_whitespace().collect();
+                let global_install = words.starts_with(&["npm", "install"]) && words.contains(&"-g");
+                let typescript = words.iter().any(|w| *w == "typescript" || w.starts_with("typescript@"));
+                assert!(!(global_install && typescript), "{language} installs typescript globally: {step}");
+            }
+        }
+    }
+
+    /// O servidor que está no `PATH` mas não responde — o TypeScript que ele
+    /// acha não traz o `tsserver.js` — conta como faltando: a etapa roda a
+    /// instalação, e, com a conferência falhando de novo, avisa com o comando
+    /// pronto. O plugin segue sendo instalado.
+    #[test]
+    fn o_servidor_que_nao_responde_e_reinstalado_e_avisa() {
+        let project = typescript_project();
+        let model_path = crate::io::project_map::model_path(project.path());
+        let mut runner = FakeRunner::new(&["npm", "node", "claude", "typescript-language-server"]);
+        runner.failing.push("node -e");
+
+        let warnings = ensure_code_tools(project.path(), &model_path, &runner);
+
+        let lines = runner.log.borrow().clone();
+        let check = TYPESCRIPT_CHECK.join(" ");
+        assert_eq!(lines.iter().filter(|l| **l == check).count(), 2, "checked before and after: {lines:?}");
+        assert_eq!(lines[1], "npm install -g typescript-language-server", "{lines:?}");
+        assert!(lines[2].starts_with("npm explore -g typescript-language-server -- "), "{lines:?}");
+        assert_eq!(
+            warnings,
+            vec![CodeToolWarning::NotReady {
+                language: "typescript".to_string(),
+                program: "typescript-language-server",
+                install_cmd: TYPESCRIPT_INSTALL,
+            }]
+        );
+        let text = warnings[0].to_string();
+        assert!(text.ends_with(&format!("install manually: {TYPESCRIPT_INSTALL}")), "{text}");
+        assert!(lines.ends_with(&["claude plugin install typescript-lsp@claude-plugins-official".to_string(),
+            "claude plugin enable typescript-lsp@claude-plugins-official".to_string()]), "{lines:?}");
+    }
+
+    /// A linguagem sem conferência na tabela, como Rust, não roda conferência
+    /// nenhuma: o programa no `PATH` basta, como sempre bastou.
+    #[test]
+    fn a_linguagem_sem_conferencia_nao_roda_conferencia() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let model_path = crate::io::project_map::model_path(project.path());
+        let runner = FakeRunner::new(&["rustup", "claude", "rust-analyzer"]);
+
+        let warnings = ensure_code_tools(project.path(), &model_path, &runner);
+
+        assert_eq!(
+            *runner.log.borrow(),
+            vec![
+                "claude plugin install rust-analyzer-lsp@claude-plugins-official",
+                "claude plugin enable rust-analyzer-lsp@claude-plugins-official",
+            ]
+        );
+        assert_eq!(warnings, Vec::new());
     }
 
     #[test]
