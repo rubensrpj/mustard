@@ -31,6 +31,13 @@
 //! tipo novo ao arquivo que não mudou, como a leitura inteira. O mesmo projeto
 //! mostra que o comando que declara duas constantes dá as duas.
 //!
+//! Cada ligação diz se é provada ou suspeita: no Rust, no TypeScript e no
+//! Python, duas funções `run` em módulos diferentes, chamadas por quem
+//! importa uma delas, por quem não importa nenhuma e por uma variável, e um
+//! nome declarado uma vez só, chamado sem import. No Rust, o próprio objeto e
+//! o tipo escrito antes do método estreitam a ligação, e o nome declarado mais
+//! vezes que o teto só se conta.
+//!
 //! E a pasta do projeto de teste some mesmo quando o teste quebra no meio, e
 //! nenhum teste do scan monta essa pasta à mão.
 
@@ -438,6 +445,9 @@ fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
     let lista = |v: &Value| -> Vec<String> {
         v.as_array().map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
     };
+    // O lugar de cada uso, provado ou suspeito: aqui se confere o que fica à
+    // vista de cada arquivo, e a chamada por uma variável (`c.Total(1)`) é
+    // suspeita mesmo com uma candidata só.
     let usos = |arquivo: &str, nome: &str| -> Vec<String> {
         let m = modulo(arquivo);
         let d = m["declarations"]
@@ -446,7 +456,12 @@ fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
             .flatten()
             .find(|d| d["name"] == nome)
             .unwrap_or_else(|| panic!("{nome} declarado em {arquivo}: {m}"));
-        lista(&d["used_by"])
+        d["used_by"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|u| u.as_str().or_else(|| u["at"].as_str()).unwrap().to_string())
+            .collect::<Vec<String>>()
     };
     let deps = |arquivo: &str| lista(&modulo(arquivo)["deps"]);
     let corpo = |arquivo: &str| arquivos.iter().find(|(rel, _)| *rel == arquivo).unwrap().1;
@@ -817,6 +832,287 @@ fn a_citacao_liga_pelo_que_o_projeto_declara_e_nao_pela_letra() {
     }
 
     assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+}
+
+/// Uma linguagem do projeto das ligações provadas e suspeitas: a pasta dela e
+/// os arquivos, cada um com o que tem dentro. Em cada uma, `run` é declarada
+/// em dois módulos, `a` e `b`; `com_import` importa a de `a` e a chama;
+/// `sem_import` a chama sem importar nada; `usa_unica` chama `unica`,
+/// declarada uma vez só na linguagem, sem importar nada; e `por_valor`
+/// importa a `run` de `a` e a chama por uma variável.
+struct Ligacoes {
+    a: &'static str,
+    b: &'static str,
+    com_import: &'static str,
+    sem_import: &'static str,
+    unica: &'static str,
+    usa_unica: &'static str,
+    por_valor: &'static str,
+    arquivos: [(&'static str, &'static str); 7],
+}
+
+fn ligacoes() -> Vec<Ligacoes> {
+    vec![
+        Ligacoes {
+            a: "rs/src/a.rs",
+            b: "rs/src/b.rs",
+            com_import: "rs/src/com_import.rs",
+            sem_import: "rs/src/sem_import.rs",
+            unica: "rs/src/unica.rs",
+            usa_unica: "rs/src/usa_unica.rs",
+            por_valor: "rs/src/por_valor.rs",
+            arquivos: [
+                ("rs/src/a.rs", "pub fn run() -> u32 {\n    1\n}\n"),
+                ("rs/src/b.rs", "pub fn run() -> u32 {\n    2\n}\n"),
+                ("rs/src/com_import.rs", "use crate::a::run;\n\npub fn com_import() -> u32 {\n    run()\n}\n"),
+                ("rs/src/sem_import.rs", "pub fn sem_import() -> u32 {\n    run()\n}\n"),
+                ("rs/src/unica.rs", "pub fn unica() -> u32 {\n    3\n}\n"),
+                ("rs/src/usa_unica.rs", "pub fn usa_unica() -> u32 {\n    unica()\n}\n"),
+                ("rs/src/por_valor.rs", "use crate::a::run;\n\npub fn por_valor(x: Tarefa) -> u32 {\n    x.run()\n}\n"),
+            ],
+        },
+        Ligacoes {
+            a: "ts/src/a/tarefa.ts",
+            b: "ts/src/b/tarefa.ts",
+            com_import: "ts/src/com_import.ts",
+            sem_import: "ts/src/sem_import.ts",
+            unica: "ts/src/unica.ts",
+            usa_unica: "ts/src/usa_unica.ts",
+            por_valor: "ts/src/por_valor.ts",
+            arquivos: [
+                ("ts/src/a/tarefa.ts", "export function run(): number {\n  return 1;\n}\n"),
+                ("ts/src/b/tarefa.ts", "export function run(): number {\n  return 2;\n}\n"),
+                (
+                    "ts/src/com_import.ts",
+                    "import { run } from \"./a/tarefa\";\n\nexport function comImport(): number {\n  return run();\n}\n",
+                ),
+                ("ts/src/sem_import.ts", "export function semImport(): number {\n  return run();\n}\n"),
+                ("ts/src/unica.ts", "export function unica(): number {\n  return 3;\n}\n"),
+                ("ts/src/usa_unica.ts", "export function usaUnica(): number {\n  return unica();\n}\n"),
+                (
+                    "ts/src/por_valor.ts",
+                    "import { run } from \"./a/tarefa\";\n\nexport function porValor(x: Tarefa): number {\n  \
+                     return x.run();\n}\n",
+                ),
+            ],
+        },
+        Ligacoes {
+            a: "py/pkg/a/tarefa.py",
+            b: "py/pkg/b/tarefa.py",
+            com_import: "py/pkg/com_import.py",
+            sem_import: "py/pkg/sem_import.py",
+            unica: "py/pkg/unica.py",
+            usa_unica: "py/pkg/usa_unica.py",
+            por_valor: "py/pkg/por_valor.py",
+            arquivos: [
+                ("py/pkg/a/tarefa.py", "def run():\n    return 1\n"),
+                ("py/pkg/b/tarefa.py", "def run():\n    return 2\n"),
+                ("py/pkg/com_import.py", "from pkg.a.tarefa import run\n\n\ndef com_import():\n    return run()\n"),
+                ("py/pkg/sem_import.py", "def sem_import():\n    return run()\n"),
+                ("py/pkg/unica.py", "def unica():\n    return 3\n"),
+                ("py/pkg/usa_unica.py", "def usa_unica():\n    return unica()\n"),
+                ("py/pkg/por_valor.py", "from pkg.a.tarefa import run\n\n\ndef por_valor(x):\n    return x.run()\n"),
+            ],
+        },
+    ]
+}
+
+/// Os usos gravados de cada declaração do mapa, pelo arquivo e pelo nome:
+/// os provados, como o texto `arquivo:linha:quem`, e os suspeitos, cada um
+/// com o lugar e as candidatas.
+struct Usos {
+    provados: Vec<String>,
+    suspeitos: Vec<(String, Vec<String>)>,
+    comuns: u64,
+}
+
+fn usos_de(map: &Value, arquivo: &str, nome: &str) -> Usos {
+    let m = map["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .find(|m| m["path"] == arquivo)
+        .unwrap_or_else(|| panic!("{arquivo} no mapa"));
+    let d = m["declarations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|d| d["name"] == nome)
+        .unwrap_or_else(|| panic!("{nome} declarado em {arquivo}: {m}"));
+    let mut usos = Usos { provados: Vec::new(), suspeitos: Vec::new(), comuns: d["common_calls"].as_u64().unwrap_or(0) };
+    for u in d["used_by"].as_array().into_iter().flatten() {
+        match u.as_str() {
+            Some(lugar) => usos.provados.push(lugar.to_string()),
+            None => usos.suspeitos.push((
+                u["at"].as_str().expect("o uso suspeito tem o lugar").to_string(),
+                u["candidates"]
+                    .as_array()
+                    .expect("o uso suspeito tem as candidatas")
+                    .iter()
+                    .map(|c| c.as_str().unwrap().to_string())
+                    .collect(),
+            )),
+        }
+    }
+    usos
+}
+
+/// Cada ligação de quem chama diz se é provada ou suspeita, no Rust, no
+/// TypeScript e no Python. Com duas funções `run` em módulos diferentes, a
+/// chamada no arquivo que importa uma delas é provada só para ela; a chamada
+/// num arquivo que não importa nenhuma é suspeita nas duas, com as duas
+/// candidatas; e o nome declarado uma vez só na linguagem é provado mesmo sem
+/// import. A chamada por uma variável (`x.run()`) é suspeita mesmo com a
+/// `run` importada: sem saber o tipo da variável, ela pode ser outro método.
+#[test]
+fn each_link_says_whether_it_is_proven_or_suspect() {
+    let temp = pasta_do_projeto("ligacao-provada-ou-suspeita");
+    let dir = temp.path().to_path_buf();
+    let todas = ligacoes();
+    for l in &todas {
+        for (rel, corpo) in l.arquivos {
+            write(&dir, rel, corpo);
+        }
+    }
+    let map = scan(&dir);
+    let corpo = |l: &Ligacoes, arquivo: &str| l.arquivos.iter().find(|(rel, _)| *rel == arquivo).unwrap().1;
+    // Junta as faltas antes de reprovar, para que cada linguagem que voltar a
+    // ligar sem marca apareça de uma vez.
+    let mut faltas: Vec<String> = Vec::new();
+    for l in &todas {
+        let (run_a, run_b) = (usos_de(&map, l.a, "run"), usos_de(&map, l.b, "run"));
+        let duas = vec![format!("{}:1:run", l.a), format!("{}:1:run", l.b)];
+
+        let lugar = format!("{}:{}", l.com_import, linha_de(corpo(l, l.com_import), "run()"));
+        let de_quem_importa = |u: &Usos| {
+            u.provados.iter().chain(u.suspeitos.iter().map(|(at, _)| at)).filter(|at| at.starts_with(&lugar)).count()
+        };
+        if run_a.provados.iter().filter(|at| at.starts_with(&lugar)).count() != 1
+            || de_quem_importa(&run_a) != 1
+            || de_quem_importa(&run_b) != 0
+        {
+            faltas.push(format!("a chamada de {lugar}, que importa a run de {}, é provada só para ela", l.a));
+        }
+
+        let lugar = format!("{}:{}", l.sem_import, linha_de(corpo(l, l.sem_import), "run()"));
+        for (dono, usos) in [(l.a, &run_a), (l.b, &run_b)] {
+            let suspeitas: Vec<&Vec<String>> =
+                usos.suspeitos.iter().filter(|(at, _)| at.starts_with(&lugar)).map(|(_, c)| c).collect();
+            if suspeitas != [&duas] || usos.provados.iter().any(|at| at.starts_with(&lugar)) {
+                faltas.push(format!("a chamada de {lugar}, sem import, é suspeita em {dono} com {duas:?}: {suspeitas:?}"));
+            }
+        }
+
+        let lugar = format!("{}:{}", l.usa_unica, linha_de(corpo(l, l.usa_unica), " unica()"));
+        let unica = usos_de(&map, l.unica, "unica");
+        if unica.provados.iter().filter(|at| at.starts_with(&lugar)).count() != 1 || !unica.suspeitos.is_empty() {
+            faltas.push(format!("unica, declarada uma vez, é provada em {lugar} sem import: {:?}", unica.provados));
+        }
+
+        let lugar = format!("{}:{}", l.por_valor, linha_de(corpo(l, l.por_valor), "x.run()"));
+        let so_a = vec![format!("{}:1:run", l.a)];
+        let suspeitas: Vec<&Vec<String>> =
+            run_a.suspeitos.iter().filter(|(at, _)| at.starts_with(&lugar)).map(|(_, c)| c).collect();
+        if suspeitas != [&so_a] || run_a.provados.iter().any(|at| at.starts_with(&lugar)) {
+            faltas.push(format!("a chamada por variável de {lugar} é suspeita, com a run importada: {suspeitas:?}"));
+        }
+    }
+    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+}
+
+/// O próprio objeto e o tipo escrito antes do método estreitam a ligação, no
+/// Rust: `self.fechar()`, dentro de `Caixa`, é provado para o `fechar` de
+/// `Caixa`, e não para o de `Porta`; `Caixa::new()` é provado para o `new` de
+/// `Caixa`, que o arquivo importa. `Vec::new()` nomeia um tipo que o projeto
+/// não declara: é uma chamada de fora e não liga a nada.
+#[test]
+fn the_object_itself_and_a_named_type_narrow_the_link() {
+    const CAIXA: &str = "pub struct Caixa;\n\nimpl Caixa {\n    pub fn abrir(&self) -> u32 {\n        self.fechar()\n    }\n\n    \
+                         pub fn fechar(&self) -> u32 {\n        1\n    }\n\n    pub fn new() -> Caixa {\n        Caixa\n    }\n}\n";
+    const PORTA: &str = "pub struct Porta;\n\nimpl Porta {\n    pub fn fechar(&self) -> u32 {\n        2\n    }\n\n    \
+                         pub fn new() -> Porta {\n        Porta\n    }\n}\n";
+    const USA: &str = "use crate::caixa::Caixa;\n\npub fn usa() -> Vec<u32> {\n    let _ = Caixa::new();\n    Vec::new()\n}\n";
+    let temp = pasta_do_projeto("ligacao-pelo-tipo");
+    let dir = temp.path().to_path_buf();
+    write(&dir, "src/caixa.rs", CAIXA);
+    write(&dir, "src/porta.rs", PORTA);
+    write(&dir, "src/usa.rs", USA);
+    let map = scan(&dir);
+
+    let fechar = usos_de(&map, "src/caixa.rs", "fechar");
+    let esperado = format!("src/caixa.rs:{}:abrir", linha_de(CAIXA, "self.fechar()"));
+    assert_eq!((fechar.provados, fechar.suspeitos.len()), (vec![esperado], 0), "self.fechar() é o fechar de Caixa");
+    let fechar_porta = usos_de(&map, "src/porta.rs", "fechar");
+    assert!(fechar_porta.provados.is_empty() && fechar_porta.suspeitos.is_empty(), "o fechar de Porta não é chamado");
+
+    let new = usos_de(&map, "src/caixa.rs", "new");
+    let esperado = format!("src/usa.rs:{}:usa", linha_de(USA, "Caixa::new()"));
+    assert_eq!((new.provados, new.suspeitos.len()), (vec![esperado], 0), "Caixa::new() é o new de Caixa, e Vec::new() não");
+    let new_porta = usos_de(&map, "src/porta.rs", "new");
+    assert!(new_porta.provados.is_empty() && new_porta.suspeitos.is_empty(), "o new de Porta não é chamado");
+}
+
+/// O nome sozinho só alcança um método ou um membro de enum na língua que
+/// chama o membro do próprio objeto sem escrevê-lo. No Rust, o `Ok(` e o
+/// `trancar()` escritos sozinhos não são o `Ok` de um `enum` do projeto nem o
+/// método `trancar` de `Caixa`, mesmo com os dois importados: nenhum ganha o
+/// uso. No C#, o `Trancar()` escrito dentro da própria classe é o método dela,
+/// provado.
+#[test]
+fn a_bare_name_reaches_a_member_only_where_the_language_calls_it_without_the_object() {
+    const ESTADO: &str = "pub enum Estado {\n    Ok,\n    Falha,\n}\n";
+    const CAIXA_RS: &str = "pub struct Caixa;\n\nimpl Caixa {\n    pub fn trancar(&self) -> u32 {\n        1\n    }\n}\n";
+    const USA: &str = "use crate::caixa::Caixa;\nuse crate::estado::Estado;\n\npub fn usa() -> Result<u32, ()> {\n    \
+                       let trancar = || 2;\n    Ok(trancar())\n}\n";
+    const CAIXA_CS: &str = "namespace Loja;\n\npublic class Caixa\n{\n    public int Trancar()\n    {\n        return 1;\n    }\n\n    \
+                            public int Abrir()\n    {\n        return Trancar();\n    }\n}\n";
+    let temp = pasta_do_projeto("nome-sozinho-e-membro");
+    let dir = temp.path().to_path_buf();
+    write(&dir, "rs/src/estado.rs", ESTADO);
+    write(&dir, "rs/src/caixa.rs", CAIXA_RS);
+    write(&dir, "rs/src/usa.rs", USA);
+    write(&dir, "cs/Caixa.cs", CAIXA_CS);
+    let map = scan(&dir);
+
+    for (arquivo, nome) in [("rs/src/estado.rs", "Ok"), ("rs/src/caixa.rs", "trancar")] {
+        let usos = usos_de(&map, arquivo, nome);
+        assert!(
+            usos.provados.is_empty() && usos.suspeitos.is_empty(),
+            "o {nome} de {arquivo} não é o nome escrito sozinho: {:?} {:?}",
+            usos.provados,
+            usos.suspeitos
+        );
+    }
+    let trancar = usos_de(&map, "cs/Caixa.cs", "Trancar");
+    let esperado = format!("cs/Caixa.cs:{}:Abrir", linha_de(CAIXA_CS, "return Trancar()"));
+    assert_eq!(
+        (trancar.provados, trancar.suspeitos.len()),
+        (vec![esperado], 0),
+        "o Trancar() dentro da classe é o método dela"
+    );
+}
+
+/// O nome declarado mais vezes que o teto não liga: a chamada que pode
+/// alcançar nove declarações só se conta, em cada uma delas, e nenhuma ganha
+/// o uso.
+#[test]
+fn a_name_above_the_ceiling_is_only_counted() {
+    let temp = pasta_do_projeto("nome-comum-so-se-conta");
+    let dir = temp.path().to_path_buf();
+    let donos: Vec<String> = (1..=9).map(|n| format!("src/m{n}.rs")).collect();
+    for (n, dono) in donos.iter().enumerate() {
+        write(&dir, dono, &format!("pub fn comum() -> u32 {{\n    {n}\n}}\n"));
+    }
+    write(&dir, "src/chama.rs", "pub fn chama() -> u32 {\n    comum()\n}\n");
+    let map = scan(&dir);
+    for dono in &donos {
+        let comum = usos_de(&map, dono, "comum");
+        assert_eq!(
+            (comum.comuns, comum.provados.len(), comum.suspeitos.len()),
+            (1, 0, 0),
+            "o comum de {dono} só conta a chamada"
+        );
+    }
 }
 
 /// Todos os arquivos de texto debaixo de `dir`, menos a pasta da compilação.

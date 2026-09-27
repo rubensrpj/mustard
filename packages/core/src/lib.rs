@@ -103,12 +103,12 @@ pub use domain::config::{
 // `domain/command_detect.rs`.
 pub use domain::command_detect::{detect_commands, detect_commands_for_unit};
 
-// scan tool client — the single boundary to the external `scan` miner (scan /
-// facts). Replaces the deleted in-tree scan engine;
+// scan tool client — the single boundary to the external `scan` miner (the
+// `scan` pass). Replaces the deleted in-tree scan engine;
 // Mustard consumes the tool's JSON/Markdown, never project source — and never
 // reads the map `.claude/grain.db` outside the port `io/project_map.rs` (the
 // scan tool fills its blocks). See `domain/scan.rs`.
-pub use domain::scan::{read_entity_names, read_projects, ModelFacts, Project, Scan};
+pub use domain::scan::{read_projects, Project, Scan};
 
 // Source-language resolution — the single owner of "what language is this target
 // (a set of file paths), and can the JS/TS-family gates reason about it?".

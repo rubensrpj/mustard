@@ -7,8 +7,9 @@
 //! The model lands in the SQLite map at `<root>/.claude/grain.db` (the durable
 //! product, re-run when the codebase changes; only the blocks that changed are
 //! written again). Downstream commands consume it through the
-//! project map (`run map`) and the [`mustard_core::Scan`] client (`facts`),
-//! never by reading source. No skills or agents are produced; with `--full`, the one file
+//! project map (`run map`), never by reading source; the
+//! [`mustard_core::Scan`] client only runs the pass that writes it. No skills
+//! or agents are produced; with `--full`, the one file
 //! written per subproject is its `.claude/scan-map.md`.
 //!
 //! A cada vez que roda, o scan também lê o banco de lições e aponta o que
@@ -453,11 +454,11 @@ mod tests {
         );
     }
 
-    /// A lista de projetos, lida só da tabela deles, é a mesma que a
-    /// projeção do scan dava lendo o mapa inteiro noutro processo, com as
-    /// dependências, os scripts e as pilhas de cada um.
+    /// Depois de um scan de verdade, a lista de projetos lida só da tabela
+    /// deles traz cada subprojeto pela pasta dele, com as dependências, os
+    /// scripts e as pilhas dos manifestos que ficam sob ela.
     #[test]
-    fn the_projects_read_from_their_table_are_the_ones_the_scan_facts_gave() {
+    fn the_projects_table_holds_each_subproject_after_a_real_scan() {
         let scan = Scan::locate();
         assert!(
             scan.is_compiled_alongside(),
@@ -473,11 +474,17 @@ mod tests {
         let model = store::model_path(root);
         scan.scan(root, &model).expect("the scan writes the map");
 
-        let from_the_table = read_projects(&model);
-        let from_the_facts = scan.facts(&model).expect("the scan facts").projects;
-        assert_eq!(format!("{from_the_table:?}"), format!("{from_the_facts:?}"));
-        assert_eq!(from_the_table.len(), 2, "{from_the_table:?}");
-        assert!(from_the_table.iter().any(|p| !p.dependencies.is_empty() && !p.detected_stacks.is_empty()), "{from_the_table:?}");
+        let projects = read_projects(&model);
+        let dirs: Vec<&str> = projects.iter().map(|p| p.dir.as_str()).collect();
+        assert_eq!(dirs, ["packages/core", "web"], "{projects:?}");
+        let core = &projects[0];
+        assert_eq!(core.dependencies, ["serde"], "{core:?}");
+        assert!(core.scripts.is_empty() && core.detected_stacks.is_empty(), "{core:?}");
+        let web = &projects[1];
+        assert_eq!(web.dependencies, ["laravel/framework", "php"], "{web:?}");
+        assert_eq!(web.scripts, ["test: phpunit"], "{web:?}");
+        let stacks: Vec<&str> = web.detected_stacks.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(stacks, ["laravel"], "{web:?}");
     }
 
     /// Roda `git <args>` em `root`, ignorando o resultado: só monta o

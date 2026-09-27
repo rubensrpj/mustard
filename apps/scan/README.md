@@ -169,10 +169,6 @@ scan scan ./meu-projeto --out grain.db --all
 
 # uma linha JSON com o que foi lido, no lugar do resumo
 scan scan ./meu-projeto --out grain.db --json
-
-# os fatos pequenos, em JSON: os subprojetos e os nomes declarados
-scan facts grain.db
-# (aceita o banco pronto OU um diretório, que ele lê na hora)
 ```
 
 Depois de gravar o banco, o scan apaga o mapa de antes dele (`grain.model.json`)
@@ -262,9 +258,7 @@ as tabelas dele e a marca do scan que o gravou:
   e a tabela dos caminhos que eles citam.
 
 `mustard-rt run map dump` mostra o banco tabela por tabela, fora o índice da
-busca, que se refaz do mapa. O comando `facts`
-projeta do mapa só o que o consumidor precisa (os subprojetos e os nomes
-declarados), para que ninguém leia o esquema do banco por conta própria.
+busca, que se refaz do mapa.
 
 ## Licença
 

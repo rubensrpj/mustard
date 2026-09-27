@@ -93,19 +93,20 @@ jobs:
           shared-key: mustard-workspace
           save-if: ${{ github.event_name == 'push' }}
 
-      - name: Expose the scan binary to core's spawn-based tests
+      - name: Expose the scan binary to the tests that spawn it
         shell: bash
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
       # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
       #
-      # `-p scan` is here because mustard-core's stack-registry tests exercise
-      # `Scan::locate()` at runtime (spawn, fail-open): without `scan` reachable
-      # the test degrades to an empty project list and fails — green on any dev
-      # machine (installed scan on PATH), red on a bare runner. `cargo test`
-      # builds a package's BIN targets alongside its tests, so `scan.exe` lands
-      # in target/debug before any test runs; the PATH step above only has to
-      # name the directory, not wait for the file.
+      # `-p scan` is here because mustard-rt's map tests run the scan compiled
+      # with them: `Scan::locate()` looks for `scan` next to the test binary, and
+      # the test that reads the projects table after a real scan
+      # (`apps/rt/src/commands/scan.rs`) fails without it, asking for
+      # `cargo build -p scan` — green on any dev machine that built it, red on a
+      # bare runner. `cargo test` builds a package's BIN targets alongside its
+      # tests, so `scan.exe` lands in target/debug before any test runs; the
+      # PATH step above only has to name the directory, not wait for the file.
       #
       # There is no separate `cargo build` step any more. It compiled the same
       # four crates this line compiles, and the per-step attribution of run

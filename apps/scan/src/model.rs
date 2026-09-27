@@ -326,7 +326,8 @@ impl Module {
 
 /// One call or citation read out of a file: the name, the line, and the
 /// qualifier written right before it (`q` in `q::name` and `q.name`, empty
-/// when there is none). The caller is the file it was read from, and the
+/// when there is none, [`RECEIVER`] when what comes before is a value and not
+/// a name). The caller is the file it was read from, and the
 /// declaration that encloses the line — resolved by
 /// [`crate::graph::link_declarations`], not stored twice.
 ///
@@ -342,6 +343,13 @@ pub struct CallSite {
     /// never written with a dot, so the text splits back without ambiguity.
     pub qualifier: String,
 }
+
+/// O qualificador da chamada feita sobre um valor e não sobre um nome: o
+/// resultado de outra chamada, um índice, um texto (`f().g()`, `a[0].g()`),
+/// ou o nome escrito antes de um separador que só liga método. Nenhum nome se
+/// escreve assim, e a ligação por ele nunca se prova: sem saber o tipo do
+/// valor, a chamada pode alcançar qualquer método com o nome.
+pub const RECEIVER: &str = "?";
 
 impl Serialize for CallSite {
     fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
@@ -367,6 +375,10 @@ impl<'de> Deserialize<'de> for CallSite {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Where the last pass read from, so the next one reads only what changed.
@@ -429,10 +441,15 @@ pub struct Decl {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<String>,
     /// Every use of this declaration: which file, which line, and which
-    /// declaration the call starts from. Filled by
+    /// declaration the call starts from, proven or suspect. Filled by
     /// [`crate::graph::link_declarations`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub used_by: Vec<UseSite>,
+    /// Quantas chamadas pelo nome ficaram sem ligação por ele ser comum
+    /// demais: cada uma podia alcançar mais declarações que o teto. Preenchido
+    /// por [`crate::graph::link_declarations`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub common_calls: usize,
     /// Os donos da declaração, do mais interno para o mais externo: as
     /// declarações do mesmo arquivo cuja faixa contém a dela e, depois, o
     /// tipo escrito fora dela (`@owner`). Só os nomes, lidos com o arquivo:

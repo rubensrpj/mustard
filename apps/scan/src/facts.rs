@@ -1,50 +1,15 @@
-//! Deterministic model FACTS — the small, stable projection the ORCHESTRATOR
-//! (Mustard) consumes instead of reading the map database itself.
-//!
-//! Two facts an orchestrator needs without reading source or the (large) model:
-//! the subproject list (one per build manifest) and the known declaration names
-//! (entities/types/functions). Keeping this here makes `scan` the single owner
-//! of the model schema — consumers depend only on this tiny JSON shape, never on
-//! the model's internals. A pure projection of the deterministic model, so it is
-//! deterministic too. Nothing here is language- or framework-specific.
+//! A projeção dos manifestos em cada subprojeto: as dependências, os scripts
+//! e os frameworks de cada unidade saem dos manifestos que ficam sob a pasta
+//! dela. O manifesto pertence à unidade de pasta mais específica que o contém,
+//! de modo que o de um subprojeto aninhado não sobe para o pai. É uma projeção
+//! pura e determinística do modelo; nada aqui depende de linguagem ou
+//! framework.
 
-use crate::model::{Manifest, ProjectModel, ProjectUnit};
-use serde::Serialize;
+use crate::model::{Manifest, ProjectUnit};
 
 /// How many ranked values `rank_by_frequency` surfaces. A fixed projection
 /// constant, not user config — tuning the model shape does not belong here.
 const STACK_RANK_LIMIT: usize = 12;
-
-#[derive(Serialize)]
-pub struct ModelFacts {
-    /// Subprojects (one per build manifest) — the deterministic discovery the
-    /// orchestrator splits work by. Kept in the model's stable order.
-    pub projects: Vec<ProjectUnit>,
-    /// Distinct declaration names (entities/types/functions), sorted + deduped —
-    /// the "known entities" set (answers "is X new or already in the repo?").
-    pub entities: Vec<String>,
-}
-
-/// Project the model down to its orchestrator FACTS. Deterministic: `projects`
-/// keep the model's stable order; `entities` are sorted + deduped. Each project
-/// is enriched with the frameworks/dependencies/scripts mined from the manifests
-/// that live under it (a per-unit slice of the same agnostic projection).
-#[must_use]
-pub fn build(model: &ProjectModel) -> ModelFacts {
-    let mut entities: Vec<String> = model
-        .modules
-        .iter()
-        .flat_map(|m| m.declarations.iter().map(|d| d.name.clone()))
-        .filter(|n| !n.is_empty())
-        .collect();
-    entities.sort();
-    entities.dedup();
-
-    let mut projects = model.projects.clone();
-    enrich_projects(&mut projects, &model.projects, &model.manifests);
-
-    ModelFacts { projects, entities }
-}
 
 /// Enrich each unit in `projects` with the frameworks/dependencies/scripts
 /// aggregated from the manifests it owns. `all` is the full (immutable) project
@@ -53,9 +18,8 @@ pub fn build(model: &ProjectModel) -> ModelFacts {
 ///
 /// Single source of the manifest→project projection: `build_projects` calls it
 /// so the grain `projects[]` carry the fields (`scan_claude` reads `scripts` for
-/// `## Commands` and `frameworks` for the Guards facts), and [`build`] calls it
-/// for the facts view. Idempotent — re-running over already-enriched units
-/// reproduces the same values.
+/// `## Commands` and `frameworks` for the Guards facts). Idempotent — re-running
+/// over already-enriched units reproduces the same values.
 pub(crate) fn enrich_projects(projects: &mut [ProjectUnit], all: &[ProjectUnit], manifests: &[Manifest]) {
     for project in projects.iter_mut() {
         let owned: Vec<&Manifest> = owned_manifests(project, all, manifests);
@@ -131,17 +95,12 @@ pub fn rank_by_frequency<'a>(values: impl Iterator<Item = &'a String>) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Decl, Module};
 
-    fn model_with(decls: &[&str], projects: &[&str]) -> ProjectModel {
-        ProjectModel {
-            modules: vec![Module {
-                declarations: decls.iter().map(|n| Decl { name: (*n).to_string(), ..Default::default() }).collect(),
-                ..Default::default()
-            }],
-            projects: projects.iter().map(|n| ProjectUnit { name: (*n).to_string(), ..Default::default() }).collect(),
-            ..Default::default()
-        }
+    /// As unidades depois da projeção, cada uma lida contra a lista inteira.
+    fn enriched(projects: Vec<ProjectUnit>, manifests: &[Manifest]) -> Vec<ProjectUnit> {
+        let mut out = projects.clone();
+        enrich_projects(&mut out, &projects, manifests);
+        out
     }
 
     fn unit(name: &str, dir: &str) -> ProjectUnit {
@@ -158,47 +117,27 @@ mod tests {
     }
 
     #[test]
-    fn entities_are_sorted_deduped_and_nonempty() {
-        let f = build(&model_with(&["User", "Invoice", "User", ""], &[]));
-        assert_eq!(f.entities, vec!["Invoice", "User"]);
-    }
-
-    #[test]
-    fn projects_preserve_model_order() {
-        let f = build(&model_with(&[], &["api", "web"]));
-        let names: Vec<String> = f.projects.iter().map(|p| p.name.clone()).collect();
-        assert_eq!(names, vec!["api", "web"]);
-    }
-
-    #[test]
     fn crossing_by_dir_prefix_fills_frameworks_scripts_and_deps() {
-        let model = ProjectModel {
-            projects: vec![unit("api", "apps/api"), unit("web", "apps/web")],
-            manifests: vec![
+        let projects = enriched(
+            vec![unit("api", "apps/api"), unit("web", "apps/web")],
+            &[
                 manifest("apps/api/Cargo.toml", &["serde", "tokio"], &["gen: build.rs"]),
                 manifest("apps/web/package.json", &["react"], &["build: vite"]),
             ],
-            ..Default::default()
-        };
-        let f = build(&model);
-        let api = f.projects.iter().find(|p| p.name == "api").unwrap();
+        );
+        let api = projects.iter().find(|p| p.name == "api").unwrap();
         assert_eq!(api.dependencies, vec!["serde", "tokio"]);
         assert_eq!(api.scripts, vec!["gen: build.rs"]);
         assert_eq!(api.frameworks, vec!["serde", "tokio"]);
-        let web = f.projects.iter().find(|p| p.name == "web").unwrap();
+        let web = projects.iter().find(|p| p.name == "web").unwrap();
         assert_eq!(web.dependencies, vec!["react"]);
         assert_eq!(web.scripts, vec!["build: vite"]);
     }
 
     #[test]
     fn unmatched_dir_stays_empty() {
-        let model = ProjectModel {
-            projects: vec![unit("api", "apps/api")],
-            manifests: vec![manifest("apps/other/Cargo.toml", &["serde"], &[])],
-            ..Default::default()
-        };
-        let f = build(&model);
-        let api = &f.projects[0];
+        let projects = enriched(vec![unit("api", "apps/api")], &[manifest("apps/other/Cargo.toml", &["serde"], &[])]);
+        let api = &projects[0];
         assert!(api.dependencies.is_empty(), "deps should be empty: {:?}", api.dependencies);
         assert!(api.frameworks.is_empty(), "frameworks should be empty: {:?}", api.frameworks);
         assert!(api.scripts.is_empty());
@@ -208,17 +147,12 @@ mod tests {
     fn nested_subproject_does_not_leak_into_parent() {
         // The parent unit must NOT absorb the nested unit's manifest — the
         // more-specific (longer dir) unit owns it.
-        let model = ProjectModel {
-            projects: vec![unit("root", ""), unit("api", "apps/api")],
-            manifests: vec![
-                manifest("Cargo.toml", &["workspace-dep"], &[]),
-                manifest("apps/api/Cargo.toml", &["serde"], &[]),
-            ],
-            ..Default::default()
-        };
-        let f = build(&model);
-        let root = f.projects.iter().find(|p| p.name == "root").unwrap();
-        let api = f.projects.iter().find(|p| p.name == "api").unwrap();
+        let projects = enriched(
+            vec![unit("root", ""), unit("api", "apps/api")],
+            &[manifest("Cargo.toml", &["workspace-dep"], &[]), manifest("apps/api/Cargo.toml", &["serde"], &[])],
+        );
+        let root = projects.iter().find(|p| p.name == "root").unwrap();
+        let api = projects.iter().find(|p| p.name == "api").unwrap();
         // Root keeps only its own root manifest, not the nested one.
         assert_eq!(root.dependencies, vec!["workspace-dep"]);
         assert_eq!(api.dependencies, vec!["serde"]);
@@ -226,16 +160,14 @@ mod tests {
 
     #[test]
     fn aggregated_fields_are_sorted_and_deduped() {
-        let model = ProjectModel {
-            projects: vec![unit("api", "apps/api")],
-            manifests: vec![
+        let projects = enriched(
+            vec![unit("api", "apps/api")],
+            &[
                 manifest("apps/api/Cargo.toml", &["tokio", "serde"], &[]),
                 manifest("apps/api/crate/Cargo.toml", &["serde", "anyhow"], &[]),
             ],
-            ..Default::default()
-        };
-        let f = build(&model);
-        let api = &f.projects[0];
+        );
+        let api = &projects[0];
         // Both manifests are under apps/api (no more-specific sibling unit), so
         // deps merge, dedupe and sort.
         assert_eq!(api.dependencies, vec!["anyhow", "serde", "tokio"]);

@@ -1,7 +1,7 @@
 //! O mapa que o scan grava, visto pelos testes do pacote num lugar só: onde
 //! ele mora numa pasta, a passada do scan que o grava, a leitura dele e a
-//! gravação de um mapa escrito à mão. Quando o formato do mapa mudar, só este
-//! arquivo muda com ele.
+//! regravação de um mapa mudado pelo teste. Quando o formato do mapa mudar,
+//! só este arquivo muda com ele.
 //!
 //! O mapa é um banco SQLite; a leitura daqui o devolve no JSON do scan, pela
 //! porta do núcleo, que é o que os testes conferem.
@@ -48,14 +48,6 @@ pub fn read(dir: &Path) -> Value {
 /// conteúdo dão o mesmo texto.
 pub fn read_bytes(dir: &Path) -> Vec<u8> {
     store::read_stored_at(&path_in(dir)).expect("o mapa foi gravado e se lê").json.into_bytes()
-}
-
-/// Grava `text` como o mapa da pasta `dir` e devolve o caminho dele: um mapa
-/// escrito à mão, para o comando que o lê.
-pub fn write(dir: &Path, text: &str) -> PathBuf {
-    let model = path_in(dir);
-    store::write_text_at(&model, text).expect("grava o mapa");
-    model
 }
 
 /// Grava de novo, pelo porto, o mapa da pasta `dir` mudado por `change`, com

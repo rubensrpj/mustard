@@ -670,13 +670,32 @@ fn assert_a_path_to_the_file_itself_links_only_to_the_file(v: &serde_json::Value
     assert_eq!(holders_of(v, "valor", "src/a.rs:11:perto"), vec!["src/a.rs".to_string()]);
 }
 
-/// A chamada sem caminho segue ligando a toda declaração à vista: `valor()`,
-/// na linha 6 de `src/a.rs`, é o `valor` do próprio arquivo e o de
-/// `src/x.rs`, que o arquivo importa.
-fn assert_a_call_without_a_path_still_links_to_every_one_in_sight(v: &serde_json::Value) {
+/// Os arquivos cuja declaração `name` tem `site` entre os usos suspeitos, em
+/// ordem, cada um com as candidatas que o uso traz.
+fn suspect_holders_of(v: &serde_json::Value, name: &str, site: &str) -> Vec<(String, serde_json::Value)> {
+    let mut holders: Vec<(String, serde_json::Value)> = Vec::new();
+    for m in v["modules"].as_array().expect("modules") {
+        for d in m["declarations"].as_array().into_iter().flatten().filter(|d| d["name"] == name) {
+            for u in d["used_by"].as_array().into_iter().flatten().filter(|u| u["at"] == site) {
+                holders.push((m["path"].as_str().unwrap().to_string(), u["candidates"].clone()));
+            }
+        }
+    }
+    holders.sort_by(|a, b| a.0.cmp(&b.0));
+    holders
+}
+
+/// A chamada sem caminho alcança toda declaração à vista, e com duas ela é
+/// suspeita: `valor()`, na linha 6 de `src/a.rs`, pode ser o `valor` do
+/// próprio arquivo ou o de `src/x.rs`, que o arquivo importa — importar é
+/// por arquivo, e o import não diz o nome. Nenhuma das duas guarda o uso
+/// como provado, e as duas o guardam com as mesmas candidatas.
+fn assert_a_call_without_a_path_is_suspect_between_every_one_in_sight(v: &serde_json::Value) {
+    assert!(holders_of(v, "valor", "src/a.rs:6:soma").is_empty(), "nenhuma provada");
+    let both = serde_json::json!(["src/a.rs:1:valor", "src/x.rs:1:valor"]);
     assert_eq!(
-        holders_of(v, "valor", "src/a.rs:6:soma"),
-        vec!["src/a.rs".to_string(), "src/x.rs".to_string()]
+        suspect_holders_of(v, "valor", "src/a.rs:6:soma"),
+        vec![("src/a.rs".to_string(), both.clone()), ("src/x.rs".to_string(), both)]
     );
 }
 
@@ -693,9 +712,9 @@ fn a_path_to_the_file_itself_links_only_to_the_file() {
 }
 
 #[test]
-fn a_call_without_a_path_still_links_to_every_one_in_sight() {
+fn a_call_without_a_path_is_suspect_between_every_one_in_sight() {
     let v = scan_fixture_labeled("rs-no-path", "graph_rust_call_path");
-    assert_a_call_without_a_path_still_links_to_every_one_in_sight(&v);
+    assert_a_call_without_a_path_is_suspect_between_every_one_in_sight(&v);
 }
 
 /// A passada que reaproveita `src/a.rs` sem relê-lo liga as chamadas por
@@ -707,6 +726,6 @@ fn a_pass_that_keeps_the_file_links_the_calls_by_path_the_same() {
     for v in [&first, &second] {
         assert_a_call_by_a_path_links_only_to_the_file_it_names(v);
         assert_a_path_to_the_file_itself_links_only_to_the_file(v);
-        assert_a_call_without_a_path_still_links_to_every_one_in_sight(v);
+        assert_a_call_without_a_path_is_suspect_between_every_one_in_sight(v);
     }
 }

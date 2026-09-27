@@ -92,6 +92,25 @@ fn main() {
     let mut parent_table = String::new();
     parent_table.push_str("pub(crate) static LANG_PARENT_ALIAS: &[(&str, &str)] = &[\n");
 
+    // (name, member_separators) e (name, self_receivers) — os textos
+    // OPCIONAIS que ligam o método ao valor antes dele sem juntar caminho, e
+    // os nomes que são o próprio objeto. Sem o campo, lista vazia.
+    let mut member_table = String::new();
+    member_table.push_str("pub(crate) static LANG_MEMBER_SEPARATORS: &[(&str, &[&str])] = &[\n");
+    let mut self_table = String::new();
+    self_table.push_str("pub(crate) static LANG_SELF_RECEIVERS: &[(&str, &[&str])] = &[\n");
+
+    // (name, implicit_self) — se o nome sozinho alcança um membro do próprio
+    // objeto. OPCIONAL: sem o campo, `false`.
+    let mut implicit_table = String::new();
+    implicit_table.push_str("pub(crate) static LANG_IMPLICIT_SELF: &[(&str, bool)] = &[\n");
+
+    // (name, dir) — a família da língua: as que leem as mesmas consultas
+    // (`dir`) são a mesma língua escrita em arquivos diferentes, e uma chamada
+    // alcança as declarações da família inteira.
+    let mut family_table = String::new();
+    family_table.push_str("pub(crate) static LANG_FAMILY: &[(&str, &str)] = &[\n");
+
     let alias_fields = ["alias_config", "alias_base", "alias_paths", "alias_extends"];
     let mut alias_field_tables: Vec<String> = alias_fields
         .iter()
@@ -178,6 +197,12 @@ fn main() {
                 || (!qualified_separators.is_empty() && qualified_separators.iter().all(|s| !s.is_empty())),
             "language.qualified_separators of `{name}` must list at least one non-empty separator"
         );
+        let member_separators = str_list(tbl, "member_separators");
+        let self_receivers = str_list(tbl, "self_receivers");
+        let implicit_self = tbl
+            .get("implicit_self")
+            .map(|v| v.as_bool().expect("language.implicit_self must be true or false"))
+            .unwrap_or(false);
         let parent_alias = tbl
             .get("parent_alias")
             .map(|v| v.as_str().expect("language.parent_alias must be a string").to_string())
@@ -230,6 +255,13 @@ fn main() {
             .expect("the generated table is a String, which never fails to write");
         writeln!(parent_table, "    ({name:?}, {parent_alias:?}),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(member_table, "    ({name:?}, &[{}]),", quoted_list(&member_separators))
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(self_table, "    ({name:?}, &[{}]),", quoted_list(&self_receivers))
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(implicit_table, "    ({name:?}, {implicit_self}),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(family_table, "    ({name:?}, {dir:?}),").expect("the generated table is a String, which never fails to write");
         for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
             writeln!(table, "    ({name:?}, {value:?}),").expect("the generated table is a String, which never fails to write");
         }
@@ -250,6 +282,10 @@ fn main() {
     body.push_str(&separators_table);
     parent_table.push_str("];\n");
     body.push_str(&parent_table);
+    for table in [&mut member_table, &mut self_table, &mut implicit_table, &mut family_table] {
+        table.push_str("];\n");
+        body.push_str(table);
+    }
     for table in &mut alias_field_tables {
         table.push_str("];\n");
         body.push_str(table);
@@ -257,6 +293,28 @@ fn main() {
 
     let out_path = Path::new(&out_dir).join("langs_generated.rs");
     fs::write(&out_path, body).expect("write langs_generated.rs");
+}
+
+/// A lista OPCIONAL de textos do campo `key`: vazia sem o campo. Declarada,
+/// ela precisa de ao menos um texto, e nenhum deles vazio.
+fn str_list(tbl: &toml::value::Table, key: &str) -> Vec<String> {
+    let Some(value) = tbl.get(key) else { return Vec::new() };
+    let list: Vec<String> = value
+        .as_array()
+        .unwrap_or_else(|| panic!("language.{key} must be an array"))
+        .iter()
+        .map(|e| e.as_str().unwrap_or_else(|| panic!("each language.{key} must be a string")).to_string())
+        .collect();
+    assert!(
+        !list.is_empty() && list.iter().all(|s| !s.is_empty()),
+        "language.{key} must list at least one non-empty text"
+    );
+    list
+}
+
+/// Os textos como literais de Rust, separados por vírgula.
+fn quoted_list(list: &[String]) -> String {
+    list.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join(", ")
 }
 
 fn str_field(tbl: &toml::value::Table, key: &str) -> String {

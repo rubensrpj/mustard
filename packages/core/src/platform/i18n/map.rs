@@ -135,10 +135,34 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `slice --file <path> --name <declaration>`, `users --name <declaration>` or \
              `search --query \"<words>\"`."
         }
-        ("map.users.head", Locale::PtBr) => "Quem usa `{name}`, como arquivo:linha:quem chama:",
-        ("map.users.head", Locale::EnUs) => "Who uses `{name}`, as file:line:caller:",
+        ("map.users.head", Locale::PtBr) => {
+            "Quem usa `{name}`, como arquivo:linha:quem chama. As ligações provadas vêm primeiro. \
+             As suspeitas vêm depois, agrupadas pelas declarações que a chamada pode alcançar."
+        }
+        ("map.users.head", Locale::EnUs) => {
+            "Who uses `{name}`, as file:line:caller. Proven links come first. \
+             Suspect ones follow, grouped by the declarations the call may reach."
+        }
         ("map.users.none", Locale::PtBr) => "Ninguém usa `{name}` de `{file}`.",
         ("map.users.none", Locale::EnUs) => "Nothing uses `{name}` from `{file}`.",
+        ("map.users.suspect", Locale::PtBr) => {
+            "Uma ligação suspeita tem mais de um alvo possível, ou chega por um valor de tipo que o mapa não conhece. \
+             Para decidir, peça goToDefinition na linha de cada chamada à ferramenta `LSP` (servidor de linguagem) \
+             do Claude Code."
+        }
+        ("map.users.suspect", Locale::EnUs) => {
+            "A suspect link has more than one possible target, or comes through a value whose type the map does not know. \
+             To decide, ask the `LSP` (language server) tool of Claude Code for goToDefinition on the line of each call."
+        }
+        ("map.users.common", Locale::PtBr) => {
+            "{count} chamadas de `{name}` ficaram sem ligação, porque o nome é comum demais para o mapa decidir. \
+             Para achá-las, peça findReferences nesta declaração à ferramenta `LSP` (servidor de linguagem) \
+             do Claude Code."
+        }
+        ("map.users.common", Locale::EnUs) => {
+            "{count} calls of `{name}` were left unlinked, because the name is too common for the map to decide. \
+             To find them, ask the `LSP` (language server) tool of Claude Code for findReferences on this declaration."
+        }
         _ => return None,
     })
 }
@@ -156,9 +180,24 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            31,
-            0x57f4_f6d8_5ebf_7927,
+            33,
+            0xa512_df64_6f41_25c4,
         );
+    }
+
+    /// O que a resposta de quem usa diz das ligações — o cabeçalho, o próximo
+    /// passo da suspeita e a contagem do nome comum — passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com cada vaga trocada por uma
+    /// palavra.
+    #[test]
+    fn the_users_texts_read_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            for key in ["map.users.head", "map.users.none", "map.users.suspect", "map.users.common"] {
+                let text = translate(key, lang).replace("{name}", "run").replace("{file}", "a.rs").replace("{count}", "12");
+                let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+                assert!(report.passed, "{key} {lang:?}: {report:?}");
+            }
+        }
     }
 
     /// The refusals and texts of the project map, and the `doctor` advisory on
@@ -193,6 +232,8 @@ mod tests {
             ("map.summary.ask", &[][..]),
             ("map.users.head", &["{name}"][..]),
             ("map.users.none", &["{name}", "{file}"][..]),
+            ("map.users.suspect", &[][..]),
+            ("map.users.common", &["{count}", "{name}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

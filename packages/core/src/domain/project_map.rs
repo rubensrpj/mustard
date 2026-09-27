@@ -296,8 +296,13 @@ pub struct MapDecl {
     /// gravou uma.
     pub signature: String,
     /// Cada uso da declaração no projeto: o arquivo, a linha e a declaração
-    /// de onde parte a chamada. Vazio num mapa antigo, sem o campo.
+    /// de onde parte a chamada, provado ou suspeito. Vazio num mapa antigo,
+    /// sem o campo.
     pub used_by: Vec<UseSite>,
+    /// Quantas chamadas pelo nome da declaração ficaram sem ligação porque o
+    /// nome é comum demais: cada uma podia alcançar mais declarações que o
+    /// teto do scan.
+    pub common_calls: usize,
     /// Os donos da declaração, do mais interno para o mais externo: as
     /// declarações do mesmo arquivo cuja faixa contém a dela e, depois, o
     /// tipo escrito fora dela (o do bloco `impl` do Rust, o receptor do
@@ -346,23 +351,75 @@ impl<'de> Deserialize<'de> for DeclAt {
 /// e a declaração de onde ela parte (vazia quando a chamada fica fora de toda
 /// declaração). É a ligação com nome: quem chama quem, e onde.
 ///
-/// O scan grava o uso num texto só, `arquivo:linha:quem` (`arquivo:linha`
-/// quando a chamada fica fora de toda declaração), o mesmo `arquivo:linha` que
-/// um compilador imprime. O tipo mora aqui, e o scan o reexporta: quem grava o
-/// mapa e quem responde a partir dele leem o mesmo texto do mesmo jeito.
+/// A ligação é provada quando `candidates` fica vazia: a chamada só alcança
+/// esta declaração. Na suspeita, `candidates` traz cada declaração que a
+/// chamada pode alcançar, esta inclusa, e só quem lê o código com o tipo de
+/// cada valor decide qual.
+///
+/// O scan grava o uso provado num texto só, `arquivo:linha:quem`
+/// (`arquivo:linha` quando a chamada fica fora de toda declaração), o mesmo
+/// `arquivo:linha` que um compilador imprime; o suspeito, como
+/// `{"at": "arquivo:linha:quem", "candidates": ["arquivo:linha:nome", …]}`.
+/// O mapa antigo, só com textos, se lê inteiro como provado. O tipo mora
+/// aqui, e o scan o reexporta: quem grava o mapa e quem responde a partir
+/// dele leem o mesmo texto do mesmo jeito.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UseSite {
     pub file: String,
     pub line: usize,
     pub from: String,
+    /// Vazia na ligação provada; na suspeita, as declarações que a chamada
+    /// pode alcançar.
+    pub candidates: Vec<DeclAt>,
+}
+
+impl UseSite {
+    /// A chamada só alcança a declaração que guarda este uso.
+    #[must_use]
+    pub fn is_proven(&self) -> bool {
+        self.candidates.is_empty()
+    }
+
+    /// O lugar do uso como o scan o grava: `arquivo:linha:quem`, ou
+    /// `arquivo:linha` fora de toda declaração.
+    #[must_use]
+    pub fn place(&self) -> String {
+        if self.from.is_empty() {
+            format!("{}:{}", self.file, self.line)
+        } else {
+            format!("{}:{}:{}", self.file, self.line, self.from)
+        }
+    }
+
+    /// O uso lido de `arquivo:linha[:quem]`, sem candidatas. `None` quando o
+    /// texto não tem essa forma.
+    fn parse_place(text: &str) -> Option<Self> {
+        let (head, tail) = text.rsplit_once(':')?;
+        // `arquivo:linha` ou `arquivo:linha:quem`: quem diz qual dos dois é o
+        // número da linha, que é sempre a última parte que é um número.
+        Some(match tail.parse() {
+            Ok(line) => Self { file: head.to_string(), line, ..Self::default() },
+            Err(_) => {
+                let (file, line) = head.rsplit_once(':')?;
+                Self { file: file.to_string(), line: line.parse().ok()?, from: tail.to_string(), ..Self::default() }
+            }
+        })
+    }
+}
+
+/// O uso suspeito como o scan o grava: o lugar e as candidatas.
+#[derive(Serialize, Deserialize)]
+struct SuspectUse {
+    at: String,
+    candidates: Vec<DeclAt>,
 }
 
 impl Serialize for UseSite {
     fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
-        if self.from.is_empty() {
-            out.collect_str(&format_args!("{}:{}", self.file, self.line))
+        if self.is_proven() {
+            out.collect_str(&self.place())
         } else {
-            out.collect_str(&format_args!("{}:{}:{}", self.file, self.line, self.from))
+            SuspectUse { at: self.place(), candidates: self.candidates.clone() }.serialize(out)
         }
     }
 }
@@ -370,22 +427,21 @@ impl Serialize for UseSite {
 impl<'de> Deserialize<'de> for UseSite {
     fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
         use serde::de::Error as _;
-        let text = String::deserialize(input)?;
-        let wrong = || D::Error::custom(format!("a use reads `file:line[:from]`, not `{text}`"));
-        let (head, tail) = text.rsplit_once(':').ok_or_else(wrong)?;
-        // `arquivo:linha` ou `arquivo:linha:quem`: quem diz qual dos dois é o
-        // número da linha, que é sempre a última parte que é um número.
-        Ok(match tail.parse() {
-            Ok(line) => Self { file: head.to_string(), line, from: String::new() },
-            Err(_) => {
-                let (file, line) = head.rsplit_once(':').ok_or_else(wrong)?;
-                Self {
-                    file: file.to_string(),
-                    line: line.parse().map_err(D::Error::custom)?,
-                    from: tail.to_string(),
-                }
-            }
-        })
+        /// As duas formas gravadas: o texto do uso provado e o objeto do
+        /// suspeito.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Written {
+            Proven(String),
+            Suspect(SuspectUse),
+        }
+        let (text, candidates) = match Written::deserialize(input)? {
+            Written::Proven(text) => (text, Vec::new()),
+            Written::Suspect(SuspectUse { at, candidates }) => (at, candidates),
+        };
+        let place = Self::parse_place(&text)
+            .ok_or_else(|| D::Error::custom(format!("a use reads `file:line[:from]`, not `{text}`")))?;
+        Ok(Self { candidates, ..place })
     }
 }
 
@@ -643,6 +699,9 @@ pub struct DeclUsers {
     pub line: u64,
     pub end_line: u64,
     pub used_by: Vec<UseSite>,
+    /// Quantas chamadas pelo nome ficaram sem ligação por ele ser comum
+    /// demais ([`MapDecl::common_calls`]).
+    pub common_calls: usize,
 }
 
 /// Cada declaração chamada `name`, com os usos de cada uma, em ordem de
@@ -661,6 +720,7 @@ pub fn users(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<Dec
             line: d.line,
             end_line: d.end_line.max(d.line),
             used_by: d.used_by.clone(),
+            common_calls: d.common_calls,
         })
         .collect())
 }

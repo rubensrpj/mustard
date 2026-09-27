@@ -28,7 +28,7 @@
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.
 
-use crate::model::{CallSite, Decl};
+use crate::model::{CallSite, Decl, RECEIVER};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
@@ -177,6 +177,42 @@ pub fn parent_alias(lang: &str) -> Option<&'static str> {
 /// língua ou, quando ela não os declara, `::` e `.`.
 fn qualifier_separators(lang: &str) -> &'static [&'static str] {
     qualified_separators(lang).unwrap_or(&["::", "."])
+}
+
+/// Os separadores que ligam o método ao valor escrito antes dele sem juntar
+/// caminho (`member_separators` em languages.toml). Vazio sem o campo.
+fn member_separators(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_MEMBER_SEPARATORS, lang)
+}
+
+/// A língua liga o método ao valor por um separador próprio: o de nome
+/// qualificado, nela, só junta caminho, e o nome antes dele é módulo ou tipo.
+pub fn has_member_separators(lang: &str) -> bool {
+    !member_separators(lang).is_empty()
+}
+
+/// Os nomes que, antes do método chamado, são o próprio objeto ou o próprio
+/// tipo (`self_receivers` em languages.toml). Vazio sem o campo.
+pub fn self_receivers(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_SELF_RECEIVERS, lang)
+}
+
+/// A língua chama um membro do próprio objeto pelo nome sozinho
+/// (`implicit_self` em languages.toml). `false` sem o campo.
+pub fn implicit_self(lang: &str) -> bool {
+    LANG_IMPLICIT_SELF.iter().any(|&(name, on)| name == lang && on)
+}
+
+/// A família da língua: as línguas que leem as mesmas consultas (`dir` em
+/// languages.toml) são a mesma, escrita em arquivos de extensões diferentes.
+/// Vazio para uma língua que o registro não tem.
+pub fn family(lang: &str) -> &'static str {
+    text_field(LANG_FAMILY, lang)
+}
+
+/// O valor de um campo de lista do registro para a língua; vazio sem o campo.
+fn list_field(table: &'static [(&'static str, &'static [&'static str])], lang: &str) -> &'static [&'static str] {
+    table.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, values)| *values)
 }
 
 /// O valor de um campo de texto do registro para a língua; vazio sem o campo.
@@ -428,7 +464,7 @@ impl Analyzer {
                                 import_spans.insert((node.start_byte(), node.end_byte()));
                                 // O nome chamado é o nó nomeado logo depois do
                                 // caminho, lido como a chamada dele é lida.
-                                let call = node.next_named_sibling().and_then(|n| called_site(n, bytes, separators));
+                                let call = node.next_named_sibling().and_then(|n| called_site(n, bytes, &self.name));
                                 here_imports.push(Written { call, ..Written::at(path, false, node) });
                             }
                         }
@@ -601,6 +637,7 @@ impl Analyzer {
                     signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
                     calls: Vec::new(),
                     used_by: Vec::new(),
+                    common_calls: 0,
                     owner: h.owner,
                     contract: h.contract,
                     members: Vec::new(),
@@ -688,13 +725,14 @@ impl Written {
 }
 
 /// A chamada do nome no nó, como [`use_sites`] a lê: o nome, a linha e o
-/// qualificador escrito antes dele. `None` quando o nó não é um nome.
-fn called_site(node: Node, bytes: &[u8], separators: &[&str]) -> Option<CallSite> {
+/// qualificador escrito antes dele, pelos separadores de `lang`. `None` quando
+/// o nó não é um nome.
+fn called_site(node: Node, bytes: &[u8], lang: &str) -> Option<CallSite> {
     let name = node.utf8_text(bytes).ok().filter(|text| is_identifier(text))?;
     Some(CallSite {
         name: name.to_string(),
         line: node.start_position().row + 1,
-        qualifier: qualifier_before(node, bytes, separators),
+        qualifier: qualifier_before(node, bytes, lang),
     })
 }
 
@@ -1037,7 +1075,7 @@ fn one_line(text: &str, max: usize) -> String {
 /// declarations of the file write their names with: `x.from(1)` is a call,
 /// and a modifier or a type keyword before a parenthesis is not.
 ///
-/// O qualificador se lê pelos separadores de nome qualificado de `lang`.
+/// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]).
 fn use_sites(
     root: Node,
     bytes: &[u8],
@@ -1046,7 +1084,6 @@ fn use_sites(
     name_kinds: &BTreeSet<&str>,
     lang: &str,
 ) -> (Vec<CallSite>, Vec<CallSite>) {
-    let separators = qualifier_separators(lang);
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cursor = root.walk();
@@ -1068,7 +1105,7 @@ fn use_sites(
         if !is_identifier(text) {
             continue;
         }
-        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, separators));
+        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, lang));
         if followed_by_open_paren(node, bytes) {
             calls.insert(site);
         } else if !against_a_quote(node, bytes) {
@@ -1092,14 +1129,20 @@ fn is_wrapped_word(node: Node, name_kinds: &BTreeSet<&str>) -> bool {
             .is_some_and(|c| c.child_count() == 0 && c.start_byte() == node.start_byte() && c.end_byte() == node.end_byte())
 }
 
-/// The name written right before the node and joined to it by one of the
-/// language's `separators`: `preco` in `crate::preco::total`, `model` in
-/// `model.User`. Empty when the node stands alone, or when what comes before
-/// the separator is not a name (`f().total`, `...total`).
-fn qualifier_before(node: Node, bytes: &[u8], separators: &[&str]) -> String {
+/// O que vem escrito antes do nó e ligado a ele por um separador de `lang`.
+/// Pelo separador de nome qualificado, o nome antes dele: `preco` em
+/// `crate::preco::total`, `model` em `model.User`. Pelo separador que só liga
+/// método (`member_separators`), o nome só fica quando é o próprio objeto
+/// (`self_receivers`): outro nome ali é um valor. Quando o que vem antes do
+/// separador não é um nome (`f().total`, `a[0].total`, `...total`), ou é um
+/// valor, a marca [`RECEIVER`]. Vazio quando o nó está sozinho.
+fn qualifier_before(node: Node, bytes: &[u8], lang: &str) -> String {
     let before = bytes[..node.start_byte()].trim_ascii_end();
-    let Some(before) = separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes())) else {
-        return String::new();
+    let strip = |separators: &[&str]| separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes()));
+    let (before, only_member) = match (strip(qualifier_separators(lang)), strip(member_separators(lang))) {
+        (Some(before), _) => (before, false),
+        (None, Some(before)) => (before, true),
+        (None, None) => return String::new(),
     };
     let before = before.trim_ascii_end();
     let start = before
@@ -1107,8 +1150,8 @@ fn qualifier_before(node: Node, bytes: &[u8], separators: &[&str]) -> String {
         .rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80))
         .map_or(0, |i| i + 1);
     match std::str::from_utf8(&before[start..]) {
-        Ok(q) if is_identifier(q) => q.to_string(),
-        _ => String::new(),
+        Ok(q) if is_identifier(q) && (!only_member || self_receivers(lang).contains(&q)) => q.to_string(),
+        _ => RECEIVER.to_string(),
     }
 }
 

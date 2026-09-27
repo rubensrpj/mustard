@@ -268,7 +268,9 @@ pub const FILES: MapBlock = block!("files", version 2, {
 });
 
 /// As declarações e os textos delas: o arquivo, o tipo, o nome, as linhas, a
-/// assinatura, a documentação e quem usa cada uma; o dono e o contrato
+/// assinatura, a documentação e quem usa cada uma — cada uso provado ou
+/// suspeito, com as candidatas, e quantas chamadas do nome ficaram sem
+/// ligação por ele ser comum demais; o dono e o contrato
 /// escritos com ela; os membros de cada tipo e as implementações de cada
 /// método, que a passada refaz do projeto inteiro como refaz os usos.
 ///
@@ -279,10 +281,10 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// trigram, para o pedaço do nome; as línguas e as médias com que ele foi
 /// feito; e o índice do nome sem caixa. As listas saem antes das tabelas de
 /// que elas leem.
-pub const DECLS: MapBlock = block!("decls", version 3, {
+pub const DECLS: MapBlock = block!("decls", version 4, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
-        "signature" Text, "doc" Text, "supertypes" Json, "calls" Json, "used_by" Json,
+        "signature" Text, "doc" Text, "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
         "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
     ]
 }, index [
@@ -757,9 +759,9 @@ fn tests_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
 }
 
 /// As colunas de uma declaração que as perguntas pelo nome leem.
-const NAMED_COLUMNS: [&str; 13] = [
+const NAMED_COLUMNS: [&str; 14] = [
     "file", "kind", "name", "line", "end_line", "doc", "signature", "used_by",
-    "owner", "contract", "members", "implements", "implemented_by",
+    "owner", "contract", "members", "implements", "implemented_by", "common_calls",
 ];
 
 /// A declaração de uma linha com as colunas de [`NAMED_COLUMNS`].
@@ -777,6 +779,7 @@ fn named_decl(row: &Picked) -> Result<MapDecl> {
         members: json_cell(&row[10])?,
         implements: json_cell(&row[11])?,
         implemented_by: json_cell(&row[12])?,
+        common_calls: usize::try_from(int_cell(&row[13])).unwrap_or_default(),
     })
 }
 

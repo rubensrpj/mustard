@@ -101,6 +101,23 @@
 #                 escrito antes dele (`a` em `a::f()`). Sem o campo: `\` e
 #                 `::` sempre viram `/`, o ponto só fora de caminho, e o
 #                 qualificador é o nome antes de `::` ou de `.`.
+#   member_separators OPTIONAL — os textos que ligam o método chamado ao
+#                 valor escrito antes dele quando não juntam também as partes
+#                 de um nome qualificado (`.` em `x.f()` numa língua cujo
+#                 caminho usa `::`). O que vem antes deles é um valor, nunca
+#                 um módulo: a chamada por ele só se prova quando o valor é o
+#                 próprio objeto (`self_receivers`). Sem o campo, nenhum: o
+#                 separador de nome qualificado já liga o método.
+#   self_receivers OPTIONAL — os nomes que, escritos antes do método chamado,
+#                 são o próprio objeto ou o próprio tipo (`self.f()`,
+#                 `this.f()`): a chamada procura o método entre os membros do
+#                 tipo em que ela está escrita. Sem o campo, nenhum nome é o
+#                 próprio objeto.
+#   implicit_self OPTIONAL — `true` na língua que chama um membro do próprio
+#                 objeto pelo nome sozinho, sem escrever o objeto (`Fechar()`
+#                 dentro da classe). Sem o campo, `false`: o nome sozinho
+#                 nunca alcança um método, um campo ou um membro de enum, e o
+#                 `Ok(` ou o `fechar()` escrito sem o objeto não liga a eles.
 
 [[language]]
 name = "csharp"
@@ -108,6 +125,8 @@ extensions = ["cs"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
 namespace_scope = "nested"
+self_receivers = ["this"]
+implicit_self = true
 doc_tags = [
     "summary", "remarks", "returns", "param", "typeparam", "value", "example",
     "para", "c", "code", "list", "item", "term", "description", "exception",
@@ -119,6 +138,7 @@ name = "typescript"
 extensions = ["ts", "mts", "cts"]
 dir = "typescript"
 grammar = "grammar_ts::LANGUAGE_TYPESCRIPT"
+self_receivers = ["this"]
 import_extensions = ["js", "mjs", "cjs", "jsx"]
 alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
@@ -130,6 +150,7 @@ name = "tsx"
 extensions = ["tsx"]
 dir = "typescript"
 grammar = "grammar_ts::LANGUAGE_TSX"
+self_receivers = ["this"]
 import_extensions = ["js", "jsx", "mjs", "cjs"]
 alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
@@ -142,6 +163,7 @@ extensions = ["py", "pyi"]
 dir = "python"
 grammar = "grammar_py::LANGUAGE"
 relative_import = { separator = ".", package_file = "__init__" }
+self_receivers = ["self", "cls"]
 
 [[language]]
 name = "rust"
@@ -151,6 +173,8 @@ grammar = "grammar_rs::LANGUAGE"
 root_aliases = ["crate", "self"]
 parent_alias = "super"
 qualified_separators = ["::"]
+member_separators = ["."]
+self_receivers = ["self", "Self"]
 
 [[language]]
 name = "go"
@@ -164,9 +188,13 @@ name = "php"
 extensions = ["php"]
 dir = "php"
 grammar = "grammar_php::LANGUAGE_PHP"
+member_separators = ["->"]
+self_receivers = ["this", "self", "static"]
 
 [[language]]
 name = "dart"
 extensions = ["dart"]
 dir = "dart"
 grammar = "grammar_dart::LANGUAGE"
+self_receivers = ["this"]
+implicit_self = true

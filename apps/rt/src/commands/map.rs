@@ -8,7 +8,9 @@
 //! - `slice --file <arquivo> --name <declaração>`: o trecho da declaração, do
 //!   começo ao fim, com o caminho e as linhas de onde ele saiu;
 //! - `users --name <declaração>` (com `--file`, só a desse arquivo): quem usa
-//!   a declaração, como `arquivo:linha:quem chama`;
+//!   a declaração, como `arquivo:linha:quem chama` — as ligações provadas
+//!   primeiro, e as suspeitas agrupadas pelas declarações que a chamada pode
+//!   alcançar;
 //! - `search --query "<palavras>"`: a busca por conceito;
 //! - `summary`: o resumo do início da sessão, até 3 kB;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
@@ -21,11 +23,12 @@
 //! se leem o mapa, a skill e o arquivo de onde sai o trecho, e se imprime o
 //! JSON.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::project_map::{self as project_map, MapRefusal, ProjectMap};
+use mustard_core::domain::project_map::{self as project_map, DeclAt, MapRefusal, ProjectMap};
 use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::search::TOP;
 use mustard_core::io::map_search;
@@ -200,24 +203,48 @@ fn slice(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRef
 
 /// Quem usa a declaração de `--name`: cada declaração com esse nome no mapa
 /// (só a do arquivo de `--file`, quando ele vem), com os usos que o scan
-/// gravou, como `arquivo:linha:quem chama`. A que ninguém usa leva a nota que
-/// diz isso, para que a lista vazia não pareça um mapa sem a informação.
+/// gravou, como `arquivo:linha:quem chama`. As ligações provadas vêm primeiro,
+/// em `used_by`; as suspeitas, em `suspect`, agrupadas pelas declarações que a
+/// chamada pode alcançar, e a resposta com alguma traz em `next` o próximo
+/// passo: conferir cada uma pelo servidor de linguagem. As chamadas que o
+/// nome comum demais deixou sem ligação vêm só contadas, com o jeito de
+/// achá-las. A que ninguém usa leva a nota que diz isso, para que a lista
+/// vazia não pareça um mapa sem a informação.
 fn users(opts: &MapOpts, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRefusal> {
     let name = after_the_map(required(opts.name.as_deref(), opts.question, "--name"), read)?;
     let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
     let found = project_map::users(&read(Need::Declarations { file, name: &name })?, file, &name)?;
+    let mut any_suspect = false;
     let declarations: Vec<Value> = found
         .iter()
         .map(|d| {
+            let proven: Vec<String> = d.used_by.iter().filter(|u| u.is_proven()).map(|u| u.place()).collect();
+            let mut by_candidates: BTreeMap<&[DeclAt], Vec<String>> = BTreeMap::new();
+            for u in d.used_by.iter().filter(|u| !u.is_proven()) {
+                by_candidates.entry(u.candidates.as_slice()).or_default().push(u.place());
+            }
             let mut entry = json!({
                 "file": d.file,
                 "name": d.name,
                 "kind": d.kind,
                 "line": d.line,
                 "end_line": d.end_line,
-                "used_by": d.used_by,
+                "used_by": proven,
             });
-            if d.used_by.is_empty() {
+            if !by_candidates.is_empty() {
+                any_suspect = true;
+                entry["suspect"] = by_candidates
+                    .into_iter()
+                    .map(|(candidates, used_by)| json!({"candidates": candidates, "used_by": used_by}))
+                    .collect();
+            }
+            if d.common_calls > 0 {
+                entry["common_calls"] = json!(d.common_calls);
+                entry["common"] = json!(mustard_core::translate("map.users.common", lang)
+                    .replace("{count}", &d.common_calls.to_string())
+                    .replace("{name}", &d.name));
+            }
+            if d.used_by.is_empty() && d.common_calls == 0 {
                 entry["note"] = json!(mustard_core::translate("map.users.none", lang)
                     .replace("{name}", &d.name)
                     .replace("{file}", &d.file));
@@ -232,6 +259,9 @@ fn users(opts: &MapOpts, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRe
         "head": mustard_core::translate("map.users.head", lang).replace("{name}", name.trim()),
         "declarations": declarations,
     });
+    if any_suspect {
+        report["next"] = json!(mustard_core::translate("map.users.suspect", lang));
+    }
     if let Some(file) = file {
         report["file"] = json!(project_map::clean_path(file));
     }

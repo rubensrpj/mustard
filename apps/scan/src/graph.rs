@@ -54,7 +54,7 @@
 //!     Nothing here switches on a language name, so a new language needs no change.
 //!     Imports that resolve to nothing internal are treated as external deps.
 
-use crate::model::{CallSite, Decl, DeclAt, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
+use crate::model::{CallSite, Decl, DeclAt, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite, RECEIVER};
 use crate::path_aliases::PathAliases;
 use mustard_core::domain::ast::is_test_path;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -284,10 +284,10 @@ pub fn build(
     (stats, depth_by_path)
 }
 
-/// A name declared by more declarations than this is a common word (`new`,
-/// `build`, `run`), not a link: tying every call of it to all of them would
-/// fill the map with noise instead of answers. Same bucket ceiling the import
-/// resolution already applies.
+/// A call that can reach more declarations than this one is a common word
+/// (`new`, `build`, `run`), not a link: tying it to all of them would fill the
+/// map with noise instead of answers, so it is only counted. Same bucket
+/// ceiling the import resolution already applies.
 const MAX_SAME_NAME: usize = 8;
 
 /// The declaration kinds a use can point to: what is called or built by name.
@@ -295,6 +295,11 @@ const MAX_SAME_NAME: usize = 8;
 /// something else that happens to share the name — and a type alias, an
 /// interface or a trait is never the target of a call either.
 const CALLABLE_KINDS: &[&str] = &["function", "method", "class", "struct", "record", "enum_member", "const"];
+
+/// Os tipos de declaração que só se alcançam pelo objeto ou pelo tipo dono:
+/// o nome sozinho só chega a eles na língua que chama o membro do próprio
+/// objeto sem escrevê-lo (`implicit_self` no registro).
+const MEMBER_KINDS: &[&str] = &["method", "field", "property", "enum_member"];
 
 /// The declaration kinds a citation can point to: what is named without being
 /// called — a constant compared against, a type written in a parameter, an
@@ -313,36 +318,58 @@ pub(crate) const CITED_KINDS: &[&str] =
 /// escrita num trecho de teste do arquivo (`Module::test_lines`, guardado do
 /// mesmo jeito) é do teste: não entra em quem usa a declaração.
 ///
-/// A name is resolved only to the declarations that can be called and that the
-/// calling file sees: the ones in the file itself, in a file it imports, in a
-/// file a global import of its language puts in sight (one written anywhere
-/// under the folder of the nearest manifest above the file that writes it, or
-/// under that file's own folder when no manifest is above it), or in a file
-/// that declares the same namespace in the same language (the languages that
-/// group files by namespace see each other that way, without importing a
-/// file). How a namespace is seen is registry data: in a language whose
-/// namespace holds together with its folder, the same name in another folder
-/// is another namespace; in a language whose namespaces nest, a file also sees
-/// the namespaces above its own. A qualified name (`q::name`, `q.name`) also reaches the declarations
-/// of a file of the same language whose name or folder is `q` — `crate::preco::total(`
-/// and `model.User{}` need no import. A chamada escrita por um caminho que
-/// nomeia arquivo do projeto (`Module::call_paths`, resolvido pelo mesmo passo
-/// que o põe em `deps`) liga só às declarações desses arquivos: o próprio
-/// arquivo só entra quando o caminho o nomeia (`super::valor()` dentro de um
-/// módulo do arquivo). A name no file in sight declares is an
-/// outside call — `.join(` of the
-/// standard library, a field read as `x.kind()` — and is simply dropped, never
-/// tied to every declaration of that name across the project. The links of
-/// every declaration are rewritten from scratch on each pass, so nothing
-/// survives a declaration that is gone.
+/// Cada ligação diz se é provada ou suspeita ([`UseSite::candidates`]). A
+/// provada tem um alvo só; a suspeita traz as declarações que a chamada pode
+/// alcançar, e a chamada que pode alcançar mais que o teto só se conta
+/// (`Decl::common_calls`). Quem a chamada alcança se procura por degraus,
+/// sempre só entre as declarações que se chamam ([`CALLABLE_KINDS`]):
 ///
-/// Cada módulo guarda, em `Module::cites`, só as citações de um nome que algum
-/// arquivo à vista dele declara como constante ou tipo, mesmo o nome comum
-/// demais para ligar: é essa citação que leva a importação de namespace ao
-/// arquivo que o declara. O nome que nenhum arquivo à vista declara, como um
-/// tipo da biblioteca padrão, não é uso de nada do projeto e sai do mapa. O
-/// que uma passada seguinte ganha com um nome que passa a ser declarado é
-/// relido por [`crate::refresh::stale_citers`].
+/// - O caminho escrito antes do nome que nomeia arquivo do projeto
+///   (`Module::call_paths`, resolvido pelo mesmo passo que o põe em `deps`)
+///   liga só às declarações desses arquivos: o próprio arquivo só entra
+///   quando o caminho o nomeia (`super::valor()` dentro de um módulo do
+///   arquivo).
+/// - O nome sozinho não alcança método, campo nem membro de enum, a não ser na
+///   língua que chama o membro do próprio objeto sem escrevê-lo
+///   (`implicit_self` no registro): nas outras, o `Ok(` escrito sozinho é o
+///   da biblioteca padrão mesmo com um `enum` do projeto que tem um `Ok`.
+/// - O nome sozinho procura o que o arquivo tem à vista: ele mesmo, o que
+///   ele importa (as arestas já estreitadas pelo tipo usado), o que um import
+///   global da língua põe à vista (escrito em qualquer lugar sob a pasta do
+///   manifesto mais próximo acima de quem o escreve, ou sob a pasta dele
+///   quando não há manifesto acima) e o mesmo módulo — os arquivos que
+///   declaram o mesmo namespace na mesma língua. Como o namespace se vê é
+///   dado do registro: na língua cujo namespace vai junto com a pasta, o
+///   mesmo nome em outra pasta é outro namespace; na língua cujos namespaces
+///   se aninham, o arquivo vê também os de cima. Importar é por arquivo, não
+///   por nome: o que o arquivo importa e o que ele mesmo declara contam
+///   juntos, e dois alvos ali são suspeitos. Sem nada à vista, o nome
+///   declarado uma vez na família da língua é provado; mais de uma vez, as
+///   declarações da família inteira são suspeitas.
+/// - O nome qualificado (`q::nome`, `q.nome`) estreita pelo qualificador: as
+///   declarações de um arquivo da mesma língua cujo nome ou pasta é `q`
+///   (`crate::preco::total(` e `model.User{}` não precisam de import), e as
+///   de um tipo `q` que o arquivo tem à vista (`Pedido::novo()`).
+/// - O próprio objeto (`self`, `this`: `self_receivers` no registro)
+///   estreita pelos membros do tipo em que a chamada está escrita, e o que
+///   está à vista vale antes do resto.
+/// - Sem estreitar — o qualificador que é um valor (`x.run()`, `f().run()`),
+///   ou o próprio objeto sem o método entre os membros —, a chamada é
+///   suspeita, só entre as declarações à vista: o nome que o arquivo não vê
+///   é uma chamada de fora, como o `.join(` da biblioteca padrão ou o campo
+///   lido como `x.kind()`.
+///
+/// A citação liga só ao que o arquivo tem à vista, com o nome qualificado
+/// estreitando do mesmo jeito. Cada módulo guarda, em `Module::cites`, só as
+/// citações de um nome que algum arquivo à vista dele declara como constante
+/// ou tipo, mesmo o nome comum demais para ligar: é essa citação que leva a
+/// importação de namespace ao arquivo que o declara. O nome que nenhum
+/// arquivo à vista declara, como um tipo da biblioteca padrão, não é uso de
+/// nada do projeto e sai do mapa. O que uma passada seguinte ganha com um
+/// nome que passa a ser declarado é relido por
+/// [`crate::refresh::stale_citers`]. The links of every declaration are
+/// rewritten from scratch on each pass, so nothing survives a declaration
+/// that is gone.
 pub fn link_declarations(
     modules: &mut [Module],
     go_module: &Option<String>,
@@ -350,7 +377,8 @@ pub fn link_declarations(
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
 ) {
-    let (calls, uses, linked) = resolve_declaration_links(modules, go_module, packages, manifests, aliases);
+    let DeclLinks { mut calls, mut uses, common, linked } =
+        resolve_declaration_links(modules, go_module, packages, manifests, aliases);
     for (m, linked) in modules.iter_mut().zip(linked) {
         m.cites = std::mem::take(&mut m.cites)
             .into_iter()
@@ -358,29 +386,90 @@ pub fn link_declarations(
             .filter_map(|(i, site)| linked.contains(&i).then_some(site))
             .collect();
     }
-    for (m, (module_calls, module_uses)) in modules.iter_mut().zip(calls.into_iter().zip(uses)) {
-        for (decl, (called, used)) in m.declarations.iter_mut().zip(module_calls.into_iter().zip(module_uses)) {
-            decl.calls = called.into_iter().collect();
-            let mut used: Vec<UseSite> = used;
+    for (mi, m) in modules.iter_mut().enumerate() {
+        for (di, decl) in m.declarations.iter_mut().enumerate() {
+            decl.calls = std::mem::take(&mut calls[mi][di]).into_iter().collect();
+            let mut used = std::mem::take(&mut uses[mi][di]);
             used.sort();
-            used.dedup();
+            // O mesmo lugar ligado duas vezes fica uma só, e a provada, que
+            // vem antes na ordem, vence a suspeita.
+            used.dedup_by(|next, kept| (&next.file, next.line, &next.from) == (&kept.file, kept.line, &kept.from));
             decl.used_by = used;
+            decl.common_calls = common[mi][di];
         }
     }
 }
 
-/// What each declaration calls, per module and per declaration.
-type CallsByDecl = Vec<Vec<BTreeSet<String>>>;
+/// As ligações do projeto, por módulo e por declaração: os nomes que cada uma
+/// chama, os usos que recebe, as chamadas comuns demais para ligar que
+/// podiam alcançá-la, e as citações de cada módulo que ligaram, pela posição
+/// em `Module::cites`.
+struct DeclLinks {
+    calls: Vec<Vec<BTreeSet<String>>>,
+    uses: Vec<Vec<Vec<UseSite>>>,
+    common: Vec<Vec<usize>>,
+    linked: Vec<HashSet<usize>>,
+}
 
-/// The uses each declaration receives, per module and per declaration.
-type UsesByDecl = Vec<Vec<Vec<UseSite>>>;
+/// O que uma chamada ou uma citação alcança.
+enum Verdict {
+    /// Só esta declaração: a ligação provada.
+    Proven(DeclId),
+    /// Uma destas, sem como decidir qual: a ligação suspeita.
+    Suspect(Vec<DeclId>),
+    /// Mais declarações que o teto: a chamada só se conta.
+    Common(Vec<DeclId>),
+}
 
-/// The citations of each module that linked to a declaration, by position in
-/// `Module::cites`.
-type LinkedCites = Vec<HashSet<usize>>;
+impl Verdict {
+    /// O veredito sobre as declarações que a chamada pode alcançar: uma só é
+    /// provada quando `provable`; mais que o teto, só a contagem. `None` sem
+    /// nenhuma.
+    fn of(pool: Vec<DeclId>, provable: bool) -> Option<Self> {
+        match pool.len() {
+            0 => None,
+            1 if provable => Some(Self::Proven(pool[0])),
+            n if n > MAX_SAME_NAME => Some(Self::Common(pool)),
+            _ => Some(Self::Suspect(pool)),
+        }
+    }
+}
 
-/// The links, per module and per declaration: the names it calls and the uses
-/// it receives, and which citations of each module linked. Split out of
+/// O que vem escrito antes do nome, como a ligação o lê.
+enum Before<'a> {
+    /// Nada: o nome sozinho.
+    Nothing,
+    /// O próprio objeto ou o próprio tipo (`self_receivers` no registro).
+    Itself,
+    /// Um nome, que pode ser um arquivo, um tipo ou um valor.
+    Name(&'a str),
+    /// Um valor que não é nome ([`RECEIVER`]).
+    Value,
+}
+
+impl<'a> Before<'a> {
+    fn of(qualifier: &'a str, lang: &str) -> Self {
+        match qualifier {
+            "" => Self::Nothing,
+            RECEIVER => Self::Value,
+            q if crate::extract::self_receivers(lang).contains(&q) => Self::Itself,
+            q => Self::Name(q),
+        }
+    }
+}
+
+/// Os nomes do tipo em que a linha está escrita: os donos da declaração que a
+/// contém e ela mesma, quando é um tipo. Vazio fora de toda declaração.
+fn own_types(m: &Module, from: Option<usize>) -> Vec<&str> {
+    let Some(d) = from.map(|di| &m.declarations[di]) else { return Vec::new() };
+    let mut names: Vec<&str> = d.owner.iter().map(String::as_str).collect();
+    if TYPE_KINDS.contains(&d.kind.as_str()) {
+        names.push(d.name.as_str());
+    }
+    names
+}
+
+/// As ligações, por módulo e por declaração ([`DeclLinks`]). Split out of
 /// [`link_declarations`] so the whole project is read before any declaration
 /// is written to.
 fn resolve_declaration_links(
@@ -389,9 +478,9 @@ fn resolve_declaration_links(
     packages: &[(String, String)],
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
-) -> (CallsByDecl, UsesByDecl, LinkedCites) {
+) -> DeclLinks {
     let index = |kinds: &[&str]| {
-        let mut by_name: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        let mut by_name: HashMap<&str, Vec<DeclId>> = HashMap::new();
         for (mi, m) in modules.iter().enumerate() {
             for (di, d) in m.declarations.iter().enumerate() {
                 if !d.name.is_empty() && kinds.contains(&d.kind.as_str()) {
@@ -453,24 +542,39 @@ fn resolve_declaration_links(
             [file_stem(&m.path), folder]
         })
         .collect();
+    let owner_of = |(mi, di): DeclId| modules[mi].declarations[di].owner.first().map(String::as_str);
+    let at = |(mi, di): DeclId| {
+        let d = &modules[mi].declarations[di];
+        DeclAt { file: modules[mi].path.clone(), line: d.line, name: d.name.clone() }
+    };
 
-    let mut calls: CallsByDecl = modules.iter().map(|m| vec![BTreeSet::new(); m.declarations.len()]).collect();
-    let mut uses: UsesByDecl = modules.iter().map(|m| vec![Vec::new(); m.declarations.len()]).collect();
-    let mut linked: LinkedCites = vec![HashSet::new(); modules.len()];
+    let mut links = DeclLinks {
+        calls: modules.iter().map(|m| vec![BTreeSet::new(); m.declarations.len()]).collect(),
+        uses: modules.iter().map(|m| vec![Vec::new(); m.declarations.len()]).collect(),
+        common: modules.iter().map(|m| vec![0; m.declarations.len()]).collect(),
+        linked: vec![HashSet::new(); modules.len()],
+    };
 
     for (src, m) in modules.iter().enumerate() {
         if m.calls.is_empty() && m.cites.is_empty() {
             continue;
         }
         let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
-        let sees = |mi: usize, qualifier: &str| {
+        let family = crate::extract::family(&m.language);
+        let implicit_self = crate::extract::implicit_self(&m.language);
+        // Na língua que liga o método por um separador próprio, o de nome
+        // qualificado só junta caminho.
+        let path_only = crate::extract::has_member_separators(&m.language);
+        // O que o arquivo tem à vista: ele mesmo, o que importa, o que um
+        // import global põe à vista e o mesmo namespace da mesma língua.
+        let sees = |mi: usize| {
             mi == src
                 || imported.contains(modules[mi].path.as_str())
                 || globals.sees(src, &modules[mi].path)
-                || (modules[mi].language == m.language
-                    && (declared[mi].iter().any(|ns| in_sight[src].contains(ns))
-                        || (!qualifier.is_empty() && own_names[mi].iter().any(|n| n == qualifier))))
+                || (modules[mi].language == m.language && declared[mi].iter().any(|ns| in_sight[src].contains(ns)))
         };
+        // O arquivo da mesma língua que o qualificador nomeia.
+        let named_by = |mi: usize, q: &str| modules[mi].language == m.language && own_names[mi].iter().any(|n| n == q);
         // Cada chamada escrita por um caminho do projeto, com os caminhos.
         let mut through: BTreeMap<&CallSite, Vec<&str>> = BTreeMap::new();
         for (path, written) in &m.call_paths {
@@ -487,49 +591,131 @@ fn resolve_declaration_links(
             let is_call = cite_at.is_none();
             let Some(all) = by_name.get(site.name.as_str()) else { continue };
             let from = enclosing(&m.declarations, site.line);
-            let named = match (&resolver, through.get(site)) {
-                (Some(resolver), Some(paths)) if is_call => path_files(resolver, m, site.line, paths),
-                _ => None,
-            };
-            let chosen: Vec<(usize, usize)> = all
+            let before = Before::of(&site.qualifier, &m.language);
+            // O nome sozinho só alcança um membro na língua que o chama sem
+            // escrever o objeto.
+            let member_out = matches!(before, Before::Nothing) && !implicit_self;
+            // A type named inside its own body is not a use of it.
+            let all: Vec<DeclId> = all
                 .iter()
                 .copied()
-                .filter(|&(mi, _)| match &named {
-                    Some(files) => files.contains(modules[mi].path.as_str()),
-                    None => sees(mi, &site.qualifier),
-                })
-                // A type named inside its own body is not a use of it.
                 .filter(|&(mi, di)| is_call || !(mi == src && from == Some(di)))
+                .filter(|&(mi, di)| !(member_out && MEMBER_KINDS.contains(&modules[mi].declarations[di].kind.as_str())))
                 .collect();
-            if chosen.is_empty() {
-                continue;
-            }
+            let seen: Vec<DeclId> = all.iter().copied().filter(|&(mi, _)| sees(mi)).collect();
+            // Estreita pelo que vem antes do nome: o arquivo que o
+            // qualificador nomeia (só o que fica fora de todo tipo nele) ou
+            // o tipo que ele nomeia, ou os membros do tipo em que a chamada
+            // está escrita. Com o que ficou, se a ligação pode ser provada:
+            // o arquivo nomeado que o arquivo não tem à vista pode ser outro
+            // de mesmo nome, de fora do projeto. `None` quando nada estreita.
+            let narrowed = |pool: &[DeclId]| -> Option<(Vec<DeclId>, bool)> {
+                let kept: Vec<DeclId> = match before {
+                    Before::Name(q) => pool
+                        .iter()
+                        .copied()
+                        .filter(|&d| match owner_of(d) {
+                            None => named_by(d.0, q),
+                            Some(owner) => owner == q && sees(d.0),
+                        })
+                        .collect(),
+                    Before::Itself => {
+                        let types = own_types(m, from);
+                        let own: Vec<DeclId> =
+                            pool.iter().copied().filter(|&d| owner_of(d).is_some_and(|o| types.contains(&o))).collect();
+                        let own_seen: Vec<DeclId> = own.iter().copied().filter(|&(mi, _)| sees(mi)).collect();
+                        if own_seen.is_empty() { own } else { own_seen }
+                    }
+                    Before::Nothing | Before::Value => Vec::new(),
+                };
+                let provable = matches!(before, Before::Itself) || kept.iter().all(|&(mi, _)| sees(mi));
+                (!kept.is_empty()).then_some((kept, provable))
+            };
+            let verdict = if is_call {
+                let named = match (&resolver, through.get(site)) {
+                    (Some(resolver), Some(paths)) => path_files(resolver, m, site.line, paths),
+                    _ => None,
+                };
+                match (named, &before) {
+                    (Some(files), _) => Verdict::of(
+                        all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect(),
+                        true,
+                    ),
+                    (None, Before::Nothing) if !seen.is_empty() => Verdict::of(seen, true),
+                    // Sem nada à vista, a família inteira da língua.
+                    (None, Before::Nothing) => Verdict::of(
+                        all.iter()
+                            .copied()
+                            .filter(|&(mi, _)| crate::extract::family(&modules[mi].language) == family)
+                            .collect(),
+                        true,
+                    ),
+                    (None, _) => match narrowed(&all) {
+                        Some((kept, provable)) => Verdict::of(kept, provable),
+                        // O nome antes de um separador que só junta caminho
+                        // é módulo ou tipo, nunca valor: sem nada do projeto
+                        // com esse nome, a chamada é de fora (`Vec::new()`).
+                        None if matches!(before, Before::Name(_)) && path_only => None,
+                        None => Verdict::of(seen, false),
+                    },
+                }
+            } else {
+                // A citação só liga ao que o arquivo tem à vista, com o
+                // arquivo que o qualificador nomeia.
+                let pool: Vec<DeclId> = match before {
+                    Before::Name(q) => all.iter().copied().filter(|&(mi, _)| sees(mi) || named_by(mi, q)).collect(),
+                    _ => seen,
+                };
+                match (narrowed(&pool), &before) {
+                    (Some((kept, provable)), _) => Verdict::of(kept, provable),
+                    (None, Before::Nothing) => Verdict::of(pool, true),
+                    (None, _) => Verdict::of(pool, false),
+                }
+            };
+            let Some(verdict) = verdict else { continue };
             // A citação de um nome que algum arquivo à vista declara fica no
             // módulo mesmo quando o nome é comum demais para ligar: é ela que
             // leva a importação de namespace ao arquivo que o declara, e a
             // passada que não relê o arquivo precisa dela para ligar igual.
             if let Some(i) = cite_at {
-                linked[src].insert(i);
+                links.linked[src].insert(i);
             }
             // O que se chama ou se cita num trecho de teste do arquivo não é
             // uso do código.
-            if chosen.len() > MAX_SAME_NAME || m.is_test_line(site.line) {
+            if m.is_test_line(site.line) {
                 continue;
             }
             let from_name = from.map_or(String::new(), |di| m.declarations[di].name.clone());
-            for (dst_mi, dst_di) in chosen {
-                uses[dst_mi][dst_di].push(UseSite {
+            let (targets, candidates) = match verdict {
+                Verdict::Proven(target) => (vec![target], Vec::new()),
+                Verdict::Suspect(targets) => {
+                    let mut candidates: Vec<DeclAt> = targets.iter().map(|&t| at(t)).collect();
+                    candidates.sort();
+                    (targets, candidates)
+                }
+                Verdict::Common(targets) => {
+                    if is_call {
+                        for (mi, di) in targets {
+                            links.common[mi][di] += 1;
+                        }
+                    }
+                    continue;
+                }
+            };
+            for (dst_mi, dst_di) in targets {
+                links.uses[dst_mi][dst_di].push(UseSite {
                     file: m.path.clone(),
                     line: site.line,
                     from: from_name.clone(),
+                    candidates: candidates.clone(),
                 });
-                if is_call && let Some(di) = from {
-                    calls[src][di].insert(site.name.clone());
-                }
+            }
+            if is_call && let Some(di) = from {
+                links.calls[src][di].insert(site.name.clone());
             }
         }
     }
-    (calls, uses, linked)
+    links
 }
 
 /// Os arquivos que os caminhos escritos antes de uma chamada na linha `line`

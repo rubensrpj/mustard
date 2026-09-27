@@ -1,6 +1,6 @@
-//! A busca antiga do scan não existe mais: `digest` e `feature-bundle` são
-//! recusados como comando desconhecido, mesmo sobre um modelo válido, e o
-//! `facts` sobre o mesmo modelo continua respondendo.
+//! Os comandos que o scan deixou de ter não existem mais: a busca antiga
+//! (`digest` e `feature-bundle`) e a projeção à parte do mapa (`facts`) são
+//! recusadas como comando desconhecido, mesmo sobre um modelo válido.
 
 #[path = "support/model.rs"]
 mod model;
@@ -23,7 +23,7 @@ fn model_in(dir: &Path) -> String {
 }
 
 #[test]
-fn the_old_search_commands_are_refused_as_unknown() {
+fn the_retired_commands_are_refused_as_unknown() {
     let temp = tempfile::Builder::new().prefix("scan-retired-").tempdir().unwrap();
     let model = model_in(temp.path());
 
@@ -31,6 +31,7 @@ fn the_old_search_commands_are_refused_as_unknown() {
         vec!["digest", model.as_str()],
         vec!["digest", model.as_str(), "--query", "invoice"],
         vec!["feature-bundle", model.as_str(), "--query", "invoice"],
+        vec!["facts", model.as_str()],
     ] {
         let out = scan(&args);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -42,10 +43,4 @@ fn the_old_search_commands_are_refused_as_unknown() {
         );
         assert!(out.stdout.is_empty(), "a refused command prints nothing on stdout");
     }
-
-    // O mesmo modelo segue servindo ao comando que ficou.
-    let facts = scan(&["facts", model.as_str()]);
-    assert!(facts.status.success(), "facts: {}", String::from_utf8_lossy(&facts.stderr));
-    let v: serde_json::Value = serde_json::from_slice(&facts.stdout).expect("facts prints JSON");
-    assert_eq!(v["entities"], serde_json::json!(["Invoice"]), "facts: {v}");
 }

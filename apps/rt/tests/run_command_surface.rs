@@ -307,6 +307,65 @@ fn o_mapa_devolve_quem_usa_uma_declaracao_pelo_nome() {
     assert!(hint.contains("Confira o nome"), "o texto de declaração desconhecida: {report}");
 }
 
+/// A resposta de quem usa separa o que o mapa provou do que ele só suspeita,
+/// pelo comando que a pessoa roda: `run map users --name run`. As ligações
+/// provadas vêm em `used_by`; as suspeitas, em `suspect`, agrupadas pelas
+/// declarações que a chamada pode alcançar, e a resposta traz o próximo passo
+/// para decidir cada uma pelo servidor de linguagem. A declaração cujo nome
+/// ficou comum demais traz só a contagem das chamadas, com o jeito de achá-las.
+#[test]
+fn the_users_answer_puts_proven_links_first_and_groups_the_suspect_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // O mapa como o scan o grava: `run` em src/a.rs, chamada com certeza por
+    // `usa`, em src/com.rs; a chamada de `outra`, em src/sem.rs, pode ser a
+    // `run` de src/a.rs ou a de src/b.rs; e a `run` de src/c.rs só conta três
+    // chamadas do nome comum.
+    let duas = r#"["src/a.rs:1:run", "src/b.rs:1:run"]"#;
+    mustard_core::io::project_map::write_text(
+        root,
+        &format!(
+            r#"{{"modules": [
+             {{"path": "src/a.rs", "loc": 3, "declarations": [
+               {{"kind": "function", "name": "run", "line": 1, "end_line": 3,
+                "used_by": ["src/com.rs:4:usa", {{"at": "src/sem.rs:2:outra", "candidates": {duas}}}]}}]}},
+             {{"path": "src/b.rs", "loc": 3, "declarations": [
+               {{"kind": "function", "name": "run", "line": 1, "end_line": 3,
+                "used_by": [{{"at": "src/sem.rs:2:outra", "candidates": {duas}}}]}}]}},
+             {{"path": "src/c.rs", "loc": 3, "declarations": [
+               {{"kind": "function", "name": "run", "line": 1, "end_line": 3, "common_calls": 3}}]}}
+           ]}}"#
+        ),
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "map", "users", "--name", "run", "--root"])
+        .arg(root)
+        .current_dir(root)
+        .output()
+        .expect("run map users");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    assert!(out.status.success(), "{report}");
+    let declarations = report["declarations"].as_array().unwrap();
+    let files: Vec<&str> = declarations.iter().map(|d| d["file"].as_str().unwrap()).collect();
+    assert_eq!(files, ["src/a.rs", "src/b.rs", "src/c.rs"], "{report}");
+
+    let grupo = serde_json::json!([{"candidates": ["src/a.rs:1:run", "src/b.rs:1:run"], "used_by": ["src/sem.rs:2:outra"]}]);
+    assert_eq!(declarations[0]["used_by"], serde_json::json!(["src/com.rs:4:usa"]), "só a provada: {report}");
+    assert_eq!(declarations[0]["suspect"], grupo, "a suspeita com as duas candidatas: {report}");
+    assert_eq!(declarations[1]["used_by"], serde_json::json!([]), "nenhuma provada: {report}");
+    assert_eq!(declarations[1]["suspect"], grupo, "{report}");
+    assert!(declarations[1].get("note").is_none(), "quem tem uso suspeito não leva a nota de ninguém usa: {report}");
+    let next = report["next"].as_str().unwrap_or_default();
+    assert!(next.contains("goToDefinition") && next.contains("LSP"), "o próximo passo pelo servidor de linguagem: {report}");
+
+    assert_eq!(declarations[2]["common_calls"], 3, "{report}");
+    assert!(declarations[2].get("suspect").is_none() && declarations[2].get("note").is_none(), "{report}");
+    let common = declarations[2]["common"].as_str().unwrap_or_default();
+    assert!(common.contains('3') && common.contains("findReferences"), "a contagem e o jeito de achar: {report}");
+}
+
 /// Pergunta ao mapa pelo comando que a pessoa roda, na raiz `root`: o JSON da
 /// resposta e se o comando saiu sem erro.
 fn ask_map(root: &Path, question: &str) -> (bool, serde_json::Value) {

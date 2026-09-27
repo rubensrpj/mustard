@@ -5,8 +5,9 @@
 //! it shells out to the grain binary and consumes its JSON/Markdown:
 //!
 //! - `grain scan <root> --out <model.json>` — the durable model (run once/repo).
-//! - `grain facts <model>` — the subproject list and the known declaration
-//!   names, so Mustard never parses the model's own schema.
+//!
+//! What the map holds is read back through the map port
+//! (`io/project_map.rs`), never through another run of the tool.
 //!
 //! The boundary is a TOOL (process + JSON/MD), not a library link: no shared
 //! build, no tree-sitter version coupling, grain stays standalone. This module
@@ -79,18 +80,6 @@ pub struct Project {
     pub own_git_root: bool,
 }
 
-/// The small, stable FACTS the orchestrator consumes from a grain model — the
-/// subproject list and the known declaration names. Produced by `scan facts`;
-/// Mustard deserializes this tiny shape but never the model's own (large)
-/// schema, so the scan tool stays the single owner of the model format.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ModelFacts {
-    #[serde(default)]
-    pub projects: Vec<Project>,
-    #[serde(default)]
-    pub entities: Vec<String>,
-}
-
 /// Os subprojetos do mapa em `model_path`, lidos só da tabela deles pela
 /// porta do mapa ([`crate::io::project_map::projects_at`]), sem abrir outro
 /// processo nem ler o resto do mapa. Falha aberta: sem mapa (o scan ainda não
@@ -98,18 +87,6 @@ pub struct ModelFacts {
 #[must_use]
 pub fn read_projects(model_path: &std::path::Path) -> Vec<Project> {
     crate::io::project_map::projects_at(model_path).unwrap_or_default()
-}
-
-/// Read the distinct declaration names (entities / types / functions) from a
-/// grain model — the "known entities" set — via the scan tool's `facts` command.
-/// Sorted + deduped by the tool. Fail-open: empty on a missing model or any
-/// spawn/parse error.
-#[must_use]
-pub fn read_entity_names(model_path: &std::path::Path) -> Vec<String> {
-    if !crate::io::project_map::exists_at(model_path) {
-        return Vec::new();
-    }
-    Scan::locate().facts(model_path).map(|f| f.entities).unwrap_or_default()
 }
 
 /// Stamp [`Project::own_git_root`] on each census entry by probing whether its
@@ -178,17 +155,6 @@ impl Scan {
         parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
-    /// Read the model's FACTS (subproject list + known declaration names) via
-    /// `scan facts <model>` — so Mustard never parses the model's own schema.
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
-    /// [`Error::Parse`] if the output is not the expected JSON.
-    pub fn facts(&self, model: &Path) -> Result<ModelFacts> {
-        let out = self.run(&facts_args(model))?;
-        Ok(serde_json::from_str(&out)?)
-    }
-
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
     /// stderr) to [`Error::CheckFailed`].
     fn run(&self, args: &[String]) -> Result<String> {
@@ -230,10 +196,6 @@ pub struct ScanReport {
 fn parse_scan_report(stdout: &str) -> Result<ScanReport> {
     let line = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}");
     serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan report: {e}")))
-}
-
-fn facts_args(model: &Path) -> Vec<String> {
-    vec!["facts".to_string(), model.to_string_lossy().into_owned()]
 }
 
 #[cfg(test)]
@@ -291,21 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn facts_args_shape() {
-        let a = facts_args(&PathBuf::from("m.json"));
-        assert_eq!(a, vec!["facts", "m.json"]);
-    }
-
-    #[test]
-    fn model_facts_deserializes_scan_output() {
-        let json = r#"{"projects":[{"name":"api","dir":"apps/api","kind":"node","code_files":3}],"entities":["Invoice","User"]}"#;
-        let f: ModelFacts = serde_json::from_str(json).expect("valid scan facts json");
-        assert_eq!(f.projects.len(), 1);
-        assert_eq!(f.projects[0].name, "api");
-        assert_eq!(f.entities, vec!["Invoice", "User"]);
-    }
-
-    #[test]
     fn detected_stacks_serde_compat() {
         // An old payload without `detected_stacks` still deserialises, and
         // `frameworks` is untouched by the new field.
@@ -321,13 +268,6 @@ mod tests {
         assert_eq!(p.detected_stacks[0].name, "laravel");
         assert_eq!(p.detected_stacks[0].signals, vec!["dep:laravel/framework"]);
         assert_eq!(p.frameworks, vec!["laravel/framework"]);
-    }
-
-    #[test]
-    fn model_facts_defaults_missing_fields() {
-        let f: ModelFacts = serde_json::from_str("{}").expect("empty object ok");
-        assert!(f.projects.is_empty());
-        assert!(f.entities.is_empty());
     }
 
     #[test]

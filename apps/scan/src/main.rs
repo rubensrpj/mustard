@@ -4,7 +4,7 @@
 //! Pipeline: ingest -> extract -> graph -> condense. Fully deterministic
 //! and blind to any framework/language. `scan` writes the model into the
 //! project map, the SQLite file the core port declares
-//! (`mustard_core::io::project_map`); `facts` only projects it.
+//! (`mustard_core::io::project_map`).
 
 mod classify;
 mod condense;
@@ -59,25 +59,6 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Emit the small, stable facts the orchestrator consumes, as JSON: the
-    /// subproject list and the known declaration names. So a consumer never
-    /// has to parse the (large) model itself. `path` is a project dir to scan, or a
-    /// map database.
-    Facts {
-        path: PathBuf,
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-}
-
-/// Load a model: scan a project directory, or read a map database.
-fn load_model(path: &Path) -> Result<ProjectModel> {
-    if path.is_dir() {
-        // A projeção (facts) quer só o modelo.
-        Ok(analyze(path, None)?.model)
-    } else {
-        ProjectModel::read(path)
-    }
 }
 
 /// Apaga o mapa de antes do banco, na pasta do banco em `out`, quando ele
@@ -138,17 +119,6 @@ fn main() -> Result<()> {
                     analysis.read.len(),
                     if analysis.full { " (every file)" } else { " (only what changed)" }
                 );
-            }
-        }
-        Command::Facts { path, out } => {
-            let model = load_model(&path)?;
-            let json = serde_json::to_string_pretty(&facts::build(&model))?;
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &json)?;
-                    println!("facts written to {} ({} bytes)", p.display(), json.len());
-                }
-                None => println!("{json}"),
             }
         }
     }
@@ -486,8 +456,8 @@ fn build_projects(manifests: &[model::Manifest], modules: &[Module]) -> Vec<mode
     let mut projects = dedup_by_dir(projects);
     projects.sort_by(|a, b| b.code_files.cmp(&a.code_files).then(a.name.cmp(&b.name)));
     // Enrich each unit with the frameworks/dependencies/scripts mined from the
-    // manifests it owns — the SAME projection the facts view uses, so the grain
-    // `projects[]` carry the data. `scan_claude` reads `scripts` (for `## Commands`)
+    // manifests it owns — the projection `facts::enrich_projects` owns, so the
+    // grain `projects[]` carry the data. `scan_claude` reads `scripts` (for `## Commands`)
     // and `frameworks` (for the Guards facts) straight off `projects[]`; without
     // this they were left at `..Default` (empty), so `## Commands` stayed dormant.
     let snapshot = projects.clone();
@@ -669,7 +639,7 @@ mod tests {
         use clap::CommandFactory;
         let tree = Cli::command();
         let names: Vec<&str> = tree.get_subcommands().map(clap::Command::get_name).collect();
-        assert_eq!(names, ["scan", "facts"], "the check reached every command");
+        assert_eq!(names, ["scan"], "the check reached every command");
         let defects = tree_defects(&tree);
         assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
     }
