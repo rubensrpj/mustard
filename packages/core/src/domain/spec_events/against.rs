@@ -12,14 +12,21 @@ use crate::domain::survey;
 
 use super::check::missing;
 use super::read::ints;
-use super::{is_empty, EventRef, Refusal, SpecEvent, SpecLog, TimeFilter};
+use super::{is_empty, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TimeFilter};
 
 /// Troca cada código (`MSTD-RULE-NNNN`) dos campos que apontam eventos pelos
 /// números que ele nomeia no arquivo como está, para que a linha gravada
 /// guarde só números: em `replaces` (um só ou a lista) e no `closes` de um
 /// ponto, a versão mais nova do item; nos alvos de `remove` e `purge`, todas
-/// as versões dele. Um código que não existe na spec recusa o evento. Um
-/// evento sem código nenhum sai como entrou.
+/// as versões dele. Um código que não existe na spec recusa o evento.
+///
+/// Na remoção, a tarefa sai sempre inteira: o número de qualquer versão dela,
+/// e a versão dela que o filtro pega, viram todas as versões da tarefa nos
+/// alvos. A remoção gravada já leva o efeito, e a leitura segue a mesma:
+/// tirar só a versão que a rodada gravou com a onda devolveria a versão sem
+/// onda ao backlog, e a rodada a soltaria de novo. Nos outros tipos, o número
+/// tira só aquela versão. O evento sem código e sem tarefa a expandir sai
+/// como entrou.
 pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<(), Refusal> {
     let is_code = |v: &Value| matches!(EventRef::from_value(v), Some(EventRef::Code(_)));
     let replaces_list = event.get("replaces").and_then(Value::as_array).cloned();
@@ -27,7 +34,8 @@ pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<()
         || replaces_list.as_ref().is_some_and(|list| list.iter().any(is_code));
     let closes_code = event.get("closes").is_some_and(is_code);
     let targets = event.get("targets").and_then(Value::as_array).cloned().unwrap_or_default();
-    if !replaces_code && !closes_code && !targets.iter().any(is_code) {
+    let removal = event.get("type").and_then(Value::as_str) == Some("remove");
+    if !replaces_code && !closes_code && !targets.iter().any(is_code) && !removal {
         return Ok(());
     }
     let codes = log.codes();
@@ -58,19 +66,47 @@ pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<()
         }
         event.insert("replaces".into(), Value::Array(resolved));
     }
-    if targets.iter().any(is_code) {
-        let mut resolved: Vec<Value> = Vec::new();
-        for target in &targets {
-            let ids: Vec<Value> = match EventRef::from_value(target) {
-                Some(EventRef::Code(code)) => ids_of(&code)?.into_iter().map(Value::from).collect(),
-                _ => vec![target.clone()],
-            };
-            for id in ids {
-                if !resolved.contains(&id) {
-                    resolved.push(id);
+    // Todas as versões da tarefa de que `id` é uma versão; `None` quando o
+    // número não é de tarefa, e ele segue sozinho.
+    let task_versions = |id: u64| -> Option<Vec<u64>> {
+        log.get(id).filter(|e| e.event_type == "task")?;
+        codes.get(&id).and_then(|code| ids_of(code).ok())
+    };
+    let mut changed = false;
+    let mut resolved: Vec<Value> = Vec::new();
+    for target in &targets {
+        let ids: Vec<Value> = match EventRef::from_value(target) {
+            Some(EventRef::Code(code)) => {
+                changed = true;
+                ids_of(&code)?.into_iter().map(Value::from).collect()
+            }
+            Some(EventRef::Id(id)) if removal => match task_versions(id) {
+                Some(versions) => {
+                    changed |= versions != [id];
+                    versions.into_iter().map(Value::from).collect()
                 }
+                None => vec![target.clone()],
+            },
+            _ => vec![target.clone()],
+        };
+        for id in ids {
+            if !resolved.contains(&id) {
+                resolved.push(id);
             }
         }
+    }
+    // A versão de tarefa que o filtro pega leva junto as versões dela que ele
+    // não pega, como a sem onda, gravada antes do intervalo.
+    if removal && let Some(filter) = event.get("filter").and_then(TimeFilter::from_value) {
+        let matched: BTreeSet<u64> = log.filter_matches(&filter, log.max_id().saturating_add(1)).into_iter().collect();
+        for version in matched.iter().filter_map(|id| task_versions(*id)).flatten() {
+            if !matched.contains(&version) && !resolved.contains(&Value::from(version)) {
+                changed = true;
+                resolved.push(Value::from(version));
+            }
+        }
+    }
+    if changed {
         event.insert("targets".into(), Value::Array(resolved));
     }
     Ok(())
@@ -87,8 +123,8 @@ pub struct Effects {
 
 /// Confere o evento contra o arquivo como está: cada número que `replaces`
 /// aponta, um só ou a lista, existe, é do mesmo tipo e é a versão vigente do
-/// item; os alvos de `remove` e `purge` existem; o filtro de `remove` acha
-/// pelo menos um evento anterior.
+/// item, e na tarefa não é versão que uma remoção tirou; os alvos de `remove`
+/// e `purge` existem; o filtro de `remove` acha pelo menos um evento anterior.
 ///
 /// No ponto do levantamento: o `closes` aponta um ponto aberto, por qualquer
 /// versão dele (a versão nova de um fechamento continua fechando o mesmo
@@ -132,6 +168,14 @@ pub fn check_against(
                     |code| format!("{code} ({})", current.id),
                 ),
             });
+        }
+        // A tarefa que uma remoção tirou não volta por uma versão nova: a
+        // versão nova sobre uma versão removida traria de volta o trabalho
+        // que o usuário tirou. Refazer é gravar uma tarefa nova.
+        if event_type == "task"
+            && let Some(Hidden::Removed { by }) = log.hidden().get(&old)
+        {
+            return Err(Refusal::ReplacesRemoved { id: old, by: *by });
         }
         // Basta uma versão substituída sem a forma para a emenda herdar a
         // ausência dela.
@@ -357,6 +401,84 @@ mod tests {
             checked("remove", json!({"targets": ["R2"], "reason": "r"})).unwrap_err(),
             Refusal::InvalidValue { ref field, expected: Kind::Refs, .. } if field == "targets"
         ));
+    }
+
+    /// Na remoção, o número de qualquer versão de uma tarefa vira todas as
+    /// versões dela, na posição do número; o de uma versão de nota segue
+    /// sozinho. A versão de tarefa que o filtro pega leva junto as versões
+    /// que ele não pega. O expurgo não expande nada.
+    #[test]
+    fn removing_any_version_of_a_task_takes_out_every_version() {
+        let at = |id: u64, time: &str, event_type: &str, extra: &str| {
+            format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-09-12T{time}:00-03:00\",\"type\":\"{event_type}\"{extra}}}\n")
+        };
+        let log = parse_log(
+            &[
+                at(1, "10:00", "task", ",\"code\":\"MSTD-TASK-0001\""),
+                at(2, "10:00", "note", ",\"code\":\"MSTD-NOTE-0001\""),
+                at(3, "11:00", "task", ",\"code\":\"MSTD-TASK-0001\",\"replaces\":1,\"wave\":1"),
+                at(4, "11:00", "note", ",\"code\":\"MSTD-NOTE-0001\",\"replaces\":2"),
+                at(5, "12:00", "task", ",\"code\":\"MSTD-TASK-0002\""),
+            ]
+            .concat(),
+        );
+        let resolved = |draft: Value| {
+            let mut event = obj(draft);
+            resolve_codes(&log, &mut event).unwrap();
+            event
+        };
+
+        let by_the_wave_version = resolved(json!({"type": "remove", "targets": [3], "reason": "r"}));
+        assert_eq!(by_the_wave_version["targets"], json!([1, 3]), "a versão com onda leva a sem onda junto");
+        let mixed = resolved(json!({"type": "remove", "targets": [4, 1], "reason": "r"}));
+        assert_eq!(mixed["targets"], json!([4, 1, 3]), "a nota fica só na versão apontada; a tarefa vai inteira");
+        let note_only = resolved(json!({"type": "remove", "targets": [4], "reason": "r"}));
+        assert_eq!(note_only["targets"], json!([4]), "a versão de nota segue sozinha");
+        let single = resolved(json!({"type": "remove", "targets": [5], "reason": "r"}));
+        assert_eq!(single["targets"], json!([5]), "a tarefa de versão única segue como está");
+
+        let by_filter = resolved(json!({"type": "remove", "reason": "r",
+            "filter": {"type": "task", "from": "2026-09-12T11:00", "to": "2026-09-12T11:59"}}));
+        assert_eq!(by_filter["targets"], json!([1]), "o filtro pega a versão com onda, e a sem onda entra nos alvos");
+        let note_filter = resolved(json!({"type": "remove", "reason": "r",
+            "filter": {"type": "note", "from": "2026-09-12T11:00", "to": "2026-09-12T11:59"}}));
+        assert_eq!(note_filter.get("targets"), None, "o filtro de nota sai como entrou");
+
+        let purge = resolved(json!({"type": "purge", "targets": [3], "reason": "secret"}));
+        assert_eq!(purge["targets"], json!([3]), "o expurgo não tira item da leitura e não expande");
+    }
+
+    /// A versão nova de uma tarefa sobre uma versão que a remoção tirou é
+    /// recusada, dizendo o evento e a remoção, nos dois idiomas. A versão
+    /// nova de uma nota removida segue aceita, como antes.
+    #[test]
+    fn a_new_version_of_a_removed_task_is_refused() {
+        let log = parse_log(
+            &[
+                line(1, "task", ",\"code\":\"MSTD-TASK-0001\""),
+                line(2, "task", ",\"code\":\"MSTD-TASK-0001\",\"replaces\":1,\"wave\":1"),
+                line(3, "remove", ",\"targets\":[1,2],\"reason\":\"r\",\"gives_back\":true"),
+                line(4, "note", ",\"code\":\"MSTD-NOTE-0001\""),
+                line(5, "remove", ",\"targets\":[4],\"reason\":\"r\",\"gives_back\":true"),
+            ]
+            .concat(),
+        );
+        let over = |kind: &str, replaces: u64| check_against(&log, &obj(json!({"type": kind, "replaces": replaces})), 6);
+
+        for version in [1, 2] {
+            let refusal = over("task", version).unwrap_err();
+            assert_eq!(refusal, Refusal::ReplacesRemoved { id: version, by: 3 });
+            assert_eq!(refusal.reason(), "replaces-removed");
+        }
+        let refusal = over("task", 2).unwrap_err();
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.contains("O evento 2 é de uma tarefa que a remoção 3 tirou."), "{pt}");
+        assert!(pt.contains("grave uma tarefa nova, sem replaces. Nada foi gravado."), "{pt}");
+        let en = refusal.message(Locale::EnUs);
+        assert!(en.contains("Event 2 belongs to a task that removal 3 took out."), "{en}");
+        assert!(en.contains("write a new task, without replaces. Nothing was written."), "{en}");
+
+        assert!(over("note", 4).is_ok(), "a nota removida segue a regra de antes");
     }
 
     /// Com a versão 2 no lugar da 1, a versão nova sobre a 1 é recusada, e a

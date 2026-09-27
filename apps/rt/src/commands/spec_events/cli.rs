@@ -54,7 +54,8 @@ pub enum SpecEventsCmd {
     /// point at an item by its event number or by the code the page shows,
     /// like `MSTD-RULE-NNNN`. A `remove` by the code takes out the whole
     /// item, every version of it; by the number, only that version, and the
-    /// version it replaced comes back. A new agreed item written here comes
+    /// version it replaced comes back, except on a `task`, where any version
+    /// takes out the whole task. A new agreed item written here comes
     /// in three parts: a short `title` (up to 70 characters), the user's part
     /// in `text`, which says why by the effect the user sees and carries no
     /// backtick, file path or item code, and the agent's part in `agent`, in

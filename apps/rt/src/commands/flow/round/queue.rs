@@ -758,6 +758,16 @@ fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value)
 /// `at`, `type` e `search`, com `replaces` apontando para ela e os campos de
 /// `extra` somados por cima — a mesma forma de [`send_revision`], para a
 /// tarefa em vez do envio.
+///
+/// Na tarefa, `replaces` aponta a versão mais nova do mesmo código, ainda que
+/// a leitura mostre outra: numa spec antiga, a remoção de só a versão com a
+/// onda devolvia à leitura a versão sem onda, e a versão nova sobre ela
+/// traria de volta a tarefa removida. Apontada a mais nova, a gravação recusa
+/// a versão nova da tarefa que saiu. O número é o desta leitura, e não o
+/// código resolvido na hora de gravar: a versão que outra gravação fizer
+/// depois desta leitura continua recusando esta como substituída, e o texto
+/// dela não se perde. O evento sem código, e o que não é tarefa, vão pelo
+/// número, como antes.
 fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
     let event = log.get(id)?;
     let mut draft: Map<String, Value> = event
@@ -766,7 +776,14 @@ fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Ma
         .filter(|(key, _)| !["v", "id", "code", "at", "type", "search"].contains(&key.as_str()))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    draft.insert("replaces".into(), json!(id));
+    let newest = (event.event_type == "task")
+        .then(|| log.codes())
+        .and_then(|codes| {
+            let code = codes.get(&id)?;
+            log.events.iter().filter(|e| codes.get(&e.id) == Some(code)).map(|e| e.id).max()
+        })
+        .unwrap_or(id);
+    draft.insert("replaces".into(), json!(newest));
     for (key, value) in extra {
         draft.insert(key, value);
     }
@@ -2822,8 +2839,8 @@ mod tests {
         // A tarefa 1 sai do backlog por remoção, depois de o lote já ter sido
         // formado: o trabalho dela já foi feito fora da onda. A gravação do
         // lote deu a ela uma versão nova, com o número da onda; a remoção a
-        // aponta pelo código, que tira todas as versões — pelo número da
-        // versão vigente, a original voltaria ao backlog.
+        // aponta pelo código, que tira todas as versões, como o número de
+        // qualquer versão da tarefa também tira.
         let log = store::read(&path).unwrap().unwrap();
         let t1_code = log.codes().get(&t1).cloned().expect("a tarefa 1 tem código");
         write(root, "x", "remove", json!({"targets": [t1_code], "reason": "o trabalho ja foi feito fora da onda"}));
@@ -3250,5 +3267,177 @@ mod tests {
             Some(("backlog-not-empty".into(), None)),
             "{assumed}"
         );
+    }
+
+    /// As versões de tarefa com o código `code` que a leitura mostra.
+    fn shown_task_versions(log: &SpecLog, code: &str) -> Vec<u64> {
+        let codes = log.codes();
+        log.visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task" && codes.get(&e.id).map(String::as_str) == Some(code))
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// A tarefa `task` solta pela rodada numa onda de lote, e a versão dela
+    /// que a rodada gravou com o número da onda.
+    fn batched(root: &Path, task: u64) -> u64 {
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log), Ok(vec![1]), "a tarefa sai na onda 1");
+        let log = spec_now(root);
+        let version = log.current(task).expect("a tarefa segue viva");
+        assert_eq!(version.wave(), Some(1), "a rodada gravou a versão com a onda");
+        version.id
+    }
+
+    /// O usuário remove, pelo número, a versão que a rodada gravou com a
+    /// onda. A tarefa sai inteira: a versão sem onda não volta ao backlog, a
+    /// onda que ficou vazia sai do plano, e a rodada seguinte não forma lote.
+    #[test]
+    fn removing_the_round_version_of_a_task_takes_out_the_whole_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let with_wave = batched(root, task);
+        let code = spec_now(root).codes().get(&task).cloned().expect("a tarefa tem código");
+
+        let removed = write(root, "x", "remove", json!({"targets": [with_wave], "reason": "Não é mais preciso."}));
+        assert_eq!(removed["ok"], json!(true), "{removed}");
+
+        let log = spec_now(root);
+        assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "nenhuma versão da tarefa fica na leitura");
+        assert!(!log.planned_waves().contains(&1), "a onda sem tarefa sai do plano");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log), Ok(vec![]), "nada volta ao backlog");
+    }
+
+    /// A tarefa tem três versões: a sem onda, a da rodada e a do agente, com
+    /// texto novo. Remover pelo número a do meio tira as três.
+    #[test]
+    fn removing_the_middle_version_of_a_task_takes_out_every_version() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let with_wave = batched(root, task);
+        let code = spec_now(root).codes().get(&task).cloned().expect("a tarefa tem código");
+        let by_agent = id_of(&write(root, "x", "task", json!({"replaces": with_wave, "wave": 1,
+            "text": "Mexer de outro jeito no código de um.", "files": [{"path": "src/a.rs"}],
+            "depends_on": [], "covers": [crit], "origin": said})));
+        assert_eq!(shown_task_versions(&spec_now(root), &code), vec![by_agent], "a versão do agente é a vigente");
+
+        let removed = write(root, "x", "remove", json!({"targets": [with_wave], "reason": "Não é mais preciso."}));
+        assert_eq!(removed["ok"], json!(true), "{removed}");
+
+        let log = spec_now(root);
+        assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "as três versões saem");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log), Ok(vec![]), "nada volta ao backlog");
+    }
+
+    /// A rodada monta a versão nova de uma tarefa com a onda 2, e antes de
+    /// ela gravar, o usuário remove a tarefa pelo código. A gravação da
+    /// rodada é recusada, e a tarefa segue fora.
+    #[test]
+    fn the_round_version_written_after_the_removal_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let with_wave = batched(root, task);
+        let log = spec_now(root);
+        let code = log.codes().get(&task).cloned().expect("a tarefa tem código");
+        let draft = task_revision(&log, with_wave, Map::from_iter([("wave".to_string(), json!(2))])).expect("o rascunho");
+
+        let removed = write(root, "x", "remove", json!({"targets": [code], "reason": "Não é mais preciso."}));
+        assert_eq!(removed["ok"], json!(true), "{removed}");
+
+        let Err(refusal) = record(root, "x", "task", draft, PhaseWriter::Binary) else {
+            panic!("a versão nova sobre a tarefa removida foi gravada")
+        };
+        assert_eq!(refusal.reason(), "replaces-removed", "{refusal:?}");
+        let log = spec_now(root);
+        assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "a tarefa segue fora");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log), Ok(vec![]), "nada volta ao backlog");
+    }
+
+    /// A rodada monta a versão nova de uma tarefa, e antes de ela gravar,
+    /// outra gravação revê a tarefa com texto novo. A versão da rodada é
+    /// recusada como substituída, e o texto novo segue na leitura.
+    #[test]
+    fn a_task_revised_after_the_round_reading_keeps_its_new_text() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let draft = task_revision(&spec_now(root), task, Map::from_iter([("wave".to_string(), json!(1))])).expect("o rascunho");
+        let revised = id_of(&write(root, "x", "task", json!({"replaces": task, "text": "Mexer de outro jeito no código de um.",
+            "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
+
+        let Err(refusal) = record(root, "x", "task", draft, PhaseWriter::Binary) else {
+            panic!("a versão da rodada passou por cima do texto novo")
+        };
+        assert_eq!(refusal.reason(), "replaces-superseded", "{refusal:?}");
+        let log = spec_now(root);
+        assert_eq!(log.current(task).map(|e| e.id), Some(revised), "a versão com texto novo segue vigente");
+    }
+
+    /// Com a tarefa removida pela versão da rodada e outra tarefa revista uma
+    /// vez, cada versão que a rodada seguinte grava aponta a versão mais nova
+    /// do mesmo código.
+    #[test]
+    fn the_round_version_replaces_the_newest_version_of_the_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let with_wave = batched(root, task);
+        write(root, "x", "remove", json!({"targets": [with_wave], "reason": "Não é mais preciso."}));
+        let other = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
+        id_of(&write(root, "x", "task", json!({"replaces": other, "text": "Mexer de outro jeito no código de dois.",
+            "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
+
+        let before = spec_now(root);
+        let codes = before.codes();
+        let newest = |code: &str| before.events.iter().filter(|e| codes.get(&e.id).map(String::as_str) == Some(code)).map(|e| e.id).max();
+        assert_eq!(dispatch_backlog(root, "x", &before, &before), Ok(vec![2]), "a outra tarefa sai na onda 2");
+
+        let after = spec_now(root);
+        let written: Vec<&SpecEvent> =
+            after.events.iter().filter(|e| e.id > before.max_id() && e.event_type == "task").collect();
+        let after_codes = after.codes();
+        for version in &written {
+            let code = after_codes.get(&version.id).expect("a versão tem código");
+            assert_eq!(version.int("replaces"), newest(code), "a versão da rodada aponta a mais nova de {code}");
+        }
+        assert_eq!(written.len(), 1, "só a outra tarefa ganha versão nova");
+    }
+
+    /// Numa spec antiga, a remoção de só a versão com onda devolveu a versão
+    /// sem onda ao backlog. A rodada não a solta de novo: a versão nova
+    /// aponta a versão removida, e a gravação a recusa sem gravar nada.
+    #[test]
+    fn an_old_removal_of_the_round_version_does_not_send_the_task_again() {
+        use std::io::Write as _;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let with_wave = batched(root, task);
+        let path = store::spec_file(root, "x").unwrap();
+        let by = spec_now(root).max_id() + 1;
+        let old_removal = json!({"v": 1, "id": by, "at": "2026-09-20T10:00:00-03:00", "type": "remove",
+            "targets": [with_wave], "reason": "Não é mais preciso.", "gives_back": true, "author": "assistant"});
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{old_removal}").unwrap();
+
+        let log = spec_now(root);
+        assert_eq!(log.current(task).map(|e| e.id), Some(task), "a leitura antiga devolve a versão sem onda");
+        assert_eq!(
+            dispatch_backlog(root, "x", &log, &log),
+            Err(mustard_core::domain::spec_events::Refusal::ReplacesRemoved { id: with_wave, by }),
+            "a rodada não solta a tarefa removida"
+        );
+        assert_eq!(spec_now(root).max_id(), by, "nada foi gravado");
     }
 }

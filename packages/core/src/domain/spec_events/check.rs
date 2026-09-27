@@ -24,7 +24,9 @@ pub(crate) fn is_empty(value: &Value) -> bool {
 
 /// A marca que o binário põe em toda remoção que grava. Com ela, a remoção
 /// que aponta pelo número a versão nova de um item tira só essa versão, e a
-/// versão que ela substituiu volta à leitura. A remoção gravada antes da
+/// versão que ela substituiu volta à leitura. A tarefa é a exceção: qualquer
+/// versão dela tira a tarefa inteira, porque a gravação da remoção já troca o
+/// número pelo de todas as versões. A remoção gravada antes da
 /// marca segue a regra de quando foi gravada: tirava o item inteiro, e a
 /// leitura de uma spec antiga não muda. Por isso a marca é só do binário: o
 /// que vier nela de quem grava é trocado.

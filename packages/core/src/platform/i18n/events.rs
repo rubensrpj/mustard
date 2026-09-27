@@ -448,6 +448,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              version replaces only the current one: read it again and write the new version over \
              it, with replaces pointing at it. Nothing was written."
         }
+        ("spec_events.replaces_removed", Locale::PtBr) => {
+            "O evento {id} é de uma tarefa que a remoção {by} tirou. Para refazer o trabalho, \
+             grave uma tarefa nova, sem replaces. Nada foi gravado."
+        }
+        ("spec_events.replaces_removed", Locale::EnUs) => {
+            "Event {id} belongs to a task that removal {by} took out. To redo the work, write a \
+             new task, without replaces. Nothing was written."
+        }
         ("spec_events.filter_matches_nothing", Locale::PtBr) => {
             "Nenhum evento {type} entre {from} e {to}. Nada foi gravado."
         }
@@ -851,8 +859,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            113,
-            0x0525_550a_dde2_0707,
+            114,
+            0x97e9_706b_6d5b_107f,
         );
     }
 
@@ -923,6 +931,7 @@ mod tests {
             ("spec_events.unknown_field", &["{type}", "{field}", "{fields}"][..]),
             ("spec_events.replaces_other_type", &["{id}", "{found}", "{type}"][..]),
             ("spec_events.replaces_superseded", &["{id}", "{current}"][..]),
+            ("spec_events.replaces_removed", &["{id}", "{by}"][..]),
             ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
@@ -1001,6 +1010,18 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+    }
+
+    /// A recusa da versão nova de uma tarefa removida passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com cada vaga trocada por uma
+    /// palavra.
+    #[test]
+    fn the_removed_task_refusal_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("spec_events.replaces_removed", lang).replace("{id}", "12").replace("{by}", "15");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
         }
     }
 

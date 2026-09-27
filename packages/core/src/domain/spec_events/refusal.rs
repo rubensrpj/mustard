@@ -32,6 +32,10 @@ pub enum Refusal {
     /// versão vigente, pelo código e pelo número, ou só pelo número no tipo
     /// sem código. Nada é gravado.
     ReplacesSuperseded { id: u64, current: String },
+    /// A versão nova de uma tarefa aponta em `replaces` o evento `id`, versão
+    /// que a remoção `by` tirou da leitura: gravá-la traria de volta o
+    /// trabalho removido. Refazer é gravar uma tarefa nova. Nada é gravado.
+    ReplacesRemoved { id: u64, by: u64 },
     FilterMatchesNothing { event_type: String, from: String, to: String },
     UnknownBlock { found: String },
     BadSpecName { spec: String },
@@ -276,6 +280,7 @@ impl Refusal {
             Self::TargetOtherType { .. } => "target-other-type",
             Self::ReplacesOtherType { .. } => "replaces-other-type",
             Self::ReplacesSuperseded { .. } => "replaces-superseded",
+            Self::ReplacesRemoved { .. } => "replaces-removed",
             Self::FilterMatchesNothing { .. } => "filter-matches-nothing",
             Self::UnknownBlock { .. } => "unknown-block",
             Self::BadSpecName { .. } => "bad-spec-name",
@@ -420,6 +425,10 @@ impl Refusal {
             Self::ReplacesSuperseded { id, current } => fill(
                 "spec_events.replaces_superseded",
                 &[("{id}", id.to_string()), ("{current}", current.clone())],
+            ),
+            Self::ReplacesRemoved { id, by } => fill(
+                "spec_events.replaces_removed",
+                &[("{id}", id.to_string()), ("{by}", by.to_string())],
             ),
             Self::FilterMatchesNothing { event_type, from, to } => fill(
                 "spec_events.filter_matches_nothing",
