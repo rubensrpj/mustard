@@ -20,7 +20,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // developer and injected into the session, so they follow the
         // project's text language (`language.text` in `mustard.json`) — unlike
         // the internal census/index/search, which stays English by policy. The
-        // `{kind}` / `{count}` slots are interpolated by the caller.
+        // `{kind}` / `{count}` / `{map}` slots are interpolated by the caller.
         ("orient.terrain.header", Locale::PtBr) => {
             "[Terreno] subprojetos mapeados pelo /scan — leia daqui, não grepe para se orientar:"
         }
@@ -30,10 +30,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("orient.census.files_suffix", Locale::PtBr) => " · {count} arquivos",
         ("orient.census.files_suffix", Locale::EnUs) => " · {count} files",
         ("orient.census.truncated", Locale::PtBr) => {
-            "\n- (+{count} subprojetos não listados — o censo completo está em `.claude/grain.model.json`)"
+            "\n- (+{count} subprojetos não listados — o censo completo está em `{map}`)"
         }
         ("orient.census.truncated", Locale::EnUs) => {
-            "\n- (+{count} subprojects not listed — the full census is in `.claude/grain.model.json`)"
+            "\n- (+{count} subprojects not listed — the full census is in `{map}`)"
         }
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
@@ -157,7 +157,7 @@ mod tests {
             include_str!("map.rs"),
             super::PREFIXES,
             31,
-            0x8b60_ba6e_40bd_3cf5,
+            0x57f4_f6d8_5ebf_7927,
         );
     }
 

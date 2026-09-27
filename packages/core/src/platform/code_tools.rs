@@ -196,7 +196,7 @@ pub fn detect_project_languages(project_dir: &Path) -> Vec<&'static str> {
 /// aberta dos dois jeitos.
 #[must_use]
 pub fn detect_code_languages(project_root: &Path, model_path: &Path) -> BTreeSet<String> {
-    if model_path.is_file() {
+    if crate::io::project_map::exists_at(model_path) {
         let projects = read_projects(model_path);
         // `detected_languages` atribui cada caminho ao subprojeto cujo `dir` é
         // o prefixo mais específico; um caminho fictício dentro de cada
@@ -445,7 +445,7 @@ mod tests {
     fn detect_code_languages_falls_back_to_manifest_probe_without_a_model() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
-        let model_path = dir.path().join(".claude").join("grain.model.json");
+        let model_path = crate::io::project_map::model_path(dir.path());
         let langs = detect_code_languages(dir.path(), &model_path);
         assert!(langs.contains("rust"), "{langs:?}");
     }
@@ -527,7 +527,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(project.path().join("App.csproj"), "<Project/>\n").unwrap();
-        let model_path = project.path().join(".claude").join("grain.model.json");
+        let model_path = crate::io::project_map::model_path(project.path());
 
         let mut runner = FakeRunner::new(&["rustup", "npm", "claude", "typescript-language-server"]);
         runner.brings.push(("rustup", "rust-analyzer"));
@@ -577,7 +577,7 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("pubspec.yaml"), "name: app\n").unwrap();
         std::fs::write(project.path().join("go.mod"), "module x\n").unwrap();
-        let model_path = project.path().join(".claude").join("grain.model.json");
+        let model_path = crate::io::project_map::model_path(project.path());
 
         let mut runner = FakeRunner::new(&["claude"]);
         runner.off_path.push(("gopls", "/home/u/go/bin/gopls"));

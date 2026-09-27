@@ -18,22 +18,18 @@
 //! falta só é apontado com o mapa desta vez: quando a ferramenta do scan
 //! falha, só as lições parecidas saem.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mustard_core::Scan;
 use mustard_core::domain::lessons::{self, MissingPaths};
 use mustard_core::domain::project_map::{self, ProjectMap};
+use mustard_core::io::project_map as store;
 use mustard_core::domain::scan::{mark_own_git_roots, read_projects, ScanReport};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 
 use super::scan_claude;
-
-/// Default model location under the project's `.claude/` directory.
-pub(crate) fn default_model_path(root: &Path) -> PathBuf {
-    root.join(".claude").join("grain.model.json")
-}
 
 /// Run `grain scan <root> --out <model>`; print a small JSON result. Fail-open:
 /// a spawn/exit error is reported, never panics (matches the other handlers).
@@ -62,7 +58,7 @@ pub(crate) fn scan_at(
     full: bool,
     mine: impl FnOnce(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
 ) -> Value {
-    let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
+    let model_path = out.map_or_else(|| store::model_path(root), Path::to_path_buf);
 
     // Preflight BEFORE the miner: an unpopulated submodule is indistinguishable
     // from an absent subtree once the walk runs — it visits the directory, finds
@@ -155,8 +151,7 @@ fn review_lessons(root: &Path, model_path: Option<&Path>, result: &mut Value) {
     let home = mustard_core::io::spec_events::spec_root(root);
     let Some(path) = ClaudePaths::for_project(&home).ok().map(|paths| paths.lessons_path()) else { return };
     let Ok(Some(bank)) = mustard_core::io::lessons::read(&path) else { return };
-    let map: Option<ProjectMap> =
-        model_path.and_then(|model| std::fs::read_to_string(model).ok()).and_then(|text| serde_json::from_str(&text).ok());
+    let map: Option<ProjectMap> = model_path.and_then(|model| store::read_at(model).ok());
     let missing = map.as_ref().map_or_else(Vec::new, |map| {
         lessons::citing_missing_paths(&bank, |cited: &str, inside: Option<&str>| path_found(root, map, cited, inside))
     });
@@ -260,6 +255,7 @@ fn hollow_submodules(root: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn write(path: &Path, body: &str) {
         if let Some(parent) = path.parent() {

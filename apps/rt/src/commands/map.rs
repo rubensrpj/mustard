@@ -340,8 +340,7 @@ mod tests {
 
     fn project_with_map() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
-        std::fs::write(store::model_path(dir.path()), MODEL).unwrap();
+        store::write_text(dir.path(), MODEL).unwrap();
         dir
     }
 
@@ -357,9 +356,8 @@ mod tests {
     #[test]
     fn users_finds_user_repository_when_the_project_codes_in_english() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
-        std::fs::write(
-            store::model_path(dir.path()),
+        store::write_text(
+            dir.path(),
             r#"{"modules": [
               {"path": "src/storage.rs", "loc": 40, "declarations": [{"name": "UserRepository"}]},
               {"path": "src/billing.rs", "loc": 40, "declarations": [{"name": "Payment"}]}
@@ -446,7 +444,6 @@ mod tests {
     #[test]
     fn o_mapa_devolve_o_trecho_de_uma_declaracao() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let file = "packages/core/src/pay.rs";
         std::fs::create_dir_all(dir.path().join("packages/core/src")).unwrap();
         std::fs::write(
@@ -459,9 +456,9 @@ mod tests {
              // depois\n",
         )
         .unwrap();
-        std::fs::write(
-            store::model_path(dir.path()),
-            format!(
+        store::write_text(
+            dir.path(),
+            &format!(
                 r#"{{"modules": [{{"path": "{file}", "loc": 6, "declarations": [
                      {{"kind": "function", "name": "total", "line": 3, "end_line": 5,
                       "doc": "Soma o preço do pedido com o frete.",

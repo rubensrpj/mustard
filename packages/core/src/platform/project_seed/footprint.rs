@@ -79,7 +79,7 @@ impl InstallMode {
 /// carrying the operator's own prompt titles stayed visible to the client's git.
 const HARNESS_CLAUDE_FILES: &[&str] = &[
     ".artifacts.json",
-    "grain.model.json",
+    crate::io::project_map::MAP_FILE_NAME,
     "scan-declined.json",
     "scan-map.md",
     // NOT `skills/`. The shelf is a directory a client may also author in; what
@@ -583,7 +583,7 @@ mod tests {
         for (name, body) in [
             ("settings.json", "{}\n"),
             ("scan-map.md", "Type: cargo\n"),
-            ("grain.model.json", "{}\n"),
+            (crate::io::project_map::MAP_FILE_NAME, "{}\n"),
             ("scan-declined.json", "{}\n"),
             (".artifacts.json", "{}\n"),
             ("capabilities/cap.demo.md", "# cap\n"),

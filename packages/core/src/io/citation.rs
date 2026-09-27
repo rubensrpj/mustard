@@ -82,7 +82,7 @@ fn count_lines(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::project_map::model_path;
+    use crate::io::project_map::{self, model_path};
     use crate::io::spec_events::spec_root;
 
     fn git(dir: &Path, args: &[&str]) {
@@ -106,16 +106,15 @@ mod tests {
         git(&main, &["commit", "-q", "-m", "seed"]);
         // O Mustard e o mapa ficam fora do git, então o worktree não tem nenhum dos dois.
         std::fs::write(main.join("mustard.json"), "{}").unwrap();
-        std::fs::create_dir_all(main.join(".claude")).unwrap();
-        std::fs::write(
-            model_path(&main),
+        project_map::write_text(
+            &main,
             r#"{"modules":[{"path":"src/a.rs","declarations":[
                 {"kind":"struct","name":"Tipo","line":1},{"kind":"function","name":"run","line":2}]}]}"#,
         )
         .unwrap();
         let worktree = dir.path().join("wt");
         git(&main, &["worktree", "add", "-q", "-b", "work", &worktree.to_string_lossy()]);
-        assert!(!model_path(&worktree).exists());
+        assert!(!project_map::exists_at(&model_path(&worktree)));
         // Um arquivo novo, ainda sem commit, que só o worktree tem.
         std::fs::write(worktree.join("src/novo.rs"), "fn novo() {}\n").unwrap();
 
@@ -140,8 +139,7 @@ mod tests {
         let root = dir.path().to_path_buf();
         let roots = vec![root.clone()];
         assert_eq!(check_at(&roots, &root, "cargo test → ok", "o `SpecLog`"), vec![Finding::NoMap]);
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(model_path(&root), "{quebrado").unwrap();
+        project_map::write_text(&root, "{quebrado").unwrap();
         assert_eq!(check_at(&roots, &root, "cargo test → ok", "o `SpecLog`"), vec![Finding::NoMap]);
         let world = DiskWorld::new(roots, None);
         assert!(!world.has_map());

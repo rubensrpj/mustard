@@ -34,35 +34,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::Deserialize;
-
-use mustard_core::domain::scan::Project;
+use mustard_core::io::project_map;
 use mustard_core::{translate, SupportedLocale};
-
-// ===========================================================================
-// Grain model — the minimal read-only view this module deserializes.
-// ===========================================================================
-
-/// The slice of `grain.model.json` the census reads. Only the fields consumed
-/// are declared; every extra field grain writes is ignored (lenient serde), so
-/// the scan tool stays the single owner of the model format. No `snippet` field
-/// is declared anywhere in this view, so the census can never leak a code body.
-#[derive(Debug, Default, Deserialize)]
-struct RawModel {
-    #[serde(default)]
-    projects: Vec<Project>,
-    #[serde(default)]
-    skeleton: Vec<SkeletonEntry>,
-}
-
-/// One `skeleton[]` row — grain's per-dir architectural layer (`L0`/`L1`/`L2`).
-#[derive(Debug, Deserialize)]
-struct SkeletonEntry {
-    #[serde(default)]
-    dir: String,
-    #[serde(default)]
-    role: String,
-}
 
 // ===========================================================================
 // Orientation — the computed, render-ready projection.
@@ -90,18 +63,16 @@ struct TerrainRow {
 // Core projection.
 // ===========================================================================
 
-/// Project `<root>/.claude/grain.model.json` into an [`Orientation`].
+/// Project the map of `root`, read through its door, into an [`Orientation`].
+/// The census reads only the subprojects and the `skeleton[]` layers of it,
+/// neither of which carries a code body.
 ///
 /// Fail-open: a missing / unreadable / unparseable model returns
 /// [`Orientation::default`] (empty). Deterministic: same model ⇒
 /// byte-identical projection.
 #[must_use]
 pub fn compute_orientation(root: &Path) -> Orientation {
-    let model_path = root.join(".claude").join("grain.model.json");
-    let Ok(text) = std::fs::read_to_string(&model_path) else {
-        return Orientation::default();
-    };
-    let Ok(model) = serde_json::from_str::<RawModel>(&text) else {
+    let Ok(model) = project_map::read(root) else {
         return Orientation::default();
     };
 
@@ -216,7 +187,9 @@ pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> 
     // where the whole list lives.
     if let Some(hidden) = o.terrain.len().checked_sub(TERRAIN_ROWS_CAP).filter(|n| *n > 0) {
         out.push_str(
-            &translate("orient.census.truncated", lang).replace("{count}", &hidden.to_string()),
+            &translate("orient.census.truncated", lang)
+                .replace("{count}", &hidden.to_string())
+                .replace("{map}", project_map::MAP_FILE),
         );
     }
     Some(out)
@@ -263,6 +236,10 @@ mod tests {
             "the census truncated without saying how many rows it left out, which \
              reads as a complete list: {census}",
         );
+        assert!(
+            census.contains(&format!("`{}`", project_map::MAP_FILE)),
+            "the census names the file where the whole list lives: {census}",
+        );
     }
 
     use super::*;
@@ -287,13 +264,11 @@ mod tests {
       ]
     }"#;
 
-    /// Write [`FIXTURE`] into `<root>/.claude/grain.model.json` and return the
+    /// Write `model` as the project map, through its door, and return the
     /// tempdir + its path.
     fn seed(model: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempdir().unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::write(claude.join("grain.model.json"), model).unwrap();
+        project_map::write_text(dir.path(), model).unwrap();
         let root = dir.path().to_path_buf();
         (dir, root)
     }

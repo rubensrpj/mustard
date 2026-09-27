@@ -420,8 +420,8 @@ mod tests {
 
         // Minimal settings.json so wiring check doesn't fail hard.
         make_minimal_settings(&claude_dir, "mustard-rt on PreToolUse");
-        // grain.model.json to keep state-health from warning.
-        write_file(&claude_dir.join("grain.model.json"), "{}");
+        // A project map, to keep state-health from warning.
+        mustard_core::io::project_map::write_text(dir.path(), "{}").unwrap();
 
         // Run all checks the same way `run()` does, rooted at the tempdir.
         let results: Vec<CheckResult> = vec![

@@ -1635,9 +1635,8 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/real.rs"), "fn um() {}\nfn dois_passos() {}\n").unwrap();
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(
-            mustard_core::io::project_map::model_path(root),
+        mustard_core::io::project_map::write_text(
+            root,
             r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"dois_passos","line":2}]}]}"#,
         )
         .unwrap();

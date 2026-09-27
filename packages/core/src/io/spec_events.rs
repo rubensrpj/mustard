@@ -943,9 +943,8 @@ mod tests {
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/real.rs"), "fn a() {}\nfn ler_linha() {}\nfn c() {}\n").unwrap();
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(
-            crate::io::project_map::model_path(&root),
+        crate::io::project_map::write_text(
+            &root,
             r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"ler_linha","line":2}]}]}"#,
         )
         .unwrap();

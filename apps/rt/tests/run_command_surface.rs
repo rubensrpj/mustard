@@ -263,11 +263,10 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
 fn o_mapa_devolve_quem_usa_uma_declaracao_pelo_nome() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    fs::create_dir_all(root.join(".claude")).unwrap();
     // O mapa como o scan o grava: `total` em src/preco.rs, usada duas vezes
     // por `fechar`, em src/pedido.rs.
-    fs::write(
-        root.join(".claude/grain.model.json"),
+    mustard_core::io::project_map::write_text(
+        root,
         r#"{"modules": [
              {"path": "src/preco.rs", "loc": 5, "declarations": [
                {"kind": "function", "name": "total", "line": 1, "end_line": 3,

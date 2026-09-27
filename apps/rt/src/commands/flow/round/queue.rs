@@ -2372,10 +2372,9 @@ mod tests {
         // O mapa já foi lido no commit atual (a "semente"), com a função em
         // 3-5.
         let head_v1 = git_text(root, &["rev-parse", "HEAD"]);
-        let model = mustard_core::io::project_map::model_path(root);
-        std::fs::write(
-            &model,
-            json!({
+        mustard_core::io::project_map::write_text(
+            root,
+            &json!({
                 "modules": [{"path": "src/a.rs",
                     "declarations": [{"kind": "function", "name": "soma", "line": 3, "end_line": 5}]}],
                 "state": {"head": head_v1},

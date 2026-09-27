@@ -844,10 +844,9 @@ mod tests {
         git(root, &["add", "-A"]);
         git(root, &["commit", "-q", "-m", "seed"]);
 
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(
-            mustard_core::io::project_map::model_path(root),
-            json!({"modules": [], "state": {"head": "0000000000000000000000000000000000000000"}}).to_string(),
+        mustard_core::io::project_map::write_text(
+            root,
+            &json!({"modules": [], "state": {"head": "0000000000000000000000000000000000000000"}}).to_string(),
         )
         .unwrap();
 

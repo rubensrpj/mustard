@@ -746,11 +746,9 @@ mod tests {
         std::fs::write(dir.join("SKILL.md"), text).unwrap();
     }
 
-    /// O mapa de teste, gravado como o scan o grava: cria a pasta `.claude`
-    /// antes de escrever o arquivo do mapa.
+    /// O mapa de teste, gravado pela porta do mapa, como o scan o grava.
     fn write_map(root: &Path, model: &Value) {
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(crate::io::project_map::model_path(root), model.to_string()).unwrap();
+        crate::io::project_map::write_text(root, &model.to_string()).unwrap();
     }
 
     /// O caminho do arquivo da skill como o pedido o escreve: absoluto, no

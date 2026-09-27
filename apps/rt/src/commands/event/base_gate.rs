@@ -222,7 +222,7 @@ mod tests {
     use super::*;
     use crate::commands::event::census_settlement::{settle, CensusSettlement, CheckoutPosition};
     use crate::commands::event::work_branch::{checkout_work, CheckoutWork};
-    use crate::commands::scan::default_model_path;
+    use mustard_core::io::project_map;
     use std::process::Command;
 
     /// A pergunta inteira, feita como a porta de CORTE a faz.
@@ -438,26 +438,18 @@ mod tests {
 
     /// A repo on `dev` whose `.claude/grain.model.json` is TRACKED and
     /// committed — the shape where a re-mined census shows up as a dirty tree
-    /// at all. Returns the model path.
-    fn repo_tracking_the_census(root: &Path) -> std::path::PathBuf {
+    /// at all.
+    fn repo_tracking_the_census(root: &Path) {
         init_repo_on(root, "dev");
-        let model = default_model_path(root);
-        std::fs::create_dir_all(model.parent().expect("model parent")).unwrap();
-        std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
+        project_map::write_text(root, "{\"projects\":[]}\n").unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-m", "track the census"]);
         assert_eq!(porcelain(root), "", "the fixture must start clean");
-        model
     }
 
-    /// O caminho do modelo desta árvore, para quem só tem a raiz em mãos.
-    fn model_of(root: &Path) -> std::path::PathBuf {
-        default_model_path(root)
-    }
-
-    /// What a scan writes: the model.
-    fn remine(model: &Path) {
-        std::fs::write(model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
+    /// What a scan writes: the model of the tree at `root`.
+    fn remine(root: &Path) {
+        project_map::write_text(root, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
     }
 
     /// Deixa na árvore, e só na árvore, a saída da passagem de ENRIQUECIMENTO —
@@ -500,9 +492,9 @@ mod tests {
         )
         .unwrap();
         // A árvore fica em `dev`, que é a base de onde `dev_second` sai.
-        let model = repo_tracking_the_census(root);
+        repo_tracking_the_census(root);
 
-        remine(&model);
+        remine(root);
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
 
@@ -559,7 +551,7 @@ mod tests {
             r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
         )
         .unwrap();
-        let model = repo_tracking_the_census(root);
+        repo_tracking_the_census(root);
 
         // Um `origin` cuja `dev` está UM commit à frente da base local. O commit
         // é VAZIO de propósito: assim o fast-forward não depende da árvore suja.
@@ -576,7 +568,7 @@ mod tests {
         );
 
         // A abertura ordinária: a árvore suja só com o censo.
-        remine(&model);
+        remine(root);
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
 
@@ -616,9 +608,9 @@ mod tests {
             r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
         )
         .unwrap();
-        let model = repo_tracking_the_census(root);
+        repo_tracking_the_census(root);
 
-        remine(&model);
+        remine(root);
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
@@ -666,9 +658,9 @@ mod tests {
             r#"{"git":{"flow":{"*":"dev"},"protected":["dev"]}}"#,
         )
         .unwrap();
-        let model = repo_tracking_the_census(root);
+        repo_tracking_the_census(root);
 
-        remine(&model);
+        remine(root);
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
@@ -707,13 +699,13 @@ mod tests {
             r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
         )
         .unwrap();
-        let model = repo_tracking_the_census(root);
+        repo_tracking_the_census(root);
         git(root, &["init", "--bare", "-q", &origin_s]);
         git(root, &["remote", "add", "origin", &origin_s]);
         git(root, &["push", "-q", "origin", "dev"]);
         // A máquina A re-minerou e publicou.
         const ORIGINS_CENSUS: &str = "{\"projects\":[{\"dir\":\"apps/rt\"},{\"dir\":\"apps/cli\"}]}\n";
-        std::fs::write(&model, ORIGINS_CENSUS).unwrap();
+        project_map::write_text(root, ORIGINS_CENSUS).unwrap();
         git(root, &["commit", "-q", "-am", "another machine re-mined the census"]);
         git(root, &["push", "-q", "origin", "dev"]);
         let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
@@ -744,7 +736,7 @@ mod tests {
 
         // A máquina B com o censo sujo — o modelo INCLUSIVE, que é o arquivo
         // que o avanço sobrescreve.
-        remine(&model_of(root));
+        remine(root);
         leftover_enrichment(root);
         assert!(
             matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
@@ -761,7 +753,7 @@ mod tests {
             "a base avançou até o origin: o censo no caminho não a prendeu",
         );
         assert_eq!(
-            std::fs::read_to_string(model_of(root)).unwrap(),
+            std::fs::read_to_string(project_map::model_path(root)).unwrap(),
             origins_census,
             "o modelo é o do origin — o local velho foi posto de lado, não gravado por cima",
         );
@@ -792,7 +784,7 @@ mod tests {
         // A `dev` local com um commit PRÓPRIO: divergiu do origin.
         git(root, &["commit", "-q", "--allow-empty", "-m", "a commit of its own"]);
 
-        remine(&model_of(root));
+        remine(root);
         leftover_enrichment(root);
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
         let dirty_before = porcelain(root);
@@ -876,11 +868,11 @@ mod tests {
             r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
         )
         .unwrap();
-        let model = repo_tracking_the_census(root);
+        repo_tracking_the_census(root);
         if let Some(branch) = stand_on {
             git(root, &["checkout", "-b", branch]);
         }
-        remine(&model);
+        remine(root);
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
     }
@@ -921,10 +913,10 @@ mod tests {
     fn an_adopted_mold_is_the_operators_writing_not_the_census() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let model = repo_tracking_the_census(root);
+        repo_tracking_the_census(root);
         git(root, &["checkout", "-b", "dev_first"]);
 
-        remine(&model);
+        remine(root);
         leftover_enrichment(root);
         // O molde curado, adotado: a partir do `source: manual` quem escreve
         // ali é o operador, e o próprio molde documenta isso.
@@ -1044,15 +1036,15 @@ mod tests {
         // …que nesta máquina existe, não rastreado, e vai barrar o avanço.
         std::fs::write(root.join(".claude").join("feature-digest.json"), "{\"local\":1}\n")
             .unwrap();
-        remine(&model_of(root));
+        remine(root);
         leftover_enrichment(root);
         // O modelo ENCENADO no índice: o estado que o descarte antigo não via.
-        git(root, &["add", ".claude/grain.model.json"]);
+        git(root, &["add", project_map::MAP_FILE]);
         assert!(
             matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
             "precondição: só o censo (e um rascunho) está sujo",
         );
-        let ours = std::fs::read_to_string(model_of(root)).unwrap();
+        let ours = std::fs::read_to_string(project_map::model_path(root)).unwrap();
         let dirty_before = porcelain(root);
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
@@ -1076,7 +1068,7 @@ mod tests {
             "o censo posto de lado voltou exatamente como estava — o modelo encenado inclusive",
         );
         assert_eq!(
-            std::fs::read_to_string(model_of(root)).unwrap(),
+            std::fs::read_to_string(project_map::model_path(root)).unwrap(),
             ours,
             "e com o conteúdo local, não o do origin",
         );
@@ -1103,9 +1095,9 @@ mod tests {
         let root_s = root.to_string_lossy().to_string();
         let (ahead, origins_census) = origin_ahead_touching_the_census(root);
 
-        remine(&model_of(root));
+        remine(root);
         leftover_enrichment(root);
-        git(root, &["add", ".claude/grain.model.json"]);
+        git(root, &["add", project_map::MAP_FILE]);
         assert!(
             porcelain(root).lines().any(|l| l.starts_with("M ")),
             "precondição: o modelo está ENCENADO: {}",
@@ -1120,7 +1112,7 @@ mod tests {
             git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
             "a base avançou apesar do censo encenado",
         );
-        assert_eq!(std::fs::read_to_string(model_of(root)).unwrap(), origins_census);
+        assert_eq!(std::fs::read_to_string(project_map::model_path(root)).unwrap(), origins_census);
         assert_eq!(
             git_out(root, &["rev-parse", "dev"]).expect("dev"),
             ahead,
@@ -1215,9 +1207,7 @@ mod tests {
         )
         .unwrap();
         init_repo_on(root, "main");
-        let model = default_model_path(root);
-        std::fs::create_dir_all(model.parent().expect("model parent")).unwrap();
-        std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
+        project_map::write_text(root, "{\"projects\":[]}\n").unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-q", "-m", "track the census"]);
         let origin = root.parent().expect("tmp").join("origin.git");
@@ -1226,7 +1216,7 @@ mod tests {
         git(root, &["remote", "add", "origin", &origin_s]);
         git(root, &["push", "-q", "origin", "main"]);
         const ORIGINS_CENSUS: &str = "{\"projects\":[{\"dir\":\"apps/rt\"},{\"dir\":\"apps/cli\"}]}\n";
-        std::fs::write(&model, ORIGINS_CENSUS).unwrap();
+        project_map::write_text(root, ORIGINS_CENSUS).unwrap();
         git(root, &["commit", "-q", "-am", "another machine re-mined the census"]);
         git(root, &["push", "-q", "origin", "main"]);
         let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
@@ -1248,13 +1238,13 @@ mod tests {
         let root = root.as_path();
         let (ahead, origins_census) = protected_main_behind_origin(root);
         let config = ProjectConfig::load(root);
-        remine(&model_of(root));
+        remine(root);
         std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
         let CheckoutWork::Holds { theirs, census } = checkout_work(root) else {
             panic!("precondição: trabalho do operador E censo");
         };
         assert_eq!(theirs, vec!["theirs.txt".to_string()]);
-        assert!(census.iter().any(|p| p.ends_with("grain.model.json")), "{census:?}");
+        assert!(census.iter().any(|p| p.ends_with(project_map::MAP_FILE_NAME)), "{census:?}");
 
         let settled = settle_cut(root, Some("main"), "feature/first", Some("main"), &config);
         assert!(
@@ -1265,7 +1255,7 @@ mod tests {
             git_out(root, &["rev-list", "main"]).expect("rev-list").contains(&ahead),
             "a base avançou",
         );
-        assert_eq!(std::fs::read_to_string(model_of(root)).unwrap(), origins_census);
+        assert_eq!(std::fs::read_to_string(project_map::model_path(root)).unwrap(), origins_census);
         assert_eq!(
             std::fs::read_to_string(root.join("theirs.txt")).unwrap(),
             "mine, not yours\n",
@@ -1294,7 +1284,7 @@ mod tests {
         git(root, &["reset", "-q", "--hard", "HEAD~2"]);
         // …que o operador editou aqui, sem commitar.
         std::fs::write(root.join("f.txt"), "edited here").unwrap();
-        remine(&model_of(root));
+        remine(root);
         let config = ProjectConfig::load(root);
         let dirty_before = porcelain(root);
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
@@ -1329,10 +1319,10 @@ mod tests {
     fn operator_work_beside_the_census_still_refuses_and_names_only_theirs() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let model = repo_tracking_the_census(root);
+        repo_tracking_the_census(root);
         git(root, &["checkout", "-b", "dev_first"]);
 
-        remine(&model);
+        remine(root);
         leftover_enrichment(root);
         std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");

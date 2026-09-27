@@ -5,12 +5,10 @@
 
 use std::path::Path;
 
+use mustard_core::io::project_map;
 use mustard_core::platform::i18n::{translate, Locale};
 
 use super::CheckResult;
-
-/// What the scan writes, inside the project's `.claude/`.
-const SCAN_OUTPUTS: &[&str] = &["grain.model.json"];
 
 /// The scan only writes outside git: what it recorded may be neither tracked
 /// nor show up as a new file. A visible file becomes a WARN with the list, in
@@ -18,10 +16,10 @@ const SCAN_OUTPUTS: &[&str] = &["grain.model.json"];
 /// to check. Read-only.
 pub(super) fn check_scan_output(root: &Path, lang: Locale) -> CheckResult {
     const NAME: &str = "scan-output";
-    let written: Vec<String> = SCAN_OUTPUTS
-        .iter()
-        .filter(|name| root.join(".claude").join(name).is_file())
-        .map(|name| format!(".claude/{name}"))
+    // What the scan writes: the project map, asked through its door.
+    let written: Vec<String> = project_map::exists_at(&project_map::model_path(root))
+        .then(|| project_map::MAP_FILE.to_string())
+        .into_iter()
         .collect();
     let visible = match visible_to_git(root, &written) {
         Some(visible) if !visible.is_empty() => visible,
@@ -122,8 +120,7 @@ mod tests {
     fn the_doctor_flags_a_scan_map_that_git_can_see() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(root.join(".claude").join("grain.model.json"), "{}").unwrap();
+        project_map::write_text(root, "{}").unwrap();
         assert_eq!(check_scan_output(root, Locale::PtBr).status, Status::Ok, "not a repository");
 
         let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(root).output();
@@ -132,11 +129,11 @@ mod tests {
         }
         let visible = check_scan_output(root, Locale::PtBr);
         assert_eq!(visible.status, Status::Warn, "{:?}", visible.details);
-        assert!(visible.details.join(" ").contains(".claude/grain.model.json"), "{:?}", visible.details);
+        assert!(visible.details.join(" ").contains(project_map::MAP_FILE), "{:?}", visible.details);
         let en = check_scan_output(root, Locale::EnUs);
         assert!(en.details.join(" ").contains("visible to git"), "{:?}", en.details);
 
-        std::fs::write(root.join(".git").join("info").join("exclude"), "**/.claude/grain.model.json\n").unwrap();
+        std::fs::write(root.join(".git").join("info").join("exclude"), format!("**/{}\n", project_map::MAP_FILE)).unwrap();
         assert_eq!(check_scan_output(root, Locale::PtBr).status, Status::Ok);
     }
 

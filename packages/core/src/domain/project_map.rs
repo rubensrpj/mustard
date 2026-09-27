@@ -247,7 +247,7 @@ pub fn date_of(at: i64) -> String {
 
 /// A parte do mapa que as perguntas leem. Campos que faltam valem o padrão,
 /// e os que sobram são ignorados.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProjectMap {
     pub modules: Vec<MapModule>,
@@ -256,9 +256,11 @@ pub struct ProjectMap {
     pub graph: MapGraph,
     pub history: History,
     pub state: MapState,
+    /// A camada da arquitetura de cada pasta, como o scan a grava.
+    pub skeleton: Vec<MapSkeleton>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapModule {
     pub path: String,
@@ -275,7 +277,7 @@ pub struct MapModule {
     pub has_tests: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapDecl {
     /// O tipo da declaração, como o scan o grava: `function`, `struct`…
@@ -345,7 +347,7 @@ impl<'de> Deserialize<'de> for UseSite {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapProject {
     pub name: String,
@@ -354,7 +356,7 @@ pub struct MapProject {
     pub code_files: usize,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapLanguage {
     pub language: String,
@@ -362,21 +364,29 @@ pub struct MapLanguage {
     pub loc: usize,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapGraph {
     pub top_fan_in: Vec<MapDegree>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapDegree {
     pub module: String,
     pub degree: usize,
 }
 
+/// A camada da arquitetura (`L0`, `L1`, `L2`) que o scan dá a uma pasta.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MapSkeleton {
+    pub dir: String,
+    pub role: String,
+}
+
 /// De onde o mapa foi lido: o commit da última passada.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapState {
     pub head: String,
@@ -582,10 +592,6 @@ pub fn declaration(map: &ProjectMap, file: &str, name: &str) -> Result<DeclPlace
     })
 }
 
-/// Onde o scan grava o mapa, a partir da raiz do projeto. É o que a recusa de
-/// [`users`] cita quando o nome não está declarado em arquivo nenhum.
-pub const MAP_FILE: &str = ".claude/grain.model.json";
-
 /// Uma declaração com o nome perguntado, onde ela mora e quem a usa.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeclUsers {
@@ -601,7 +607,8 @@ pub struct DeclUsers {
 /// caminho e de linha. Com `file`, só as desse arquivo. Recusa
 /// [`MapRefusal::UnknownFile`] quando o arquivo não está no mapa e
 /// [`MapRefusal::UnknownDeclaration`] quando nenhuma declaração tem o nome:
-/// no arquivo pedido, ou no mapa inteiro, que a recusa cita por [`MAP_FILE`].
+/// no arquivo pedido, ou no mapa inteiro, que a recusa cita pelo caminho dele
+/// ([`MAP_FILE`](crate::io::project_map::MAP_FILE)).
 pub fn users(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<DeclUsers>, MapRefusal> {
     let name = name.trim();
     let modules: Vec<&MapModule> = match file {
@@ -622,7 +629,7 @@ pub fn users(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<Dec
         })
         .collect();
     if found.is_empty() {
-        let file = modules.first().filter(|_| file.is_some()).map_or_else(|| MAP_FILE.to_string(), |m| m.path.clone());
+        let file = modules.first().filter(|_| file.is_some()).map_or_else(|| crate::io::project_map::MAP_FILE.to_string(), |m| m.path.clone());
         return Err(MapRefusal::UnknownDeclaration { file, name: name.to_string() });
     }
     found.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
@@ -1390,6 +1397,7 @@ mod tests {
             graph: MapGraph { top_fan_in },
             history,
             state: MapState::default(),
+            skeleton: Vec::new(),
         };
         for lang in [Locale::PtBr, Locale::EnUs] {
             let text = summary(&map, lang);

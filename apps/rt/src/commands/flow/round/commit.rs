@@ -265,8 +265,7 @@ fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
 /// trava a rodada nem avisa: sem o mapa, ou sem a ferramenta, a sugestão
 /// segue com o que já tinha.
 pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
-    let model = crate::commands::scan::default_model_path(root);
-    let _ = mine(root, &model);
+    let _ = mine(root, &mustard_core::io::project_map::model_path(root));
 }
 
 /// O mapa fica atrasado do commit atual do checkout `root`: o mapa não
@@ -911,6 +910,8 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use mustard_core::domain::project_map::{MapState, ProjectMap};
+    use mustard_core::io::project_map;
     use mustard_core::io::spec_events as store;
     use tempfile::tempdir;
 
@@ -941,15 +942,14 @@ mod tests {
         assert_eq!(calls.get(), 0, "sem mapa, a ferramenta não é chamada");
 
         // Mapa sem o commit gravado (mapa antigo, de antes deste campo): idem.
-        let model = crate::commands::scan::default_model_path(root);
-        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
-        std::fs::write(&model, json!({"modules": []}).to_string()).unwrap();
+        let map_at = |head: &str| ProjectMap { state: MapState { head: head.to_string() }, ..ProjectMap::default() };
+        project_map::write(root, &map_at("")).unwrap();
         refresh_map_if_stale(root, &mine_counting(&calls));
         assert_eq!(calls.get(), 0, "sem o head gravado, a ferramenta não é chamada");
 
         // Mapa com um commit gravado, mas fora de um repositório git: sem
         // como comparar, a ferramenta não roda.
-        std::fs::write(&model, json!({"modules": [], "state": {"head": "abc123"}}).to_string()).unwrap();
+        project_map::write(root, &map_at("abc123")).unwrap();
         refresh_map_if_stale(root, &mine_counting(&calls));
         assert_eq!(calls.get(), 0, "sem git, a ferramenta não é chamada");
 
@@ -971,7 +971,7 @@ mod tests {
         )
         .trim()
         .to_string();
-        std::fs::write(&model, json!({"modules": [], "state": {"head": head}}).to_string()).unwrap();
+        project_map::write(root, &map_at(&head)).unwrap();
         refresh_map_if_stale(root, &mine_counting(&calls));
         assert_eq!(calls.get(), 0, "o mapa já está no commit atual");
 

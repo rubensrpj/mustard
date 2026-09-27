@@ -182,7 +182,7 @@ mod tests {
     fn the_install_sets_up_the_code_tool_of_each_language() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
-        let model_path = project.path().join(".claude").join("grain.model.json");
+        let model_path = mustard_core::io::project_map::model_path(project.path());
 
         let bin = tempfile::tempdir().unwrap();
         let log = bin.path().join("log.txt");
@@ -210,7 +210,7 @@ mod tests {
     fn a_language_without_a_catalog_entry_gets_a_no_plugin_notice_instead_of_an_install_attempt() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("pom.xml"), "<project></project>\n").unwrap();
-        let model_path = project.path().join(".claude").join("grain.model.json");
+        let model_path = mustard_core::io::project_map::model_path(project.path());
 
         let bin = tempfile::tempdir().unwrap();
         let log = bin.path().join("log.txt");

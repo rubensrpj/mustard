@@ -752,7 +752,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
     put("state", json!({"phase": "running", "branch": "feature/copia"}));
     // O mapa marca o projeto como Rust, como o scan o grava.
     let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": "cargo", "code_files": 1}]});
-    std::fs::write(mustard_core::io::project_map::model_path(&root), model.to_string()).unwrap();
+    mustard_core::io::project_map::write_text(&root, &model.to_string()).unwrap();
 
     let round = rt(&root, &home, &["run", "round", "--spec", "copia"], None);
     assert_eq!(round["ok"], json!(true), "{round}");

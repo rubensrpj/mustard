@@ -97,7 +97,7 @@ pub struct ModelFacts {
 /// spawn/parse error yields an empty list.
 #[must_use]
 pub fn read_projects(model_path: &std::path::Path) -> Vec<Project> {
-    if !model_path.is_file() {
+    if !crate::io::project_map::exists_at(model_path) {
         return Vec::new();
     }
     Scan::locate().facts(model_path).map(|f| f.projects).unwrap_or_default()
@@ -109,7 +109,7 @@ pub fn read_projects(model_path: &std::path::Path) -> Vec<Project> {
 /// spawn/parse error.
 #[must_use]
 pub fn read_entity_names(model_path: &std::path::Path) -> Vec<String> {
-    if !model_path.is_file() {
+    if !crate::io::project_map::exists_at(model_path) {
         return Vec::new();
     }
     Scan::locate().facts(model_path).map(|f| f.entities).unwrap_or_default()

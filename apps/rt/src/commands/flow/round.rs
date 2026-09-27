@@ -312,7 +312,7 @@ mod tests {
     /// o mapa fica fora do commit, como no projeto de verdade.
     pub(super) fn mapped(root: &Path, kind: &str) {
         let model = json!({"projects": [{"name": "(root)", "dir": "", "kind": kind, "code_files": 1}]});
-        std::fs::write(mustard_core::io::project_map::model_path(root), model.to_string()).unwrap();
+        mustard_core::io::project_map::write_text(root, &model.to_string()).unwrap();
     }
 
     /// O projeto em `root` com o submódulo `libs/sub`, clonado de um servidor

@@ -54,7 +54,6 @@ use crate::commands::event::work_branch::{
     checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
     CheckoutWork, RefusalCause,
 };
-use crate::commands::scan::default_model_path;
 use crate::commands::spec_events::{self, write::record_open};
 use crate::shared::spec_state::DiskSpecState;
 use crate::shared::work_kind::WorkKind;
@@ -429,7 +428,7 @@ fn opened(
 /// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade.
 /// Nunca entra em pânico.
 pub(crate) fn open_at(opts: &OpenOpts) -> Value {
-    open_with(opts, |root| Scan::locate().scan(root, &default_model_path(root)).map_err(|e| e.to_string()))
+    open_with(opts, |root| Scan::locate().scan(root, &mustard_core::io::project_map::model_path(root)).map_err(|e| e.to_string()))
 }
 
 /// O `open`, com quem atualiza o mapa do projeto dado por quem chama.
