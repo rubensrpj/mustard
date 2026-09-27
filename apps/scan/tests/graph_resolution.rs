@@ -15,6 +15,10 @@
 //!     (`./pedido.service`), import com a extensão de saída
 //!     (`./pedido.service.js`) e apelido de pasta (`@app/pedido`) declarado na
 //!     configuração herdada pela da raiz e redeclarado numa subpasta.
+//!     E `graph_python_relative/`: import relativo com um ponto, com dois,
+//!     `from . import x`, pasta de pacote com `__init__.py` e import absoluto.
+//!     E `graph_csharp_namespace/`: três arquivos num namespace, importado por
+//!     quem usa um tipo, por quem não usa nada e pelo nome qualificado.
 //!
 //! Characterization baseline (recorded on the code BEFORE the resolution fix):
 //! csharp, typescript and go already produced edges; python, rust and php
@@ -230,4 +234,78 @@ fn a_folder_alias_inherited_through_extends_links_to_the_right_file() {
 fn the_nearest_configuration_wins_over_the_root_one() {
     let v = scan_fixture_labeled("nearest", "graph_typescript_aliases");
     assert_eq!(deps_of(&v, "pkg/usa.ts"), vec!["pkg/lib/pedido.ts".to_string()]);
+}
+
+/// Um ponto na frente é a pasta de quem importa: `from .models import Pedido`
+/// em `pkg/views.py` liga a `pkg/models.py`, ao lado.
+#[test]
+fn a_one_dot_relative_import_links_to_the_file_beside() {
+    let v = scan_fixture_labeled("py-one-dot", "graph_python_relative");
+    assert_eq!(deps_of(&v, "pkg/views.py"), vec!["pkg/models.py".to_string()]);
+}
+
+/// Dois pontos sobem uma pasta, e o resto, cortado nos pontos, é o caminho
+/// dentro dela: `from ..core.regras import LIMITE` em `pkg/api/handlers.py`
+/// liga a `pkg/core/regras.py`.
+#[test]
+fn a_two_dot_relative_import_climbs_one_folder() {
+    let v = scan_fixture_labeled("py-two-dots", "graph_python_relative");
+    assert_eq!(deps_of(&v, "pkg/api/handlers.py"), vec!["pkg/core/regras.py".to_string()]);
+}
+
+/// `from . import models` traz um arquivo da própria pasta: liga a
+/// `pkg/models.py`, e não à pasta nem ao `__init__.py` dela.
+#[test]
+fn a_from_dot_import_links_to_the_named_file_of_the_folder() {
+    let v = scan_fixture_labeled("py-from-dot", "graph_python_relative");
+    assert_eq!(deps_of(&v, "pkg/admin.py"), vec!["pkg/models.py".to_string()]);
+}
+
+/// O import relativo que nomeia uma pasta de pacote liga ao `__init__.py`
+/// dela: `from .servicos import cobrar` liga a `pkg/servicos/__init__.py`.
+#[test]
+fn a_relative_import_of_a_package_links_to_its_init_file() {
+    let v = scan_fixture_labeled("py-package", "graph_python_relative");
+    assert_eq!(deps_of(&v, "pkg/usa_pacote.py"), vec!["pkg/servicos/__init__.py".to_string()]);
+}
+
+/// O import sem ponto segue lido a partir da raiz, e não da pasta de quem
+/// importa: `from pkg.models import Pedido` em `pkg/api/absoluto.py` liga a
+/// `pkg/models.py`.
+#[test]
+fn an_absolute_import_is_still_read_from_the_root() {
+    let v = scan_fixture_labeled("py-absolute", "graph_python_relative");
+    assert_eq!(deps_of(&v, "pkg/api/absoluto.py"), vec!["pkg/models.py".to_string()]);
+}
+
+/// Três arquivos no mesmo namespace; quem importa o namespace e usa só um tipo
+/// dele liga só ao arquivo desse tipo.
+#[test]
+fn a_namespace_import_links_only_to_the_file_of_the_type_it_uses() {
+    let v = scan_fixture_labeled("ns-used", "graph_csharp_namespace");
+    assert_eq!(deps_of(&v, "src/Services/PedidoService.cs"), vec!["src/Models/Pedido.cs".to_string()]);
+}
+
+/// Quem importa o namespace e não usa nada dele não liga a nenhum arquivo.
+#[test]
+fn a_namespace_import_with_nothing_used_links_to_nothing() {
+    let v = scan_fixture_labeled("ns-unused", "graph_csharp_namespace");
+    assert_eq!(deps_of(&v, "src/Services/SemUso.cs"), Vec::<String>::new());
+}
+
+/// O nome qualificado completo de um tipo segue ligando ao arquivo que leva o
+/// nome dele, use o arquivo o tipo ou não.
+#[test]
+fn a_fully_qualified_import_still_links_to_the_file_of_the_type() {
+    let v = scan_fixture_labeled("ns-qualified", "graph_csharp_namespace");
+    assert_eq!(deps_of(&v, "src/Services/Qualificado.cs"), vec!["src/Models/Cliente.cs".to_string()]);
+}
+
+/// O nome qualificado de um tipo que nenhum arquivo leva no nome liga só ao
+/// arquivo do namespace que declara o que quem importa usa, e não ao
+/// namespace inteiro: `Aplicar`, de `Desconto`, mora em `Produto.cs`.
+#[test]
+fn a_qualified_type_without_its_own_file_links_only_to_what_is_used() {
+    let v = scan_fixture_labeled("ns-no-file", "graph_csharp_namespace");
+    assert_eq!(deps_of(&v, "src/Services/SemArquivo.cs"), vec!["src/Models/Produto.cs".to_string()]);
 }

@@ -30,6 +30,11 @@
 //!     path loses its last dotted part only when that part is an extension of
 //!     the importer's language, or one its imports write in place of it
 //!     (registry data): any other dot is part of the file's name;
+//!   * import relativo por separador — só para a língua que o registro dá
+//!     `relative_import`: o import que começa pelo separador é lido a partir
+//!     da pasta de quem importa (cada separador a mais sobe uma pasta) e liga
+//!     ao arquivo com esse caminho ou ao arquivo que responde pela pasta; é
+//!     o primeiro caminho tentado, e nenhum outro responde por ele;
 //!   * root-alias path — only for imports whose first segment is one of the
 //!     importer language's declared `root_aliases` (registry data): drop the
 //!     alias segment and probe the tail against the importer's ancestor dirs.
@@ -74,9 +79,10 @@ fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> u
 /// its `NodeIndex`. Self-edges are excluded (`dst != src`).
 ///
 /// Edge weight ×1024 is resolution SPECIFICITY: an import that lands on ONE
-/// module is full evidence (1024); a namespace/package import that resolves to
-/// a bucket of N modules spreads that single import across N files, so each
-/// target gets 1/N (floored at 1). A bucket import must not mint N units of
+/// module is full evidence (1024); an import that resolves to a bucket of N
+/// modules (a package folder, or the files of an imported namespace that
+/// declare a name the importer uses) spreads that single import across N
+/// files, so each target gets 1/N (floored at 1). A bucket import must not mint N units of
 /// centrality — otherwise every file of the most-imported namespace ends up at
 /// the same high fan-in, saturating `top_fan_in` with uniform glue.
 ///
@@ -100,7 +106,7 @@ pub fn resolve_edges(
     let mut edge_w: HashMap<(usize, usize), u64> = HashMap::new();
     for (src, m) in modules.iter().enumerate() {
         for imp in &m.imports {
-            let targets = resolver.resolve(imp, m);
+            let targets = resolver.resolve(imp, m, Reach::Used);
             let w = (1024 / targets.len().max(1) as u64).max(1);
             for t in targets {
                 if let Some(&dst) = pos.get(t.as_str())
@@ -262,7 +268,7 @@ const CALLABLE_KINDS: &[&str] = &["function", "method", "class", "struct", "reco
 /// called — a constant compared against, a type written in a parameter, an
 /// enum member picked out.
 pub(crate) const CITED_KINDS: &[&str] =
-    &["const", "constant", "struct", "enum", "enum_member", "type", "trait", "class", "interface"];
+    &["const", "constant", "struct", "enum", "enum_member", "type", "trait", "class", "interface", "record"];
 
 /// The named edges BETWEEN DECLARATIONS: for each declaration, which ones it
 /// calls and every place that uses it, with the file and the line. Until here
@@ -292,11 +298,13 @@ pub(crate) const CITED_KINDS: &[&str] =
 /// every declaration are rewritten from scratch on each pass, so nothing
 /// survives a declaration that is gone.
 ///
-/// Each module keeps, in `Module::cites`, only the citations that linked: a
-/// name the file cites and that no file in its sight declares, like a type of
-/// the standard library, is not a use of anything in the project, and is
-/// dropped from the map. What a later pass gains from a name that comes to be
-/// declared is read again by [`crate::refresh::stale_citers`].
+/// Cada módulo guarda, em `Module::cites`, só as citações de um nome que algum
+/// arquivo à vista dele declara como constante ou tipo, mesmo o nome comum
+/// demais para ligar: é essa citação que leva a importação de namespace ao
+/// arquivo que o declara. O nome que nenhum arquivo à vista declara, como um
+/// tipo da biblioteca padrão, não é uso de nada do projeto e sai do mapa. O
+/// que uma passada seguinte ganha com um nome que passa a ser declarado é
+/// relido por [`crate::refresh::stale_citers`].
 pub fn link_declarations(
     modules: &mut [Module],
     go_module: &Option<String>,
@@ -435,11 +443,18 @@ fn resolve_declaration_links(
                 // A type named inside its own body is not a use of it.
                 .filter(|&(mi, di)| is_call || !(mi == src && from == Some(di)))
                 .collect();
-            if chosen.is_empty() || chosen.len() > MAX_SAME_NAME {
+            if chosen.is_empty() {
                 continue;
             }
+            // A citação de um nome que algum arquivo à vista declara fica no
+            // módulo mesmo quando o nome é comum demais para ligar: é ela que
+            // leva a importação de namespace ao arquivo que o declara, e a
+            // passada que não relê o arquivo precisa dela para ligar igual.
             if let Some(i) = cite_at {
                 linked[src].insert(i);
+            }
+            if chosen.len() > MAX_SAME_NAME {
+                continue;
             }
             let from_name = from.map_or(String::new(), |di| m.declarations[di].name.clone());
             for (dst_mi, dst_di) in chosen {
@@ -497,7 +512,8 @@ fn global_sight(
             .max_by_key(|d| d.len())
             .cloned()
             .unwrap_or_else(|| parent_dir(&g.path));
-        let targets: HashSet<String> = g.global_imports.iter().flat_map(|imp| resolver.resolve(imp, g)).collect();
+        let targets: HashSet<String> =
+            g.global_imports.iter().flat_map(|imp| resolver.resolve(imp, g, Reach::Whole)).collect();
         if targets.is_empty() {
             continue;
         }
@@ -541,6 +557,18 @@ fn build_stem_index(modules: &[Module]) -> HashMap<String, Vec<String>> {
     m
 }
 
+/// O que uma importação de namespace alcança.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Só os arquivos do namespace que declaram um nome que quem importa chama
+    /// ou cita: a ligação de um arquivo a outro.
+    Used,
+    /// O namespace inteiro: a importação global põe o namespace à vista de
+    /// muitos arquivos, cada um usando nomes diferentes dele, e o nome de cada
+    /// uso é que escolhe a declaração.
+    Whole,
+}
+
 /// Everything import resolution reads, indexed once for the whole project.
 struct Resolver<'a> {
     /// Per language, each declared namespace in canonical segment form -> the
@@ -550,6 +578,8 @@ struct Resolver<'a> {
     stem_index: HashMap<String, Vec<String>>,
     dir_index: HashMap<String, Vec<String>>,
     module_paths: HashSet<&'a str>,
+    /// Cada módulo pelo caminho: o que um arquivo do namespace declara.
+    by_path: HashMap<&'a str, &'a Module>,
     go_module: &'a Option<String>,
     packages: &'a [(String, String)],
     /// Os apelidos de pasta das configurações do projeto.
@@ -586,6 +616,7 @@ impl<'a> Resolver<'a> {
             stem_index: build_stem_index(modules),
             dir_index,
             module_paths: modules.iter().map(|m| m.path.as_str()).collect(),
+            by_path: modules.iter().map(|m| (m.path.as_str(), m)).collect(),
             go_module,
             packages,
             aliases,
@@ -594,11 +625,18 @@ impl<'a> Resolver<'a> {
     }
 
     /// The project files one import of `importer` names. Empty when it names
-    /// nothing inside the project: an external dependency.
-    fn resolve(&self, imp: &str, importer: &Module) -> Vec<String> {
+    /// nothing inside the project: an external dependency. `reach` decide o
+    /// que a importação de um namespace alcança (veja [`Reach`]).
+    fn resolve(&self, imp: &str, importer: &Module, reach: Reach) -> Vec<String> {
         let from = importer.path.as_str();
         let lang = importer.language.as_str();
         let (stem_index, dir_index, module_paths) = (&self.stem_index, &self.dir_index, &self.module_paths);
+        // O import relativo escrito com o separador da língua nomeia um lugar
+        // a partir da pasta de quem importa, e nenhum outro caminho responde
+        // por ele.
+        if let Some(hits) = self.separated_relative(imp, importer) {
+            return hits;
+        }
         // Try every resolution shape; whichever applies wins. No language switch.
         // Lookups run on the canonical segment form so no shape ever cares which
         // separator the import was written with — except for an import that
@@ -617,22 +655,24 @@ impl<'a> Resolver<'a> {
         let namespaces = self.ns_index.get(importer.language.as_str());
         // 1) Namespace/package match: the import names a namespace declared in
         //    the importer's language (the common case for namespace languages —
-        //    a using shared by many files).
+        //    a using shared by many files). Liga só aos arquivos do namespace
+        //    que declaram um nome que quem importa chama ou cita: o namespace
+        //    importado sem nenhum nome usado não liga a nada.
         if let Some(v) = namespaces.and_then(|ix| ix.get(&canon)) {
-            return v.clone();
+            return self.narrow(v, importer, reach);
         }
         // 1b) Fully-qualified-name match: the import names a TYPE inside a
         //     declared namespace — retry with the final segment dropped,
         //     narrowed to the file named after the type (the file-per-type
         //     convention) so one FQCN doesn't edge to every file in the
-        //     namespace. When no file carries the type's name, keep the whole
-        //     bucket: coupling at namespace granularity, the same evidence
-        //     shape (1) accepts.
+        //     namespace. Quando nenhum arquivo leva o nome do tipo, o mesmo
+        //     filtro do passo 1: só os arquivos do namespace que declaram um
+        //     nome que quem importa usa.
         if let Some((ns, type_name)) = canon.rsplit_once('/')
             && let Some(v) = namespaces.and_then(|ix| ix.get(ns))
         {
             let named: Vec<String> = v.iter().filter(|p| file_stem(p) == type_name).cloned().collect();
-            return if named.is_empty() { v.clone() } else { named };
+            return if named.is_empty() { self.narrow(v, importer, reach) } else { named };
         }
         // 2) Module-prefixed path: strip a declared module prefix and match the
         //    directory it points at (the import-as-package-path shape). Raw on
@@ -718,6 +758,81 @@ impl<'a> Resolver<'a> {
             }
         }
         Vec::new()
+    }
+
+    /// Os arquivos de um namespace que a importação de `importer` alcança: com
+    /// [`Reach::Used`], só os que declaram um nome que ele chama (uma
+    /// declaração que se chama) ou cita (uma que se cita) — as mesmas
+    /// declarações que o vínculo por nome liga depois, de modo que a ligação
+    /// entre os arquivos e a ligação entre as declarações contam a mesma
+    /// história; com [`Reach::Whole`], o namespace inteiro.
+    fn narrow(&self, bucket: &[String], importer: &Module, reach: Reach) -> Vec<String> {
+        if reach == Reach::Whole {
+            return bucket.to_vec();
+        }
+        let called: HashSet<&str> = importer.calls.iter().map(|c| c.name.as_str()).collect();
+        let cited: HashSet<&str> = importer.cites.iter().map(|c| c.name.as_str()).collect();
+        if called.is_empty() && cited.is_empty() {
+            return Vec::new();
+        }
+        bucket
+            .iter()
+            .filter(|path| {
+                self.by_path.get(path.as_str()).is_some_and(|m| {
+                    m.declarations.iter().any(|d| {
+                        (CALLABLE_KINDS.contains(&d.kind.as_str()) && called.contains(d.name.as_str()))
+                            || (CITED_KINDS.contains(&d.kind.as_str()) && cited.contains(d.name.as_str()))
+                    })
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Os arquivos que um import relativo escrito com o separador da língua
+    /// cita (`relative_import` no registro): o primeiro separador do começo é
+    /// a pasta de quem importa, cada um a mais sobe uma pasta, e o resto,
+    /// cortado no separador, é o caminho dentro dela. O alvo é o arquivo da
+    /// língua com esse caminho ou, sem ele, o arquivo que responde pela pasta;
+    /// o que não existe no projeto, ou sobe além da raiz dele, não liga a
+    /// nada. `None` quando o import não começa pelo separador ou a língua não
+    /// o declara: segue pelos outros caminhos.
+    fn separated_relative(&self, imp: &str, importer: &Module) -> Option<Vec<String>> {
+        let rule = crate::extract::relative_import(&importer.language)?;
+        let (ups, rest) = rule.leading(imp);
+        if ups == 0 {
+            return None;
+        }
+        let base = parent_dir(&importer.path);
+        let mut parts: Vec<&str> = base.split('/').filter(|s| !s.is_empty()).collect();
+        for _ in 1..ups {
+            if parts.pop().is_none() {
+                return Some(Vec::new());
+            }
+        }
+        parts.extend(rest.split(rule.separator).filter(|s| !s.is_empty()));
+        let place = parts.join("/");
+        let extensions = crate::extract::extensions(&importer.language);
+        let of_language = |stem: &str| -> Vec<String> {
+            self.stem_index
+                .get(stem)
+                .into_iter()
+                .flatten()
+                .filter(|p| p.rsplit_once('.').is_some_and(|(_, ext)| extensions.contains(&ext)))
+                .cloned()
+                .collect()
+        };
+        if !place.is_empty() {
+            let file = of_language(&place);
+            if !file.is_empty() {
+                return Some(file);
+            }
+        }
+        if rule.package_file.is_empty() {
+            return Some(Vec::new());
+        }
+        let package = if place.is_empty() { rule.package_file.to_string() } else { format!("{place}/{}", rule.package_file) };
+        Some(of_language(&package))
     }
 
     /// The files `tail` names inside the declared package `name` (resolution

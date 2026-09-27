@@ -217,8 +217,8 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
     let graph = graph::build(&modules, &ing.go_module, &packages, &aliases);
     // The project files each module imports, from the same resolved edges the
     // graph counts — the answer to "who imports this file", read backwards.
-    // Every resolved edge counts, a namespace import spread over several files
-    // included: it is still an import of each of them.
+    // A importação de namespace chega aqui já estreitada aos arquivos que
+    // declaram um nome que o módulo usa.
     let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); modules.len()];
     for (from, to, _) in graph::resolve_edges(&modules, &ing.go_module, &packages, &aliases) {
         deps[from].insert(to);

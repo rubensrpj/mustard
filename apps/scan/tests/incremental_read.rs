@@ -138,3 +138,48 @@ fn changing_only_the_alias_configuration_reads_everything_again() {
     let usa = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/usa.ts")).unwrap();
     assert_eq!(usa["deps"], json!(["src/b/pedido.ts"]), "{usa}");
 }
+
+/// A importação de namespace liga aos arquivos que declaram o nome que o
+/// arquivo cita, e a passada que lê só o que mudou liga igual à que lê tudo,
+/// mesmo quando o nome é declarado por arquivos demais para a citação ligar a
+/// uma declaração: `Status`, citado por `Uso.cs`, está em nove arquivos do
+/// namespace, e mudar só `Outro.cs` não tira de `Uso.cs` os nove.
+#[test]
+fn a_namespace_import_links_the_same_when_only_another_file_changed() {
+    let temp = tempfile::Builder::new().prefix("scan-incremental-namespace-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
+    git(&dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+
+    let declaring: Vec<String> = (1..=9).map(|i| format!("src/Models/Tipo{i}.cs")).collect();
+    for path in &declaring {
+        write(&dir, path, "namespace Loja.Models;\n\npublic enum Status\n{\n    Ativo,\n}\n");
+    }
+    write(
+        &dir,
+        "src/Services/Uso.cs",
+        "using Loja.Models;\n\nnamespace Loja.Services;\n\npublic class Uso\n{\n    public Status Atual;\n}\n",
+    );
+    write(&dir, "src/Outro.cs", "namespace Loja;\n\npublic class Outro\n{\n}\n");
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "first"]);
+    assert_eq!(scan(&dir, &[])["full"], json!(true));
+
+    let deps_of_uso = || -> Value {
+        let model: Value = serde_json::from_slice(&std::fs::read(model_of(&dir)).unwrap()).unwrap();
+        model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/Services/Uso.cs")).unwrap()["deps"]
+            .clone()
+    };
+    assert_eq!(deps_of_uso(), json!(declaring), "the nine files that declare the name it cites");
+
+    write(&dir, "src/Outro.cs", "namespace Loja;\n\npublic class Outro\n{\n    public int Contar() => 0;\n}\n");
+    git(&dir, &["commit", "-q", "-am", "second"]);
+    let second = scan(&dir, &[]);
+    assert_eq!(second["read"], json!(["src/Outro.cs"]), "{second}");
+    assert_eq!(deps_of_uso(), json!(declaring), "a pass that did not read Uso.cs keeps its links");
+
+    let stepped = std::fs::read(model_of(&dir)).unwrap();
+    assert_eq!(scan(&dir, &["--all"])["full"], json!(true));
+    assert_eq!(std::fs::read(model_of(&dir)).unwrap(), stepped, "reading only what changed gives the same map");
+}

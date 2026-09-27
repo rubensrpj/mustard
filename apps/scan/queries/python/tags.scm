@@ -2,7 +2,21 @@
 (import_statement name: (dotted_name) @import)
 (import_statement name: (aliased_import (dotted_name) @import))
 (import_from_statement module_name: (dotted_name) @import)
-(import_from_statement module_name: (relative_import) @import)
+(import_from_statement module_name: (relative_import (dotted_name)) @import)
+
+; `from . import models`: o import é só os pontos, uma pasta, e cada nome que
+; ele traz é um arquivo dela. Capturados juntos, o motor lê o import como
+; `.models` (veja `relative_import` no languages.toml).
+(import_from_statement
+  module_name: (relative_import . (import_prefix) .) @import
+  name: (dotted_name) @imported)
+(import_from_statement
+  module_name: (relative_import . (import_prefix) .) @import
+  name: (aliased_import name: (dotted_name) @imported))
+; `from . import *` não traz arquivo pelo nome: o import fica a pasta.
+(import_from_statement
+  module_name: (relative_import . (import_prefix) .) @import
+  (wildcard_import))
 
 (class_definition name: (identifier) @name) @definition.class
 

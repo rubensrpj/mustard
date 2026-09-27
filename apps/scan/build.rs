@@ -73,6 +73,13 @@ fn main() {
     // (name, alias_extends) — o arquivo de configuração OPCIONAL dos apelidos
     // de pasta e as três chaves lidas nele. Sem o campo, texto vazio: a
     // língua não tem apelido de pasta e a leitura nem começa.
+    // (name, separator, package_file) — o import relativo OPCIONAL que a
+    // língua escreve com um separador no lugar da barra, e o arquivo que
+    // responde pela pasta. Sem o campo, dois textos vazios: o import da
+    // língua nunca é lido assim.
+    let mut relative_table = String::new();
+    relative_table.push_str("pub(crate) static LANG_RELATIVE_IMPORT: &[(&str, &str, &str)] = &[\n");
+
     let alias_fields = ["alias_config", "alias_base", "alias_paths", "alias_extends"];
     let mut alias_field_tables: Vec<String> = alias_fields
         .iter()
@@ -131,6 +138,17 @@ fn main() {
                     .unwrap_or_default()
             })
             .collect();
+        let (separator, package_file) = tbl.get("relative_import").map_or((String::new(), String::new()), |v| {
+            let rule = v.as_table().expect("language.relative_import must be a table");
+            let text = |key: &str| {
+                rule.get(key)
+                    .map(|v| v.as_str().unwrap_or_else(|| panic!("language.relative_import.{key} must be a string")).to_string())
+                    .unwrap_or_default()
+            };
+            let separator = text("separator");
+            assert!(!separator.is_empty(), "language.relative_import of `{name}` must declare a non-empty separator");
+            (separator, text("package_file"))
+        });
         let namespace_scope = tbl
             .get("namespace_scope")
             .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
@@ -166,6 +184,8 @@ fn main() {
         writeln!(scope_table, "    ({name:?}, {namespace_scope:?}),").expect("the generated table is a String, which never fails to write");
         writeln!(import_ext_table, "    ({name:?}, &[{import_exts}]),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(relative_table, "    ({name:?}, {separator:?}, {package_file:?}),")
+            .expect("the generated table is a String, which never fails to write");
         for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
             writeln!(table, "    ({name:?}, {value:?}),").expect("the generated table is a String, which never fails to write");
         }
@@ -180,6 +200,8 @@ fn main() {
     body.push_str(&scope_table);
     import_ext_table.push_str("];\n");
     body.push_str(&import_ext_table);
+    relative_table.push_str("];\n");
+    body.push_str(&relative_table);
     for table in &mut alias_field_tables {
         table.push_str("];\n");
         body.push_str(table);

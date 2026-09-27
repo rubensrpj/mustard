@@ -58,6 +58,23 @@
 #                 que esta herda: a última da lista vence, e o próprio arquivo
 #                 vence todas. Só se segue caminho relativo dentro do projeto;
 #                 nome de pacote fica de fora.
+#   relative_import OPTIONAL — o import relativo que a língua escreve com um
+#                 separador no lugar da barra (`..core.models`). Duas chaves:
+#                   separator     o texto entre as partes do caminho. Repetido
+#                                 no começo, ele faz o import relativo: um só
+#                                 é a pasta de quem importa, e cada um a mais
+#                                 sobe uma pasta; o resto, cortado nele, vira
+#                                 o caminho dentro dela. Quando o import é só
+#                                 esse começo, cada nome que ele traz
+#                                 (`@imported` no mesmo pattern) é um arquivo
+#                                 da pasta;
+#                   package_file  OPTIONAL — o nome, sem extensão, do arquivo
+#                                 que responde pela pasta quando o import
+#                                 relativo nomeia a pasta e não um arquivo.
+#                 O alvo é o arquivo da língua com esse caminho ou, sem ele, o
+#                 `package_file` da pasta; o que não existe no projeto não
+#                 liga a nada. O import que não começa pelo separador segue
+#                 como os outros.
 
 [[language]]
 name = "csharp"
@@ -98,6 +115,7 @@ name = "python"
 extensions = ["py", "pyi"]
 dir = "python"
 grammar = "grammar_py::LANGUAGE"
+relative_import = { separator = ".", package_file = "__init__" }
 
 [[language]]
 name = "rust"

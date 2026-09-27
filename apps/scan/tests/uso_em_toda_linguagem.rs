@@ -463,7 +463,10 @@ fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
         faltas.push(format!("Total tem o uso {esperado} e nenhum de Outro/Conta.cs: {total:?}"));
     }
     // O import global fica guardado só no arquivo que o escreve, e a aresta do
-    // grafo de import continua só nele.
+    // grafo de import, só nele. Como todo import de namespace, ela liga só aos
+    // arquivos que declaram um nome que o próprio arquivo usa: GlobalUsings.cs
+    // não usa nada e não liga a nada, e Pedido.cs, que usa Calculadora pelo
+    // import global, não ganha aresta por ele.
     let globais = lista(&modulo("Loja/GlobalUsings.cs")["global_imports"]);
     if globais != ["Loja.Dominio"] {
         faltas.push(format!("GlobalUsings.cs guarda o import global Loja.Dominio: {globais:?}"));
@@ -471,11 +474,9 @@ fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
     if let Some(m) = modules.iter().find(|m| m["path"] != "Loja/GlobalUsings.cs" && m.get("global_imports").is_some()) {
         faltas.push(format!("só GlobalUsings.cs grava import global: {}", m["path"]));
     }
-    if !deps("Loja/GlobalUsings.cs").contains(&"Loja/Dominio/Calculadora.cs".to_string())
-        || deps(pedido).contains(&"Loja/Dominio/Calculadora.cs".to_string())
-    {
+    if !deps("Loja/GlobalUsings.cs").is_empty() || deps(pedido).contains(&"Loja/Dominio/Calculadora.cs".to_string()) {
         faltas.push(format!(
-            "a aresta de import vai de GlobalUsings.cs a Calculadora.cs, e não de Pedido.cs: {:?} / {:?}",
+            "nem GlobalUsings.cs, que não usa nada, nem Pedido.cs têm aresta para Calculadora.cs: {:?} / {:?}",
             deps("Loja/GlobalUsings.cs"),
             deps(pedido)
         ));

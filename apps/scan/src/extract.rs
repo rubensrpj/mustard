@@ -106,6 +106,41 @@ pub fn import_extensions(lang: &str) -> &'static [&'static str] {
     LANG_IMPORT_EXTENSIONS.iter().find(|(name, _)| *name == lang).map_or(&[], |(_, exts)| *exts)
 }
 
+/// O import relativo que a língua escreve com um separador no lugar da barra
+/// (`relative_import` em languages.toml).
+#[derive(Clone, Copy, Debug)]
+pub struct RelativeImport {
+    /// O texto entre as partes do caminho; repetido no começo, torna o import
+    /// relativo à pasta de quem importa.
+    pub separator: &'static str,
+    /// O nome, sem extensão, do arquivo que responde pela pasta; vazio quando
+    /// a língua não tem.
+    pub package_file: &'static str,
+}
+
+impl RelativeImport {
+    /// Quantas vezes o separador abre o import, e o resto dele. Zero quando o
+    /// import não começa pelo separador: não é relativo nesta forma.
+    pub fn leading<'a>(&self, imp: &'a str) -> (usize, &'a str) {
+        let mut rest = imp;
+        let mut count = 0;
+        while let Some(after) = rest.strip_prefix(self.separator) {
+            rest = after;
+            count += 1;
+        }
+        (count, rest)
+    }
+}
+
+/// O import relativo por separador da língua — dado do registro. `None`
+/// quando a língua não o declara: o import dela nunca é lido assim.
+pub fn relative_import(lang: &str) -> Option<RelativeImport> {
+    LANG_RELATIVE_IMPORT
+        .iter()
+        .find(|(name, separator, _)| *name == lang && !separator.is_empty())
+        .map(|(_, separator, package_file)| RelativeImport { separator, package_file })
+}
+
 /// O valor de um campo de texto do registro para a língua; vazio sem o campo.
 fn text_field(table: &'static [(&'static str, &'static str)], lang: &str) -> &'static str {
     table.iter().find(|(name, _)| *name == lang).map_or("", |(_, value)| *value)
@@ -268,6 +303,9 @@ impl Analyzer {
         let mut import_spans: Spans = BTreeSet::new();
         let mut supers_by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
 
+        // O import relativo por separador da língua, quando ela o declara.
+        let relative = relative_import(&self.name);
+
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
             let mut def: Option<(Node, &str)> = None;
@@ -278,6 +316,10 @@ impl Analyzer {
             let mut value_start: Option<usize> = None;
             let mut name_kind: &'static str = "";
             let mut doc_inside: Option<(usize, String)> = None;
+            // Os imports deste match e os nomes que o mesmo pattern diz que
+            // eles trazem.
+            let mut here_imports: Vec<(String, bool)> = Vec::new();
+            let mut brought: Vec<String> = Vec::new();
 
             for cap in m.captures {
                 let node = cap.node;
@@ -287,16 +329,19 @@ impl Analyzer {
                         if let Ok(t) = node.utf8_text(bytes) {
                             let c = clean_import(t);
                             if !c.is_empty() {
-                                if matches!(self.cap_kinds[cap.index as usize], CapKind::ImportGlobal) {
-                                    out.global_imports.push(c);
-                                } else {
-                                    out.imports.push(c);
-                                }
+                                let global = matches!(self.cap_kinds[cap.index as usize], CapKind::ImportGlobal);
+                                here_imports.push((c, global));
                             }
                         }
                     }
                     CapKind::Imported => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
+                        if let Ok(t) = node.utf8_text(bytes) {
+                            let t = t.trim();
+                            if !t.is_empty() {
+                                brought.push(t.to_string());
+                            }
+                        }
                     }
                     CapKind::Namespace => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
@@ -338,6 +383,25 @@ impl Analyzer {
                         def = Some((node, kind.as_str()));
                     }
                     CapKind::Ignore => {}
+                }
+            }
+
+            // O import relativo feito só do separador nomeia uma pasta, e não
+            // um arquivo: cada nome que o mesmo pattern diz que ele traz é um
+            // arquivo dessa pasta, e o import vira o separador seguido do
+            // nome. Qualquer outro import fica como foi escrito.
+            for (import, global) in here_imports {
+                let folder_only =
+                    relative.is_some_and(|rule| matches!(rule.leading(&import), (count, "") if count > 0));
+                let paths: Vec<String> = if folder_only && !brought.is_empty() {
+                    brought.iter().map(|name| format!("{import}{name}")).collect()
+                } else {
+                    vec![import]
+                };
+                if global {
+                    out.global_imports.extend(paths);
+                } else {
+                    out.imports.extend(paths);
                 }
             }
 
