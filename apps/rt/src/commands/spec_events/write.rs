@@ -1254,6 +1254,7 @@ fn unrecorded_points(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Ve
     let list = survey::build(&survey::Sources {
         kinds: &kinds,
         goal: goal.and_then(|g| g.str_field("text")).map(str::trim).unwrap_or_default(),
+        goal_agent: goal.and_then(|g| g.str_field("agent")).map(str::trim).unwrap_or_default(),
         current: spec,
         bank: None,
         lessons_file: "",

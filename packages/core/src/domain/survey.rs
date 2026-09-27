@@ -820,6 +820,9 @@ pub struct Sources<'a> {
     pub kinds: &'a [&'a str],
     /// O texto do objetivo.
     pub goal: &'a str,
+    /// A parte do agente do objetivo, vazia quando não há: é nela que o
+    /// objetivo gravado pela forma de três partes cita os nomes de código.
+    pub goal_agent: &'a str,
     /// A spec do levantamento, que nunca é a própria spec anterior.
     pub current: &'a str,
     /// O banco de lições, quando existe.
@@ -873,7 +876,8 @@ pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
 
 /// Os fatos que o mapa do projeto já dá para a lacuna: para quem depende, na
 /// refatoração, onde cada nome citado no objetivo é declarado e quem importa
-/// esse arquivo.
+/// esse arquivo. Os nomes vêm primeiro da parte do agente e depois do texto,
+/// sem repetir: o objetivo antigo, com o nome no texto, segue achando.
 fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
     let Some(read) = sources.map.filter(|_| key == GapKey::Dependents) else {
         return Vec::new();
@@ -884,7 +888,13 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
             facts.push(fact);
         }
     };
-    for name in cited_names(sources.goal).into_iter().take(MAP_NAMES) {
+    let mut names: Vec<String> = Vec::new();
+    for name in cited_names(sources.goal_agent).into_iter().chain(cited_names(sources.goal)) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    for name in names.into_iter().take(MAP_NAMES) {
         let declared = read(Need::Declarations { file: None, name: &name }).map(|map| map.declared(&name));
         for (path, line) in declared.unwrap_or_default().into_iter().take(MAP_NAMES) {
             push(Fact {
@@ -1117,6 +1127,7 @@ mod tests {
         Sources {
             kinds,
             goal: GOAL,
+            goal_agent: "",
             current: "atual",
             bank,
             lessons_file: ".claude/spec/lessons.ndjson",
@@ -1435,6 +1446,38 @@ mod tests {
             ]
         );
         assert!(list.iter().filter(|p| p.key != Some(GapKey::Dependents)).all(|p| p.facts.is_empty()));
+    }
+
+    /// O objetivo gravado em três partes não cita código na parte do usuário:
+    /// o nome vem entre crases na parte do agente, e a lacuna de quem depende
+    /// traz dele os mesmos fatos que traria do texto.
+    #[test]
+    fn o_nome_citado_na_parte_do_agente_do_objetivo_traz_a_declaracao_e_quem_a_importa() {
+        let map: ProjectMap = serde_json::from_value(json!({
+            "modules": [
+                {"path": "src/a.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
+                {"path": "src/b.rs", "deps": ["src/a.rs"]},
+                {"path": "src/c.rs", "deps": ["src/a.rs"]},
+            ]
+        }))
+        .unwrap();
+        let mut given = sources(&["refactor"], None, &[], &[]);
+        given.goal = "Tirar o registro de nascimento do fluxo.";
+        given.goal_agent = "- Tirar `record_birth` do fluxo.";
+        let whole = |_: Need<'_>| Ok(map.clone());
+        given.map = Some(&whole);
+        let list = build(&given);
+        let dependents = list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap();
+        assert_eq!(
+            dependents.facts,
+            [
+                Fact { text: "`record_birth` é declarado em src/a.rs, linha 3.".into(), source: "src/a.rs:3".into() },
+                Fact {
+                    text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(),
+                    source: "mustard-rt run map importers --file src/a.rs".into(),
+                },
+            ]
+        );
     }
 
     /// Um projeto com o nome do objetivo declarado em dois arquivos, cada um
