@@ -35,9 +35,10 @@
 #                 o caminho pode terminar em tipo e método; sem arquivo para
 #                 nenhuma parte, o alvo é o arquivo que responde pela pasta
 #                 (`super::f()`). O que sobe além da raiz, ou não existe no
-#                 projeto, não liga a nada. Dentro de um trecho de teste
-#                 (`@test_block`), o primeiro sai do trecho e fica no próprio
-#                 arquivo.
+#                 projeto, não liga a nada. Dentro de N módulos escritos no
+#                 próprio arquivo (`@inner_module`, o trecho de teste
+#                 incluído), os N primeiros só saem deles e ficam no arquivo;
+#                 os outros sobem pasta.
 #   namespace_scope OPTIONAL — how a declared namespace is seen by the other files
 #                 of the same language, with no import between them:
 #                   "folder" the namespace holds only together with its folder

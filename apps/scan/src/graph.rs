@@ -36,11 +36,12 @@
 //!     ao arquivo com esse caminho ou ao arquivo que responde pela pasta; é
 //!     o primeiro caminho tentado, e nenhum outro responde por ele;
 //!   * apelido que sobe — só para a língua que o registro dá `parent_alias`:
-//!     o caminho que começa por ele é lido a partir da pasta dos módulos de
-//!     dentro de quem importa (cada repetição sobe uma pasta), tirando do fim
-//!     quantas partes for preciso até achar arquivo e, sem nenhuma, ligando
-//!     ao arquivo que responde pela pasta; como o import relativo, nenhum
-//!     outro caminho responde por ele;
+//!     escrito dentro de N módulos do próprio arquivo (`Module::module_lines`),
+//!     as N primeiras repetições só saem deles; as outras sobem, cada uma, uma
+//!     pasta a partir da pasta dos módulos de dentro de quem importa. O resto
+//!     do caminho é lido ali, tirando do fim quantas partes for preciso até
+//!     achar arquivo e, sem nenhuma, ligando ao arquivo que responde pela
+//!     pasta; como o import relativo, nenhum outro caminho responde por ele;
 //!   * root-alias path — only for imports whose first segment is one of the
 //!     importer language's declared `root_aliases` (registry data): drop the
 //!     alias segment and probe the tail, and the tail cut from its end as far
@@ -113,14 +114,16 @@ pub fn resolve_edges(
     let mut edge_w: HashMap<(usize, usize), u64> = HashMap::new();
     for (src, m) in modules.iter().enumerate() {
         for imp in &m.imports {
-            let targets = resolver.resolve(imp, m, Reach::Used, 0);
-            let w = (1024 / targets.len().max(1) as u64).max(1);
-            for t in targets {
-                if let Some(&dst) = pos.get(t.as_str())
-                    && dst != src {
-                        let e = edge_w.entry((src, dst)).or_insert(0);
-                        *e = (*e).max(w);
-                    }
+            for nested in m.import_depths(imp, false) {
+                let targets = resolver.resolve(imp, m, Reach::Used, nested);
+                let w = (1024 / targets.len().max(1) as u64).max(1);
+                for t in targets {
+                    if let Some(&dst) = pos.get(t.as_str())
+                        && dst != src {
+                            let e = edge_w.entry((src, dst)).or_insert(0);
+                            *e = (*e).max(w);
+                        }
+                }
             }
         }
     }
@@ -132,8 +135,8 @@ pub fn resolve_edges(
 /// Os arquivos do projeto que o trecho de teste de cada módulo importa
 /// (`Module::test_imports`), pela mesma resolução dos imports do corpo, na
 /// ordem de `modules`. Guardados à parte: nenhum é aresta do grafo nem entra
-/// em `deps`. O trecho de teste é um módulo escrito dentro do arquivo, e o
-/// próprio arquivo não conta.
+/// em `deps`. O trecho de teste é um dos módulos escritos dentro do arquivo
+/// (`Module::module_lines`), e o próprio arquivo não conta.
 pub fn resolve_test_deps(
     modules: &[Module],
     go_module: &Option<String>,
@@ -150,7 +153,9 @@ pub fn resolve_test_deps(
             let found: BTreeSet<String> = m
                 .test_imports
                 .iter()
-                .flat_map(|imp| resolver.resolve(imp, m, Reach::Used, 1))
+                .flat_map(|imp| {
+                    m.import_depths(imp, true).into_iter().flat_map(|nested| resolver.resolve(imp, m, Reach::Used, nested))
+                })
                 .filter(|target| *target != m.path)
                 .collect();
             found.into_iter().collect()
@@ -553,7 +558,14 @@ fn global_sight(
             .cloned()
             .unwrap_or_else(|| parent_dir(&g.path));
         let targets: HashSet<String> =
-            g.global_imports.iter().flat_map(|imp| resolver.resolve(imp, g, Reach::Whole, 0)).collect();
+            g.global_imports
+                .iter()
+                .flat_map(|imp| {
+                    g.import_depths(imp, false)
+                        .into_iter()
+                        .flat_map(|nested| resolver.resolve(imp, g, Reach::Whole, nested))
+                })
+                .collect();
         if targets.is_empty() {
             continue;
         }
@@ -667,8 +679,8 @@ impl<'a> Resolver<'a> {
     /// The project files one import of `importer` names. Empty when it names
     /// nothing inside the project: an external dependency. `reach` decide o
     /// que a importação de um namespace alcança (veja [`Reach`]); `nested`,
-    /// quantos módulos escritos dentro do arquivo separam o import do corpo
-    /// dele: zero no corpo, um no trecho de teste.
+    /// dentro de quantos módulos escritos no arquivo o import é escrito
+    /// ([`Module::import_depths`]): zero fora de todos eles.
     fn resolve(&self, imp: &str, importer: &Module, reach: Reach, nested: usize) -> Vec<String> {
         let from = importer.path.as_str();
         let lang = importer.language.as_str();

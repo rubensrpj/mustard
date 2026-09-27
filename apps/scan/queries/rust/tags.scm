@@ -22,6 +22,11 @@
 ((attribute_item) @_marker . (mod_item) @test_block
   (#eq? @_marker "#[cfg(test)]"))
 
+; Todo módulo com corpo escrito dentro do arquivo, o de teste incluído: o
+; `super` escrito dentro de N deles sai primeiro desses N módulos, e só depois
+; sobe pasta. O `mod x;` sem corpo mora em outro arquivo e não entra.
+(mod_item body: (declaration_list)) @inner_module
+
 (struct_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait

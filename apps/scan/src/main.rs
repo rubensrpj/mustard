@@ -200,6 +200,8 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
                     test_imports: extracted.test_imports,
                     test_deps: Vec::new(),
                     test_lines: extracted.test_lines,
+                    module_lines: extracted.module_lines,
+                    import_lines: extracted.import_lines,
                     namespaces: extracted.namespaces,
                     declarations: extracted.declarations,
                     file_class,

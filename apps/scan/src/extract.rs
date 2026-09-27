@@ -45,6 +45,12 @@ pub(crate) struct Extracted {
     pub test_imports: Vec<String>,
     /// As linhas, da primeira à última, de cada trecho de teste do arquivo.
     pub test_lines: Vec<(usize, usize)>,
+    /// As linhas, da primeira à última, de cada módulo com corpo escrito
+    /// dentro do arquivo (`@inner_module`).
+    pub module_lines: Vec<(usize, usize)>,
+    /// As linhas de cada import que o arquivo escreve ao menos uma vez dentro
+    /// de um desses módulos, todas elas.
+    pub import_lines: BTreeMap<String, Vec<usize>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     pub calls: Vec<CallSite>,
@@ -253,6 +259,9 @@ enum CapKind {
     /// Um trecho de teste escrito dentro do arquivo: o que se importa nele é
     /// do teste, e o que se chama ou se cita nele não é uso do código.
     TestBlock,
+    /// Um módulo com corpo escrito dentro do arquivo: o caminho escrito nele
+    /// que começa pelo `parent_alias` da língua sai dele antes de subir pasta.
+    InnerModule,
     Def(String),
     Ignore,
 }
@@ -271,6 +280,7 @@ fn classify(cap: &str) -> CapKind {
         "value" => CapKind::Value,
         "doc" => CapKind::Doc,
         "test_block" => CapKind::TestBlock,
+        "inner_module" => CapKind::InnerModule,
         other => match other.strip_prefix("definition.") {
             Some(kind) => CapKind::Def(kind.to_string()),
             None => CapKind::Ignore,
@@ -339,10 +349,11 @@ impl Analyzer {
         // there are the path of the import, not a use of what they name.
         let mut import_spans: Spans = BTreeSet::new();
         let mut supers_by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
-        // Os trechos de teste do arquivo, e cada import com o byte em que foi
-        // escrito: só depois de todos os matches se sabe qual cai num trecho.
+        // Os trechos de teste do arquivo, e cada import com o byte e a linha
+        // em que foi escrito: só depois de todos os matches se sabe qual cai
+        // num trecho de teste ou num módulo do arquivo.
         let mut test_blocks: Spans = BTreeSet::new();
-        let mut written: Vec<(String, bool, usize)> = Vec::new();
+        let mut written: Vec<Written> = Vec::new();
 
         // O import relativo por separador da língua, quando ela o declara.
         let relative = relative_import(&self.name);
@@ -362,9 +373,9 @@ impl Analyzer {
             let mut value_start: Option<usize> = None;
             let mut name_kind: &'static str = "";
             let mut doc_inside: Option<(usize, String)> = None;
-            // Os imports deste match, com o byte em que cada um foi escrito, e
-            // os nomes que o mesmo pattern diz que eles trazem.
-            let mut here_imports: Vec<(String, bool, usize)> = Vec::new();
+            // Os imports deste match, com o byte e a linha em que cada um foi
+            // escrito, e os nomes que o mesmo pattern diz que eles trazem.
+            let mut here_imports: Vec<Written> = Vec::new();
             let mut brought: Vec<String> = Vec::new();
 
             for cap in m.captures {
@@ -376,7 +387,7 @@ impl Analyzer {
                             let c = clean_import(t);
                             if !c.is_empty() {
                                 let global = matches!(self.cap_kinds[cap.index as usize], CapKind::ImportGlobal);
-                                here_imports.push((c, global, node.start_byte()));
+                                here_imports.push(Written::at(c, global, node));
                             }
                         }
                     }
@@ -399,7 +410,7 @@ impl Analyzer {
                             let first = first_segment(&path, separators);
                             if aliases.contains(&first) || parent == Some(first) {
                                 import_spans.insert((node.start_byte(), node.end_byte()));
-                                here_imports.push((path, false, node.start_byte()));
+                                here_imports.push(Written::at(path, false, node));
                             }
                         }
                     }
@@ -443,6 +454,9 @@ impl Analyzer {
                         test_blocks.insert((node.start_byte(), node.end_byte()));
                         out.test_lines.push((node.start_position().row + 1, node.end_position().row + 1));
                     }
+                    CapKind::InnerModule => {
+                        out.module_lines.push((node.start_position().row + 1, node.end_position().row + 1));
+                    }
                     CapKind::Def(kind) => {
                         def = Some((node, kind.as_str()));
                     }
@@ -454,13 +468,15 @@ impl Analyzer {
             // um arquivo: cada nome que o mesmo pattern diz que ele traz é um
             // arquivo dessa pasta, e o import vira o separador seguido do
             // nome. Qualquer outro import fica como foi escrito.
-            for (import, global, at) in here_imports {
+            for import in here_imports {
                 let folder_only =
-                    relative.is_some_and(|rule| matches!(rule.leading(&import), (count, "") if count > 0));
+                    relative.is_some_and(|rule| matches!(rule.leading(&import.text), (count, "") if count > 0));
                 if folder_only && !brought.is_empty() {
-                    written.extend(brought.iter().map(|name| (format!("{import}{name}"), global, at)));
+                    written.extend(
+                        brought.iter().map(|name| Written { text: format!("{}{name}", import.text), ..import.clone() }),
+                    );
                 } else {
-                    written.push((import, global, at));
+                    written.push(import);
                 }
             }
 
@@ -555,15 +571,29 @@ impl Analyzer {
         let quiet: Spans = decorations.union(&import_spans).copied().collect();
         (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at, &name_kinds, &self.name);
 
+        // O import escrito ao menos uma vez dentro de um módulo do arquivo
+        // guarda todas as linhas em que é escrito: é por elas que o grafo sabe
+        // de quantos módulos cada uma sai antes de subir pasta.
+        let inside = |line: usize| out.module_lines.iter().any(|&(first, last)| (first..=last).contains(&line));
+        let nested: BTreeSet<&str> = written.iter().filter(|w| inside(w.line)).map(|w| w.text.as_str()).collect();
+        let mut import_lines: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for w in written.iter().filter(|w| nested.contains(w.text.as_str())) {
+            import_lines.entry(w.text.clone()).or_default().push(w.line);
+        }
+        for lines in import_lines.values_mut() {
+            lines.sort();
+            lines.dedup();
+        }
+        out.import_lines = import_lines;
         // O import escrito dentro de um trecho de teste é do teste, e fica à
         // parte dos do arquivo.
-        for (import, global, at) in written {
-            if test_blocks.iter().any(|&(start, end)| (start..end).contains(&at)) {
-                out.test_imports.push(import);
+        for Written { text, global, byte, .. } in written {
+            if test_blocks.iter().any(|&(start, end)| (start..end).contains(&byte)) {
+                out.test_imports.push(text);
             } else if global {
-                out.global_imports.push(import);
+                out.global_imports.push(text);
             } else {
-                out.imports.push(import);
+                out.imports.push(text);
             }
         }
         out.imports.sort();
@@ -574,9 +604,27 @@ impl Analyzer {
         out.test_imports.dedup();
         out.test_lines.sort();
         out.test_lines.dedup();
+        out.module_lines.sort();
+        out.module_lines.dedup();
         out.namespaces.sort();
         out.namespaces.dedup();
         out
+    }
+}
+
+/// Um import como foi escrito no arquivo: o texto já limpo, se ele vale para
+/// mais arquivos que o que o escreve, e o byte e a linha em que começa.
+#[derive(Clone)]
+struct Written {
+    text: String,
+    global: bool,
+    byte: usize,
+    line: usize,
+}
+
+impl Written {
+    fn at(text: String, global: bool, node: Node) -> Written {
+        Written { text, global, byte: node.start_byte(), line: node.start_position().row + 1 }
     }
 }
 

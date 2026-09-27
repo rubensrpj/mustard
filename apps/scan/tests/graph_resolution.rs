@@ -28,6 +28,10 @@
 //!     do arquivo que responde pela própria pasta (`src/k/mod.rs`) e por um
 //!     caminho que não nomeia nada do projeto (`crate::nada::f()`, ao lado de
 //!     um `src/a/nada.rs`).
+//!     E `graph_rust_inner_module/`: `super` escrito dentro de um módulo do
+//!     próprio arquivo (`mod interno { }` de `src/a.rs`) e dentro do trecho de
+//!     teste, que sai do módulo antes de subir pasta, também na passada que
+//!     reaproveita o arquivo sem relê-lo.
 //!
 //! Characterization baseline (recorded on the code BEFORE the resolution fix):
 //! csharp, typescript and go already produced edges; python, rust and php
@@ -415,4 +419,146 @@ fn a_crate_path_that_names_nothing_does_not_link_by_the_end_of_another_path() {
     let v = scan_fixture_labeled("rs-no-target", "graph_rust_qualified");
     assert_eq!(imports_of(&v, "src/sem_alvo.rs"), vec!["crate::nada".to_string()]);
     assert_eq!(deps_of(&v, "src/sem_alvo.rs"), Vec::<String>::new());
+}
+
+/// O que o mapa grava em `key` para o arquivo `path`, como lista de textos.
+fn list_of(v: &serde_json::Value, path: &str, key: &str) -> Vec<String> {
+    let module = v["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .find(|m| m["path"] == path)
+        .unwrap_or_else(|| panic!("{path} está no mapa"));
+    module[key]
+        .as_array()
+        .map(|items| items.iter().map(|i| i.as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Quem usa a declaração `name` do arquivo `path`, como o mapa grava.
+fn used_by_of(v: &serde_json::Value, path: &str, name: &str) -> Vec<String> {
+    let module = v["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .find(|m| m["path"] == path)
+        .unwrap_or_else(|| panic!("{path} está no mapa"));
+    let decl = module["declarations"]
+        .as_array()
+        .expect("declarations")
+        .iter()
+        .find(|d| d["name"] == name)
+        .unwrap_or_else(|| panic!("{name} está em {path}"));
+    decl["used_by"]
+        .as_array()
+        .map(|items| items.iter().map(|i| i.as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// O `super` escrito dentro de um módulo do próprio arquivo sai desse módulo e
+/// fica no arquivo: `super::valor()` dentro de `mod interno { }` de `src/a.rs`
+/// é o `valor` de `src/a.rs`, e não o `valor` homônimo de `src/main.rs`, onde o
+/// caminho cairia se subisse pasta direto.
+fn assert_super_inside_a_module_stays_in_the_file(v: &serde_json::Value) {
+    assert_eq!(used_by_of(v, "src/a.rs", "valor"), vec!["src/a.rs:7:perto".to_string()]);
+    assert_eq!(used_by_of(v, "src/main.rs", "valor"), Vec::<String>::new());
+    assert!(!deps_of(v, "src/a.rs").contains(&"src/main.rs".to_string()), "{:?}", deps_of(v, "src/a.rs"));
+}
+
+/// O segundo `super` escrito dentro do mesmo módulo é o que sobe pasta:
+/// `super::super::x::dobro()` liga `src/a.rs` a `src/x.rs`.
+fn assert_second_super_inside_a_module_climbs_one_folder(v: &serde_json::Value) {
+    assert_eq!(deps_of(v, "src/a.rs"), vec!["src/x.rs".to_string()]);
+}
+
+/// O `use super::*` do trecho de teste é o próprio arquivo: não vira arquivo
+/// coberto pelo teste, e o arquivo de cima não ganha o teste.
+fn assert_super_of_the_test_block_stays_in_the_file(v: &serde_json::Value) {
+    assert_eq!(list_of(v, "src/a.rs", "test_imports"), vec!["super::*".to_string()]);
+    assert_eq!(list_of(v, "src/a.rs", "test_deps"), Vec::<String>::new());
+    assert_eq!(list_of(v, "src/main.rs", "tests"), Vec::<String>::new());
+}
+
+#[test]
+fn super_inside_a_module_of_the_file_links_to_the_file_itself() {
+    let v = scan_fixture_labeled("rs-inner-super", "graph_rust_inner_module");
+    assert_super_inside_a_module_stays_in_the_file(&v);
+}
+
+#[test]
+fn super_super_inside_a_module_of_the_file_climbs_one_folder() {
+    let v = scan_fixture_labeled("rs-inner-super-super", "graph_rust_inner_module");
+    assert_second_super_inside_a_module_climbs_one_folder(&v);
+}
+
+#[test]
+fn super_of_the_test_block_stays_in_the_file() {
+    let v = scan_fixture_labeled("rs-inner-test-block", "graph_rust_inner_module");
+    assert_super_of_the_test_block_stays_in_the_file(&v);
+}
+
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        if from.is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).unwrap();
+        }
+    }
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(["-c", "user.email=scan@example.com", "-c", "user.name=scan", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// Roda o scan dentro do projeto e devolve o mapa gravado e o relato da
+/// passada.
+fn scan_in_place(dir: &std::path::Path) -> (serde_json::Value, serde_json::Value) {
+    let model = dir.join(".claude").join("grain.model.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args(["scan", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
+        .output()
+        .expect("run scan");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let report = serde_json::from_str(stdout.lines().last().unwrap_or("{}")).expect("o relato é uma linha JSON");
+    (serde_json::from_str(&std::fs::read_to_string(&model).unwrap()).unwrap(), report)
+}
+
+/// A passada que reaproveita `src/a.rs` sem relê-lo sabe o mesmo que a
+/// leitura inteira: os módulos do arquivo e as linhas dos imports escritos
+/// neles ficam no mapa.
+#[test]
+fn a_pass_that_keeps_the_file_knows_the_same_modules_of_the_file() {
+    let temp = tempfile::Builder::new().prefix("scan-graph-rs-inner-reuse-").tempdir().unwrap();
+    let dir = temp.path();
+    copy_tree(&fixture("graph_rust_inner_module"), dir);
+    git(dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    let (first, report) = scan_in_place(dir);
+    assert_eq!(report["full"], serde_json::Value::Bool(true), "{report}");
+
+    let main = std::fs::read_to_string(dir.join("src/main.rs")).unwrap();
+    std::fs::write(dir.join("src/main.rs"), format!("{main}\npub fn outra() {{}}\n")).unwrap();
+    git(dir, &["commit", "-q", "-am", "segundo"]);
+    let (second, report) = scan_in_place(dir);
+    assert_eq!(report["read"], serde_json::json!(["src/main.rs"]), "só o que mudou é relido: {report}");
+
+    for v in [&first, &second] {
+        assert_super_inside_a_module_stays_in_the_file(v);
+        assert_second_super_inside_a_module_climbs_one_folder(v);
+        assert_super_of_the_test_block_stays_in_the_file(v);
+    }
 }

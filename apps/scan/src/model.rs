@@ -9,6 +9,7 @@ use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -167,6 +168,19 @@ pub struct Module {
     /// não relê o arquivo saiba o mesmo.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_lines: Vec<(usize, usize)>,
+    /// As linhas, da primeira à última, de cada módulo com corpo escrito
+    /// dentro do arquivo, o trecho de teste incluído. O caminho escrito dentro
+    /// de N deles que começa pelo `parent_alias` da língua sai primeiro desses
+    /// N módulos, e só depois sobe pasta. Guardadas com o módulo, para que a
+    /// passada que não relê o arquivo saiba o mesmo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_lines: Vec<(usize, usize)>,
+    /// As linhas em que o arquivo escreve cada import que ele escreve ao menos
+    /// uma vez dentro de um dos seus módulos ([`Module::module_lines`]), todas
+    /// elas, dentro e fora. O import que não está aqui só é escrito fora de
+    /// qualquer módulo do arquivo.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub import_lines: BTreeMap<String, Vec<usize>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     /// Machine-written class, when one applies: "generated" | "vendored" |
@@ -219,6 +233,29 @@ impl Module {
     /// A linha cai num trecho de teste do arquivo ([`Module::test_lines`]).
     pub fn is_test_line(&self, line: usize) -> bool {
         self.test_lines.iter().any(|&(first, last)| (first..=last).contains(&line))
+    }
+
+    /// Em quantos módulos escritos dentro do arquivo
+    /// ([`Module::module_lines`]) a linha cai.
+    pub fn module_depth(&self, line: usize) -> usize {
+        self.module_lines.iter().filter(|&&(first, last)| (first..=last).contains(&line)).count()
+    }
+
+    /// Dentro de quantos módulos do arquivo o import é escrito, uma vez por
+    /// profundidade diferente ([`Module::import_lines`]). Contam só as linhas
+    /// do trecho de teste quando `in_test`, e só as de fora dele no resto,
+    /// como o import se reparte entre `test_imports` e `imports`. Zero quando
+    /// o import só é escrito fora de qualquer módulo.
+    pub fn import_depths(&self, import: &str, in_test: bool) -> BTreeSet<usize> {
+        let depths: BTreeSet<usize> = self
+            .import_lines
+            .get(import)
+            .into_iter()
+            .flatten()
+            .filter(|&&line| self.is_test_line(line) == in_test)
+            .map(|&line| self.module_depth(line))
+            .collect();
+        if depths.is_empty() { BTreeSet::from([0]) } else { depths }
     }
 }
 
