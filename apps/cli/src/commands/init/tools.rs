@@ -19,6 +19,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use mustard_core::platform::process;
+
 /// Whether `rtk --version` succeeds (RTK reachable on PATH).
 fn rtk_on_path() -> bool {
     Command::new("rtk")
@@ -110,6 +112,7 @@ fn rg_on_path() -> bool {
 /// command exited successfully. Every spawn failure is swallowed.
 ///
 /// - Windows: try `scoop install ripgrep` first, then `cargo install ripgrep`.
+///   O `scoop` é `scoop.cmd`: roda pelo arquivo que o `PATH` tem para ele.
 /// - Unix: return `false` so the caller prints manual instructions.
 fn install_ripgrep() -> bool {
     let run_ok = |cmd: &mut Command| -> bool {
@@ -117,10 +120,10 @@ fn install_ripgrep() -> bool {
     };
 
     if cfg!(windows) {
-        if run_ok(Command::new("scoop").args(["install", "ripgrep"])) {
+        if run_ok(process::command("scoop").args(["install", "ripgrep"])) {
             return true;
         }
-        return run_ok(Command::new("cargo").args(["install", "ripgrep"]));
+        return run_ok(process::command("cargo").args(["install", "ripgrep"]));
     }
     false
 }

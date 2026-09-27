@@ -79,6 +79,9 @@ grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.6" }
 # Each test builds its project in a TempDir, which deletes the folder when it
 # goes out of scope — also when the test panics (the workspace keeps unwinding).
 tempfile = { workspace = true }
+# Os testes do texto de dentro das peças leem o índice de busca direto no
+# banco do mapa: ele se refaz das tabelas e a porta do mapa não o devolve.
+rusqlite = { workspace = true }
 
 [build-dependencies]
 # Used only at build time to read the external language registry and embed the

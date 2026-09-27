@@ -1,0 +1,27 @@
+# As rotas do NestJS. O nome deste arquivo é o nome do framework; a consulta
+# que acha as rotas está em `nestjs/routes.scm`, e o que cada captura dela diz,
+# em `src/routes.rs`. O caminho da rota junta o prefixo do `@Controller('…')`
+# da classe e o do decorador do método (`@Get(':id')`, `@Post('edit')`).
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`@nestjs/common/…`).
+# - `methods`: o nome do decorador e o método HTTP que ele diz; `"*"` é
+#   qualquer método. O decorador fora da tabela não faz rota.
+# - `param_prefixes`: o começo do pedaço de caminho que é parâmetro (`:id`).
+
+language = ["typescript", "tsx"]
+imports = ["@nestjs/common"]
+param_prefixes = [":"]
+
+[methods]
+Get = "GET"
+Post = "POST"
+Put = "PUT"
+Patch = "PATCH"
+Delete = "DELETE"
+Head = "HEAD"
+Options = "OPTIONS"
+All = "*"

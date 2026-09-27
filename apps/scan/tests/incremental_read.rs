@@ -225,6 +225,40 @@ fn a_name_the_code_binds_itself_links_the_same_when_only_another_file_changed() 
     same_as_a_full_pass(dir);
 }
 
+/// A chamada pelo caminho da biblioteca (`std::fs::read_to_string`) não liga
+/// à função de mesmo nome da pasta `fs` do projeto, também na passada que lê
+/// só o que mudou: o caminho do arquivo não relido fica com ele no mapa.
+#[test]
+fn a_call_through_a_library_path_links_the_same_when_only_another_file_changed() {
+    let temp = project(
+        "scan-incremental-library-path-",
+        &[
+            ("src/lib.rs", "pub mod io;\npub mod leitor;\npub mod outro;\n"),
+            ("src/io/mod.rs", "pub mod fs;\n"),
+            ("src/io/fs/mod.rs", "pub fn read_to_string(_: &str) -> String {\n    String::new()\n}\n"),
+            (
+                "src/leitor.rs",
+                "use crate::io::fs;\n\npub fn pelo_projeto() -> String {\n    fs::read_to_string(\"a\")\n}\n\n\
+                 pub fn pela_biblioteca() -> String {\n    std::fs::read_to_string(\"b\").unwrap()\n}\n",
+            ),
+            ("src/outro.rs", "pub fn outro() {}\n"),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    write(dir, "src/outro.rs", "pub fn outro() {}\npub fn mais() {}\n");
+    git(dir, &["commit", "-q", "-am", "second"]);
+    let second = scan(dir, &[]);
+    assert_eq!(second["read"], json!(["src/outro.rs"]), "{second}");
+
+    let model = model::read(&map_folder(dir));
+    let module = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/io/fs/mod.rs")).unwrap().clone();
+    let decl = module["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!("read_to_string")).unwrap().clone();
+    assert_eq!(decl["used_by"], json!(["src/leitor.rs:4:pelo_projeto"]), "the library call does not link");
+    same_as_a_full_pass(dir);
+}
+
 /// Um projeto git com o mapa fora dele, como a instalação o deixa, e um
 /// commit com `files`.
 fn project(prefix: &str, files: &[(&str, &str)]) -> tempfile::TempDir {

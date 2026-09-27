@@ -15,6 +15,12 @@
 #   name          display id, stored on each module (e.g. shown in the JSON model)
 #   extensions    file extensions that select this language (no leading dot)
 #   dir           subdirectory under queries/ holding this language's .scm files
+#   extra_queries OPTIONAL — mais uma pasta sob queries/, cujos .scm entram só
+#                 na consulta desta entrada, depois dos de `dir`. Serve à
+#                 entrada que divide o `dir` (e a família) com outra, mas cuja
+#                 gramática tem nós que a outra não tem: o padrão com esses
+#                 nós na pasta comum seria pulado na outra. A pasta precisa
+#                 existir, ou a compilação para.
 #   grammar       Rust expression yielding the grammar's tree-sitter LanguageFn;
 #                 build.rs emits it verbatim, so the crate symbol never appears in src/.
 #   root_aliases  OPTIONAL — leading import segments that alias the package root
@@ -24,7 +30,9 @@
 #                 import can never be mistaken for an internal module. O
 #                 caminho de uma chamada qualificada (`@call.path`) só vira
 #                 import do arquivo quando começa por um destes ou pelo
-#                 `parent_alias`.
+#                 `parent_alias`. O outro, de duas partes ou mais, fica com a
+#                 chamada; quando a raiz dele não é peça do projeto, a
+#                 chamada é da biblioteca e não liga ao projeto.
 #   parent_alias  OPTIONAL — o nome que, no começo de um caminho qualificado,
 #                 sobe um módulo (`super` em `super::x::f()`). O primeiro é a
 #                 pasta de quem importa, e cada um a mais sobe uma pasta, como
@@ -176,6 +184,7 @@ error_forms = ["throw", "*Error", "*Exception", "reject"]
 name = "tsx"
 extensions = ["tsx"]
 dir = "typescript"
+extra_queries = "tsx"
 grammar = "grammar_ts::LANGUAGE_TSX"
 self_receivers = ["this"]
 import_extensions = ["js", "jsx", "mjs", "cjs"]

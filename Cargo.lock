@@ -1058,6 +1058,7 @@ dependencies = [
  "mustard-core",
  "petgraph",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "streaming-iterator",

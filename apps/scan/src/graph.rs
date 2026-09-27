@@ -329,6 +329,11 @@ pub(crate) const CITED_KINDS: &[&str] =
 ///   liga só às declarações desses arquivos: o próprio arquivo só entra
 ///   quando o caminho o nomeia (`super::valor()` dentro de um módulo do
 ///   arquivo).
+/// - O caminho de duas partes ou mais que não virou import
+///   (`Module::other_call_paths`) cuja raiz não é peça do projeto — nenhum
+///   apelido, pacote, arquivo ou pasta dele, nem nome que um import do
+///   projeto trouxe — é da biblioteca: a chamada escrita por ele não liga a
+///   nada do projeto (`std::fs::read()` com uma pasta `fs` no projeto).
 /// - O nome sozinho não alcança método, campo nem membro de enum, a não ser na
 ///   língua que chama o membro do próprio objeto sem escrevê-lo
 ///   (`implicit_self` no registro): nas outras, o `Ok(` escrito sozinho é o
@@ -584,6 +589,21 @@ fn resolve_declaration_links(
                 through.entry(call).or_default().push(path.as_str());
             }
         }
+        // Cada chamada escrita por um caminho de duas partes ou mais cuja
+        // raiz não é peça do projeto (`std::fs::read()`): nenhum apelido,
+        // pacote, arquivo ou pasta dele, nem nome que um import do projeto
+        // trouxe. Ela é da biblioteca, e não liga ao projeto.
+        let by_library: BTreeSet<&CallSite> = m
+            .other_call_paths
+            .iter()
+            .filter(|(path, _)| {
+                let canon = canon_segments(path, &m.language);
+                let first = canon.split('/').next().unwrap_or_default();
+                let brought_inside = brought.contains(first) && !outside.contains(first);
+                !brought_inside && resolver.outside(path, m)
+            })
+            .flat_map(|(_, written)| written)
+            .collect();
         let sites = m
             .calls
             .iter()
@@ -621,7 +641,7 @@ fn resolve_declaration_links(
                 && !(m.declarations.iter().any(|d| d.name == site.name)
                     || brought.contains(site.name.as_str())
                     || all.iter().any(|&(mi, _)| globbed.contains(&modules[mi].path)));
-            let not_ours = from_outside || of_the_language;
+            let not_ours = from_outside || of_the_language || (is_call && by_library.contains(site));
             // Estreita pelo que vem antes do nome: o arquivo que o
             // qualificador nomeia (só o que fica fora de todo tipo nele) ou
             // o tipo que ele nomeia, ou os membros do tipo em que a chamada

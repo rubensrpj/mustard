@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{
@@ -15,6 +15,7 @@ use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::recorded_copy;
 use mustard_core::platform::git as git_exec;
 use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::platform::process;
 use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
@@ -215,10 +216,11 @@ fn dotnet_project(root: &Path) -> Option<String> {
     sln.or(csproj)
 }
 
-/// Roda um programa na raiz do projeto; `false` quando ele não está lá ou
+/// Roda um programa na raiz do projeto, pelo arquivo que o `PATH` tem para
+/// ele (no Windows, o `npx.cmd` do `npx`); `false` quando ele não está lá ou
 /// saiu com erro.
 fn run(root: &Path, program: &str, args: &[&str]) -> bool {
-    Command::new(program)
+    process::command(program)
         .args(args)
         .current_dir(root)
         .stdin(Stdio::null())
@@ -906,6 +908,8 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use mustard_core::io::project_map;
     use mustard_core::io::spec_events as store;
     use tempfile::tempdir;

@@ -43,6 +43,9 @@ pub const MAX_COMMITS: usize = 5000;
 /// Quantos arquivos que mudam junto a resposta mostra.
 pub const TOGETHER_SHOWN: usize = 5;
 
+/// Quantos títulos de commit do arquivo a resposta mostra, dos mais novos.
+pub const TITLES_SHOWN: usize = 3;
+
 /// O tamanho máximo do resumo do início da sessão, em bytes.
 pub const SUMMARY_MAX_BYTES: usize = 3 * 1024;
 
@@ -62,13 +65,16 @@ pub struct History {
     pub commits: Vec<Commit>,
 }
 
-/// Um commit guardado: o começo do hash, a data (segundos desde 1970) e os
-/// arquivos que ele criou e os que ele mudou, pelo número na tabela.
+/// Um commit guardado: o começo do hash, a data (segundos desde 1970), o
+/// título e os arquivos que ele criou e os que ele mudou, pelo número na
+/// tabela.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Commit {
     pub id: String,
     pub at: i64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub added: Vec<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -80,6 +86,7 @@ pub struct Commit {
 pub struct RawCommit {
     pub id: String,
     pub at: i64,
+    pub title: String,
     pub added: Vec<String>,
     pub changed: Vec<String>,
 }
@@ -118,7 +125,13 @@ impl History {
         };
         let commits = commits
             .iter()
-            .map(|c| Commit { id: c.id.clone(), at: c.at, added: numbers(&c.added), changed: numbers(&c.changed) })
+            .map(|c| Commit {
+                id: c.id.clone(),
+                at: c.at,
+                title: c.title.clone(),
+                added: numbers(&c.added),
+                changed: numbers(&c.changed),
+            })
             .collect();
         Self { paths, commits }
     }
@@ -132,7 +145,13 @@ impl History {
         };
         self.commits
             .iter()
-            .map(|c| RawCommit { id: c.id.clone(), at: c.at, added: name(&c.added), changed: name(&c.changed) })
+            .map(|c| RawCommit {
+                id: c.id.clone(),
+                at: c.at,
+                title: c.title.clone(),
+                added: name(&c.added),
+                changed: name(&c.changed),
+            })
             .collect()
     }
 
@@ -156,6 +175,10 @@ pub struct FileHistory {
     pub last_commit: String,
     /// Os arquivos que mais mudam junto com ele, com quantas vezes.
     pub together: Vec<(String, u32)>,
+    /// Os títulos dos commits mais novos que o citam, até [`TITLES_SHOWN`],
+    /// do mais novo para o mais antigo. O commit guardado sem título fica de
+    /// fora.
+    pub titles: Vec<String>,
 }
 
 /// O histórico de um arquivo, ou `None` quando nenhum commit guardado o cita.
@@ -187,6 +210,15 @@ pub fn file_history(history: &History, path: &str) -> Option<FileHistory> {
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     ranked.truncate(TOGETHER_SHOWN);
     out.together = ranked;
+    out.titles = history
+        .commits
+        .iter()
+        .rev()
+        .filter(|commit| !commit.title.is_empty())
+        .filter(|commit| commit.added.binary_search(&index).is_ok() || commit.changed.binary_search(&index).is_ok())
+        .take(TITLES_SHOWN)
+        .map(|commit| commit.title.clone())
+        .collect();
     Some(out)
 }
 
@@ -1303,6 +1335,7 @@ mod tests {
         RawCommit {
             id: id.to_string(),
             at,
+            title: String::new(),
             added: added.iter().map(|p| (*p).to_string()).collect(),
             changed: changed.iter().map(|p| (*p).to_string()).collect(),
         }

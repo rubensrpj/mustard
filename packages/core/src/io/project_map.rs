@@ -268,14 +268,16 @@ pub const FILES: MapBlock = block!("files", version 2, {
 });
 
 /// As declarações e os textos delas: o arquivo, o tipo, o nome, as linhas, a
-/// assinatura, a documentação e quem usa cada uma — cada uso provado ou
-/// suspeito, com as candidatas, e quantas chamadas do nome ficaram sem
-/// ligação por ele ser comum demais; o dono e o contrato
+/// assinatura, a documentação — e a inteira, quando o teto a cortou —, os
+/// comentários e os nomes escritos nas linhas dela, e quem usa cada uma —
+/// cada uso provado ou suspeito, com as candidatas, e quantas chamadas do
+/// nome ficaram sem ligação por ele ser comum demais; o dono e o contrato
 /// escritos com ela; os membros de cada tipo e as implementações de cada
 /// método, que a passada refaz do projeto inteiro como refaz os usos. Ao
 /// lado, os textos fixos de cada arquivo — as mensagens de log, as de erro e
 /// os outros textos escritos no código —, cada um com a linha, a marca e a
-/// declaração que o contém.
+/// declaração que o contém, e os comentários do arquivo: os do começo e os
+/// outros.
 ///
 /// Junto delas mora o índice da busca do mapa ([`crate::io::map_search`]):
 /// uma tabela FTS5 por nível — a declaração e o arquivo —, uma coluna por
@@ -283,37 +285,47 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// tamanho de cada campo, em palavras; os nomes das declarações numa tabela
 /// trigram, para o pedaço do nome; as línguas e as médias com que ele foi
 /// feito; e o índice do nome sem caixa. As listas saem antes das tabelas de
-/// que elas leem.
-pub const DECLS: MapBlock = block!("decls", version 5, {
+/// que elas leem. Os campos que a busca sem filtro lê vêm primeiro; os do
+/// texto de dentro das peças vêm depois, e ela não os lê.
+pub const DECLS: MapBlock = block!("decls", version 6, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
-        "signature" Text, "doc" Text, "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
+        "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,
+        "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
         "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
     ],
-    "texts" at Place::Files => ["path" Text, "texts" Json]
+    "texts" at Place::Files => ["path" Text, "texts" Json, "file_doc" Text, "file_comment" Text]
 }, index [
     "file_vocab", "decl_vocab", "file_fts", "decl_fts", "decl_trigram", "file_lengths", "decl_lengths", "search_meta"
 ] "CREATE INDEX decls_name_nocase ON decls(name COLLATE NOCASE);\
-   CREATE VIRTUAL TABLE file_fts USING fts5(name, path, doc, log, error, text, content='', contentless_delete=1, \
-     tokenize='unicode61 remove_diacritics 2');\
-   CREATE VIRTUAL TABLE decl_fts USING fts5(name, path, signature, doc, log, error, text, content='', \
+   CREATE VIRTUAL TABLE file_fts USING fts5(name, path, doc, log, error, text, file_doc, file_comment, content='', \
      contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
+   CREATE VIRTUAL TABLE decl_fts USING fts5(name, path, signature, doc, log, error, text, whole_doc, body_comment, \
+     body_names, body_calls, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
    CREATE VIRTUAL TABLE file_vocab USING fts5vocab(file_fts, instance);\
    CREATE VIRTUAL TABLE decl_vocab USING fts5vocab(decl_fts, instance);\
    CREATE VIRTUAL TABLE decl_trigram USING fts5(name, file UNINDEXED, tokenize='trigram');\
    CREATE TABLE file_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, doc INTEGER, log INTEGER, \
-     error INTEGER, text INTEGER);\
+     error INTEGER, text INTEGER, file_doc INTEGER, file_comment INTEGER);\
    CREATE TABLE decl_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, signature INTEGER, doc INTEGER, \
-     log INTEGER, error INTEGER, text INTEGER);\
+     log INTEGER, error INTEGER, text INTEGER, whole_doc INTEGER, body_comment INTEGER, body_names INTEGER, \
+     body_calls INTEGER);\
    CREATE TABLE search_meta(key TEXT PRIMARY KEY, value);");
 
+/// As rotas do servidor de cada arquivo: o método, o caminho padronizado e o
+/// escrito, a função que atende cada uma e a linha dela, e o framework cuja
+/// regra a achou.
+pub const ROUTES: MapBlock = block!("routes", version 1, {
+    "routes" at Place::Files => ["path" Text, "routes" Json]
+});
+
 /// O grafo: as importações resolvidas, os testes que cobrem cada arquivo, as
-/// chamadas e as citações com a linha, os nomes que cada import traz, e os
-/// arquivos mais importados.
-pub const GRAPH: MapBlock = block!("graph", version 2, {
+/// chamadas e as citações com a linha, os caminhos escritos antes das
+/// chamadas, os nomes que cada import traz, e os arquivos mais importados.
+pub const GRAPH: MapBlock = block!("graph", version 3, {
     "links" at Place::Files => [
         "path" Text, "deps" Json, "test_deps" Json, "tests" Json, "calls" Json, "cites" Json, "call_paths" Json,
-        "brought" Json
+        "other_call_paths" Json, "brought" Json
     ],
     "graph" at Place::One => ["nodes" Int ["graph", "nodes"], "edges" Int ["graph", "edges"]],
     "fan_in" at list(&["graph", "top_fan_in"]) => ["module" Text, "degree" Int],
@@ -322,20 +334,20 @@ pub const GRAPH: MapBlock = block!("graph", version 2, {
 });
 
 /// A história do git: os caminhos numa tabela, em ordem, e os commits
-/// apontando para ela.
-pub const HISTORY: MapBlock = block!("history", version 1, {
+/// apontando para ela, cada um com o título.
+pub const HISTORY: MapBlock = block!("history", version 2, {
     "history_paths" at Place::List { at: &["history", "paths"], keep: false } => ["path" Text []],
     "commits" at Place::List { at: &["history", "commits"], keep: false } => [
-        "id" Text, "at" Int, "added" Json, "changed" Json
+        "id" Text, "at" Int, "title" Text, "added" Json, "changed" Json
     ]
 });
 
 /// Os blocos do mapa, na ordem em que se leem: os arquivos antes das
-/// declarações e das ligações deles.
-pub const BLOCKS: [MapBlock; 5] = [CENSUS, FILES, DECLS, GRAPH, HISTORY];
+/// declarações, das rotas e das ligações deles.
+pub const BLOCKS: [MapBlock; 6] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY];
 
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 5] = [CENSUS.block, FILES.block, DECLS.block, GRAPH.block, HISTORY.block];
+const DB_BLOCKS: [Block; 6] = [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -723,10 +735,16 @@ fn fan_in(conn: &Connection) -> Result<Vec<MapDegree>> {
 
 fn history(conn: &Connection) -> Result<History> {
     let paths = picked(conn, "history_paths", &["path"], "", &[])?.iter().map(|row| text_cell(&row[0])).collect();
-    let commits = picked(conn, "commits", &["id", "at", "added", "changed"], "", &[])?
+    let commits = picked(conn, "commits", &["id", "at", "title", "added", "changed"], "", &[])?
         .iter()
         .map(|row| {
-            Ok(Commit { id: text_cell(&row[0]), at: int_cell(&row[1]), added: json_cell(&row[2])?, changed: json_cell(&row[3])? })
+            Ok(Commit {
+                id: text_cell(&row[0]),
+                at: int_cell(&row[1]),
+                title: text_cell(&row[2]),
+                added: json_cell(&row[3])?,
+                changed: json_cell(&row[4])?,
+            })
         })
         .collect::<Result<_>>()?;
     Ok(History { paths, commits })
@@ -1350,9 +1368,9 @@ fn json_of(table: &Table, column: &Column, value: &Sql) -> std::result::Result<O
 /// mudaram se regrava, e todos os que mudaram numa transação só: quem lê
 /// nunca vê um pela metade. Devolve `true` quando gravou; com tudo igual,
 /// `false`, e o arquivo fica como estava. Um arquivo em `model` que não é um
-/// banco é trocado pelo mapa. Regravados os arquivos ou as declarações, o
-/// índice de busca se refaz na mesma transação, com as palavras preparadas
-/// nas línguas `languages`.
+/// banco é trocado pelo mapa. Regravados os arquivos, as declarações ou as
+/// ligações, o índice de busca se refaz na mesma transação, com as palavras
+/// preparadas nas línguas `languages`.
 ///
 /// # Errors
 ///
@@ -1365,8 +1383,8 @@ pub fn save_at(model: &Path, map: &Value, mark: &str, languages: &Languages) -> 
 /// Grava só o bloco `block` de `map` no banco em `model`, com a marca
 /// `mark`, como [`save_at`]; os outros blocos ficam como estão, com as marcas
 /// deles. É a passada do scan que só refaz o censo. Sem as línguas, o bloco
-/// dos arquivos ou das declarações gravado assim deixa o índice de busca
-/// para a primeira busca refazer.
+/// dos arquivos, das declarações ou das ligações gravado assim deixa o
+/// índice de busca para a primeira busca refazer.
 ///
 /// # Errors
 ///
@@ -1382,7 +1400,8 @@ type BlockRows = Vec<Vec<Row>>;
 
 /// Grava as linhas `fresh` de cada bloco que elas trazem, com a marca
 /// `mark`; o bloco que ficou igual, com a mesma marca, não se regrava.
-/// Regravados os arquivos ou as declarações, o índice de busca se refaz nas
+/// Regravado um bloco de que o índice de busca lê — os arquivos, as
+/// declarações ou as ligações, onde moram as chamadas —, ele se refaz nas
 /// línguas `languages`; sem elas, fica sem línguas, e a primeira busca o
 /// refaz nas dela.
 fn save_rows<'b>(
@@ -1426,7 +1445,7 @@ fn save_rows<'b>(
             }
             map_db::set_mark(tx, block.name(), mark)?;
         }
-        if changed.iter().any(|(block, _)| [FILES.name(), DECLS.name()].contains(&block.name())) {
+        if changed.iter().any(|(block, _)| [FILES.name(), DECLS.name(), GRAPH.name()].contains(&block.name())) {
             match languages {
                 Some(languages) => map_search::rebuild(tx, languages)?,
                 None => map_search::forget(tx)?,
@@ -1719,14 +1738,19 @@ mod tests {
                  "test_lines": [[8, 10]], "import_lines": {"crate::b": [1]}, "has_tests": true,
                  "declarations": [
                     {"kind": "function", "name": "alpha", "line": 1, "end_line": 3, "supertypes": [],
-                     "doc": "Soma um.", "signature": "fn alpha(s: &str) -> \"a\\b\"\n\t\u{1} ação", "used_by": ["src/b.rs:2:beta"]},
+                     "doc": "Soma um.", "whole_doc": "Soma um. E devolve o total.", "body_comment": "o total vem de beta",
+                     "body_names": "alpha s beta", "signature": "fn alpha(s: &str) -> \"a\\b\"\n\t\u{1} ação",
+                     "used_by": ["src/b.rs:2:beta"]},
                     {"kind": "struct", "name": "Alpha", "line": 5, "end_line": 6, "supertypes": ["Base"],
                      "members": ["src/a.rs:7:run"]},
                     {"kind": "method", "name": "run", "line": 7, "end_line": 7, "owner": ["Alpha"], "contract": ["Base"],
                      "implements": ["src/b.rs:3:run"], "implemented_by": ["src/c.rs:9:run"]}
                  ],
                  "deps": ["src/b.rs"], "calls": ["beta:2", "b.beta:4"], "call_paths": {"crate::b": ["beta:4"]},
-                 "brought": {"std::fs::{self}": ["fs"]}},
+                 "other_call_paths": {"std::fs": ["fs.read:5"]}, "brought": {"std::fs::{self}": ["fs"]},
+                 "routes": [{"method": "GET", "path": "pedidos/{}", "written": "/pedidos/:id", "handler": "alpha", "line": 1,
+                             "framework": "axum"}],
+                 "file_doc": "O leitor dos pedidos.", "file_comment": "o total vem de beta"},
                 {"path": "src/b.rs", "language": "rust", "loc": 20, "imports": ["crate::a"], "namespaces": [],
                  "declarations": [], "file_class": "generated", "marker": "@generated"}
             ],
@@ -1739,7 +1763,7 @@ mod tests {
             "shared_contracts": [{"name": "Base", "implementors": 3}],
             "detected_stacks": [],
             "state": {"head": "abc", "listing": "00ff-2", "inputs": {"Cargo.toml": "b1"}},
-            "history": {"paths": ["src/a.rs", "src/b.rs"], "commits": [{"id": "c1", "at": 10, "added": [0, 1]}, {"id": "c2", "at": 20, "changed": [1]}]}
+            "history": {"paths": ["src/a.rs", "src/b.rs"], "commits": [{"id": "c1", "at": 10, "title": "Cria o leitor", "added": [0, 1]}, {"id": "c2", "at": 20, "changed": [1]}]}
         })
     }
 
@@ -1781,6 +1805,9 @@ mod tests {
         );
         assert_eq!(read.graph.top_fan_in[0].module, "src/b.rs");
         assert_eq!(read.history.commits.len(), 2);
+        assert_eq!(read.history.commits[0].title, "Cria o leitor");
+        // A leitura do resumo traz o mesmo histórico, títulos inclusive.
+        assert_eq!(read_for(dir.path(), Need::Summary).unwrap().history, read.history);
     }
 
     /// Com o mesmo mapa e a mesma marca, nada se grava: o arquivo fica com os
@@ -1874,8 +1901,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "links", "graph",
-                "fan_in", "layers", "touchpoints", "history_paths", "commits", "blocks"
+                "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
+                "graph", "fan_in", "layers", "touchpoints", "history_paths", "commits", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];

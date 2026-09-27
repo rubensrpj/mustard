@@ -11,6 +11,12 @@
 //!   declarações dele e os textos fixos do arquivo inteiro, nos mesmos três
 //!   campos.
 //!
+//! Depois desses, cada nível guarda o texto de dentro das peças, em campos
+//! que a busca sem filtro não lê — a nota dela não muda com eles: da
+//! declaração, a documentação inteira, os comentários, os nomes e as
+//! chamadas escritos nas linhas dela; do arquivo, os comentários do começo e
+//! os outros.
+//!
 //! Cada texto passa pela normalização de toda busca (`domain::normalize`),
 //! nas línguas do projeto, antes de entrar: o nome colado entra quebrado
 //! (`parseGitLog` vira `parse git log`), e cada palavra entra com as suas
@@ -44,12 +50,21 @@ use crate::io::project_map::{model_path, open_existing, unreadable};
 use crate::platform::error::Result;
 
 /// Um nível do índice: a tabela FTS5, a lista de cada forma por ela, a tabela
-/// dos tamanhos e os campos, na ordem das colunas.
+/// dos tamanhos, os campos que a busca sem filtro lê e, depois deles, os que
+/// o índice guarda sem que ela os leia, na ordem das colunas.
 struct Level {
     fts: &'static str,
     vocab: &'static str,
     lengths: &'static str,
     fields: &'static [&'static str],
+    unread: &'static [&'static str],
+}
+
+impl Level {
+    /// Todas as colunas do nível: os campos lidos e, depois, os outros.
+    fn columns(&self) -> impl Iterator<Item = &'static str> {
+        self.fields.iter().chain(self.unread).copied()
+    }
 }
 
 /// O nível dos arquivos: o que a busca devolve.
@@ -58,6 +73,7 @@ const FILE_LEVEL: Level = Level {
     vocab: "file_vocab",
     lengths: "file_lengths",
     fields: &["name", "path", "doc", "log", "error", "text"],
+    unread: &["file_doc", "file_comment"],
 };
 
 /// O nível das declarações.
@@ -66,6 +82,7 @@ const DECL_LEVEL: Level = Level {
     vocab: "decl_vocab",
     lengths: "decl_lengths",
     fields: &["name", "path", "signature", "doc", "log", "error", "text"],
+    unread: &["whole_doc", "body_comment", "body_names", "body_calls"],
 };
 
 /// Os campos dos textos fixos, os últimos dos dois níveis, nesta ordem: cada
@@ -171,7 +188,9 @@ pub(crate) fn forget(conn: &Connection) -> Result<()> {
 /// arquivo; os nomes, a documentação e os textos fixos do arquivo são as
 /// palavras das declarações dele e dos textos dele, sem repetir a palavra de
 /// mesmas formas — o mesmo que preparar o texto delas junto. Cada texto fixo
-/// é também da declaração mais interna que contém a linha dele.
+/// é também da declaração mais interna que contém a linha dele; cada chamada
+/// é de toda declaração cujas linhas a contêm. A documentação inteira que o
+/// scan não guardou à parte é a mesma de `doc`.
 fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>, Vec<Decl>)> {
     let mut files: Vec<Doc> = Vec::new();
     // As palavras que o arquivo já tem nos nomes, na documentação e em cada
@@ -187,13 +206,16 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         let path = text(row, 1)?;
         let words = normalizer.forms(&path);
         at.insert(path, files.len());
-        let mut fields = vec![Vec::new(); FILE_LEVEL.fields.len()];
+        let mut fields = vec![Vec::new(); FILE_LEVEL.columns().count()];
         fields[1] = words;
         files.push(Doc { id: row.get(0)?, fields });
         seen.push(Default::default());
     }
     let mut rows_of: Vec<DeclRow> = Vec::new();
-    let mut stmt = conn.prepare("SELECT rowid, file, name, signature, doc, line, end_line FROM decls ORDER BY rowid")?;
+    let mut stmt = conn.prepare(
+        "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names \
+         FROM decls ORDER BY rowid",
+    )?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let Some(&owner) = at.get(&text(row, 1)?) else { continue };
@@ -206,6 +228,9 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             doc: text(row, 4)?,
             lines: (line(5)?, line(6)?),
             texts: vec![Vec::new(); TEXT_FIELDS.len()],
+            whole_doc: text(row, 7)?,
+            body_comment: text(row, 8)?,
+            body_names: text(row, 9)?,
         });
     }
     // Os textos de cada arquivo: as palavras vão para o arquivo e para a
@@ -214,8 +239,11 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     for (at, row) in rows_of.iter().enumerate() {
         decls_of[row.owner].push(at);
     }
-    for (path, written) in written_texts(conn)? {
+    let comments = FILE_LEVEL.fields.len();
+    for FileText { path, written, file_doc, file_comment } in written_texts(conn)? {
         let Some(&owner) = at.get(&path) else { continue };
+        files[owner].fields[comments] = normalizer.forms(&file_doc);
+        files[owner].fields[comments + 1] = normalizer.forms(&file_comment);
         for written in written {
             let words = normalizer.forms(&written.value);
             let field = written.field();
@@ -225,9 +253,11 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             }
         }
     }
+    let calls = written_calls(conn, &at, normalizer)?;
     let mut decls = Vec::new();
     for row in rows_of {
         let (name_words, doc_words) = (normalizer.forms(&row.name), normalizer.forms(&row.doc));
+        let whole_doc = if row.whole_doc.is_empty() { doc_words.clone() } else { normalizer.forms(&row.whole_doc) };
         let file = &mut files[row.owner];
         add_new(&mut file.fields[0], &mut seen[row.owner][0], &name_words);
         add_new(&mut file.fields[2], &mut seen[row.owner][1], &doc_words);
@@ -237,9 +267,44 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             add_new(&mut words, &mut HashSet::new(), &texts.concat());
             fields.push(words);
         }
+        let mut called: Words = Vec::new();
+        let (first, last) = row.lines;
+        let file_calls = calls.get(row.owner).map(Vec::as_slice).unwrap_or_default();
+        let start = file_calls.partition_point(|(line, _)| *line < first);
+        let end = file_calls.partition_point(|(line, _)| *line <= last.max(first));
+        let mut seen_calls = HashSet::new();
+        for (_, words) in &file_calls[start..end.max(start)] {
+            add_new(&mut called, &mut seen_calls, words);
+        }
+        fields.extend([whole_doc, normalizer.forms(&row.body_comment), normalizer.forms(&row.body_names), called]);
         decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id });
     }
     Ok((files, decls))
+}
+
+/// As chamadas de cada arquivo do índice, pela posição dele em `at`, cada
+/// uma com a linha e as palavras dela — o qualificador e o nome, separados —,
+/// em ordem de linha. A chamada que não se lê como `nome:linha` fica de fora.
+fn written_calls(
+    conn: &Connection,
+    at: &HashMap<String, usize>,
+    normalizer: &mut Normalizer,
+) -> Result<Vec<Vec<(u64, Words)>>> {
+    let mut out: Vec<Vec<(u64, Words)>> = vec![Vec::new(); at.len()];
+    let mut stmt = conn.prepare("SELECT path, calls FROM links ORDER BY rowid")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let Some(&owner) = at.get(&text(row, 0)?) else { continue };
+        let sites: Vec<String> = serde_json::from_str(&text(row, 1)?).unwrap_or_default();
+        let calls = &mut out[owner];
+        for site in sites {
+            let Some((head, line)) = site.rsplit_once(':') else { continue };
+            let Ok(line) = line.parse::<u64>() else { continue };
+            calls.push((line, normalizer.forms(&head.replace('.', " "))));
+        }
+        calls.sort_by_key(|(line, _)| *line);
+    }
+    Ok(out)
 }
 
 /// Uma declaração lida do mapa para o índice: o número dela, o arquivo, o
@@ -253,6 +318,10 @@ struct DeclRow {
     doc: String,
     lines: (u64, u64),
     texts: Vec<Vec<Words>>,
+    /// A documentação inteira, quando o teto de `doc` a cortou.
+    whole_doc: String,
+    body_comment: String,
+    body_names: String,
 }
 
 /// Acrescenta a `into` cada palavra de `words` que `seen` ainda não tem.
@@ -278,17 +347,28 @@ fn innermost(rows: &[DeclRow], of: &[usize], line: u64) -> Option<usize> {
     best
 }
 
-/// Os textos fixos de cada arquivo, como o scan os gravou. O arquivo cuja
-/// coluna não se lê fica sem eles.
-fn written_texts(conn: &Connection) -> Result<Vec<(String, Vec<Written>)>> {
-    let mut stmt = conn.prepare("SELECT path, texts FROM texts ORDER BY rowid")?;
+/// O texto de um arquivo como o scan o gravou: os textos fixos, os
+/// comentários do começo e os outros.
+struct FileText {
+    path: String,
+    written: Vec<Written>,
+    file_doc: String,
+    file_comment: String,
+}
+
+/// O texto de cada arquivo. O arquivo cuja coluna dos textos fixos não se lê
+/// fica sem eles.
+fn written_texts(conn: &Connection) -> Result<Vec<FileText>> {
+    let mut stmt = conn.prepare("SELECT path, texts, file_doc, file_comment FROM texts ORDER BY rowid")?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
-        let written: Vec<Written> = serde_json::from_str(&text(row, 1)?).unwrap_or_default();
-        if !written.is_empty() {
-            out.push((text(row, 0)?, written));
-        }
+        out.push(FileText {
+            path: text(row, 0)?,
+            written: serde_json::from_str(&text(row, 1)?).unwrap_or_default(),
+            file_doc: text(row, 2)?,
+            file_comment: text(row, 3)?,
+        });
     }
     Ok(out)
 }
@@ -305,12 +385,13 @@ fn text(row: &Row<'_>, at: usize) -> Result<String> {
 /// o tamanho de cada campo em palavras, e o número de documentos e o tamanho
 /// médio de cada campo em `search_meta`.
 fn fill<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d Doc>) -> Result<()> {
-    let columns = level.fields.join(", ");
-    let slots: Vec<String> = (2..=level.fields.len() + 1).map(|at| format!("?{at}")).collect();
+    let names: Vec<&str> = level.columns().collect();
+    let columns = names.join(", ");
+    let slots: Vec<String> = (2..=names.len() + 1).map(|at| format!("?{at}")).collect();
     let slots = slots.join(", ");
     let mut words = conn.prepare(&format!("INSERT INTO {}(rowid, {columns}) VALUES (?1, {slots})", level.fts))?;
     let mut lengths = conn.prepare(&format!("INSERT INTO {}(id, {columns}) VALUES (?1, {slots})", level.lengths))?;
-    let mut total = vec![0u64; level.fields.len()];
+    let mut total = vec![0u64; names.len()];
     let mut count = 0u64;
     for doc in docs {
         let mut texts = vec![Sql::Integer(doc.id)];
@@ -326,7 +407,7 @@ fn fill<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d
     }
     let mut meta = conn.prepare("INSERT INTO search_meta(key, value) VALUES (?1, ?2)")?;
     meta.execute(params![format!("{}.docs", level.fts), count as i64])?;
-    for (field, name) in level.fields.iter().enumerate() {
+    for (field, name) in names.iter().enumerate() {
         let avg = if count == 0 { 0.0 } else { total[field] as f64 / count as f64 };
         meta.execute(params![format!("{}.{name}", level.fts), avg])?;
     }

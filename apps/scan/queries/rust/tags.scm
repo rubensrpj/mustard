@@ -13,7 +13,10 @@
 ; em `crate::a::b::f()`, já sem o nome chamado. Preso à chamada, e nunca a um
 ; caminho solto, que casaria dentro do `use` e em cada pedaço do caminho. O
 ; motor só o guarda como import quando ele começa por um dos `root_aliases` ou
-; pelo `parent_alias`, e lê o nome chamado no nó nomeado logo depois dele.
+; pelo `parent_alias`, e lê o nome chamado no nó nomeado logo depois dele. O
+; outro caminho de duas partes ou mais (`std::fs` em `std::fs::read()`) fica
+; guardado com a chamada: quando a raiz dele não é peça do projeto, a chamada
+; é da biblioteca e não liga ao projeto, mesmo com uma pasta `fs` nele.
 (call_expression function: (scoped_identifier path: (_) @call.path))
 
 ; O módulo marcado como teste: o atributo `#[cfg(test)]` logo antes do `mod`.

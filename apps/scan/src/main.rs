@@ -16,6 +16,7 @@ mod manifests;
 mod model;
 mod path_aliases;
 mod refresh;
+mod routes;
 mod testmap;
 
 use anyhow::Result;
@@ -212,17 +213,18 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     let extracted = ingest::in_parallel(std::mem::take(&mut ing.files), |walked| match walked {
         ingest::Walked::Kept(mut kept) => {
             // Recomputed below from the whole set of modules. The call
-            // sites, the citations and the fixed texts are NOT cleared: they
-            // are what the file itself says, and a pass that did not read it
-            // again resolves the same declaration links from them and keeps
-            // the same texts.
+            // sites, the citations, the fixed texts, the routes and the
+            // comments are NOT cleared: they are what the file itself says,
+            // and a pass that did not read it again resolves the same
+            // declaration links from them and keeps the same texts, routes and
+            // comments.
             kept.deps.clear();
             kept.test_deps.clear();
             kept.tests.clear();
             Some(*kept)
         }
         ingest::Walked::Fresh(sf) => {
-            let extracted = analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
+            let mut extracted = analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
             // Machine-written class (generated/vendored/lockfile/minified) —
             // additive provenance on the module. The map keeps the module —
             // its file, its place in the graph and its declarations — and
@@ -230,11 +232,21 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
             let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
                 .map(|c| (c.class, c.marker))
                 .unwrap_or_default();
-            // O texto fixo do arquivo de teste descreve o teste, e o do
-            // arquivo escrito por máquina fica fora da busca: nenhum dos dois
-            // se guarda.
-            let texts =
-                if file_class.is_empty() && !is_test_path(&sf.rel_path) { extracted.texts } else { Vec::new() };
+            // O texto fixo e a rota do arquivo de teste são do teste, e os do
+            // arquivo escrito por máquina ficam fora da busca: nenhum dos dois
+            // arquivos guarda os seus.
+            let project_code = file_class.is_empty() && !is_test_path(&sf.rel_path);
+            let texts = if project_code { extracted.texts } else { Vec::new() };
+            let routes = if project_code { extracted.routes } else { Vec::new() };
+            // Os comentários e os nomes de dentro das declarações do arquivo
+            // escrito por máquina também ficam fora da busca, e ele não os
+            // guarda. Os do arquivo de teste ficam, como a documentação dele.
+            if !file_class.is_empty() {
+                (extracted.file_doc, extracted.file_comment) = (String::new(), String::new());
+                for decl in &mut extracted.declarations {
+                    (decl.whole_doc, decl.body_comment, decl.body_names) = (String::new(), String::new(), String::new());
+                }
+            }
             Some(Module {
                 path: sf.rel_path.clone(),
                 blob: String::new(),
@@ -248,6 +260,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 module_lines: extracted.module_lines,
                 import_lines: extracted.import_lines,
                 call_paths: extracted.call_paths,
+                other_call_paths: extracted.other_call_paths,
                 brought: extracted.brought,
                 namespaces: extracted.namespaces,
                 declarations: extracted.declarations,
@@ -260,6 +273,9 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 calls: extracted.calls,
                 cites: extracted.cites,
                 texts,
+                routes,
+                file_doc: extracted.file_doc,
+                file_comment: extracted.file_comment,
             })
         }
         // A caminhada lê todo arquivo que deixou para depois.

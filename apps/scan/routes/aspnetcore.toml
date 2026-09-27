@@ -1,0 +1,47 @@
+# As rotas do ASP.NET Core. O nome deste arquivo é o nome do framework; a
+# consulta que acha as rotas está em `aspnetcore/routes.scm`, e o que cada
+# captura dela diz, em `src/routes.rs`. O caminho do controlador junta o
+# `[Route("…")]` da classe e o atributo da ação (`[HttpGet("{id}")]`); o da
+# API mínima junta o `MapGroup("…")` guardado numa variável e o `MapGet("…")`
+# chamado nela.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador
+#   (`Microsoft.AspNetCore.Mvc.…`).
+# - `methods`: o nome do atributo ou do método e o método HTTP que ele diz;
+#   `"*"` é qualquer método (`[Route]` na ação, sem atributo de método). O
+#   nome fora da tabela não faz rota.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`{id}`,
+#   `{id:int}`, `{id?}`, `{*resto}`).
+# - `reset_marks`: o começo que faz o caminho da ação não se juntar ao da
+#   classe (`[HttpGet("/raiz")]`, `[HttpGet("~/raiz")]`). O do `MapGroup`
+#   continua: na API mínima, o caminho sempre começa pela barra.
+# - `class_marker` e `class_suffix`: o marcador que, no caminho, vira o nome
+#   da classe sem o sufixo (`[controller]` em `PedidosController` é
+#   `Pedidos`).
+
+language = ["csharp"]
+imports = ["Microsoft.AspNetCore.Mvc", "Microsoft.AspNetCore.Builder"]
+param_wrappers = [["{", "}"]]
+reset_marks = ["/", "~/"]
+class_marker = "[controller]"
+class_suffix = "Controller"
+
+[methods]
+HttpGet = "GET"
+HttpPost = "POST"
+HttpPut = "PUT"
+HttpPatch = "PATCH"
+HttpDelete = "DELETE"
+HttpHead = "HEAD"
+HttpOptions = "OPTIONS"
+Route = "*"
+MapGet = "GET"
+MapPost = "POST"
+MapPut = "PUT"
+MapPatch = "PATCH"
+MapDelete = "DELETE"
+MapMethods = "*"

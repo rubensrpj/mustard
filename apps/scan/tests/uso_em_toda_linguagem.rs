@@ -1224,6 +1224,63 @@ fn a_name_the_code_binds_itself_wins_over_the_project_declaration() {
     assert!(faltas.is_empty(), "{}", faltas.join("\n"));
 }
 
+/// Um projeto Rust com uma pasta `fs` que declara `read_to_string`, e um
+/// arquivo que a importa e chama o nome de três jeitos: pelo nome que
+/// importou (l.4), pelo caminho da biblioteca (l.8) e pelo caminho inteiro do
+/// projeto (l.12).
+fn projeto_do_caminho_da_biblioteca() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("src/lib.rs", "pub mod io;\npub mod leitor;\n"),
+        ("src/io/mod.rs", "pub mod fs;\n"),
+        ("src/io/fs/mod.rs", "pub fn read_to_string(_: &str) -> String {\n    String::new()\n}\n"),
+        (
+            "src/leitor.rs",
+            "use crate::io::fs;\n\npub fn pelo_projeto() -> String {\n    fs::read_to_string(\"a\")\n}\n\n\
+             pub fn pela_biblioteca() -> String {\n    std::fs::read_to_string(\"b\").unwrap()\n}\n\n\
+             pub fn pelo_caminho_inteiro() -> String {\n    crate::io::fs::read_to_string(\"c\")\n}\n",
+        ),
+    ]
+}
+
+/// Quem usa a `read_to_string` do projeto, lida no mapa do projeto do caminho
+/// da biblioteca.
+fn usos_do_caminho_da_biblioteca() -> (tempfile::TempDir, Usos) {
+    let temp = pasta_do_projeto("caminho-da-biblioteca");
+    for (rel, corpo) in projeto_do_caminho_da_biblioteca() {
+        write(temp.path(), rel, corpo);
+    }
+    let map = scan(temp.path());
+    let usos = usos_de(&map, "src/io/fs/mod.rs", "read_to_string");
+    (temp, usos)
+}
+
+/// `std::fs::read_to_string("b")` é a função da biblioteca, mesmo com a pasta
+/// `fs` do projeto à vista do arquivo: não liga à do projeto, nem como
+/// suspeita.
+#[test]
+fn a_call_through_a_library_path_does_not_link_to_the_project_function() {
+    let (_temp, usos) = usos_do_caminho_da_biblioteca();
+    let da_biblioteca = "src/leitor.rs:8:pela_biblioteca";
+    assert!(!usos.provados.iter().any(|lugar| lugar == da_biblioteca), "{:?}", usos.provados);
+    assert!(!usos.suspeitos.iter().any(|(lugar, _)| lugar == da_biblioteca), "{:?}", usos.suspeitos);
+}
+
+/// `fs::read_to_string("a")`, com o `fs` que o arquivo importou do projeto,
+/// segue ligando à função do projeto, provada.
+#[test]
+fn a_call_through_a_name_imported_from_the_project_stays_proven() {
+    let (_temp, usos) = usos_do_caminho_da_biblioteca();
+    assert!(usos.provados.iter().any(|lugar| lugar == "src/leitor.rs:4:pelo_projeto"), "{:?}", usos.provados);
+}
+
+/// `crate::io::fs::read_to_string("c")`, o caminho inteiro do projeto, segue
+/// ligando à função do projeto, provada.
+#[test]
+fn a_call_through_the_whole_project_path_stays_proven() {
+    let (_temp, usos) = usos_do_caminho_da_biblioteca();
+    assert!(usos.provados.iter().any(|lugar| lugar == "src/leitor.rs:12:pelo_caminho_inteiro"), "{:?}", usos.provados);
+}
+
 /// Todos os arquivos de texto debaixo de `dir`, menos a pasta da compilação.
 fn arquivos_de_texto(dir: &Path, achados: &mut Vec<(std::path::PathBuf, String)>) {
     for entrada in std::fs::read_dir(dir).unwrap() {

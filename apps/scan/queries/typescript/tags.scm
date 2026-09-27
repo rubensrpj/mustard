@@ -1,4 +1,5 @@
-; TypeScript / TSX — imports and declarations. Same grammar family, one query set.
+; TypeScript / TSX — imports e declarações. A mesma família: o `.ts` e o `.tsx`
+; leem estes padrões; o que só a gramática do TSX tem fica em tsx/.
 (import_statement source: (string (string_fragment) @import))
 
 ; The names an import brings into the file (`limite` in

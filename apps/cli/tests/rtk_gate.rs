@@ -279,6 +279,62 @@ fn the_binary_brings_typescript_6_into_the_servers_folder() {
     );
 }
 
+/// No Windows, o `npm` e o `claude` instalados pelo npm são `npm.cmd` e
+/// `claude.cmd`: o sistema os acha pelo nome, e o `Command` do Rust, dado só
+/// o nome, completa apenas o `.exe`. Pelo binário de verdade, com os falsos
+/// escritos como `.cmd` e um `node` que falha a conferência do servidor, a
+/// instalação chega a rodar `npm install -g typescript-language-server`.
+#[cfg(windows)]
+#[test]
+fn on_windows_the_binary_runs_npm_by_its_cmd_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log = tmp.path().join("spawn.log");
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).expect("mkdir bin");
+    // O portão só pede que `rtk --version` responda: o próprio binário do
+    // Mustard responde.
+    fs::copy(env!("CARGO_BIN_EXE_mustard"), bin.join("rtk.exe")).expect("copy rtk");
+    for (tool, exit) in [("npm", 0), ("claude", 0), ("typescript-language-server", 0), ("node", 1)] {
+        let script = format!("@echo {tool} %* >> \"{}\"\r\n@exit /b {exit}\r\n", log.display());
+        fs::write(bin.join(format!("{tool}.cmd")), script).expect("write shim");
+    }
+    let project = fresh_repo(tmp.path());
+    fs::write(project.join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).expect("package.json");
+    fs::write(project.join("tsconfig.json"), "{}\n").expect("tsconfig.json");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+
+    // O `git` de verdade vem da pasta dele no `PATH` do teste, como no
+    // `shim_dir` dos outros sistemas.
+    let git_dir = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<PathBuf>>())
+        .unwrap_or_default()
+        .into_iter()
+        .find(|dir| dir.join("git.exe").is_file())
+        .expect("git on PATH");
+    let path = std::env::join_paths([bin.clone(), git_dir]).expect("join PATH");
+    let mut init = Command::new(env!("CARGO_BIN_EXE_mustard"));
+    init.args(["init", "--yes"])
+        .current_dir(&project)
+        .env_clear()
+        .env("PATH", &path)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home);
+    for key in ["SystemRoot", "TEMP", "TMP"] {
+        if let Some(value) = std::env::var_os(key) {
+            init.env(key, value);
+        }
+    }
+    let out = init.output().expect("the mustard binary runs");
+
+    assert!(out.status.success(), "the install must still succeed: {}", String::from_utf8_lossy(&out.stderr));
+    let spawned = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        spawned.lines().any(|l| l.starts_with("npm install -g typescript-language-server")),
+        "the install must run npm through npm.cmd; log was:\n{spawned}"
+    );
+}
+
 /// What is in `home`, by name. The install may leave nothing there.
 fn home_entries(home: &Path) -> Vec<String> {
     fs::read_dir(home)

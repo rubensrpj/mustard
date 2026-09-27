@@ -1,0 +1,32 @@
+# As rotas do Express. O nome deste arquivo é o nome do framework; a consulta
+# que acha as rotas está em `express/routes.scm`, e o que cada captura dela
+# diz, em `src/routes.rs`. O caminho vem de `router.post('/pedidos', criar)`;
+# o `app.use('/api', router)` soma o prefixo às rotas registradas nesse
+# roteador, no mesmo arquivo.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`express/…`); o
+#   `expression` e o `express-session` são outros nomes.
+# - `methods`: o nome do método chamado e o método HTTP que ele diz; `"*"` é
+#   qualquer método. O nome fora da tabela não faz rota.
+# - `param_prefixes`: o começo do pedaço de caminho que é parâmetro (`:id`).
+# - `path_starts`: o começo que todo caminho de rota tem. O texto sem ele
+#   (`config.get('CHAVE', '')`) é outra coisa, e não faz rota.
+
+language = ["typescript", "tsx"]
+imports = ["express"]
+param_prefixes = [":"]
+path_starts = ["/", "*"]
+
+[methods]
+get = "GET"
+post = "POST"
+put = "PUT"
+patch = "PATCH"
+delete = "DELETE"
+head = "HEAD"
+options = "OPTIONS"
+all = "*"

@@ -1,0 +1,34 @@
+# As rotas do axum. O nome deste arquivo é o nome do framework; a consulta
+# que acha as rotas está em `axum/routes.scm`, e o que cada captura dela diz,
+# em `src/routes.rs`. O caminho vem do `.route("…", get(ler).post(criar))`,
+# e cada método da corrente é uma rota; o `.nest("…", …)` soma o prefixo ao
+# roteador escrito nele ou à função que ele chama.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`axum::routing`).
+# - `methods`: o nome da função de método e o método HTTP que ela diz; `"*"`
+#   é qualquer método. O nome fora da tabela não faz rota.
+# - `param_prefixes`: o começo do pedaço de caminho que é parâmetro (`:id`,
+#   `*resto`).
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`{id}`).
+# - `path_starts`: o começo que todo caminho de rota tem. O texto sem ele é
+#   outra coisa, e não faz rota.
+
+language = ["rust"]
+imports = ["axum"]
+param_prefixes = [":", "*"]
+param_wrappers = [["{", "}"]]
+path_starts = ["/"]
+
+[methods]
+get = "GET"
+post = "POST"
+put = "PUT"
+patch = "PATCH"
+delete = "DELETE"
+head = "HEAD"
+options = "OPTIONS"
+any = "*"

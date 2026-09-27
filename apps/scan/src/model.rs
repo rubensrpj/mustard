@@ -246,6 +246,14 @@ pub struct Module {
     /// passada que não relê o arquivo ligue igual.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub call_paths: BTreeMap<String, Vec<CallSite>>,
+    /// Cada caminho de duas partes ou mais escrito antes do nome numa
+    /// chamada, o que não virou import (`std::fs` em `std::fs::read()`), com
+    /// as chamadas escritas por ele fora do trecho de teste. A chamada que
+    /// está aqui não liga ao projeto quando a raiz do caminho é de fora dele.
+    /// Guardados com o módulo, para que a passada que não relê o arquivo ligue
+    /// igual.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub other_call_paths: BTreeMap<String, Vec<CallSite>>,
     /// De cada import do arquivo, como foi escrito, os nomes que ele traz
     /// (`@imported`). O nome que um import de fora do projeto traz é de fora:
     /// escrito sozinho ou antes de outro nome, não liga a nada do projeto. A
@@ -306,6 +314,24 @@ pub struct Module {
     /// arquivo guarde os mesmos. Written only when there is one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texts: Vec<Text>,
+    /// As rotas do servidor registradas no arquivo ([`Route`]), achadas pela
+    /// regra do framework que ele importa, fora as do trecho de teste. O
+    /// arquivo de teste e o escrito por máquina não guardam nenhuma.
+    /// Guardadas com o módulo, como os textos fixos. Written only when there
+    /// is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<Route>,
+    /// Os comentários do começo do arquivo, antes do primeiro código — a
+    /// documentação do módulo, o cabeçalho do arquivo —, limpos das marcas e
+    /// juntados numa linha. O arquivo escrito por máquina não guarda. Written
+    /// only when there is one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_doc: String,
+    /// Os outros comentários do arquivo, fora os do começo, limpos das marcas
+    /// e juntados numa linha, na ordem em que foram escritos. O arquivo
+    /// escrito por máquina não guarda. Written only when there is one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_comment: String,
 }
 
 /// Um texto fixo escrito no código: a linha, a marca — [`TEXT_LOG`],
@@ -330,6 +356,26 @@ pub const TEXT_ERROR: &str = "error";
 
 /// A marca de todo outro texto fixo.
 pub const TEXT_PLAIN: &str = "text";
+
+/// Uma rota do servidor: o método HTTP ([`ANY_METHOD`] quando vale qualquer
+/// um), o caminho padronizado — em minúsculas, sem barra no começo nem no
+/// fim, cada parâmetro como `{}` —, o caminho como foi escrito, com os
+/// prefixos juntados por barra, quem a atende — o nome da função, vazio
+/// quando ela é escrita ali mesmo, e a linha dela no arquivo — e o framework
+/// cuja regra a achou. O método e o caminho padronizado são a chave da rota.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Route {
+    pub method: String,
+    pub path: String,
+    pub written: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub handler: String,
+    pub line: usize,
+    pub framework: String,
+}
+
+/// O método da rota que atende qualquer método HTTP.
+pub const ANY_METHOD: &str = "*";
 
 impl Module {
     /// A linha cai num trecho de teste do arquivo ([`Module::test_lines`]).
@@ -472,6 +518,21 @@ pub struct Decl {
     /// declaration has no header to speak of.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signature: String,
+    /// A documentação de cima inteira, sem o teto de [`Decl::doc`]: guardada
+    /// só quando o teto cortou alguma coisa, e vazia quando a de `doc` já é a
+    /// inteira.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub whole_doc: String,
+    /// Os comentários escritos nas linhas da declaração, da primeira à
+    /// última, limpos das marcas e juntados numa linha. Os de uma declaração
+    /// de dentro são também da que a contém.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body_comment: String,
+    /// Os nomes escritos no código das linhas da declaração, fora de
+    /// comentário e de texto fixo, cada um uma vez, na ordem em que aparecem,
+    /// separados por espaço.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body_names: String,
     /// The declarations of this project that this one calls, by name, sorted
     /// and deduped. Filled by [`crate::graph::link_declarations`] from the
     /// call sites of the file.

@@ -262,13 +262,14 @@ fn log(root: &Path, range: &str) -> Option<Vec<RawCommit>> {
     let max = format!("--max-count={MAX_COMMITS}");
     let out = git(
         root,
-        &["log", "--no-merges", "--no-renames", "--relative", "--name-status", "--format=%x00%H %ct", &max, range],
+        &["log", "--no-merges", "--no-renames", "--relative", "--name-status", "--format=%x00%H %ct %s", &max, range],
     )?;
     Some(parse_log(&out))
 }
 
-/// Parse `git log --name-status --format=%x00%H %ct` into commits, oldest
-/// first. A commit that touches nothing under the scanned root is left out.
+/// Parse `git log --name-status --format=%x00%H %ct %s` into commits, oldest
+/// first, each with its title. A commit that touches nothing under the
+/// scanned root is left out.
 pub(crate) fn parse_log(text: &str) -> Vec<RawCommit> {
     let mut commits = Vec::new();
     for block in text.split('\0').filter(|b| !b.trim().is_empty()) {
@@ -276,12 +277,17 @@ pub(crate) fn parse_log(text: &str) -> Vec<RawCommit> {
         let Some(header) = lines.next() else {
             continue;
         };
-        let mut parts = header.split_whitespace();
+        let mut parts = header.splitn(3, ' ');
         let (Some(sha), Some(at)) = (parts.next(), parts.next()) else {
             continue;
         };
-        let mut commit =
-            RawCommit { id: sha.chars().take(10).collect(), at: at.parse().unwrap_or(0), ..RawCommit::default() };
+        let title = parts.next().unwrap_or_default().trim().to_string();
+        let mut commit = RawCommit {
+            id: sha.chars().take(10).collect(),
+            at: at.trim().parse().unwrap_or(0),
+            title,
+            ..RawCommit::default()
+        };
         for line in lines {
             let Some((status, path)) = line.split_once('\t') else {
                 continue;
@@ -329,14 +335,16 @@ mod tests {
 
     #[test]
     fn the_log_is_read_oldest_first_without_deletions_or_empty_commits() {
-        let text = "\0bbbbbbbbbbbbbbbb 20\n\nM\tsrc/a.rs\nD\tsrc/old.rs\nA\t\"src/with\\\"quote.rs\"\n\
-                    \0cccccccccccc 15\n\n\
+        let text = "\0bbbbbbbbbbbbbbbb 20 Troca o  leitor\n\nM\tsrc/a.rs\nD\tsrc/old.rs\nA\t\"src/with\\\"quote.rs\"\n\
+                    \0cccccccccccc 15 Vazio\n\n\
                     \0aaaaaaaaaaaaaaaa 10\n\nA\tsrc/a.rs\n";
         let commits = parse_log(text);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].id, "aaaaaaaaaa");
         assert_eq!(commits[0].added, vec!["src/a.rs".to_string()]);
         assert_eq!(commits[1].at, 20);
+        assert_eq!(commits[1].title, "Troca o  leitor");
+        assert_eq!(commits[0].title, "", "a commit written with no title keeps none");
         assert_eq!(commits[1].changed, vec!["src/a.rs".to_string()]);
         assert_eq!(commits[1].added, vec!["src/with\"quote.rs".to_string()]);
     }

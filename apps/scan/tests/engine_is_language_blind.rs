@@ -9,10 +9,11 @@
 //! per-language special case is normal here.
 //!
 //! The forbidden vocabulary is DERIVED, never curated: it is every `name` and
-//! every `dir` the registry itself declares. Adding a language to
-//! `languages.toml` therefore widens this check automatically — the one place a
-//! language is declared stays the one place, and this test cannot fall behind
-//! it.
+//! every `dir` the registry itself declares, and the name of every framework
+//! route rule under `routes/`. Adding a language to `languages.toml`, or a
+//! framework to `routes/`, therefore widens this check automatically — the one
+//! place a language or a framework is declared stays the one place, and this
+//! test cannot fall behind it.
 //!
 //! ## What is deliberately NOT checked, and why
 //!
@@ -70,6 +71,22 @@ fn declared_language_terms() -> BTreeSet<String> {
     terms
 }
 
+/// Every framework the route rules declare — the name of each
+/// `routes/<framework>.toml`, lowercased. Like the languages, a framework is
+/// data: the engine that joins the routes never spells one.
+fn declared_framework_terms() -> BTreeSet<String> {
+    let entries = std::fs::read_dir(crate_dir().join("routes")).expect("read routes/");
+    let terms: BTreeSet<String> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "toml"))
+        .filter_map(|path| path.file_stem().and_then(|s| s.to_str()).map(str::to_ascii_lowercase))
+        .filter(|term| term.len() >= MIN_TERM_LEN)
+        .collect();
+    assert!(!terms.is_empty(), "routes/ must declare at least one framework");
+    terms
+}
+
 /// Every `.rs` file under `src/`, recursively.
 fn engine_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -109,7 +126,8 @@ fn is_word_byte(b: u8) -> bool {
 
 #[test]
 fn no_engine_source_names_a_language_the_registry_declares() {
-    let terms = declared_language_terms();
+    let mut terms = declared_language_terms();
+    terms.extend(declared_framework_terms());
     let mut files = Vec::new();
     engine_sources(&crate_dir().join("src"), &mut files);
     files.sort();
@@ -135,9 +153,9 @@ fn no_engine_source_names_a_language_the_registry_declares() {
 
     assert!(
         violations.is_empty(),
-        "the engine must never spell a language the registry declares — that knowledge belongs in \
-         languages.toml, manifests.toml and queries/<dir>/*.scm, and this holds for comments too, \
-         because prose is what the next author copies:\n  {}",
+        "the engine must never spell a language the registry declares, nor a framework the route rules \
+         declare — that knowledge belongs in languages.toml, manifests.toml, queries/<dir>/*.scm and \
+         routes/, and this holds for comments too, because prose is what the next author copies:\n  {}",
         violations.join("\n  ")
     );
 }
@@ -147,8 +165,11 @@ fn the_vocabulary_comes_from_the_registry_and_nowhere_else() {
     // A ratchet whose term list silently emptied would pass forever while
     // checking nothing. Assert it is actually loaded and plural, and that the
     // length floor is what excludes ids rather than any named exception.
-    let terms = declared_language_terms();
+    let mut terms = declared_language_terms();
     assert!(terms.len() >= 2, "expected several language ids, got {terms:?}");
+    let frameworks = declared_framework_terms();
+    assert!(frameworks.len() >= 2, "expected several frameworks, got {frameworks:?}");
+    terms.extend(frameworks);
     assert!(
         terms.iter().all(|t| t.len() >= MIN_TERM_LEN),
         "every checked term clears the length floor: {terms:?}"

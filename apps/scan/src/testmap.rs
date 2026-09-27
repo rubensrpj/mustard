@@ -124,7 +124,7 @@ mod tests {
     }
 
     fn commit(id: &str, files: &[&str]) -> RawCommit {
-        RawCommit { id: id.to_string(), at: 1, added: Vec::new(), changed: files.iter().map(|f| (*f).to_string()).collect() }
+        RawCommit { id: id.to_string(), at: 1, changed: files.iter().map(|f| (*f).to_string()).collect(), ..RawCommit::default() }
     }
 
     #[test]

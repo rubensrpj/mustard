@@ -62,6 +62,15 @@ public class EstoqueService
 }
 "#;
 
+/// Uma tela: o texto escrito solto entre as marcas, sem aspas.
+const SCREEN: &str = r#"export function CarrinhoVazio() {
+  return <>
+    <p>Seu carrinho está vazio</p>
+    <span>It's empty now</span>
+  </>;
+}
+"#;
+
 /// Um arquivo de teste inteiro: o texto dele descreve o teste.
 const TEST_FILE: &str = r#"describe('busca de clientes', () => {
   it('devolve o cliente pelo número', () => {});
@@ -78,7 +87,7 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
-/// Um projeto no git com os três arquivos, já no primeiro commit.
+/// Um projeto no git com os arquivos, já no primeiro commit.
 fn project() -> tempfile::TempDir {
     let temp = tempfile::Builder::new().prefix("scan-textos-").tempdir().unwrap();
     let dir = temp.path();
@@ -90,6 +99,7 @@ fn project() -> tempfile::TempDir {
         ("web/clientes.service.ts", TYPESCRIPT),
         ("Loja/Estoque/EstoqueService.cs", CSHARP),
         ("web/clientes.service.test.ts", TEST_FILE),
+        ("web/carrinho.tsx", SCREEN),
     ] {
         let path = dir.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -186,7 +196,7 @@ fn a_pass_that_does_not_read_the_file_again_keeps_the_same_texts() {
     let (second, report) = scan(temp.path());
     assert_eq!(report["full"], json!(false), "{report}");
     assert_eq!(report["read"], json!(["src/outro.rs"]), "{report}");
-    for path in ["src/consulta.rs", "web/clientes.service.ts", "Loja/Estoque/EstoqueService.cs"] {
+    for path in ["src/consulta.rs", "web/clientes.service.ts", "Loja/Estoque/EstoqueService.cs", "web/carrinho.tsx"] {
         assert!(!values(&first, path).is_empty(), "{path}");
         assert_eq!(texts(&second, path), texts(&first, path), "{path}");
     }
@@ -205,5 +215,69 @@ fn the_search_for_the_message_finds_the_file_with_the_text_its_line_and_its_func
     assert_eq!(
         (text.line, text.kind.as_str(), text.value.as_str(), text.owner.as_str()),
         (4, "error", "pedido não encontrado", "carregar")
+    );
+}
+
+#[test]
+fn the_text_written_loose_on_a_screen_is_kept_with_the_function_that_shows_it() {
+    let temp = project();
+    let (map, _) = scan(temp.path());
+    let kept = texts(&map, "web/carrinho.tsx");
+    assert!(
+        kept.as_array().unwrap().contains(&json!({"line": 3, "kind": "text", "value": "Seu carrinho está vazio", "owner": "CarrinhoVazio"})),
+        "{kept}"
+    );
+}
+
+#[test]
+fn a_loose_screen_text_with_an_apostrophe_near_the_start_is_kept_whole() {
+    let temp = project();
+    let (map, _) = scan(temp.path());
+    let kept = texts(&map, "web/carrinho.tsx");
+    assert!(
+        kept.as_array().unwrap().contains(&json!({"line": 4, "kind": "text", "value": "It's empty now", "owner": "CarrinhoVazio"})),
+        "{kept}"
+    );
+}
+
+#[test]
+fn a_typescript_file_keeps_the_same_texts_beside_a_screen() {
+    let temp = project();
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        texts(&map, "web/clientes.service.ts"),
+        json!([
+            {"line": 5, "kind": "log", "value": "buscando o cliente ${id}", "owner": "buscar"},
+            {"line": 7, "kind": "error", "value": "cliente não encontrado", "owner": "buscar"},
+        ])
+    );
+}
+
+#[test]
+fn a_pass_over_typescript_and_a_screen_skips_no_query_pattern() {
+    let temp = project();
+    let model = model::path_in(&temp.path().join(".claude"));
+    let run = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args(["scan", temp.path().to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
+        .output()
+        .expect("run scan");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "stderr: {stderr}");
+    assert!(!stderr.contains("query pattern skipped"), "{stderr}");
+}
+
+#[test]
+fn the_search_for_a_screen_text_finds_the_screen_its_line_and_its_function() {
+    let temp = project();
+    scan(temp.path());
+    let languages = Languages::of(&ProjectConfig::default());
+    let map = model::path_in(&temp.path().join(".claude"));
+    let found = map_search::search_at(&map, "carrinho está vazio", &languages, 10).expect("a busca lê o mapa");
+    let first = found.first().expect("a busca acha o arquivo");
+    assert_eq!(first.path, "web/carrinho.tsx", "{found:?}");
+    let text = first.text.as_ref().expect("o texto que casou");
+    assert_eq!(
+        (text.line, text.kind.as_str(), text.value.as_str(), text.owner.as_str()),
+        (3, "text", "Seu carrinho está vazio", "CarrinhoVazio")
     );
 }

@@ -31,6 +31,7 @@ use crate::domain::scan::read_projects;
 use crate::domain::source_lang::detected_languages;
 use crate::io::fs;
 use crate::platform::harness::home_dir;
+use crate::platform::process::{program_file, program_file_names};
 
 /// O programa que um plugin de linguagem chama, e o comando que instala esse
 /// programa. `plugin` é `None` para uma linguagem que o catálogo oficial
@@ -451,32 +452,17 @@ impl MachineRunner {
     }
 }
 
-/// Os nomes de arquivo com que `program` aparece numa pasta: no Windows, com
-/// as extensões de executável que o sistema roda sem que se digite a
-/// extensão; nos outros sistemas, o nome puro. A busca no `PATH` e a busca
-/// nas pastas de ferramenta do usuário usam os mesmos nomes.
-fn program_file_names(program: &str, windows: bool) -> Vec<String> {
-    if windows {
-        ["exe", "cmd", "bat"].iter().map(|ext| format!("{program}.{ext}")).collect()
-    } else {
-        vec![program.to_string()]
-    }
-}
-
 impl ToolRunner for MachineRunner {
     fn on_path(&self, program: &str) -> bool {
-        if program.is_empty() {
-            return false;
-        }
-        let sep = if self.windows { ';' } else { ':' };
-        let names = program_file_names(program, self.windows);
-        self.path_env
-            .split(sep)
-            .any(|dir| names.iter().any(|n| Path::new(dir).join(n).is_file()))
+        program_file(program, self.windows, &self.path_env).is_some_and(|file| file.is_file())
     }
 
+    /// Roda o arquivo que o `PATH` do executor tem para `program` (no
+    /// Windows, o `npm.cmd` do `npm`); sem ele, o nome puro, que falha como
+    /// antes.
     fn run(&self, program: &str, args: &[&str]) -> bool {
-        Command::new(program)
+        let file = program_file(program, self.windows, &self.path_env).unwrap_or_else(|| PathBuf::from(program));
+        Command::new(file)
             .args(args)
             .env("PATH", &self.path_env)
             .output()

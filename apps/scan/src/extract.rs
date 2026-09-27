@@ -28,8 +28,9 @@
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.
 
-use crate::model::{CallSite, Decl, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use crate::model::{CallSite, Decl, Route, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
+use crate::routes::{self, RouteRule};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
@@ -55,6 +56,10 @@ pub(crate) struct Extracted {
     /// (`@call.path` que virou import), com as chamadas escritas por ele, fora
     /// do trecho de teste.
     pub call_paths: BTreeMap<String, Vec<CallSite>>,
+    /// Cada caminho de duas partes ou mais escrito antes do nome numa chamada
+    /// que não virou import (`std::fs` em `std::fs::read()`), com as chamadas
+    /// escritas por ele, fora do trecho de teste.
+    pub other_call_paths: BTreeMap<String, Vec<CallSite>>,
     /// De cada import, os nomes que ele traz ao arquivo (`@imported`),
     /// ordenados e sem repetição.
     pub brought: BTreeMap<String, Vec<String>>,
@@ -64,6 +69,13 @@ pub(crate) struct Extracted {
     pub cites: Vec<CallSite>,
     /// Os textos fixos do arquivo (`@text`), em ordem de linha.
     pub texts: Vec<Text>,
+    /// As rotas do servidor registradas no arquivo, fora do trecho de teste.
+    pub routes: Vec<Route>,
+    /// Os comentários do começo do arquivo, antes do primeiro código, numa
+    /// linha.
+    pub file_doc: String,
+    /// Os outros comentários do arquivo, numa linha.
+    pub file_comment: String,
 }
 
 /// One language as produced by `build.rs` from `languages.toml` + its `.scm`
@@ -345,8 +357,10 @@ enum CapKind {
     Local,
     /// Um literal de texto escrito no código: vira texto fixo do arquivo
     /// quando tem cara de texto e não cai num import, num trecho de teste
-    /// nem numa documentação.
-    Text,
+    /// nem numa documentação. `plain` é o texto escrito sem aspas (o texto
+    /// solto de uma tela): ele se guarda como está escrito, sem o corte das
+    /// aspas.
+    Text { plain: bool },
     Def(String),
     Ignore,
 }
@@ -369,7 +383,8 @@ fn classify(cap: &str) -> CapKind {
         "test_block" => CapKind::TestBlock,
         "inner_module" => CapKind::InnerModule,
         "local" => CapKind::Local,
-        "text" => CapKind::Text,
+        "text" => CapKind::Text { plain: false },
+        "text.plain" => CapKind::Text { plain: true },
         other => match other.strip_prefix("definition.") {
             Some(kind) => CapKind::Def(kind.to_string()),
             None => CapKind::Ignore,
@@ -384,6 +399,8 @@ pub(crate) struct Analyzer {
     /// `cap_kinds[i]` is the role of capture index `i` in `query`.
     cap_kinds: Vec<CapKind>,
     doc_tags: &'static [&'static str],
+    /// As regras de rota dos frameworks escritos na língua.
+    routes: Vec<RouteRule>,
 }
 
 impl Analyzer {
@@ -406,7 +423,8 @@ impl Analyzer {
             }
         };
         let cap_kinds = query.capture_names().iter().map(|n| classify(n)).collect();
-        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags })
+        let routes = routes::rules_for(raw.name, &language);
+        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags, routes })
     }
 
     pub fn extract(&self, src: &str) -> Extracted {
@@ -449,10 +467,13 @@ impl Analyzer {
         // Cada nome que o corpo de uma função liga, com a linha e o byte em
         // que foi escrito.
         let mut locals: Vec<(usize, usize, String)> = Vec::new();
-        // Os literais de texto do arquivo e o que a documentação escrita
-        // dentro das declarações cobre: o literal que a contém não é texto
-        // fixo.
-        let mut literals: Vec<Node> = Vec::new();
+        // Os literais de texto do arquivo, cada um dizendo se foi escrito sem
+        // aspas, e o que a documentação escrita dentro das declarações cobre:
+        // o literal que a contém não é texto fixo.
+        let mut literals: Vec<(Node, bool)> = Vec::new();
+        // Cada caminho de chamada que não virou import, com o byte em que foi
+        // escrito e a chamada que vem depois dele.
+        let mut other_paths: Vec<(String, usize, CallSite)> = Vec::new();
         let mut doc_spans: Spans = BTreeSet::new();
         let self_name = import_self(&self.name);
 
@@ -522,16 +543,24 @@ impl Analyzer {
                         // Só o caminho que começa no próprio projeto é import;
                         // qualquer outro (`Vec::new()`, `std::fs::read()`)
                         // segue como uso, como antes. Os argumentos de tipo
-                        // não são parte do lugar que o caminho nomeia.
+                        // não são parte do lugar que o caminho nomeia. O nome
+                        // chamado é o nó nomeado logo depois do caminho, lido
+                        // como a chamada dele é lida.
                         if let Ok(t) = node.utf8_text(bytes) {
                             let path = without_type_arguments(&t.split_whitespace().collect::<String>(), separators);
                             let first = first_segment(&path, separators);
+                            let call = || node.next_named_sibling().and_then(|n| called_site(n, bytes, &self.name));
                             if aliases.contains(&first) || parent == Some(first) {
                                 import_spans.insert((node.start_byte(), node.end_byte()));
-                                // O nome chamado é o nó nomeado logo depois do
-                                // caminho, lido como a chamada dele é lida.
-                                let call = node.next_named_sibling().and_then(|n| called_site(n, bytes, &self.name));
-                                here_imports.push(Written { call, ..Written::at(path, false, node) });
+                                here_imports.push(Written { call: call(), ..Written::at(path, false, node) });
+                            } else if first.len() < path.len()
+                                && let Some(call) = call()
+                            {
+                                // O de duas partes ou mais fica guardado com a
+                                // chamada: o grafo diz se a raiz dele é de
+                                // fora do projeto. O de uma parte só
+                                // (`Vec::new()`) segue só como qualificador.
+                                other_paths.push((path, node.start_byte(), call));
                             }
                         }
                     }
@@ -590,7 +619,7 @@ impl Analyzer {
                     CapKind::InnerModule => {
                         out.module_lines.push((node.start_position().row + 1, node.end_position().row + 1));
                     }
-                    CapKind::Text => literals.push(node),
+                    CapKind::Text { plain } => literals.push((node, *plain)),
                     CapKind::Def(kind) => {
                         def = Some((node, kind.as_str()));
                     }
@@ -691,10 +720,13 @@ impl Analyzer {
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
                 let above = doc_above(h.node, bytes, &decorations, self.doc_tags);
-                let doc = match h.doc_inside {
-                    Some((_, inside)) if above.text.is_empty() => one_line(&inside, DOC_MAX_CHARS),
-                    _ => above.text,
+                let whole = match h.doc_inside {
+                    Some((_, inside)) if above.whole.is_empty() => one_line(&inside, usize::MAX),
+                    _ => above.whole,
                 };
+                let doc = one_line(&whole, DOC_MAX_CHARS);
+                // A documentação inteira fica só quando o teto cortou.
+                let whole_doc = if whole == doc { String::new() } else { whole };
                 Decl {
                     kind: h.kind,
                     name: h.name,
@@ -702,6 +734,9 @@ impl Analyzer {
                     end_line: (h.node.end_position().row + 1).max(h.body_end.unwrap_or(0)),
                     supertypes,
                     doc,
+                    whole_doc,
+                    body_comment: String::new(),
+                    body_names: String::new(),
                     signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
                     calls: Vec::new(),
                     used_by: Vec::new(),
@@ -715,6 +750,17 @@ impl Analyzer {
             })
             .collect();
         owners_in_file(&mut out.declarations);
+        // O texto das linhas de cada declaração e os comentários do arquivo
+        // saem de uma caminhada só pela árvore. O literal de texto e a
+        // documentação escrita como literal não são código: os nomes escritos
+        // neles ficam de fora.
+        let not_code: HashSet<(usize, usize)> =
+            literals.iter().map(|(node, _)| (node.start_byte(), node.end_byte())).chain(doc_spans.iter().copied()).collect();
+        let written_text = WrittenText::of(root, bytes, self.doc_tags, &not_code);
+        for decl in &mut out.declarations {
+            (decl.body_comment, decl.body_names) = written_text.lines(decl.line, decl.end_line);
+        }
+        (out.file_doc, out.file_comment) = written_text.of_file();
         out.texts = fixed_texts(&literals, bytes, &[&import_spans, &test_blocks, &doc_spans], &out.declarations, &self.name);
 
         // The call sites and the citations of the file, minus the
@@ -782,7 +828,12 @@ impl Analyzer {
         out.global_imports.dedup();
         out.test_imports.sort();
         out.test_imports.dedup();
-        for sites in out.call_paths.values_mut() {
+        for (path, byte, call) in other_paths {
+            if !test_blocks.iter().any(|&(start, end)| (start..end).contains(&byte)) {
+                out.other_call_paths.entry(path).or_default().push(call);
+            }
+        }
+        for sites in out.call_paths.values_mut().chain(out.other_call_paths.values_mut()) {
             sites.sort();
             sites.dedup();
         }
@@ -792,6 +843,8 @@ impl Analyzer {
         out.module_lines.dedup();
         out.namespaces.sort();
         out.namespaces.dedup();
+        let imports: Vec<String> = out.imports.iter().chain(&out.global_imports).cloned().collect();
+        out.routes = routes::find(&self.routes, root, bytes, &imports, &out.declarations, &test_blocks);
         out
     }
 }
@@ -1028,14 +1081,112 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
         anchor = parent;
     }
     parts.reverse();
-    Above { text: one_line(&parts.join(" "), DOC_MAX_CHARS), first_row }
+    Above { whole: one_line(&parts.join(" "), usize::MAX), first_row }
 }
 
-/// What is read above a declaration: its documentation comment, and the row
-/// (from zero) where the declaration starts.
+/// What is read above a declaration: its whole documentation comment, in one
+/// line and with no ceiling, and the row (from zero) where the declaration
+/// starts.
 struct Above {
-    text: String,
+    whole: String,
     first_row: usize,
+}
+
+/// Um comentário ou um nome escrito no arquivo: a linha (a partir de zero)
+/// em que começa, o byte e o texto — o comentário já limpo das marcas.
+struct Piece {
+    row: usize,
+    byte: usize,
+    text: String,
+}
+
+/// O que se lê numa caminhada pela árvore do arquivo, na ordem em que foi
+/// escrito: cada comentário (os nós extras da gramática) e cada nome escrito
+/// no código (a folha nomeada que se lê como nome), fora dos trechos que não
+/// são código; e onde termina o comentário do começo do arquivo.
+struct WrittenText {
+    comments: Vec<Piece>,
+    names: Vec<Piece>,
+    /// O byte em que começa o primeiro nó do arquivo que não é comentário:
+    /// o comentário antes dele é do começo do arquivo.
+    first_code: usize,
+}
+
+impl WrittenText {
+    /// Caminha pela árvore de `root` na ordem do texto. O comentário é lido
+    /// inteiro, limpo das marcas e das `tags` de documentação; o nó cujo
+    /// trecho está em `not_code` fica de fora, com o que tem dentro.
+    fn of(root: Node, bytes: &[u8], tags: &[&str], not_code: &HashSet<(usize, usize)>) -> WrittenText {
+        let mut comments = Vec::new();
+        let mut names = Vec::new();
+        let mut cursor = root.walk();
+        let first_code = {
+            let mut children = root.children(&mut cursor);
+            children.find(|child| !child.is_extra()).map_or(usize::MAX, |child| child.start_byte())
+        };
+        let mut cursor = root.walk();
+        loop {
+            let node = cursor.node();
+            let piece = |text: String| Piece { row: node.start_position().row, byte: node.start_byte(), text };
+            let mut descend = false;
+            if node.is_extra() {
+                if let Ok(text) = node.utf8_text(bytes) {
+                    let text = clean_comment(text, tags);
+                    if !text.is_empty() {
+                        comments.push(piece(text));
+                    }
+                }
+            } else if !not_code.contains(&(node.start_byte(), node.end_byte())) {
+                descend = node.child_count() > 0;
+                if !descend && node.is_named()
+                    && let Ok(text) = node.utf8_text(bytes)
+                    && is_identifier(text)
+                {
+                    names.push(piece(text.to_string()));
+                }
+            }
+            if descend && cursor.goto_first_child() {
+                continue;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return WrittenText { comments, names, first_code };
+                }
+            }
+        }
+    }
+
+    /// Os comentários e os nomes das linhas `first` a `last` (a partir de
+    /// um), cada um numa linha: os comentários juntados com espaço, e cada
+    /// nome uma vez, na ordem em que aparece. A declaração sem a última linha
+    /// fica só com a primeira.
+    fn lines(&self, first: usize, last: usize) -> (String, String) {
+        let rows = first.saturating_sub(1)..last.max(first);
+        let comment: Vec<&str> = Self::within(&self.comments, &rows).iter().map(|piece| piece.text.as_str()).collect();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let names: Vec<&str> = Self::within(&self.names, &rows)
+            .iter()
+            .map(|piece| piece.text.as_str())
+            .filter(|name| seen.insert(name))
+            .collect();
+        (comment.join(" "), names.join(" "))
+    }
+
+    /// Os pedaços de `pieces`, que estão na ordem do texto, que começam numa
+    /// das linhas `rows`.
+    fn within<'p>(pieces: &'p [Piece], rows: &std::ops::Range<usize>) -> &'p [Piece] {
+        let start = pieces.partition_point(|piece| piece.row < rows.start);
+        let end = pieces.partition_point(|piece| piece.row < rows.end);
+        &pieces[start..end.max(start)]
+    }
+
+    /// Os comentários do começo do arquivo e os outros, cada grupo numa
+    /// linha.
+    fn of_file(&self) -> (String, String) {
+        let (head, rest): (Vec<&Piece>, Vec<&Piece>) = self.comments.iter().partition(|piece| piece.byte < self.first_code);
+        let joined = |pieces: Vec<&Piece>| pieces.iter().map(|piece| piece.text.as_str()).collect::<Vec<_>>().join(" ");
+        (joined(head), joined(rest))
+    }
 }
 
 /// Drop the punctuation a comment is written with, line by line, and leave the
@@ -1220,17 +1371,19 @@ const QUOTE_PREFIX_MAX: usize = 3;
 /// cai em nenhum dos trechos de `skip` e tem cara de texto
 /// ([`reads_as_text`]), o valor, a linha, a declaração que a contém e a
 /// marca ([`mark_of`]) pelas chamadas de log e pelas formas de erro da
-/// língua `lang`.
-fn fixed_texts(literals: &[Node], bytes: &[u8], skip: &[&Spans], declarations: &[Decl], lang: &str) -> Vec<Text> {
+/// língua `lang`. O literal escrito sem aspas vale como está escrito; o
+/// outro perde as aspas ([`literal_value`]).
+fn fixed_texts(literals: &[(Node, bool)], bytes: &[u8], skip: &[&Spans], declarations: &[Decl], lang: &str) -> Vec<Text> {
     let (logs, errors) = (log_calls(lang), error_forms(lang));
     let overlaps = |node: &Node| {
         skip.iter().flat_map(|spans| spans.iter()).any(|&(start, end)| start < node.end_byte() && node.start_byte() < end)
     };
     let mut texts: Vec<Text> = literals
         .iter()
-        .filter(|node| !overlaps(node))
-        .filter_map(|node| {
-            let value = one_line(literal_value(node.utf8_text(bytes).ok()?), TEXT_MAX_CHARS);
+        .filter(|(node, _)| !overlaps(node))
+        .filter_map(|(node, plain)| {
+            let written = node.utf8_text(bytes).ok()?;
+            let value = one_line(if *plain { written } else { literal_value(written) }, TEXT_MAX_CHARS);
             if !reads_as_text(&value) {
                 return None;
             }
@@ -1247,7 +1400,7 @@ fn fixed_texts(literals: &[Node], bytes: &[u8], skip: &[&Spans], declarations: &
 /// O valor de um literal de texto sem as aspas e o que vem antes delas
 /// (`r#"…"#`, `f'…'`, `@"…"`, `"""…"""`). O literal sem aspas perto do
 /// começo fica como foi escrito.
-fn literal_value(written: &str) -> &str {
+pub(crate) fn literal_value(written: &str) -> &str {
     let Some(open) = written.find(['"', '\'', '`']).filter(|&at| at <= QUOTE_PREFIX_MAX) else { return written };
     let Some(quote) = written[open..].chars().next() else { return written };
     let run = written[open..].chars().take_while(|&c| c == quote).count();
@@ -1517,7 +1670,7 @@ fn is_identifier(text: &str) -> bool {
 /// Split a `.scm` source into top-level patterns and keep the ones that compile
 /// against this grammar. Resilience over strictness: a query referencing a node
 /// a given grammar version lacks drops that one pattern, not the language.
-fn compile_good_patterns(lang: &Language, src: &str, name: &str) -> Vec<String> {
+pub(crate) fn compile_good_patterns(lang: &Language, src: &str, name: &str) -> Vec<String> {
     split_patterns(src)
         .into_iter()
         .filter(|p| match Query::new(lang, p) {
