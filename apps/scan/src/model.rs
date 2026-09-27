@@ -332,9 +332,18 @@ pub struct Module {
     /// regra do framework que ele importa, fora as do trecho de teste. O
     /// arquivo de teste e o escrito por máquina não guardam nenhuma.
     /// Guardadas com o módulo, como os textos fixos. Written only when there
-    /// is one.
+    /// is one. A rota que um prefixo escrito noutro arquivo alcança já sai com
+    /// ele, e guarda o caminho só com o que o próprio arquivo escreve
+    /// ([`Route::local`]): cada passada soma de novo, a partir dele, os
+    /// prefixos de fora.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
+    /// Os prefixos que o arquivo escreve para rotas de outros arquivos
+    /// ([`RouteLinks`]). Guardados com o módulo, como as rotas, para que a
+    /// passada que não relê o arquivo some os mesmos. Written only when there
+    /// is one.
+    #[serde(default, skip_serializing_if = "RouteLinks::is_empty")]
+    pub route_links: RouteLinks,
     /// Os comentários do começo do arquivo, antes do primeiro código — a
     /// documentação do módulo, o cabeçalho do arquivo —, limpos das marcas e
     /// juntados numa linha. O arquivo escrito por máquina não guarda. Written
@@ -388,6 +397,11 @@ pub const TEXT_PLAIN: &str = "text";
 /// prefixos juntados por barra, quem a atende — o nome da função, vazio
 /// quando ela é escrita ali mesmo, e a linha dela no arquivo — e o framework
 /// cuja regra a achou. O método e o caminho padronizado são a chave da rota.
+///
+/// O resto diz como os prefixos escritos noutros arquivos a alcançam: o nome
+/// do objeto em que ela se registra, o da declaração que a contém, o prefixo
+/// em aberto e, quando algum prefixo de fora a mudou, o caminho só com o que
+/// o próprio arquivo escreve.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Route {
     pub method: String,
@@ -397,6 +411,137 @@ pub struct Route {
     pub handler: String,
     pub line: usize,
     pub framework: String,
+    /// O nome do objeto em que a rota se registra (`router` em
+    /// `router.get(…)`); vazio quando ele não é um nome só.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub receiver: String,
+    /// O nome da declaração mais interna que contém a rota; vazio fora de
+    /// toda declaração.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
+    /// O prefixo em aberto: o objeto da rota, seguidos os grupos do arquivo, é
+    /// um parâmetro da declaração que a contém. Quem chama a declaração com um
+    /// grupo nessa posição lhe dá o prefixo ([`Handoff`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<OpenPrefix>,
+    /// O caminho só com o que o próprio arquivo escreve, quando um prefixo de
+    /// outro arquivo o mudou; `None` quando nenhum mudou.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<RoutePath>,
+}
+
+impl Route {
+    /// A rota só com o que o próprio arquivo escreve: sem os prefixos de
+    /// fora que uma passada lhe somou.
+    #[must_use]
+    pub fn local_form(&self) -> Self {
+        match &self.local {
+            Some(local) => Self { written: local.written.clone(), path: local.path.clone(), local: None, ..self.clone() },
+            None => self.clone(),
+        }
+    }
+}
+
+/// Um caminho de rota, ou um pedaço dele: como foi escrito, com os pedaços
+/// juntados por barra, e padronizado como o [`Route::path`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RoutePath {
+    pub written: String,
+    pub path: String,
+}
+
+/// A posição de um parâmetro numa declaração: o nome dela e a posição dele
+/// entre os parâmetros, contada do zero sem o receptor; `None` é o receptor,
+/// o parâmetro que recebe o objeto escrito antes do nome na chamada
+/// (`api` em `api.MapOrders()`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OpenPrefix {
+    pub declaration: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<usize>,
+}
+
+/// Os prefixos que um arquivo escreve para rotas de outros arquivos.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct RouteLinks {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mounts: Vec<Mount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub globals: Vec<GlobalPrefix>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoffs: Vec<Handoff>,
+}
+
+impl RouteLinks {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.mounts.is_empty() && self.globals.is_empty() && self.handoffs.is_empty()
+    }
+}
+
+/// A montagem de um nome que o arquivo não registra: o prefixo vale para as
+/// rotas do arquivo de onde o nome vem. Com `whole`, o nome recebe o módulo
+/// inteiro (o import padrão, o que recebe o `require`), e o prefixo vale
+/// para todas as rotas dele; sem, só para as registradas num objeto com esse
+/// nome ou escritas numa declaração com esse nome. A linha é a do nome, para
+/// achar a declaração a que a chamada escrita ali liga.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Mount {
+    pub framework: String,
+    pub target: String,
+    pub line: usize,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub whole: bool,
+    #[serde(flatten)]
+    pub prefix: RoutePath,
+}
+
+/// O prefixo de todas as rotas do framework no projeto do arquivo que o
+/// escreve (a pasta do manifesto mais perto acima dele), fora as rotas que
+/// uma das exclusões tira.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GlobalPrefix {
+    pub framework: String,
+    #[serde(flatten)]
+    pub prefix: RoutePath,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes: Vec<Exclusion>,
+}
+
+/// Uma rota que o prefixo global não alcança: a de caminho igual a `path`,
+/// ou que começa por ele com `starts`, do método `method` ([`ANY_METHOD`]
+/// para qualquer um).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Exclusion {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub starts: bool,
+    pub method: String,
+}
+
+impl Exclusion {
+    /// A exclusão tira o prefixo da rota de método `method` e caminho `path`.
+    #[must_use]
+    pub fn covers(&self, method: &str, path: &str) -> bool {
+        let same_path = if self.starts { path.starts_with(&self.path) } else { path == self.path };
+        same_path && (self.method == ANY_METHOD || self.method == method)
+    }
+}
+
+/// A entrega de um grupo: a chamada ao nome `name` que leva, na posição
+/// `position` ([`OpenPrefix::position`]), um grupo com o prefixo dado. Com
+/// `from`, o grupo nasce de um parâmetro da declaração em que a chamada
+/// está, e o prefixo dele soma, na frente, o que chega a esse parâmetro.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Handoff {
+    pub framework: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<usize>,
+    #[serde(flatten)]
+    pub prefix: RoutePath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<OpenPrefix>,
 }
 
 /// O método da rota que atende qualquer método HTTP.

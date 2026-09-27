@@ -6,8 +6,19 @@
   arguments: (arguments . (string) @route.path (_) @route.handler .))
 
 ; A montagem: `app.use('/api', router)` soma o prefixo às rotas registradas
-; em `router`.
+; em `router`, ou às do arquivo de onde vem o `router` trazido por import.
 ((call_expression
    function: (member_expression property: (property_identifier) @_use)
    arguments: (arguments . (string) @route.prefix (identifier) @route.target .))
  (#eq? @_use "use"))
+
+; O nome que recebe o módulo inteiro: o import padrão
+; (`import aves from './aves'`) e o que recebe o `require`
+; (`const aves = require('./aves')`). Montado, ele leva o prefixo a todas as
+; rotas do arquivo de onde vem.
+(import_clause (identifier) @route.module)
+
+((variable_declarator
+   name: (identifier) @route.module
+   value: (call_expression function: (identifier) @_require))
+ (#eq? @_require "require"))

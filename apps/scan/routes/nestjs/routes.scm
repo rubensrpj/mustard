@@ -48,3 +48,50 @@
    decorator: (decorator
      (call_expression function: (identifier) @route.method arguments: (arguments) @_arguments)))
  (#eq? @_arguments "()"))
+
+; O prefixo global: `app.setGlobalPrefix('api')`. Vale para as rotas do
+; projeto do arquivo que o escreve.
+((call_expression
+   function: (member_expression property: (property_identifier) @_global)
+   arguments: (arguments . (string) @route.prefix.global))
+ (#eq? @_global "setGlobalPrefix"))
+
+; Cada item de texto do `exclude`: `setGlobalPrefix('api', { exclude: ['saude'] })`.
+((call_expression
+   function: (member_expression property: (property_identifier) @_global)
+   arguments: (arguments
+     . (string) @route.prefix.global
+     . (object (pair key: (property_identifier) @_exclude value: (array (string) @route.exclude)))))
+ (#eq? @_global "setGlobalPrefix")
+ (#eq? @_exclude "exclude"))
+
+; O item de objeto do `exclude`: o `path` e o `method` dele, em matches
+; separados, que o objeto junta
+; (`{ path: 'saude', method: RequestMethod.GET }`).
+((call_expression
+   function: (member_expression property: (property_identifier) @_global)
+   arguments: (arguments
+     . (string) @route.prefix.global
+     . (object
+         (pair
+           key: (property_identifier) @_exclude
+           value: (array (object (pair key: (property_identifier) @_path value: (string) @route.exclude)) @route.exclude.item)))))
+ (#eq? @_global "setGlobalPrefix")
+ (#eq? @_exclude "exclude")
+ (#eq? @_path "path"))
+
+((call_expression
+   function: (member_expression property: (property_identifier) @_global)
+   arguments: (arguments
+     . (string) @route.prefix.global
+     . (object
+         (pair
+           key: (property_identifier) @_exclude
+           value: (array
+             (object
+               (pair
+                 key: (property_identifier) @_method
+                 value: (member_expression property: (property_identifier) @route.exclude.method))) @route.exclude.item)))))
+ (#eq? @_global "setGlobalPrefix")
+ (#eq? @_exclude "exclude")
+ (#eq? @_method "method"))

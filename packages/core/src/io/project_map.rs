@@ -323,9 +323,10 @@ pub const DECLS: MapBlock = block!("decls", version 7, {
 
 /// As rotas do servidor de cada arquivo: o método, o caminho padronizado e o
 /// escrito, a função que atende cada uma e a linha dela, e o framework cuja
-/// regra a achou.
-pub const ROUTES: MapBlock = block!("routes", version 1, {
-    "routes" at Place::Files => ["path" Text, "routes" Json]
+/// regra a achou; e os prefixos que o arquivo escreve para rotas de outros
+/// arquivos, que a passada seguinte soma de novo sem reler o arquivo.
+pub const ROUTES: MapBlock = block!("routes", version 2, {
+    "routes" at Place::Files => ["path" Text, "routes" Json, "route_links" Json]
 });
 
 /// O grafo: as importações resolvidas, os testes que cobrem cada arquivo, as
@@ -1762,6 +1763,7 @@ mod tests {
                  "reexports": {"io::leitor::Leitor": {"Leitor": "Leitor"}}, "unbound_heads": ["std"],
                  "routes": [{"method": "GET", "path": "pedidos/{}", "written": "/pedidos/:id", "handler": "alpha", "line": 1,
                              "framework": "axum"}],
+                 "route_links": {"mounts": [{"framework": "axum", "target": "rotas", "line": 4, "written": "api", "path": "api"}]},
                  "file_doc": "O leitor dos pedidos.", "file_comment": "o fim do leitor", "file_doc_in_body": 3},
                 {"path": "src/b.rs", "language": "rust", "loc": 20, "imports": ["crate::a"], "namespaces": [],
                  "declarations": [], "file_class": "generated", "marker": "@generated"}

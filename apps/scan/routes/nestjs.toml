@@ -6,18 +6,34 @@
 # método (`@Get(':id')`, `@Post('edit')`). O `version` fica de fora: o prefixo
 # de versão depende do `enableVersioning` escrito em outro arquivo.
 #
+# O prefixo global, `app.setGlobalPrefix('api')`, escrito no arquivo que sobe
+# a aplicação, vale para toda rota do NestJS no projeto dele: a pasta do
+# manifesto mais perto acima do arquivo (`route.prefix.global`). O `exclude`
+# do segundo argumento tira dele as rotas de cada item (`route.exclude`): o
+# texto (`'saude'`) ou o `path` do objeto
+# (`{ path: 'saude', method: RequestMethod.GET }`), com o `method` dele
+# (`route.exclude.method`), que junta ao caminho pelo objeto
+# (`route.exclude.item`). O caminho do item se compara padronizado, como o da
+# rota (`:id` vira `{}`); o método se lê na tabela `methods` sem olhar
+# maiúsculas, e o `ALL` vale qualquer um.
+#
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
 #   consulta lê. Ela precisa compilar na gramática de cada uma.
 # - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
-#   caminho que começa por ele seguido de separador (`@nestjs/common/…`).
+#   caminho que começa por ele seguido de separador (`@nestjs/common/…`). O
+#   `@nestjs/core` é o do arquivo que sobe a aplicação e escreve o prefixo
+#   global.
 # - `methods`: o nome do decorador e o método HTTP que ele diz; `"*"` é
 #   qualquer método. O decorador fora da tabela não faz rota.
 # - `param_prefixes`: o começo do pedaço de caminho que é parâmetro (`:id`).
+# - `exclude_wildcards`: o fim do item de `exclude` que o faz valer para toda
+#   rota que começa pelo resto (`'saude/(.*)'`, `'saude*'`).
 
 language = ["typescript", "tsx", "javascript"]
-imports = ["@nestjs/common"]
+imports = ["@nestjs/common", "@nestjs/core"]
 param_prefixes = [":"]
+exclude_wildcards = ["(.*)", "*"]
 
 [methods]
 Get = "GET"

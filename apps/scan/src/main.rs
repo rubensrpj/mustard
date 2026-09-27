@@ -288,6 +288,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 cites: extracted.cites,
                 texts: extracted.texts,
                 routes: extracted.routes,
+                route_links: extracted.route_links,
                 file_doc: extracted.file_doc,
                 file_comment: extracted.file_comment,
                 file_doc_in_body: extracted.file_doc_in_body,
@@ -380,10 +381,12 @@ fn routes_by_global_imports(
     let found = ingest::in_parallel(again, |(at, analyzer, globals, manifest_deps)| {
         let content = std::fs::read_to_string(ing.root.join(&modules[at].path)).ok()?;
         let project = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps };
-        Some((at, analyzer.extract(&content, keep, &project).routes))
+        let extracted = analyzer.extract(&content, keep, &project);
+        Some((at, extracted.routes, extracted.route_links))
     });
-    for (at, routes) in found.into_iter().flatten() {
+    for (at, routes, links) in found.into_iter().flatten() {
         modules[at].routes = routes;
+        modules[at].route_links = links;
     }
 }
 
@@ -425,6 +428,13 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     // Cada tipo com os membros dele e cada método com o do contrato que ele
     // cumpre, refeitos do projeto inteiro como as ligações acima.
     graph::link_members(&mut modules);
+    // Os prefixos que um arquivo escreve para as rotas de outro — a montagem
+    // de um nome trazido, o prefixo global, a entrega de um grupo — somam-se
+    // aqui, depois do grafo e das ligações, a partir do que cada arquivo
+    // guarda, em toda passada.
+    let mounted = routes::mounted_names(&modules);
+    let brought = graph::files_bringing(&modules, &ing.go_module, &packages, &aliases, &mounted);
+    routes::across_files(&mut modules, &ing.manifests, &brought);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     // The git history: only the commits since the previous pass, when that

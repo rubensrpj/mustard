@@ -470,3 +470,288 @@ fn a_javascript_file_that_requires_express_has_its_routes() {
     assert_eq!(keys(&map, "src/aves.js"), ["GET aves/{} -> ler:3"]);
     assert_eq!(routes(&map, "src/leitor.js"), json!([]));
 }
+
+/// Cada rota do arquivo como `MÉTODO caminho -> função`.
+fn served(map: &Value, path: &str) -> Vec<String> {
+    let mut served: Vec<String> = routes(map, path)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let handler = r.get("handler").and_then(Value::as_str).unwrap_or_default();
+            format!("{} {} -> {handler}", r["method"].as_str().unwrap(), r["path"].as_str().unwrap())
+        })
+        .collect();
+    served.sort();
+    served
+}
+
+/// O `package.json` de um projeto NestJS.
+const NEST_PACKAGE: &str = r#"{"name": "app", "dependencies": {"@nestjs/common": "^10.0.0", "@nestjs/core": "^10.0.0"}}"#;
+
+/// O `main.ts` que sobe a aplicação com o prefixo global `options`, escrito
+/// como vai no `setGlobalPrefix`.
+fn nest_main(options: &str) -> String {
+    format!(
+        "import {{ NestFactory }} from '@nestjs/core';\nimport {{ RequestMethod }} from '@nestjs/common';\n\
+         import {{ AppModule }} from './app.module';\n\nasync function bootstrap() {{\n  \
+         const app = await NestFactory.create(AppModule);\n  app.setGlobalPrefix({options});\n  \
+         await app.listen(3000);\n}}\nbootstrap();\n"
+    )
+}
+
+/// Um controlador NestJS com o prefixo `prefix` e um método `@method(path)`
+/// atendido por `handler`.
+fn nest_controller(prefix: &str, method: &str, path: &str, handler: &str) -> String {
+    format!(
+        "import {{ Controller, {method} }} from '@nestjs/common';\n\n@Controller('{prefix}')\n\
+         export class C {{\n  @{method}({path})\n  {handler}() {{}}\n}}\n"
+    )
+}
+
+/// O prefixo global do `main.ts` vale para as rotas do projeto dele — a
+/// pasta do `package.json` mais perto acima —, e não para as da pasta
+/// vizinha com `package.json` próprio.
+#[test]
+fn the_global_prefix_reaches_the_routes_of_its_own_project_only() {
+    let temp = project_with(&[
+        ("app/package.json", NEST_PACKAGE),
+        ("app/src/main.ts", &nest_main("'api'")),
+        ("app/src/x.controller.ts", &nest_controller("v1/x", "Post", "'edit'", "editar")),
+        ("vizinho/package.json", NEST_PACKAGE),
+        ("vizinho/src/y.controller.ts", &nest_controller("v1/x", "Post", "'edit'", "editar")),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "app/src/x.controller.ts"), ["POST api/v1/x/edit -> editar"]);
+    let x = &routes(&map, "app/src/x.controller.ts")[0];
+    assert_eq!(x["written"], json!("api/v1/x/edit"));
+    assert_eq!(x["local"], json!({"written": "v1/x/edit", "path": "v1/x/edit"}));
+    assert_eq!(served(&map, "vizinho/src/y.controller.ts"), ["POST v1/x/edit -> editar"]);
+}
+
+/// Os controladores de `saude`, `pedidos/:id` e `saude/x` sob o prefixo
+/// global escrito em `options`.
+fn nest_with_exclusions(options: &str) -> (tempfile::TempDir, Value) {
+    let temp = project_with(&[
+        ("package.json", NEST_PACKAGE),
+        ("src/main.ts", &nest_main(options)),
+        ("src/saude.controller.ts", &nest_controller("saude", "Get", "", "ver")),
+        ("src/pedidos.controller.ts", &nest_controller("pedidos", "Get", "':id'", "ler")),
+        ("src/detalhe.controller.ts", &nest_controller("saude", "Get", "'x'", "detalhe")),
+    ]);
+    let (map, _) = scan(temp.path());
+    (temp, map)
+}
+
+/// O `exclude` tira o prefixo global da rota de caminho igual ao do item,
+/// padronizado como o dela; com `method`, só da rota desse método; o item que
+/// termina em `(.*)`, de toda rota que começa pelo resto.
+#[test]
+fn the_exclude_of_the_global_prefix_takes_it_off_the_routes_of_each_item() {
+    let (_temp, map) = nest_with_exclusions("'api', { exclude: ['saude'] }");
+    assert_eq!(served(&map, "src/saude.controller.ts"), ["GET saude -> ver"]);
+    assert_eq!(served(&map, "src/pedidos.controller.ts"), ["GET api/pedidos/{} -> ler"]);
+    assert_eq!(served(&map, "src/detalhe.controller.ts"), ["GET api/saude/x -> detalhe"]);
+
+    let (_temp, map) = nest_with_exclusions("'api', { exclude: [{ path: 'saude', method: RequestMethod.POST }] }");
+    assert_eq!(served(&map, "src/saude.controller.ts"), ["GET api/saude -> ver"], "a POST exclusion leaves the GET");
+
+    let (_temp, map) = nest_with_exclusions("'api', { exclude: [{ method: RequestMethod.GET, path: 'pedidos/:id' }] }");
+    assert_eq!(served(&map, "src/pedidos.controller.ts"), ["GET pedidos/{} -> ler"]);
+
+    let (_temp, map) = nest_with_exclusions("'api', { exclude: ['saude/(.*)'] }");
+    assert_eq!(served(&map, "src/detalhe.controller.ts"), ["GET saude/x -> detalhe"]);
+    assert_eq!(served(&map, "src/saude.controller.ts"), ["GET api/saude -> ver"]);
+}
+
+/// Um roteador de Express escrito num arquivo e montado noutro: o import
+/// padrão e o `require` trazem o módulo inteiro, e o prefixo vale para todas
+/// as rotas dele; o nome trazido entre chaves, só para as do objeto com esse
+/// nome.
+#[test]
+fn a_router_brought_from_another_file_takes_the_prefix_of_the_mount() {
+    let router = "import { Router } from 'express';\n\nconst router = Router();\nrouter.get('/:id', ler);\n\n\
+                  function ler() {}\n\nexport default router;\n";
+    let app = "import express from 'express';\nimport aves from './aves';\n\nconst app = express();\n\
+               app.use('/aves', aves);\n";
+    let router_js = "const express = require('express');\nconst router = express.Router();\n\
+                     router.get('/:id', ler);\nfunction ler() {}\nmodule.exports = router;\n";
+    let app_js = "const express = require('express');\nconst aves = require('./aves');\nconst app = express();\n\
+                  app.use('/aves', aves);\n";
+    let named = "import { Router } from 'express';\n\nexport const aves = Router();\naves.get('/:id', ler);\n\
+                 export const outro = Router();\noutro.get('/outro', ler);\n\nfunction ler() {}\n";
+    let named_app = "import express from 'express';\nimport { aves } from './passaros';\n\nconst app = express();\n\
+                     app.use('/aves', aves);\n";
+    let temp = project_with(&[
+        ("ts/aves.ts", router),
+        ("ts/app.ts", app),
+        ("js/aves.js", router_js),
+        ("js/app.js", app_js),
+        ("named/passaros.ts", named),
+        ("named/app.ts", named_app),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "ts/aves.ts"), ["GET aves/{} -> ler"]);
+    assert_eq!(served(&map, "js/aves.js"), ["GET aves/{} -> ler"]);
+    assert_eq!(served(&map, "named/passaros.ts"), ["GET aves/{} -> ler", "GET outro -> ler"]);
+}
+
+/// A função de rotas do axum escrita noutro arquivo e aninhada pelo caminho
+/// (`pedidos::rotas()`) ou pelo nome trazido no `use`.
+#[test]
+fn an_axum_function_from_another_file_takes_the_prefix_of_the_nest() {
+    let pedidos = "use axum::{routing::get, Router};\n\npub fn rotas() -> Router {\n    \
+                   Router::new().route(\"/pedidos/:id\", get(ler))\n}\n\nasync fn ler() {}\n";
+    let by_path = "use axum::Router;\n\nmod pedidos;\n\nfn app() -> Router {\n    \
+                   Router::new().nest(\"/api\", pedidos::rotas())\n}\n";
+    let by_use = "use axum::Router;\nuse crate::pedidos::rotas;\n\nmod pedidos;\n\nfn app() -> Router {\n    \
+                  Router::new().nest(\"/api\", rotas())\n}\n";
+    for main in [by_path, by_use] {
+        let temp = project_with(&[
+            ("Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\n\n[dependencies]\naxum = \"0.7\"\n"),
+            ("src/pedidos.rs", pedidos),
+            ("src/main.rs", main),
+        ]);
+        let (map, _) = scan(temp.path());
+        assert_eq!(served(&map, "src/pedidos.rs"), ["GET api/pedidos/{} -> ler"], "{main}");
+    }
+}
+
+/// O projeto web de C# com os arquivos dados, sob `Api/`.
+fn web_project(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let web = csproj("Microsoft.NET.Sdk.Web");
+    let mut all: Vec<(String, String)> = vec![("Api/Api.csproj".to_string(), web)];
+    all.extend(files.iter().map(|(path, body)| ((*path).to_string(), (*body).to_string())));
+    let borrowed: Vec<(&str, &str)> = all.iter().map(|(path, body)| (path.as_str(), body.as_str())).collect();
+    project_with(&borrowed)
+}
+
+/// O grupo da API mínima vale em qualquer ponto da cadeia que começa nele,
+/// como objeto direto da rota e como objeto de outro grupo.
+#[test]
+fn a_minimal_api_group_joins_through_a_chain_a_direct_call_and_a_group_of_a_group() {
+    let program = "var app = WebApplication.Create(args);\n\
+                   var ep = app.MapGroup(\"/pedidos\").WithTags(\"Pedidos\").RequireAuthorization();\n\
+                   ep.MapGet(\"/{id}\", Ler).WithName(\"ler\");\n\
+                   app.MapGroup(\"/a\").MapGet(\"/b\", B);\n\
+                   var x = app.MapGroup(\"/x\");\nvar y = x.MapGroup(\"/y\");\ny.MapGet(\"/z\", Z);\n\
+                   var p = \"/montado\";\napp.MapGet(p, M);\n";
+    let temp = web_project(&[("Api/Program.cs", program)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "Api/Program.cs"), ["GET a/b -> B", "GET pedidos/{} -> Ler", "GET x/y/z -> Z"]);
+}
+
+/// A extensão que registra rotas no grupo que recebe.
+const ORDERS: &str = "namespace Loja;\n\npublic static class Orders\n{\n    \
+    public static void MapOrders(this IEndpointRouteBuilder g)\n    {\n        g.MapGet(\"/orders/{id}\", Ler);\n    }\n\n    \
+    static string Ler(int id) => \"ok\";\n}\n";
+
+/// O grupo que chega pelo objeto da chamada à extensão, guardado numa
+/// variável ou escrito na cadeia, soma o prefixo às rotas dela; a extensão de
+/// mesmo nome noutro projeto segue sem ele.
+#[test]
+fn a_group_handed_to_an_extension_prefixes_its_routes_in_the_same_project() {
+    for program in [
+        "var app = WebApplication.Create(args);\nvar api = app.MapGroup(\"/api\");\napi.MapOrders();\n",
+        "var app = WebApplication.Create(args);\napp.MapGroup(\"/api\").MapOrders();\n",
+    ] {
+        let temp = web_project(&[
+            ("Api/Program.cs", program),
+            ("Api/Orders.cs", ORDERS),
+            ("Outro/Outro.csproj", &csproj("Microsoft.NET.Sdk.Web")),
+            ("Outro/Orders.cs", ORDERS),
+        ]);
+        let (map, _) = scan(temp.path());
+        assert_eq!(served(&map, "Api/Orders.cs"), ["GET api/orders/{} -> Ler"], "{program}");
+        assert_eq!(served(&map, "Outro/Orders.cs"), ["GET orders/{} -> Ler"], "{program}");
+    }
+}
+
+/// A interface dos módulos, como na prova.
+const MODULE_CONTRACT: &str = "namespace Loja;\n\npublic interface IModule\n{\n    \
+    IEndpointRouteBuilder MapEndpoints(IEndpointRouteBuilder endpoints, ApiVersionSet versionSet);\n}\n";
+
+/// A extensão que monta o grupo `/api` e o entrega a cada módulo.
+const MODULE_EXTENSIONS: &str = "namespace Loja;\n\npublic static class ModuleExtensions\n{\n    \
+    public static WebApplication MapEndpoints(this WebApplication app, ApiVersionSet versionSet)\n    {\n        \
+    var apiGroup = app.MapGroup(\"/api\");\n        foreach (var module in Modules)\n        {\n            \
+    module.MapEndpoints(apiGroup, versionSet);\n        }\n        return app;\n    }\n}\n";
+
+/// Um módulo que registra as rotas no grupo que recebe.
+const ROLE_MODULE: &str = "namespace Loja;\n\npublic class RoleModule : IModule\n{\n    \
+    public IEndpointRouteBuilder MapEndpoints(IEndpointRouteBuilder endpoints, ApiVersionSet versionSet)\n    {\n        \
+    var ep = endpoints.MapGroup(\"/roles\").WithTags(\"Roles\").RequireAuthorization();\n        \
+    ep.MapGet(\"/{id:guid}\", RoleEndPoints.GetAsync).WithApiVersionSet(versionSet);\n        return endpoints;\n    }\n}\n";
+
+/// A forma da prova: a extensão entrega o grupo `/api` a cada módulo pelo
+/// argumento, na posição do parâmetro que o módulo declara.
+#[test]
+fn a_group_handed_as_an_argument_prefixes_the_routes_of_each_module() {
+    let temp = web_project(&[
+        ("Api/Infra/IModule.cs", MODULE_CONTRACT),
+        ("Api/Infra/ModuleExtensions.cs", MODULE_EXTENSIONS),
+        ("Api/Modules/Roles/RoleModule.cs", ROLE_MODULE),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "Api/Modules/Roles/RoleModule.cs"), ["GET api/roles/{} -> GetAsync"]);
+}
+
+/// A função que recebe o grupo e o passa adiante, com um grupo no meio, soma
+/// os dois prefixos.
+#[test]
+fn a_group_passed_along_by_another_extension_sums_every_prefix() {
+    let v1 = "namespace Loja;\n\npublic static class V1\n{\n    \
+              public static void MapV1(this RouteGroupBuilder g)\n    {\n        g.MapGroup(\"/v1\").MapOrders();\n    }\n}\n";
+    let program = "var app = WebApplication.Create(args);\napp.MapGroup(\"/api\").MapV1();\n";
+    let temp = web_project(&[("Api/Program.cs", program), ("Api/V1.cs", v1), ("Api/Orders.cs", ORDERS)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "Api/Orders.cs"), ["GET api/v1/orders/{} -> Ler"]);
+}
+
+/// A passada que lê só o arquivo mudado — o do roteador montado noutro, o
+/// que escreve o prefixo global, o que entrega o grupo — dá as rotas da
+/// passada inteira, sem somar o prefixo de novo.
+#[test]
+fn a_pass_that_reads_only_what_changed_sums_the_prefixes_of_other_files_once() {
+    let router = "import { Router } from 'express';\n\nconst router = Router();\nrouter.get('/:id', ler);\n\n\
+                  function ler() {}\n\nexport default router;\n";
+    let app = "import express from 'express';\nimport aves from './aves';\n\nconst app = express();\n\
+               app.use('/aves', aves);\n";
+    let program = "var app = WebApplication.Create(args);\nvar api = app.MapGroup(\"/api\");\napi.MapOrders();\n";
+    let temp = web_project(&[
+        ("Api/Program.cs", program),
+        ("Api/Orders.cs", ORDERS),
+        ("web/aves.ts", router),
+        ("web/app.ts", app),
+        ("nest/package.json", NEST_PACKAGE),
+        ("nest/src/main.ts", &nest_main("'api'")),
+        ("nest/src/pedidos.controller.ts", &nest_controller("pedidos", "Get", "':id'", "ler")),
+    ]);
+    let dir = temp.path();
+    let (first, _) = scan(dir);
+    assert_eq!(served(&first, "web/aves.ts"), ["GET aves/{} -> ler"]);
+    assert_eq!(served(&first, "nest/src/pedidos.controller.ts"), ["GET api/pedidos/{} -> ler"]);
+    assert_eq!(served(&first, "Api/Orders.cs"), ["GET api/orders/{} -> Ler"]);
+
+    let steps: [(&str, String, &str, &[&str]); 4] = [
+        ("web/aves.ts", router.replace("router.get('/:id', ler);", "router.get('/:id', ler);\nrouter.post('/', ler);"),
+         "web/aves.ts", &["GET aves/{} -> ler", "POST aves -> ler"]),
+        ("nest/src/main.ts", nest_main("'v2'"), "nest/src/pedidos.controller.ts", &["GET v2/pedidos/{} -> ler"]),
+        ("Api/Program.cs", program.replace("\"/api\"", "\"/loja\""), "Api/Orders.cs", &["GET loja/orders/{} -> Ler"]),
+        ("Api/Program.cs", "var app = WebApplication.Create(args);\n".to_string(), "Api/Orders.cs", &["GET orders/{} -> Ler"]),
+    ];
+    for (path, body, file, expected) in steps {
+        std::fs::write(dir.join(path), body).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", path]);
+        let (partial, report) = scan(dir);
+        assert_eq!(report["full"], json!(false), "{path}: {report}");
+        assert_eq!(report["read"], json!([path]), "{path}: {report}");
+        let whole_out = tempfile::tempdir().unwrap();
+        let (whole, _) = model::scan(dir, whole_out.path(), &[]);
+        assert_eq!(served(&whole, file), expected, "{path}: the whole pass");
+        for other in ["web/aves.ts", "nest/src/pedidos.controller.ts", "Api/Orders.cs"] {
+            assert_eq!(routes(&partial, other), routes(&whole, other), "{path}: {other}");
+        }
+    }
+}

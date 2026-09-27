@@ -438,7 +438,8 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
             "    RawRouteRule {{ framework: {framework:?}, languages: &[{}], imports: &[{}], \
              manifest_dependencies: &[{}], query: {query:?}, \
              methods: &[{}], param_prefixes: &[{}], param_wrappers: &[{}], reset_marks: &[{}], \
-             path_starts: &[{}], class_marker: {class_marker:?}, class_suffix: {class_suffix:?} }},",
+             path_starts: &[{}], exclude_wildcards: &[{}], class_marker: {class_marker:?}, \
+             class_suffix: {class_suffix:?} }},",
             quoted_list(&rule_languages),
             quoted_list(&imports),
             quoted_list(&list("manifest_dependencies", false)),
@@ -447,6 +448,7 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
             pairs(&wrappers),
             quoted_list(&list("reset_marks", false)),
             quoted_list(&list("path_starts", false)),
+            quoted_list(&list("exclude_wildcards", false)),
         )
         .expect("the generated table is a String, which never fails to write");
     }

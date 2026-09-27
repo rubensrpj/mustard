@@ -21,7 +21,8 @@
   arguments: (arguments . (_) @route.handler .))
 
 ; O prefixo: `.nest("/api", …)`. Vale para o roteador escrito ali mesmo e,
-; quando ali se chama uma função (`rotas()`), para as rotas escritas nela.
+; quando ali se chama uma função (`rotas()`, `pedidos::rotas()`), para as
+; rotas escritas nela, neste arquivo ou no arquivo a que a chamada liga.
 ((call_expression
    function: (field_expression field: (field_identifier) @_nest)
    arguments: (arguments . (string_literal) @route.prefix . (_) @route.scope .))
@@ -30,4 +31,11 @@
 ((call_expression
    function: (field_expression field: (field_identifier) @_nest)
    arguments: (arguments . (string_literal) @route.prefix . (call_expression function: (identifier) @route.target) .))
+ (#eq? @_nest "nest"))
+
+((call_expression
+   function: (field_expression field: (field_identifier) @_nest)
+   arguments: (arguments
+     . (string_literal) @route.prefix
+     . (call_expression function: (scoped_identifier name: (identifier) @route.target)) .))
  (#eq? @_nest "nest"))

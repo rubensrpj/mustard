@@ -875,7 +875,7 @@ pub(crate) fn global_reach(modules: &[Module], manifests: &[crate::model::Manife
         .enumerate()
         .filter(|(_, g)| !g.global_imports.is_empty())
         .map(|(writer, g)| {
-            let scope = nearest_manifest_dir(&g.path, manifests).unwrap_or_else(|| folder_of(&g.path));
+            let scope = project_dir(&g.path, manifests);
             let reached = modules
                 .iter()
                 .enumerate()
@@ -883,6 +883,43 @@ pub(crate) fn global_reach(modules: &[Module], manifests: &[crate::model::Manife
                 .map(|(at, _)| at)
                 .collect();
             (writer, reached)
+        })
+        .collect()
+}
+
+/// A pasta do projeto de `path`: a do manifesto mais perto acima dele, ou a
+/// pasta dele quando nenhum manifesto está acima. É o alcance do import
+/// global ([`global_reach`]) e dos prefixos de rota escritos para o projeto
+/// inteiro.
+pub(crate) fn project_dir<'a>(path: &'a str, manifests: &'a [crate::model::Manifest]) -> &'a str {
+    nearest_manifest_dir(path, manifests).unwrap_or_else(|| folder_of(path))
+}
+
+/// Os arquivos do projeto de onde vem cada nome pedido, pela posição em
+/// `modules` do arquivo que o usa e pelo nome: os que o import que traz o
+/// nome a esse arquivo ([`Module::brought`]) nomeia, resolvido como todo
+/// import. Sem pedido, o resolvedor nem se monta.
+pub(crate) fn files_bringing(
+    modules: &[Module],
+    go_module: &Option<String>,
+    packages: &[(String, String)],
+    aliases: &PathAliases,
+    asks: &[(usize, String)],
+) -> BTreeMap<(usize, String), Vec<String>> {
+    if asks.is_empty() {
+        return BTreeMap::new();
+    }
+    let resolver = Resolver::new(modules, go_module, packages, aliases);
+    asks.iter()
+        .map(|(at, name)| {
+            let m = &modules[*at];
+            let files: BTreeSet<String> = m
+                .brought
+                .iter()
+                .filter(|(_, names)| names.contains(name))
+                .flat_map(|(imp, _)| import_files(&resolver, m, imp))
+                .collect();
+            ((*at, name.clone()), files.into_iter().collect())
         })
         .collect()
 }
@@ -908,7 +945,7 @@ fn folder_of(path: &str) -> &str {
 }
 
 /// The path sits somewhere under `dir` (the root holds everything).
-fn is_under(path: &str, dir: &str) -> bool {
+pub(crate) fn is_under(path: &str, dir: &str) -> bool {
     dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
 }
 

@@ -28,7 +28,7 @@
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.
 
-use crate::model::{CallSite, Decl, Route, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
+use crate::model::{CallSite, Decl, Route, RouteLinks, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
 use crate::routes::{self, RouteRule};
 use mustard_core::domain::project_map::outer_declarations;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -79,6 +79,8 @@ pub(crate) struct Extracted {
     pub texts: Vec<Text>,
     /// As rotas do servidor registradas no arquivo, fora do trecho de teste.
     pub routes: Vec<Route>,
+    /// Os prefixos que o arquivo escreve para rotas de outros arquivos.
+    pub route_links: RouteLinks,
     /// Os comentários do começo do arquivo, antes do primeiro código, numa
     /// linha.
     pub file_doc: String,
@@ -971,7 +973,8 @@ impl Analyzer {
         out.namespaces.dedup();
         if keep.texts_and_routes {
             let imports: Vec<String> = out.imports.iter().chain(&out.global_imports).cloned().collect();
-            out.routes = routes::find(&self.routes, root, bytes, &imports, project, &out.declarations, &test_blocks);
+            let found = routes::find(&self.routes, root, bytes, &imports, project, &out.declarations, &test_blocks);
+            (out.routes, out.route_links) = (found.routes, found.links);
         }
         out
     }
