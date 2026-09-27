@@ -1,6 +1,6 @@
-//! End-to-end contract over machine-written-file classification (classify.rs
-//! + generated-markers.toml), driven through the binary: the committed
-//! `tests/fixtures/generated_mix` project — a generator banner, a
+//! End-to-end contract over machine-written-file classification
+//! (classify.rs and generated-markers.toml), driven through the binary: the
+//! committed `tests/fixtures/generated_mix` project — a generator banner, a
 //! `.gitattributes` override in BOTH directions, and a hand-written control —
 //! proves scan stamps `file_class`/`marker` additively on the model and that
 //! overrides beat the catalog.
