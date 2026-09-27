@@ -13,6 +13,8 @@ skip_dirs = [".git", ".claude", "node_modules", "target", "bin", "obj", "dist", 
 #   kind            label stored on the project (free-form, from the repo's world)
 #   filename / ext  match by exact filename OR by extension(s)
 #   format          generic reader: json | xml-attr | xml-text | toml-sections | yaml-section | gomod
+#                   | none (no dependency reader: the file only marks the project;
+#                   a manifest written in a source language is still read as code)
 #   name            project name rule: "dir" (parent folder) | "stem" (filename without ext)
 #   deps            selector(s) for dependencies (meaning depends on format)
 #   scripts         (json) object path whose entries are build/codegen scripts
@@ -81,3 +83,16 @@ format = "toml-sections"
 name = "dir"
 package_pattern = '^\s*name\s*=\s*"([^"]+)"'
 deps = ["dependencies", "dev-dependencies", "build-dependencies"]
+
+[[manifest]]
+kind = "pyproject"
+filename = "pyproject.toml"
+format = "toml-sections"
+name = "dir"
+deps = ["tool.poetry.dependencies", "tool.poetry.dev-dependencies"]
+
+[[manifest]]
+kind = "setuptools"
+filename = "setup.py"
+format = "none"
+name = "dir"

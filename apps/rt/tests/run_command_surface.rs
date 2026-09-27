@@ -408,7 +408,7 @@ fn o_despejo_do_mapa_traz_uma_entrada_por_tabela() {
         names,
         [
             "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
-            "graph", "fan_in", "history_paths", "commits", "blocks"
+            "graph", "fan_in", "history_base", "history_paths", "commits", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"
     );

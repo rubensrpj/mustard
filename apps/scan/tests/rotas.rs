@@ -755,3 +755,153 @@ fn a_pass_that_reads_only_what_changed_sums_the_prefixes_of_other_files_once() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// As chamadas da tela ligadas às rotas do servidor
+// ---------------------------------------------------------------------------
+
+/// Um servidor Express com as rotas `(método, caminho, função)`, uma por
+/// linha a partir da quarta, e as funções depois delas.
+fn express_server(routes: &[(&str, &str, &str)]) -> String {
+    let mut body = String::from("import express from 'express';\n\nconst router = express.Router();\n");
+    for (method, path, handler) in routes {
+        body.push_str(&format!("router.{method}('{path}', {handler});\n"));
+    }
+    body.push('\n');
+    for (_, _, handler) in routes {
+        body.push_str(&format!("function {handler}(req, res) {{}}\n"));
+    }
+    body
+}
+
+/// O `package.json` da tela, que declara o axios.
+const SCREEN_PACKAGE: &str = "{\n  \"name\": \"tela\",\n  \"dependencies\": {\n    \"axios\": \"^1.7.0\"\n  }\n}\n";
+
+/// As chamadas da tela que alcançam a rota de `method` e `path` do arquivo.
+fn called_by(map: &Value, file: &str, method: &str, path: &str) -> Value {
+    let routes = routes(map, file);
+    let route = routes.as_array().unwrap().iter().find(|r| r["method"] == json!(method) && r["path"] == json!(path));
+    route.unwrap_or_else(|| panic!("{method} {path} em {file}: {routes}")).get("called_by").cloned().unwrap_or(json!([]))
+}
+
+/// As chamadas da tela que o mapa guarda para o arquivo.
+fn route_calls(map: &Value, path: &str) -> Value {
+    let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!(path));
+    module.unwrap_or_else(|| panic!("{path} no mapa")).get("route_calls").cloned().unwrap_or(json!([]))
+}
+
+/// A tela que faz um cliente com `axios.create({ baseURL: '/api' })` e chama
+/// `client.get(`/pedidos/${id}`)` liga provada ao `GET api/pedidos/{}` do
+/// servidor: a base entra na frente do caminho, e o `${id}` vira a lacuna,
+/// como o `:id` da rota.
+#[test]
+fn a_screen_call_through_a_client_with_a_base_links_proven_to_the_route_and_its_function() {
+    let screen = "import axios from 'axios';\n\nconst client = axios.create({ baseURL: '/api' });\n\n\
+                  export function carregar(id: string) {\n  return client.get(`/pedidos/${id}`);\n}\n";
+    let temp = project_with(&[
+        ("servidor/src/pedidos.ts", &express_server(&[("get", "/api/pedidos/:id", "ler")])),
+        ("tela/src/pedidos.ts", screen),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        route_calls(&map, "tela/src/pedidos.ts"),
+        json!([{"method": "GET", "path": "pedidos/{}", "written": "/pedidos/${id}", "line": 6, "owner": "carregar",
+                "framework": "axios", "base": {"written": "/api", "path": "api"}}])
+    );
+    assert_eq!(called_by(&map, "servidor/src/pedidos.ts", "GET", "api/pedidos/{}"), json!(["tela/src/pedidos.ts:6:carregar"]));
+}
+
+/// O cliente trazido de outro arquivo — pelo nome ou pelo padrão que o
+/// arquivo exporta — põe a base dele na frente do caminho, e o número no
+/// meio do caminho vira a lacuna: as duas chamadas ligam provadas. A chamada
+/// que só casa com a rota sem o `v1` dela liga suspeita, com a função que
+/// atende essa rota. A passada que relê só o servidor liga as chamadas das
+/// telas que ela não releu como a passada inteira.
+#[test]
+fn a_client_brought_from_another_file_carries_its_base_and_a_call_without_the_version_is_suspect() {
+    let temp = project_with(&[
+        ("servidor/package.json", NEST_PACKAGE),
+        ("servidor/src/main.ts", &nest_main("'api'")),
+        ("servidor/src/planos.controller.ts", &nest_controller("v1/puzzle/pcp/plans", "Post", "'edit'", "editar")),
+        ("servidor/src/pedidos.controller.ts", &nest_controller("pedidos", "Get", "':id'", "ler")),
+        ("tela/package.json", SCREEN_PACKAGE),
+        ("tela/src/api.ts", "import axios from 'axios';\n\nexport const client = axios.create({ baseURL: '/api' });\n"),
+        ("tela/src/http.ts", "import axios from 'axios';\n\nexport default axios.create({ baseURL: '/api' });\n"),
+        ("tela/src/planos.ts", "import { client } from './api';\n\nexport function salvar() {\n  return client.post('puzzle/pcp/plans/edit');\n}\n"),
+        ("tela/src/pedidos.ts", "import { client } from './api';\n\nexport function abrir() {\n  return client.get('/pedidos/42');\n}\n"),
+        ("tela/src/itens.ts", "import http from './http';\n\nexport function listar() {\n  return http.get('/pedidos/7');\n}\n"),
+    ]);
+    let dir = temp.path();
+    let (first, _) = scan(dir);
+    assert_eq!(
+        called_by(&first, "servidor/src/pedidos.controller.ts", "GET", "api/pedidos/{}"),
+        json!(["tela/src/itens.ts:4:listar", "tela/src/pedidos.ts:4:abrir"])
+    );
+    assert_eq!(
+        called_by(&first, "servidor/src/planos.controller.ts", "POST", "api/v1/puzzle/pcp/plans/edit"),
+        json!([{"at": "tela/src/planos.ts:4:salvar", "candidates": ["servidor/src/planos.controller.ts:5:editar"]}])
+    );
+
+    let controller = dir.join("servidor/src/pedidos.controller.ts");
+    let body = std::fs::read_to_string(&controller).unwrap();
+    std::fs::write(&controller, format!("// Os pedidos.\n{body}")).unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "comentario"]);
+    let (partial, report) = scan(dir);
+    assert_eq!(report["read"], json!(["servidor/src/pedidos.controller.ts"]), "{report}");
+    let whole_out = tempfile::tempdir().unwrap();
+    let (whole, _) = model::scan(dir, whole_out.path(), &[]);
+    for file in ["servidor/src/pedidos.controller.ts", "servidor/src/planos.controller.ts"] {
+        assert_eq!(routes(&partial, file), routes(&whole, file), "{file}");
+    }
+    assert_eq!(
+        called_by(&partial, "servidor/src/pedidos.controller.ts", "GET", "api/pedidos/{}"),
+        json!(["tela/src/itens.ts:4:listar", "tela/src/pedidos.ts:4:abrir"])
+    );
+}
+
+/// O `fetch` solto, sem import, liga ao método que as opções dizem, e sem
+/// elas ao `GET`.
+#[test]
+fn a_bare_fetch_links_to_the_method_its_options_name_or_to_get() {
+    let screen = "export async function enviar(corpo: string) {\n  return fetch('/api/pedidos', { method: 'POST', body: corpo });\n}\n\n\
+                  export async function listar() {\n  return fetch('/api/pedidos');\n}\n";
+    let temp = project_with(&[
+        ("servidor/src/pedidos.ts", &express_server(&[("get", "/api/pedidos", "listar"), ("post", "/api/pedidos", "criar")])),
+        ("tela/src/pedidos.ts", screen),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(called_by(&map, "servidor/src/pedidos.ts", "POST", "api/pedidos"), json!(["tela/src/pedidos.ts:2:enviar"]));
+    assert_eq!(called_by(&map, "servidor/src/pedidos.ts", "GET", "api/pedidos"), json!(["tela/src/pedidos.ts:6:listar"]));
+}
+
+/// O caminho guardado numa variável, ou montado sobre ela, não é texto
+/// escrito na chamada: nem o cliente nem o `fetch` fazem chamada com ele, e
+/// a rota fica sem ligação.
+#[test]
+fn a_path_kept_in_a_variable_makes_no_call_and_no_link() {
+    let screen = "import axios from 'axios';\n\nconst client = axios.create({ baseURL: '/api' });\n\
+                  const caminho = '/pedidos';\nconst base = '/api';\n\nexport function carregar() {\n  client.get(caminho);\n  \
+                  fetch(caminho);\n  return fetch(`${base}/pedidos`);\n}\n";
+    let temp = project_with(&[
+        ("servidor/src/pedidos.ts", &express_server(&[("get", "/api/pedidos", "listar")])),
+        ("tela/src/pedidos.ts", screen),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(route_calls(&map, "tela/src/pedidos.ts"), json!([]));
+    assert_eq!(called_by(&map, "servidor/src/pedidos.ts", "GET", "api/pedidos"), json!([]));
+}
+
+/// Um método chamado `fetch` de outro objeto (`repo.fetch('/api/pedidos')`)
+/// não é o `fetch` solto: não faz chamada da tela.
+#[test]
+fn a_method_named_like_the_bare_call_is_not_a_screen_call() {
+    let screen = "export function carregar(repo: { fetch(p: string): void }) {\n  return repo.fetch('/api/pedidos');\n}\n";
+    let temp = project_with(&[
+        ("servidor/src/pedidos.ts", &express_server(&[("get", "/api/pedidos", "listar")])),
+        ("tela/src/repo.ts", screen),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(route_calls(&map, "tela/src/repo.ts"), json!([]));
+    assert_eq!(called_by(&map, "servidor/src/pedidos.ts", "GET", "api/pedidos"), json!([]));
+}

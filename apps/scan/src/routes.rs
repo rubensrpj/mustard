@@ -58,6 +58,30 @@
 //!
 //! O caminho só conta quando é texto escrito ali: o montado numa variável não
 //! casa com a captura de literal, e não faz rota.
+//!
+//! A regra da tela acha as chamadas que a tela faz às rotas do servidor
+//! ([`crate::model::RouteCall`]), e não rotas. Ela liga como a do servidor,
+//! ou em todo arquivo das línguas dela, quando a regra diz que é global. As
+//! capturas dela:
+//!
+//! - `client.method`: o nome chamado, que a tabela `methods` leva ao método
+//!   HTTP (`get` em `api.get('/pedidos')`); o nome fora da tabela não é
+//!   chamada.
+//! - `client.path`: o literal do caminho. O que começa por um parâmetro é
+//!   montado sobre um valor, como a base guardada numa variável, e não liga.
+//! - `client.option`: o método escrito nas opções da chamada, que vale no
+//!   lugar do que o nome diz.
+//! - `client.receiver`: o objeto antes do nome. A chamada conta quando ele é
+//!   o objeto da biblioteca — um nome que o import dela traz —, um cliente
+//!   feito no arquivo ou um nome trazido de outro arquivo, cujo cliente a
+//!   ligação acha lá. Sem objeto, a chamada solta conta.
+//! - `client.made`: a chamada que faz um cliente, com o objeto que a faz em
+//!   `client.factory` — que precisa ser o da biblioteca —, o nome que o
+//!   recebe em `client.instance` e o literal da base em `client.base`. Sem
+//!   `client.instance`, o cliente é o que o arquivo exporta como padrão.
+//!
+//! Uma regra é do servidor ou da tela: a consulta dela usa as capturas de um
+//! lado só.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
@@ -68,8 +92,8 @@ use tree_sitter::{Language, Node, Query, QueryCursor};
 use crate::extract::{compile_good_patterns, literal_value};
 use crate::graph::{enclosing, is_under, project_dir};
 use crate::model::{
-    Decl, Exclusion, GlobalPrefix, Handoff, Manifest, Module, Mount, OpenPrefix, Route, RouteLinks, RoutePath,
-    ANY_METHOD,
+    Client, Decl, Exclusion, GlobalPrefix, Handoff, Manifest, Module, Mount, OpenPrefix, Route, RouteCall, RouteLinks,
+    RoutePath, ANY_METHOD,
 };
 
 /// A regra de rota de um framework, como o `build.rs` a lê de
@@ -78,6 +102,8 @@ pub(crate) struct RawRouteRule {
     pub framework: &'static str,
     /// As línguas do registro cujos arquivos a consulta lê.
     pub languages: &'static [&'static str],
+    /// A regra liga em todo arquivo das línguas dela, sem import.
+    pub global: bool,
     /// Os imports que ligam a regra no arquivo.
     pub imports: &'static [&'static str],
     /// As dependências de manifesto que ligam a regra nos arquivos sob o
@@ -134,7 +160,32 @@ enum Role {
     ParameterReceiver,
     Call,
     Argument,
+    ClientMethod,
+    ClientPath,
+    ClientOption,
+    ClientReceiver,
+    ClientMade,
+    ClientFactory,
+    ClientInstance,
+    ClientBase,
     Ignore,
+}
+
+impl Role {
+    /// A captura é do lado da tela.
+    fn is_client(self) -> bool {
+        matches!(
+            self,
+            Self::ClientMethod
+                | Self::ClientPath
+                | Self::ClientOption
+                | Self::ClientReceiver
+                | Self::ClientMade
+                | Self::ClientFactory
+                | Self::ClientInstance
+                | Self::ClientBase
+        )
+    }
 }
 
 fn role(capture: &str) -> Role {
@@ -162,6 +213,14 @@ fn role(capture: &str) -> Role {
         "route.parameter.receiver" => Role::ParameterReceiver,
         "route.call" => Role::Call,
         "route.argument" => Role::Argument,
+        "client.method" => Role::ClientMethod,
+        "client.path" => Role::ClientPath,
+        "client.option" => Role::ClientOption,
+        "client.receiver" => Role::ClientReceiver,
+        "client.made" => Role::ClientMade,
+        "client.factory" => Role::ClientFactory,
+        "client.instance" => Role::ClientInstance,
+        "client.base" => Role::ClientBase,
         _ => Role::Ignore,
     }
 }
@@ -183,6 +242,8 @@ struct Compiled {
     query: Query,
     /// `roles[i]` é o papel da captura `i` da consulta.
     roles: Vec<Role>,
+    /// A regra é da tela: acha chamadas, e não rotas.
+    client: bool,
 }
 
 /// As regras dos frameworks escritos na língua `lang`, ainda sem compilar.
@@ -210,30 +271,42 @@ pub(crate) fn turned_on_by(rules: &[RouteRule], imports: &[String], less: &Proje
     rules.iter().any(|rule| rule.active(imports, more) && !rule.active(imports, less))
 }
 
-/// O que as regras acham num arquivo: as rotas e os prefixos que ele escreve
-/// para rotas de outros arquivos.
+/// O que as regras acham num arquivo: as rotas, os prefixos que ele escreve
+/// para rotas de outros arquivos e as chamadas que a tela faz às rotas.
 #[derive(Default)]
 pub(crate) struct Found {
     pub routes: Vec<Route>,
     pub links: RouteLinks,
+    pub calls: Vec<RouteCall>,
 }
 
-/// As rotas do arquivo, pelas regras que ele liga com os `imports` dele ou
-/// com o que o `project` diz dele, fora as escritas num trecho de `skip`, em
-/// ordem, e os prefixos que ele escreve para rotas de outros arquivos.
-pub(crate) fn find(
-    rules: &[RouteRule],
-    root: Node,
-    bytes: &[u8],
-    imports: &[String],
-    project: &Project,
-    declarations: &[Decl],
-    skip: &BTreeSet<(usize, usize)>,
-) -> Found {
+/// O que o arquivo diz de si às regras: os `imports` dele e, de cada um, os
+/// nomes que ele traz (`brought`), as declarações e os trechos de teste
+/// (`skip`), cujas rotas e chamadas não contam.
+pub(crate) struct Source<'s> {
+    pub imports: &'s [String],
+    pub brought: &'s BTreeMap<String, Vec<String>>,
+    pub declarations: &'s [Decl],
+    pub skip: &'s BTreeSet<(usize, usize)>,
+}
+
+/// As rotas do arquivo, pelas regras que ele liga com os imports dele ou
+/// com o que o `project` diz dele, em ordem, os prefixos que ele escreve
+/// para rotas de outros arquivos e as chamadas da tela escritas nele.
+pub(crate) fn find(rules: &[RouteRule], root: Node, bytes: &[u8], source: &Source, project: &Project) -> Found {
+    let (declarations, skip) = (source.declarations, source.skip);
     let mut found = Found::default();
-    for (rule, compiled) in
-        rules.iter().filter(|rule| rule.active(imports, project)).filter_map(|rule| Some((rule, rule.compiled()?)))
+    for (rule, compiled) in rules
+        .iter()
+        .filter(|rule| rule.active(source.imports, project) && rule.may_find(bytes))
+        .filter_map(|rule| Some((rule, rule.compiled()?)))
     {
+        if compiled.client {
+            let (calls, clients) = rule.calls(compiled, root, bytes, source);
+            found.calls.extend(calls);
+            found.links.clients.extend(clients);
+            continue;
+        }
         let (routes, links) = rule.routes(compiled, root, bytes, declarations, skip);
         found.routes.extend(routes);
         found.links.mounts.extend(links.mounts);
@@ -248,6 +321,10 @@ pub(crate) fn find(
     found.links.globals.dedup();
     found.links.handoffs.sort();
     found.links.handoffs.dedup();
+    found.links.clients.sort();
+    found.links.clients.dedup();
+    found.calls.sort();
+    found.calls.dedup();
     found
 }
 
@@ -408,8 +485,9 @@ impl RouteRule {
                     return None;
                 }
                 let query = Query::new(&self.language, &good.join("\n")).ok()?;
-                let roles = query.capture_names().iter().map(|name| role(name)).collect();
-                Some(Compiled { query, roles })
+                let roles: Vec<Role> = query.capture_names().iter().map(|name| role(name)).collect();
+                let client = roles.iter().any(|role| role.is_client());
+                Some(Compiled { query, roles, client })
             })
             .as_ref()
     }
@@ -429,23 +507,37 @@ impl RouteRule {
         self.compiled.get().is_some()
     }
 
-    /// O arquivo liga o framework: ele ou um import global que o alcança o
-    /// importa, ou o manifesto mais próximo acima dele o declara.
+    /// O arquivo liga o framework: a regra é global, ele ou um import global
+    /// que o alcança o importa, ou o manifesto mais próximo acima dele o
+    /// declara.
     fn active(&self, imports: &[String], project: &Project) -> bool {
-        self.imported(imports)
+        self.raw.global
+            || self.imported(imports)
             || self.imported(project.global_imports)
             || self.raw.manifest_dependencies.iter().any(|dep| project.manifest_deps.iter().any(|has| has == dep))
+    }
+
+    /// A regra pode achar alguma coisa no texto `bytes`. A global, que liga
+    /// em todo arquivo das línguas dela, só roda no que escreve um dos nomes
+    /// da tabela `methods`: sem ele, não há chamada a achar, e a consulta nem
+    /// se compila.
+    fn may_find(&self, bytes: &[u8]) -> bool {
+        !self.raw.global
+            || self.raw.methods.iter().any(|(name, _)| bytes.windows(name.len()).any(|window| window == name.as_bytes()))
     }
 
     /// Um dos `imports` é um nome da regra, ou começa por ele seguido de
     /// separador. Letra, algarismo, `_` ou `-` logo depois fazem outro nome,
     /// que não liga a regra.
     fn imported(&self, imports: &[String]) -> bool {
-        imports.iter().any(|import| {
-            self.raw.imports.iter().any(|name| {
-                import.strip_prefix(name).is_some_and(|rest| {
-                    rest.chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '-'))
-                })
+        imports.iter().any(|import| self.names(import))
+    }
+
+    /// O import é um nome da regra, ou começa por ele seguido de separador.
+    fn names(&self, import: &str) -> bool {
+        self.raw.imports.iter().any(|name| {
+            import.strip_prefix(name).is_some_and(|rest| {
+                rest.chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '-'))
             })
         })
     }
@@ -517,7 +609,9 @@ impl RouteRule {
                     Role::ParameterReceiver => here.parameter_receiver = node,
                     Role::Call => here.call = node,
                     Role::Argument => here.argument = node,
-                    Role::Ignore => {}
+                    // Uma regra usa as capturas de um lado só; as da tela
+                    // não são do servidor.
+                    _ => {}
                 }
             }
             if here.method.is_some() {
@@ -629,6 +723,7 @@ impl RouteRule {
                         owner: owner.unwrap_or_default().to_string(),
                         open: group.as_ref().and_then(|g| g.open).map(open_of),
                         local: None,
+                        called_by: Vec::new(),
                     },
                     has_path: own.as_deref().is_some_and(|path| !path.is_empty()),
                 });
@@ -682,6 +777,113 @@ impl RouteRule {
         (joined(built), links)
     }
 
+    /// As chamadas da tela escritas no arquivo, fora as de um trecho de
+    /// teste, e os clientes que ele faz. A chamada cujo objeto é trazido de
+    /// outro arquivo guarda o nome dele, e a ligação acha lá a base; a que
+    /// é feita por um cliente do arquivo já sai com a base dele.
+    fn calls(&self, compiled: &Compiled, root: Node, bytes: &[u8], source: &Source) -> (Vec<RouteCall>, Vec<Client>) {
+        let text = |node: Node| node.utf8_text(bytes).unwrap_or_default().to_string();
+        let literal = |node: Node| literal_value(&text(node)).to_string();
+        let span = |node: Node| (node.start_byte(), node.end_byte());
+        let skipped = |node: Node| {
+            let byte = node.start_byte();
+            source.skip.iter().any(|&(start, end)| (start..end).contains(&byte))
+        };
+        // O objeto da biblioteca é o nome que o import dela traz; os nomes
+        // trazidos pelos outros imports podem ser clientes feitos noutro
+        // arquivo.
+        let names_of = |library: bool| -> HashSet<String> {
+            source
+                .brought
+                .iter()
+                .filter(|(import, _)| self.names(import) == library)
+                .flat_map(|(_, names)| names.iter().cloned())
+                .collect()
+        };
+        let (library, elsewhere) = (names_of(true), names_of(false));
+
+        let mut made: BTreeMap<(usize, usize), (String, Option<String>)> = BTreeMap::new();
+        let mut written: BTreeMap<(usize, usize), CallAt> = BTreeMap::new();
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&compiled.query, root, bytes);
+        while let Some(m) = matches.next() {
+            let mut here = CallCaptured::default();
+            for cap in m.captures {
+                let node = Some(cap.node);
+                match compiled.roles[cap.index as usize] {
+                    Role::ClientMethod => here.method = node,
+                    Role::ClientPath => here.path = node,
+                    Role::ClientOption => here.option = node,
+                    Role::ClientReceiver => here.receiver = node,
+                    Role::ClientMade => here.made = node,
+                    Role::ClientFactory => here.factory = node,
+                    Role::ClientInstance => here.instance = node,
+                    Role::ClientBase => here.base = node,
+                    _ => {}
+                }
+            }
+            if let Some(at) = here.made {
+                if skipped(at) || !here.factory.is_some_and(|factory| library.contains(&text(factory))) {
+                    continue;
+                }
+                let entry = made.entry(span(at)).or_insert_with(|| (here.instance.map(text).unwrap_or_default(), None));
+                entry.1 = here.base.map(literal).or(entry.1.take());
+            } else if let (Some(method), Some(path)) = (here.method, here.path) {
+                if skipped(method) {
+                    continue;
+                }
+                let entry = written.entry(span(method)).or_insert(CallAt { method, path, receiver: here.receiver, option: None });
+                entry.option = here.option.or(entry.option);
+            }
+        }
+
+        let framework = self.raw.framework.to_string();
+        let clients: Vec<Client> = made
+            .into_values()
+            .map(|(name, base)| Client { framework: framework.clone(), name, base: self.base_path(base.as_deref()) })
+            .collect();
+        let mut calls = Vec::new();
+        for call in written.into_values() {
+            let Some(named) = self.method(&text(call.method)) else { continue };
+            let method = call.option.map(literal).filter(|m| is_method_name(m)).map_or_else(|| named.to_string(), |m| m.to_uppercase());
+            let path = literal(call.path);
+            if self.raw.param_wrappers.iter().any(|(open, _)| path.starts_with(*open))
+                || self.raw.param_prefixes.iter().any(|prefix| path.starts_with(prefix))
+            {
+                continue;
+            }
+            let (base, via) = match call.receiver.map(text) {
+                None => (None, String::new()),
+                Some(receiver) if library.contains(&receiver) => (None, String::new()),
+                Some(receiver) => match clients.iter().find(|c| !c.name.is_empty() && c.name == receiver) {
+                    Some(client) => ((!client.base.path.is_empty()).then(|| client.base.clone()), String::new()),
+                    None if elsewhere.contains(&receiver) => (None, receiver),
+                    None => continue,
+                },
+            };
+            let line = call.method.start_position().row + 1;
+            calls.push(RouteCall {
+                method,
+                path: self.normalized(without_query(&path), None),
+                written: path,
+                line,
+                owner: enclosing(source.declarations, line).map(|i| source.declarations[i].name.clone()).unwrap_or_default(),
+                framework: framework.clone(),
+                base,
+                via,
+            });
+        }
+        (calls, clients)
+    }
+
+    /// A base de um cliente, sem o esquema e a máquina do endereço
+    /// (`http://localhost:3000`), que não fazem parte do caminho da rota.
+    fn base_path(&self, written: Option<&str>) -> RoutePath {
+        let Some(written) = written else { return RoutePath::default() };
+        let path = written.split_once("://").map_or(written, |(_, rest)| rest.find('/').map_or("", |at| &rest[at..]));
+        RoutePath { written: written.to_string(), path: self.normalized(without_query(path), None) }
+    }
+
     /// Um prefixo, escrito com os pedaços juntados por barra e padronizado.
     fn prefix_path(&self, pieces: &[&str]) -> RoutePath {
         let written = joined_path(pieces);
@@ -721,10 +923,11 @@ impl RouteRule {
     }
 
     /// Um pedaço do caminho padronizado: o que começa por um prefixo de
-    /// parâmetro é todo `{}`; cada trecho entre as marcas de um parâmetro vira
-    /// `{}`; o resto fica em minúsculas.
+    /// parâmetro, e o número ou o id escrito no lugar dele, é todo `{}`; cada
+    /// trecho entre as marcas de um parâmetro vira `{}`; o resto fica em
+    /// minúsculas.
     fn piece(&self, piece: &str) -> String {
-        if self.raw.param_prefixes.iter().any(|prefix| piece.starts_with(prefix)) {
+        if self.raw.param_prefixes.iter().any(|prefix| piece.starts_with(prefix)) || is_id(piece) {
             return PARAM.to_string();
         }
         let mut out = String::new();
@@ -753,6 +956,64 @@ impl RouteRule {
 
 /// Como o caminho padronizado escreve um parâmetro.
 const PARAM: &str = "{}";
+
+/// O menor id de letras e algarismos que um pedaço de caminho escreve no
+/// lugar de um parâmetro: o do Mongo tem 24, e o UUID, 32 fora os traços.
+/// Com menos, o pedaço pode ser uma palavra do caminho.
+const MIN_ID_LEN: usize = 16;
+
+/// O pedaço é o valor de um parâmetro escrito no caminho: um número, ou um id
+/// de algarismos e das letras de `a` a `f`, com traços ou sem, de
+/// [`MIN_ID_LEN`] ou mais, com algum algarismo.
+fn is_id(piece: &str) -> bool {
+    if !piece.is_empty() && piece.bytes().all(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    let hex = piece.chars().filter(|c| *c != '-');
+    hex.clone().count() >= MIN_ID_LEN
+        && hex.clone().all(|c| c.is_ascii_hexdigit())
+        && piece.chars().any(|c| c.is_ascii_digit())
+}
+
+/// O caminho sem a busca e sem a âncora do endereço (`?status=1`, `#fim`).
+fn without_query(path: &str) -> &str {
+    path.split(['?', '#']).next().unwrap_or_default()
+}
+
+/// O texto é o nome de um método HTTP: só letras.
+fn is_method_name(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// O caminho padronizado sem os pedaços que dizem a versão da API (`v1`,
+/// `v2`): a chamada e a rota que só casam assim casam por suspeita.
+pub(crate) fn without_version(path: &str) -> String {
+    path.split('/')
+        .filter(|piece| !(piece.len() > 1 && piece.starts_with('v') && piece[1..].bytes().all(|b| b.is_ascii_digit())))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Uma chamada da tela como a consulta a dá, pela captura do nome chamado.
+struct CallAt<'t> {
+    method: Node<'t>,
+    path: Node<'t>,
+    receiver: Option<Node<'t>>,
+    option: Option<Node<'t>>,
+}
+
+/// As capturas da tela de um match, pelo papel.
+#[derive(Default)]
+struct CallCaptured<'t> {
+    method: Option<Node<'t>>,
+    path: Option<Node<'t>>,
+    option: Option<Node<'t>>,
+    receiver: Option<Node<'t>>,
+    made: Option<Node<'t>>,
+    factory: Option<Node<'t>>,
+    instance: Option<Node<'t>>,
+    base: Option<Node<'t>>,
+}
 
 /// A rota de qualquer método com caminho e a de método conhecido sem caminho,
 /// da mesma função com nome, são uma rota só: o método de uma no caminho da
@@ -847,14 +1108,20 @@ fn earlier_siblings(node: Node) -> Vec<Node> {
     out
 }
 
-/// Os nomes montados que cada arquivo não registra ([`Mount`]), com a
-/// posição do arquivo em `modules`: o que [`across_files`] pede para saber de
-/// onde cada um vem.
-pub(crate) fn mounted_names(modules: &[Module]) -> Vec<(usize, String)> {
+/// Os nomes trazidos de outro arquivo que as rotas e as chamadas pedem, com
+/// a posição do arquivo em `modules`: os montados que cada arquivo não
+/// registra ([`Mount`]), que [`across_files`] segue até as rotas de onde
+/// eles vêm, e os objetos das chamadas da tela feitas por um cliente de
+/// outro arquivo ([`RouteCall::via`]), que a ligação segue até a base dele.
+pub(crate) fn brought_names(modules: &[Module]) -> Vec<(usize, String)> {
     let names: BTreeSet<(usize, String)> = modules
         .iter()
         .enumerate()
-        .flat_map(|(at, m)| m.route_links.mounts.iter().map(move |mount| (at, mount.target.clone())))
+        .flat_map(|(at, m)| {
+            let mounted = m.route_links.mounts.iter().map(|mount| mount.target.clone());
+            let via = m.route_calls.iter().filter(|call| !call.via.is_empty()).map(|call| call.via.clone());
+            mounted.chain(via).map(move |name| (at, name))
+        })
         .collect();
     names.into_iter().collect()
 }
@@ -866,7 +1133,7 @@ pub(crate) fn mounted_names(modules: &[Module]) -> Vec<(usize, String)> {
 ///
 /// - a montagem de um nome trazido de outro arquivo ([`Mount`]). O arquivo de
 ///   onde o nome vem é o que o import que o traz nomeia (`brought`, pela
-///   posição do arquivo e pelo nome, de [`mounted_names`]) ou o da
+///   posição do arquivo e pelo nome, de [`brought_names`]) ou o da
 ///   declaração a que liga a chamada escrita na linha da montagem;
 /// - a entrega de um grupo ([`Handoff`]) às rotas em aberto de toda
 ///   declaração com o nome e a posição dela, no projeto do arquivo que a

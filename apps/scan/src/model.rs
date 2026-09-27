@@ -45,7 +45,8 @@ pub struct ProjectModel {
     #[serde(default)]
     pub state: ScanState,
     /// The git history, one entry per commit (created and changed files).
-    #[serde(default, skip_serializing_if = "History::is_empty")]
+    /// Sem commit, fica o nome da branch de partida e o motivo da falta.
+    #[serde(default, skip_serializing_if = "is_blank_history")]
     pub history: History,
     /// A marca de cada bloco do mapa de onde o modelo foi lido, pelo nome do
     /// bloco: a versão do scan que o encheu, ou vazia no bloco que voltou
@@ -344,6 +345,13 @@ pub struct Module {
     /// is one.
     #[serde(default, skip_serializing_if = "RouteLinks::is_empty")]
     pub route_links: RouteLinks,
+    /// As chamadas da tela a rotas do servidor escritas no arquivo
+    /// ([`RouteCall`]), achadas pela regra do cliente que ele liga, fora as
+    /// do trecho de teste. Guardadas com o módulo, como as rotas: a ligação
+    /// de cada uma à rota que ela alcança se refaz em toda passada. Written
+    /// only when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route_calls: Vec<RouteCall>,
     /// Os comentários do começo do arquivo, antes do primeiro código — a
     /// documentação do módulo, o cabeçalho do arquivo —, limpos das marcas e
     /// juntados numa linha. O arquivo escrito por máquina não guarda. Written
@@ -428,18 +436,64 @@ pub struct Route {
     /// outro arquivo o mudou; `None` quando nenhum mudou.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local: Option<RoutePath>,
+    /// As chamadas da tela que alcançam a rota ([`RouteCall`]), como o uso
+    /// de uma declaração: o arquivo e a linha da chamada e a declaração de
+    /// onde ela parte. Provada quando o método e o caminho casam exato e com
+    /// uma rota só; suspeita, com as funções que atendem cada rota que ela
+    /// pode alcançar, quando casa com mais de uma ou só casa sem o prefixo de
+    /// versão ou sem a base do cliente. Refeitas em toda passada.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub called_by: Vec<UseSite>,
 }
 
 impl Route {
     /// A rota só com o que o próprio arquivo escreve: sem os prefixos de
-    /// fora que uma passada lhe somou.
+    /// fora que uma passada lhe somou nem as chamadas da tela que a
+    /// alcançam.
     #[must_use]
     pub fn local_form(&self) -> Self {
+        let route = Self { called_by: Vec::new(), ..self.clone() };
         match &self.local {
-            Some(local) => Self { written: local.written.clone(), path: local.path.clone(), local: None, ..self.clone() },
-            None => self.clone(),
+            Some(local) => Self { written: local.written.clone(), path: local.path.clone(), local: None, ..route },
+            None => route,
         }
     }
+}
+
+/// Uma chamada da tela a uma rota do servidor: o método HTTP, o caminho
+/// padronizado como o da rota, sem a base do cliente, o caminho como foi
+/// escrito, a linha da chamada, o nome da declaração mais interna que a
+/// contém (vazio fora de toda declaração) e o framework cuja regra a achou.
+///
+/// A base do cliente — o endereço que o objeto que faz a chamada põe na
+/// frente de todo caminho — vem escrita no próprio arquivo em `base`, ou,
+/// quando o objeto é trazido de outro arquivo, pelo nome dele em `via`: a
+/// ligação a acha no [`Client`] com esse nome do arquivo de onde ele vem.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RouteCall {
+    pub method: String,
+    pub path: String,
+    pub written: String,
+    pub line: usize,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
+    pub framework: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<RoutePath>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub via: String,
+}
+
+/// Um cliente que o arquivo faz e que outro arquivo pode trazer por import:
+/// o nome que o recebe — vazio no que o arquivo exporta como padrão — e a
+/// base dele, vazia quando ele não a escreve.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Client {
+    pub framework: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(flatten)]
+    pub base: RoutePath,
 }
 
 /// Um caminho de rota, ou um pedaço dele: como foi escrito, com os pedaços
@@ -470,12 +524,16 @@ pub struct RouteLinks {
     pub globals: Vec<GlobalPrefix>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs: Vec<Handoff>,
+    /// Os clientes que o arquivo faz, com a base que eles põem na frente das
+    /// chamadas feitas por eles noutros arquivos.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients: Vec<Client>,
 }
 
 impl RouteLinks {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.mounts.is_empty() && self.globals.is_empty() && self.handoffs.is_empty()
+        self.mounts.is_empty() && self.globals.is_empty() && self.handoffs.is_empty() && self.clients.is_empty()
     }
 }
 
@@ -630,6 +688,12 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// A história sem commit, sem branch de partida e sem motivo: nada a
+/// guardar.
+fn is_blank_history(history: &History) -> bool {
+    *history == History::default()
+}
+
 fn is_zero(n: &usize) -> bool {
     *n == 0
 }
@@ -641,8 +705,16 @@ fn is_zero(n: &usize) -> bool {
 #[serde(default)]
 pub struct ScanState {
     /// The commit checked out at the last pass (empty outside git and
-    /// before the first commit). It says where the history stopped.
+    /// before the first commit).
     pub head: String,
+    /// A branch de partida que a última passada leu, pelo `mustard.json`;
+    /// vazia quando o projeto não declara uma.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base: String,
+    /// A ponta dessa branch na última passada: onde a história parou, e de
+    /// onde a próxima soma os commits novos. Vazia sem a branch no clone.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base_tip: String,
     /// A marca da listagem do git que a passada leu: a conferência antes de
     /// cada pergunta ao mapa a compara com a de agora, sem ler o mapa.
     #[serde(skip_serializing_if = "String::is_empty")]

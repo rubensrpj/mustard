@@ -56,18 +56,39 @@ pub const SKILL_MAX_LINES: usize = 500;
 // Histórico do git
 // ---------------------------------------------------------------------------
 
-/// O histórico do git guardado no mapa: os caminhos numa tabela só, em ordem
-/// de nome, e os commits do mais antigo para o mais novo, apontando a tabela.
+/// O histórico do git guardado no mapa: o da branch de partida do projeto,
+/// nunca o da branch em que se está. Os caminhos numa tabela só, em ordem de
+/// nome, e os commits do mais antigo para o mais novo, apontando a tabela.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct History {
+    /// A branch de partida de onde os commits vêm; vazia quando o projeto
+    /// não declara uma.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base: String,
+    /// Por que não há história, quando o motivo é da configuração ou do
+    /// clone, e não da falta de commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing: Option<NoHistory>,
     pub paths: Vec<String>,
     pub commits: Vec<Commit>,
 }
 
+/// Por que o mapa ficou sem a história do git.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoHistory {
+    /// O projeto não diz qual é a branch de partida (`git.flow` no
+    /// `mustard.json`).
+    NoBase,
+    /// A branch de partida declarada não existe no clone, nem a local nem a
+    /// do servidor.
+    BaseNotFound,
+}
+
 /// Um commit guardado: o começo do hash, a data (segundos desde 1970), o
-/// título e os arquivos que ele criou e os que ele mudou, pelo número na
-/// tabela.
+/// título, o número do pull request que o trouxe, quando o git o diz, e os
+/// arquivos que ele criou e os que ele mudou, pelo número na tabela.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Commit {
@@ -75,6 +96,8 @@ pub struct Commit {
     pub at: i64,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub added: Vec<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -87,6 +110,7 @@ pub struct RawCommit {
     pub id: String,
     pub at: i64,
     pub title: String,
+    pub pr: Option<u32>,
     pub added: Vec<String>,
     pub changed: Vec<String>,
 }
@@ -99,11 +123,6 @@ impl RawCommit {
 }
 
 impl History {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.commits.is_empty()
-    }
-
     /// Monta o histórico a partir dos commits, do mais antigo para o mais
     /// novo. Ficam só os [`MAX_COMMITS`] mais novos, e a tabela de caminhos
     /// sai em ordem de nome, com os caminhos que os commits guardados citam:
@@ -129,11 +148,12 @@ impl History {
                 id: c.id.clone(),
                 at: c.at,
                 title: c.title.clone(),
+                pr: c.pr,
                 added: numbers(&c.added),
                 changed: numbers(&c.changed),
             })
             .collect();
-        Self { paths, commits }
+        Self { paths, commits, ..Self::default() }
     }
 
     /// Os commits com os caminhos por extenso, do mais antigo para o mais
@@ -149,19 +169,32 @@ impl History {
                 id: c.id.clone(),
                 at: c.at,
                 title: c.title.clone(),
+                pr: c.pr,
                 added: name(&c.added),
                 changed: name(&c.changed),
             })
             .collect()
     }
 
-    /// O histórico com `newer` acrescentado no fim.
+    /// O histórico com `newer` acrescentado no fim, da mesma branch.
     #[must_use]
     pub fn extended(&self, newer: Vec<RawCommit>) -> Self {
         let mut all = self.raw();
         all.extend(newer);
-        Self::from_raw(all)
+        Self { base: self.base.clone(), ..Self::from_raw(all) }
     }
+}
+
+/// Por que o mapa está sem a história do git, dito para quem pergunta, com o
+/// jeito de ter a história; `None` quando o motivo não é da configuração nem
+/// do clone.
+#[must_use]
+pub fn history_note(history: &History, lang: Locale) -> Option<String> {
+    let key = match history.missing? {
+        NoHistory::NoBase => "map.history.no_base",
+        NoHistory::BaseNotFound => "map.history.base_not_found",
+    };
+    Some(translate(key, lang).replace("{base}", &history.base))
 }
 
 /// O que o histórico diz de um arquivo.
@@ -307,6 +340,23 @@ pub struct MapModule {
     pub tests: Vec<String>,
     /// O arquivo traz os próprios testes.
     pub has_tests: bool,
+    /// As rotas do servidor registradas no arquivo, com as chamadas da tela
+    /// que alcançam cada uma.
+    pub routes: Vec<MapRoute>,
+}
+
+/// Uma rota do servidor como as perguntas a leem: o método HTTP, o caminho
+/// padronizado, o nome da função que a atende e a linha dela, e as chamadas
+/// da tela que a alcançam, cada uma como um uso, provado ou suspeito
+/// ([`UseSite`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MapRoute {
+    pub method: String,
+    pub path: String,
+    pub handler: String,
+    pub line: u64,
+    pub called_by: Vec<UseSite>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -734,9 +784,13 @@ pub struct DeclUsers {
     /// Quantas chamadas pelo nome ficaram sem ligação por ele ser comum
     /// demais ([`MapDecl::common_calls`]).
     pub common_calls: usize,
+    /// As rotas do servidor que a declaração atende, com as chamadas da tela
+    /// que alcançam cada uma.
+    pub routes: Vec<MapRoute>,
 }
 
-/// Cada declaração chamada `name`, com os usos de cada uma, em ordem de
+/// Cada declaração chamada `name`, com os usos de cada uma e as rotas que ela
+/// atende — as do arquivo dela com o nome e a linha dela —, em ordem de
 /// caminho e de linha. Com `file`, só as desse arquivo. Recusa
 /// [`MapRefusal::UnknownFile`] quando o arquivo não está no mapa e
 /// [`MapRefusal::UnknownDeclaration`] quando nenhuma declaração tem o nome:
@@ -753,6 +807,7 @@ pub fn users(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<Dec
             end_line: d.end_line.max(d.line),
             used_by: d.used_by.clone(),
             common_calls: d.common_calls,
+            routes: m.routes.iter().filter(|r| r.handler == d.name && r.line == d.line).cloned().collect(),
         })
         .collect())
 }
@@ -960,6 +1015,9 @@ pub struct Examples {
     pub picks: Vec<Example>,
     /// Até 3 receitas do git, a mais nova primeiro.
     pub recipes: Vec<Recipe>,
+    /// Por que não há receita do git: o mapa está sem a história da branch
+    /// de partida.
+    pub no_history: Option<String>,
 }
 
 /// Quantos exemplos a resposta dá, no máximo.
@@ -1128,7 +1186,13 @@ pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
         })
         .collect();
 
-    Examples { recipes: recipes(&map.history, &folder, extension_of(&target)), folder, main_imports, picks }
+    Examples {
+        recipes: recipes(&map.history, &folder, extension_of(&target)),
+        no_history: history_note(&map.history, lang),
+        folder,
+        main_imports,
+        picks,
+    }
 }
 
 /// A receita do git: os últimos 3 commits que criaram um arquivo do tipo
@@ -1227,6 +1291,9 @@ pub fn summary(map: &ProjectMap, lang: Locale) -> String {
     recent.truncate(SUMMARY_FILES);
     if !recent.is_empty() {
         lines.push(clip(translate("map.summary.recent", lang).replace("{files}", &recent.join(", "))));
+    }
+    if let Some(note) = history_note(&map.history, lang) {
+        lines.push(clip(note));
     }
     let ask = translate("map.summary.ask", lang).to_string();
 
@@ -1365,6 +1432,7 @@ mod tests {
             id: id.to_string(),
             at,
             title: String::new(),
+            pr: None,
             added: added.iter().map(|p| (*p).to_string()).collect(),
             changed: changed.iter().map(|p| (*p).to_string()).collect(),
         }

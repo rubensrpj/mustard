@@ -39,13 +39,20 @@ fn write(dir: &Path, rel: &str, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
+/// Declara no `mustard.json` a `main` como a branch de partida, de onde vem
+/// a história que o mapa guarda.
+fn declare_base(dir: &Path) {
+    write(dir, "mustard.json", r#"{"git": {"flow": {"*": "main"}}}"#);
+}
+
 #[test]
 fn a_second_pass_reads_only_the_changed_file_and_leaves_git_clean() {
     let temp = tempfile::Builder::new().prefix("scan-incremental-").tempdir().unwrap();
     let dir = temp.path().to_path_buf();
-    git(&dir, &["init", "-q"]);
+    git(&dir, &["init", "-q", "-b", "main"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    declare_base(&dir);
 
     write(&dir, "Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
     write(&dir, "src/lib.rs", "pub mod a;\npub mod b;\n");
@@ -267,6 +274,7 @@ fn project(prefix: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
     git(dir, &["init", "-q", "-b", "main"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    declare_base(dir);
     for (rel, body) in files {
         write(dir, rel, body);
     }
@@ -365,7 +373,7 @@ fn the_same_content_on_another_branch_is_not_read_again() {
     assert_eq!(there["full"], json!(false), "{there}");
     assert_eq!(there["read"], json!([]), "{there}");
     let model = model::read(&map_folder(dir));
-    assert_eq!(model["history"]["commits"].as_array().unwrap().len(), 3, "the history follows the branch");
+    assert_eq!(model["history"]["commits"].as_array().unwrap().len(), 1, "the history stays on the base branch");
 }
 
 /// Um repositório ainda sem commit lê só o que mudou, como qualquer outro:

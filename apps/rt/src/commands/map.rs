@@ -10,7 +10,8 @@
 //! - `users --name <declaração>` (com `--file`, só a desse arquivo): quem usa
 //!   a declaração, como `arquivo:linha:quem chama` — as ligações provadas
 //!   primeiro, e as suspeitas agrupadas pelas declarações que a chamada pode
-//!   alcançar;
+//!   alcançar; na função que atende uma rota do servidor, também a rota e as
+//!   chamadas da tela que a alcançam;
 //! - `search --query "<palavras>"`: a busca por conceito;
 //! - `summary`: o resumo do início da sessão, até 3 kB;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
@@ -28,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::project_map::{self as project_map, DeclAt, MapRefusal, ProjectMap};
+use mustard_core::domain::project_map::{self as project_map, DeclAt, MapRefusal, ProjectMap, UseSite};
 use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::search::TOP;
 use mustard_core::io::map_search;
@@ -218,21 +219,22 @@ fn slice(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRef
 /// chamada pode alcançar, e a resposta com alguma traz em `next` o próximo
 /// passo: conferir cada uma pelo servidor de linguagem. As chamadas que o
 /// nome comum demais deixou sem ligação vêm só contadas, com o jeito de
-/// achá-las. A que ninguém usa leva a nota que diz isso, para que a lista
+/// achá-las. A declaração que atende rotas do servidor traz, em `routes`,
+/// cada uma com o arquivo e a linha dela e as chamadas da tela que a
+/// alcançam, como `arquivo:linha:quem chama`: as provadas em `screens`, e as
+/// suspeitas em `suspect`, agrupadas pelas funções que a chamada pode
+/// alcançar. A que ninguém usa leva a nota que diz isso, para que a lista
 /// vazia não pareça um mapa sem a informação.
 fn users(opts: &MapOpts, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRefusal> {
     let name = after_the_map(required(opts.name.as_deref(), opts.question, "--name"), read)?;
     let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
     let found = project_map::users(&read(Need::Declarations { file, name: &name })?, file, &name)?;
     let mut any_suspect = false;
+    let (mut any_route, mut any_route_suspect) = (false, false);
     let declarations: Vec<Value> = found
         .iter()
         .map(|d| {
-            let proven: Vec<String> = d.used_by.iter().filter(|u| u.is_proven()).map(|u| u.place()).collect();
-            let mut by_candidates: BTreeMap<&[DeclAt], Vec<String>> = BTreeMap::new();
-            for u in d.used_by.iter().filter(|u| !u.is_proven()) {
-                by_candidates.entry(u.candidates.as_slice()).or_default().push(u.place());
-            }
+            let (proven, by_candidates) = split_uses(&d.used_by);
             let mut entry = json!({
                 "file": d.file,
                 "name": d.name,
@@ -254,7 +256,29 @@ fn users(opts: &MapOpts, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRe
                     .replace("{count}", &d.common_calls.to_string())
                     .replace("{name}", &d.name));
             }
-            if d.used_by.is_empty() && d.common_calls == 0 {
+            if !d.routes.is_empty() {
+                any_route = true;
+                entry["routes"] = d
+                    .routes
+                    .iter()
+                    .map(|r| {
+                        let (screens, by_candidates) = split_uses(&r.called_by);
+                        let mut route = json!({
+                            "method": r.method, "path": r.path, "file": d.file, "line": r.line, "screens": screens,
+                        });
+                        if !by_candidates.is_empty() {
+                            any_route_suspect = true;
+                            route["suspect"] = by_candidates
+                                .into_iter()
+                                .map(|(candidates, screens)| json!({"candidates": candidates, "screens": screens}))
+                                .collect();
+                        }
+                        route
+                    })
+                    .collect();
+            }
+            let screens = d.routes.iter().any(|r| !r.called_by.is_empty());
+            if d.used_by.is_empty() && d.common_calls == 0 && !screens {
                 entry["note"] = json!(mustard_core::translate("map.users.none", lang)
                     .replace("{name}", &d.name)
                     .replace("{file}", &d.file));
@@ -272,10 +296,27 @@ fn users(opts: &MapOpts, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRe
     if any_suspect {
         report["next"] = json!(mustard_core::translate("map.users.suspect", lang));
     }
+    if any_route {
+        report["route_head"] = json!(mustard_core::translate("map.users.routes", lang).replace("{name}", name.trim()));
+    }
+    if any_route_suspect {
+        report["route_next"] = json!(mustard_core::translate("map.users.route_suspect", lang));
+    }
     if let Some(file) = file {
         report["file"] = json!(project_map::clean_path(file));
     }
     Ok(report)
+}
+
+/// Os usos provados, como `arquivo:linha:quem chama`, e os suspeitos,
+/// agrupados pelas declarações que a chamada pode alcançar.
+fn split_uses(uses: &[UseSite]) -> (Vec<String>, BTreeMap<&[DeclAt], Vec<String>>) {
+    let proven: Vec<String> = uses.iter().filter(|u| u.is_proven()).map(UseSite::place).collect();
+    let mut by_candidates: BTreeMap<&[DeclAt], Vec<String>> = BTreeMap::new();
+    for u in uses.iter().filter(|u| !u.is_proven()) {
+        by_candidates.entry(u.candidates.as_slice()).or_default().push(u.place());
+    }
+    (proven, by_candidates)
 }
 
 /// Os exemplos para o alvo de `--file`; sem ele, para a pasta do arquivo que
@@ -342,6 +383,9 @@ fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'
     });
     if got.picks.is_empty() {
         report["note"] = json!(mustard_core::translate("map.no_examples", lang).replace("{folder}", &got.folder));
+    }
+    if let Some(why) = got.no_history {
+        report["no_history"] = json!(why);
     }
     Ok(report)
 }
@@ -677,6 +721,53 @@ mod tests {
         assert!(report["hint"].as_str().unwrap().contains("sumiu"), "{report}");
     }
 
+    /// A função do controlador que atende uma rota traz, na resposta de quem
+    /// a usa, a rota com o arquivo e a linha dela e as chamadas da tela que a
+    /// alcançam, cada uma com o arquivo e a linha: a provada, e a suspeita com
+    /// a função que ela pode alcançar. A rota que outra função atende não
+    /// entra.
+    #[test]
+    fn users_of_a_controller_function_shows_the_screen_calls_with_their_lines() {
+        let dir = tempdir().unwrap();
+        store::write_text(
+            dir.path(),
+            r#"{"modules": [
+              {"path": "servidor/src/pedidos.controller.ts", "language": "typescript", "loc": 12,
+               "declarations": [{"kind": "method", "name": "editar", "line": 5, "end_line": 7},
+                                {"kind": "method", "name": "listar", "line": 9, "end_line": 10}],
+               "routes": [
+                 {"method": "POST", "path": "api/v1/pedidos/edit", "written": "api/v1/pedidos/edit", "handler": "editar",
+                  "line": 5, "framework": "nestjs",
+                  "called_by": ["tela/src/pedidos.ts:6:salvar",
+                                {"at": "tela/src/planos.ts:4:enviar",
+                                 "candidates": ["servidor/src/pedidos.controller.ts:5:editar"]}]},
+                 {"method": "GET", "path": "api/v1/pedidos", "written": "api/v1/pedidos", "handler": "listar", "line": 9,
+                  "framework": "nestjs", "called_by": ["tela/src/lista.ts:3:abrir"]}]},
+              {"path": "tela/src/pedidos.ts", "language": "typescript", "loc": 8,
+               "declarations": [{"kind": "function", "name": "salvar", "line": 5}]}
+            ]}"#,
+        )
+        .unwrap();
+        let mut opts = ask(dir.path(), Question::Users);
+        opts.name = Some("editar".to_string());
+        let report = answered(&opts);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let found = &report["declarations"][0];
+        assert_eq!(
+            found["routes"],
+            json!([{
+                "method": "POST", "path": "api/v1/pedidos/edit", "file": "servidor/src/pedidos.controller.ts", "line": 5,
+                "screens": ["tela/src/pedidos.ts:6:salvar"],
+                "suspect": [{"candidates": ["servidor/src/pedidos.controller.ts:5:editar"],
+                             "screens": ["tela/src/planos.ts:4:enviar"]}]
+            }]),
+            "{report}"
+        );
+        assert_eq!(found.get("note"), None, "a function reached from the screen is used: {report}");
+        assert!(report["route_head"].as_str().unwrap().contains("editar"), "{report}");
+        assert!(report["route_next"].is_string(), "{report}");
+    }
+
     /// Um mapa com tudo o que as perguntas leem: línguas, subprojetos, os
     /// mais importados, a história, um arquivo escrito por máquina, o mesmo
     /// nome declarado em vários arquivos (fora da ordem dos caminhos) e duas
@@ -703,7 +794,9 @@ mod tests {
         {"path": "packages/core/src/pay.rs", "language": "rust", "loc": 200,
          "declarations": [{"kind": "struct", "name": "Payment", "line": 1, "end_line": 3, "used_by": ["a.rs:1"]}]},
         {"path": "apps/rt/tests/pay_cli.rs", "language": "rust", "loc": 80, "deps": ["apps/rt/src/commands/pay/write.rs"]},
-        {"path": "web/src/pay.ts", "language": "typescript", "loc": 60, "declarations": [{"name": "run", "line": 3}]}
+        {"path": "web/src/pay.ts", "language": "typescript", "loc": 60, "declarations": [{"name": "run", "line": 3}],
+         "routes": [{"method": "GET", "path": "pay", "written": "/pay", "handler": "run", "line": 3, "framework": "express",
+                     "called_by": ["web/src/tela.ts:2:abrir"]}]}
       ],
       "projects": [
         {"name": "rt", "dir": "apps/rt", "kind": "cargo", "code_files": 6},
@@ -755,6 +848,7 @@ mod tests {
             with(Question::Users, Some("apps/rt/src/commands/pay/write.rs"), Some("run"), None),
             with(Question::Users, Some("packages/core/src/pay.rs"), Some("Payment"), None),
             with(Question::Users, Some("packages/core/src/pay.rs"), Some("run"), None),
+            with(Question::Users, Some("web/src/pay.ts"), Some("run"), None),
             with(Question::Users, Some("nao/existe.rs"), Some("run"), None),
             with(Question::Users, None, Some("sumiu"), None),
             with(Question::Users, None, None, None),

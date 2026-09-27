@@ -94,6 +94,12 @@ fn main() {
     let mut parent_table = String::new();
     parent_table.push_str("pub(crate) static LANG_PARENT_ALIAS: &[(&str, &str)] = &[\n");
 
+    // (name, module_alias) — o nome OPCIONAL que, no começo de um caminho
+    // qualificado, nomeia o próprio módulo de quem escreve. Sem o campo,
+    // texto vazio: nenhum caminho da língua é lido assim.
+    let mut module_table = String::new();
+    module_table.push_str("pub(crate) static LANG_MODULE_ALIAS: &[(&str, &str)] = &[\n");
+
     // (name, member_separators) e (name, self_receivers) — os textos
     // OPCIONAIS que ligam o método ao valor antes dele sem juntar caminho, e
     // os nomes que são o próprio objeto. Sem o campo, lista vazia.
@@ -230,6 +236,14 @@ fn main() {
             tbl.get("parent_alias").is_none() || !parent_alias.is_empty(),
             "language.parent_alias of `{name}` must not be empty"
         );
+        let module_alias = tbl
+            .get("module_alias")
+            .map(|v| v.as_str().expect("language.module_alias must be a string").to_string())
+            .unwrap_or_default();
+        assert!(
+            tbl.get("module_alias").is_none() || !module_alias.is_empty(),
+            "language.module_alias of `{name}` must not be empty"
+        );
         let import_self = tbl
             .get("import_self")
             .map(|v| v.as_str().expect("language.import_self must be a string").to_string())
@@ -291,6 +305,8 @@ fn main() {
             .expect("the generated table is a String, which never fails to write");
         writeln!(parent_table, "    ({name:?}, {parent_alias:?}),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(module_table, "    ({name:?}, {module_alias:?}),")
+            .expect("the generated table is a String, which never fails to write");
         writeln!(member_table, "    ({name:?}, &[{}]),", quoted_list(&member_separators))
             .expect("the generated table is a String, which never fails to write");
         writeln!(self_table, "    ({name:?}, &[{}]),", quoted_list(&self_receivers))
@@ -324,6 +340,8 @@ fn main() {
     body.push_str(&separators_table);
     parent_table.push_str("];\n");
     body.push_str(&parent_table);
+    module_table.push_str("];\n");
+    body.push_str(&module_table);
     for table in
         [&mut member_table, &mut self_table, &mut implicit_table, &mut family_table, &mut import_self_table]
             .into_iter()
@@ -415,7 +433,14 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
                 "routes/{framework}.toml names the language `{lang}`, which languages.toml does not declare"
             );
         }
-        let imports = list("imports", true);
+        // A regra global liga em todo arquivo das línguas dela e não tem
+        // import; a outra liga pelo import, e precisa dele.
+        let global = match tbl.get("global") {
+            None => false,
+            Some(value) => value.as_bool().unwrap_or_else(|| panic!("routes/{framework}.toml: `global` must be true or false")),
+        };
+        let imports = list("imports", !global);
+        assert!(!global || imports.is_empty(), "routes/{framework}.toml: a `global` rule has no `imports`");
         let methods: Vec<(String, String)> = tbl
             .get("methods")
             .and_then(|v| v.as_table())
@@ -447,10 +472,16 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
             "routes/{framework}.toml: `class_suffix` needs a `class_marker`"
         );
         let query = read_queries(crate_root, &root, &framework);
+        // A regra é do servidor, que acha rotas, ou da tela, que acha as
+        // chamadas a elas: a consulta usa as capturas de um lado só.
+        assert!(
+            !(query.contains("@route.") && query.contains("@client.")),
+            "routes/{framework}: a query captures either `@route.` or `@client.`, never both"
+        );
         let pairs = |list: &[(String, String)]| list.iter().map(|(a, b)| format!("({a:?}, {b:?})")).collect::<Vec<_>>().join(", ");
         writeln!(
             table,
-            "    RawRouteRule {{ framework: {framework:?}, languages: &[{}], imports: &[{}], \
+            "    RawRouteRule {{ framework: {framework:?}, languages: &[{}], global: {global}, imports: &[{}], \
              manifest_dependencies: &[{}], query: {query:?}, \
              methods: &[{}], param_prefixes: &[{}], param_wrappers: &[{}], reset_marks: &[{}], \
              path_starts: &[{}], exclude_wildcards: &[{}], class_marker: {class_marker:?}, \

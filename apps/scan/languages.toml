@@ -28,7 +28,11 @@
 #                 build.rs emits it verbatim, so the crate symbol never appears in src/.
 #   root_aliases  OPTIONAL — leading import segments that alias the package root
 #                 in qualified import paths. Only imports starting with one of
-#                 these earn the graph's root-alias resolution probe; languages
+#                 these earn the graph's root-alias resolution probe: o resto
+#                 se lê na pasta do arquivo raiz do pacote de quem importa
+#                 (`package_entry` sob o manifesto mais perto acima dele) e só
+#                 nela; quem importa fora dessa pasta, ou o pacote sem arquivo
+#                 raiz, lê subindo as pastas a partir da sua; languages
 #                 that declare none never take that branch, so a fully external
 #                 import can never be mistaken for an internal module. O
 #                 caminho de uma chamada qualificada (`@call.path`) só vira
@@ -50,6 +54,17 @@
 #                 próprio arquivo (`@inner_module`, o trecho de teste
 #                 incluído), os N primeiros só saem deles e ficam no arquivo;
 #                 os outros sobem pasta.
+#   module_alias  OPTIONAL — o nome que, no começo de um caminho qualificado,
+#                 nomeia o próprio módulo de quem o escreve (`self` em
+#                 `self::x::f()`). O resto do caminho é lido na pasta dos
+#                 módulos do arquivo, sem subir nenhuma: a que leva o nome
+#                 dele ou, no arquivo que responde pela própria pasta e no
+#                 arquivo raiz do pacote, a pasta dele. Tira do fim quantas
+#                 partes for preciso até achar arquivo, como o
+#                 `parent_alias`; sem arquivo para nenhuma parte, o alvo é o
+#                 próprio arquivo. Como os `root_aliases` e o
+#                 `parent_alias`, faz do caminho de uma chamada qualificada
+#                 um import do arquivo.
 #   namespace_scope OPTIONAL — how a declared namespace is seen by the other files
 #                 of the same language, with no import between them:
 #                   "folder" the namespace holds only together with its folder
@@ -133,6 +148,8 @@
 #                 (`demo_core::Leitor`) liga ao arquivo raiz, que declara o
 #                 nome ou o repassa; e os módulos filhos do arquivo raiz moram
 #                 na pasta dele, como os do arquivo que responde pela pasta.
+#                 O import que é só o nome do pacote (`use demo_core;`,
+#                 `from '@empresa/core'`) liga ao arquivo raiz também.
 #                 Sem o campo, nenhum: o caminho que não chega a arquivo não
 #                 liga a nada.
 #   implicit_self OPTIONAL — `true` na língua que chama um membro do próprio
@@ -189,6 +206,7 @@ grammar = "grammar_ts::LANGUAGE_TYPESCRIPT"
 self_receivers = ["this"]
 parent_receivers = ["super"]
 import_extensions = ["js", "mjs", "cjs", "jsx"]
+package_entry = ["src/index", "index"]
 alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
 alias_paths = "compilerOptions.paths"
@@ -205,6 +223,7 @@ grammar = "grammar_ts::LANGUAGE_TSX"
 self_receivers = ["this"]
 parent_receivers = ["super"]
 import_extensions = ["js", "jsx", "mjs", "cjs"]
+package_entry = ["src/index", "index"]
 alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
 alias_paths = "compilerOptions.paths"
@@ -222,6 +241,7 @@ extra_queries = "tsx"
 grammar = "grammar_ts::LANGUAGE_TSX"
 self_receivers = ["this"]
 parent_receivers = ["super"]
+package_entry = ["src/index", "index"]
 log_calls = ["console.*", "logger.*", "Logger.*"]
 error_forms = ["throw", "*Error", "*Exception", "reject"]
 
@@ -240,8 +260,9 @@ name = "rust"
 extensions = ["rs"]
 dir = "rust"
 grammar = "grammar_rs::LANGUAGE"
-root_aliases = ["crate", "self"]
+root_aliases = ["crate"]
 parent_alias = "super"
+module_alias = "self"
 qualified_separators = ["::"]
 member_separators = ["."]
 self_receivers = ["self", "Self"]

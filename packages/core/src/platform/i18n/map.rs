@@ -154,6 +154,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A suspect link has more than one possible target, or comes through a value whose type the map does not know. \
              To decide, ask the `LSP` (language server) tool of Claude Code for goToDefinition on the line of each call."
         }
+        ("map.users.routes", Locale::PtBr) => {
+            "As rotas do servidor que `{name}` atende vêm em routes. Cada uma traz as chamadas da tela que a \
+             alcançam, como arquivo:linha:quem chama."
+        }
+        ("map.users.routes", Locale::EnUs) => {
+            "The server routes that `{name}` serves come in routes. Each one lists the screen calls that reach it, \
+             as file:line:caller."
+        }
+        ("map.users.route_suspect", Locale::PtBr) => {
+            "Uma chamada suspeita da tela casa com mais de uma rota. Ou só casa sem a versão do endereço, como v1, \
+             ou sem a base do cliente. Para decidir, leia o endereço na linha da chamada."
+        }
+        ("map.users.route_suspect", Locale::EnUs) => {
+            "A suspect screen call matches more than one route. Or it only matches without the address version, \
+             such as v1, or without the client base. To decide, read the address on the line of the call."
+        }
         ("map.users.common", Locale::PtBr) => {
             "{count} chamadas de `{name}` ficaram sem ligação, porque o nome é comum demais para o mapa decidir. \
              Para achá-las, peça findReferences nesta declaração à ferramenta `LSP` (servidor de linguagem) \
@@ -162,6 +178,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.users.common", Locale::EnUs) => {
             "{count} calls of `{name}` were left unlinked, because the name is too common for the map to decide. \
              To find them, ask the `LSP` (language server) tool of Claude Code for findReferences on this declaration."
+        }
+        ("map.history.no_base", Locale::PtBr) => {
+            "O mapa está sem a história do git, porque o projeto não diz qual é a branch de partida. \
+             É a branch que recebe os pull requests. Para declarar, ponha o nome dela em mustard.json, \
+             em git.flow, na chave \"*\"."
+        }
+        ("map.history.no_base", Locale::EnUs) => {
+            "The map has no git history, because the project does not name its base branch. \
+             It is the branch that takes the pull requests. To name it, put its name in mustard.json, \
+             in git.flow, under the key \"*\"."
+        }
+        ("map.history.base_not_found", Locale::PtBr) => {
+            "O mapa está sem a história do git, porque a branch de partida {base} não existe neste clone. \
+             Ela falta aqui e em origin. Para trazer, rode git fetch origin {base}."
+        }
+        ("map.history.base_not_found", Locale::EnUs) => {
+            "The map has no git history, because the base branch {base} is not in this clone. \
+             It is missing here and in origin. To get it, run git fetch origin {base}."
         }
         _ => return None,
     })
@@ -180,20 +214,34 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            33,
-            0xa512_df64_6f41_25c4,
+            37,
+            0xb307_3441_d01c_8ffe,
         );
     }
 
     /// O que a resposta de quem usa diz das ligações — o cabeçalho, o próximo
-    /// passo da suspeita e a contagem do nome comum — passa na conferência de
-    /// escrita das respostas, nos dois idiomas, com cada vaga trocada por uma
-    /// palavra.
+    /// passo da suspeita, a contagem do nome comum e as rotas com as chamadas
+    /// da tela — e o aviso do mapa sem a história do git passam na
+    /// conferência de escrita das respostas, nos dois idiomas, com cada vaga
+    /// trocada por uma palavra.
     #[test]
     fn the_users_texts_read_clearly() {
         for lang in [Locale::PtBr, Locale::EnUs] {
-            for key in ["map.users.head", "map.users.none", "map.users.suspect", "map.users.common"] {
-                let text = translate(key, lang).replace("{name}", "run").replace("{file}", "a.rs").replace("{count}", "12");
+            for key in [
+                "map.users.head",
+                "map.users.none",
+                "map.users.suspect",
+                "map.users.common",
+                "map.users.routes",
+                "map.users.route_suspect",
+                "map.history.no_base",
+                "map.history.base_not_found",
+            ] {
+                let text = translate(key, lang)
+                    .replace("{name}", "run")
+                    .replace("{file}", "a.rs")
+                    .replace("{count}", "12")
+                    .replace("{base}", "dev");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
             }
@@ -234,6 +282,10 @@ mod tests {
             ("map.users.none", &["{name}", "{file}"][..]),
             ("map.users.suspect", &[][..]),
             ("map.users.common", &["{count}", "{name}"][..]),
+            ("map.users.routes", &["{name}"][..]),
+            ("map.users.route_suspect", &[][..]),
+            ("map.history.no_base", &[][..]),
+            ("map.history.base_not_found", &["{base}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

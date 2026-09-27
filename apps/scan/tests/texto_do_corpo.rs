@@ -117,10 +117,12 @@ fn write(dir: &Path, files: &[(&str, &str)]) {
 fn project_with(files: &[(&str, &str)]) -> tempfile::TempDir {
     let temp = tempfile::Builder::new().prefix("scan-corpo-").tempdir().unwrap();
     let dir = temp.path();
-    git(dir, &["init", "-q"]);
+    git(dir, &["init", "-q", "-b", "main"]);
     std::fs::create_dir_all(dir.join(".git").join("info")).unwrap();
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    // A história que o mapa guarda vem da branch de partida declarada.
+    write(dir, &[("mustard.json", r#"{"git": {"flow": {"*": "main"}}}"#)]);
     write(dir, files);
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-q", "-m", "primeiro"]);

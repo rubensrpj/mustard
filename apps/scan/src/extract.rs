@@ -28,7 +28,7 @@
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.
 
-use crate::model::{CallSite, Decl, Route, RouteLinks, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
+use crate::model::{CallSite, Decl, Route, RouteCall, RouteLinks, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
 use crate::routes::{self, RouteRule};
 use mustard_core::domain::project_map::outer_declarations;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -81,6 +81,9 @@ pub(crate) struct Extracted {
     pub routes: Vec<Route>,
     /// Os prefixos que o arquivo escreve para rotas de outros arquivos.
     pub route_links: RouteLinks,
+    /// As chamadas da tela a rotas do servidor escritas no arquivo, fora do
+    /// trecho de teste.
+    pub route_calls: Vec<RouteCall>,
     /// Os comentários do começo do arquivo, antes do primeiro código, numa
     /// linha.
     pub file_doc: String,
@@ -211,6 +214,13 @@ pub fn qualified_separators(lang: &str) -> Option<&'static [&'static str]> {
 /// (`parent_alias` em languages.toml). `None` quando a língua não o declara.
 pub fn parent_alias(lang: &str) -> Option<&'static str> {
     Some(text_field(LANG_PARENT_ALIAS, lang)).filter(|alias| !alias.is_empty())
+}
+
+/// O nome que, no começo de um caminho qualificado, nomeia o próprio módulo
+/// de quem o escreve (`module_alias` em languages.toml). `None` quando a
+/// língua não o declara.
+pub fn module_alias(lang: &str) -> Option<&'static str> {
+    Some(text_field(LANG_MODULE_ALIAS, lang)).filter(|alias| !alias.is_empty())
 }
 
 /// Os separadores que ligam um nome ao qualificador escrito antes dele: os da
@@ -366,7 +376,8 @@ enum CapKind {
     Namespace,
     /// O caminho escrito antes do nome numa chamada qualificada (`crate::a`
     /// em `crate::a::f()`): vira import do arquivo só quando começa por um
-    /// dos `root_aliases` da língua ou pelo `parent_alias` dela.
+    /// dos `root_aliases` da língua, pelo `parent_alias` ou pelo
+    /// `module_alias` dela.
     CallPath,
     Name,
     Supertype,
@@ -553,6 +564,7 @@ impl Analyzer {
         // próprio projeto, e o que separa as partes dele.
         let aliases = root_aliases(&self.name);
         let parent = parent_alias(&self.name);
+        let own_module = module_alias(&self.name);
         let separators = qualifier_separators(&self.name);
 
         // Os comentários do arquivo: o separador escrito num deles não liga
@@ -633,7 +645,7 @@ impl Analyzer {
                             let path = without_type_arguments(&t.split_whitespace().collect::<String>(), separators);
                             let first = first_segment(&path, separators);
                             let call = || node.next_named_sibling().and_then(|n| called_site(n, bytes, &comments, &self.name));
-                            if aliases.contains(&first) || parent == Some(first) {
+                            if aliases.contains(&first) || parent == Some(first) || own_module == Some(first) {
                                 import_spans.insert((node.start_byte(), node.end_byte()));
                                 here_imports.push(Written { call: call(), ..Written::at(path, false, node) });
                             } else if first.len() < path.len()
@@ -970,8 +982,14 @@ impl Analyzer {
         out.namespaces.dedup();
         if keep.texts_and_routes {
             let imports: Vec<String> = out.imports.iter().chain(&out.global_imports).cloned().collect();
-            let found = routes::find(&self.routes, root, bytes, &imports, project, &out.declarations, &test_blocks);
-            (out.routes, out.route_links) = (found.routes, found.links);
+            let source = routes::Source {
+                imports: &imports,
+                brought: &out.brought,
+                declarations: &out.declarations,
+                skip: &test_blocks,
+            };
+            let found = routes::find(&self.routes, root, bytes, &source, project);
+            (out.routes, out.route_links, out.route_calls) = (found.routes, found.links, found.calls);
         }
         out
     }

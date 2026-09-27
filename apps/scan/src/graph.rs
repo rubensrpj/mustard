@@ -108,17 +108,12 @@ fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> u
 /// dependencies of each file (`Module::deps`) both read it, so the two can
 /// never see a different graph. Output sorted → byte-stable. Nothing switches
 /// on a language name.
-pub fn resolve_edges(
-    modules: &[Module],
-    go_module: &Option<String>,
-    packages: &[(String, String)],
-    aliases: &PathAliases,
-) -> Vec<(usize, usize, u64)> {
+pub fn resolve_edges(modules: &[Module], projects: &Projects, aliases: &PathAliases) -> Vec<(usize, usize, u64)> {
     let mut pos: HashMap<&str, usize> = HashMap::with_capacity(modules.len());
     for (i, m) in modules.iter().enumerate() {
         pos.insert(m.path.as_str(), i);
     }
-    let resolver = Resolver::new(modules, go_module, packages, aliases);
+    let resolver = Resolver::new(modules, projects, aliases);
 
     // The strongest evidence per (src, dst) pair wins; re-imports never inflate.
     let mut edge_w: HashMap<(usize, usize), u64> = HashMap::new();
@@ -147,16 +142,11 @@ pub fn resolve_edges(
 /// ordem de `modules`. Guardados à parte: nenhum é aresta do grafo nem entra
 /// em `deps`. O trecho de teste é um dos módulos escritos dentro do arquivo
 /// (`Module::module_lines`), e o próprio arquivo não conta.
-pub fn resolve_test_deps(
-    modules: &[Module],
-    go_module: &Option<String>,
-    packages: &[(String, String)],
-    aliases: &PathAliases,
-) -> Vec<Vec<String>> {
+pub fn resolve_test_deps(modules: &[Module], projects: &Projects, aliases: &PathAliases) -> Vec<Vec<String>> {
     if modules.iter().all(|m| m.test_imports.is_empty()) {
         return vec![Vec::new(); modules.len()];
     }
-    let resolver = Resolver::new(modules, go_module, packages, aliases);
+    let resolver = Resolver::new(modules, projects, aliases);
     modules
         .iter()
         .map(|m| {
@@ -177,12 +167,7 @@ pub fn resolve_test_deps(
 /// cada módulo.
 pub type GraphBuild = (GraphStats, HashMap<String, usize>);
 
-pub fn build(
-    modules: &[Module],
-    go_module: &Option<String>,
-    packages: &[(String, String)],
-    aliases: &PathAliases,
-) -> GraphBuild {
+pub fn build(modules: &[Module], projects: &Projects, aliases: &PathAliases) -> GraphBuild {
     let mut g: DiGraph<String, ()> = DiGraph::new();
     for m in modules {
         g.add_node(m.path.clone());
@@ -193,7 +178,7 @@ pub fn build(
     // `NodeIndex::new(i)`. The published degree is specificity-weighted (see the
     // resolver): a bucket-broadcast target keeps its 1/N share instead of a
     // minted full count, so real hubs rank above diffuse glue.
-    let resolved = resolve_edges(modules, go_module, packages, aliases);
+    let resolved = resolve_edges(modules, projects, aliases);
     let mut edge_w: HashMap<(NodeIndex, NodeIndex), u64> = HashMap::new();
     for &(a, b, w) in &resolved {
         edge_w.insert((NodeIndex::new(a), NodeIndex::new(b)), w);
@@ -357,13 +342,12 @@ pub(crate) const CITED_KINDS: &[&str] =
 /// that is gone.
 pub fn link_declarations(
     modules: &mut [Module],
-    go_module: &Option<String>,
-    packages: &[(String, String)],
+    projects: &Projects,
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
 ) {
     let DeclLinks { mut calls, mut uses, common, linked } =
-        resolve_declaration_links(modules, go_module, packages, manifests, aliases);
+        resolve_declaration_links(modules, projects, manifests, aliases);
     for (m, linked) in modules.iter_mut().zip(linked) {
         m.cites = std::mem::take(&mut m.cites)
             .into_iter()
@@ -459,8 +443,7 @@ fn own_types(m: &Module, from: Option<usize>) -> Vec<&str> {
 /// is written to.
 fn resolve_declaration_links(
     modules: &[Module],
-    go_module: &Option<String>,
-    packages: &[(String, String)],
+    projects: &Projects,
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
 ) -> DeclLinks {
@@ -511,10 +494,10 @@ fn resolve_declaration_links(
             all
         })
         .collect();
-    let globals = global_sight(modules, go_module, packages, manifests, aliases);
+    let globals = global_sight(modules, projects, manifests, aliases);
     // O caminho escrito antes do nome chamado, o import que traz nomes e o
     // import com `*` se resolvem como o import que são.
-    let resolver = Resolver::new(modules, go_module, packages, aliases);
+    let resolver = Resolver::new(modules, projects, aliases);
     // The names a qualifier can give a file: its own name and its folder's.
     let own_names: Vec<[String; 2]> = modules
         .iter()
@@ -832,8 +815,7 @@ impl GlobalSight {
 /// [`global_reach`]).
 fn global_sight(
     modules: &[Module],
-    go_module: &Option<String>,
-    packages: &[(String, String)],
+    projects: &Projects,
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
 ) -> GlobalSight {
@@ -842,7 +824,7 @@ fn global_sight(
     if reach.is_empty() {
         return sight;
     }
-    let resolver = Resolver::new(modules, go_module, packages, aliases);
+    let resolver = Resolver::new(modules, projects, aliases);
     for (writer, reached) in reach {
         let g = &modules[writer];
         let targets: HashSet<String> =
@@ -902,15 +884,14 @@ pub(crate) fn project_dir<'a>(path: &'a str, manifests: &'a [crate::model::Manif
 /// import. Sem pedido, o resolvedor nem se monta.
 pub(crate) fn files_bringing(
     modules: &[Module],
-    go_module: &Option<String>,
-    packages: &[(String, String)],
+    projects: &Projects,
     aliases: &PathAliases,
     asks: &[(usize, String)],
 ) -> BTreeMap<(usize, String), Vec<String>> {
     if asks.is_empty() {
         return BTreeMap::new();
     }
-    let resolver = Resolver::new(modules, go_module, packages, aliases);
+    let resolver = Resolver::new(modules, projects, aliases);
     asks.iter()
         .map(|(at, name)| {
             let m = &modules[*at];
@@ -928,7 +909,13 @@ pub(crate) fn files_bringing(
 /// The folder of the manifest nearest above `path`: the deepest folder that
 /// holds both a manifest and the path. `None` when no manifest is above it.
 fn nearest_manifest_dir<'m>(path: &str, manifests: &'m [crate::model::Manifest]) -> Option<&'m str> {
-    manifests.iter().map(|m| folder_of(&m.path)).filter(|dir| is_under(path, dir)).max_by_key(|dir| dir.len())
+    deepest_holding(path, manifests.iter().map(|m| folder_of(&m.path)))
+}
+
+/// A mais funda das pastas `dirs` que guarda `path`. `None` quando nenhuma o
+/// guarda.
+fn deepest_holding<'d>(path: &str, dirs: impl Iterator<Item = &'d str>) -> Option<&'d str> {
+    dirs.filter(|dir| is_under(path, dir)).max_by_key(|dir| dir.len())
 }
 
 /// What the manifests nearest above `path` depend on: every manifest in the
@@ -989,6 +976,112 @@ struct Linked {
     members: Vec<DeclAt>,
     implements: Vec<DeclAt>,
     implemented_by: Vec<DeclAt>,
+}
+
+/// Uma rota do projeto: a posição do arquivo em `modules` e a dela entre as
+/// rotas dele.
+type RouteId = (usize, usize);
+
+/// A ligação da tela ao servidor, refeita do zero em toda passada, depois que
+/// as rotas ganharam os prefixos escritos noutros arquivos: cada chamada da
+/// tela ([`crate::model::RouteCall`]) vira um uso da rota que ela alcança
+/// ([`crate::model::Route::called_by`]), da declaração que faz a chamada à
+/// função que atende a rota.
+///
+/// O caminho da chamada é o dela com a base do cliente na frente: a escrita
+/// no arquivo, ou a do cliente trazido de outro, que o import com o nome dele
+/// nomeia (`brought`, de [`crate::routes::brought_names`]). O nome trazido
+/// que não é cliente nenhum lá não faz chamada. O método casa quando é o
+/// mesmo, ou quando a rota vale qualquer um.
+///
+/// - Provada: o caminho casa exato com o de uma rota só.
+/// - Suspeita, com as funções que atendem cada rota que ela pode alcançar: o
+///   caminho casa exato com mais de uma rota; ou nenhuma casa exato, e alguma
+///   casa sem os pedaços de versão (`v1`) ou sem a base do cliente.
+pub(crate) fn link_route_calls(modules: &mut [Module], brought: &BTreeMap<(usize, String), Vec<String>>) {
+    for m in modules.iter_mut() {
+        for route in &mut m.routes {
+            route.called_by.clear();
+        }
+    }
+    if modules.iter().all(|m| m.route_calls.is_empty()) {
+        return;
+    }
+    let index: HashMap<&str, usize> = modules.iter().enumerate().map(|(at, m)| (m.path.as_str(), at)).collect();
+    let mut exact: HashMap<&str, Vec<RouteId>> = HashMap::new();
+    let mut loose: HashMap<String, Vec<RouteId>> = HashMap::new();
+    for (at, m) in modules.iter().enumerate() {
+        for (ri, route) in m.routes.iter().enumerate() {
+            exact.entry(route.path.as_str()).or_default().push((at, ri));
+            loose.entry(crate::routes::without_version(&route.path)).or_default().push((at, ri));
+        }
+    }
+    let mut found: Vec<(RouteId, UseSite)> = Vec::new();
+    for (at, m) in modules.iter().enumerate() {
+        for call in &m.route_calls {
+            let base = if call.via.is_empty() {
+                call.base.as_ref().map(|b| b.path.clone()).unwrap_or_default()
+            } else {
+                let from = brought.get(&(at, call.via.clone())).into_iter().flatten().filter_map(|p| index.get(p.as_str()));
+                let clients: Vec<&crate::model::Client> = from
+                    .flat_map(|&to| modules[to].route_links.clients.iter())
+                    .filter(|c| c.framework == call.framework)
+                    .collect();
+                let named = clients.iter().find(|c| c.name == call.via).or_else(|| clients.iter().find(|c| c.name.is_empty()));
+                let Some(client) = named else { continue };
+                client.base.path.clone()
+            };
+            let method_fits = |&&(to, ri): &&RouteId| {
+                let route = &modules[to].routes[ri];
+                route.method == call.method || route.method == crate::model::ANY_METHOD
+            };
+            let full = join_route_path(&base, &call.path);
+            let hits = |found: Option<&Vec<RouteId>>| -> Vec<RouteId> { found.into_iter().flatten().filter(method_fits).copied().collect() };
+            let mut targets = hits(exact.get(full.as_str()));
+            let proven = targets.len() == 1;
+            if targets.is_empty() {
+                targets = hits(loose.get(&crate::routes::without_version(&full)));
+                if !base.is_empty() {
+                    targets.extend(hits(exact.get(call.path.as_str())));
+                    targets.extend(hits(loose.get(&crate::routes::without_version(&call.path))));
+                }
+                targets.sort_unstable();
+                targets.dedup();
+            }
+            let candidates: Vec<DeclAt> = if proven {
+                Vec::new()
+            } else {
+                let mut all: Vec<DeclAt> = targets
+                    .iter()
+                    .map(|&(to, ri)| {
+                        let route = &modules[to].routes[ri];
+                        DeclAt { file: modules[to].path.clone(), line: route.line, name: route.handler.clone() }
+                    })
+                    .collect();
+                all.sort();
+                all.dedup();
+                all
+            };
+            for target in targets {
+                let site = UseSite { file: m.path.clone(), line: call.line, from: call.owner.clone(), candidates: candidates.clone() };
+                found.push((target, site));
+            }
+        }
+    }
+    for ((to, ri), site) in found {
+        modules[to].routes[ri].called_by.push(site);
+    }
+    for m in modules.iter_mut() {
+        for route in &mut m.routes {
+            route.called_by.sort();
+            route.called_by.dedup();
+        }
+    }
+}
+
+/// O caminho padronizado `path` com a base `base` na frente.
+fn join_route_path(base: &str, path: &str) -> String {
+    [base, path].iter().filter(|piece| !piece.is_empty()).copied().collect::<Vec<_>>().join("/")
 }
 
 /// Os membros de cada tipo e as implementações de cada método, refeitos do
@@ -1178,10 +1271,14 @@ struct Resolver<'a> {
     module_paths: HashSet<&'a str>,
     /// Cada módulo pelo caminho: o que um arquivo do namespace declara.
     by_path: HashMap<&'a str, &'a Module>,
+    /// Cada caminho sem a extensão (as chaves de `stem_index`) pela última
+    /// parte dele: o caminho que termina num candidato só se procura entre os
+    /// de mesmo nome.
+    by_name: HashMap<String, Vec<String>>,
     /// O nome de cada arquivo, sem a extensão, e o de cada pasta do projeto.
     local_names: HashSet<String>,
-    go_module: &'a Option<String>,
-    packages: &'a [(String, String)],
+    /// Os pacotes, os módulos declarados e as pastas de projeto dos manifestos.
+    projects: &'a Projects,
     /// Os apelidos de pasta das configurações do projeto.
     aliases: &'a PathAliases,
     /// O que cada trio `(língua, pacote, resto)` resolveu, uma vez perguntado:
@@ -1193,12 +1290,7 @@ struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    fn new(
-        modules: &'a [Module],
-        go_module: &'a Option<String>,
-        packages: &'a [(String, String)],
-        aliases: &'a PathAliases,
-    ) -> Self {
+    fn new(modules: &'a [Module], projects: &'a Projects, aliases: &'a PathAliases) -> Self {
         let mut ns_index: HashMap<&str, HashMap<String, Vec<String>>> = HashMap::new();
         let mut dir_index: HashMap<String, Vec<String>> = HashMap::new(); // dir -> module paths
         for m in modules {
@@ -1214,9 +1306,16 @@ impl<'a> Resolver<'a> {
             }
             dir_index.entry(parent_dir(&m.path)).or_default().push(m.path.clone());
         }
+        let stem_index = build_stem_index(modules);
+        let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
+        for stem in stem_index.keys() {
+            let name = stem.rsplit('/').next().unwrap_or(stem);
+            by_name.entry(name.to_string()).or_default().push(stem.clone());
+        }
         Resolver {
             ns_index,
-            stem_index: build_stem_index(modules),
+            stem_index,
+            by_name,
             dir_index,
             module_paths: modules.iter().map(|m| m.path.as_str()).collect(),
             by_path: modules.iter().map(|m| (m.path.as_str(), m)).collect(),
@@ -1228,8 +1327,7 @@ impl<'a> Resolver<'a> {
                     folders.into_iter().chain([file_stem(&m.path)])
                 })
                 .collect(),
-            go_module,
-            packages,
+            projects,
             aliases,
             package_hits: RefCell::new(HashMap::new()),
             through_hits: RefCell::new(HashMap::new()),
@@ -1364,18 +1462,17 @@ impl<'a> Resolver<'a> {
             let named: Vec<String> = v.iter().filter(|p| file_stem(p) == type_name).cloned().collect();
             return if named.is_empty() { self.narrow(v, importer, reach) } else { named };
         }
-        // 2) Module-prefixed path: strip a declared module prefix and match the
-        //    directory it points at (the import-as-package-path shape). Raw on
-        //    both sides: these imports and the declared prefix are already
-        //    slash-separated, and canonicalizing a dotted module domain would
-        //    corrupt it.
-        if let Some(modpath) = self.go_module
-            && let Some(rest) = imp.strip_prefix(modpath.as_str())
+        // 2) Module-prefixed path: the import opens with a module a manifest
+        //    declares, followed by `/` or at its end, and the rest names a
+        //    folder read from that manifest's folder (the
+        //    import-as-package-path shape); with more than one declared module
+        //    that fits, the longest. Raw on both sides: these imports and the
+        //    declared prefix are already slash-separated, and canonicalizing a
+        //    dotted module domain would corrupt it.
+        if let Some((dir, rest)) = self.projects.module_of(imp)
+            && let Some(v) = dir_index.get(&join_dir(dir, rest))
         {
-            let rest = rest.trim_start_matches('/');
-            if let Some(v) = dir_index.get(rest) {
-                return v.clone();
-            }
+            return v.clone();
         }
         // 2b) Apelido de pasta: um import não relativo lido pelos apelidos e
         //     pela pasta base da configuração mais próxima de quem importa. Só
@@ -1401,13 +1498,22 @@ impl<'a> Resolver<'a> {
         }
         // 3) File path: a relative or path-ish import resolved to a module file.
         //    The canonical form means dotted / `::` module paths take this branch
-        //    too — they are paths spelled with another separator.
+        //    too — they are paths spelled with another separator. O caminho
+        //    relativo que nomeia um arquivo exato fica com ele; fora isso, a
+        //    procura vai primeiro aos arquivos do projeto de quem importa e,
+        //    só sem nenhum ali, ao resto do repositório: um projeto pode usar
+        //    outro do mesmo repositório pelo nome do módulo.
+        let project = self.projects.nearest(from);
         if cleaned.starts_with('.') {
             let joined = join_relative(from, cleaned);
-            return resolve_path_candidate(&joined, lang, stem_index, dir_index, module_paths);
+            let exact = exact_path_candidate(&joined, lang, stem_index, module_paths);
+            if !exact.is_empty() {
+                return exact;
+            }
+            return self.path_candidate(&joined, lang, project, true);
         }
         if cleaned.contains('/') || file_path {
-            let hits = resolve_path_candidate(cleaned, lang, stem_index, dir_index, module_paths);
+            let hits = self.path_candidate(cleaned, lang, project, true);
             if !hits.is_empty() {
                 return hits;
             }
@@ -1416,32 +1522,37 @@ impl<'a> Resolver<'a> {
         //    importer language's declared root aliases (registry data — the engine
         //    never spells one); any other first segment names an external
         //    package, never the project root. Drop the alias and probe the tail
-        //    against the importer's ancestor directories, nearest first — and,
-        //    because the path may end in an ITEM, a type and a method inside the
-        //    module, the tail cut from its end one segment at a time, as far as
-        //    it takes to reach a file. Each probe is exact: the root the alias
-        //    names is always one of the importer's ancestors, so a file found
-        //    only by the end of its path would be another place. The fixed
-        //    probe order keeps resolution deterministic. No aliases declared ->
-        //    this branch never runs.
+        //    — and, because the path may end in an ITEM, a type and a method
+        //    inside the module, the tail cut from its end one segment at a
+        //    time, as far as it takes to reach a file. A raiz que o apelido
+        //    nomeia é a pasta do arquivo raiz do pacote de quem importa
+        //    ([`Resolver::package_root`]), e o resto se lê só ali; quem
+        //    importa fora dessa pasta, ou o pacote sem arquivo raiz achado,
+        //    lê nas pastas de cima de quem importa, a mais perto primeiro.
+        //    Each probe is exact: a file found only by the end of its path
+        //    would be another place. The fixed probe order keeps resolution
+        //    deterministic. No aliases declared -> this branch never runs.
         let root_aliases = crate::extract::root_aliases(&importer.language);
         if let Some((alias, tail)) = canon.split_once('/')
             && root_aliases.contains(&alias)
         {
             let parts: Vec<&str> = tail.split('/').collect();
             let tails: Vec<String> = (1..=parts.len()).rev().map(|cut| parts[..cut].join("/")).collect();
+            // As pastas em que o resto se procura, na ordem: só a da raiz do
+            // pacote, ou as de cima de quem importa, da mais perto à raiz.
+            let dirs: Vec<String> = match self.package_root(from, lang) {
+                Some(root) => vec![root],
+                None => std::iter::successors(Some(parent_dir(from)), |dir| {
+                    (!dir.is_empty()).then(|| parent_dir(dir))
+                })
+                .collect(),
+            };
             for t in &tails {
-                let mut dir = parent_dir(from);
-                loop {
-                    let cand = if dir.is_empty() { t.clone() } else { format!("{dir}/{t}") };
-                    let hits = exact_path_candidate(&cand, lang, stem_index, module_paths);
+                for dir in &dirs {
+                    let hits = exact_path_candidate(&join_dir(dir, t), lang, stem_index, module_paths);
                     if !hits.is_empty() {
                         return hits;
                     }
-                    if dir.is_empty() {
-                        break;
-                    }
-                    dir = parent_dir(&dir);
                 }
             }
         }
@@ -1452,21 +1563,79 @@ impl<'a> Resolver<'a> {
         //    item) under that package's directory, the shallowest directory
         //    first; failing that, the package file whose path ends in the rest
         //    answers — the one a manifest that maps the package's paths onto a
-        //    deeper folder (`./x` onto `./src/x`) points at. Any other leading
-        //    run stays an external package.
+        //    deeper folder (`./x` onto `./src/x`) points at. O import que é só o
+        //    nome do pacote (`@empresa/core`) tem o resto vazio e liga ao
+        //    arquivo raiz dele. Any other leading run stays an external package.
         let segments: Vec<&str> = canon.split('/').collect();
-        for cut in (1..segments.len()).rev() {
+        for cut in (1..=segments.len()).rev() {
             let name = fold_package(&segments[..cut].join("/"));
-            if self.packages.iter().any(|(n, _)| *n == name) {
+            if self.projects.has_package(&name) {
                 return self.in_package(lang, name, segments[cut..].join("/"));
             }
         }
         Vec::new()
     }
 
+    /// A pasta do arquivo raiz do pacote de quem está em `from`: o primeiro
+    /// arquivo raiz da língua (`package_entry` no registro) que existe sob a
+    /// pasta do manifesto mais perto acima dele. `None` sem manifesto acima,
+    /// sem arquivo raiz achado, ou quando `from` está fora dessa pasta (um
+    /// teste ao lado dela, o roteiro de compilação).
+    fn package_root(&self, from: &str, lang: &str) -> Option<String> {
+        let dir = self.projects.nearest(from)?;
+        let root = crate::extract::package_entry(lang).iter().find_map(|entry| {
+            exact_path_candidate(&join_dir(dir, entry), lang, &self.stem_index, &self.module_paths).into_iter().next()
+        })?;
+        let folder = inner_folder(&root, lang);
+        is_under(from, &folder).then_some(folder)
+    }
+
+    /// Os arquivos que um caminho candidato nomeia, para quem importa na
+    /// língua `lang`: os exatos primeiro ([`exact_path_candidate`]), depois os
+    /// arquivos cujo caminho termina nele a partir de uma parte inteira (o
+    /// próprio caminho, ou `/` logo antes do trecho). Com `within`, só os que
+    /// estão sob essa pasta respondem primeiro; os de fora respondem só
+    /// quando nenhum de dentro responde e `widen` pede o resto do
+    /// repositório.
+    fn path_candidate(&self, cand: &str, lang: &str, within: Option<&str>, widen: bool) -> Vec<String> {
+        let inside = |hits: &[String]| -> Vec<String> {
+            hits.iter().filter(|p| within.is_none_or(|dir| is_under(p, dir))).cloned().collect()
+        };
+        let exact = exact_path_candidate(cand, lang, &self.stem_index, &self.module_paths);
+        let exact_inside = inside(&exact);
+        if !exact_inside.is_empty() {
+            return exact_inside;
+        }
+        let ending = self.ending_in(cand, lang);
+        let ending_inside = inside(&ending);
+        if !ending_inside.is_empty() || !widen {
+            return ending_inside;
+        }
+        if exact.is_empty() { ending } else { exact }
+    }
+
+    /// Os arquivos cujo caminho, sem a extensão, é o candidato ou termina em
+    /// `/` seguido dele, em ordem.
+    fn ending_in(&self, cand: &str, lang: &str) -> Vec<String> {
+        let stem = strip_import_ext(&normalize(cand), lang);
+        let name = stem.rsplit('/').next().unwrap_or(&stem);
+        let tail = format!("/{stem}");
+        let mut hits: Vec<String> = self
+            .by_name
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|k| **k == stem || k.ends_with(&tail))
+            .flat_map(|k| self.stem_index.get(k).into_iter().flatten().cloned())
+            .collect();
+        hits.sort(); // stable output: HashMap iteration order varies per run
+        hits
+    }
+
     /// O import que não nomeia nada do projeto, como `std::fs::{self}`: não é
-    /// relativo, não começa por um apelido da raiz, da pasta de cima, das
-    /// configurações ou do módulo declarado, nenhum começo dele é pacote do
+    /// relativo, não começa por um apelido da raiz, da pasta de cima, do
+    /// próprio módulo, das configurações ou por um módulo declarado (seguido
+    /// de `/` ou no fim), nenhum começo dele é pacote do
     /// projeto e a primeira parte não é nome de arquivo nem de pasta do
     /// projeto. Quem chama já sabe que ele não resolve a arquivo nenhum; o
     /// que parece do projeto e não resolve fica de dentro, por cautela.
@@ -1474,7 +1643,7 @@ impl<'a> Resolver<'a> {
         let lang = importer.language.as_str();
         if self.separated_relative(imp, importer).is_some()
             || !self.aliases.candidates(&importer.path, lang, imp).is_empty()
-            || self.go_module.as_deref().is_some_and(|module| imp.starts_with(module))
+            || self.projects.module_of(imp).is_some()
         {
             return false;
         }
@@ -1486,9 +1655,9 @@ impl<'a> Resolver<'a> {
         let segments: Vec<&str> = canon.split('/').collect();
         let first = segments.first().copied().unwrap_or_default();
         let aliased = crate::extract::root_aliases(lang).contains(&first)
-            || crate::extract::parent_alias(lang) == Some(first);
-        let package = (1..=segments.len())
-            .any(|cut| self.packages.iter().any(|(name, _)| *name == fold_package(&segments[..cut].join("/"))));
+            || crate::extract::parent_alias(lang) == Some(first)
+            || crate::extract::module_alias(lang) == Some(first);
+        let package = (1..=segments.len()).any(|cut| self.projects.has_package(&fold_package(&segments[..cut].join("/"))));
         !(aliased || package || self.local_names.contains(first))
     }
 
@@ -1525,8 +1694,9 @@ impl<'a> Resolver<'a> {
     /// dele é módulo filho de quem importa, na língua que declara
     /// `root_aliases`: o arquivo mais fundo que o caminho nomeia dentro da
     /// pasta dos módulos de quem importa ([`inner_folder`]). `None` quando a
-    /// língua não declara apelido, o caminho começa por um deles ou pelo
-    /// `parent_alias`, ou a primeira parte não é módulo filho.
+    /// língua não declara apelido, o caminho começa por um deles, pelo
+    /// `parent_alias` ou pelo `module_alias`, ou a primeira parte não é
+    /// módulo filho.
     fn child_module(&self, canon: &str, importer: &Module) -> Option<Vec<String>> {
         let lang = importer.language.as_str();
         let aliases = crate::extract::root_aliases(lang);
@@ -1536,6 +1706,7 @@ impl<'a> Resolver<'a> {
             || first.is_empty()
             || aliases.contains(&first)
             || crate::extract::parent_alias(lang) == Some(first)
+            || crate::extract::module_alias(lang) == Some(first)
         {
             return None;
         }
@@ -1551,31 +1722,39 @@ impl<'a> Resolver<'a> {
         (1..=segments.len()).rev().map(probe).find(|hits| !hits.is_empty())
     }
 
-    /// Os arquivos que um caminho aberto pelo `parent_alias` da língua cita.
-    /// Os módulos de dentro de um arquivo moram na pasta que leva o nome dele
-    /// ou, no arquivo que responde pela própria pasta, nela mesma; cada
-    /// repetição do apelido sobe uma pasta a partir dali, e as `nested`
-    /// primeiras só saem dos módulos escritos dentro do arquivo. O resto do
-    /// caminho é procurado nessa pasta, tirando do fim quantas partes for
-    /// preciso até achar arquivo; sem nenhuma, o alvo é o arquivo que responde
-    /// pela pasta. O que sobe além da raiz, ou não existe no projeto, não liga
-    /// a nada. `None` quando o caminho não começa pelo apelido ou a língua não
-    /// o declara: segue pelos outros caminhos.
+    /// Os arquivos que um caminho aberto pelo `parent_alias` ou pelo
+    /// `module_alias` da língua cita. Os módulos de dentro de um arquivo
+    /// moram na pasta que leva o nome dele ou, no arquivo que responde pela
+    /// própria pasta, nela mesma; o `module_alias` lê dali, sem subir, e cada
+    /// repetição do `parent_alias` sobe uma pasta a partir dali, e as
+    /// `nested` primeiras só saem dos módulos escritos dentro do arquivo. O
+    /// resto do caminho é procurado nessa pasta, tirando do fim quantas
+    /// partes for preciso até achar arquivo; sem nenhuma, o alvo é o arquivo
+    /// que responde pela pasta. O que sobe além da raiz, ou não existe no
+    /// projeto, não liga a nada. `None` quando o caminho não começa por um
+    /// dos dois ou a língua não os declara: segue pelos outros caminhos.
     fn climbing(&self, canon: &str, importer: &Module, nested: usize) -> Option<Vec<String>> {
-        let alias = crate::extract::parent_alias(&importer.language)?;
+        let lang = importer.language.as_str();
         let segments: Vec<&str> = canon.split('/').collect();
-        let ups = segments.iter().take_while(|s| **s == alias).count();
-        if ups == 0 {
-            return None;
-        }
-        let mut base = inner_folder(&importer.path, &importer.language);
+        // Quantas pastas o caminho sobe e quantas partes do começo são apelido.
+        let (ups, skip) = if crate::extract::module_alias(lang).is_some_and(|alias| segments.first() == Some(&alias)) {
+            (0, 1)
+        } else {
+            let alias = crate::extract::parent_alias(lang)?;
+            let ups = segments.iter().take_while(|s| **s == alias).count();
+            if ups == 0 {
+                return None;
+            }
+            (ups, ups)
+        };
+        let mut base = inner_folder(&importer.path, lang);
         for _ in nested..ups {
             if base.is_empty() {
                 return Some(Vec::new());
             }
             base = parent_dir(&base);
         }
-        let rest = &segments[ups..];
+        let rest = &segments[skip..];
         for cut in (0..=rest.len()).rev() {
             let place: Vec<&str> =
                 std::iter::once(base.as_str()).chain(rest[..cut].iter().copied()).filter(|s| !s.is_empty()).collect();
@@ -1649,24 +1828,28 @@ impl<'a> Resolver<'a> {
         }
         let (_, name, tail) = &key;
         let (stem_index, dir_index, module_paths) = (&self.stem_index, &self.dir_index, &self.module_paths);
-        let dirs: Vec<&String> = self.packages.iter().filter(|(n, _)| n == name).map(|(_, d)| d).collect();
+        let dirs: Vec<&String> = self.projects.packages.iter().filter(|(n, _)| n == name).map(|(_, d)| d).collect();
         let mut tails = vec![tail.clone()];
         if let Some((head, _)) = tail.rsplit_once('/') {
             tails.push(head.to_string());
         }
-        let probed = dirs.iter().find_map(|dir| {
+        // O import que é só o nome do pacote não procura nada dentro dele:
+        // vai direto ao arquivo raiz, logo abaixo.
+        let probed = (!tail.is_empty()).then(|| dirs.iter().find_map(|dir| {
             let inside = |d: &String| is_under(d, dir) || d == *dir;
             let mut bases: Vec<&String> = dir_index.keys().filter(|d| inside(d)).collect();
             bases.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()).then_with(|| a.cmp(b)));
             tails.iter().find_map(|t| {
                 bases.iter().find_map(|base| {
-                    let cand = if base.is_empty() { t.clone() } else { format!("{base}/{t}") };
-                    let hits = resolve_path_candidate(&cand, lang, stem_index, dir_index, module_paths);
+                    let hits = self.path_candidate(&join_dir(base, t), lang, Some(dir.as_str()), false);
                     (!hits.is_empty()).then_some(hits)
                 })
             })
-        });
+        })).flatten();
         let mut hits = probed.unwrap_or_else(|| {
+            if tail.is_empty() {
+                return Vec::new();
+            }
             let ending = format!("/{}", strip_import_ext(tail, lang));
             let mut hits: Vec<String> = stem_index
                 .iter()
@@ -1706,47 +1889,62 @@ fn fold_package(name: &str) -> String {
     name.trim().to_ascii_lowercase().replace('-', "_")
 }
 
-/// The packages the project declares, as `(folded name, manifest directory)`,
-/// in name order — what resolution shape 5 matches an import's first segment
-/// against.
-pub fn packages(manifests: &[crate::model::Manifest]) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = manifests
-        .iter()
-        .filter_map(|m| m.package.as_deref().map(|p| (fold_package(p), parent_dir(&m.path))))
-        .filter(|(name, _)| !name.is_empty())
-        .collect();
-    out.sort();
-    out.dedup();
-    out
+/// O que o grafo tira dos manifestos do projeto, feito uma vez por passada:
+/// os pacotes que o projeto declara, os módulos que os manifestos declaram
+/// para os imports e a pasta de cada projeto. O projeto de um arquivo é a
+/// pasta do manifesto mais perto acima dele, na mesma pasta ou acima.
+pub struct Projects {
+    /// Cada pacote declarado, `(nome dobrado, pasta do manifesto)`, em ordem
+    /// de nome: o que o passo 5 casa com o começo de um import.
+    packages: Vec<(String, String)>,
+    /// Cada módulo declarado, `(módulo, pasta do manifesto)`, do mais longo ao
+    /// mais curto: o import que começa por mais de um fica com o mais longo.
+    modules: Vec<(String, String)>,
+    /// A pasta de cada manifesto, sem repetir.
+    dirs: Vec<String>,
 }
 
-/// The project files a path candidate names, for an importer of language
-/// `lang`: the exact candidates first ([`exact_path_candidate`]), then any
-/// module whose path ends with it.
-fn resolve_path_candidate(
-    cand: &str,
-    lang: &str,
-    stem_index: &HashMap<String, Vec<String>>,
-    dir_index: &HashMap<String, Vec<String>>,
-    module_paths: &HashSet<&str>,
-) -> Vec<String> {
-    let exact = exact_path_candidate(cand, lang, stem_index, module_paths);
-    if !exact.is_empty() {
-        return exact;
+impl Projects {
+    pub fn of(manifests: &[crate::model::Manifest]) -> Self {
+        let mut packages: Vec<(String, String)> = manifests
+            .iter()
+            .filter_map(|m| m.package.as_deref().map(|p| (fold_package(p), parent_dir(&m.path))))
+            .filter(|(name, _)| !name.is_empty())
+            .collect();
+        packages.sort();
+        packages.dedup();
+        let mut modules: Vec<(String, String)> = manifests
+            .iter()
+            .filter_map(|m| m.module.as_deref().map(|module| (module.trim_end_matches('/').to_string(), parent_dir(&m.path))))
+            .filter(|(module, _)| !module.is_empty())
+            .collect();
+        modules.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.cmp(b)));
+        modules.dedup();
+        let dirs: BTreeSet<String> = manifests.iter().map(|m| folder_of(&m.path).to_string()).collect();
+        Projects { packages, modules, dirs: dirs.into_iter().collect() }
     }
-    let stem = strip_import_ext(&normalize(cand), lang);
-    // package-suffix shape: match any module whose path ends with the candidate
-    let mut suffix_matches: Vec<String> = stem_index
-        .iter()
-        .filter(|(k, _)| k.ends_with(&stem))
-        .flat_map(|(_, v)| v.clone())
-        .collect();
-    if !suffix_matches.is_empty() {
-        suffix_matches.sort(); // stable output: HashMap iteration order varies per run
-        return suffix_matches;
+
+    /// A pasta do projeto de `path`: a do manifesto mais perto acima dele
+    /// (a mesma regra de [`nearest_manifest_dir`]). `None` sem manifesto
+    /// acima.
+    fn nearest(&self, path: &str) -> Option<&str> {
+        deepest_holding(path, self.dirs.iter().map(String::as_str))
     }
-    let _ = dir_index;
-    Vec::new()
+
+    /// O módulo declarado que abre `imp`, seguido de `/` ou no fim dele: a
+    /// pasta do manifesto que o declara e o resto do import. Com mais de um
+    /// que case, o mais longo.
+    fn module_of<'i>(&self, imp: &'i str) -> Option<(&str, &'i str)> {
+        self.modules.iter().find_map(|(module, dir)| {
+            let rest = imp.strip_prefix(module.as_str())?;
+            (rest.is_empty() || rest.starts_with('/')).then(|| (dir.as_str(), rest.trim_start_matches('/')))
+        })
+    }
+
+    /// Algum pacote declarado tem o nome dobrado `name`.
+    fn has_package(&self, name: &str) -> bool {
+        self.packages.iter().any(|(n, _)| n == name)
+    }
 }
 
 /// Os arquivos que um caminho candidato cita sem adivinhar: o próprio

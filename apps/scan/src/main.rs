@@ -188,12 +188,14 @@ fn code_evidence<'a>(modules: impl Iterator<Item = &'a Module>) -> Vec<String> {
 }
 
 /// What one read of the project gives before the declarations are linked:
-/// the walk, the modules with their imports resolved, the packages the
-/// manifests name and the file graph.
+/// the walk, the modules with their imports resolved, what the graph takes
+/// from the manifests and the file graph.
 struct Read {
     ing: ingest::Ingested,
     modules: Vec<Module>,
-    packages: Vec<(String, String)>,
+    /// Os pacotes, os módulos declarados e as pastas de projeto dos
+    /// manifestos, tirados deles uma vez.
+    projects: graph::Projects,
     /// Os apelidos de pasta das configurações do projeto, lidos uma vez e
     /// usados tanto nas importações quanto nos vínculos entre declarações.
     aliases: path_aliases::PathAliases,
@@ -289,6 +291,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 texts: extracted.texts,
                 routes: extracted.routes,
                 route_links: extracted.route_links,
+                route_calls: extracted.route_calls,
                 file_doc: extracted.file_doc,
                 file_comment: extracted.file_comment,
                 file_doc_in_body: extracted.file_doc_in_body,
@@ -308,15 +311,15 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
         }
     }
 
-    let packages = graph::packages(&ing.manifests);
+    let projects = graph::Projects::of(&ing.manifests);
     let aliases = path_aliases::PathAliases::load(&ing.root, &ing.walk_paths);
-    let graph = graph::build(&modules, &ing.go_module, &packages, &aliases);
+    let graph = graph::build(&modules, &projects, &aliases);
     // The project files each module imports, from the same resolved edges the
     // graph counts — the answer to "who imports this file", read backwards.
     // A importação de namespace chega aqui já estreitada aos arquivos que
     // declaram um nome que o módulo usa.
     let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); modules.len()];
-    for (from, to, _) in graph::resolve_edges(&modules, &ing.go_module, &packages, &aliases) {
+    for (from, to, _) in graph::resolve_edges(&modules, &projects, &aliases) {
         deps[from].insert(to);
     }
     let paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();
@@ -327,11 +330,11 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     }
     // O que o trecho de teste de cada módulo importa, resolvido no mesmo passo
     // e guardado à parte: não é dependência do arquivo, é o que o teste cobre.
-    let test_deps = graph::resolve_test_deps(&modules, &ing.go_module, &packages, &aliases);
+    let test_deps = graph::resolve_test_deps(&modules, &projects, &aliases);
     for (m, found) in modules.iter_mut().zip(test_deps) {
         m.test_deps = found;
     }
-    Ok(Read { ing, modules, packages, aliases, graph, route_rules })
+    Ok(Read { ing, modules, projects, aliases, graph, route_rules })
 }
 
 /// As rotas que o import global de outro arquivo liga: o arquivo lido nesta
@@ -382,11 +385,12 @@ fn routes_by_global_imports(
         let content = std::fs::read_to_string(ing.root.join(&modules[at].path)).ok()?;
         let project = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps };
         let extracted = analyzer.extract(&content, keep, &project);
-        Some((at, extracted.routes, extracted.route_links))
+        Some((at, extracted.routes, extracted.route_links, extracted.route_calls))
     });
-    for (at, routes, links) in found.into_iter().flatten() {
+    for (at, routes, links, calls) in found.into_iter().flatten() {
         modules[at].routes = routes;
         modules[at].route_links = links;
+        modules[at].route_calls = calls;
     }
 }
 
@@ -418,13 +422,13 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         }
         _ => (true, read_modules(root, None, listing.as_ref())?),
     };
-    let Read { ing, mut modules, packages, aliases, graph: (graph_stats, depth_by_path), route_rules } = read;
+    let Read { ing, mut modules, projects, aliases, graph: (graph_stats, depth_by_path), route_rules } = read;
 
     // The named edges between declarations: who calls or cites whom, in which
     // file and on which line. Read from the call sites and the citations every
     // module carries, so a pass that read only what changed links the same
     // declarations a full pass does.
-    graph::link_declarations(&mut modules, &ing.go_module, &packages, &ing.manifests, &aliases);
+    graph::link_declarations(&mut modules, &projects, &ing.manifests, &aliases);
     // Cada tipo com os membros dele e cada método com o do contrato que ele
     // cumpre, refeitos do projeto inteiro como as ligações acima.
     graph::link_members(&mut modules);
@@ -432,22 +436,27 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     // de um nome trazido, o prefixo global, a entrega de um grupo — somam-se
     // aqui, depois do grafo e das ligações, a partir do que cada arquivo
     // guarda, em toda passada.
-    let mounted = routes::mounted_names(&modules);
-    let brought = graph::files_bringing(&modules, &ing.go_module, &packages, &aliases, &mounted);
+    let asked = routes::brought_names(&modules);
+    let brought = graph::files_bringing(&modules, &projects, &aliases, &asked);
     routes::across_files(&mut modules, &ing.manifests, &brought);
+    // Cada chamada da tela liga à rota que ela alcança, já com todos os
+    // prefixos, e à função que a atende.
+    graph::link_route_calls(&mut modules, &brought);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
-    // The git history: only the commits since the previous pass, when that
-    // pass read this same project.
+    // A história do git, a da branch de partida do projeto: só os commits
+    // depois da ponta em que a passada anterior parou, quando ela leu este
+    // mesmo projeto.
     let root_text = ing.root.to_string_lossy().to_string();
     let same = previous.filter(|p| p.root == root_text);
     let head = refresh::head(&ing.root);
+    let base = listing.as_ref().map(|l| l.base.clone()).unwrap_or_default();
     let history = match &head {
-        Some(now) => refresh::history(
+        Some(_) => refresh::history(
             &ing.root,
+            &base,
             same.map(|p| &p.history),
-            same.map_or("", |p| p.state.head.as_str()),
-            now,
+            same.map_or("", |p| p.state.base_tip.as_str()),
         ),
         None => History::default(),
     };
@@ -461,6 +470,8 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     let manifest_paths: Vec<&str> = ing.manifests.iter().map(|m| m.path.as_str()).collect();
     let state = model::ScanState {
         head: head.unwrap_or_default(),
+        base: base.name,
+        base_tip: base.tip,
         listing: listing.as_ref().map(Listing::digest).unwrap_or_default(),
         inputs: listing.as_ref().map(|l| refresh::inputs(l, &manifest_paths, &ing.non_utf8)).unwrap_or_default(),
         non_utf8: ing.non_utf8,

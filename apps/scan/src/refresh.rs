@@ -9,17 +9,19 @@
 //! changed —, or when a file that changes how every other one is read
 //! changed, every file is read.
 //!
-//! The history comes from the local repository (`git log`), never from the
-//! network: the first pass reads it whole, and the next ones read only the
-//! commits after the one the previous pass stopped at.
+//! A história vem da branch de partida que o projeto declara no
+//! `mustard.json`, nunca da branch em que se está: a ponta do servidor que o
+//! clone já tem (`origin/<base>`), senão a local, sem ir à rede. A primeira
+//! passada lê a janela inteira, e as seguintes só os commits depois da ponta
+//! em que a anterior parou.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use mustard_core::platform::git as git_exec;
 
-use mustard_core::domain::project_map::{History, RawCommit, MAX_COMMITS};
-use mustard_core::io::project_map::{Listing, MapBlock, BLOCKS, CENSUS, DECLS, FILES, GRAPH};
+use mustard_core::domain::project_map::{History, NoHistory, RawCommit, MAX_COMMITS};
+use mustard_core::io::project_map::{Base, Listing, MapBlock, BLOCKS, CENSUS, DECLS, FILES, GRAPH};
 
 use crate::model::{Module, ProjectModel};
 
@@ -164,13 +166,15 @@ fn under_changed_manifests(
 }
 
 /// A passada não tem arquivo a reler: todo bloco do mapa anterior `prev` é
-/// desta versão do scan, o commit é o mesmo que ele leu — um commit novo
-/// pode mudar a história e os testes que mudam juntos — e o plano não pede
-/// arquivo nenhum. Falta só conferir que não entrou nem saiu arquivo de
-/// código ou manifesto (ver [`crate::ingest::same_sources`]).
+/// desta versão do scan, o commit, a branch de partida e a ponta dela são
+/// os mesmos que ele leu — um commit novo na base muda a história e os
+/// testes que mudam juntos — e o plano não pede arquivo nenhum. Falta só conferir
+/// que não entrou nem saiu arquivo de código ou manifesto (ver
+/// [`crate::ingest::same_sources`]).
 pub(crate) fn nothing_to_read(root: &Path, prev: &ProjectModel, listing: &Listing) -> bool {
     BLOCKS.iter().all(|block| fresh(prev, block))
         && prev.state.head == listing.head
+        && (prev.state.base.as_str(), prev.state.base_tip.as_str()) == (listing.base.name.as_str(), listing.base.tip.as_str())
         && plan(root, Some(prev), Some(listing)) == Plan::Only(BTreeSet::new())
 }
 
@@ -291,58 +295,73 @@ fn is_ancestor(root: &Path, ancestor: &str, head: &str) -> bool {
     git_exec::run(root, &["merge-base", "--is-ancestor", ancestor, head]).ok
 }
 
-/// The history at `head`: the previous one when nothing was committed since,
-/// the previous one plus the new commits when `head` descends from where the
-/// previous pass stopped, and the whole log otherwise (another branch, a
-/// rewritten history, a first pass).
-pub(crate) fn history(root: &Path, prev: Option<&History>, prev_head: &str, head: &str) -> History {
-    let prev = prev.filter(|h| !h.is_empty() && !prev_head.is_empty());
-    if let Some(prev) = prev {
-        if prev_head == head {
-            return prev.clone();
-        }
-        if is_ancestor(root, prev_head, head) {
-            return match log(root, &format!("{prev_head}..{head}")) {
+/// A história da branch de partida `base`: vazia, com o motivo, quando o
+/// projeto não declara a base ou o clone não a tem; a anterior quando a
+/// ponta não mudou; a anterior mais os commits novos quando a ponta andou
+/// para a frente de onde a passada anterior parou, `prev_tip`; e a janela
+/// inteira nos outros casos (outra base, base reescrita, primeira passada).
+pub(crate) fn history(root: &Path, base: &Base, prev: Option<&History>, prev_tip: &str) -> History {
+    if base.name.is_empty() {
+        return History { missing: Some(NoHistory::NoBase), ..History::default() };
+    }
+    if base.tip.is_empty() {
+        return History { base: base.name.clone(), missing: Some(NoHistory::BaseNotFound), ..History::default() };
+    }
+    let prev = prev.filter(|h| h.base == base.name && h.missing.is_none() && !prev_tip.is_empty());
+    let read = match prev {
+        Some(prev) if prev_tip == base.tip => prev.clone(),
+        Some(prev) if is_ancestor(root, prev_tip, &base.tip) => {
+            match log(root, &format!("{prev_tip}..{}", base.tip)) {
                 Some(newer) => prev.extended(newer),
                 None => prev.clone(),
-            };
+            }
         }
-    }
-    log(root, head).map(History::from_raw).unwrap_or_default()
+        _ => log(root, &base.tip).map(History::from_raw).unwrap_or_default(),
+    };
+    History { base: base.name.clone(), ..read }
 }
 
-/// The commits of `range` that touch `root`, oldest first.
+/// Os commits de `range` que mexem em `root`, do mais antigo para o mais
+/// novo, com os que entraram por merge. O merge conta na janela de
+/// [`MAX_COMMITS`] e não se guarda: só diz o número do pull request.
 fn log(root: &Path, range: &str) -> Option<Vec<RawCommit>> {
     let max = format!("--max-count={MAX_COMMITS}");
-    let out = git(
-        root,
-        &["log", "--no-merges", "--no-renames", "--relative", "--name-status", "--format=%x00%H %ct %s", &max, range],
-    )?;
+    let out = git(root, &["log", "--no-renames", "--relative", "--name-status", "--format=%x00%H %ct %P%x1f%s", &max, range])?;
     Some(parse_log(&out))
 }
 
-/// Parse `git log --name-status --format=%x00%H %ct %s` into commits, oldest
-/// first, each with its title. A commit that touches nothing under the
-/// scanned root is left out.
+/// Um commit como o `log` o escreve: o hash inteiro, os pais e o commit.
+struct Logged<'t> {
+    sha: &'t str,
+    parents: Vec<&'t str>,
+    commit: RawCommit,
+}
+
+/// Lê a saída de `git log --name-status --format=%x00%H %ct %P%x1f%s`, que
+/// começa pela ponta, em commits do mais antigo para o mais novo, cada um
+/// com o título e o número do pull request que o trouxe. O merge só dá esse
+/// número e fica de fora, como o commit que não mexe em nada sob a pasta
+/// lida.
 pub(crate) fn parse_log(text: &str) -> Vec<RawCommit> {
-    let mut commits = Vec::new();
+    let mut logged = Vec::new();
     for block in text.split('\0').filter(|b| !b.trim().is_empty()) {
         let mut lines = block.lines();
         let Some(header) = lines.next() else {
             continue;
         };
-        let mut parts = header.splitn(3, ' ');
-        let (Some(sha), Some(at)) = (parts.next(), parts.next()) else {
+        let (ids, title) = header.split_once('\x1f').unwrap_or((header, ""));
+        let mut ids = ids.split_whitespace();
+        let (Some(sha), Some(at)) = (ids.next(), ids.next()) else {
             continue;
         };
-        let title = parts.next().unwrap_or_default().trim().to_string();
+        let parents: Vec<&str> = ids.collect();
         let mut commit = RawCommit {
             id: sha.chars().take(10).collect(),
             at: at.trim().parse().unwrap_or(0),
-            title,
+            title: title.trim().to_string(),
             ..RawCommit::default()
         };
-        for line in lines {
+        for line in lines.filter(|_| parents.len() < 2) {
             let Some((status, path)) = line.split_once('\t') else {
                 continue;
             };
@@ -353,12 +372,99 @@ pub(crate) fn parse_log(text: &str) -> Vec<RawCommit> {
                 Some(_) => commit.changed.push(path),
             }
         }
-        if !commit.added.is_empty() || !commit.changed.is_empty() {
-            commits.push(commit);
+        logged.push(Logged { sha, parents, commit });
+    }
+    let brought = merged_numbers(&logged);
+    let order = oldest_first(&logged);
+    let mut logged: Vec<Option<(Logged<'_>, Option<u32>)>> = logged.into_iter().zip(brought).map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|i| logged[i].take())
+        .filter(|(one, _)| one.parents.len() < 2 && (!one.commit.added.is_empty() || !one.commit.changed.is_empty()))
+        .map(|(one, number)| {
+            let pr = number.or_else(|| squashed_number(&one.commit.title));
+            RawCommit { pr, ..one.commit }
+        })
+        .collect()
+}
+
+/// A ordem em que a história se guarda, do mais antigo para o mais novo:
+/// cada commit depois dos pais, o primeiro pai antes dos outros, a partir da
+/// ponta, `logged[0]`. A data não decide, porque dois commits do mesmo
+/// segundo sairiam em qualquer ordem: assim a leitura inteira e a soma do
+/// que é novo dão a mesma lista. O commit que a ponta não alcança pelos
+/// listados, que o git não lista, entraria antes, na ordem do git.
+fn oldest_first(logged: &[Logged<'_>]) -> Vec<usize> {
+    let at: HashMap<&str, usize> = logged.iter().enumerate().map(|(i, one)| (one.sha, i)).collect();
+    let mut placed = vec![false; logged.len()];
+    let mut order = Vec::with_capacity(logged.len());
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    if !logged.is_empty() {
+        placed[0] = true;
+        stack.push((0, 0));
+    }
+    while let Some((node, next)) = stack.last_mut() {
+        let (node, parent) = (*node, logged[*node].parents.get(*next));
+        *next += 1;
+        match parent {
+            Some(parent) => {
+                if let Some(&i) = at.get(parent).filter(|&&i| !placed[i]) {
+                    placed[i] = true;
+                    stack.push((i, 0));
+                }
+            }
+            None => {
+                order.push(node);
+                stack.pop();
+            }
         }
     }
-    commits.reverse();
-    commits
+    let unreached = (0..logged.len()).rev().filter(|&i| !placed[i]);
+    unreached.chain(order).collect()
+}
+
+/// O número do merge de pull request que trouxe cada commit de `logged` para
+/// a branch. A linha principal sai da ponta, `logged[0]`, pelos primeiros
+/// pais; cada merge dela, do mais antigo para o mais novo, dá o número dele
+/// aos commits que só ele alcança pelos outros pais. O commit da própria
+/// linha e o trazido por merge sem número ficam sem.
+fn merged_numbers(logged: &[Logged<'_>]) -> Vec<Option<u32>> {
+    let at: HashMap<&str, usize> = logged.iter().enumerate().map(|(i, one)| (one.sha, i)).collect();
+    let mut line = Vec::new();
+    let mut next = (!logged.is_empty()).then_some(0);
+    while let Some(i) = next.filter(|_| line.len() < logged.len()) {
+        line.push(i);
+        next = logged[i].parents.first().and_then(|parent| at.get(parent).copied());
+    }
+    let mut seen = vec![false; logged.len()];
+    let mut brought = vec![None; logged.len()];
+    for &merge in line.iter().rev() {
+        let number = merge_number(&logged[merge].commit.title);
+        let mut stack: Vec<usize> = logged[merge].parents.iter().skip(1).filter_map(|p| at.get(p).copied()).collect();
+        while let Some(i) = stack.pop() {
+            if std::mem::replace(&mut seen[i], true) {
+                continue;
+            }
+            brought[i] = number;
+            stack.extend(logged[i].parents.iter().filter_map(|p| at.get(p).copied()).filter(|&p| !seen[p]));
+        }
+        seen[merge] = true;
+    }
+    brought
+}
+
+/// O número no título de um merge de pull request: `Merge pull request #N`.
+fn merge_number(title: &str) -> Option<u32> {
+    let rest = title.strip_prefix("Merge pull request #")?;
+    let digits: &str = &rest[..rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len())];
+    digits.parse().ok()
+}
+
+/// O número no fim do título de um pull request juntado num commit só:
+/// `(#N)`.
+fn squashed_number(title: &str) -> Option<u32> {
+    let (_, number) = title.trim_end().strip_suffix(')')?.rsplit_once("(#")?;
+    number.chars().all(|c| c.is_ascii_digit()).then(|| number.parse().ok()).flatten()
 }
 
 /// Undo git's C-style quoting of a path with unusual characters.
@@ -389,9 +495,9 @@ mod tests {
 
     #[test]
     fn the_log_is_read_oldest_first_without_deletions_or_empty_commits() {
-        let text = "\0bbbbbbbbbbbbbbbb 20 Troca o  leitor\n\nM\tsrc/a.rs\nD\tsrc/old.rs\nA\t\"src/with\\\"quote.rs\"\n\
-                    \0cccccccccccc 15 Vazio\n\n\
-                    \0aaaaaaaaaaaaaaaa 10\n\nA\tsrc/a.rs\n";
+        let text = "\0bbbbbbbbbbbbbbbb 20 cccccccccccc\x1fTroca o  leitor\n\nM\tsrc/a.rs\nD\tsrc/old.rs\nA\t\"src/with\\\"quote.rs\"\n\
+                    \0cccccccccccc 15 aaaaaaaaaaaaaaaa\x1fVazio\n\n\
+                    \0aaaaaaaaaaaaaaaa 10 \x1f\n\nA\tsrc/a.rs\n";
         let commits = parse_log(text);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].id, "aaaaaaaaaa");
@@ -410,7 +516,11 @@ mod tests {
 
     /// A listagem do git com estes arquivos e blobs.
     fn listing_of(files: &[(&str, &str)]) -> Listing {
-        Listing { head: String::new(), blobs: files.iter().map(|(path, blob)| (path.to_string(), blob.to_string())).collect() }
+        Listing {
+            head: String::new(),
+            blobs: files.iter().map(|(path, blob)| (path.to_string(), blob.to_string())).collect(),
+            base: Default::default(),
+        }
     }
 
     /// O mapa anterior desta versão do scan, com estes arquivos de código e

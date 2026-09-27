@@ -818,3 +818,181 @@ fn an_absolute_import_of_a_package_reaches_its_init_file() {
     );
     assert_eq!(deps_of(&v, "app.py"), vec!["loja/servicos/__init__.py".to_string()]);
 }
+
+/// Dois projetos lado a lado, cada um com o seu `package.json` e um
+/// `src/index.ts` de mesmo caminho: o import do servidor fica no servidor.
+#[test]
+fn an_import_by_path_stays_inside_the_project_of_the_importer() {
+    let v = scan_files(
+        "own-project",
+        &[
+            ("servidor/package.json", "{\n  \"name\": \"servidor\"\n}\n"),
+            ("servidor/src/index.ts", "export function x() {\n  return 1;\n}\n"),
+            ("servidor/src/app.ts", "import { x } from 'src/index';\n\nexport function app() {\n  return x();\n}\n"),
+            ("tela/package.json", "{\n  \"name\": \"tela\"\n}\n"),
+            ("tela/src/index.ts", "export function x() {\n  return 2;\n}\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "servidor/src/app.ts"), vec!["servidor/src/index.ts".to_string()]);
+}
+
+/// `b/c` não é o fim de `web/src/ab/c`: o trecho tem de começar numa parte
+/// inteira do caminho.
+#[test]
+fn a_path_import_matches_only_whole_parts_at_the_end_of_a_path() {
+    let v = scan_files(
+        "whole-parts",
+        &[
+            ("web/src/ab/c.ts", "export function c() {\n  return 1;\n}\n"),
+            ("web/src/x.ts", "import { c } from 'b/c';\n\nexport function x() {\n  return c();\n}\n"),
+        ],
+    );
+    assert!(deps_of(&v, "web/src/x.ts").is_empty(), "{:?}", deps_of(&v, "web/src/x.ts"));
+}
+
+/// Dois projetos Python, cada um com o seu `pyproject.toml` e um
+/// `utils/formato.py`; o `comum/registro.py` só existe no `api`.
+const TWO_PYTHON_PROJECTS: &[(&str, &str)] = &[
+    ("api/pyproject.toml", "[tool.poetry]\nname = \"api\"\n\n[tool.poetry.dependencies]\nrequests = \"^2.0\"\n"),
+    ("api/utils/formato.py", "def f():\n    return 1\n"),
+    ("api/comum/registro.py", "def r():\n    return 1\n"),
+    ("api/main.py", "from utils.formato import f\n\n\ndef main():\n    return f()\n"),
+    ("worker/pyproject.toml", "[tool.poetry]\nname = \"worker\"\n"),
+    ("worker/utils/formato.py", "def f():\n    return 2\n"),
+    ("worker/tarefa.py", "from comum.registro import r\n\n\ndef tarefa():\n    return r()\n"),
+];
+
+/// O `pyproject.toml` marca o projeto: o import do `api` liga ao arquivo do
+/// `api`, e não aos dois de mesmo caminho.
+#[test]
+fn a_python_project_is_marked_by_its_manifest_and_its_import_stays_in_it() {
+    let v = scan_files("python-projects", TWO_PYTHON_PROJECTS);
+    assert_eq!(deps_of(&v, "api/main.py"), vec!["api/utils/formato.py".to_string()]);
+}
+
+/// Sem nada no próprio projeto, o import procura no resto do repositório: um
+/// projeto pode usar outro pelo nome do módulo.
+#[test]
+fn an_import_with_nothing_in_its_own_project_reaches_another_project() {
+    let v = scan_files("python-other-project", TWO_PYTHON_PROJECTS);
+    assert_eq!(deps_of(&v, "worker/tarefa.py"), vec!["api/comum/registro.py".to_string()]);
+}
+
+/// `import { x } from '@empresa/core'`, só o nome do pacote, liga ao arquivo
+/// raiz dele.
+#[test]
+fn an_import_of_a_package_by_its_name_alone_reaches_its_root_file() {
+    let v = scan_files(
+        "package-name",
+        &[
+            ("pacotes/core/package.json", "{\n  \"name\": \"@empresa/core\"\n}\n"),
+            ("pacotes/core/src/index.ts", "export function x() {\n  return 1;\n}\n"),
+            ("web/src/tela.ts", "import { x } from '@empresa/core';\n\nexport function tela() {\n  return x();\n}\n"),
+        ],
+    );
+    assert!(
+        deps_of(&v, "web/src/tela.ts").contains(&"pacotes/core/src/index.ts".to_string()),
+        "{:?}",
+        deps_of(&v, "web/src/tela.ts")
+    );
+}
+
+/// Um crate com `src/config.rs` e `src/cmd/config.rs`: o `crate::config` de
+/// `src/cmd/x.rs` parte da raiz do pacote, e o `self::config` do
+/// `src/cmd/mod.rs` parte do módulo dele.
+const CRATE_WITH_TWO_CONFIGS: &[(&str, &str)] = &[
+    ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+    ("src/main.rs", "mod cmd;\nmod config;\n\nfn main() {}\n"),
+    ("src/config.rs", "pub struct Opcoes;\n"),
+    (
+        "src/cmd/mod.rs",
+        "pub mod config;\npub mod x;\n\nuse self::config::Ajuste;\n\npub fn ajuste() -> Ajuste {\n    Ajuste\n}\n",
+    ),
+    ("src/cmd/config.rs", "pub struct Ajuste;\n"),
+    ("src/cmd/x.rs", "use crate::config::Opcoes;\n\npub fn rodar() -> Opcoes {\n    Opcoes\n}\n"),
+];
+
+/// `crate::config` em `src/cmd/x.rs` é o `src/config.rs`, da raiz do
+/// pacote, e não o `src/cmd/config.rs` achado subindo da pasta.
+#[test]
+fn a_path_from_the_root_alias_is_read_from_the_folder_of_the_package_root_file() {
+    let v = scan_files("root-alias-root", CRATE_WITH_TWO_CONFIGS);
+    assert_eq!(deps_of(&v, "src/cmd/x.rs"), vec!["src/config.rs".to_string()]);
+}
+
+/// `self::config` no `src/cmd/mod.rs` é o `src/cmd/config.rs`.
+#[test]
+fn a_path_from_the_own_module_alias_in_a_folder_file_reaches_its_child() {
+    let v = scan_files("module-alias-folder", CRATE_WITH_TWO_CONFIGS);
+    let deps = deps_of(&v, "src/cmd/mod.rs");
+    assert!(deps.contains(&"src/cmd/config.rs".to_string()), "{deps:?}");
+    assert!(!deps.contains(&"src/config.rs".to_string()), "{deps:?}");
+}
+
+/// `use self::b::F;` em `src/a.rs` nomeia o módulo filho `src/a/b.rs`, e não
+/// o `src/b.rs` ao lado.
+#[test]
+fn a_path_from_the_own_module_alias_reads_inside_the_folder_of_the_file_modules() {
+    let v = scan_files(
+        "module-alias",
+        &[
+            ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            ("src/main.rs", "mod a;\nmod b;\n\nfn main() {}\n"),
+            ("src/a.rs", "mod b;\n\nuse self::b::F;\n\npub fn f() -> F {\n    F\n}\n"),
+            ("src/a/b.rs", "pub struct F;\n"),
+            ("src/b.rs", "pub struct F;\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "src/a.rs"), vec!["src/a/b.rs".to_string()]);
+}
+
+/// Um `go.mod` numa subpasta: o import pelo módulo dele lê a partir da pasta
+/// do manifesto.
+#[test]
+fn a_module_declared_in_a_subfolder_resolves_from_that_folder() {
+    let v = scan_files(
+        "module-subfolder",
+        &[
+            ("servico/go.mod", "module exemplo.com/servico\n\ngo 1.21\n"),
+            ("servico/interno/x/x.go", "package x\n\nfunc F() int {\n\treturn 1\n}\n"),
+            (
+                "servico/cmd/main.go",
+                "package main\n\nimport \"exemplo.com/servico/interno/x\"\n\nfunc main() {\n\tx.F()\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(deps_of(&v, "servico/cmd/main.go"), vec!["servico/interno/x/x.go".to_string()]);
+}
+
+/// Dois módulos declarados, cada um importando o outro: os dois ligam.
+#[test]
+fn every_declared_module_resolves_not_only_the_last_one_seen() {
+    let v = scan_files(
+        "two-modules",
+        &[
+            ("a/go.mod", "module exemplo.com/a\n\ngo 1.21\n"),
+            ("a/util/u.go", "package util\n\nfunc A() int {\n\treturn 1\n}\n"),
+            ("a/main.go", "package main\n\nimport \"exemplo.com/b/util\"\n\nfunc main() {\n\tutil.B()\n}\n"),
+            ("b/go.mod", "module exemplo.com/b\n\ngo 1.21\n"),
+            ("b/util/u.go", "package util\n\nfunc B() int {\n\treturn 2\n}\n"),
+            ("b/main.go", "package main\n\nimport \"exemplo.com/a/util\"\n\nfunc main() {\n\tutil.A()\n}\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "a/main.go"), vec!["b/util/u.go".to_string()]);
+    assert_eq!(deps_of(&v, "b/main.go"), vec!["a/util/u.go".to_string()]);
+}
+
+/// `exemplo.com/servico2/y` não abre com o módulo `exemplo.com/servico`: o
+/// módulo só casa seguido de `/` ou no fim do import.
+#[test]
+fn a_declared_module_matches_only_when_followed_by_a_slash_or_the_end() {
+    let v = scan_files(
+        "module-prefix",
+        &[
+            ("go.mod", "module exemplo.com/servico\n\ngo 1.21\n"),
+            ("2/y/y.go", "package y\n\nfunc Y() int {\n\treturn 1\n}\n"),
+            ("main.go", "package main\n\nimport \"exemplo.com/servico2/y\"\n\nfunc main() {\n\ty.Y()\n}\n"),
+        ],
+    );
+    assert!(deps_of(&v, "main.go").is_empty(), "{:?}", deps_of(&v, "main.go"));
+}

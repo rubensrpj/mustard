@@ -24,8 +24,6 @@ pub(crate) struct Ingested {
     /// path evidence class, kept so later stages can slice it per unit and run
     /// the same inference on a unit's own evidence.
     pub walk_paths: Vec<String>,
-    /// A unit's own module path, if a manifest declares one (import resolution).
-    pub go_module: Option<String>,
     pub coverage: Coverage,
     /// The files whose content this pass read (sources and manifests), sorted.
     pub read: Vec<String>,
@@ -208,7 +206,6 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
     let mut non_utf8_paths: Vec<String> = Vec::new();
     let mut manifests = Vec::new();
     let mut lang_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    let mut go_module = None;
     // Every file path the walk visits (relative, /-normalized) — the path
     // evidence class for stack inference. Includes non-source files, since
     // layout markers are often not source code.
@@ -236,24 +233,25 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
 
         // Manifest? Detection + dep/script parsing is data-driven (manifests.toml).
         // An unchanged manifest the previous map parsed is taken as it was.
+        // O manifesto escrito na própria língua do projeto (um roteiro de
+        // instalação) marca o projeto e segue lido como código.
+        let language = crate::extract::detect_language(path);
+        let source = language.is_some();
         if crate::manifests::is_manifest(&fname) {
             if let Some(kept) = reuse.and_then(|r| r.kept_manifest(&rel)) {
-                if kept.module.is_some() {
-                    go_module.clone_from(&kept.module);
-                }
                 manifests.push(kept.clone());
-                *top_other.entry(topdir).or_default() += 1;
-                continue;
-            }
-            if let Ok(content) = fs::read_to_string(path)
+                if !source {
+                    *top_other.entry(topdir).or_default() += 1;
+                    continue;
+                }
+            } else if let Ok(content) = fs::read_to_string(path)
                 && let Some(p) = crate::manifests::parse(&rel, &fname, &content)
             {
-                if p.module.is_some() {
-                    go_module.clone_from(&p.module);
+                if !source {
+                    read.push(rel.clone());
                 }
-                read.push(rel.clone());
                 manifests.push(Manifest {
-                    path: rel,
+                    path: rel.clone(),
                     kind: p.kind,
                     dependencies: p.deps,
                     scripts: p.scripts,
@@ -261,14 +259,16 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
                     module: p.module,
                     package: p.package,
                 });
-                *top_other.entry(topdir).or_default() += 1;
-                continue;
+                if !source {
+                    *top_other.entry(topdir).or_default() += 1;
+                    continue;
+                }
             }
         }
 
         // Source file? Language is detected from data (the tree-sitter language
         // registry), never a hardcoded extension map — see extract::detect_language.
-        if let Some(lang) = crate::extract::detect_language(path) {
+        if let Some(lang) = language {
             // An unchanged file the previous map knows is taken as it was,
             // without opening it.
             if let Some(kept) = reuse.and_then(|r| r.kept_module(&rel)) {
@@ -374,7 +374,6 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
         languages,
         frameworks,
         walk_paths,
-        go_module,
         coverage,
         read,
         non_utf8: non_utf8_paths,

@@ -235,13 +235,16 @@ fn filled_by_the_scan(_: &Connection, _: &Path) -> Result<()> {
 
 /// O censo: o estado da leitura, as pilhas, os projetos, as línguas, os
 /// manifestos e o esqueleto das pastas. O estado guarda o commit lido, a
-/// marca da listagem do git daquela passada ([`Listing::digest`]) e o blob
+/// branch de partida e a ponta dela, onde a história parou, a marca da listagem
+/// do git daquela passada ([`Listing::digest`]) e o blob
 /// de cada arquivo que decide a releitura sem ser código: os manifestos, os
 /// que mudam a leitura de todos os outros e os que não se decodificaram.
-pub const CENSUS: MapBlock = block!("census", version 3, {
+pub const CENSUS: MapBlock = block!("census", version 4, {
     "census" at Place::One => [
         "root" Text,
         "head" Text ["state", "head"],
+        "base" Text ["state", "base"],
+        "base_tip" Text ["state", "base_tip"],
         "listing" Text ["state", "listing"],
         "inputs" Json ["state", "inputs"],
         "non_utf8" Json ["state", "non_utf8"],
@@ -322,11 +325,14 @@ pub const DECLS: MapBlock = block!("decls", version 7, {
    CREATE TABLE search_meta(key TEXT PRIMARY KEY, value);");
 
 /// As rotas do servidor de cada arquivo: o método, o caminho padronizado e o
-/// escrito, a função que atende cada uma e a linha dela, e o framework cuja
-/// regra a achou; e os prefixos que o arquivo escreve para rotas de outros
-/// arquivos, que a passada seguinte soma de novo sem reler o arquivo.
-pub const ROUTES: MapBlock = block!("routes", version 2, {
-    "routes" at Place::Files => ["path" Text, "routes" Json, "route_links" Json]
+/// escrito, a função que atende cada uma e a linha dela, o framework cuja
+/// regra a achou e as chamadas da tela que a alcançam, provadas ou
+/// suspeitas; os prefixos que o arquivo escreve para rotas de outros
+/// arquivos e os clientes que ele faz, que a passada seguinte soma de novo
+/// sem reler o arquivo; e as chamadas da tela escritas no arquivo, que ela
+/// liga de novo às rotas.
+pub const ROUTES: MapBlock = block!("routes", version 3, {
+    "routes" at Place::Files => ["path" Text, "routes" Json, "route_links" Json, "route_calls" Json]
 });
 
 /// O grafo: as importações resolvidas, os testes que cobrem cada arquivo, as
@@ -343,12 +349,14 @@ pub const GRAPH: MapBlock = block!("graph", version 4, {
     "fan_in" at list(&["graph", "top_fan_in"]) => ["module" Text, "degree" Int]
 }, retired ["layers", "touchpoints"]);
 
-/// A história do git: os caminhos numa tabela, em ordem, e os commits
-/// apontando para ela, cada um com o título.
-pub const HISTORY: MapBlock = block!("history", version 2, {
+/// A história do git, a da branch de partida: o nome dela e, sem história, o
+/// motivo; os caminhos numa tabela, em ordem, e os commits apontando para
+/// ela, cada um com o título e o número do pull request que o trouxe.
+pub const HISTORY: MapBlock = block!("history", version 3, {
+    "history_base" at Place::One => ["base" Text ["history", "base"], "missing" Text ["history", "missing"]],
     "history_paths" at Place::List { at: &["history", "paths"], keep: false } => ["path" Text []],
     "commits" at Place::List { at: &["history", "commits"], keep: false } => [
-        "id" Text, "at" Int, "title" Text, "added" Json, "changed" Json
+        "id" Text, "at" Int, "title" Text, "pr" Int, "added" Json, "changed" Json
     ]
 });
 
@@ -745,19 +753,24 @@ fn fan_in(conn: &Connection) -> Result<Vec<MapDegree>> {
 
 fn history(conn: &Connection) -> Result<History> {
     let paths = picked(conn, "history_paths", &["path"], "", &[])?.iter().map(|row| text_cell(&row[0])).collect();
-    let commits = picked(conn, "commits", &["id", "at", "title", "added", "changed"], "", &[])?
+    let commits = picked(conn, "commits", &["id", "at", "title", "pr", "added", "changed"], "", &[])?
         .iter()
         .map(|row| {
             Ok(Commit {
                 id: text_cell(&row[0]),
                 at: int_cell(&row[1]),
                 title: text_cell(&row[2]),
-                added: json_cell(&row[3])?,
-                changed: json_cell(&row[4])?,
+                pr: u32::try_from(int_cell(&row[3])).ok().filter(|n| *n > 0),
+                added: json_cell(&row[4])?,
+                changed: json_cell(&row[5])?,
             })
         })
         .collect::<Result<_>>()?;
-    Ok(History { paths, commits })
+    let (base, missing) = match picked(conn, "history_base", &["base", "missing"], "", &[])?.first() {
+        Some(row) => (text_cell(&row[0]), serde_json::from_value(Value::String(text_cell(&row[1]))).ok()),
+        None => (String::new(), None),
+    };
+    Ok(History { base, missing, paths, commits })
 }
 
 /// O arquivo `file` e os que o importam, na ordem do mapa, cada um com as
@@ -842,6 +855,7 @@ fn named(conn: &Connection, file: Option<&str>, name: &str) -> Result<Vec<MapMod
                 module.declarations.push(named_decl(row)?);
             }
         }
+        with_routes(conn, &mut modules)?;
         return Ok(modules);
     };
     let Some(row) = file_rows(conn, &["path"], Some(file))?.into_iter().next() else { return Ok(Vec::new()) };
@@ -849,7 +863,21 @@ fn named(conn: &Connection, file: Option<&str>, name: &str) -> Result<Vec<MapMod
     for row in picked(conn, "decls", &NAMED_COLUMNS, &format!("{decl_file} = ?1 AND {decl_name} = ?2"), &[file, name])? {
         module.declarations.push(named_decl(&row)?);
     }
-    Ok(vec![module])
+    let mut modules = vec![module];
+    with_routes(conn, &mut modules)?;
+    Ok(modules)
+}
+
+/// As rotas de cada arquivo de `modules` que declara alguma coisa: as que a
+/// declaração atende, com as chamadas da tela que as alcançam.
+fn with_routes(conn: &Connection, modules: &mut [MapModule]) -> Result<()> {
+    let path = column_names("routes", &["path"])?;
+    for module in modules.iter_mut().filter(|module| !module.declarations.is_empty()) {
+        if let Some(row) = picked(conn, "routes", &["routes"], &format!("{path} = ?1"), &[module.path.as_str()])?.first() {
+            module.routes = json_cell(&row[0])?;
+        }
+    }
+    Ok(())
 }
 
 /// Cada arquivo com o que os exemplos leem dele: o tamanho, a classe, a
@@ -908,6 +936,19 @@ pub struct Listing {
     pub head: String,
     /// O blob de cada arquivo, pelo caminho.
     pub blobs: BTreeMap<String, String>,
+    /// A branch de partida do projeto e o commit da ponta dela.
+    pub base: Base,
+}
+
+/// A branch de partida que o projeto declara no `mustard.json` e o commit da
+/// ponta dela, de onde vem a história do git que o mapa guarda.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Base {
+    /// O nome declarado; vazio quando o projeto não declara nenhum.
+    pub name: String,
+    /// O commit da ponta: a do servidor (`origin/<nome>`) quando o clone a
+    /// tem, senão a local; vazio quando nenhuma das duas existe.
+    pub tip: String,
 }
 
 impl Listing {
@@ -942,7 +983,24 @@ pub fn listing(root: &Path) -> Option<Listing> {
     let own = [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME].map(|name| format!("{MAP_DIR}/{name}"));
     let blobs = blobs_under(root, &own)?;
     let head = git_out(root, &["rev-parse", "--verify", "-q", "HEAD"]).map(|out| out.trim().to_string()).unwrap_or_default();
-    Some(Listing { head, blobs })
+    Some(Listing { head, blobs, base: base_of(root) })
+}
+
+/// A branch de partida do projeto em `root`, pela configuração dele, com a
+/// ponta que o clone tem: a do servidor antes da local, numa chamada só ao
+/// git.
+#[must_use]
+pub fn base_of(root: &Path) -> Base {
+    let Some(name) = crate::domain::config::ProjectConfig::load(root).git.primary_base() else {
+        return Base::default();
+    };
+    let (remote, local) = (format!("refs/remotes/origin/{name}"), format!("refs/heads/{name}"));
+    let refs = git_out(root, &["for-each-ref", "--format=%(objectname) %(refname)", &remote, &local]).unwrap_or_default();
+    let tip_of = |wanted: &str| {
+        refs.lines().find_map(|line| line.split_once(' ').filter(|(_, name)| *name == wanted).map(|(tip, _)| tip.to_string()))
+    };
+    let tip = tip_of(&remote).or_else(|| tip_of(&local)).unwrap_or_default();
+    Base { name, tip }
 }
 
 /// O blob de cada arquivo sob `root`, com os de dentro dos submódulos
@@ -1005,17 +1063,19 @@ fn blobs_under(root: &Path, skip: &[String]) -> Option<BTreeMap<String, String>>
     Some(blobs)
 }
 
-/// O mapa de `root` ficou atrás do conteúdo de agora: o commit do checkout
-/// ou algum arquivo mudou desde a passada que o gravou. Lê só o estado
-/// gravado, nunca o mapa inteiro. `false` sem mapa, com um mapa que não se
-/// lê e fora do git: não há com que comparar.
+/// O mapa de `root` ficou atrás do conteúdo de agora: o commit do checkout,
+/// a branch de partida, a ponta dela ou algum arquivo mudou desde a passada
+/// que o gravou. Lê só o estado gravado, nunca o mapa inteiro. `false` sem mapa,
+/// com um mapa que não se lê e fora do git: não há com que comparar.
 #[must_use]
 pub fn is_behind(root: &Path) -> bool {
     let Ok(db) = open_existing(&model_path(root)) else { return false };
-    let Ok(rows) = picked(db.conn(), "census", &["head", "listing"], "", &[]) else { return false };
+    let Ok(rows) = picked(db.conn(), "census", &["head", "listing", "base", "base_tip"], "", &[]) else { return false };
     let Some(now) = listing(root) else { return false };
-    let (head, digest) = rows.first().map_or_else(Default::default, |row| (text_cell(&row[0]), text_cell(&row[1])));
-    head != now.head || digest != now.digest()
+    let (head, digest, base) = rows.first().map_or_else(Default::default, |row| {
+        (text_cell(&row[0]), text_cell(&row[1]), Base { name: text_cell(&row[2]), tip: text_cell(&row[3]) })
+    });
+    head != now.head || digest != now.digest() || base != now.base
 }
 
 /// O banco em `model`, que já tem de existir: sem o arquivo, a recusa de
@@ -1762,8 +1822,13 @@ mod tests {
                  "other_call_paths": {"std::fs": ["fs.read:5"]}, "brought": {"std::fs::{self}": ["fs"]},
                  "reexports": {"io::leitor::Leitor": {"Leitor": "Leitor"}}, "unbound_heads": ["std"],
                  "routes": [{"method": "GET", "path": "pedidos/{}", "written": "/pedidos/:id", "handler": "alpha", "line": 1,
-                             "framework": "axum"}],
-                 "route_links": {"mounts": [{"framework": "axum", "target": "rotas", "line": 4, "written": "api", "path": "api"}]},
+                             "framework": "axum",
+                             "called_by": ["web/tela.ts:3:carregar",
+                                           {"at": "web/outra.ts:5:salvar", "candidates": ["src/a.rs:1:alpha"]}]}],
+                 "route_links": {"mounts": [{"framework": "axum", "target": "rotas", "line": 4, "written": "api", "path": "api"}],
+                                 "clients": [{"framework": "axios", "name": "api", "written": "/api", "path": "api"}]},
+                 "route_calls": [{"method": "GET", "path": "pedidos/{}", "written": "/pedidos/${id}", "line": 3,
+                                  "owner": "carregar", "framework": "axios", "via": "api"}],
                  "file_doc": "O leitor dos pedidos.", "file_comment": "o fim do leitor", "file_doc_in_body": 3},
                 {"path": "src/b.rs", "language": "rust", "loc": 20, "imports": ["crate::a"], "namespaces": [],
                  "declarations": [], "file_class": "generated", "marker": "@generated"}
@@ -1776,8 +1841,9 @@ mod tests {
                           "scripts": [], "detected_stacks": [{"stack": "rust", "confidence": 0.5}]}],
             "shared_contracts": [{"name": "Base", "implementors": 3}],
             "detected_stacks": [],
-            "state": {"head": "abc", "listing": "00ff-2", "inputs": {"Cargo.toml": "b1"}},
-            "history": {"paths": ["src/a.rs", "src/b.rs"], "commits": [{"id": "c1", "at": 10, "title": "Cria o leitor", "added": [0, 1]}, {"id": "c2", "at": 20, "changed": [1]}]}
+            "state": {"head": "abc", "base": "dev", "base_tip": "fed", "listing": "00ff-2", "inputs": {"Cargo.toml": "b1"}},
+            "history": {"base": "dev", "paths": ["src/a.rs", "src/b.rs"],
+                        "commits": [{"id": "c1", "at": 10, "title": "Cria o leitor (#12)", "pr": 12, "added": [0, 1]}, {"id": "c2", "at": 20, "changed": [1]}]}
         })
     }
 
@@ -1823,7 +1889,8 @@ mod tests {
         );
         assert_eq!(read.graph.top_fan_in[0].module, "src/b.rs");
         assert_eq!(read.history.commits.len(), 2);
-        assert_eq!(read.history.commits[0].title, "Cria o leitor");
+        assert_eq!(read.history.commits[0].title, "Cria o leitor (#12)");
+        assert_eq!((read.history.base.as_str(), read.history.commits[0].pr, read.history.commits[1].pr), ("dev", Some(12), None));
         // A leitura do resumo traz o mesmo histórico, títulos inclusive.
         assert_eq!(read_for(dir.path(), Need::Summary).unwrap().history, read.history);
     }
@@ -1922,7 +1989,7 @@ mod tests {
             names,
             [
                 "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
-                "graph", "fan_in", "history_paths", "commits", "blocks"
+                "graph", "fan_in", "history_base", "history_paths", "commits", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];
