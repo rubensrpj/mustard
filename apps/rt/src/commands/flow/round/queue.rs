@@ -1001,28 +1001,33 @@ fn stale_batch_revisions(log: &SpecLog) -> Vec<Map<String, Value>> {
     revisions
 }
 
-/// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
-/// rodada despacha: em andamento, reprovada na última revisão ou entregue e
-/// aprovada — a rodada não pede revisão de onda nenhuma, então a entrega já
-/// vale como aprovada. A onda que não está aqui está por fazer. A página da
-/// spec mostra este estado.
+/// O estado de cada onda do plano ([`SpecLog::planned_waves`]), pela mesma
+/// leitura que decide o que a rodada despacha: em andamento, reprovada na
+/// última revisão, entregue e aprovada — a rodada não pede revisão de onda
+/// nenhuma, então a entrega já vale como aprovada — ou por fazer, a que o
+/// backlog formou e ainda não saiu inclusive. A onda de lote que ficou sem
+/// tarefa saiu do plano e não aparece, nem com a entrega gravada em nome
+/// dela. A página da spec lista as ondas por aqui, e só por aqui.
 pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveStates {
     use mustard_core::view::document::WaveState;
     let running = waves_in_progress(log);
     let rejected = waves_pending_fix(log);
     let done = waves_done(log, &running);
-    let mut states = mustard_core::view::document::WaveStates::new();
-    for n in running.keys().chain(rejected.keys()).chain(&done) {
-        let state = if running.contains_key(n) {
-            WaveState::Running
-        } else if rejected.contains_key(n) {
-            WaveState::Rejected
-        } else {
-            WaveState::Approved
-        };
-        states.insert(*n, state);
-    }
-    states
+    log.planned_waves()
+        .into_iter()
+        .map(|n| {
+            let state = if running.contains_key(&n) {
+                WaveState::Running
+            } else if rejected.contains_key(&n) {
+                WaveState::Rejected
+            } else if done.contains(&n) {
+                WaveState::Approved
+            } else {
+                WaveState::Todo
+            };
+            (n, state)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1694,15 +1699,14 @@ mod tests {
         }
     }
 
-    /// O estado de cada onda que a página mostra acompanha a rodada: em
-    /// andamento depois do pedido, aprovada assim que entrega — a rodada não
-    /// pede revisão nenhuma —, o que já solta a onda seguinte, reprovada por
-    /// quem julgar (o agente de teste dedicado, no fechamento), em andamento
-    /// de novo com o conserto e aprovada no fim; a onda que ainda não saiu
-    /// não aparece, e a página a mostra por fazer.
+    /// O estado de cada onda que a página mostra acompanha a rodada: por
+    /// fazer antes de sair, em andamento depois do pedido, aprovada assim que
+    /// entrega — a rodada não pede revisão nenhuma —, o que já solta a onda
+    /// seguinte, reprovada por quem julgar (o agente de teste dedicado, no
+    /// fechamento), em andamento de novo com o conserto e aprovada no fim.
     #[test]
     fn the_wave_states_follow_the_round() {
-        use mustard_core::view::document::WaveState::{Approved, Rejected, Running};
+        use mustard_core::view::document::WaveState::{Approved, Rejected, Running, Todo};
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
@@ -1711,9 +1715,9 @@ mod tests {
             let log = mustard_core::io::spec_events::read(&events).unwrap().unwrap();
             wave_states(&log).into_iter().collect::<Vec<_>>()
         };
-        assert_eq!(states(), [], "nothing went out yet");
+        assert_eq!(states(), [(1, Todo), (2, Todo)], "nothing went out yet: every wave of the plan is to do");
         round(root, "x", None);
-        assert_eq!(states(), [(1, Running)]);
+        assert_eq!(states(), [(1, Running), (2, Todo)]);
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
         assert_eq!(states(), [(1, Approved), (2, Running)], "the delivery already frees the next wave");
 
@@ -1728,6 +1732,40 @@ mod tests {
         let approval = json!({"author": "review", "final": true, "wave": 1, "result": "approved", "text": "pronto"});
         mustard_core::io::spec_events::write(&events, "verdict", approval.as_object().cloned().unwrap(), &[]).unwrap();
         assert_eq!(states(), [(1, Approved), (2, Running)]);
+    }
+
+    /// O estado das ondas lista só as do plano: a onda de lote que o backlog
+    /// formou e ainda não saiu vem como por fazer, e a onda de lote que ficou
+    /// sem tarefa não vem, nem com uma entrega gravada em nome dela.
+    #[test]
+    fn the_wave_states_list_only_the_planned_waves() {
+        use mustard_core::view::document::WaveState::Todo;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let events = root.join(".claude/spec/x/spec.ndjson");
+        let raw = |kind: &str, fields: Value| {
+            mustard_core::io::spec_events::write(&events, kind, fields.as_object().cloned().unwrap(), &[]).unwrap();
+        };
+        let log = mustard_core::io::spec_events::read(&events).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+        let batch = |n: u64| {
+            json!({"author": "binary", "n": n, "text": format!("Lote {n}."), "criteria": [crit],
+                "done_when": "A suíte passa."})
+        };
+        // O lote 2 ficou sem tarefa, e uma entrega foi gravada em nome dele.
+        raw("wave", batch(2));
+        raw("delivered", json!({"author": "wave", "wave": 2, "text": "Saiu.", "files": ["src/b.rs"]}));
+        // O lote 3 tem tarefa e ainda não saiu.
+        raw("wave", batch(3));
+        raw("task", json!({"author": "binary", "wave": 3, "text": "Tarefa do lote.", "files": [{"path": "src/c.rs"}],
+            "depends_on": []}));
+        let log = mustard_core::io::spec_events::read(&events).unwrap().unwrap();
+        assert_eq!(
+            wave_states(&log).into_iter().collect::<Vec<_>>(),
+            [(1, Todo), (3, Todo)],
+            "the empty batch stays out, and the formed batch that did not go out is to do"
+        );
     }
 
     /// A onda em andamento — com pedido e sem entrega depois dele — ocupa uma

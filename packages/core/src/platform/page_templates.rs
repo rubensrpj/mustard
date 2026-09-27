@@ -113,7 +113,7 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 /// cada mudança no molde montado (o template ou o catálogo dele): é ela, e
 /// não a versão do Mustard, que manda publicar de novo a página já
 /// publicada. A trava dos testes falha quando o molde muda sem ela subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 3;
+pub const SPEC_LAYOUT_VERSION: u32 = 4;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
@@ -375,8 +375,8 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 3, "16b67358417152f4"),
-        ("spec", Locale::EnUs, 3, "d25f8bf9f33328db"),
+        ("spec", Locale::PtBr, 4, "6de0feb78831cb06"),
+        ("spec", Locale::EnUs, 4, "2062ab4c171a17fd"),
         ("project", Locale::PtBr, 2, "5c7b4eee3a7b2603"),
         ("project", Locale::EnUs, 2, "4d85adda20bd8de6"),
     ];
@@ -504,8 +504,10 @@ mod tests {
             .collect()
     }
 
+    /// O estado calculado das ondas da spec de exemplo, como a rodada o grava:
+    /// toda onda do plano, a por fazer inclusive.
     fn wave_states() -> WaveStates {
-        WaveStates::from([(2, WaveState::Approved), (3, WaveState::Running)])
+        WaveStates::from([(1, WaveState::Todo), (2, WaveState::Approved), (3, WaveState::Running), (4, WaveState::Todo)])
     }
 
     fn wave_prompts() -> BTreeMap<u64, String> {
@@ -1219,7 +1221,7 @@ mod tests {
                 "text":"A onda seis.","criteria":[],"done_when":"A suíte passa.","origin":1}),
         ];
         let mut db = spec_database(&lines);
-        db["computed"][0]["data"]["waves"] = json!({"5": "approved"});
+        db["computed"][0]["data"]["waves"] = json!({"5": "approved", "6": "todo"});
         db["computed"][0]["data"]["prompts"] = json!({"6": old_request});
         let steps = json!([
             {"do": "wait"}, {"do": "hash", "value": "waves-5"}, {"do": "scrape", "as": "new"},
@@ -1320,7 +1322,7 @@ mod tests {
                 "text":"A onda seis.","criteria":[],"done_when":"A suíte passa.","origin":1}),
         ];
         let mut db = spec_database(&lines);
-        db["computed"][0]["data"]["waves"] = json!({"5": "approved"});
+        db["computed"][0]["data"]["waves"] = json!({"5": "approved", "6": "todo"});
         db["computed"][0]["data"]["prompts"] = json!({"6": old_request});
         let steps = json!([
             {"do": "wait"}, {"do": "hash", "value": "waves-5"}, {"do": "scrape", "as": "new"},
@@ -1959,6 +1961,30 @@ mod tests {
         assert_eq!(got["recovered"]["statusHidden"], json!(true), "the next copy that succeeds clears the warning");
     }
 
+    /// A página lista só as ondas do estado calculado: a onda de lote que
+    /// ficou sem tarefa, com o evento dela ainda na spec e fora do estado, não
+    /// aparece no gráfico nem na lista Agora; as quatro ondas do estado, a por
+    /// fazer inclusive, aparecem.
+    #[test]
+    fn the_page_lists_only_the_waves_of_the_computed_state() {
+        let mut lines = spec_lines();
+        lines.push(json!({"v":1,"id":47,"at":"2026-09-12T12:06:00-03:00","type":"wave","author":"binary","n":5,
+            "text":"O lote que ficou sem tarefa.","criteria":[],"done_when":"A suíte passa.","origin":2}));
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let page = &got["page"];
+        let bars: Vec<Value> = page["chart"]["bars"].as_array().expect("bars").iter().map(|b| b["wave"].clone()).collect();
+        assert_eq!(bars, [json!(1), json!(2), json!(3), json!(4)], "the empty batch has no bar");
+        let listed: Vec<Value> = page["now"]["parts"]
+            .as_array()
+            .expect("parts")
+            .iter()
+            .filter(|p| p["kind"] == json!("wave"))
+            .map(|p| p["pill"].clone())
+            .collect();
+        assert!(!listed.contains(&json!("Onda 5")), "the empty batch is not in the Now list: {listed:?}");
+    }
+
     /// Uma cópia que só muda o documento das coisas calculadas — nenhum item
     /// novo, nenhum apagado, nenhum tocado — sozinha faz a página aberta
     /// reler: a escuta de `computed/current` não depende de nada acontecer
@@ -2203,8 +2229,8 @@ mod tests {
     }
 
     /// Rodando mostra toda onda que não foi entregue nem aprovada, e não só a
-    /// que roda: a onda que o backlog já formou e espera sair (sem estado
-    /// calculado nenhum) e a reprovada que volta para conserto ganham cada
+    /// que roda: a onda que o backlog já formou e espera sair (por fazer no
+    /// estado calculado) e a reprovada que volta para conserto ganham cada
     /// uma a sua linha, com o selo, a situação e as tarefas. Enquanto uma
     /// delas existir, a lista nunca diz que faltam só a revisão final e o
     /// fechamento, nem com o backlog vazio e nenhuma onda rodando.
@@ -2235,7 +2261,7 @@ mod tests {
         let tail = |page: &Value| now_rows(page).last().cloned().unwrap_or_default();
 
         let all: Vec<Value> = [vec![state.clone()], delivered.clone(), running, waiting.clone(), rejected.clone()].concat();
-        let states = json!({"1": "approved", "2": "running", "4": "rejected"});
+        let states = json!({"1": "approved", "2": "running", "3": "todo", "4": "rejected"});
         let page = open(all.clone(), states.clone(), Locale::PtBr);
         assert_eq!(
             pills(&page),
@@ -2262,7 +2288,8 @@ mod tests {
         assert_eq!(tail(&page), json!(["after", "Then come the final review and the closing."]));
 
         // Só a onda que espera sair, com o backlog vazio e nada rodando.
-        let page = open([vec![state.clone()], delivered.clone(), waiting].concat(), json!({"1": "approved"}), Locale::PtBr);
+        let page =
+            open([vec![state.clone()], delivered.clone(), waiting].concat(), json!({"1": "approved", "3": "todo"}), Locale::PtBr);
         assert_eq!(pills(&page).len(), 1, "{}", page["now"]);
         assert_eq!(tail(&page), json!(["after", "Depois vêm a revisão final e o fechamento."]));
 

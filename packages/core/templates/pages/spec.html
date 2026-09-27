@@ -639,18 +639,11 @@ details.agent>.md p:last-child{margin-bottom:0}
       return found ? found[field] : null;
     }
 
-    // As ondas conhecidas: as que têm estado calculado e as que algum item do
-    // bloco das ondas cita pelo número, porque a onda que o backlog já formou
-    // e ainda não saiu não tem estado nenhum.
-    var numbers = (function () {
-      var known = new Set(Object.keys(waves).filter(function (k) { return /^\d+$/.test(k); }).map(Number));
-      visible.forEach(function (e) {
-        if (blockOf(e) !== 'waves') return;
-        var n = waveOf(e);
-        if (n !== null) known.add(n);
-      });
-      return Array.from(known).sort(function (a, b) { return a - b; });
-    })();
+    // As ondas do plano, só pelo estado calculado: ele traz toda onda do
+    // plano, a formada e ainda não enviada como por fazer, e deixa de fora a
+    // onda de lote que ficou sem tarefa, mesmo com o evento dela na spec.
+    var numbers = Object.keys(waves).filter(function (k) { return /^\d+$/.test(k); }).map(Number)
+      .sort(function (a, b) { return a - b; });
     function tasksOf(n) { return ofType('task').filter(function (e) { return waveOf(e) === n; }); }
     var backlog = ofType('task').filter(function (e) { return waveOf(e) === null; });
     function pathOf(f) { return str(f) !== null ? f : (str(get(f, 'path')) || ''); }

@@ -36,8 +36,9 @@ pub enum WaveState {
     Rejected,
 }
 
-/// O estado de cada onda, pelo número dela. A onda que não está aqui está
-/// por fazer.
+/// O estado de cada onda do plano, pelo número dela: toda onda do plano está
+/// aqui, a por fazer inclusive. A onda que não está aqui saiu do plano, e a
+/// página não a lista.
 pub type WaveStates = BTreeMap<u64, WaveState>;
 
 #[cfg(test)]
