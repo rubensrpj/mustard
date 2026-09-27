@@ -22,6 +22,9 @@ skip_dirs = [".git", ".claude", "node_modules", "target", "bin", "obj", "dist", 
 #                   matches; an import whose first segment is that name (with
 #                   `-` read as `_`) resolves inside this package's directory
 #   dep_pattern     (gomod) regex capturing each dependency
+#   extra_dep_pattern regex whose first group, wherever it matches in the file,
+#                   is one more dependency: what the manifest depends on
+#                   outside the dependency list (the SDK a .csproj names)
 
 [[manifest]]
 kind = "npm"
@@ -47,6 +50,7 @@ format = "xml-attr"
 name = "stem"
 element = "PackageReference"
 attr = "Include"
+extra_dep_pattern = '<Project\s+[^>]*Sdk="([^"]+)"'
 
 [[manifest]]
 kind = "pub"

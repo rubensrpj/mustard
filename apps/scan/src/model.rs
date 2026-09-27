@@ -112,10 +112,6 @@ pub struct ProjectUnit {
     /// to the manifests under `dir`. No catalog; agnostic to language/framework.
     #[serde(default)]
     pub frameworks: Vec<String>,
-    /// Distinct dependencies declared by this unit's manifests — aggregated,
-    /// deduped, sorted (deterministic output).
-    #[serde(default)]
-    pub dependencies: Vec<String>,
     /// Build/codegen scripts declared by this unit's manifests, verbatim —
     /// aggregated, deduped, sorted.
     #[serde(default)]
@@ -262,6 +258,24 @@ pub struct Module {
     /// ligue igual.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub brought: BTreeMap<String, Vec<String>>,
+    /// De cada repasse do arquivo, como foi escrito (`export * from './x'`,
+    /// `pub use a::B`), os nomes que ele oferece a quem importa o arquivo,
+    /// cada um com o nome que tem no arquivo de origem; `*` quando oferece
+    /// todos. O nome que o arquivo não declara, mas repassa, liga quem o
+    /// importa ao arquivo que o declara. Fica com o módulo pelo mesmo motivo
+    /// dos `brought`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reexports: BTreeMap<String, BTreeMap<String, String>>,
+    /// Os nomes que abrem a cadeia escrita antes de uma chamada — o
+    /// qualificador sem nada antes dele (`File` em `File.ReadAllText()`) ou a
+    /// primeira parte do caminho dela (`System` em
+    /// `System.IO.File.ReadAllText()`) — e que o arquivo não liga: nenhum é
+    /// nome local (`@local`) nem o próprio objeto (`self_receivers`,
+    /// `parent_receivers`). O grafo toma a chamada aberta por um deles que
+    /// não é peça do projeto como chamada de biblioteca. Ficam com o módulo
+    /// pelo mesmo motivo dos `brought`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unbound_heads: Vec<String>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     /// Machine-written class, when one applies: "generated" | "vendored" |
@@ -327,11 +341,22 @@ pub struct Module {
     /// only when there is one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub file_doc: String,
-    /// Os outros comentários do arquivo, fora os do começo, limpos das marcas
-    /// e juntados numa linha, na ordem em que foram escritos. O arquivo
-    /// escrito por máquina não guarda. Written only when there is one.
+    /// Os outros comentários do arquivo, fora os do começo, que caem fora das
+    /// linhas de toda declaração, limpos das marcas e juntados numa linha, na
+    /// ordem em que foram escritos: os de dentro de uma declaração estão no
+    /// [`Decl::body_comment`] dela, e o índice de busca junta os dois, cada
+    /// comentário uma vez. O arquivo escrito por máquina não guarda. Written
+    /// only when there is one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub file_comment: String,
+    /// Quantos bytes do começo do [`Decl::body_comment`] da primeira
+    /// declaração de fora (`outer_declarations`, no núcleo) são comentários
+    /// do começo do arquivo, os de [`Module::file_doc`]: o comentário escrito
+    /// antes de todo código na primeira linha dela é das duas, e o índice o
+    /// pula ao juntar os comentários do arquivo. Written only when it is not
+    /// zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub file_doc_in_body: usize,
 }
 
 /// Um texto fixo escrito no código: a linha, a marca — [`TEXT_LOG`],
@@ -585,33 +610,10 @@ pub struct GraphStats {
     pub edges: usize,
     pub cyclic: bool,
     pub top_fan_in: Vec<NodeDegree>,
-    pub layers: Vec<LayerInfo>,
-    /// High fan-out hubs that import across many directories — the registration
-    /// points (DI container, menu, barrels) you EDIT when adding an entity, not
-    /// the per-entity files you create. Frequency-derived; tests excluded.
-    #[serde(default)]
-    pub touchpoints: Vec<Touchpoint>,
-}
-
-/// A registration hub: a file that wires many modules together, so adding a new
-/// entity usually means editing it (register a service, add a menu route, …).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct Touchpoint {
-    pub module: String,
-    /// How many internal modules it imports.
-    pub fan_out: usize,
-    /// How many distinct directories those imports span (breadth = "central").
-    pub breadth: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct NodeDegree {
     pub module: String,
     pub degree: usize,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct LayerInfo {
-    pub name: String,
-    pub modules: usize,
 }

@@ -3,13 +3,13 @@
 //! The declared architecture lives in folder names; the *real* architecture
 //! lives in the import edges. We resolve imports to internal modules and ask
 //! objective, vocabulary-free questions: are there cycles? god modules? and
-//! what is the *emergent* layering — i.e. how deep is each module in the
-//! dependency order the code itself defines?
+//! how deep is each module in the dependency order the code itself defines?
 //!
-//! Layering is derived, not named: condense cycles into a DAG, then take each
-//! module's longest dependency chain as its depth (`L0` = most depended-upon /
-//! innermost). The only direction-violation topology can prove without a
-//! hardcoded layer vocabulary is a dependency cycle, so that is what we count.
+//! Depth is derived, not named: condense cycles into a DAG, then take each
+//! module's longest dependency chain as its depth (0 = most depended-upon /
+//! innermost); the folder skeleton reads it. The only direction-violation
+//! topology can prove without a hardcoded layer vocabulary is a dependency
+//! cycle, so that is what we count.
 //!
 //! Resolution is heuristic and language-agnostic: imports and declared
 //! namespaces are first normalized to one canonical segment form (`\`, `::`
@@ -50,13 +50,21 @@
 //!     package path can never be mistaken for an internal module.
 //!   * workspace package path — the longest leading run of segments that names
 //!     a package the project declares (`@scope/core` included), the rest read
-//!     inside that package's folder.
+//!     inside that package's folder; o resto que não chega a arquivo nenhum
+//!     (`Leitor` em `demo_core::Leitor`) cai no arquivo raiz do pacote
+//!     (`package_entry` no registro);
+//!   * módulo filho — só na língua que declara `root_aliases`: o caminho sem
+//!     apelido cuja primeira parte é módulo filho de quem importa se lê na
+//!     pasta dos módulos dele, como se o apelido do próprio módulo viesse na
+//!     frente;
+//!   * repasse — achado o arquivo alvo, cada nome que o import traz e que o
+//!     alvo não declara, mas repassa (`Module::reexports`), liga ao arquivo
+//!     que o declara, seguindo os repasses sem voltar a um já visto.
 //!     Nothing here switches on a language name, so a new language needs no change.
 //!     Imports that resolve to nothing internal are treated as external deps.
 
-use crate::model::{CallSite, Decl, DeclAt, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite, RECEIVER};
+use crate::model::{CallSite, Decl, DeclAt, GraphStats, Module, NodeDegree, UseSite, RECEIVER};
 use crate::path_aliases::PathAliases;
-use mustard_core::domain::ast::is_test_path;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -95,10 +103,10 @@ fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> u
 /// centrality — otherwise every file of the most-imported namespace ends up at
 /// the same high fan-in, saturating `top_fan_in` with uniform glue.
 ///
-/// The SINGLE resolver both the model graph ([`build`]) and the
-/// personalized-PageRank ranker (`pagerank`) consume, so the two can never see
-/// a different graph. Output sorted → byte-stable. Nothing switches on a
-/// language name.
+/// The single resolver of the imports: the model graph ([`build`]) and the
+/// dependencies of each file (`Module::deps`) both read it, so the two can
+/// never see a different graph. Output sorted → byte-stable. Nothing switches
+/// on a language name.
 pub fn resolve_edges(
     modules: &[Module],
     go_module: &Option<String>,
@@ -116,7 +124,7 @@ pub fn resolve_edges(
     for (src, m) in modules.iter().enumerate() {
         for imp in &m.imports {
             for nested in m.import_depths(imp, false) {
-                let targets = resolver.resolve(imp, m, Reach::Used, nested);
+                let targets = resolver.resolve_through(imp, m, nested);
                 let w = (1024 / targets.len().max(1) as u64).max(1);
                 for t in targets {
                     if let Some(&dst) = pos.get(t.as_str())
@@ -155,7 +163,7 @@ pub fn resolve_test_deps(
                 .test_imports
                 .iter()
                 .flat_map(|imp| {
-                    m.import_depths(imp, true).into_iter().flat_map(|nested| resolver.resolve(imp, m, Reach::Used, nested))
+                    m.import_depths(imp, true).into_iter().flat_map(|nested| resolver.resolve_through(imp, m, nested))
                 })
                 .filter(|target| *target != m.path)
                 .collect();
@@ -179,8 +187,8 @@ pub fn build(
         g.add_node(m.path.clone());
     }
 
-    // Fan-in and centrality read the SAME resolved edges the PageRank
-    // ranker does (`resolve_edges`): position i == the i-th added node ==
+    // Fan-in reads the same resolved edges the dependencies of each file do
+    // (`resolve_edges`): position i == the i-th added node ==
     // `NodeIndex::new(i)`. The published degree is specificity-weighted (see the
     // resolver): a bucket-broadcast target keeps its 1/N share instead of a
     // minted full count, so real hubs rank above diffuse glue.
@@ -225,8 +233,9 @@ pub fn build(
     let mut fan_in: Vec<NodeDegree> = fan_in.into_iter().map(|(_, d)| d).collect();
     fan_in.truncate(TOP_DEGREE_CAP);
 
-    // Emergent layering: condense cycles into a DAG, then depth = longest
-    // dependency chain. No layer names — just the order the imports define.
+    // The depth of each file, for the folder skeleton: condense cycles into a
+    // DAG, then depth = longest dependency chain. No layer names — just the
+    // order the imports define.
     let mut scc_of = vec![0usize; g.node_count()];
     for (i, comp) in sccs.iter().enumerate() {
         for &n in comp {
@@ -241,46 +250,13 @@ pub fn build(
         }
     }
     let mut memo = vec![None; sccs.len()];
-    let mut per_depth: BTreeMap<usize, usize> = BTreeMap::new();
     let mut depth_by_path: HashMap<String, usize> = HashMap::new();
     for n in g.node_indices() {
         let d = scc_depth(scc_of[n.index()], &succ, &mut memo);
-        *per_depth.entry(d).or_default() += 1;
         depth_by_path.insert(g[n].clone(), d);
     }
-    let layers: Vec<LayerInfo> = per_depth
-        .into_iter()
-        .map(|(d, modules)| LayerInfo { name: format!("L{d}"), modules })
-        .collect();
 
-    // Touchpoints: hubs that import across many directories — the registration
-    // points you edit when adding an entity (DI container, menu, barrels). Ranked
-    // by breadth (distinct dirs imported) then fan-out; tests excluded because
-    // they import broadly but register nothing — recognised by the same rule
-    // the whole scan uses for a test file. Frequency-derived, no catalog.
-    let mut src_targets: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (a, b) in &edge_set {
-        src_targets.entry(g[*a].as_str()).or_default().push(g[*b].as_str());
-    }
-    let mut touchpoints: Vec<Touchpoint> = src_targets
-        .iter()
-        .filter(|(src, _)| !is_test_path(src))
-        .map(|(src, tgts)| {
-            let breadth = tgts.iter().map(|t| parent_dir(t)).collect::<HashSet<_>>().len();
-            Touchpoint { module: (*src).to_string(), fan_out: tgts.len(), breadth }
-        })
-        .collect();
-    touchpoints.sort_by(|a, b| b.breadth.cmp(&a.breadth).then(b.fan_out.cmp(&a.fan_out)).then(a.module.cmp(&b.module)));
-    touchpoints.truncate(120); // keep enough so per-project hubs (e.g. a frontend menu) aren't crowded out by a larger project
-
-    let stats = GraphStats {
-        nodes: g.node_count(),
-        edges: edge_set.len(),
-        cyclic,
-        top_fan_in: fan_in,
-        layers,
-        touchpoints,
-    };
+    let stats = GraphStats { nodes: g.node_count(), edges: edge_set.len(), cyclic, top_fan_in: fan_in };
     (stats, depth_by_path)
 }
 
@@ -355,6 +331,9 @@ pub(crate) const CITED_KINDS: &[&str] =
 ///   declarações de um arquivo da mesma língua cujo nome ou pasta é `q`
 ///   (`crate::preco::total(` e `model.User{}` não precisam de import), e as
 ///   de um tipo `q` que o arquivo tem à vista (`Pedido::novo()`).
+/// - A chamada aberta por um nome que não é peça do projeto nem do arquivo
+///   ([`Module::unbound_heads`]: `File` em `File.ReadAllText()`, `std` em
+///   `std::fs::read()`) é da biblioteca, e não liga.
 /// - O próprio objeto (`self`, `this`: `self_receivers` no registro)
 ///   estreita pelos membros do tipo em que a chamada está escrita, e o que
 ///   está à vista vale antes do resto.
@@ -544,6 +523,13 @@ fn resolve_declaration_links(
             [file_stem(&m.path), folder]
         })
         .collect();
+    // Os nomes que são peça declarada do projeto: o de toda declaração e cada
+    // parte de um namespace declarado.
+    let declared_names: HashSet<&str> = modules
+        .iter()
+        .flat_map(|m| m.declarations.iter().map(|d| d.name.as_str()))
+        .chain(declared.iter().flatten().flat_map(|(_, ns)| ns.split('/')))
+        .collect();
     let owner_of = |(mi, di): DeclId| modules[mi].declarations[di].owner.first().map(String::as_str);
     let at = |(mi, di): DeclId| {
         let d = &modules[mi].declarations[di];
@@ -589,21 +575,28 @@ fn resolve_declaration_links(
                 through.entry(call).or_default().push(path.as_str());
             }
         }
-        // Cada chamada escrita por um caminho de duas partes ou mais cuja
-        // raiz não é peça do projeto (`std::fs::read()`): nenhum apelido,
-        // pacote, arquivo ou pasta dele, nem nome que um import do projeto
-        // trouxe. Ela é da biblioteca, e não liga ao projeto.
-        let by_library: BTreeSet<&CallSite> = m
-            .other_call_paths
-            .iter()
-            .filter(|(path, _)| {
-                let canon = canon_segments(path, &m.language);
-                let first = canon.split('/').next().unwrap_or_default();
-                let brought_inside = brought.contains(first) && !outside.contains(first);
-                !brought_inside && resolver.outside(path, m)
-            })
-            .flat_map(|(_, written)| written)
-            .collect();
+        // O nome que abre a cadeia escrita antes de uma chamada, que o
+        // arquivo não liga (`Module::unbound_heads`), e que não é peça do
+        // projeto: nenhuma declaração ou namespace, apelido, pacote, arquivo
+        // ou pasta dele, nem nome que um import do projeto trouxe.
+        let from_library = |head: &str, written: &str| {
+            m.unbound_heads.binary_search_by(|h| h.as_str().cmp(head)).is_ok()
+                && !declared_names.contains(head)
+                && !(brought.contains(head) && !outside.contains(head))
+                && resolver.outside(written, m)
+        };
+        // Cada chamada escrita por um caminho de duas partes ou mais
+        // (`std::fs::read()`), com a raiz de biblioteca ou não. A raiz do
+        // caminho decide, e não o nome escrito logo antes da chamada.
+        let mut by_path: BTreeMap<&CallSite, bool> = BTreeMap::new();
+        for (path, written) in &m.other_call_paths {
+            let canon = canon_segments(path, &m.language);
+            let first = canon.split('/').next().unwrap_or_default();
+            let library = from_library(first, path);
+            for site in written {
+                *by_path.entry(site).or_default() |= library;
+            }
+        }
         let sites = m
             .calls
             .iter()
@@ -641,7 +634,14 @@ fn resolve_declaration_links(
                 && !(m.declarations.iter().any(|d| d.name == site.name)
                     || brought.contains(site.name.as_str())
                     || all.iter().any(|&(mi, _)| globbed.contains(&modules[mi].path)));
-            let not_ours = from_outside || of_the_language || (is_call && by_library.contains(site));
+            // A chamada aberta por um nome de biblioteca é de fora
+            // (`File.ReadAllText()`, `std::fs::read()`), e não liga.
+            let by_library = is_call
+                && match by_path.get(site) {
+                    Some(&library) => library,
+                    None => matches!(before, Before::Name(q) if from_library(q, q)),
+                };
+            let not_ours = from_outside || of_the_language || by_library;
             // Estreita pelo que vem antes do nome: o arquivo que o
             // qualificador nomeia (só o que fica fora de todo tipo nele) ou
             // o tipo que ele nomeia, ou os membros do tipo em que a chamada
@@ -826,10 +826,9 @@ impl GlobalSight {
     }
 }
 
-/// What the global imports of the project put in sight of each file. The
-/// scope of a global import is the folder of the nearest manifest above the
-/// file that writes it, or that file's own folder when no manifest is above
-/// it, and only files of the same language see it.
+/// What the global imports of the project put in sight of each file: the
+/// files each import resolves to, seen by the files it reaches (see
+/// [`global_reach`]).
 fn global_sight(
     modules: &[Module],
     go_module: &Option<String>,
@@ -838,18 +837,13 @@ fn global_sight(
     aliases: &PathAliases,
 ) -> GlobalSight {
     let mut sight = GlobalSight { groups: Vec::new(), seen_by: vec![Vec::new(); modules.len()] };
-    if modules.iter().all(|m| m.global_imports.is_empty()) {
+    let reach = global_reach(modules, manifests);
+    if reach.is_empty() {
         return sight;
     }
     let resolver = Resolver::new(modules, go_module, packages, aliases);
-    let manifest_dirs: Vec<String> = manifests.iter().map(|m| parent_dir(&m.path)).collect();
-    for g in modules.iter().filter(|g| !g.global_imports.is_empty()) {
-        let scope = manifest_dirs
-            .iter()
-            .filter(|d| is_under(&g.path, d))
-            .max_by_key(|d| d.len())
-            .cloned()
-            .unwrap_or_else(|| parent_dir(&g.path));
+    for (writer, reached) in reach {
+        let g = &modules[writer];
         let targets: HashSet<String> =
             g.global_imports
                 .iter()
@@ -864,13 +858,53 @@ fn global_sight(
         }
         let group = sight.groups.len();
         sight.groups.push(targets);
-        for (si, m) in modules.iter().enumerate() {
-            if m.language == g.language && is_under(&m.path, &scope) {
-                sight.seen_by[si].push(group);
-            }
+        for si in reached {
+            sight.seen_by[si].push(group);
         }
     }
     sight
+}
+
+/// Each file of `modules` that writes a global import, by its index, with the
+/// indexes of the files that import reaches: those of the same language under
+/// the folder of the manifest nearest above the writer, or under the writer's
+/// own folder when no manifest is above it.
+pub(crate) fn global_reach(modules: &[Module], manifests: &[crate::model::Manifest]) -> Vec<(usize, Vec<usize>)> {
+    modules
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| !g.global_imports.is_empty())
+        .map(|(writer, g)| {
+            let scope = nearest_manifest_dir(&g.path, manifests).unwrap_or_else(|| folder_of(&g.path));
+            let reached = modules
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.language == g.language && is_under(&m.path, scope))
+                .map(|(at, _)| at)
+                .collect();
+            (writer, reached)
+        })
+        .collect()
+}
+
+/// The folder of the manifest nearest above `path`: the deepest folder that
+/// holds both a manifest and the path. `None` when no manifest is above it.
+fn nearest_manifest_dir<'m>(path: &str, manifests: &'m [crate::model::Manifest]) -> Option<&'m str> {
+    manifests.iter().map(|m| folder_of(&m.path)).filter(|dir| is_under(path, dir)).max_by_key(|dir| dir.len())
+}
+
+/// What the manifests nearest above `path` depend on: every manifest in the
+/// folder [`nearest_manifest_dir`] gives. Empty when no manifest is above it.
+pub(crate) fn nearest_manifest_deps(path: &str, manifests: &[crate::model::Manifest]) -> Vec<String> {
+    let Some(dir) = nearest_manifest_dir(path, manifests) else {
+        return Vec::new();
+    };
+    manifests.iter().filter(|m| folder_of(&m.path) == dir).flat_map(|m| m.dependencies.iter().cloned()).collect()
+}
+
+/// The folder part of `path`, empty at the root.
+fn folder_of(path: &str) -> &str {
+    path.rfind('/').map_or("", |at| &path[..at])
 }
 
 /// The path sits somewhere under `dir` (the root holds everything).
@@ -1115,6 +1149,9 @@ struct Resolver<'a> {
     /// O que cada trio `(língua, pacote, resto)` resolveu, uma vez perguntado:
     /// a língua de quem importa decide que extensão sai do resto.
     package_hits: RefCell<HashMap<(String, String, String), Vec<String>>>,
+    /// Os arquivos que declaram cada nome pedido a um arquivo que repassa,
+    /// uma vez seguidos os repasses a partir dele.
+    through_hits: RefCell<HashMap<(String, String), Vec<String>>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -1157,7 +1194,78 @@ impl<'a> Resolver<'a> {
             packages,
             aliases,
             package_hits: RefCell::new(HashMap::new()),
+            through_hits: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Os arquivos do projeto que um import de `importer` liga, seguidos os
+    /// repasses: cada nome que ele traz e que o arquivo alvo não declara, mas
+    /// repassa ([`Module::reexports`], pelo nome ou por `*`), liga ao arquivo
+    /// que o declara. O arquivo alvo fica pelos nomes que ele mesmo declara,
+    /// pelos que nenhum arquivo alcançado declara e pelo import que não traz
+    /// nome. A única leitura dos imports do corpo e do trecho de teste: as
+    /// arestas, o `deps` e, por ele, a ligação das declarações veem o nome
+    /// no arquivo que o define.
+    fn resolve_through(&self, imp: &str, importer: &Module, nested: usize) -> Vec<String> {
+        let targets = self.resolve(imp, importer, Reach::Used, nested);
+        let names = importer.brought.get(imp).map(Vec::as_slice).unwrap_or_default();
+        if names.is_empty() {
+            return targets;
+        }
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        for target in targets {
+            let Some(module) = self.by_path.get(target.as_str()).filter(|m| !m.reexports.is_empty()) else {
+                out.insert(target);
+                continue;
+            };
+            let mut stays = false;
+            for name in names {
+                let key = (target.clone(), name.clone());
+                let cached = self.through_hits.borrow().get(&key).cloned();
+                let found = cached.unwrap_or_else(|| {
+                    let found = self.declared_through(module, name, &mut HashSet::new());
+                    self.through_hits.borrow_mut().insert(key, found.clone());
+                    found
+                });
+                stays |= found.is_empty();
+                out.extend(found);
+            }
+            if stays {
+                out.insert(target);
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// Os arquivos que declaram `name` a partir de `module`: ele mesmo, quando
+    /// o declara; senão, os que cada repasse dele que oferece o nome alcança,
+    /// pelo nome de origem. `seen` guarda cada par de arquivo e nome já
+    /// visitado, e um repasse que volta a um deles não é seguido de novo.
+    fn declared_through(&self, module: &'a Module, name: &str, seen: &mut HashSet<(&'a str, String)>) -> Vec<String> {
+        if !seen.insert((module.path.as_str(), name.to_string())) {
+            return Vec::new();
+        }
+        if module.declarations.iter().any(|d| d.name == name) {
+            return vec![module.path.clone()];
+        }
+        let mut found = Vec::new();
+        for (imp, offered) in &module.reexports {
+            let original = match offered.get(name) {
+                Some(original) => original.as_str(),
+                None if offered.contains_key("*") => name,
+                None => continue,
+            };
+            for nested in module.import_depths(imp, false) {
+                for target in self.resolve(imp, module, Reach::Used, nested) {
+                    if let Some(&next) = self.by_path.get(target.as_str()) {
+                        found.extend(self.declared_through(next, original, seen));
+                    }
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
     }
 
     /// The project files one import of `importer` names. Empty when it names
@@ -1240,6 +1348,18 @@ impl<'a> Resolver<'a> {
             if !hits.is_empty() {
                 return hits;
             }
+        }
+        // 2c) Módulo filho: na língua que declara `root_aliases`, o caminho
+        //     sem apelido cuja primeira parte é módulo filho de quem importa
+        //     (`io` em `pub use io::leitor::Leitor`, escrito no `lib.rs`) se lê
+        //     como se tivesse o apelido do próprio módulo na frente: na pasta
+        //     dos módulos de quem importa, tirando do fim quantas partes for
+        //     preciso até achar arquivo. Só fora dos módulos escritos no
+        //     arquivo, cujos filhos são outros.
+        if nested == 0
+            && let Some(hits) = self.child_module(&canon, importer)
+        {
+            return hits;
         }
         // 3) File path: a relative or path-ish import resolved to a module file.
         //    The canonical form means dotted / `::` module paths take this branch
@@ -1363,6 +1483,36 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
+    /// Os arquivos que um caminho sem apelido cita quando a primeira parte
+    /// dele é módulo filho de quem importa, na língua que declara
+    /// `root_aliases`: o arquivo mais fundo que o caminho nomeia dentro da
+    /// pasta dos módulos de quem importa ([`inner_folder`]). `None` quando a
+    /// língua não declara apelido, o caminho começa por um deles ou pelo
+    /// `parent_alias`, ou a primeira parte não é módulo filho.
+    fn child_module(&self, canon: &str, importer: &Module) -> Option<Vec<String>> {
+        let lang = importer.language.as_str();
+        let aliases = crate::extract::root_aliases(lang);
+        let segments: Vec<&str> = canon.split('/').collect();
+        let first = segments.first().copied().unwrap_or_default();
+        if aliases.is_empty()
+            || first.is_empty()
+            || aliases.contains(&first)
+            || crate::extract::parent_alias(lang) == Some(first)
+        {
+            return None;
+        }
+        let base = inner_folder(&importer.path, lang);
+        let probe = |cut: usize| {
+            let place: Vec<&str> =
+                std::iter::once(base.as_str()).chain(segments[..cut].iter().copied()).filter(|s| !s.is_empty()).collect();
+            exact_path_candidate(&place.join("/"), lang, &self.stem_index, &self.module_paths)
+        };
+        if probe(1).is_empty() {
+            return None;
+        }
+        (1..=segments.len()).rev().map(probe).find(|hits| !hits.is_empty())
+    }
+
     /// Os arquivos que um caminho aberto pelo `parent_alias` da língua cita.
     /// Os módulos de dentro de um arquivo moram na pasta que leva o nome dele
     /// ou, no arquivo que responde pela própria pasta, nela mesma; cada
@@ -1380,7 +1530,7 @@ impl<'a> Resolver<'a> {
         if ups == 0 {
             return None;
         }
-        let mut base = inner_folder(&importer.path);
+        let mut base = inner_folder(&importer.path, &importer.language);
         for _ in nested..ups {
             if base.is_empty() {
                 return Some(Vec::new());
@@ -1476,7 +1626,7 @@ impl<'a> Resolver<'a> {
                 })
             })
         });
-        let hits = probed.unwrap_or_else(|| {
+        let mut hits = probed.unwrap_or_else(|| {
             let ending = format!("/{}", strip_import_ext(tail, lang));
             let mut hits: Vec<String> = stem_index
                 .iter()
@@ -1486,6 +1636,17 @@ impl<'a> Resolver<'a> {
             hits.sort(); // stable output: HashMap iteration order varies per run
             hits
         });
+        // O resto que não chega a arquivo nenhum (`Leitor` em
+        // `demo_core::Leitor`) é um nome do arquivo raiz do pacote
+        // (`package_entry` no registro), que o declara ou o repassa.
+        if hits.is_empty() {
+            hits = dirs
+                .iter()
+                .flat_map(|dir| crate::extract::package_entry(lang).iter().map(move |entry| join_dir(dir, entry)))
+                .map(|entry| exact_path_candidate(&entry, lang, stem_index, module_paths))
+                .find(|found| !found.is_empty())
+                .unwrap_or_default();
+        }
         self.package_hits.borrow_mut().insert(key, hits.clone());
         hits
     }
@@ -1581,13 +1742,20 @@ fn exact_path_candidate(
 const INDEX_FILES: [&str; 3] = ["index", "main", "mod"];
 
 /// A pasta em que moram os módulos escritos dentro de um arquivo: a que leva
-/// o nome dele ou, no arquivo que responde pela própria pasta, a pasta dele.
-fn inner_folder(path: &str) -> String {
-    if INDEX_FILES.contains(&file_stem(path).as_str()) {
-        parent_dir(path)
-    } else {
-        strip_ext(path)
-    }
+/// o nome dele ou, no arquivo que responde pela própria pasta e no arquivo
+/// raiz de um pacote (`package_entry` no registro, como `src/lib`), a pasta
+/// dele.
+fn inner_folder(path: &str, lang: &str) -> String {
+    let stem = strip_ext(path);
+    let entry = crate::extract::package_entry(lang)
+        .iter()
+        .any(|entry| stem == *entry || stem.strip_suffix(entry).is_some_and(|dir| dir.ends_with('/')));
+    if entry || INDEX_FILES.contains(&file_stem(path).as_str()) { parent_dir(path) } else { stem }
+}
+
+/// O caminho `rest` dentro da pasta `dir` (vazia na raiz do projeto).
+fn join_dir(dir: &str, rest: &str) -> String {
+    if dir.is_empty() { rest.to_string() } else { format!("{dir}/{rest}") }
 }
 
 fn parent_dir(path: &str) -> String {

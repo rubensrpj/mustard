@@ -51,6 +51,8 @@ public class Estoque
 
     public int Consultar(int quantidade) => quantidade;
 }
+
+// fim do estoque
 "#;
 
 /// O serviço do carrinho, com a documentação de `aplicarCupom` de
@@ -247,16 +249,14 @@ fn the_comment_at_the_top_of_the_file_is_its_doc_and_not_its_other_comments() {
         field(rust, "file_doc"),
         "Pedidos da loja: criar, conferir e cancelar. Cada pedido passa pela conferência antes de gravar."
     );
-    assert_eq!(
-        field(rust, "file_comment"),
-        "Confere o pedido antes de gravar. o estoque precisa cobrir o total do pedido consulta o armazém central"
-    );
+    assert_eq!(field(rust, "file_comment"), "Confere o pedido antes de gravar.", "the comments inside a function are its own");
     let csharp = module(&map, "Loja/Estoque.cs");
     assert_eq!(field(csharp, "file_doc"), "Estoque da loja: reserva e baixa de itens.");
     assert!(!field(csharp, "file_comment").contains("baixa de itens"), "{}", field(csharp, "file_comment"));
     let typescript = module(&map, "web/carrinho.service.ts");
     assert_eq!(field(typescript, "file_doc"), "Serviço do carrinho: soma os itens e aplica o cupom.");
-    assert!(field(typescript, "file_comment").starts_with("cupom de frete grátis"), "{}", field(typescript, "file_comment"));
+    let other = field(typescript, "file_comment");
+    assert!(other.starts_with("regra0 regra1") && !other.contains("cupom de frete"), "{other}");
 }
 
 #[test]
@@ -316,4 +316,87 @@ fn the_unfiltered_search_gives_the_same_list_as_before() {
     assert_eq!(got("cupom frete"), list(&[("web/carrinho.service.ts", 1281)]));
     assert_eq!(got("reserva trinta minutos"), list(&[("Loja/Estoque.cs", 1643)]));
     assert_eq!(got("regra7 regra8"), list(&[("web/carrinho.service.ts", 1255)]));
+}
+
+/// Um arquivo com comentário em todo lugar: o do começo escrito na primeira
+/// linha da primeira função, antes de todo código; um numa linha dividida por
+/// duas funções de fora; um solto entre elas; e um dentro de um bloco e outro
+/// dentro do método dele, que é uma declaração de dentro.
+const EVERYWHERE: &str = r#"/* começo junto */ pub fn primeira() {
+    // dentro da primeira
+} pub fn segunda() { // linha dividida
+    // dentro da segunda
+}
+
+// solto entre as duas
+pub struct Caixa;
+
+impl Caixa {
+    // dentro do bloco
+    pub fn abrir(&self) {
+        // dentro do método
+    }
+}
+"#;
+
+/// Os comentários de [`EVERYWHERE`] depois do primeiro código, na ordem, como
+/// o mapa os juntava num campo só antes de guardar cada um uma vez.
+const EVERYWHERE_AFTER_CODE: &str =
+    "dentro da primeira linha dividida dentro da segunda solto entre as duas dentro do bloco dentro do método";
+
+/// Cada termo da coluna `column` do índice dos arquivos para o arquivo
+/// `path`, com quantas vezes ele entra, e o tamanho da coluna em palavras.
+fn file_terms(dir: &Path, path: &str, column: &str) -> (Vec<(String, i64)>, i64) {
+    let conn = rusqlite::Connection::open(model::path_in(&dir.join(".claude"))).unwrap();
+    let id: i64 = conn.query_row("SELECT rowid FROM files WHERE path = ?1", [path], |row| row.get(0)).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT term, count(*) FROM file_vocab WHERE doc = ?1 AND col = ?2 GROUP BY term ORDER BY term")
+        .unwrap();
+    let terms = stmt.query_map(rusqlite::params![id, column], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    let terms = terms.collect::<Result<_, _>>().unwrap();
+    let length = conn
+        .query_row(&format!("SELECT {column} FROM file_lengths WHERE id = ?1"), [id], |row| row.get(0))
+        .unwrap();
+    (terms, length)
+}
+
+/// Os termos e o tamanho que o índice dá a um campo feito só de `text`: as
+/// palavras dele pela normalização de toda busca, cada uma uma vez, na
+/// tabela de palavras com o mesmo tokenizador do índice.
+fn terms_of(text: &str) -> (Vec<(String, i64)>, i64) {
+    let words = mustard_core::domain::normalize::forms(text, &Languages::of(&ProjectConfig::default()));
+    let joined = words.iter().flatten().map(String::as_str).collect::<Vec<_>>().join(" ");
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE t USING fts5(c, tokenize='unicode61 remove_diacritics 2');\
+         CREATE VIRTUAL TABLE v USING fts5vocab(t, instance);",
+    )
+    .unwrap();
+    conn.execute("INSERT INTO t(c) VALUES (?1)", [joined]).unwrap();
+    let mut stmt = conn.prepare("SELECT term, count(*) FROM v GROUP BY term ORDER BY term").unwrap();
+    let terms = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+    (terms, words.len() as i64)
+}
+
+/// Cada comentário de dentro de uma declaração mora só no dela, e o índice
+/// monta os comentários do arquivo com os de fora das declarações e os de
+/// cada declaração de fora: as palavras e as contagens do campo saem iguais
+/// às de quando o arquivo guardava todos. O comentário do começo escrito na
+/// primeira linha da primeira função é do começo do arquivo, e não entra; o
+/// da linha dividida por duas funções conta uma vez.
+#[test]
+fn the_comments_of_the_file_reach_the_index_once_as_they_did_when_the_file_kept_them_all() {
+    let temp = project_with(&[("src/caixa.rs", EVERYWHERE)]);
+    let map = scan(temp.path());
+    let caixa = module(&map, "src/caixa.rs");
+    assert_eq!(field(caixa, "file_doc"), "começo junto");
+    assert_eq!(
+        field(caixa, "file_comment"),
+        "solto entre as duas dentro do bloco",
+        "only the comments outside every declaration; a block that declares nothing is not one"
+    );
+    assert_eq!(field(decl(&map, "src/caixa.rs", "primeira"), "body_comment"), "começo junto dentro da primeira linha dividida");
+    assert_eq!(caixa["file_doc_in_body"], json!("começo junto ".len()));
+    assert_eq!(file_terms(temp.path(), "src/caixa.rs", "file_comment"), terms_of(EVERYWHERE_AFTER_CODE));
+    assert_eq!(file_terms(temp.path(), "src/caixa.rs", "file_doc"), terms_of("começo junto"));
 }

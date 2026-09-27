@@ -1,6 +1,5 @@
-//! A projeção dos manifestos em cada subprojeto: as dependências, os scripts
-//! e os frameworks de cada unidade saem dos manifestos que ficam sob a pasta
-//! dela. O manifesto pertence à unidade de pasta mais específica que o contém,
+//! A projeção dos manifestos em cada subprojeto: os scripts e os frameworks
+//! de cada unidade saem dos manifestos que ficam sob a pasta dela. O manifesto pertence à unidade de pasta mais específica que o contém,
 //! de modo que o de um subprojeto aninhado não sobe para o pai. É uma projeção
 //! pura e determinística do modelo; nada aqui depende de linguagem ou
 //! framework.
@@ -11,8 +10,7 @@ use crate::model::{Manifest, ProjectUnit};
 /// constant, not user config — tuning the model shape does not belong here.
 const STACK_RANK_LIMIT: usize = 12;
 
-/// Enrich each unit in `projects` with the frameworks/dependencies/scripts
-/// aggregated from the manifests it owns. `all` is the full (immutable) project
+/// Enrich each unit in `projects` with the frameworks/scripts aggregated from the manifests it owns. `all` is the full (immutable) project
 /// list used for the longest-prefix ownership test (`owned_manifests`), passed
 /// separately so the caller can mutate `projects` while reading `all`.
 ///
@@ -23,7 +21,6 @@ const STACK_RANK_LIMIT: usize = 12;
 pub(crate) fn enrich_projects(projects: &mut [ProjectUnit], all: &[ProjectUnit], manifests: &[Manifest]) {
     for project in projects.iter_mut() {
         let owned: Vec<&Manifest> = owned_manifests(project, all, manifests);
-        project.dependencies = aggregate_field(owned.iter().flat_map(|m| m.dependencies.iter()));
         project.scripts = aggregate_field(owned.iter().flat_map(|m| m.scripts.iter()));
         project.frameworks = rank_by_frequency(owned.iter().flat_map(|m| m.dependencies.iter()));
     }
@@ -117,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn crossing_by_dir_prefix_fills_frameworks_scripts_and_deps() {
+    fn crossing_by_dir_prefix_fills_frameworks_and_scripts() {
         let projects = enriched(
             vec![unit("api", "apps/api"), unit("web", "apps/web")],
             &[
@@ -126,11 +123,10 @@ mod tests {
             ],
         );
         let api = projects.iter().find(|p| p.name == "api").unwrap();
-        assert_eq!(api.dependencies, vec!["serde", "tokio"]);
         assert_eq!(api.scripts, vec!["gen: build.rs"]);
         assert_eq!(api.frameworks, vec!["serde", "tokio"]);
         let web = projects.iter().find(|p| p.name == "web").unwrap();
-        assert_eq!(web.dependencies, vec!["react"]);
+        assert_eq!(web.frameworks, vec!["react"]);
         assert_eq!(web.scripts, vec!["build: vite"]);
     }
 
@@ -138,7 +134,6 @@ mod tests {
     fn unmatched_dir_stays_empty() {
         let projects = enriched(vec![unit("api", "apps/api")], &[manifest("apps/other/Cargo.toml", &["serde"], &[])]);
         let api = &projects[0];
-        assert!(api.dependencies.is_empty(), "deps should be empty: {:?}", api.dependencies);
         assert!(api.frameworks.is_empty(), "frameworks should be empty: {:?}", api.frameworks);
         assert!(api.scripts.is_empty());
     }
@@ -154,8 +149,8 @@ mod tests {
         let root = projects.iter().find(|p| p.name == "root").unwrap();
         let api = projects.iter().find(|p| p.name == "api").unwrap();
         // Root keeps only its own root manifest, not the nested one.
-        assert_eq!(root.dependencies, vec!["workspace-dep"]);
-        assert_eq!(api.dependencies, vec!["serde"]);
+        assert_eq!(root.frameworks, vec!["workspace-dep"]);
+        assert_eq!(api.frameworks, vec!["serde"]);
     }
 
     #[test]
@@ -163,14 +158,14 @@ mod tests {
         let projects = enriched(
             vec![unit("api", "apps/api")],
             &[
-                manifest("apps/api/Cargo.toml", &["tokio", "serde"], &[]),
-                manifest("apps/api/crate/Cargo.toml", &["serde", "anyhow"], &[]),
+                manifest("apps/api/Cargo.toml", &["tokio", "serde"], &["test: cargo test", "build: cargo build"]),
+                manifest("apps/api/crate/Cargo.toml", &["serde", "anyhow"], &["build: cargo build"]),
             ],
         );
         let api = &projects[0];
         // Both manifests are under apps/api (no more-specific sibling unit), so
-        // deps merge, dedupe and sort.
-        assert_eq!(api.dependencies, vec!["anyhow", "serde", "tokio"]);
+        // scripts merge, dedupe and sort.
+        assert_eq!(api.scripts, vec!["build: cargo build", "test: cargo test"]);
         // serde appears twice → ranks first by frequency.
         assert_eq!(api.frameworks.first().map(String::as_str), Some("serde"));
     }

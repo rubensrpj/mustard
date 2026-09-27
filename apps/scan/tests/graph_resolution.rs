@@ -161,25 +161,18 @@ fn graph_resolution_no_regression_preexisting() {
     }
 }
 
-/// Cascade smoke: with PHP FQCNs resolving, the graph stops collapsing into a
-/// single `L0` layer and hubs/touchpoints/fan-in stop being empty.
+/// Cascade smoke: with PHP FQCNs resolving, every internal import becomes an
+/// edge and the fan-in stops being empty.
 /// Fixture shape: 3 Models <- 2 Services <- 2 Controllers, every import an
 /// internal FQCN (`App\Models\User`, `App\Services\UserService`, ...):
 ///   UserService -> User; PostService -> Post, Comment;
 ///   UserController -> UserService, User; PostController -> PostService, Post.
 #[test]
-fn graph_resolution_php_cascade_layers_hubs_touchpoints() {
+fn graph_resolution_php_cascade_resolves_every_import_and_fills_fan_in() {
     let v = scan_fixture("graph_php_cascade");
     let g = &v["graph"];
 
     assert_eq!(g["edges"].as_u64(), Some(7), "all 7 internal FQCN imports resolve: {g}");
-
-    // Layers: Models at `L0`, Services at `L1`, Controllers at `L2` — not one
-    // flat `L0`.
-    let layers = g["layers"].as_array().unwrap();
-    assert_eq!(layers.len(), 3, "emergent layering must have 3 depths: {g}");
-    let l0 = layers.iter().find(|l| l["name"] == "L0").expect("L0 present");
-    assert_eq!(l0["modules"].as_u64(), Some(3), "the 3 Models are the innermost layer: {g}");
 
     // Fan-in: the models are depended upon (User and Post twice each).
     let fan_in = fan_in_modules(&v);
@@ -187,90 +180,6 @@ fn graph_resolution_php_cascade_layers_hubs_touchpoints() {
     assert!(
         fan_in.contains(&"app/Models/User.php".to_string()),
         "User model is a fan-in target: {fan_in:?}"
-    );
-
-    // Touchpoints/hubs: controllers import across Services + Models (breadth 2).
-    let touchpoints = g["touchpoints"].as_array().unwrap();
-    assert!(!touchpoints.is_empty(), "touchpoints must not be empty: {g}");
-    assert_eq!(touchpoints[0]["breadth"].as_u64(), Some(2), "top hub spans two dirs: {touchpoints:?}");
-}
-
-/// Arquivo de teste importa de muitas pastas, mas não registra nada: nem o que
-/// mora numa pasta de dados de teste (`pkg/testdata/x.go`) nem o que só o nome
-/// marca como teste (`pkg/foo_test.go`) vira ponto de registro. O ponto de
-/// verdade ao lado (`cmd/app/main.go`, duas pastas) continua na lista.
-///
-/// Na divisa da pasta `spec`, que só marca teste perto do topo: na terceira
-/// pasta (`lib/core/spec/edge.go`) ainda é teste e sai; na quarta
-/// (`lib/core/deep/spec/past.go`) já é pasta do domínio e fica.
-#[test]
-fn a_test_file_by_folder_or_by_name_is_never_a_registration_point() {
-    let temp = tempfile::Builder::new().prefix("scan-graph-touchpoints-tests-").tempdir().unwrap();
-    let root = temp.path().join("repo");
-    let files: &[(&str, &str)] = &[
-        ("go.mod", "module example.test/hubs\n\ngo 1.22\n"),
-        ("a/a.go", "package a\n\nfunc A() int { return 1 }\n"),
-        ("b/b.go", "package b\n\nfunc B() int { return 2 }\n"),
-        ("c/c.go", "package c\n\nfunc C() int { return 3 }\n"),
-        (
-            "pkg/testdata/x.go",
-            "package testdata\n\nimport (\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n\t\"example.test/hubs/c\"\n)\n\nfunc X() int { return a.A() + b.B() + c.C() }\n",
-        ),
-        (
-            "pkg/foo_test.go",
-            "package pkg\n\nimport (\n\t\"testing\"\n\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n\t\"example.test/hubs/c\"\n)\n\nfunc TestFoo(t *testing.T) { _ = a.A() + b.B() + c.C() }\n",
-        ),
-        ("pkg/foo.go", "package pkg\n\nfunc Foo() int { return 0 }\n"),
-        (
-            "lib/core/spec/edge.go",
-            "package spec\n\nimport (\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n)\n\nfunc Edge() int { return a.A() + b.B() }\n",
-        ),
-        (
-            "lib/core/deep/spec/past.go",
-            "package spec\n\nimport (\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n)\n\nfunc Past() int { return a.A() + b.B() }\n",
-        ),
-        (
-            "cmd/app/main.go",
-            "package main\n\nimport (\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n)\n\nfunc main() { _ = a.A() + b.B() }\n",
-        ),
-    ];
-    for (path, body) in files {
-        let file = root.join(path);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, body).unwrap();
-    }
-    let out = temp.path().join("out");
-    std::fs::create_dir_all(&out).unwrap();
-    let v = model::scan(&root, &out, &[]).0;
-
-    // Os dois arquivos de teste importam mesmo as três pastas: sem o desconto,
-    // seriam os pontos de registro mais largos do projeto.
-    for test_file in ["pkg/testdata/x.go", "pkg/foo_test.go"] {
-        assert_eq!(
-            deps_of(&v, test_file),
-            vec!["a/a.go".to_string(), "b/b.go".to_string(), "c/c.go".to_string()],
-            "{test_file} importa as três pastas"
-        );
-    }
-
-    let touchpoints: Vec<String> = v["graph"]["touchpoints"]
-        .as_array()
-        .expect("graph.touchpoints")
-        .iter()
-        .map(|t| t["module"].as_str().unwrap().to_string())
-        .collect();
-    for edge_file in ["lib/core/spec/edge.go", "lib/core/deep/spec/past.go"] {
-        assert_eq!(
-            deps_of(&v, edge_file),
-            vec!["a/a.go".to_string(), "b/b.go".to_string()],
-            "{edge_file} importa as duas pastas"
-        );
-    }
-    assert_eq!(
-        touchpoints,
-        vec!["cmd/app/main.go".to_string(), "lib/core/deep/spec/past.go".to_string()],
-        "só os pontos de verdade ficam: {}",
-        v["graph"]
     );
 }
 
@@ -728,4 +637,112 @@ fn a_pass_that_keeps_the_file_links_the_calls_by_path_the_same() {
         assert_a_path_to_the_file_itself_links_only_to_the_file(v);
         assert_a_call_without_a_path_is_suspect_between_every_one_in_sight(v);
     }
+}
+
+/// Escreve os arquivos num projeto novo e devolve o mapa do scan dele.
+fn scan_files(label: &str, files: &[(&str, &str)]) -> serde_json::Value {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-graph-{label}-")).tempdir().unwrap();
+    let root = temp.path().join("repo");
+    for (path, body) in files {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, body).unwrap();
+    }
+    let out = temp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    model::scan(&root, &out, &[]).0
+}
+
+/// Um workspace de dois crates: o `lib.rs` do `core` (pacote `demo-core`)
+/// repassa o `Leitor` de um módulo filho, e o `app` o importa pelo nome do
+/// pacote, sem o caminho do arquivo que o declara.
+const WORKSPACE_THAT_PASSES_ON: &[(&str, &str)] = &[
+    ("Cargo.toml", "[workspace]\nmembers = [\"core\", \"app\"]\n"),
+    ("core/Cargo.toml", "[package]\nname = \"demo-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+    ("core/src/lib.rs", "pub mod io;\npub use io::leitor::Leitor;\n"),
+    ("core/src/io/mod.rs", "pub mod leitor;\n"),
+    ("core/src/io/leitor.rs", "pub struct Leitor;\n\nimpl Leitor {\n    pub fn novo() -> Self {\n        Leitor\n    }\n}\n"),
+    (
+        "app/Cargo.toml",
+        "[package]\nname = \"demo-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [dependencies]\ndemo-core = { path = \"../core\" }\n",
+    ),
+    ("app/src/main.rs", "use demo_core::Leitor;\n\nfn main() {\n    let _ = Leitor::novo();\n}\n"),
+];
+
+/// `use demo_core::Leitor` não nomeia arquivo nenhum do pacote: cai no
+/// arquivo raiz dele, que não declara o `Leitor`, mas o repassa, e a
+/// dependência vai para o arquivo que o declara.
+#[test]
+fn a_package_import_of_a_name_the_root_file_passes_on_reaches_the_file_that_declares_it() {
+    let v = scan_files("reexport-crate", WORKSPACE_THAT_PASSES_ON);
+    assert_eq!(deps_of(&v, "app/src/main.rs"), vec!["core/src/io/leitor.rs".to_string()]);
+}
+
+/// `pub use io::leitor::Leitor`, escrito no `lib.rs`, começa pelo módulo filho
+/// `io`, sem apelido: lê-se na pasta dos módulos do arquivo raiz, como se o
+/// `self` viesse na frente.
+#[test]
+fn a_path_that_opens_with_a_child_module_resolves_inside_the_folder_of_its_modules() {
+    let v = scan_files("reexport-child", WORKSPACE_THAT_PASSES_ON);
+    assert_eq!(deps_of(&v, "core/src/lib.rs"), vec!["core/src/io/leitor.rs".to_string()]);
+}
+
+/// O serviço e a tela que importa a pasta dele; o `index.ts` da pasta, que só
+/// repassa, é o arquivo dado.
+fn folder_that_passes_on(index: &str, tela: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("web/src/pedidos/index.ts", index.to_string()),
+        (
+            "web/src/pedidos/pedido.service.ts",
+            "export function buscarPedido(id: number) {\n  return id;\n}\n".to_string(),
+        ),
+        ("web/src/tela.ts", tela.to_string()),
+    ]
+}
+
+fn scan_owned(label: &str, files: &[(&'static str, String)]) -> serde_json::Value {
+    let files: Vec<(&str, &str)> = files.iter().map(|(path, body)| (*path, body.as_str())).collect();
+    scan_files(label, &files)
+}
+
+/// `export * from './pedido.service'` no `index.ts` da pasta: quem importa a
+/// pasta depende do serviço, que declara o nome trazido, e não do `index.ts`;
+/// o `index.ts` depende do serviço que repassa.
+#[test]
+fn an_import_of_a_folder_that_passes_everything_on_reaches_the_file_that_declares_the_name() {
+    let files = folder_that_passes_on(
+        "export * from './pedido.service';\n",
+        "import { buscarPedido } from './pedidos';\n\nexport function tela() {\n  return buscarPedido(1);\n}\n",
+    );
+    let v = scan_owned("reexport-star", &files);
+    assert_eq!(deps_of(&v, "web/src/tela.ts"), vec!["web/src/pedidos/pedido.service.ts".to_string()]);
+    assert_eq!(deps_of(&v, "web/src/pedidos/index.ts"), vec!["web/src/pedidos/pedido.service.ts".to_string()]);
+}
+
+/// `export { buscarPedido as buscar } from './pedido.service'`: quem importa
+/// pede o nome novo (`buscar`), e o repasse o tira do serviço pelo de origem.
+#[test]
+fn a_name_passed_on_under_another_name_is_followed_by_its_original_name() {
+    let files = folder_that_passes_on(
+        "export { buscarPedido as buscar } from './pedido.service';\n",
+        "import { buscar } from './pedidos';\n\nexport function tela() {\n  return buscar(1);\n}\n",
+    );
+    let v = scan_owned("reexport-renamed", &files);
+    assert_eq!(deps_of(&v, "web/src/tela.ts"), vec!["web/src/pedidos/pedido.service.ts".to_string()]);
+}
+
+/// Dois `index.ts` que repassam tudo um ao outro: a leitura termina, e o nome
+/// que nenhum dos dois declara fica no `index.ts` importado.
+#[test]
+fn two_files_that_pass_everything_on_to_each_other_keep_the_name_nobody_declares() {
+    let v = scan_files(
+        "reexport-cycle",
+        &[
+            ("web/src/a/index.ts", "export * from '../b';\n"),
+            ("web/src/b/index.ts", "export * from '../a';\n"),
+            ("web/src/usa.ts", "import { ninguem } from './a';\n\nexport function usa() {\n  return ninguem();\n}\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "web/src/usa.ts"), vec!["web/src/a/index.ts".to_string()]);
 }

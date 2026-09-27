@@ -121,6 +121,20 @@
 #                 `this.f()`): a chamada procura o método entre os membros do
 #                 tipo em que ela está escrita. Sem o campo, nenhum nome é o
 #                 próprio objeto.
+#   parent_receivers OPTIONAL — os nomes que, escritos antes do método
+#                 chamado, são o próprio objeto visto pelo tipo de cima
+#                 (`base.f()`, `super.f()`). Como o próprio objeto, são do
+#                 arquivo: a chamada por eles nunca é tomada por chamada de
+#                 biblioteca. Sem o campo, nenhum.
+#   package_entry OPTIONAL — os arquivos raiz de um pacote do repositório,
+#                 sem a extensão e a partir da pasta do manifesto dele
+#                 (`src/lib` no Rust). O caminho que nomeia um pacote do
+#                 projeto e cujo resto não chega a arquivo nenhum
+#                 (`demo_core::Leitor`) liga ao arquivo raiz, que declara o
+#                 nome ou o repassa; e os módulos filhos do arquivo raiz moram
+#                 na pasta dele, como os do arquivo que responde pela pasta.
+#                 Sem o campo, nenhum: o caminho que não chega a arquivo não
+#                 liga a nada.
 #   implicit_self OPTIONAL — `true` na língua que chama um membro do próprio
 #                 objeto pelo nome sozinho, sem escrever o objeto (`Fechar()`
 #                 dentro da classe). Sem o campo, `false`: o nome sozinho
@@ -157,6 +171,7 @@ dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
 namespace_scope = "nested"
 self_receivers = ["this"]
+parent_receivers = ["base"]
 implicit_self = true
 doc_tags = [
     "summary", "remarks", "returns", "param", "typeparam", "value", "example",
@@ -172,6 +187,7 @@ extensions = ["ts", "mts", "cts"]
 dir = "typescript"
 grammar = "grammar_ts::LANGUAGE_TYPESCRIPT"
 self_receivers = ["this"]
+parent_receivers = ["super"]
 import_extensions = ["js", "mjs", "cjs", "jsx"]
 alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
@@ -187,11 +203,25 @@ dir = "typescript"
 extra_queries = "tsx"
 grammar = "grammar_ts::LANGUAGE_TSX"
 self_receivers = ["this"]
+parent_receivers = ["super"]
 import_extensions = ["js", "jsx", "mjs", "cjs"]
 alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
 alias_paths = "compilerOptions.paths"
 alias_extends = "extends"
+log_calls = ["console.*", "logger.*", "Logger.*"]
+error_forms = ["throw", "*Error", "*Exception", "reject"]
+
+# JavaScript: a gramática do TypeScript estende a do JavaScript, e a variante
+# TSX lê também o JSX; as consultas são as do TypeScript e as do TSX.
+[[language]]
+name = "javascript"
+extensions = ["js", "jsx", "mjs", "cjs"]
+dir = "typescript"
+extra_queries = "tsx"
+grammar = "grammar_ts::LANGUAGE_TSX"
+self_receivers = ["this"]
+parent_receivers = ["super"]
 log_calls = ["console.*", "logger.*", "Logger.*"]
 error_forms = ["throw", "*Error", "*Exception", "reject"]
 
@@ -216,6 +246,7 @@ qualified_separators = ["::"]
 member_separators = ["."]
 self_receivers = ["self", "Self"]
 import_self = "self"
+package_entry = ["src/lib", "src/main"]
 prelude = ["Result", "Option", "Ok", "Err", "Some", "None", "Vec", "String", "Box"]
 log_calls = ["println!", "eprintln!", "print!", "eprint!", "info!", "warn!", "error!", "debug!", "trace!", "log!"]
 error_forms = ["Err", "panic!", "bail!", "anyhow!", "ensure!", "unreachable!", "unimplemented!", "todo!", "expect", "context", "with_context", "error"]
@@ -245,6 +276,7 @@ extensions = ["dart"]
 dir = "dart"
 grammar = "grammar_dart::LANGUAGE"
 self_receivers = ["this"]
+parent_receivers = ["super"]
 implicit_self = true
 log_calls = ["print", "debugPrint", "log", "logger.*"]
 error_forms = ["throw", "*Exception", "*Error"]

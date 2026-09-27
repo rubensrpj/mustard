@@ -1,7 +1,8 @@
 //! As rotas do servidor que o mapa guarda: o método, o caminho padronizado, o
 //! caminho como foi escrito e a função que atende cada uma. Projetos pequenos
 //! com um controlador de C#, um de NestJS, um roteador de axum e um de
-//! Express, lidos pelo scan de verdade.
+//! Express, lidos pelo scan de verdade. O Express vale também no arquivo
+//! JavaScript que o traz pelo `require`.
 
 #[path = "support/model.rs"]
 mod model;
@@ -131,14 +132,26 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// Um projeto no git com os arquivos, já no primeiro commit.
-fn project() -> tempfile::TempDir {
+fn project_with(files: &[(&str, &str)]) -> tempfile::TempDir {
     let temp = tempfile::Builder::new().prefix("scan-rotas-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q"]);
     std::fs::create_dir_all(dir.join(".git").join("info")).unwrap();
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
-    for (rel, body) in [
+    for (rel, body) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    temp
+}
+
+/// O projeto de cada framework, com os arquivos que não ligam nenhum.
+fn project() -> tempfile::TempDir {
+    project_with(&[
         ("Loja/Controllers/PedidosController.cs", CONTROLLER),
         ("Loja/Program.cs", MINIMAL_API),
         ("api/pedidos.controller.ts", NEST),
@@ -147,14 +160,7 @@ fn project() -> tempfile::TempDir {
         ("web/app.ts", EXPRESS_APP),
         ("web/cache.ts", NO_FRAMEWORK),
         ("web/leitor.ts", OTHER_PACKAGE),
-    ] {
-        let path = dir.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, body).unwrap();
-    }
-    git(dir, &["add", "-A"]);
-    git(dir, &["commit", "-q", "-m", "primeiro"]);
-    temp
+    ])
 }
 
 /// Roda o scan sobre o projeto, com o mapa dentro dele, e devolve o mapa e o
@@ -315,4 +321,152 @@ fn a_pass_that_does_not_read_the_file_again_keeps_the_same_routes() {
         assert!(!keys(&first, path).is_empty(), "{path}");
         assert_eq!(routes(&second, path), routes(&first, path), "{path}");
     }
+}
+
+/// Uma classe de C# sem nada de framework.
+const PLAIN_CSHARP: &str = "namespace Loja;\n\npublic class Caixa\n{\n    public int Total() => 0;\n}\n";
+
+/// A consulta de rota de um framework só se compila quando algum arquivo liga
+/// a regra dele: o projeto sem import de framework, com arquivos das línguas
+/// que têm regra, não compila nenhuma; o projeto com Express compila só a do
+/// Express.
+#[test]
+fn a_route_rule_is_compiled_only_when_a_file_turns_it_on() {
+    let temp = project_with(&[
+        ("web/cache.ts", NO_FRAMEWORK),
+        ("web/leitor.ts", OTHER_PACKAGE),
+        ("src/lib.rs", "pub fn soma() -> u32 { 1 }\n"),
+        ("Loja/Caixa.cs", PLAIN_CSHARP),
+    ]);
+    let (_, report) = scan(temp.path());
+    assert_eq!(report["route_rules"], json!([]), "{report}");
+
+    let temp = project_with(&[("web/rotas.ts", EXPRESS), ("web/cache.ts", NO_FRAMEWORK), ("Loja/Caixa.cs", PLAIN_CSHARP)]);
+    let (map, report) = scan(temp.path());
+    assert_eq!(report["route_rules"], json!(["express/typescript"]), "{report}");
+    assert_eq!(keys(&map, "web/rotas.ts").len(), 2, "the rule compiled once still finds the routes");
+}
+
+/// A API mínima sem `using` nenhum no arquivo, e as rotas dela.
+const BARE_MINIMAL_API: &str = r#"var app = WebApplication.Create(args);
+var pedidos = app.MapGroup("/pedidos");
+pedidos.MapGet("/{id:int}", Ler);
+app.MapPost("/pedidos", (Pedido p) => Results.Ok(p));
+app.Run();
+"#;
+const BARE_ROUTES: [&str; 2] = ["GET pedidos/{} -> Ler:3", "POST pedidos -> :4"];
+
+/// Um projeto .NET com o SDK `sdk`.
+fn csproj(sdk: &str) -> String {
+    format!("<Project Sdk=\"{sdk}\">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n")
+}
+
+/// O `global using` do framework, escrito em outro arquivo, liga a regra nos
+/// arquivos da pasta do projeto dele, e não nos do projeto vizinho.
+#[test]
+fn a_global_using_in_another_file_turns_the_rule_on_in_the_files_of_its_project_only() {
+    let plain = csproj("Microsoft.NET.Sdk");
+    let temp = project_with(&[
+        ("Api/Api.csproj", &plain),
+        ("Api/GlobalUsings.cs", "global using Microsoft.AspNetCore.Builder;\n"),
+        ("Api/Program.cs", BARE_MINIMAL_API),
+        ("Outro/Outro.csproj", &plain),
+        ("Outro/Program.cs", BARE_MINIMAL_API),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(keys(&map, "Api/Program.cs"), BARE_ROUTES);
+    assert_eq!(keys(&map, "Outro/Program.cs"), Vec::<String>::new());
+}
+
+/// O projeto web liga a regra nos arquivos dele sem `using` nenhum; o
+/// projeto de biblioteca, não.
+#[test]
+fn a_web_project_turns_the_rule_on_in_its_files_without_any_using() {
+    let temp = project_with(&[
+        ("Api/Api.csproj", &csproj("Microsoft.NET.Sdk.Web")),
+        ("Api/Program.cs", BARE_MINIMAL_API),
+        ("Lib/Lib.csproj", &csproj("Microsoft.NET.Sdk")),
+        ("Lib/Program.cs", BARE_MINIMAL_API),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(keys(&map, "Api/Program.cs"), BARE_ROUTES);
+    assert_eq!(keys(&map, "Lib/Program.cs"), Vec::<String>::new());
+}
+
+/// A passada que lê só o que mudou dá as rotas da passada inteira quando o
+/// `global using` aparece noutro arquivo e quando o SDK do projeto troca,
+/// num sentido e no outro, sem o arquivo das rotas mudar.
+#[test]
+fn a_pass_that_reads_only_what_changed_follows_the_global_using_and_the_sdk() {
+    let plain = csproj("Microsoft.NET.Sdk");
+    let temp = project_with(&[
+        ("Api/Api.csproj", &plain),
+        ("Api/Program.cs", BARE_MINIMAL_API),
+        ("Web/Web.csproj", &plain),
+        ("Web/Program.cs", BARE_MINIMAL_API),
+    ]);
+    let dir = temp.path();
+    let (first, _) = scan(dir);
+    assert_eq!(keys(&first, "Api/Program.cs"), Vec::<String>::new());
+    assert_eq!(keys(&first, "Web/Program.cs"), Vec::<String>::new());
+
+    let steps: [(&str, String, [bool; 2]); 3] = [
+        ("Api/GlobalUsings.cs", "global using Microsoft.AspNetCore.Builder;\n".to_string(), [true, false]),
+        ("Web/Web.csproj", csproj("Microsoft.NET.Sdk.Web"), [true, true]),
+        ("Web/Web.csproj", plain.clone(), [true, false]),
+    ];
+    for (path, body, with_routes) in steps {
+        std::fs::write(dir.join(path), body).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", path]);
+        let (partial, report) = scan(dir);
+        assert_eq!(report["full"], json!(false), "{path}: {report}");
+        let whole_out = tempfile::tempdir().unwrap();
+        let (whole, _) = model::scan(dir, whole_out.path(), &[]);
+        for (file, routes_expected) in ["Api/Program.cs", "Web/Program.cs"].into_iter().zip(with_routes) {
+            let expected: Vec<String> =
+                if routes_expected { BARE_ROUTES.map(String::from).to_vec() } else { Vec::new() };
+            assert_eq!(keys(&whole, file), expected, "{path}: {file} in the whole pass");
+            assert_eq!(routes(&partial, file), routes(&whole, file), "{path}: {file}");
+        }
+    }
+}
+
+/// O `@Controller` com objeto de opções: o `path` escrito como texto é o
+/// prefixo da classe, exportada ou não; o objeto sem `path` deixa a rota no
+/// caminho do método.
+#[test]
+fn a_nest_controller_with_an_options_object_takes_its_path_as_the_prefix() {
+    let head = "import { Controller, Get } from '@nestjs/common';\n\n";
+    let exported = format!("{head}@Controller({{ path: 'v1/pedidos', version: '2' }})\nexport class PedidosController {{\n  @Get(':id')\n  ler() {{}}\n}}\n");
+    let inner = format!("{head}@Controller({{ version: '1', path: 'v1/itens' }})\nclass ItensController {{\n  @Get(':id')\n  ler() {{}}\n}}\n");
+    let hostonly = format!("{head}@Controller({{ host: 'x' }})\nexport class SaudeController {{\n  @Get('saude')\n  ver() {{}}\n}}\n");
+    let temp = project_with(&[
+        ("api/pedidos.controller.ts", &exported),
+        ("api/itens.controller.ts", &inner),
+        ("api/saude.controller.ts", &hostonly),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(keys(&map, "api/pedidos.controller.ts"), ["GET v1/pedidos/{} -> ler:5"]);
+    assert_eq!(keys(&map, "api/itens.controller.ts"), ["GET v1/itens/{} -> ler:5"]);
+    assert_eq!(keys(&map, "api/saude.controller.ts"), ["GET saude -> ver:5"]);
+}
+
+/// Um roteador de Express em JavaScript, que traz o framework pelo `require`.
+const EXPRESS_JS: &str = "const express = require('express');\nconst router = express.Router();\n\
+    function ler(req, res) {\n  res.send('ok');\n}\nrouter.get('/aves/:id', ler);\nmodule.exports = router;\n";
+
+/// Um arquivo JavaScript que traz pelo `require` um pacote cujo nome começa
+/// pelo do framework.
+const OTHER_PACKAGE_JS: &str =
+    "const { parse } = require('expression');\nconst router = { get: parse };\nrouter.get('/aves', parse);\n";
+
+/// O `require('express')` liga a regra do Express no arquivo JavaScript, como
+/// o `import`; o `require` de outro pacote não liga.
+#[test]
+fn a_javascript_file_that_requires_express_has_its_routes() {
+    let temp = project_with(&[("src/aves.js", EXPRESS_JS), ("src/leitor.js", OTHER_PACKAGE_JS)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(keys(&map, "src/aves.js"), ["GET aves/{} -> ler:3"]);
+    assert_eq!(routes(&map, "src/leitor.js"), json!([]));
 }

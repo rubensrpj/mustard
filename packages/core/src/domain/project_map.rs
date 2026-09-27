@@ -826,6 +826,35 @@ pub fn lines_of(text: &str, line: u64, end_line: u64) -> String {
     text.lines().skip(first - 1).take(last + 1 - first).collect::<Vec<_>>().join("\n")
 }
 
+/// As declarações de fora de um arquivo — as que nenhuma outra contém —,
+/// dadas a primeira e a última linha de cada uma, na ordem em que foram
+/// escritas. A última linha menor que a primeira vale como a primeira. Uma
+/// contém a outra quando começa na mesma linha ou antes e termina na mesma
+/// ou depois; entre duas de linhas iguais, a escrita antes contém a outra.
+/// Devolve as posições delas, da que começa mais acima para a de mais abaixo:
+/// a primeira é a que começa mais acima e, entre as que começam na mesma
+/// linha, a de mais linhas. O scan e o índice de busca leem as declarações
+/// de fora por esta regra só.
+#[must_use]
+pub fn outer_declarations(lines: &[(usize, usize)]) -> Vec<usize> {
+    let span = |at: usize| (lines[at].0, lines[at].1.max(lines[at].0));
+    let mut order: Vec<usize> = (0..lines.len()).collect();
+    order.sort_by_key(|&at| {
+        let (first, last) = span(at);
+        (first, std::cmp::Reverse(last))
+    });
+    let mut outer = Vec::new();
+    let mut reach: Option<usize> = None;
+    for at in order {
+        let last = span(at).1;
+        if reach.is_none_or(|reach| last > reach) {
+            outer.push(at);
+            reach = Some(reach.map_or(last, |reach| reach.max(last)));
+        }
+    }
+    outer
+}
+
 // ---------------------------------------------------------------------------
 // Busca por conceito
 // ---------------------------------------------------------------------------
@@ -1633,5 +1662,20 @@ mod tests {
         assert_eq!(map.declared("run"), vec![("src/a.rs".to_string(), 7), ("src/b.rs".to_string(), 103)]);
         assert_eq!(map.declared("old"), vec![("src/a.rs".to_string(), 0)], "an old map without the line still reads");
         assert!(map.declared("nada").is_empty());
+    }
+
+    /// A declaração de fora é a que nenhuma outra contém: o método dentro do
+    /// tipo sai, as duas que dividem uma linha ficam, e das duas de linhas
+    /// iguais fica a escrita antes. A primeira é a que começa mais acima.
+    #[test]
+    fn the_outer_declarations_are_the_ones_no_other_holds() {
+        // tipo 1-9 com método 3-5; função 9-12 que divide a linha 9; duas de
+        // uma linha só, a 14; e uma sem a última linha, na 20.
+        let lines = [(1, 9), (3, 5), (9, 12), (14, 14), (14, 14), (20, 0)];
+        assert_eq!(outer_declarations(&lines), vec![0, 2, 3, 5]);
+        // Escritas fora de ordem, a primeira devolvida é a de mais acima; das
+        // que começam na mesma linha, a de mais linhas.
+        assert_eq!(outer_declarations(&[(5, 6), (2, 2), (2, 8)]), vec![2]);
+        assert!(outer_declarations(&[]).is_empty());
     }
 }

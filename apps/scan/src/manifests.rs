@@ -29,6 +29,9 @@ struct ManifestDef {
     /// Precompiled package-name regex (`package_pattern`); `None` when the def
     /// declares none.
     package_regex: Option<Regex>,
+    /// Precompiled `extra_dep_pattern`: each first-group capture, anywhere in
+    /// the file, is one more dependency. `None` when the def declares none.
+    extra_dep_regex: Option<Regex>,
 }
 
 struct Registry {
@@ -65,7 +68,7 @@ pub(crate) struct Parsed {
 /// own module path, for languages that declare one) and the project name.
 pub fn parse(rel: &str, filename: &str, content: &str) -> Option<Parsed> {
     let def = find_def(filename)?;
-    let deps = match def.format.as_str() {
+    let mut deps = match def.format.as_str() {
         "json" => json_deps(content, &def.deps),
         "xml-attr" | "xml-text" => def.dep_regex.as_ref().map(|re| captures_all(content, re)).unwrap_or_default(),
         "toml-sections" => toml_sections(content, &def.deps),
@@ -73,6 +76,9 @@ pub fn parse(rel: &str, filename: &str, content: &str) -> Option<Parsed> {
         "gomod" => def.dep_regex.as_ref().map(|re| captures_per_line(content, re)).unwrap_or_default(),
         _ => Vec::new(),
     };
+    if let Some(re) = &def.extra_dep_regex {
+        deps.extend(captures_all(content, re));
+    }
     let scripts = match (&def.format, &def.scripts) {
         (f, Some(path)) if f == "json" => json_scripts(content, path),
         _ => Vec::new(),
@@ -231,6 +237,7 @@ fn parse_registry(src: &str) -> Registry {
             };
             let module_regex = g("module_pattern").and_then(|p| Regex::new(&p).ok());
             let package_regex = g("package_pattern").and_then(|p| Regex::new(&p).ok());
+            let extra_dep_regex = g("extra_dep_pattern").and_then(|p| Regex::new(&p).ok());
             manifests.push(ManifestDef {
                 kind: g("kind").unwrap_or_default(),
                 filename: g("filename"),
@@ -242,6 +249,7 @@ fn parse_registry(src: &str) -> Registry {
                 dep_regex,
                 module_regex,
                 package_regex,
+                extra_dep_regex,
             });
         }
     }

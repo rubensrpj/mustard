@@ -15,7 +15,8 @@
 //! que a busca sem filtro não lê — a nota dela não muda com eles: da
 //! declaração, a documentação inteira, os comentários, os nomes e as
 //! chamadas escritos nas linhas dela; do arquivo, os comentários do começo e
-//! os outros.
+//! os outros, juntados dos que o scan guardou fora das declarações e dos de
+//! cada declaração de fora, que ele guarda uma vez só, nela.
 //!
 //! Cada texto passa pela normalização de toda busca (`domain::normalize`),
 //! nas línguas do projeto, antes de entrar: o nome colado entra quebrado
@@ -44,7 +45,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Sta
 use serde::Deserialize;
 
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::project_map::{Found, FoundText, MapRefusal};
+use crate::domain::project_map::{outer_declarations, Found, FoundText, MapRefusal};
 use crate::domain::search::{bm25f, score_x1024, Fields, Posting};
 use crate::io::project_map::{model_path, open_existing, unreadable};
 use crate::platform::error::Result;
@@ -240,10 +241,11 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         decls_of[row.owner].push(at);
     }
     let comments = FILE_LEVEL.fields.len();
-    for FileText { path, written, file_doc, file_comment } in written_texts(conn)? {
+    for FileText { path, written, file_doc, file_comment, file_doc_in_body } in written_texts(conn)? {
         let Some(&owner) = at.get(&path) else { continue };
         files[owner].fields[comments] = normalizer.forms(&file_doc);
-        files[owner].fields[comments + 1] = normalizer.forms(&file_comment);
+        files[owner].fields[comments + 1] =
+            file_comments(normalizer, &file_comment, file_doc_in_body, &rows_of, &decls_of[owner]);
         for written in written {
             let words = normalizer.forms(&written.value);
             let field = written.field();
@@ -347,19 +349,48 @@ fn innermost(rows: &[DeclRow], of: &[usize], line: u64) -> Option<usize> {
     best
 }
 
+/// As palavras dos comentários de um arquivo fora os do começo, cada uma
+/// uma vez, como as de todo campo: as dos que o scan guardou fora de toda
+/// declaração (`outside`) e as dos comentários de cada declaração de fora
+/// dele (`of`, pela regra de [`outer_declarations`]) — os de uma declaração
+/// de dentro estão também nos da que a contém. Da primeira declaração de
+/// fora, os `doc_in_body` bytes do começo são comentários do começo do
+/// arquivo e ficam de fora.
+fn file_comments(
+    normalizer: &mut Normalizer,
+    outside: &str,
+    doc_in_body: usize,
+    rows: &[DeclRow],
+    of: &[usize],
+) -> Words {
+    let mut words = normalizer.forms(outside);
+    let mut seen: HashSet<Vec<String>> = words.iter().cloned().collect();
+    let lines: Vec<(usize, usize)> = of.iter().map(|&at| (rows[at].lines.0 as usize, rows[at].lines.1 as usize)).collect();
+    for (nth, outer) in outer_declarations(&lines).into_iter().enumerate() {
+        let body = rows[of[outer]].body_comment.as_str();
+        let body = if nth == 0 { body.get(doc_in_body..).unwrap_or_default() } else { body };
+        add_new(&mut words, &mut seen, &normalizer.forms(body));
+    }
+    words
+}
+
 /// O texto de um arquivo como o scan o gravou: os textos fixos, os
-/// comentários do começo e os outros.
+/// comentários do começo, os outros que caem fora das declarações e quantos
+/// bytes do começo dos comentários da primeira declaração de fora são do
+/// começo do arquivo.
 struct FileText {
     path: String,
     written: Vec<Written>,
     file_doc: String,
     file_comment: String,
+    file_doc_in_body: usize,
 }
 
 /// O texto de cada arquivo. O arquivo cuja coluna dos textos fixos não se lê
 /// fica sem eles.
 fn written_texts(conn: &Connection) -> Result<Vec<FileText>> {
-    let mut stmt = conn.prepare("SELECT path, texts, file_doc, file_comment FROM texts ORDER BY rowid")?;
+    let mut stmt =
+        conn.prepare("SELECT path, texts, file_doc, file_comment, file_doc_in_body FROM texts ORDER BY rowid")?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
@@ -368,6 +399,7 @@ fn written_texts(conn: &Connection) -> Result<Vec<FileText>> {
             written: serde_json::from_str(&text(row, 1)?).unwrap_or_default(),
             file_doc: text(row, 2)?,
             file_comment: text(row, 3)?,
+            file_doc_in_body: row.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as usize,
         });
     }
     Ok(out)

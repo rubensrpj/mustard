@@ -9,6 +9,15 @@
 (use_list (scoped_identifier name: (identifier) @imported))
 (use_as_clause alias: (identifier) @imported)
 
+; O repasse: o `use` visível de fora (`pub use io::leitor::Leitor`) oferece a
+; quem importa o arquivo os nomes que traz, tirados do arquivo que o caminho
+; nomeia; o `pub use x::*` oferece todos. O nome oferecido com outro nome
+; (`pub use a::B as C`) é tirado de lá pelo nome de origem.
+(use_declaration (visibility_modifier) argument: (_) @reexport)
+(use_as_clause
+  path: [(scoped_identifier name: (identifier) @reexport.original) (identifier) @reexport.original]
+  alias: (identifier) @imported)
+
 ; O caminho de uma chamada escrita pelo nome completo, sem `use`: `crate::a::b`
 ; em `crate::a::b::f()`, já sem o nome chamado. Preso à chamada, e nunca a um
 ; caminho solto, que casaria dentro do `use` e em cada pedaço do caminho. O

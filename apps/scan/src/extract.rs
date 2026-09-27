@@ -30,6 +30,7 @@
 
 use crate::model::{CallSite, Decl, Route, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
 use crate::routes::{self, RouteRule};
+use mustard_core::domain::project_map::outer_declarations;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
@@ -63,10 +64,17 @@ pub(crate) struct Extracted {
     /// De cada import, os nomes que ele traz ao arquivo (`@imported`),
     /// ordenados e sem repetição.
     pub brought: BTreeMap<String, Vec<String>>,
+    /// De cada repasse escrito fora dos módulos de dentro do arquivo, os nomes
+    /// que ele oferece, cada um com o nome que tem no arquivo de origem; `*`
+    /// quando oferece todos.
+    pub reexports: BTreeMap<String, BTreeMap<String, String>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     pub calls: Vec<CallSite>,
     pub cites: Vec<CallSite>,
+    /// Os nomes que abrem a cadeia escrita antes de uma chamada e que o
+    /// arquivo não liga ([`crate::model::Module::unbound_heads`]).
+    pub unbound_heads: Vec<String>,
     /// Os textos fixos do arquivo (`@text`), em ordem de linha.
     pub texts: Vec<Text>,
     /// As rotas do servidor registradas no arquivo, fora do trecho de teste.
@@ -74,8 +82,24 @@ pub(crate) struct Extracted {
     /// Os comentários do começo do arquivo, antes do primeiro código, numa
     /// linha.
     pub file_doc: String,
-    /// Os outros comentários do arquivo, numa linha.
+    /// Os outros comentários do arquivo que caem fora das linhas de toda
+    /// declaração, numa linha: os de dentro já estão no `body_comment` dela.
     pub file_comment: String,
+    /// Quantos bytes do começo do `body_comment` da primeira declaração de
+    /// fora são comentários do começo do arquivo.
+    pub file_doc_in_body: usize,
+}
+
+/// O que a extração de um arquivo lê além das declarações, dos imports, das
+/// chamadas e das citações: o que o mapa não guarda do arquivo não se lê.
+#[derive(Clone, Copy)]
+pub(crate) struct Keep {
+    /// Os comentários e os nomes escritos no código, do arquivo e de cada
+    /// declaração: o arquivo escrito por máquina não os guarda.
+    pub written_text: bool,
+    /// Os textos fixos e as rotas: só o código do projeto os guarda, e não o
+    /// arquivo de teste nem o escrito por máquina.
+    pub texts_and_routes: bool,
 }
 
 /// One language as produced by `build.rs` from `languages.toml` + its `.scm`
@@ -244,6 +268,18 @@ fn error_forms(lang: &str) -> &'static [&'static str] {
     list_field(LANG_ERROR_FORMS, lang)
 }
 
+/// Os nomes do próprio objeto visto pelo tipo de cima (`parent_receivers` em
+/// languages.toml). Vazio sem o campo.
+pub fn parent_receivers(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_PARENT_RECEIVERS, lang)
+}
+
+/// Os arquivos raiz de um pacote, sem a extensão e a partir da pasta do
+/// manifesto (`package_entry` em languages.toml). Vazio sem o campo.
+pub fn package_entry(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_PACKAGE_ENTRY, lang)
+}
+
 /// A família da língua: as línguas que leem as mesmas consultas (`dir` em
 /// languages.toml) são a mesma, escrita em arquivos de extensões diferentes.
 /// Vazio para uma língua que o registro não tem.
@@ -320,6 +356,14 @@ enum CapKind {
     /// `import { limite } from`): it says what the file brought, and like the
     /// import itself it is never a use.
     Imported,
+    /// O caminho de um repasse (`export * from './x'`, `pub use a::B`): é
+    /// import do arquivo, e os nomes trazidos no mesmo comando são os que o
+    /// arquivo oferece a quem o importa, tirados do arquivo que o caminho
+    /// nomeia; sem nome nenhum, oferece todos.
+    Reexport,
+    /// O nome que o arquivo de origem dá ao nome que o repasse do mesmo
+    /// pattern oferece com outro (`X` em `export { X as Y } from`).
+    ReexportOriginal,
     Namespace,
     /// O caminho escrito antes do nome numa chamada qualificada (`crate::a`
     /// em `crate::a::f()`): vira import do arquivo só quando começa por um
@@ -370,6 +414,8 @@ fn classify(cap: &str) -> CapKind {
         "import" => CapKind::Import,
         "import.global" => CapKind::ImportGlobal,
         "imported" => CapKind::Imported,
+        "reexport" => CapKind::Reexport,
+        "reexport.original" => CapKind::ReexportOriginal,
         "namespace" => CapKind::Namespace,
         "call.path" => CapKind::CallPath,
         "name" => CapKind::Name,
@@ -427,7 +473,29 @@ impl Analyzer {
         Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags, routes })
     }
 
-    pub fn extract(&self, src: &str) -> Extracted {
+    /// As regras de rota da língua que algum arquivo ligou até aqui, e que
+    /// por isso já compilaram a consulta, pelo nome.
+    pub fn compiled_routes(&self) -> impl Iterator<Item = String> + '_ {
+        self.routes.iter().filter(|rule| rule.was_compiled()).map(RouteRule::name)
+    }
+
+    /// Alguma regra de rota da língua liga pela dependência do manifesto.
+    pub(crate) fn routes_follow_manifests(&self) -> bool {
+        self.routes.iter().any(RouteRule::follows_manifest)
+    }
+
+    /// Alguma regra de rota da língua liga no arquivo que importa `imports`
+    /// com o que o projeto diz em `more`, e não só com o que ele diz em
+    /// `less`.
+    pub(crate) fn routes_turned_on_by(&self, imports: &[String], less: &routes::Project, more: &routes::Project) -> bool {
+        routes::turned_on_by(&self.routes, imports, less, more)
+    }
+
+    /// O que o arquivo `src` diz, lido só no que `keep` pede além das
+    /// declarações, dos imports, das chamadas e das citações. As rotas saem
+    /// das regras que o arquivo liga pelos imports dele ou pelo que o
+    /// `project` diz dele.
+    pub fn extract(&self, src: &str, keep: Keep, project: &routes::Project) -> Extracted {
         let mut out = Extracted::default();
         let mut parser = Parser::new();
         if parser.set_language(&self.language).is_err() {
@@ -464,6 +532,9 @@ impl Analyzer {
         // Cada nome que um import traz, com o nó em que foi escrito: só depois
         // de todos os matches se sabe de que import ele é.
         let mut imported_at: Vec<(Node, String)> = Vec::new();
+        // O nome de origem de cada nome que um repasse oferece com outro, pelo
+        // byte em que o nome oferecido foi escrito.
+        let mut original_of: HashMap<usize, String> = HashMap::new();
         // Cada nome que o corpo de uma função liga, com a linha e o byte em
         // que foi escrito.
         let mut locals: Vec<(usize, usize, String)> = Vec::new();
@@ -485,6 +556,9 @@ impl Analyzer {
         let parent = parent_alias(&self.name);
         let separators = qualifier_separators(&self.name);
 
+        // Os comentários do arquivo: o separador escrito num deles não liga
+        // um nome ao que vem antes.
+        let comments = comment_spans(root);
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
             let mut def: Option<(Node, &str)> = None;
@@ -502,19 +576,28 @@ impl Analyzer {
             // escrito, e os nomes que o mesmo pattern diz que eles trazem.
             let mut here_imports: Vec<Written> = Vec::new();
             let mut brought: Vec<String> = Vec::new();
+            // O nome oferecido e o de origem, quando o pattern escreve os dois.
+            let mut offered_at: Option<usize> = None;
+            let mut original: Option<String> = None;
 
             for cap in m.captures {
                 let node = cap.node;
                 match &self.cap_kinds[cap.index as usize] {
-                    CapKind::Import | CapKind::ImportGlobal => {
+                    CapKind::Import | CapKind::ImportGlobal | CapKind::Reexport => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
                         if let Ok(t) = node.utf8_text(bytes) {
                             let c = clean_import(t);
                             if !c.is_empty() {
-                                let global = matches!(self.cap_kinds[cap.index as usize], CapKind::ImportGlobal);
-                                here_imports.push(Written::at(c, global, node));
+                                let kind = &self.cap_kinds[cap.index as usize];
+                                let global = matches!(kind, CapKind::ImportGlobal);
+                                let reexport = matches!(kind, CapKind::Reexport);
+                                here_imports.push(Written { reexport, ..Written::at(c, global, node) });
                             }
                         }
+                    }
+                    CapKind::ReexportOriginal => {
+                        import_spans.insert((node.start_byte(), node.end_byte()));
+                        original = node.utf8_text(bytes).ok().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
                     }
                     CapKind::Imported => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
@@ -528,6 +611,7 @@ impl Analyzer {
                             };
                             if let Some(name) = name {
                                 imported_at.push((node, name.clone()));
+                                offered_at = Some(node.start_byte());
                                 brought.push(name);
                             }
                         }
@@ -549,7 +633,7 @@ impl Analyzer {
                         if let Ok(t) = node.utf8_text(bytes) {
                             let path = without_type_arguments(&t.split_whitespace().collect::<String>(), separators);
                             let first = first_segment(&path, separators);
-                            let call = || node.next_named_sibling().and_then(|n| called_site(n, bytes, &self.name));
+                            let call = || node.next_named_sibling().and_then(|n| called_site(n, bytes, &comments, &self.name));
                             if aliases.contains(&first) || parent == Some(first) {
                                 import_spans.insert((node.start_byte(), node.end_byte()));
                                 here_imports.push(Written { call: call(), ..Written::at(path, false, node) });
@@ -631,6 +715,11 @@ impl Analyzer {
             // um arquivo: cada nome que o mesmo pattern diz que ele traz é um
             // arquivo dessa pasta, e o import vira o separador seguido do
             // nome. Qualquer outro import fica como foi escrito.
+            if let (Some(at), Some(original)) = (offered_at, original)
+                && brought.len() == 1
+            {
+                original_of.insert(at, original);
+            }
             for import in here_imports {
                 let folder_only =
                     relative.is_some_and(|rule| matches!(rule.leading(&import.text), (count, "") if count > 0));
@@ -725,8 +814,9 @@ impl Analyzer {
                     _ => above.whole,
                 };
                 let doc = one_line(&whole, DOC_MAX_CHARS);
-                // A documentação inteira fica só quando o teto cortou.
-                let whole_doc = if whole == doc { String::new() } else { whole };
+                // A documentação inteira fica só quando o teto cortou, e só
+                // quando o arquivo guarda o texto de dentro das peças.
+                let whole_doc = if whole == doc || !keep.written_text { String::new() } else { whole };
                 Decl {
                     kind: h.kind,
                     name: h.name,
@@ -754,26 +844,38 @@ impl Analyzer {
         // saem de uma caminhada só pela árvore. O literal de texto e a
         // documentação escrita como literal não são código: os nomes escritos
         // neles ficam de fora.
-        let not_code: HashSet<(usize, usize)> =
-            literals.iter().map(|(node, _)| (node.start_byte(), node.end_byte())).chain(doc_spans.iter().copied()).collect();
-        let written_text = WrittenText::of(root, bytes, self.doc_tags, &not_code);
-        for decl in &mut out.declarations {
-            (decl.body_comment, decl.body_names) = written_text.lines(decl.line, decl.end_line);
+        if keep.written_text {
+            let not_code: HashSet<(usize, usize)> = literals
+                .iter()
+                .map(|(node, _)| (node.start_byte(), node.end_byte()))
+                .chain(doc_spans.iter().copied())
+                .collect();
+            let written_text = WrittenText::of(root, bytes, self.doc_tags, &not_code);
+            for decl in &mut out.declarations {
+                (decl.body_comment, decl.body_names) = written_text.lines(decl.line, decl.end_line);
+            }
+            (out.file_doc, out.file_comment, out.file_doc_in_body) = written_text.of_file(&out.declarations);
         }
-        (out.file_doc, out.file_comment) = written_text.of_file();
-        out.texts = fixed_texts(&literals, bytes, &[&import_spans, &test_blocks, &doc_spans], &out.declarations, &self.name);
+        if keep.texts_and_routes {
+            out.texts =
+                fixed_texts(&literals, bytes, &[&import_spans, &test_blocks, &doc_spans], &out.declarations, &self.name);
+        }
 
         // The call sites and the citations of the file, minus the
         // declaration headers themselves (`foo` in `fn foo(` is where it is
         // defined, not a use of it) and minus what is written inside a
         // decoration, an import or a namespace name.
         let quiet: Spans = decorations.union(&import_spans).copied().collect();
-        (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at, &name_kinds, &self.name);
+        let heads;
+        (out.calls, out.cites, heads) = use_sites(root, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name);
         drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites]);
 
         // Cada nome trazido é do import escrito no mesmo comando: o que fica
         // dentro do nó mais próximo, subindo a partir do nome, que contém
         // algum import. O caminho de uma chamada não traz nome.
+        // O nome trazido por um repasse é também um nome que o arquivo
+        // oferece, com o nome que tem no arquivo de origem.
+        let in_module = |line: usize| out.module_lines.iter().any(|&(first, last)| (first..=last).contains(&line));
         let mut brought_by: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (node, name) in &imported_at {
             let mut at = Some(*node);
@@ -783,6 +885,10 @@ impl Analyzer {
                 if inside.peek().is_some() {
                     for w in inside {
                         brought_by.entry(w.text.clone()).or_default().insert(name.clone());
+                        if w.reexport && !in_module(w.line) {
+                            let original = original_of.get(&node.start_byte()).unwrap_or(name);
+                            out.reexports.entry(w.text.clone()).or_default().insert(name.clone(), original.clone());
+                        }
                     }
                     break;
                 }
@@ -790,12 +896,15 @@ impl Analyzer {
             }
         }
         out.brought = brought_by.into_iter().map(|(import, names)| (import, names.into_iter().collect())).collect();
+        // O repasse que não escreve nome nenhum oferece todos.
+        for w in written.iter().filter(|w| w.reexport && !in_module(w.line)) {
+            out.reexports.entry(w.text.clone()).or_insert_with(|| BTreeMap::from([("*".to_string(), "*".to_string())]));
+        }
 
         // O import escrito ao menos uma vez dentro de um módulo do arquivo
         // guarda todas as linhas em que é escrito: é por elas que o grafo sabe
         // de quantos módulos cada uma sai antes de subir pasta.
-        let inside = |line: usize| out.module_lines.iter().any(|&(first, last)| (first..=last).contains(&line));
-        let nested: BTreeSet<&str> = written.iter().filter(|w| inside(w.line)).map(|w| w.text.as_str()).collect();
+        let nested: BTreeSet<&str> = written.iter().filter(|w| in_module(w.line)).map(|w| w.text.as_str()).collect();
         let mut import_lines: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for w in written.iter().filter(|w| nested.contains(w.text.as_str())) {
             import_lines.entry(w.text.clone()).or_default().push(w.line);
@@ -837,14 +946,33 @@ impl Analyzer {
             sites.sort();
             sites.dedup();
         }
+        // O nome que abre a cadeia de uma chamada — o qualificador sem nada
+        // antes dele, ou a primeira parte do caminho dela — fica quando o
+        // arquivo não o liga: nem nome local nem o próprio objeto. O caminho
+        // aberto por um valor (`(await x).a.f()`) não tem nome no começo.
+        let bound: BTreeSet<&str> = locals
+            .iter()
+            .map(|(_, _, name)| name.as_str())
+            .chain(self_receivers(&self.name).iter().copied())
+            .chain(parent_receivers(&self.name).iter().copied())
+            .collect();
+        let unbound: BTreeSet<&str> = heads
+            .iter()
+            .map(String::as_str)
+            .chain(out.other_call_paths.keys().map(|path| first_segment(path, separators)))
+            .filter(|head| is_identifier(head) && !bound.contains(head))
+            .collect();
+        out.unbound_heads = unbound.into_iter().map(str::to_string).collect();
         out.test_lines.sort();
         out.test_lines.dedup();
         out.module_lines.sort();
         out.module_lines.dedup();
         out.namespaces.sort();
         out.namespaces.dedup();
-        let imports: Vec<String> = out.imports.iter().chain(&out.global_imports).cloned().collect();
-        out.routes = routes::find(&self.routes, root, bytes, &imports, &out.declarations, &test_blocks);
+        if keep.texts_and_routes {
+            let imports: Vec<String> = out.imports.iter().chain(&out.global_imports).cloned().collect();
+            out.routes = routes::find(&self.routes, root, bytes, &imports, project, &out.declarations, &test_blocks);
+        }
         out
     }
 }
@@ -861,6 +989,8 @@ struct Written {
     end: usize,
     line: usize,
     call: Option<CallSite>,
+    /// Escrito como repasse (`@reexport`).
+    reexport: bool,
 }
 
 impl Written {
@@ -872,6 +1002,7 @@ impl Written {
             end: node.end_byte(),
             line: node.start_position().row + 1,
             call: None,
+            reexport: false,
         }
     }
 }
@@ -934,12 +1065,12 @@ fn drop_local_uses(
 /// A chamada do nome no nó, como [`use_sites`] a lê: o nome, a linha e o
 /// qualificador escrito antes dele, pelos separadores de `lang`. `None` quando
 /// o nó não é um nome.
-fn called_site(node: Node, bytes: &[u8], lang: &str) -> Option<CallSite> {
+fn called_site(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> Option<CallSite> {
     let name = node.utf8_text(bytes).ok().filter(|text| is_identifier(text))?;
     Some(CallSite {
         name: name.to_string(),
         line: node.start_position().row + 1,
-        qualifier: qualifier_before(node, bytes, lang),
+        qualifier: qualifier_before(node, bytes, comments, lang),
     })
 }
 
@@ -1161,7 +1292,7 @@ impl WrittenText {
     /// nome uma vez, na ordem em que aparece. A declaração sem a última linha
     /// fica só com a primeira.
     fn lines(&self, first: usize, last: usize) -> (String, String) {
-        let rows = first.saturating_sub(1)..last.max(first);
+        let rows = rows_of(first, last);
         let comment: Vec<&str> = Self::within(&self.comments, &rows).iter().map(|piece| piece.text.as_str()).collect();
         let mut seen: HashSet<&str> = HashSet::new();
         let names: Vec<&str> = Self::within(&self.names, &rows)
@@ -1180,13 +1311,35 @@ impl WrittenText {
         &pieces[start..end.max(start)]
     }
 
-    /// Os comentários do começo do arquivo e os outros, cada grupo numa
-    /// linha.
-    fn of_file(&self) -> (String, String) {
+    /// Os comentários do arquivo fora os das declarações, cada grupo numa
+    /// linha: os do começo, e os outros que caem fora das linhas de toda
+    /// declaração de `declarations` — os de dentro já estão no
+    /// `body_comment` dela. E quantos bytes do começo do `body_comment` da
+    /// primeira declaração de fora são comentários do começo do arquivo: o
+    /// comentário escrito antes de todo código na primeira linha dela é das
+    /// duas. Os comentários do começo são os primeiros do texto, e por isso
+    /// os dela vêm primeiro no `body_comment`, cada um seguido de um espaço
+    /// quando vem mais.
+    fn of_file(&self, declarations: &[Decl]) -> (String, String, usize) {
+        let spans: Vec<std::ops::Range<usize>> = declarations.iter().map(|d| rows_of(d.line, d.end_line)).collect();
         let (head, rest): (Vec<&Piece>, Vec<&Piece>) = self.comments.iter().partition(|piece| piece.byte < self.first_code);
+        let outside: Vec<&Piece> = rest.into_iter().filter(|piece| !spans.iter().any(|rows| rows.contains(&piece.row))).collect();
+        let lines: Vec<(usize, usize)> = declarations.iter().map(|d| (d.line, d.end_line)).collect();
+        let in_body = outer_declarations(&lines).first().map_or(0, |&first| {
+            let held = head.iter().filter(|piece| spans[first].contains(&piece.row));
+            let bytes: usize = held.map(|piece| piece.text.len() + 1).sum();
+            bytes.min(declarations[first].body_comment.len())
+        });
         let joined = |pieces: Vec<&Piece>| pieces.iter().map(|piece| piece.text.as_str()).collect::<Vec<_>>().join(" ");
-        (joined(head), joined(rest))
+        (joined(head), joined(outside), in_body)
     }
+}
+
+/// As linhas de uma declaração da linha `first` à `last` (a partir de um),
+/// como linhas da árvore (a partir de zero). A declaração sem a última linha
+/// fica só com a primeira.
+fn rows_of(first: usize, last: usize) -> std::ops::Range<usize> {
+    first.saturating_sub(1)..last.max(first)
 }
 
 /// Drop the punctuation a comment is written with, line by line, and leave the
@@ -1527,16 +1680,20 @@ fn glob(entry: &str, text: &str) -> bool {
 /// and a modifier or a type keyword before a parenthesis is not.
 ///
 /// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]).
+/// Vêm junto os qualificadores que abrem a cadeia de uma chamada
+/// ([`opens_chain`]).
 fn use_sites(
     root: Node,
     bytes: &[u8],
+    comments: &Spans,
     quiet: &Spans,
     names_at: &BTreeSet<usize>,
     name_kinds: &BTreeSet<&str>,
     lang: &str,
-) -> (Vec<CallSite>, Vec<CallSite>) {
+) -> (Vec<CallSite>, Vec<CallSite>, BTreeSet<String>) {
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
+    let mut heads: BTreeSet<String> = BTreeSet::new();
     let mut cursor = root.walk();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -1556,8 +1713,11 @@ fn use_sites(
         if !is_identifier(text) {
             continue;
         }
-        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, lang));
+        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang));
         if followed_by_open_paren(node, bytes) {
+            if opens_chain(node, bytes, comments, lang, &site.2) {
+                heads.insert(site.2.clone());
+            }
             calls.insert(site);
         } else if !against_a_quote(node, bytes) {
             cites.insert(site);
@@ -1566,7 +1726,60 @@ fn use_sites(
     let sites = |found: BTreeSet<(usize, String, String)>| {
         found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect()
     };
-    (sites(calls), sites(cites))
+    (sites(calls), sites(cites), heads)
+}
+
+/// O qualificador `qualifier`, escrito antes do nó, é um nome sem nada ligado
+/// a ele por um separador de `lang` antes dele: abre a cadeia (`File` em
+/// `File.ReadAllText(`, e não `repo` em `this.repo.salvar(` nem em
+/// `f().repo.salvar(`).
+fn opens_chain(node: Node, bytes: &[u8], comments: &Spans, lang: &str, qualifier: &str) -> bool {
+    if qualifier.is_empty() || qualifier == RECEIVER {
+        return false;
+    }
+    let separators = || qualifier_separators(lang).iter().chain(member_separators(lang));
+    let before = code_before(bytes, comments, node.start_byte());
+    let Some(before) = separators().find_map(|sep| before.strip_suffix(sep.as_bytes())) else { return false };
+    let Some(before) = code_before(bytes, comments, before.len()).strip_suffix(qualifier.as_bytes()) else {
+        return false;
+    };
+    let before = code_before(bytes, comments, before.len());
+    !separators().any(|sep| before.ends_with(sep.as_bytes()))
+}
+
+/// Os trechos que a árvore marca como extras — os comentários —, sem descer
+/// dentro deles.
+fn comment_spans(root: Node) -> Spans {
+    let mut spans = Spans::new();
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        if node.is_extra() {
+            spans.insert((node.start_byte(), node.end_byte()));
+        } else if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return spans;
+            }
+        }
+    }
+}
+
+/// O código escrito antes do byte `at`, sem o espaço e os comentários
+/// (`comments`) que vêm logo antes dele: o ponto que fecha a frase de um
+/// comentário não liga o nome de depois ao que o comentário diz.
+fn code_before<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
+    let mut end = at;
+    loop {
+        let before = bytes[..end].trim_ascii_end();
+        let Some(last) = before.len().checked_sub(1) else { return before };
+        match comments.range(..=(last, usize::MAX)).next_back() {
+            Some(&(start, stop)) if last < stop && start < end => end = start,
+            _ => return before,
+        }
+    }
 }
 
 /// A name node standing for one word: of a type in `name_kinds`, with a single
@@ -1586,16 +1799,17 @@ fn is_wrapped_word(node: Node, name_kinds: &BTreeSet<&str>) -> bool {
 /// método (`member_separators`), o nome só fica quando é o próprio objeto
 /// (`self_receivers`): outro nome ali é um valor. Quando o que vem antes do
 /// separador não é um nome (`f().total`, `a[0].total`, `...total`), ou é um
-/// valor, a marca [`RECEIVER`]. Vazio quando o nó está sozinho.
-fn qualifier_before(node: Node, bytes: &[u8], lang: &str) -> String {
-    let before = bytes[..node.start_byte()].trim_ascii_end();
+/// valor, a marca [`RECEIVER`]. Vazio quando o nó está sozinho. O comentário
+/// escrito no meio não conta ([`code_before`]).
+fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> String {
+    let before = code_before(bytes, comments, node.start_byte());
     let strip = |separators: &[&str]| separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes()));
     let (before, only_member) = match (strip(qualifier_separators(lang)), strip(member_separators(lang))) {
         (Some(before), _) => (before, false),
         (None, Some(before)) => (before, true),
         (None, None) => return String::new(),
     };
-    let before = before.trim_ascii_end();
+    let before = code_before(bytes, comments, before.len());
     let start = before
         .iter()
         .rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80))

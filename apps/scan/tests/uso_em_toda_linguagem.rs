@@ -43,6 +43,13 @@
 //! parâmetro e o nome tirado de desestruturação, o nome trazido por um import
 //! de fora do projeto e o nome que a língua põe em todo arquivo.
 //!
+//! O arquivo JavaScript entra no mapa como o TypeScript, e o `require` importa
+//! como o `import`, nos dois: o arquivo que ele nomeia vira dependência, e o
+//! nome que ele traz de fora do projeto não liga. A chamada aberta por um nome
+//! que não é peça do projeto nem do arquivo (`File.ReadAllText()` no C#) é da
+//! biblioteca, e não liga; a aberta pelo tipo do projeto, pelo campo, pelo
+//! parâmetro ou pelo objeto visto pelo tipo de cima segue ligando.
+//!
 //! E a pasta do projeto de teste some mesmo quando o teste quebra no meio, e
 //! nenhum teste do scan monta essa pasta à mão.
 
@@ -1281,6 +1288,223 @@ fn a_call_through_the_whole_project_path_stays_proven() {
     assert!(usos.provados.iter().any(|lugar| lugar == "src/leitor.rs:12:pelo_caminho_inteiro"), "{:?}", usos.provados);
 }
 
+/// O arquivo que usa o `require`, igual no JavaScript e no TypeScript: traz
+/// `ler` do projeto (l.1), `fs` inteiro (l.2) e `readFileSync` (l.3) da
+/// biblioteca, e chama os três (l.6 a 8).
+const APP_COM_REQUIRE: &str = "const { ler } = require('./servico');\nconst fs = require('fs');\n\
+    const { readFileSync } = require('fs');\n\nfunction criar() {\n  ler(1);\n  fs.readFileSync('z');\n  \
+    readFileSync('w');\n}\n\nclass Carrinho {\n  total() {\n    return criar();\n  }\n}\n";
+
+/// O arquivo que declara as funções que o `require` alcança, com uma de mesmo
+/// nome que a da biblioteca.
+const SERVICO_COM_REQUIRE: &str = "function ler(id) {\n  return id;\n}\n\nfunction readFileSync(p) {\n  return p;\n}\n\n\
+    module.exports = { ler, readFileSync };\n";
+
+/// Um projeto com o `require` no JavaScript e no TypeScript, e um em C# cujo
+/// `Util` declara `ReadAllText` e `Combine`, os nomes de `File` e `Path` da
+/// biblioteca. O `Servico` chama os dois de fora (l.9 e 10), o do projeto
+/// (l.11), o repositório pelo campo e pelo parâmetro (l.12 e 13) e o método do
+/// tipo de cima (l.14); o `Leitor` chama pelo caminho inteiro da biblioteca.
+fn projeto_da_biblioteca() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("js/src/app.js", APP_COM_REQUIRE),
+        ("js/src/servico.js", SERVICO_COM_REQUIRE),
+        ("ts/src/app.ts", APP_COM_REQUIRE),
+        ("ts/src/servico.ts", SERVICO_COM_REQUIRE),
+        (
+            "cs/Util.cs",
+            "namespace Demo;\n\npublic static class Util\n{\n    \
+             public static string ReadAllText(string p) => p;\n    \
+             public static string Combine(string a, string b) => a + b;\n}\n",
+        ),
+        ("cs/Repo.cs", "namespace Demo;\n\npublic class Repo\n{\n    public void Salvar() { }\n}\n"),
+        ("cs/Base.cs", "namespace Demo;\n\npublic class Base\n{\n    public virtual void Fechar() { }\n}\n"),
+        (
+            "cs/Servico.cs",
+            "using System.IO;\n\nnamespace Demo;\n\npublic class Servico : Base\n{\n    \
+             private readonly Repo _repo = new Repo();\n\n    \
+             public void A() { File.ReadAllText(\"x\"); }\n    \
+             public void C() { Path.Combine(\"a\", \"b\"); }\n    \
+             public void D() { Util.ReadAllText(\"z\"); }\n    \
+             public void E() { _repo.Salvar(); }\n    \
+             public void F(Repo repo) { repo.Salvar(); }\n    \
+             public override void Fechar() { base.Fechar(); }\n}\n",
+        ),
+        (
+            "cs/Leitor.cs",
+            "namespace Demo;\n\npublic class Leitor\n{\n    \
+             public void B() { System.IO.File.ReadAllText(\"y\"); }\n}\n",
+        ),
+        ("cs/Pedido.cs", "namespace Demo;\n\npublic partial class Pedido(Repo repositorio)\n{\n}\n"),
+        (
+            "cs/Pedido.Grava.cs",
+            "namespace Demo;\n\npublic partial class Pedido\n{\n    public void Gravar() { repositorio.Salvar(); }\n}\n",
+        ),
+        ("cs/Formas.cs", FORMAS_CS),
+        ("cs/Caixa.cs", CAIXA_CS),
+        ("js/src/medida.js", "function medir(x) {\n  return x;\n}\n\nmodule.exports = { medir };\n"),
+        (
+            "js/src/varre.js",
+            "const { medir } = require('./medida');\n\nfunction varrer(itens) {\n  \
+             for (const item of itens) item.medir();\n  try { } catch (falha) { falha.medir(); }\n}\n",
+        ),
+    ]
+}
+
+/// Cada forma do C# de ligar um nome dentro da função, chamando o `Salvar`
+/// do repositório por ele (l.7 a 14): o padrão com tipo, a variável de
+/// `out`, a desestruturação, a exceção pega, o padrão de propriedades, o
+/// laço que desestrutura e a consulta.
+const FORMAS_CS: &str = "namespace Demo;\n\npublic class Formas\n{\n    public void Ligar(object o, string texto)\n    {\n        \
+    if (o is Repo concreto) concreto.Salvar();\n        \
+    if (Fabrica.Tentar(texto, out var achado)) achado.Salvar();\n        \
+    var (primeiro, segundo) = Fabrica.Par();\n        primeiro.Salvar();\n        \
+    try { } catch (Falha erro) { erro.Salvar(); }\n        \
+    if (o is { } qualquer) qualquer.Salvar();\n        \
+    foreach (var (chave, valor) in Fabrica.Pares()) valor.Salvar();\n        \
+    var lista = from item in Fabrica.Lista() let dobro = item select dobro.Salvar();\n    }\n}\n";
+
+/// Um comentário que termina em ponto logo antes de duas chamadas: a do
+/// método do próprio tipo (l.8) e a do `File` da biblioteca (l.10).
+const CAIXA_CS: &str = "namespace Demo;\n\npublic class Caixa\n{\n    public void Encerrar()\n    {\n        \
+    // Soma antes de sair.\n        Somar();\n        // Lê o arquivo.\n        File.ReadAllText(\"c\");\n    }\n\n    \
+    private void Somar() { }\n}\n";
+
+/// Os lugares, provados ou suspeitos, que usam a declaração.
+fn lugares(usos: &Usos) -> Vec<String> {
+    usos.provados.iter().cloned().chain(usos.suspeitos.iter().map(|(lugar, _)| lugar.clone())).collect()
+}
+
+/// O arquivo `.js` entra no mapa com as declarações dele: a função e a
+/// classe, com o método.
+#[test]
+fn a_javascript_file_enters_the_map_with_its_declarations() {
+    let temp = pasta_do_projeto("javascript");
+    for (rel, corpo) in projeto_da_biblioteca() {
+        write(temp.path(), rel, corpo);
+    }
+    let map = scan(temp.path());
+    let app = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == "js/src/app.js");
+    let app = app.unwrap_or_else(|| panic!("o app.js no mapa: {map}"));
+    assert_eq!(app["language"], "javascript", "{app}");
+    let nomes: Vec<&str> =
+        app["declarations"].as_array().unwrap().iter().filter_map(|d| d["name"].as_str()).collect();
+    for nome in ["criar", "Carrinho", "total"] {
+        assert!(nomes.contains(&nome), "{nome} declarado no app.js: {nomes:?}");
+    }
+}
+
+/// `const { ler } = require('./servico')` põe o arquivo nas dependências e
+/// liga `ler()` a ele, provada; `fs.readFileSync()` e `readFileSync()`, com
+/// os nomes trazidos do `fs` pelo `require`, não ligam ao `readFileSync` do
+/// projeto. Igual no JavaScript e no TypeScript.
+#[test]
+fn a_require_imports_like_an_import_in_javascript_and_typescript() {
+    let temp = pasta_do_projeto("require");
+    for (rel, corpo) in projeto_da_biblioteca() {
+        write(temp.path(), rel, corpo);
+    }
+    let map = scan(temp.path());
+    let mut faltas: Vec<String> = Vec::new();
+    for (pasta, ext) in [("js", "js"), ("ts", "ts")] {
+        let app = format!("{pasta}/src/app.{ext}");
+        let servico = format!("{pasta}/src/servico.{ext}");
+        let modulo = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == app.as_str()).unwrap();
+        if !modulo["deps"].as_array().into_iter().flatten().any(|d| d == servico.as_str()) {
+            faltas.push(format!("{app} depende de {servico}: {}", modulo["deps"]));
+        }
+        let ler = usos_de(&map, &servico, "ler");
+        if ler.provados != [format!("{app}:6:criar")] || !ler.suspeitos.is_empty() {
+            faltas.push(format!("ler() liga a {servico}, provada: {:?} {:?}", ler.provados, ler.suspeitos));
+        }
+        let da_biblioteca = lugares(&usos_de(&map, &servico, "readFileSync"));
+        if !da_biblioteca.is_empty() {
+            faltas.push(format!("o readFileSync do fs não liga ao de {servico}: {da_biblioteca:?}"));
+        }
+    }
+    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+}
+
+/// No C#, `File.ReadAllText()`, `Path.Combine()` e
+/// `System.IO.File.ReadAllText()` são da biblioteca e não ligam ao `Util` do
+/// projeto; `Util.ReadAllText()` liga, provada, e o repositório chamado pelo
+/// campo e pelo parâmetro, e o método chamado pelo tipo de cima, seguem
+/// ligando.
+#[test]
+fn a_call_opened_by_a_name_that_is_not_of_the_project_does_not_link() {
+    let temp = pasta_do_projeto("biblioteca-cs");
+    for (rel, corpo) in projeto_da_biblioteca() {
+        write(temp.path(), rel, corpo);
+    }
+    let map = scan(temp.path());
+    let mut faltas: Vec<String> = Vec::new();
+    let read = usos_de(&map, "cs/Util.cs", "ReadAllText");
+    if read.provados != ["cs/Servico.cs:11:D"] || !read.suspeitos.is_empty() {
+        faltas.push(format!("só o Util.ReadAllText() liga ao do Util: {:?} {:?}", read.provados, read.suspeitos));
+    }
+    let combine = lugares(&usos_de(&map, "cs/Util.cs", "Combine"));
+    if !combine.is_empty() {
+        faltas.push(format!("o Path.Combine() não liga ao do Util: {combine:?}"));
+    }
+    let mut salvar = lugares(&usos_de(&map, "cs/Repo.cs", "Salvar"));
+    salvar.retain(|lugar| !lugar.starts_with("cs/Formas.cs"));
+    salvar.sort();
+    if salvar != ["cs/Pedido.Grava.cs:5:Gravar", "cs/Servico.cs:12:E", "cs/Servico.cs:13:F"] {
+        faltas.push(format!(
+            "o Salvar() pelo campo, pelo parâmetro e pelo parâmetro do construtor primário noutra parte da classe liga: \
+             {salvar:?}"
+        ));
+    }
+    let fechar = lugares(&usos_de(&map, "cs/Base.cs", "Fechar"));
+    if fechar != ["cs/Servico.cs:14:Fechar"] {
+        faltas.push(format!("o base.Fechar() liga ao do tipo de cima: {fechar:?}"));
+    }
+    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+}
+
+/// O nome que a função liga, em qualquer forma da língua, é do arquivo: a
+/// chamada aberta por ele segue ligando. No C#, o padrão com tipo, a variável
+/// de `out`, a desestruturação, a exceção pega, o padrão de propriedades, o
+/// laço que desestrutura e a consulta; no JavaScript, o laço `for … of` e a
+/// exceção pega.
+#[test]
+fn a_call_opened_by_a_name_the_function_binds_keeps_linking() {
+    let temp = pasta_do_projeto("formas");
+    for (rel, corpo) in projeto_da_biblioteca() {
+        write(temp.path(), rel, corpo);
+    }
+    let map = scan(temp.path());
+    let mut formas: Vec<String> = lugares(&usos_de(&map, "cs/Repo.cs", "Salvar"))
+        .into_iter()
+        .filter(|lugar| lugar.starts_with("cs/Formas.cs"))
+        .collect();
+    formas.sort();
+    let mut esperadas: Vec<String> =
+        [7, 8, 10, 11, 12, 13, 14].iter().map(|l| format!("cs/Formas.cs:{l}:Ligar")).collect();
+    esperadas.sort();
+    assert_eq!(formas, esperadas);
+    let mut medir = lugares(&usos_de(&map, "js/src/medida.js", "medir"));
+    medir.sort();
+    assert_eq!(medir, ["js/src/varre.js:4:varrer", "js/src/varre.js:5:varrer"]);
+}
+
+/// O ponto que fecha a frase de um comentário não liga o nome de depois à
+/// última palavra do comentário: `Somar()` escrito logo depois é chamada sem
+/// qualificador, provada ao método do próprio tipo, e `File.ReadAllText()`
+/// segue sendo da biblioteca.
+#[test]
+fn a_comment_that_ends_in_a_period_does_not_qualify_the_call_after_it() {
+    let temp = pasta_do_projeto("comentario");
+    for (rel, corpo) in projeto_da_biblioteca() {
+        write(temp.path(), rel, corpo);
+    }
+    let map = scan(temp.path());
+    let somar = usos_de(&map, "cs/Caixa.cs", "Somar");
+    assert_eq!((somar.provados, somar.suspeitos.len()), (vec!["cs/Caixa.cs:8:Encerrar".to_string()], 0));
+    let read = lugares(&usos_de(&map, "cs/Util.cs", "ReadAllText"));
+    assert!(!read.iter().any(|lugar| lugar.starts_with("cs/Caixa.cs")), "{read:?}");
+}
+
 /// Todos os arquivos de texto debaixo de `dir`, menos a pasta da compilação.
 fn arquivos_de_texto(dir: &Path, achados: &mut Vec<(std::path::PathBuf, String)>) {
     for entrada in std::fs::read_dir(dir).unwrap() {
@@ -1328,4 +1552,26 @@ fn a_pasta_do_projeto_de_teste_some_mesmo_quando_o_teste_falha() {
         .map(|(caminho, _)| caminho.display().to_string())
         .collect();
     assert!(a_mao.is_empty(), "estes arquivos montam a pasta do teste à mão: {a_mao:?}");
+}
+
+/// `Leitor::novo()` no `app`, com o `Leitor` trazido por `use demo_core::Leitor`
+/// do `lib.rs` do pacote, que só o repassa de `io/leitor.rs`: é uso provado
+/// do `novo` declarado lá.
+#[test]
+fn a_call_through_a_name_the_root_file_passes_on_is_a_proven_use() {
+    let temp = pasta_do_projeto("repasse");
+    for (rel, corpo) in [
+        ("Cargo.toml", "[workspace]\nmembers = [\"core\", \"app\"]\n"),
+        ("core/Cargo.toml", "[package]\nname = \"demo-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("core/src/lib.rs", "pub mod io;\npub use io::leitor::Leitor;\n"),
+        ("core/src/io/mod.rs", "pub mod leitor;\n"),
+        ("core/src/io/leitor.rs", "pub struct Leitor;\n\nimpl Leitor {\n    pub fn novo() -> Self {\n        Leitor\n    }\n}\n"),
+        ("app/Cargo.toml", "[package]\nname = \"demo-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("app/src/main.rs", "use demo_core::Leitor;\n\nfn main() {\n    let _ = Leitor::novo();\n}\n"),
+    ] {
+        write(temp.path(), rel, corpo);
+    }
+    let map = scan(temp.path());
+    let usos = usos_de(&map, "core/src/io/leitor.rs", "novo");
+    assert_eq!(usos.provados, vec!["app/src/main.rs:4:main".to_string()], "{:?}", usos.suspeitos);
 }

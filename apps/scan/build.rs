@@ -113,10 +113,12 @@ fn main() {
     let mut import_self_table = String::new();
     import_self_table.push_str("pub(crate) static LANG_IMPORT_SELF: &[(&str, &str)] = &[\n");
 
-    // (name, prelude), (name, log_calls) e (name, error_forms) — os nomes
-    // OPCIONAIS que todo arquivo vê sem import, as chamadas que escrevem log
-    // e as formas que lançam ou devolvem erro. Sem o campo, lista vazia.
-    let list_fields = ["prelude", "log_calls", "error_forms"];
+    // (name, prelude), (name, log_calls), (name, error_forms), (name,
+    // parent_receivers) e (name, package_entry) — os nomes OPCIONAIS que todo
+    // arquivo vê sem import, as chamadas que escrevem log, as formas que
+    // lançam ou devolvem erro, os nomes do próprio objeto visto pelo tipo de
+    // cima e os arquivos raiz de um pacote. Sem o campo, lista vazia.
+    let list_fields = ["prelude", "log_calls", "error_forms", "parent_receivers", "package_entry"];
     let mut list_field_tables: Vec<String> = list_fields
         .iter()
         .map(|field| format!("pub(crate) static LANG_{}: &[(&str, &[&str])] = &[\n", field.to_ascii_uppercase()))
@@ -433,11 +435,13 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
         let pairs = |list: &[(String, String)]| list.iter().map(|(a, b)| format!("({a:?}, {b:?})")).collect::<Vec<_>>().join(", ");
         writeln!(
             table,
-            "    RawRouteRule {{ framework: {framework:?}, languages: &[{}], imports: &[{}], query: {query:?}, \
+            "    RawRouteRule {{ framework: {framework:?}, languages: &[{}], imports: &[{}], \
+             manifest_dependencies: &[{}], query: {query:?}, \
              methods: &[{}], param_prefixes: &[{}], param_wrappers: &[{}], reset_marks: &[{}], \
              path_starts: &[{}], class_marker: {class_marker:?}, class_suffix: {class_suffix:?} }},",
             quoted_list(&rule_languages),
             quoted_list(&imports),
+            quoted_list(&list("manifest_dependencies", false)),
             pairs(&methods),
             quoted_list(&list("param_prefixes", false)),
             pairs(&wrappers),

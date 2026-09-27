@@ -16,7 +16,7 @@
 # - `path_starts`: o começo que todo caminho de rota tem. O texto sem ele
 #   (`config.get('CHAVE', '')`) é outra coisa, e não faz rota.
 
-language = ["typescript", "tsx"]
+language = ["typescript", "tsx", "javascript"]
 imports = ["express"]
 param_prefixes = [":"]
 path_starts = ["/", "*"]

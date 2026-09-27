@@ -85,3 +85,31 @@ fn a_pass_that_finds_nothing_changed_rewrites_nothing() {
     model::scan(dir, &folder, &[]);
     assert!(on_disk(&folder).0 != before.0, "a changed file is written");
 }
+
+/// As colunas da tabela `table` no banco da pasta `folder`, em ordem.
+fn columns(folder: &Path, table: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(model::path_in(folder)).unwrap();
+    let mut stmt = conn.prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid").unwrap();
+    stmt.query_map([table], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+/// As dependências moram só nos manifestos: o banco recém-gravado pelo scan
+/// não tem a coluna delas na tabela dos projetos, e a tabela dos manifestos
+/// segue com ela, cheia.
+#[test]
+fn the_dependencies_live_in_the_manifests_and_not_in_the_projects() {
+    let temp = tempfile::Builder::new().prefix("scan-map-db-deps-").tempdir().unwrap();
+    let dir = temp.path();
+    small_project(dir);
+    write(dir, "Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\n");
+    let folder = dir.join(".claude");
+    let (map, _) = model::scan(dir, &folder, &[]);
+
+    let projects = columns(&folder, "projects");
+    assert!(projects.contains(&"frameworks".to_string()), "{projects:?}");
+    assert!(!projects.contains(&"dependencies".to_string()), "{projects:?}");
+    let manifests = columns(&folder, "manifests");
+    assert!(manifests.contains(&"dependencies".to_string()), "{manifests:?}");
+    assert_eq!(map["manifests"][0]["dependencies"], serde_json::json!(["serde"]), "{}", map["manifests"]);
+    assert_eq!(map["projects"][0]["frameworks"], serde_json::json!(["serde"]), "{}", map["projects"]);
+}

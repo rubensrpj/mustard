@@ -455,7 +455,7 @@ mod tests {
     }
 
     /// Depois de um scan de verdade, a lista de projetos lida só da tabela
-    /// deles traz cada subprojeto pela pasta dele, com as dependências, os
+    /// deles traz cada subprojeto pela pasta dele, com os frameworks, os
     /// scripts e as pilhas dos manifestos que ficam sob ela.
     #[test]
     fn the_projects_table_holds_each_subproject_after_a_real_scan() {
@@ -478,10 +478,10 @@ mod tests {
         let dirs: Vec<&str> = projects.iter().map(|p| p.dir.as_str()).collect();
         assert_eq!(dirs, ["packages/core", "web"], "{projects:?}");
         let core = &projects[0];
-        assert_eq!(core.dependencies, ["serde"], "{core:?}");
+        assert_eq!(core.frameworks, ["serde"], "{core:?}");
         assert!(core.scripts.is_empty() && core.detected_stacks.is_empty(), "{core:?}");
         let web = &projects[1];
-        assert_eq!(web.dependencies, ["laravel/framework", "php"], "{web:?}");
+        assert_eq!(web.frameworks, ["php", "laravel/framework"], "{web:?}");
         assert_eq!(web.scripts, ["test: phpunit"], "{web:?}");
         let stacks: Vec<&str> = web.detected_stacks.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(stacks, ["laravel"], "{web:?}");

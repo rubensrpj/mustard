@@ -58,9 +58,6 @@ pub struct Project {
     /// frequency-ranked, top-12). Empty when none mined / older model.
     #[serde(default)]
     pub frameworks: Vec<String>,
-    /// Distinct dependencies declared by this unit's manifests (sorted, deduped).
-    #[serde(default)]
-    pub dependencies: Vec<String>,
     /// Build/codegen scripts declared by this unit's manifests (sorted, deduped).
     #[serde(default)]
     pub scripts: Vec<String>,
@@ -332,7 +329,6 @@ mod tests {
         let web = &projects[0];
         assert_eq!((web.name.as_str(), web.dir.as_str(), web.kind.as_str(), web.code_files), ("web", "web", "composer", 4));
         assert_eq!(web.frameworks, ["laravel/framework"]);
-        assert_eq!(web.dependencies, ["laravel/framework", "php"]);
         assert_eq!(web.scripts, ["test"]);
         assert_eq!(web.detected_stacks.len(), 1);
         assert_eq!(web.detected_stacks[0].signals, ["path:artisan"]);

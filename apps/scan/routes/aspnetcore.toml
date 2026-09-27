@@ -8,9 +8,13 @@
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
 #   consulta lê. Ela precisa compilar na gramática de cada uma.
-# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+# - `imports`: a regra roda no arquivo que importa um destes nomes, ou um
 #   caminho que começa por ele seguido de separador
-#   (`Microsoft.AspNetCore.Mvc.…`).
+#   (`Microsoft.AspNetCore.Mvc.…`). O `global using` de outro arquivo liga a
+#   regra nos arquivos da pasta do projeto dele, como o próprio `using`.
+# - `manifest_dependencies`: a regra roda também, sem import nenhum, nos
+#   arquivos cujo manifesto mais próximo acima declara uma destas
+#   dependências: o projeto web (`<Project Sdk="Microsoft.NET.Sdk.Web">`).
 # - `methods`: o nome do atributo ou do método e o método HTTP que ele diz;
 #   `"*"` é qualquer método (`[Route]` na ação, sem atributo de método). O
 #   nome fora da tabela não faz rota.
@@ -25,6 +29,7 @@
 
 language = ["csharp"]
 imports = ["Microsoft.AspNetCore.Mvc", "Microsoft.AspNetCore.Builder"]
+manifest_dependencies = ["Microsoft.NET.Sdk.Web"]
 param_wrappers = [["{", "}"]]
 reset_marks = ["/", "~/"]
 class_marker = "[controller]"

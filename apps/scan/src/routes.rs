@@ -3,7 +3,9 @@
 //! consulta em `routes/<framework>/*.scm` —, embutida pelo `build.rs`; este
 //! módulo só junta o que a consulta captura, sem nome de framework nem de nó.
 //!
-//! A regra roda só no arquivo que importa o framework. O que cada captura da
+//! A regra roda só no arquivo que liga o framework: pelo import dele, pelo
+//! import global de outro arquivo que o alcança ou pela dependência do
+//! manifesto mais próximo acima dele (ver [`Project`]). O que cada captura da
 //! consulta diz:
 //!
 //! - `route.method`: o nome escrito do método, que a tabela `methods` da regra
@@ -29,6 +31,7 @@
 //! casa com a captura de literal, e não faz rota.
 
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
@@ -45,6 +48,9 @@ pub(crate) struct RawRouteRule {
     pub languages: &'static [&'static str],
     /// Os imports que ligam a regra no arquivo.
     pub imports: &'static [&'static str],
+    /// As dependências de manifesto que ligam a regra nos arquivos sob o
+    /// manifesto mais próximo acima deles que as declara.
+    pub manifest_dependencies: &'static [&'static str],
     pub query: &'static str,
     /// O nome escrito do método e o método HTTP que ele diz.
     pub methods: &'static [(&'static str, &'static str)],
@@ -99,47 +105,67 @@ fn role(capture: &str) -> Role {
     }
 }
 
-/// A regra de um framework com a consulta compilada para uma língua.
+/// A regra de um framework para uma língua. A consulta se compila na
+/// gramática da língua uma vez só, na primeira vez que a regra liga num
+/// arquivo: a passada sem nenhum arquivo do framework não a compila.
 pub(crate) struct RouteRule {
     raw: &'static RawRouteRule,
+    lang: &'static str,
+    language: Language,
+    /// A consulta compilada, depois da primeira vez que a regra ligou;
+    /// `None` dentro quando nenhum padrão dela compila.
+    compiled: OnceLock<Option<Compiled>>,
+}
+
+/// A consulta de uma regra, compilada, e o papel de cada captura dela.
+struct Compiled {
     query: Query,
     /// `roles[i]` é o papel da captura `i` da consulta.
     roles: Vec<Role>,
 }
 
-/// As regras dos frameworks escritos na língua `lang`, com a consulta de cada
-/// uma compilada na gramática dela. O padrão que não compila cai sozinho, com
-/// o aviso de sempre.
-pub(crate) fn rules_for(lang: &str, language: &Language) -> Vec<RouteRule> {
+/// As regras dos frameworks escritos na língua `lang`, ainda sem compilar.
+pub(crate) fn rules_for(lang: &'static str, language: &Language) -> Vec<RouteRule> {
     ROUTE_RULES
         .iter()
         .filter(|raw| raw.languages.contains(&lang))
-        .filter_map(|raw| {
-            let good = compile_good_patterns(language, raw.query, &format!("{}/{lang}", raw.framework));
-            if good.is_empty() {
-                return None;
-            }
-            let query = Query::new(language, &good.join("\n")).ok()?;
-            let roles = query.capture_names().iter().map(|name| role(name)).collect();
-            Some(RouteRule { raw, query, roles })
-        })
+        .map(|raw| RouteRule { raw, lang, language: language.clone(), compiled: OnceLock::new() })
         .collect()
 }
 
-/// As rotas do arquivo, pelas regras que ele liga com os `imports` dele, fora
-/// as escritas num trecho de `skip`, em ordem.
+/// O que o projeto diz de um arquivo e liga nele a regra de um framework sem
+/// import próprio.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Project<'a> {
+    /// Os imports globais escritos em outros arquivos que o alcançam.
+    pub global_imports: &'a [String],
+    /// As dependências do manifesto mais próximo acima dele.
+    pub manifest_deps: &'a [String],
+}
+
+/// Alguma das regras liga no arquivo que importa `imports` com o que o
+/// projeto diz em `more`, e não ligava só com o que ele diz em `less`.
+pub(crate) fn turned_on_by(rules: &[RouteRule], imports: &[String], less: &Project, more: &Project) -> bool {
+    rules.iter().any(|rule| rule.active(imports, more) && !rule.active(imports, less))
+}
+
+/// As rotas do arquivo, pelas regras que ele liga com os `imports` dele ou
+/// com o que o `project` diz dele, fora as escritas num trecho de `skip`, em
+/// ordem.
 pub(crate) fn find(
     rules: &[RouteRule],
     root: Node,
     bytes: &[u8],
     imports: &[String],
+    project: &Project,
     declarations: &[Decl],
     skip: &BTreeSet<(usize, usize)>,
 ) -> Vec<Route> {
     let mut routes: Vec<Route> = rules
         .iter()
-        .filter(|rule| rule.active(imports))
-        .flat_map(|rule| rule.routes(root, bytes, declarations, skip))
+        .filter(|rule| rule.active(imports, project))
+        .filter_map(|rule| Some((rule, rule.compiled()?)))
+        .flat_map(|(rule, compiled)| rule.routes(compiled, root, bytes, declarations, skip))
         .collect();
     routes.sort();
     routes.dedup();
@@ -178,10 +204,49 @@ struct Built {
 }
 
 impl RouteRule {
-    /// O arquivo importa o framework: um import é um nome da regra, ou começa
-    /// por ele seguido de separador. Letra, algarismo, `_` ou `-` logo depois
-    /// fazem outro nome, que não liga a regra.
-    fn active(&self, imports: &[String]) -> bool {
+    /// A consulta da regra, compilada na primeira vez que se pede. O padrão
+    /// que não compila cai sozinho, com o aviso de sempre, dado então.
+    fn compiled(&self) -> Option<&Compiled> {
+        self.compiled
+            .get_or_init(|| {
+                let good = compile_good_patterns(&self.language, self.raw.query, &self.name());
+                if good.is_empty() {
+                    return None;
+                }
+                let query = Query::new(&self.language, &good.join("\n")).ok()?;
+                let roles = query.capture_names().iter().map(|name| role(name)).collect();
+                Some(Compiled { query, roles })
+            })
+            .as_ref()
+    }
+
+    /// O nome da regra: o framework e a língua, `framework/língua`.
+    pub(crate) fn name(&self) -> String {
+        format!("{}/{}", self.raw.framework, self.lang)
+    }
+
+    /// A regra liga também pela dependência do manifesto.
+    pub(crate) fn follows_manifest(&self) -> bool {
+        !self.raw.manifest_dependencies.is_empty()
+    }
+
+    /// A consulta da regra já foi compilada nesta passada.
+    pub(crate) fn was_compiled(&self) -> bool {
+        self.compiled.get().is_some()
+    }
+
+    /// O arquivo liga o framework: ele ou um import global que o alcança o
+    /// importa, ou o manifesto mais próximo acima dele o declara.
+    fn active(&self, imports: &[String], project: &Project) -> bool {
+        self.imported(imports)
+            || self.imported(project.global_imports)
+            || self.raw.manifest_dependencies.iter().any(|dep| project.manifest_deps.iter().any(|has| has == dep))
+    }
+
+    /// Um dos `imports` é um nome da regra, ou começa por ele seguido de
+    /// separador. Letra, algarismo, `_` ou `-` logo depois fazem outro nome,
+    /// que não liga a regra.
+    fn imported(&self, imports: &[String]) -> bool {
         imports.iter().any(|import| {
             self.raw.imports.iter().any(|name| {
                 import.strip_prefix(name).is_some_and(|rest| {
@@ -195,7 +260,14 @@ impl RouteRule {
         self.raw.methods.iter().find(|(name, _)| *name == written).map(|(_, method)| *method)
     }
 
-    fn routes(&self, root: Node, bytes: &[u8], declarations: &[Decl], skip: &BTreeSet<(usize, usize)>) -> Vec<Route> {
+    fn routes(
+        &self,
+        compiled: &Compiled,
+        root: Node,
+        bytes: &[u8],
+        declarations: &[Decl],
+        skip: &BTreeSet<(usize, usize)>,
+    ) -> Vec<Route> {
         let text = |node: Node| node.utf8_text(bytes).unwrap_or_default().to_string();
         let literal = |node: Node| literal_value(&text(node)).to_string();
         let span = |node: Node| (node.start_byte(), node.end_byte());
@@ -204,12 +276,12 @@ impl RouteRule {
         let mut groups: Vec<((usize, usize), String)> = Vec::new();
         let mut prefixes: Vec<Prefix> = Vec::new();
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&self.query, root, bytes);
+        let mut matches = cursor.matches(&compiled.query, root, bytes);
         while let Some(m) = matches.next() {
             let mut here = Captured::default();
             for cap in m.captures {
                 let node = Some(cap.node);
-                match self.roles[cap.index as usize] {
+                match compiled.roles[cap.index as usize] {
                     Role::Method => here.method = node,
                     Role::GroupedMethod => (here.method, here.grouped) = (node, true),
                     Role::Path => here.path = node,

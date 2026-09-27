@@ -102,11 +102,65 @@ pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>, listing: Option<&Li
         .map(|m| (m.path.as_str(), m.blob.as_str()))
         .chain(prev.manifests.iter().map(|m| (m.path.as_str(), stored_input(&m.path))))
         .chain(prev.state.non_utf8.iter().map(|path| (path.as_str(), stored_input(path))));
-    let changed = stored
+    let mut changed: BTreeSet<String> = stored
         .filter(|(path, blob)| blob.is_empty() || listing.blobs.get(*path).map(String::as_str) != Some(*blob))
         .map(|(path, _)| path.to_string())
         .collect();
+    let under = under_changed_manifests(root, prev, listing, &changed);
+    changed.extend(under);
     Plan::Only(changed)
+}
+
+/// Os arquivos de código que um manifesto mudado faz reler. A dependência do
+/// manifesto mais próximo acima liga regras de rota nos arquivos sob a pasta
+/// dele (ver [`crate::graph::nearest_manifest_deps`]): o manifesto cujas
+/// dependências mudaram, que apareceu ou que sumiu relê os arquivos de
+/// código dessa pasta. O que apareceu ou sumiu muda também o alcance do
+/// import global escrito sob a pasta dele (ver [`crate::graph::global_reach`]):
+/// aí os arquivos da língua desse import se releem todos.
+fn under_changed_manifests(
+    root: &Path,
+    prev: &ProjectModel,
+    listing: &Listing,
+    changed: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let name_of = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
+    let folder_of = |path: &str| path.rfind('/').map_or(String::new(), |at| path[..at].to_string());
+    let is_under = |path: &str, dir: &str| dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'));
+    // Cada pasta de manifesto mudado, e se ele apareceu ou sumiu.
+    let mut folders: Vec<(String, bool)> = Vec::new();
+    for manifest in prev.manifests.iter().filter(|m| changed.contains(&m.path)) {
+        let now = std::fs::read_to_string(root.join(&manifest.path))
+            .ok()
+            .and_then(|content| crate::manifests::parse(&manifest.path, &name_of(&manifest.path), &content));
+        let before: BTreeSet<&String> = manifest.dependencies.iter().collect();
+        match now {
+            None => folders.push((folder_of(&manifest.path), true)),
+            Some(parsed) if parsed.deps.iter().collect::<BTreeSet<_>>() != before => {
+                folders.push((folder_of(&manifest.path), false));
+            }
+            Some(_) => {}
+        }
+    }
+    let known: BTreeSet<&str> = prev.manifests.iter().map(|m| m.path.as_str()).collect();
+    for path in listing.blobs.keys().filter(|path| !known.contains(path.as_str())) {
+        if crate::manifests::is_manifest(&name_of(path)) {
+            folders.push((folder_of(path), true));
+        }
+    }
+
+    let mut again: BTreeSet<String> = BTreeSet::new();
+    let mut global_languages: BTreeSet<&str> = BTreeSet::new();
+    for (folder, came_or_went) in &folders {
+        for m in prev.modules.iter().filter(|m| is_under(&m.path, folder)) {
+            again.insert(m.path.clone());
+            if *came_or_went && !m.global_imports.is_empty() {
+                global_languages.insert(m.language.as_str());
+            }
+        }
+    }
+    again.extend(prev.modules.iter().filter(|m| global_languages.contains(m.language.as_str())).map(|m| m.path.clone()));
+    again
 }
 
 /// A passada não tem arquivo a reler: todo bloco do mapa anterior `prev` é
@@ -391,9 +445,12 @@ mod tests {
     /// Só se relê o arquivo cujo blob de agora não é o que a passada anterior
     /// leu: o de código, o manifesto e o que não se decodificou. O lido fora
     /// do git, sem blob, se relê sempre; o arquivo novo entra pela caminhada.
+    /// O manifesto que mudou sem mudar as dependências relê só ele.
     #[test]
     fn only_the_files_whose_blob_changed_are_read() {
-        let here = Path::new(".");
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"outro\"\n").unwrap();
+        let here = temp.path();
         let mut prev = previous(here, &[("a.rs", "1"), ("b.rs", "2"), ("c.rs", "")]);
         prev.manifests.push(crate::model::Manifest { path: "Cargo.toml".to_string(), ..Default::default() });
         prev.state.non_utf8 = vec!["latin.rs".to_string()];
@@ -407,6 +464,62 @@ mod tests {
         touched[4] = ("Cargo.toml", "8");
         touched[5] = ("latin.rs", "6");
         assert_eq!(plan(here, Some(&prev), Some(&listing_of(&touched))), only(&["Cargo.toml", "b.rs", "c.rs", "latin.rs"]));
+    }
+
+    /// O manifesto cujas dependências mudaram, que apareceu ou que sumiu relê
+    /// os arquivos de código sob a pasta dele, e só eles; o que apareceu ou
+    /// sumiu acima de um import global relê também os arquivos da língua dele.
+    #[test]
+    fn a_manifest_whose_dependencies_changed_reads_the_code_under_it_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let here = temp.path();
+        let csproj = |sdk: &str| format!("<Project Sdk=\"{sdk}\">\n</Project>\n");
+        for (dir, sdk) in [("api", "Microsoft.NET.Sdk"), ("web", "Microsoft.NET.Sdk.Web"), ("novo", "Microsoft.NET.Sdk")] {
+            std::fs::create_dir_all(here.join(dir)).unwrap();
+            let name = format!("{}.csproj", dir);
+            std::fs::write(here.join(dir).join(name), csproj(sdk)).unwrap();
+        }
+        let code = [("api/a.cs", "1"), ("web/b.cs", "2"), ("web/sub/c.cs", "3"), ("novo/d.cs", "4"), ("foi/e.cs", "5"), ("x.rs", "6")];
+        let mut prev = previous(here, &code);
+        for m in &mut prev.modules {
+            m.language = if m.path.ends_with(".cs") { "csharp" } else { "rust" }.to_string();
+        }
+        let manifest = |path: &str, dep: &str| crate::model::Manifest {
+            path: path.to_string(),
+            dependencies: vec![dep.to_string()],
+            ..Default::default()
+        };
+        prev.manifests = vec![
+            manifest("api/api.csproj", "Microsoft.NET.Sdk"),
+            manifest("web/web.csproj", "Microsoft.NET.Sdk"),
+            manifest("foi/foi.csproj", "Microsoft.NET.Sdk"),
+        ];
+        prev.state.inputs = [("api/api.csproj", "a"), ("web/web.csproj", "w"), ("foi/foi.csproj", "f")]
+            .map(|(p, b)| (p.to_string(), b.to_string()))
+            .into();
+        let only = |files: &[&str]| Plan::Only(files.iter().map(|f| f.to_string()).collect());
+        let mut now: Vec<(&str, &str)> = code.to_vec();
+        now.extend([("api/api.csproj", "a2"), ("web/web.csproj", "w2"), ("foi/foi.csproj", "f")]);
+        assert_eq!(
+            plan(here, Some(&prev), Some(&listing_of(&now))),
+            only(&["api/api.csproj", "web/b.cs", "web/sub/c.cs", "web/web.csproj"]),
+            "o SDK do web mudou; o do api é o mesmo"
+        );
+
+        let mut came_and_went: Vec<(&str, &str)> = code.to_vec();
+        came_and_went.extend([("api/api.csproj", "a"), ("web/web.csproj", "w"), ("novo/novo.csproj", "n")]);
+        assert_eq!(
+            plan(here, Some(&prev), Some(&listing_of(&came_and_went))),
+            only(&["foi/e.cs", "foi/foi.csproj", "novo/d.cs"]),
+            "o manifesto novo e o que sumiu, sem import global embaixo"
+        );
+
+        prev.modules.iter_mut().find(|m| m.path == "novo/d.cs").unwrap().global_imports = vec!["Algo".to_string()];
+        assert_eq!(
+            plan(here, Some(&prev), Some(&listing_of(&came_and_went))),
+            only(&["api/a.cs", "foi/e.cs", "foi/foi.csproj", "novo/d.cs", "web/b.cs", "web/sub/c.cs"]),
+            "o manifesto novo acima de um import global relê a língua dele"
+        );
     }
 
     /// Basta um dos blocos reaproveitados sem a marca desta versão — o que

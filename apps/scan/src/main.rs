@@ -100,6 +100,7 @@ fn main() -> Result<()> {
                     "read": analysis.read,
                     "files": analysis.model.modules.len(),
                     "head": analysis.model.state.head,
+                    "route_rules": analysis.route_rules,
                 });
                 println!("{report}");
             } else {
@@ -136,6 +137,9 @@ struct Analysis {
     /// A passada só refez o censo: o modelo traz o censo e, de cada arquivo,
     /// o caminho, o blob e os sinais de código, e só o censo se grava.
     census_only: bool,
+    /// As regras de rota que algum arquivo lido ligou, e que por isso
+    /// compilaram a consulta, pelo nome (`framework/língua`), em ordem.
+    route_rules: BTreeSet<String>,
 }
 
 /// A passada sem arquivo a reler, quando é o caso: o mapa em `out` é desta
@@ -167,7 +171,7 @@ fn census_pass(root: &Path, out: &Path, all: bool) -> Option<Analysis> {
     model.detected_stacks = detected_stacks;
     model.projects = projects;
     model.coverage.skipped_build_dirs = walk.skipped_build_dirs;
-    Some(Analysis { model, read: Vec::new(), full: false, census_only: true })
+    Some(Analysis { model, read: Vec::new(), full: false, census_only: true, route_rules: BTreeSet::new() })
 }
 
 /// The code-signature evidence of some modules, as the stack inference takes
@@ -194,6 +198,8 @@ struct Read {
     /// usados tanto nas importações quanto nos vínculos entre declarações.
     aliases: path_aliases::PathAliases,
     graph: graph::GraphBuild,
+    /// As regras de rota que algum arquivo lido ligou.
+    route_rules: BTreeSet<String>,
 }
 
 /// Walk the project and read every file `reuse` does not keep from the
@@ -224,7 +230,6 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
             Some(*kept)
         }
         ingest::Walked::Fresh(sf) => {
-            let mut extracted = analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
             // Machine-written class (generated/vendored/lockfile/minified) —
             // additive provenance on the module. The map keeps the module —
             // its file, its place in the graph and its declarations — and
@@ -232,21 +237,28 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
             let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
                 .map(|c| (c.class, c.marker))
                 .unwrap_or_default();
-            // O texto fixo e a rota do arquivo de teste são do teste, e os do
-            // arquivo escrito por máquina ficam fora da busca: nenhum dos dois
-            // arquivos guarda os seus.
-            let project_code = file_class.is_empty() && !is_test_path(&sf.rel_path);
-            let texts = if project_code { extracted.texts } else { Vec::new() };
-            let routes = if project_code { extracted.routes } else { Vec::new() };
-            // Os comentários e os nomes de dentro das declarações do arquivo
-            // escrito por máquina também ficam fora da busca, e ele não os
-            // guarda. Os do arquivo de teste ficam, como a documentação dele.
-            if !file_class.is_empty() {
-                (extracted.file_doc, extracted.file_comment) = (String::new(), String::new());
-                for decl in &mut extracted.declarations {
-                    (decl.whole_doc, decl.body_comment, decl.body_names) = (String::new(), String::new(), String::new());
+            // A classe sai antes da leitura, e a leitura pula o que o arquivo
+            // não guarda. Os comentários e os nomes de dentro das declarações
+            // do arquivo escrito por máquina ficam fora da busca; os do
+            // arquivo de teste ficam, como a documentação dele. O texto fixo e
+            // a rota do arquivo de teste são do teste, e os do escrito por
+            // máquina ficam fora da busca: nenhum dos dois guarda os seus.
+            let keep = extract::Keep {
+                written_text: file_class.is_empty(),
+                texts_and_routes: file_class.is_empty() && !is_test_path(&sf.rel_path),
+            };
+            // A dependência do manifesto mais próximo acima liga a regra de
+            // rota sem import no arquivo; o import global de outro arquivo,
+            // só conhecido depois da leitura de todos, liga logo abaixo.
+            let analyzer = analyzers.get(sf.language.as_str());
+            let manifest_deps = match analyzer {
+                Some(a) if keep.texts_and_routes && a.routes_follow_manifests() => {
+                    graph::nearest_manifest_deps(&sf.rel_path, &ing.manifests)
                 }
-            }
+                _ => Vec::new(),
+            };
+            let project = routes::Project { global_imports: &[], manifest_deps: &manifest_deps };
+            let extracted = analyzer.map(|a| a.extract(&sf.content, keep, &project)).unwrap_or_default();
             Some(Module {
                 path: sf.rel_path.clone(),
                 blob: String::new(),
@@ -262,6 +274,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 call_paths: extracted.call_paths,
                 other_call_paths: extracted.other_call_paths,
                 brought: extracted.brought,
+                reexports: extracted.reexports,
                 namespaces: extracted.namespaces,
                 declarations: extracted.declarations,
                 file_class,
@@ -271,17 +284,21 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 has_tests: testmap::has_inline_tests(&sf.content),
                 signals: code_signals(&sf.content),
                 calls: extracted.calls,
+                unbound_heads: extracted.unbound_heads,
                 cites: extracted.cites,
-                texts,
-                routes,
+                texts: extracted.texts,
+                routes: extracted.routes,
                 file_doc: extracted.file_doc,
                 file_comment: extracted.file_comment,
+                file_doc_in_body: extracted.file_doc_in_body,
             })
         }
         // A caminhada lê todo arquivo que deixou para depois.
         ingest::Walked::Pending(_) => None,
     });
     let mut modules: Vec<Module> = extracted.into_iter().flatten().collect();
+    routes_by_global_imports(&ing, &mut modules, &analyzers);
+    let route_rules: BTreeSet<String> = analyzers.values().flat_map(extract::Analyzer::compiled_routes).collect();
     // O blob do conteúdo lido, o de agora: o do arquivo tomado do mapa
     // anterior é o mesmo que ele guardava.
     if let Some(listing) = listing {
@@ -313,7 +330,61 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     for (m, found) in modules.iter_mut().zip(test_deps) {
         m.test_deps = found;
     }
-    Ok(Read { ing, modules, packages, aliases, graph })
+    Ok(Read { ing, modules, packages, aliases, graph, route_rules })
+}
+
+/// As rotas que o import global de outro arquivo liga: o arquivo lido nesta
+/// passada em que um import global escrito em outro arquivo, e que o alcança,
+/// liga uma regra de rota que os imports dele e o manifesto não ligavam é
+/// lido de novo, com esse import, e fica com as rotas dessa leitura. O arquivo
+/// tomado do mapa anterior já as tem: a mudança de import global relê os
+/// arquivos da língua (ver [`refresh::stale_citers`]).
+fn routes_by_global_imports(
+    ing: &ingest::Ingested,
+    modules: &mut [Module],
+    analyzers: &std::collections::HashMap<String, extract::Analyzer>,
+) {
+    let reach = graph::global_reach(modules, &ing.manifests);
+    if reach.is_empty() {
+        return;
+    }
+    let mut reaching: Vec<Vec<String>> = vec![Vec::new(); modules.len()];
+    for (writer, reached) in reach {
+        for at in reached.into_iter().filter(|&at| at != writer) {
+            reaching[at].extend(modules[writer].global_imports.iter().cloned());
+        }
+    }
+    let read: BTreeSet<&str> = ing.read.iter().map(String::as_str).collect();
+    let again: Vec<(usize, &extract::Analyzer, Vec<String>, Vec<String>)> = modules
+        .iter()
+        .enumerate()
+        .zip(reaching)
+        .filter(|((_, m), globals)| {
+            !globals.is_empty() && read.contains(m.path.as_str()) && m.file_class.is_empty() && !is_test_path(&m.path)
+        })
+        .filter_map(|((at, m), globals)| {
+            let analyzer = analyzers.get(m.language.as_str())?;
+            let manifest_deps = if analyzer.routes_follow_manifests() {
+                graph::nearest_manifest_deps(&m.path, &ing.manifests)
+            } else {
+                Vec::new()
+            };
+            let imports: Vec<String> = m.imports.iter().chain(&m.global_imports).cloned().collect();
+            let less = routes::Project { global_imports: &[], manifest_deps: &manifest_deps };
+            let more = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps };
+            analyzer.routes_turned_on_by(&imports, &less, &more).then_some((at, analyzer, globals, manifest_deps))
+        })
+        .collect();
+    // Da segunda leitura só as rotas ficam: os comentários não se leem.
+    let keep = extract::Keep { written_text: false, texts_and_routes: true };
+    let found = ingest::in_parallel(again, |(at, analyzer, globals, manifest_deps)| {
+        let content = std::fs::read_to_string(ing.root.join(&modules[at].path)).ok()?;
+        let project = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps };
+        Some((at, analyzer.extract(&content, keep, &project).routes))
+    });
+    for (at, routes) in found.into_iter().flatten() {
+        modules[at].routes = routes;
+    }
 }
 
 /// Deterministic stages (no synthesis, no AI): produce the project model, and
@@ -337,12 +408,14 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                 (false, first)
             } else {
                 let wider: BTreeSet<String> = changed.iter().cloned().chain(stale).collect();
-                (false, read_modules(root, Some(&ingest::Reuse::new(&wider, prev)), listing.as_ref())?)
+                let mut second = read_modules(root, Some(&ingest::Reuse::new(&wider, prev)), listing.as_ref())?;
+                second.route_rules.extend(first.route_rules);
+                (false, second)
             }
         }
         _ => (true, read_modules(root, None, listing.as_ref())?),
     };
-    let Read { ing, mut modules, packages, aliases, graph: (graph_stats, depth_by_path) } = read;
+    let Read { ing, mut modules, packages, aliases, graph: (graph_stats, depth_by_path), route_rules } = read;
 
     // The named edges between declarations: who calls or cites whom, in which
     // file and on which line. Read from the call sites and the citations every
@@ -402,6 +475,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         read: ing.read,
         full,
         census_only: false,
+        route_rules,
     })
 }
 
@@ -479,7 +553,7 @@ fn build_projects(manifests: &[model::Manifest], modules: &[Module]) -> Vec<mode
     }
     let mut projects = dedup_by_dir(projects);
     projects.sort_by(|a, b| b.code_files.cmp(&a.code_files).then(a.name.cmp(&b.name)));
-    // Enrich each unit with the frameworks/dependencies/scripts mined from the
+    // Enrich each unit with the frameworks/scripts mined from the
     // manifests it owns — the projection `facts::enrich_projects` owns, so the
     // grain `projects[]` carry the data. `scan_claude` reads `scripts` (for `## Commands`)
     // and `frameworks` (for the Guards facts) straight off `projects[]`; without
@@ -491,7 +565,7 @@ fn build_projects(manifests: &[model::Manifest], modules: &[Module]) -> Vec<mode
 
 /// Populate each unit's `detected_stacks` from the unit's OWN evidence slice:
 /// the dependencies of the manifests it owns (the same longest-prefix crossing
-/// `facts::enrich_projects` applies to frameworks/deps/scripts), the walk paths
+/// `facts::enrich_projects` applies to frameworks/scripts), the walk paths
 /// under its dir, and the source contents under its dir. Same engine, same
 /// generic call as the repo-wide inference in `ingest` — which stacks exist is
 /// DATA in mustard-core's registry, never logic here. Deterministic: the walk

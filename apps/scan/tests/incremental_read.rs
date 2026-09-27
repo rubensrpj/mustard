@@ -552,3 +552,27 @@ fn a_code_file_the_walk_stops_seeing_leaves_the_map() {
     assert_eq!(report["files"], json!(1), "{report}");
     same_as_a_full_pass(dir);
 }
+
+/// A passada que só relê a tela liga igual à que lê tudo: o `index.ts` da
+/// pasta importada, que não é relido, guarda no mapa o que repassa, e a tela
+/// segue dependendo do serviço que declara o nome.
+#[test]
+fn a_pass_that_rereads_only_the_importer_follows_what_the_kept_file_passes_on() {
+    let tela = "import { buscarPedido } from './pedidos';\n\nexport function tela() {\n  return buscarPedido(1);\n}\n";
+    let temp = project(
+        "scan-reexport-",
+        &[
+            ("web/src/pedidos/index.ts", "export * from './pedido.service';\n"),
+            ("web/src/pedidos/pedido.service.ts", "export function buscarPedido(id: number) {\n  return id;\n}\n"),
+            ("web/src/tela.ts", tela),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    write(dir, "web/src/tela.ts", &format!("// a tela dos pedidos\n{tela}"));
+    let report = scan(dir, &[]);
+    assert_eq!(report["read"], json!(["web/src/tela.ts"]), "{report}");
+    assert_eq!(deps_in_the_map(dir, "web/src/tela.ts"), vec![json!("web/src/pedidos/pedido.service.ts")]);
+    same_as_a_full_pass(dir);
+}

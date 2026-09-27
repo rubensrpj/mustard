@@ -191,18 +191,22 @@ macro_rules! key {
 /// esquema em SQL. Ele não mora no mapa em JSON, não se compara na gravação
 /// — a tabela sem o texto guardado não se lê de volta — e se refaz sempre
 /// que o bloco se regrava; na troca de versão, sai junto das outras.
+///
+/// A tabela que saiu do bloco numa versão anterior entra em `retired`: fora
+/// do esquema e do mapa em JSON, ela só sai do banco na troca de versão,
+/// junto das outras, para o banco antigo não guardar o que ninguém mais lê.
 macro_rules! block {
     ($name:literal, version $version:literal, {
         $( $table:literal at $place:expr => [
             $first:literal $first_cell:ident $([$($first_key:literal),*])?
             $(, $column:literal $cell:ident $([$($key:literal),*])?)*
         ] ),+
-    } $(, index [$($index_table:literal),+] $index_schema:literal)?) => {
+    } $(, index [$($index_table:literal),+] $index_schema:literal)? $(, retired [$($retired_table:literal),+])?) => {
         MapBlock {
             block: Block {
                 name: $name,
                 version: $version,
-                tables: &[$($table,)+ $($($index_table),+)?],
+                tables: &[$($table,)+ $($($index_table,)+)? $($($retired_table,)+)?],
                 schema: concat!($(
                     "CREATE TABLE ", $table, "(", $first, " ", sql_type!($first_cell)
                     $(, ", ", $column, " ", sql_type!($cell))*, ");"
@@ -234,7 +238,7 @@ fn filled_by_the_scan(_: &Connection, _: &Path) -> Result<()> {
 /// marca da listagem do git daquela passada ([`Listing::digest`]) e o blob
 /// de cada arquivo que decide a releitura sem ser código: os manifestos, os
 /// que mudam a leitura de todos os outros e os que não se decodificaram.
-pub const CENSUS: MapBlock = block!("census", version 2, {
+pub const CENSUS: MapBlock = block!("census", version 3, {
     "census" at Place::One => [
         "root" Text,
         "head" Text ["state", "head"],
@@ -247,7 +251,7 @@ pub const CENSUS: MapBlock = block!("census", version 2, {
     ],
     "projects" at list(&["projects"]) => [
         "name" Text, "dir" Text, "kind" Text, "code_files" Int,
-        "frameworks" Json, "dependencies" Json, "scripts" Json, "detected_stacks" Json
+        "frameworks" Json, "scripts" Json, "detected_stacks" Json
     ],
     "languages" at list(&["languages"]) => ["language" Text, "files" Int, "loc" Int],
     "manifests" at list(&["manifests"]) => [
@@ -277,7 +281,10 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// lado, os textos fixos de cada arquivo — as mensagens de log, as de erro e
 /// os outros textos escritos no código —, cada um com a linha, a marca e a
 /// declaração que o contém, e os comentários do arquivo: os do começo e os
-/// outros.
+/// outros que caem fora das linhas de toda declaração — os de dentro moram
+/// uma vez só, nos da declaração —, com quantos bytes do começo dos
+/// comentários da primeira declaração de fora são também do começo do
+/// arquivo.
 ///
 /// Junto delas mora o índice da busca do mapa ([`crate::io::map_search`]):
 /// uma tabela FTS5 por nível — a declaração e o arquivo —, uma coluna por
@@ -287,14 +294,16 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// feito; e o índice do nome sem caixa. As listas saem antes das tabelas de
 /// que elas leem. Os campos que a busca sem filtro lê vêm primeiro; os do
 /// texto de dentro das peças vêm depois, e ela não os lê.
-pub const DECLS: MapBlock = block!("decls", version 6, {
+pub const DECLS: MapBlock = block!("decls", version 7, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,
         "supertypes" Json, "calls" Json, "used_by" Json, "common_calls" Int,
         "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
     ],
-    "texts" at Place::Files => ["path" Text, "texts" Json, "file_doc" Text, "file_comment" Text]
+    "texts" at Place::Files => [
+        "path" Text, "texts" Json, "file_doc" Text, "file_comment" Text, "file_doc_in_body" Int
+    ]
 }, index [
     "file_vocab", "decl_vocab", "file_fts", "decl_fts", "decl_trigram", "file_lengths", "decl_lengths", "search_meta"
 ] "CREATE INDEX decls_name_nocase ON decls(name COLLATE NOCASE);\
@@ -321,17 +330,17 @@ pub const ROUTES: MapBlock = block!("routes", version 1, {
 
 /// O grafo: as importações resolvidas, os testes que cobrem cada arquivo, as
 /// chamadas e as citações com a linha, os caminhos escritos antes das
-/// chamadas, os nomes que cada import traz, e os arquivos mais importados.
-pub const GRAPH: MapBlock = block!("graph", version 3, {
+/// chamadas, os nomes que cada import traz, os nomes que cada repasse
+/// oferece, os nomes que abrem a cadeia de uma chamada sem que o arquivo os
+/// ligue, e os arquivos mais importados.
+pub const GRAPH: MapBlock = block!("graph", version 4, {
     "links" at Place::Files => [
         "path" Text, "deps" Json, "test_deps" Json, "tests" Json, "calls" Json, "cites" Json, "call_paths" Json,
-        "other_call_paths" Json, "brought" Json
+        "other_call_paths" Json, "brought" Json, "reexports" Json, "unbound_heads" Json
     ],
     "graph" at Place::One => ["nodes" Int ["graph", "nodes"], "edges" Int ["graph", "edges"]],
-    "fan_in" at list(&["graph", "top_fan_in"]) => ["module" Text, "degree" Int],
-    "layers" at list(&["graph", "layers"]) => ["name" Text, "modules" Int],
-    "touchpoints" at list(&["graph", "touchpoints"]) => ["module" Text, "fan_out" Int, "breadth" Int]
-});
+    "fan_in" at list(&["graph", "top_fan_in"]) => ["module" Text, "degree" Int]
+}, retired ["layers", "touchpoints"]);
 
 /// A história do git: os caminhos numa tabela, em ordem, e os commits
 /// apontando para ela, cada um com o título.
@@ -1725,7 +1734,9 @@ mod tests {
 
     /// Um mapa como o scan o grava: uma chave de cada jeito de guardar, em
     /// cada tabela, com lista vazia, chave que falta e chave que o banco não
-    /// guarda.
+    /// guarda — entre elas as que o scan antigo gravava e o banco deixou de
+    /// guardar: as camadas, os pontos de registro e as dependências de cada
+    /// projeto.
     fn scan_map() -> Value {
         json!({
             "root": "/proj",
@@ -1748,9 +1759,10 @@ mod tests {
                  ],
                  "deps": ["src/b.rs"], "calls": ["beta:2", "b.beta:4"], "call_paths": {"crate::b": ["beta:4"]},
                  "other_call_paths": {"std::fs": ["fs.read:5"]}, "brought": {"std::fs::{self}": ["fs"]},
+                 "reexports": {"io::leitor::Leitor": {"Leitor": "Leitor"}}, "unbound_heads": ["std"],
                  "routes": [{"method": "GET", "path": "pedidos/{}", "written": "/pedidos/:id", "handler": "alpha", "line": 1,
                              "framework": "axum"}],
-                 "file_doc": "O leitor dos pedidos.", "file_comment": "o total vem de beta"},
+                 "file_doc": "O leitor dos pedidos.", "file_comment": "o fim do leitor", "file_doc_in_body": 3},
                 {"path": "src/b.rs", "language": "rust", "loc": 20, "imports": ["crate::a"], "namespaces": [],
                  "declarations": [], "file_class": "generated", "marker": "@generated"}
             ],
@@ -1781,8 +1793,12 @@ mod tests {
         let mut expected = map;
         let Value::Object(top) = &mut expected else { unreachable!() };
         top.remove("shared_contracts");
-        top["graph"].as_object_mut().unwrap().retain(|key, _| !["cyclic", "top_fan_out"].contains(&key.as_str()));
+        top["graph"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|key, _| !["cyclic", "top_fan_out", "layers", "touchpoints"].contains(&key.as_str()));
         top["coverage"].as_object_mut().unwrap().retain(|key, _| key == "skipped_build_dirs");
+        top["projects"][0].as_object_mut().unwrap().remove("dependencies");
         assert_eq!(back, expected);
         assert_eq!(stored.marks.len(), BLOCKS.len());
         assert!(stored.marks.values().all(|mark| mark == "scan 1"), "{:?}", stored.marks);
@@ -1847,8 +1863,10 @@ mod tests {
 
         let state = read_state_at(&model).unwrap();
         let back: Value = serde_json::from_str(&state.json).unwrap();
+        let mut expected = map.clone();
+        expected["projects"][0].as_object_mut().unwrap().remove("dependencies");
         for key in ["root", "state", "manifests", "projects", "languages", "frameworks", "skeleton", "detected_stacks"] {
-            assert_eq!(back[key], map[key], "{key}");
+            assert_eq!(back[key], expected[key], "{key}");
         }
         assert_eq!(back["coverage"], json!({"skipped_build_dirs": ["target"]}));
         assert_eq!(
@@ -1902,12 +1920,65 @@ mod tests {
             names,
             [
                 "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
-                "graph", "fan_in", "layers", "touchpoints", "history_paths", "commits", "blocks"
+                "graph", "fan_in", "history_paths", "commits", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];
         assert_eq!(decls[0]["file"], json!("src/a.rs"));
         assert_eq!(decls[0]["used_by"], json!(["src/b.rs:2:beta"]));
         assert_eq!(decls[1]["doc"], Value::Null);
+    }
+
+    /// As tabelas do banco da pasta e as colunas de cada uma.
+    fn tables_and_columns(conn: &Connection) -> BTreeMap<String, Vec<String>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.name, c.name FROM pragma_table_list AS t JOIN pragma_table_info(t.name) AS c \
+                 WHERE t.schema = 'main' AND t.type = 'table' AND t.name NOT LIKE 'sqlite_%' ORDER BY t.name, c.cid",
+            )
+            .unwrap();
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap();
+        for row in rows {
+            let (table, column) = row.unwrap();
+            out.entry(table).or_default().push(column);
+        }
+        out
+    }
+
+    /// O banco gravado no formato de antes — a coluna das dependências na
+    /// tabela dos projetos, as tabelas das camadas e dos pontos de registro
+    /// no grafo — perde na troca de versão o que ninguém mais lê, e o mapa
+    /// volta inteiro na gravação seguinte.
+    #[test]
+    fn a_database_of_the_old_format_loses_what_nobody_reads_on_the_version_change() {
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        assert!(save_at(&model, &scan_map(), "scan 1", &languages()).unwrap());
+        {
+            let conn = Connection::open(&model).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE projects ADD COLUMN dependencies TEXT; \
+                 CREATE TABLE layers(name TEXT, modules INTEGER); INSERT INTO layers VALUES ('L0', 2); \
+                 CREATE TABLE touchpoints(module TEXT, fan_out INTEGER, breadth INTEGER); \
+                 INSERT INTO touchpoints VALUES ('src/a.rs', 1, 1); \
+                 UPDATE blocks SET version = version - 1 WHERE name IN ('census', 'graph');",
+            )
+            .unwrap();
+            let before = tables_and_columns(&conn);
+            assert!(before.contains_key("layers") && before.contains_key("touchpoints"), "{before:?}");
+            assert!(before["projects"].contains(&"dependencies".to_string()), "{before:?}");
+        }
+
+        assert!(save_at(&model, &scan_map(), "scan 2", &languages()).unwrap());
+        let after = tables_and_columns(&Connection::open(&model).unwrap());
+        assert!(!after.contains_key("layers") && !after.contains_key("touchpoints"), "{after:?}");
+        assert!(!after["projects"].contains(&"dependencies".to_string()), "{:?}", after["projects"]);
+        assert!(after["manifests"].contains(&"dependencies".to_string()), "{:?}", after["manifests"]);
+        let back: Value = serde_json::from_str(&read_stored_at(&model).unwrap().json).unwrap();
+        assert_eq!(back["modules"].as_array().map(Vec::len), Some(2));
+        assert_eq!(back["graph"], json!({"nodes": 2, "edges": 1, "top_fan_in": [{"module": "src/b.rs", "degree": 1}]}));
+        assert_eq!(back["manifests"][0]["dependencies"], json!(["serde"]));
+        assert_eq!(back["projects"][0].get("dependencies"), None, "{}", back["projects"]);
     }
 }

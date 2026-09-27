@@ -9,6 +9,38 @@
 (import_clause (identifier) @imported)
 (namespace_import (identifier) @imported)
 
+; O repasse: `export * from './x'` oferece a quem importa o arquivo tudo o que
+; `./x` oferece, e `export { a } from './x'`, só `a`. Quem importa pede o nome
+; novo de `export { a as b } from './x'`, e o repasse o tira de `./x` pelo de
+; origem. O repasse é também import do arquivo.
+(export_statement source: (string (string_fragment) @reexport))
+(export_statement
+  (export_clause (export_specifier name: (_) @imported !alias))
+  source: (_))
+(export_statement
+  (export_clause (export_specifier name: (_) @reexport.original alias: (_) @imported))
+  source: (_))
+
+; `require('m')` importa `m` como o `import`, e o nome que recebe o que ele
+; devolve é o que ele traz: `x` em `const x = require('m')`, `a` e `b` em
+; `const { a, b: b } = require('m')`.
+((call_expression
+   function: (identifier) @_require
+   arguments: (arguments . (string (string_fragment) @import)))
+  (#eq? @_require "require"))
+((variable_declarator
+   name: (identifier) @imported
+   value: (call_expression function: (identifier) @_require))
+  (#eq? @_require "require"))
+((variable_declarator
+   name: (object_pattern (shorthand_property_identifier_pattern) @imported)
+   value: (call_expression function: (identifier) @_require))
+  (#eq? @_require "require"))
+((variable_declarator
+   name: (object_pattern (pair_pattern key: (_) @imported value: (identifier) @imported))
+   value: (call_expression function: (identifier) @_require))
+  (#eq? @_require "require"))
+
 (class_declaration name: (_) @name) @definition.class
 (abstract_class_declaration name: (_) @name) @definition.class
 (interface_declaration name: (_) @name) @definition.interface
@@ -70,6 +102,8 @@
 (optional_parameter pattern: (identifier) @local)
 (arrow_function parameter: (identifier) @local)
 (rest_pattern (identifier) @local)
+(for_in_statement left: (identifier) @local)
+(catch_clause parameter: (identifier) @local)
 
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
