@@ -3,12 +3,15 @@
 //!
 //! Três passos sobre o grafo de importações do mapa:
 //!
-//! 1. o papel de cada arquivo, sem lista de nomes: o sufixo com ponto que se
-//!    repete em [`SUFFIX_FILES`] arquivos do mapa ou mais
-//!    (`pedido.service.ts` dá `service`); senão, a pasta mais próxima cujo
-//!    nome se repete sob [`FOLDER_PARENTS`] pais diferentes; senão, a
-//!    unidade de topo — o projeto do censo, ou a pasta logo abaixo da pasta
-//!    que guarda o código dele inteiro (`src/`);
+//! 1. o papel de cada arquivo, sem lista de nomes: o sufixo do nome — a
+//!    última palavra do nome sem a extensão, quando ele tem duas ou mais —
+//!    que se repete em [`SUFFIX_FILES`] arquivos do mapa ou mais
+//!    (`pedido.service.ts`, `pedido_service.go` e `PedidoService.cs` dão
+//!    `service`); o nome de uma palavra só que se repete sob
+//!    [`FOLDER_PARENTS`] pastas diferentes (`views.py`, `handler.go`);
+//!    senão, a pasta mais próxima cujo nome se repete sob [`FOLDER_PARENTS`]
+//!    pais diferentes; senão, a unidade de topo — o projeto do censo, ou a
+//!    pasta logo abaixo da pasta que guarda o código dele inteiro (`src/`);
 //! 2. o arquivo que concentra a contramão vira papel próprio: das
 //!    importações de um lado que vai contra a maioria do par, ou de um lado
 //!    de um par sem direção, [`AGAINST_IMPORTS`] ou mais, com
@@ -32,12 +35,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::domain::ast::is_test_path;
 use crate::domain::project_map::{MapModule, MapProject, ProjectMap};
 
-/// Em quantos arquivos do projeto o sufixo com ponto se repete para virar
+/// Em quantos arquivos do projeto o sufixo do nome se repete para virar
 /// papel.
 const SUFFIX_FILES: usize = 5;
 
-/// Sob quantos pais diferentes o nome de uma pasta se repete, no projeto,
-/// para virar papel.
+/// Sob quantos pais diferentes o nome de uma pasta, ou o nome de uma palavra
+/// só de um arquivo, se repete, no projeto, para virar papel.
 const FOLDER_PARENTS: usize = 3;
 
 /// Quantas importações, somados os dois sentidos, um par de papéis precisa
@@ -232,8 +235,8 @@ fn inner<'s>(segments: &'s [&'s str], common: usize) -> &'s [&'s str] {
     segments[..segments.len() - 1].get(common..).unwrap_or(&[])
 }
 
-/// O papel de cada arquivo (o primeiro passo do começo do módulo). O sufixo e
-/// a pasta se contam no mapa inteiro; a unidade de topo é o projeto do
+/// O papel de cada arquivo (o primeiro passo do começo do módulo). O sufixo,
+/// o nome de uma palavra só e a pasta se contam no mapa inteiro; a unidade de topo é o projeto do
 /// arquivo e, quando o código do projeto mora numa pasta só (`src/`), a pasta
 /// logo abaixo dela; o arquivo solto na pasta do projeto, como o de
 /// compilação, não conta para achar essa pasta. Com um projeto só, o nome
@@ -243,6 +246,7 @@ fn roles_of(files: &[&MapModule], projects: &[MapProject]) -> BTreeMap<String, S
     let groups = groups_of(files, projects);
     let several = groups.len() > 1;
     let suffixes = repeated_suffixes(files);
+    let single_words = repeated_single_words(files);
     let folders = repeated_folders(&groups);
     let mut roles = BTreeMap::new();
     for group in &groups {
@@ -250,7 +254,8 @@ fn roles_of(files: &[&MapModule], projects: &[MapProject]) -> BTreeMap<String, S
         for (path, segments) in &group.files {
             let inner = inner(segments, group.common);
             let folder = || inner.iter().rev().map(|s| s.to_lowercase()).find(|s| folders.contains(s));
-            let role = suffix_of(path).filter(|s| suffixes.contains(s)).or_else(folder);
+            let word = || single_word_of(path).filter(|w| single_words.contains(w));
+            let role = suffix_of(path).filter(|s| suffixes.contains(s)).or_else(word).or_else(folder);
             let label = match (role, inner.first()) {
                 (Some(role), _) if named => format!("{}:{role}", group.name),
                 (Some(role), _) => role,
@@ -295,17 +300,75 @@ fn common_depth(files: &[(&str, Vec<&str>)]) -> usize {
     folders.fold(first.len(), |common, other| first[..common].iter().zip(other).take_while(|(a, b)| a == b).count())
 }
 
-/// O sufixo com ponto do nome do arquivo, sem a extensão, em minúsculas
-/// (`service` em `pedido.service.ts`); `None` sem ele.
-fn suffix_of(path: &str) -> Option<String> {
+/// As palavras do nome do arquivo sem a extensão, em minúsculas. O nome se
+/// separa em `.`, `_` e `-` e na troca de minúscula para maiúscula; a sigla
+/// em maiúsculas fica uma palavra só até a última maiúscula antes de uma
+/// minúscula: `IPedidoService` dá `i`, `pedido`, `service`; `HTTPClient` dá
+/// `http`, `client`; `pedido_service` dá `pedido`, `service`.
+fn words_of(path: &str) -> Vec<String> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
-    let (_, suffix) = stem.rsplit_once('.')?;
-    Some(suffix.to_lowercase()).filter(|suffix| !suffix.is_empty())
+    let mut words = Vec::new();
+    for piece in stem.split(['.', '_', '-']) {
+        let letters: Vec<char> = piece.chars().collect();
+        let mut word = String::new();
+        for (at, &letter) in letters.iter().enumerate() {
+            let before = at.checked_sub(1).map(|b| letters[b]);
+            let after = letters.get(at + 1);
+            let from_lower = before.is_some_and(char::is_lowercase) && letter.is_uppercase();
+            let ends_acronym = before.is_some_and(char::is_uppercase)
+                && letter.is_uppercase()
+                && after.is_some_and(|a| a.is_lowercase());
+            if (from_lower || ends_acronym) && !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            word.extend(letter.to_lowercase());
+        }
+        if !word.is_empty() {
+            words.push(word);
+        }
+    }
+    words
 }
 
-/// Os sufixos com ponto que se repetem em [`SUFFIX_FILES`] arquivos do mapa
-/// ou mais.
+/// O sufixo do nome do arquivo: a última palavra de [`words_of`], quando o
+/// nome tem duas ou mais, com ponto entre elas ou sem (`service` em
+/// `pedido.service.ts`, `pedido_service.go` e `PedidoService.cs`); `None` no
+/// nome de uma palavra só.
+fn suffix_of(path: &str) -> Option<String> {
+    let mut words = words_of(path);
+    if words.len() < 2 {
+        return None;
+    }
+    words.pop()
+}
+
+/// O nome do arquivo, quando ele é uma palavra só (`views` em `views.py`);
+/// `None` no nome de duas palavras ou mais.
+fn single_word_of(path: &str) -> Option<String> {
+    let mut words = words_of(path);
+    if words.len() != 1 {
+        return None;
+    }
+    words.pop()
+}
+
+/// Os nomes de uma palavra só que se repetem sob [`FOLDER_PARENTS`] pastas
+/// diferentes ou mais no mapa: o mesmo nome em pastas diferentes diz o papel
+/// do arquivo, como `views.py` em cada módulo ou `handler.go` em cada pacote.
+fn repeated_single_words(files: &[&MapModule]) -> BTreeSet<String> {
+    let mut folders: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for module in files {
+        if let Some(word) = single_word_of(&module.path) {
+            let folder = module.path.rsplit_once('/').map_or("", |(folder, _)| folder);
+            folders.entry(word).or_default().insert(folder);
+        }
+    }
+    folders.into_iter().filter(|(_, above)| above.len() >= FOLDER_PARENTS).map(|(word, _)| word).collect()
+}
+
+/// Os sufixos do nome que se repetem em [`SUFFIX_FILES`] arquivos do mapa ou
+/// mais.
 fn repeated_suffixes(files: &[&MapModule]) -> BTreeSet<String> {
     let mut count: BTreeMap<String, usize> = BTreeMap::new();
     for suffix in files.iter().filter_map(|m| suffix_of(&m.path)) {
@@ -491,5 +554,79 @@ mod tests {
         assert!(!pattern.roles.values().any(|role| role == "handler"), "{:?}", pattern.roles);
         map.modules.push(module("src/extra4/pedido4.handler.ts", &[]));
         assert!(learn(&map).roles.values().any(|role| role == "handler"), "5 files make the role");
+    }
+
+    /// O papel de cada arquivo de `paths`, num mapa só com eles e sem
+    /// importação nenhuma.
+    fn roles_of_paths(paths: &[String]) -> BTreeMap<String, String> {
+        let map = ProjectMap { modules: paths.iter().map(|path| module(path, &[])).collect(), ..ProjectMap::default() };
+        learn(&map).roles
+    }
+
+    /// Os caminhos de `paths` cujo papel não é `role`, com o papel que têm.
+    fn not_in_role<'p>(roles: &BTreeMap<String, String>, paths: &'p [String], role: &str) -> Vec<(&'p str, String)> {
+        paths.iter().filter(|path| roles[*path] != role).map(|path| (path.as_str(), roles[path].clone())).collect()
+    }
+
+    const MODULES: [&str; 5] = ["Pedido", "Cliente", "Produto", "Estoque", "Fatura"];
+
+    #[test]
+    fn five_controllers_named_in_camel_case_in_module_folders_have_the_controller_role() {
+        let paths: Vec<String> = MODULES.iter().map(|m| format!("{m}s/{m}Controller.cs")).collect();
+        let roles = roles_of_paths(&paths);
+        assert_eq!(not_in_role(&roles, &paths, "controller"), []);
+    }
+
+    #[test]
+    fn five_services_named_with_an_underscore_and_a_handler_in_three_packages_have_their_roles() {
+        let services: Vec<String> =
+            MODULES.iter().map(|m| m.to_lowercase()).map(|m| format!("internal/{m}s/{m}_service.go")).collect();
+        let handlers: Vec<String> =
+            MODULES[..3].iter().map(|m| format!("internal/{}s/handler.go", m.to_lowercase())).collect();
+        let roles = roles_of_paths(&[services.clone(), handlers.clone()].concat());
+        let missed = (not_in_role(&roles, &services, "service"), not_in_role(&roles, &handlers, "handler"));
+        assert_eq!(missed, (vec![], vec![]));
+    }
+
+    #[test]
+    fn views_in_three_modules_have_the_views_role() {
+        let paths: Vec<String> = ["pedidos", "clientes", "produtos"].iter().map(|m| format!("{m}/views.py")).collect();
+        let roles = roles_of_paths(&paths);
+        assert_eq!(not_in_role(&roles, &paths, "views"), []);
+    }
+
+    #[test]
+    fn five_dotted_services_keep_the_service_role() {
+        let paths: Vec<String> = MODULES.iter().map(|m| format!("src/{}/pedido.service.ts", m.to_lowercase())).collect();
+        let roles = roles_of_paths(&paths);
+        assert_eq!(not_in_role(&roles, &paths, "service"), []);
+    }
+
+    #[test]
+    fn a_single_word_name_in_two_folders_only_is_not_a_role() {
+        let paths: Vec<String> = ["pedidos", "clientes"].iter().map(|m| format!("{m}/views.py")).collect();
+        let roles = roles_of_paths(&paths);
+        assert!(!roles.values().any(|role| role == "views"), "{roles:?}");
+    }
+
+    #[test]
+    fn a_suffix_without_a_dot_in_four_files_only_is_not_a_role() {
+        let mut paths: Vec<String> =
+            MODULES[..4].iter().map(|m| m.to_lowercase()).map(|m| format!("internal/{m}s/{m}_service.go")).collect();
+        assert!(!roles_of_paths(&paths).values().any(|role| role == "service"), "4 files are not enough");
+        paths.push("internal/faturas/fatura_service.go".to_string());
+        assert_eq!(not_in_role(&roles_of_paths(&paths), &paths, "service"), [], "5 files make the role");
+    }
+
+    #[test]
+    fn the_words_of_a_name_split_at_separators_and_case_and_keep_an_acronym_whole() {
+        assert_eq!(words_of("src/IPedidoService.cs"), ["i", "pedido", "service"]);
+        assert_eq!(words_of("HTTPClient.ts"), ["http", "client"]);
+        assert_eq!(words_of("pkg/pedido_service.go"), ["pedido", "service"]);
+        assert_eq!(words_of("src/pedido.service.ts"), ["pedido", "service"]);
+        assert_eq!(words_of("app/views.py"), ["views"]);
+        assert_eq!(suffix_of("Pedidos/PedidoController.cs").as_deref(), Some("controller"));
+        assert_eq!(suffix_of("app/views.py"), None);
+        assert_eq!(single_word_of("app/views.py").as_deref(), Some("views"));
     }
 }

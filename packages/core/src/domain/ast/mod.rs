@@ -8,14 +8,15 @@
 //!
 //! O que restou tem quatro chamadores vivos — o mapa de testes do scan, o
 //! resumo do scan, o mapa do projeto e a prova de recuperação — e todos os
-//! quatro pedem a mesma função. O mapa de testes pede ainda o nome testado,
-//! que sai dos mesmos dados de convenção. Por isso o módulo carrega só as
-//! duas, e nada mais: nenhuma dependência de gramática, nenhum tipo público
+//! quatro pedem a mesma função. O mapa de testes pede ainda o nome testado e
+//! os marcadores de teste dentro do arquivo, que saem dos mesmos dados de
+//! convenção (`test-files.toml`, ao lado do módulo). Por isso o módulo carrega só as
+//! três, e nada mais: nenhuma dependência de gramática, nenhum tipo público
 //! que ninguém constrói.
 
 pub mod conventions;
 
-pub use conventions::{is_test_path, tested_name};
+pub use conventions::{inline_test_markers, is_test_path, tested_name};
 
 #[cfg(test)]
 mod tests {

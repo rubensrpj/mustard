@@ -2,110 +2,94 @@
 //! um caminho de arquivo: ele é de teste? E, sendo, que nome ele testa?
 //!
 //! É um predicado puro de caminho, sem nenhuma noção de linguagem, framework
-//! ou arquitetura: uma convenção de segmento de pasta e uma convenção de nome
-//! de arquivo. Este é o único lugar onde se declara o que é arquivo de teste;
-//! ninguém mantém lista própria. Quem lê a regra: o mapa de testes do scan
-//! (quais testes cobrem cada arquivo), os pontos de registro do grafo do scan
-//! (teste não conta), a evidência de pilha do scan, do projeto e de cada
-//! subprojeto (arquivo de teste não diz o que o projeto é) e o mapa do
-//! projeto (busca e exemplos).
+//! ou arquitetura: uma convenção de pasta e uma convenção de nome de arquivo.
+//! As listas moram num arquivo de dados só, `test-files.toml`, embutido na
+//! compilação; ninguém mantém lista própria, e aqui não há nome de língua nem
+//! de ferramenta. Quem lê a regra: o mapa de testes do scan (quais testes
+//! cobrem cada arquivo), os pontos de registro do grafo do scan (teste não
+//! conta), a evidência de pilha do scan, do projeto e de cada subprojeto
+//! (arquivo de teste não diz o que o projeto é), o mapa do projeto (busca e
+//! exemplos) e o padrão do projeto.
 
-/// Path segments that, by widely-shared convention across communities, mark a
-/// directory as holding tests, specs, fixtures, or mocks. Compared
-/// case-insensitively against a whole `/`-delimited segment — never as a
-/// substring — so `attestation/` (which merely contains the letters of
-/// `test`) is not mistaken for a test directory.
-const TEST_DIR_SEGMENTS: &[&str] = &[
-    "test",
-    "tests",
-    "__tests__",
-    "testdata",
-    "fixtures",
-    "__mocks__",
-];
+use std::sync::OnceLock;
 
-/// Segments that mark test terrain ONLY near the top of a project — because
-/// the same words are ordinary domain nouns everywhere else.
-///
-/// `spec/` beside the source tree is a real and widespread convention. `spec/`
-/// INSIDE the source tree is a folder about specifications, and the difference
-/// is where it sits, not what it is called. Treating the word as decisive at
-/// any depth cost this workspace 46 production modules and 1419 declarations —
-/// every module of its own `commands/spec/` family and its `domain/spec/`
-/// core — silently excluded from retrieval, so a request about specs could not
-/// reach the code that implements them. Nothing failed; the files were simply
-/// never candidates.
-///
-/// The unambiguous names above need no such qualification: no project calls a
-/// domain folder `__tests__` or `testdata`, so those stay decisive at any
-/// depth. This split is DATA — which words are ambiguous — not a rule about
-/// any language or framework.
-const AMBIGUOUS_TEST_DIR_SEGMENTS: &[&str] = &["spec", "specs"];
+use serde::Deserialize;
 
-/// How deep an [`AMBIGUOUS_TEST_DIR_SEGMENTS`] segment may sit and still count
-/// as test terrain (0-based index of the segment in the repo-relative path).
-///
-/// The convention places such a directory BESIDE the source tree, at the root
-/// of the project it tests: `spec/…` in a single-project repository, or
-/// `<subproject>/spec/…` under one level of monorepo nesting — index 0 through
-/// 2. Deeper than that it is inside a source tree, where it names a domain
-/// concept rather than a test suite.
-const AMBIGUOUS_MAX_DEPTH: usize = 2;
+/// As listas que dizem o que é arquivo de teste, lidas de `test-files.toml`,
+/// embutido na compilação. O porquê de cada lista está no cabeçalho dela, lá.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct TestFiles {
+    /// Pastas de teste em qualquer profundidade.
+    dirs: Vec<String>,
+    /// Pastas de teste só perto do topo, porque o nome é também do domínio.
+    ambiguous_dirs: Vec<String>,
+    /// A última posição do caminho, contando a primeira pasta como 0, em que
+    /// a pasta ambígua ainda conta.
+    ambiguous_max_depth: usize,
+    /// Terminações do nome de uma pasta de projeto de teste.
+    project_dir_endings: Vec<String>,
+    /// Sufixos do nome do arquivo sem a última extensão.
+    stem_suffixes: Vec<String>,
+    /// Sufixos aceitos só quando começam uma palavra camelCase.
+    camel_suffixes: Vec<String>,
+    /// Prefixos do nome do arquivo.
+    stem_prefixes: Vec<String>,
+    /// Marcadores de teste dentro do conteúdo do arquivo.
+    inline_markers: Vec<String>,
+}
 
-/// Filename-stem suffixes that mark a file as a test/spec by convention, in any
-/// of the common separator styles (`.`, `_`, `-`) plus the bare `tests` plural.
-/// Matched case-insensitively against the stem (the filename with its final
-/// extension removed).
-const TEST_STEM_SUFFIXES: &[&str] = &[
-    ".test", ".spec", "_test", "_spec", "-test", "-spec", "tests",
-];
+/// Os dados de teste, lidos uma vez. Dado ilegível vira listas vazias, sem
+/// derrubar quem pergunta; o teste deste módulo garante que o arquivo
+/// embutido se lê.
+fn data() -> &'static TestFiles {
+    static DATA: OnceLock<TestFiles> = OnceLock::new();
+    DATA.get_or_init(|| toml::from_str(include_str!("test-files.toml")).unwrap_or_default())
+}
 
-/// Bare suffixes (`test` / `spec`) accepted ONLY when they begin a camelCase
-/// word inside the stem — i.e. the char before the suffix is a lowercase
-/// letter or a digit and the suffix itself is capitalised in the original
-/// (un-lowered) stem. This admits the `FooSpec` / `OrderTest` convention while
-/// rejecting `latest` / `attest`, where the trailing `test` is not a word.
-const TEST_CAMEL_SUFFIXES: &[&str] = &["test", "spec"];
-
-/// Filename-stem prefixes that mark a file as a test by convention. Matched
-/// case-insensitively against the stem.
-///
-/// `test_` only. The spec conventions communities actually use are SUFFIXES —
-/// `foo_spec.rb`, `foo.spec.ts` — and both are already covered by
-/// [`TEST_STEM_SUFFIXES`]. There is no established `spec_foo` test convention,
-/// while `spec_views`, `spec_draft`, `spec_staleness` are ordinary names for
-/// modules ABOUT specifications. Carrying the prefix hid four such production
-/// modules, one of them the largest single file in its subproject.
-const TEST_STEM_PREFIXES: &[&str] = &["test_"];
+/// Os marcadores que, no conteúdo de um arquivo, dizem que ele guarda os
+/// próprios testes.
+#[must_use]
+pub fn inline_test_markers() -> &'static [String] {
+    &data().inline_markers
+}
 
 /// Whether a relative path points at a test/spec/fixture/mock file by
 /// convention — agnostic to any programming language or framework.
 ///
 /// The relative path is normalised to forward slashes and compared
-/// case-insensitively. It is a test path when EITHER:
+/// case-insensitively. It is a test path when ANY of these holds:
 ///
-/// - any whole path segment equals one of [`TEST_DIR_SEGMENTS`] (segment
-///   match, not substring — so `attestation/x.rs` is NOT a test path); OR
+/// - a whole path segment is one of the test folders of the data (segment
+///   match, not substring — so `attestation/x.rs` is NOT a test path), or one
+///   of its ambiguous folders sitting near the top;
+/// - a folder of the path (never the file) has a name that ends with one of
+///   the test-project endings (`MeuApp.Tests/`);
 /// - the filename stem (the final component with its last extension removed)
-///   ends with one of [`TEST_STEM_SUFFIXES`] or starts with one of
-///   [`TEST_STEM_PREFIXES`].
+///   ends with one of the stem suffixes, starts with one of the stem
+///   prefixes, or ends with a camelCase test word.
 #[must_use]
 pub fn is_test_path(rel: &str) -> bool {
+    let data = data();
     let slashed = rel.replace('\\', "/");
     let normalised = slashed.to_ascii_lowercase();
+    let segments: Vec<&str> = normalised.split('/').collect();
+    let folders = segments.len().saturating_sub(1);
 
-    // Segment convention: an unambiguous test directory counts at any depth; an
-    // ambiguous one (a word that is also an ordinary domain noun) counts only
-    // where the convention actually places it — see
-    // [`AMBIGUOUS_TEST_DIR_SEGMENTS`].
-    for (i, segment) in normalised.split('/').enumerate() {
+    // Pasta: a de teste conta em qualquer profundidade; a ambígua (nome que
+    // é também do domínio) só onde a convenção a põe, perto do topo; a pasta
+    // de projeto de teste conta pelo fim do nome, em qualquer profundidade.
+    for (i, segment) in segments.iter().enumerate() {
         if segment.is_empty() {
             continue;
         }
-        if TEST_DIR_SEGMENTS.contains(&segment) {
+        if has(&data.dirs, segment) {
             return true;
         }
-        if i <= AMBIGUOUS_MAX_DEPTH && AMBIGUOUS_TEST_DIR_SEGMENTS.contains(&segment) {
+        if i <= data.ambiguous_max_depth && has(&data.ambiguous_dirs, segment) {
+            return true;
+        }
+        if i < folders && data.project_dir_endings.iter().any(|end| segment.ends_with(end.as_str())) {
             return true;
         }
     }
@@ -124,22 +108,25 @@ pub fn is_test_path(rel: &str) -> bool {
     if stem.is_empty() {
         return false;
     }
-    if TEST_STEM_SUFFIXES.iter().any(|s| stem.ends_with(s)) {
+    if data.stem_suffixes.iter().any(|s| stem.ends_with(s.as_str())) {
         return true;
     }
-    if TEST_STEM_PREFIXES.iter().any(|p| stem.starts_with(p)) {
+    if data.stem_prefixes.iter().any(|p| stem.starts_with(p.as_str())) {
         return true;
     }
-    if camel_suffix_len(stem, stem_orig).is_some() {
-        return true;
-    }
-    false
+    camel_suffix_len(stem, stem_orig).is_some()
+}
+
+/// `list` traz `word` inteiro.
+fn has(list: &[String], word: &str) -> bool {
+    list.iter().any(|entry| entry == word)
 }
 
 /// O nome que um arquivo de teste testa: o nome dele sem a marca de teste, na
 /// caixa original — `foo.spec.ts` dá `foo`, `x.service.spec.ts` dá
-/// `x.service`, `FooTest.cs` dá `Foo`. A marca sai dos mesmos dados que
-/// [`is_test_path`] usa: os sufixos, os prefixos e a palavra camelCase.
+/// `x.service`, `FooTest.cs` dá `Foo`, `login.cy.ts` dá `login`. A marca sai
+/// dos mesmos dados que [`is_test_path`] usa: os sufixos, os prefixos e a
+/// palavra camelCase.
 ///
 /// Devolve `None` quando o caminho não é de teste, ou quando nada sobra depois
 /// de tirar a marca (`tests.rs`). O teste que só é teste pela pasta onde mora
@@ -149,13 +136,14 @@ pub fn tested_name(rel: &str) -> Option<&str> {
     if !is_test_path(rel) {
         return None;
     }
+    let data = data();
     let file = rel.rsplit(['/', '\\']).next()?;
     let stem_orig = stem_of(file);
     let stem = stem_orig.to_ascii_lowercase();
     let cut_end = |len: usize| stem_orig[..stem_orig.len() - len].trim_end_matches(['.', '_', '-']);
-    let name = if let Some(suffix) = TEST_STEM_SUFFIXES.iter().find(|s| stem.ends_with(*s)) {
+    let name = if let Some(suffix) = data.stem_suffixes.iter().find(|s| stem.ends_with(s.as_str())) {
         cut_end(suffix.len())
-    } else if let Some(prefix) = TEST_STEM_PREFIXES.iter().find(|p| stem.starts_with(*p)) {
+    } else if let Some(prefix) = data.stem_prefixes.iter().find(|p| stem.starts_with(p.as_str())) {
         stem_orig[prefix.len()..].trim_start_matches(['.', '_', '-'])
     } else if let Some(len) = camel_suffix_len(&stem, stem_orig) {
         cut_end(len)
@@ -174,8 +162,8 @@ fn stem_of(file: &str) -> &str {
     }
 }
 
-/// The length of the [`TEST_CAMEL_SUFFIXES`] entry that `stem` (lowered) ends
-/// with, when, in the original-case `stem_orig`, that suffix begins a
+/// The length of the camelCase test word of the data that `stem` (lowered)
+/// ends with, when, in the original-case `stem_orig`, that word begins a
 /// capitalised word preceded by a lowercase letter or digit — the `FooSpec` /
 /// `OrderTest` convention. `None` for `latest` / `attest`, where the trailing
 /// letters are not a separate word.
@@ -185,8 +173,8 @@ fn camel_suffix_len(stem: &str, stem_orig: &str) -> Option<usize> {
         // camel match rather than risk a byte-index mismatch.
         return None;
     }
-    for suffix in TEST_CAMEL_SUFFIXES {
-        if !stem.ends_with(suffix) {
+    for suffix in &data().camel_suffixes {
+        if !stem.ends_with(suffix.as_str()) {
             continue;
         }
         let start = stem.len() - suffix.len();
@@ -307,5 +295,69 @@ mod tests {
         // nas mesmas letras da marca.
         assert_eq!(tested_name("src/foo.ts"), None);
         assert_eq!(tested_name("src/latest.rs"), None);
+    }
+
+    #[test]
+    fn the_embedded_data_reads_and_every_list_has_entries() {
+        let data = data();
+        for (name, list) in [
+            ("dirs", &data.dirs),
+            ("ambiguous_dirs", &data.ambiguous_dirs),
+            ("project_dir_endings", &data.project_dir_endings),
+            ("stem_suffixes", &data.stem_suffixes),
+            ("camel_suffixes", &data.camel_suffixes),
+            ("stem_prefixes", &data.stem_prefixes),
+            ("inline_markers", &data.inline_markers),
+        ] {
+            assert!(!list.is_empty(), "a lista {name} saiu vazia do arquivo de dados");
+        }
+        assert_eq!(data.ambiguous_max_depth, 2);
+        assert_eq!(inline_test_markers(), ["#[cfg(test)]".to_string()]);
+    }
+
+    #[test]
+    fn end_to_end_folders_a_top_level_integration_folder_and_a_test_project_folder_hold_tests() {
+        // Pastas de ponta a ponta em qualquer profundidade, o sufixo `.cy`, a
+        // pasta ambígua no topo e a pasta de projeto de teste pelo fim do nome.
+        let paths = [
+            "e2e/helpers/login.ts",
+            "apps/web/e2e/pedido.ts",
+            "cypress/support/commands.ts",
+            "app/login.cy.ts",
+            "integration/pedidos.ts",
+            "a/b/integration/x.ts",
+            "MeuApp.Tests/Helpers/Fixture.cs",
+            "src/Loja.UnitTests/PedidoFixture.cs",
+            "src/Loja.IntegrationTests/Api/Setup.cs",
+            "Loja.Test/Base.cs",
+            "front/Loja.Specs/x.ts",
+            r"MeuApp.Tests\Helpers\Fixture.cs",
+        ];
+        let missed: Vec<&str> = paths.into_iter().filter(|path| !is_test_path(path)).collect();
+        assert!(missed.is_empty(), "deveriam ser teste: {missed:?}");
+    }
+
+    #[test]
+    fn domain_folders_that_resemble_the_new_test_names_stay_production() {
+        // A pasta das integrações com outro sistema, a pasta ambígua fundo
+        // demais, a pasta cujo nome termina nas letras sem o ponto, o arquivo
+        // cujo nome termina numa terminação de pasta, e `latest`.
+        let paths = [
+            "src/integrations/pagamento.ts",
+            "a/b/c/integration/x.ts",
+            "Contests/Placar.cs",
+            "src/Contest/Placar.cs",
+            "src/Pedido.Tests",
+            "latest.ts",
+            "src/policy.ts",
+        ];
+        let taken: Vec<&str> = paths.into_iter().filter(|path| is_test_path(path)).collect();
+        assert!(taken.is_empty(), "deveriam seguir produção: {taken:?}");
+    }
+
+    #[test]
+    fn an_end_to_end_spec_file_tests_the_name_before_its_mark() {
+        assert_eq!(tested_name("app/login.cy.ts"), Some("login"));
+        assert_eq!(tested_name("cypress/e2e/pedido.cy.js"), Some("pedido"));
     }
 }

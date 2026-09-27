@@ -1,13 +1,12 @@
 //! Which tests cover each file: a test that imports the file, or a test that
 //! keeps changing together with it in git. A file that carries its own tests
-//! (an inline marker from `test-dirs.toml`) says so on its own, and covers
-//! what its test block imports.
+//! (an inline marker from the core's test-file data, `test-files.toml`) says
+//! so on its own, and covers what its test block imports.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::OnceLock;
 
-use mustard_core::domain::ast::{is_test_path, tested_name};
+use mustard_core::domain::ast::{inline_test_markers, is_test_path, tested_name};
 use mustard_core::domain::project_map::{covers_by_history, history_stats, History};
 
 use crate::model::Module;
@@ -15,21 +14,10 @@ use crate::model::Module;
 /// How many covering tests a file keeps.
 const MAX_TESTS: usize = 10;
 
-/// The inline test markers declared in `test-dirs.toml` (data, not logic).
-fn inline_markers() -> &'static [String] {
-    static MARKERS: OnceLock<Vec<String>> = OnceLock::new();
-    MARKERS.get_or_init(|| {
-        let raw: toml::Value = toml::from_str(include_str!("../test-dirs.toml")).unwrap_or(toml::Value::Integer(0));
-        raw.get("inline_markers")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|w| w.as_str().map(str::to_string)).collect())
-            .unwrap_or_default()
-    })
-}
-
-/// `true` when the content carries one of the inline test markers.
+/// `true` when the content carries one of the inline test markers of the
+/// core's test-file data.
 pub(crate) fn has_inline_tests(content: &str) -> bool {
-    inline_markers().iter().any(|marker| content.contains(marker.as_str()))
+    inline_test_markers().iter().any(|marker| content.contains(marker.as_str()))
 }
 
 /// Por que um teste cobre um arquivo, do mais forte ao mais fraco: ele importa
@@ -121,6 +109,14 @@ mod tests {
         assert_eq!(modules[0].tests, vec!["tests/a_test.rs".to_string()]);
         assert_eq!(modules[1].tests, vec!["tests/b_flow.rs".to_string()]);
         assert!(modules[2].tests.is_empty());
+    }
+
+    #[test]
+    fn an_end_to_end_test_folder_covers_the_file_its_test_imports() {
+        let mut modules = vec![module("src/pedido.ts", &[]), module("e2e/pedido.ts", &["src/pedido.ts"])];
+        assign(&mut modules, &History::from_raw(Vec::new()));
+        assert_eq!(modules[0].tests, vec!["e2e/pedido.ts".to_string()]);
+        assert!(modules[1].tests.is_empty(), "o teste não ganha teste");
     }
 
     fn commit(id: &str, files: &[&str]) -> RawCommit {

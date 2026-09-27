@@ -79,8 +79,8 @@ A regra de quem é membro e de qual contrato vale está em
 
 **Testes de cada arquivo** (`testmap.rs`). Um arquivo é coberto pelo teste que o
 importa e pelo teste que muda junto com ele no git. O arquivo que traz o próprio
-teste (um marcador de `test-dirs.toml`) diz isso sozinho, e cobre o que o trecho
-de teste dele importa.
+teste (um marcador dos dados de teste do núcleo) diz isso sozinho, e cobre o que
+o trecho de teste dele importa.
 
 **Consciência de projeto.** Cada manifesto (`.csproj`, `package.json`, `go.mod`…,
 registrados em `manifests.toml`) vira um projeto; cada arquivo é atribuído ao
@@ -95,10 +95,12 @@ convergência de três evidências — as dependências dos manifestos, os camin
 dos arquivos e as assinaturas no código —, pelo registro de pilhas do
 `mustard-core`. A evidência de um arquivo de teste não conta: ela diz o que o
 projeto testa, não o que ele é. Arquivo de teste é o que a regra do núcleo
-(`is_test_path`, em `packages/core/src/domain/ast/conventions.rs`) diz que é —
-pela pasta (`tests/`, `fixtures/`, `testdata/`…) ou pelo nome (`foo_test.go`,
-`x.spec.ts`…) —, a mesma regra que o mapa de testes e os pontos de registro
-leem.
+(`is_test_path`) diz que é, pelos dados de
+`packages/core/src/domain/ast/test-files.toml` — pela pasta (`tests/`,
+`fixtures/`, `e2e/`…), pela pasta de projeto de teste (`MeuApp.Tests/`) ou pelo
+nome (`foo_test.go`, `x.spec.ts`, `login.cy.ts`…) —, a mesma regra que o mapa
+de testes e os pontos de registro leem. O mesmo arquivo guarda os marcadores de
+teste dentro do arquivo.
 
 **Arquivos escritos por máquina** (`classify.rs`). Cada arquivo gerado,
 vendorizado, lockfile ou minificado é marcado, com o marcador que decidiu. O
@@ -142,8 +144,8 @@ todos os diretórios?".
 
 **Nada de catálogo embutido.** O scan não conhece framework nem gerador. O que
 nomeia uma linguagem, um sistema de build ou um gerador mora nas tabelas de
-dados (`languages.toml`, `manifests.toml`, `test-dirs.toml`,
-`generated-markers.toml`) e nas consultas de `queries/`; `src/` só tem o motor
+dados (`languages.toml`, `manifests.toml`, `generated-markers.toml` e, no
+núcleo, `test-files.toml`) e nas consultas de `queries/`; `src/` só tem o motor
 genérico.
 
 ## Build

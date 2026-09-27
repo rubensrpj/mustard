@@ -2,7 +2,7 @@
 //! responsibility (mirrors graph.rs / extract.rs).
 //!
 //! Everything that names a tool, ecosystem or convention lives in the catalog
-//! (`generated-markers.toml`, embedded at compile time like test-dirs.toml);
+//! (`generated-markers.toml`, embedded at compile time);
 //! this engine is three generic probes — a head-of-file string/regex search,
 //! a path-glob match, and a line-length statistic — plus the repo's own
 //! OVERRIDES (.gitattributes `linguist-generated`, .editorconfig

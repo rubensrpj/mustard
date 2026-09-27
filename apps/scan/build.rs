@@ -507,8 +507,9 @@ fn read_queries(crate_root: &Path, root: &Path, dir: &str) -> String {
 }
 
 /// A digest of the scan's own sources: every file under `src/`, `queries/` and
-/// `routes/`, and every data `.toml` at the crate root (the package manifest apart, whose
-/// version already enters the format). Paths are relative and sorted, so the
+/// `routes/`, every data `.toml` at the crate root (the package manifest apart, whose
+/// version already enters the format), and the core's test-file data, which
+/// decides what the scan keeps from each file it reads. Paths are relative and sorted, so the
 /// digest depends on the content only, never on where the crate is checked
 /// out. FNV-1a over 64 bits: stable across builds and toolchains, with no
 /// dependency to add.
@@ -517,6 +518,9 @@ fn source_digest(crate_root: &Path) -> String {
     collect_files(&crate_root.join("src"), &mut files);
     collect_files(&crate_root.join("queries"), &mut files);
     collect_files(&crate_root.join("routes"), &mut files);
+    let test_files = crate_root.join(CORE_TEST_FILES);
+    println!("cargo:rerun-if-changed={}", relative_to(crate_root, &test_files));
+    files.push(test_files);
     for entry in fs::read_dir(crate_root).expect("read the crate root").flatten() {
         let path = entry.path();
         let is_data_toml = path.extension().and_then(|e| e.to_str()) == Some("toml")
@@ -546,6 +550,10 @@ fn source_digest(crate_root: &Path) -> String {
     }
     format!("{hash:016x}")
 }
+
+/// The core's test-file data, from the crate root: which files are tests and
+/// which content marks a file that holds its own tests.
+const CORE_TEST_FILES: &str = "../../packages/core/src/domain/ast/test-files.toml";
 
 /// `path` as cargo should record a watched file: relative to the crate root.
 ///
