@@ -310,7 +310,8 @@ fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
 
 /// As tarefas das ondas `waves` que pedem conferência no código, pelo
 /// código: as que têm arquivo declarado mudado num commit da branch
-/// posterior ao texto vigente delas. Sem git, sem arquivo declarado ou sem
+/// posterior à última versão delas que mudou o texto, os arquivos ou a parte
+/// do agente ([`changed_after_text`]). Sem git, sem arquivo declarado ou sem
 /// hora legível, a tarefa fica fora.
 fn tasks_to_check(root: &Path, log: &SpecLog, waves: &BTreeSet<u64>, codes: &BTreeMap<u64, String>) -> Vec<String> {
     log.visible()
@@ -323,9 +324,12 @@ fn tasks_to_check(root: &Path, log: &SpecLog, waves: &BTreeSet<u64>, codes: &BTr
 
 /// `true` quando o último commit que toca um arquivo declarado da tarefa é
 /// posterior ao texto vigente dela: o instante da última versão que mudou o
-/// texto ou os arquivos. A versão que só põe a tarefa numa onda — que a
-/// rodada grava antes de mostrar a escolha — herda o instante da anterior;
-/// contada, ela esconderia todo commit anterior à própria rodada.
+/// texto, os arquivos ou a parte do agente. A conferência no código pode
+/// devolver a tarefa com só a parte do agente reescrita; essa versão já leva
+/// em conta o código daquele instante, e o aviso cala até um commit novo. A
+/// versão que só põe a tarefa numa onda — que a rodada grava antes de
+/// mostrar a escolha — herda o instante da anterior; contada, ela esconderia
+/// todo commit anterior à própria rodada.
 fn changed_after_text(root: &Path, log: &SpecLog, task: &SpecEvent) -> bool {
     let files = task_files(task);
     if files.is_empty() {
@@ -333,7 +337,10 @@ fn changed_after_text(root: &Path, log: &SpecLog, task: &SpecEvent) -> bool {
     }
     let mut written = task;
     while let Some(previous) = written.replaced().first().and_then(|id| log.get(*id)) {
-        if previous.fields.get("text") != written.fields.get("text") || task_files(previous) != files {
+        if previous.fields.get("text") != written.fields.get("text")
+            || task_files(previous) != files
+            || previous.fields.get("agent") != written.fields.get("agent")
+        {
             break;
         }
         written = previous;
@@ -2213,5 +2220,152 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         let warned = out["warnings"].as_array().cloned().unwrap_or_default();
         assert!(!warned.iter().any(|w| w["reason"] == json!("stuck-ended")), "{out}");
+    }
+
+    /// A hora de agora deslocada em `hours` horas: no formato da hora dos
+    /// eventos, para gravar um evento à mão, e em segundos, para a hora de um
+    /// commit.
+    fn hours_from_now(hours: i64) -> (String, i64) {
+        let at = chrono::Local::now() + chrono::Duration::hours(hours);
+        (at.format("%Y-%m-%dT%H:%M:%S%:z").to_string(), at.timestamp())
+    }
+
+    /// Um commit em `root` que muda só `file`, com a hora `epoch`, em
+    /// segundos.
+    fn commit_at(root: &Path, file: &str, body: &str, epoch: i64) {
+        std::fs::write(root.join(file), body).unwrap();
+        let date = format!("{epoch} +0000");
+        for args in [vec!["add", "--", file], vec!["commit", "-q", "-m", "muda o arquivo"]] {
+            let out = std::process::Command::new("git")
+                .args(&args)
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+
+    /// A obra aprovada `x` com duas tarefas. A do plano, na onda 1, sobre
+    /// `src/a.rs`, foi escrita agora, depois do último commit nesse arquivo.
+    /// A outra, sobre `src/b.rs`, teve o texto escrito duas horas atrás, e um
+    /// commit mudou o arquivo dela uma hora atrás; com `wave`, ela nasce
+    /// nessa onda, e sem, no backlog, de onde a rodada a põe numa onda. Uma
+    /// regra do projeto todo faz a rodada pedir a escolha antes do envio, que
+    /// é onde a conferência aparece. Devolve o número e o código dessa
+    /// tarefa.
+    fn task_changed_after_its_text(root: &Path, wave: Option<u64>) -> (u64, String) {
+        let (text_at, _) = hours_from_now(-2);
+        let mut written = None;
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let rule = "Vale sempre: a saudação é curta.";
+            id_of(&write(root, "x", "rule", json!({"title": rule, "text": rule, "example": "e", "keys": ["k"],
+                "applies_to": {"files": ["**"]}, "origin": said})));
+            // O lote que a rodada forma leva os critérios que as tarefas dele
+            // cobrem: a tarefa cobre o critério da obra.
+            let criterion = log_of(root).visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id);
+            let mut task = json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste",
+                "text": "Trocar a saudação.", "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [criterion],
+                "origin": said});
+            if let Some(wave) = wave {
+                task["wave"] = json!(wave);
+            }
+            let path = store::spec_file(root, "x").unwrap();
+            let draft = task.as_object().cloned().expect("an object");
+            written = Some(store::write_at(&path, "task", draft, &[], &text_at).expect("the task"));
+        });
+        let (_, commit) = hours_from_now(-1);
+        commit_at(root, "src/b.rs", "fn saudacao() {}\n", commit);
+        let written = written.expect("the task was written");
+        (written.id, written.code.expect("a task has a code"))
+    }
+
+    /// A versão nova da tarefa `id`: os campos dela, com os de `changed` por
+    /// cima, apontando a anterior.
+    fn revision_of(log: &SpecLog, id: u64, changed: Value) -> Map<String, Value> {
+        let mut draft: Map<String, Value> = log
+            .get(id)
+            .expect("the task")
+            .fields
+            .iter()
+            .filter(|(key, _)| !["v", "id", "code", "at", "type", "search"].contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        draft.insert("replaces".into(), json!(id));
+        draft.extend(changed.as_object().cloned().unwrap_or_default());
+        draft
+    }
+
+    /// O começo da frase que pede a conferência das tarefas no código, antes
+    /// dos códigos delas.
+    fn check_opening() -> String {
+        let phrase = translate("round.analysis_check", Locale::PtBr);
+        phrase.split("{tasks}").next().unwrap_or_default().to_string()
+    }
+
+    /// A frase que pede a conferência no código só da tarefa `code`.
+    fn check_of(code: &str) -> String {
+        translate("round.analysis_check", Locale::PtBr).replace("{tasks}", code)
+    }
+
+    /// A tarefa com arquivo mudado num commit depois do texto dela entra na
+    /// conferência no código que a rodada pede junto com a escolha da onda;
+    /// a tarefa escrita depois do último commit no arquivo dela fica fora.
+    #[test]
+    fn a_commit_after_the_task_text_asks_to_check_the_task_against_the_code() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (_, code) = task_changed_after_its_text(root, Some(1));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["analysis"][0]["wave"], json!(1), "{out}");
+        assert!(out["next"].as_str().unwrap_or_default().contains(&check_of(&code)), "{out}");
+    }
+
+    /// A conferência que devolve a tarefa com só a parte do agente reescrita,
+    /// gravada depois do commit, cala o aviso: a tarefa já foi conferida
+    /// contra o código daquele commit. A escolha da onda continua pedida. Um
+    /// commit novo no arquivo, depois dessa versão, traz o aviso de volta.
+    #[test]
+    fn a_rewrite_of_only_the_agent_part_after_the_commit_silences_the_check() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (id, code) = task_changed_after_its_text(root, Some(1));
+        let revised = revision_of(&log_of(root), id, json!({"agent": "- a saudação já está curta; conferir pelo teste"}));
+        store::write(&store::spec_file(root, "x").unwrap(), "task", revised, &[]).expect("the new version");
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["analysis"][0]["wave"], json!(1), "{out}");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains(&translate("round.analysis", Locale::PtBr).replace("{waves}", "1")), "{out}");
+        assert!(!next.contains(&check_opening()), "{out}");
+
+        let (_, later) = hours_from_now(1);
+        commit_at(root, "src/b.rs", "fn saudacao_curta() {}\n", later);
+        let again = round(root, "x", None);
+        assert!(again["next"].as_str().unwrap_or_default().contains(&check_of(&code)), "{again}");
+    }
+
+    /// A versão que só põe a tarefa numa onda — a rodada a grava ao formar o
+    /// lote, depois do commit — herda o instante do texto: o commit que mudou
+    /// o arquivo depois do texto continua pedindo a conferência.
+    #[test]
+    fn the_version_that_only_sets_the_wave_still_asks_for_the_check() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (id, code) = task_changed_after_its_text(root, None);
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let log = log_of(root);
+        let current = log.current(id).expect("the task is still there");
+        assert_eq!(current.replaced(), vec![id], "the round wrote the version that sets the wave: {out}");
+        let wave = current.wave().expect("the round put the task in a wave");
+        let asked = out["analysis"].as_array().cloned().unwrap_or_default();
+        assert!(asked.iter().any(|a| a["wave"] == json!(wave)), "{out}");
+        assert!(out["next"].as_str().unwrap_or_default().contains(&check_of(&code)), "{out}");
     }
 }
