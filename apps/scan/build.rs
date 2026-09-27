@@ -80,6 +80,12 @@ fn main() {
     let mut relative_table = String::new();
     relative_table.push_str("pub(crate) static LANG_RELATIVE_IMPORT: &[(&str, &str, &str)] = &[\n");
 
+    // (name, qualified_separators) — os textos OPCIONAIS que juntam as partes
+    // de um nome qualificado na língua. Sem o campo, lista vazia: o motor usa
+    // os separadores de sempre.
+    let mut separators_table = String::new();
+    separators_table.push_str("pub(crate) static LANG_QUALIFIED_SEPARATORS: &[(&str, &[&str])] = &[\n");
+
     let alias_fields = ["alias_config", "alias_base", "alias_paths", "alias_extends"];
     let mut alias_field_tables: Vec<String> = alias_fields
         .iter()
@@ -149,6 +155,23 @@ fn main() {
             assert!(!separator.is_empty(), "language.relative_import of `{name}` must declare a non-empty separator");
             (separator, text("package_file"))
         });
+        let qualified_separators: Vec<String> = tbl
+            .get("qualified_separators")
+            .map(|v| {
+                v.as_array()
+                    .expect("language.qualified_separators must be an array")
+                    .iter()
+                    .map(|e| e.as_str().expect("qualified separator must be a string").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // A lista vazia na tabela quer dizer "sem o campo": declarada, ela
+        // precisa de ao menos um separador, e nenhum deles vazio.
+        assert!(
+            tbl.get("qualified_separators").is_none()
+                || (!qualified_separators.is_empty() && qualified_separators.iter().all(|s| !s.is_empty())),
+            "language.qualified_separators of `{name}` must list at least one non-empty separator"
+        );
         let namespace_scope = tbl
             .get("namespace_scope")
             .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
@@ -173,6 +196,7 @@ fn main() {
             .join(", ");
         let tags = doc_tags.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
         let import_exts = import_extensions.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(", ");
+        let separators = qualified_separators.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join(", ");
 
         writeln!(
             body,
@@ -185,6 +209,8 @@ fn main() {
         writeln!(import_ext_table, "    ({name:?}, &[{import_exts}]),")
             .expect("the generated table is a String, which never fails to write");
         writeln!(relative_table, "    ({name:?}, {separator:?}, {package_file:?}),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(separators_table, "    ({name:?}, &[{separators}]),")
             .expect("the generated table is a String, which never fails to write");
         for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
             writeln!(table, "    ({name:?}, {value:?}),").expect("the generated table is a String, which never fails to write");
@@ -202,6 +228,8 @@ fn main() {
     body.push_str(&import_ext_table);
     relative_table.push_str("];\n");
     body.push_str(&relative_table);
+    separators_table.push_str("];\n");
+    body.push_str(&separators_table);
     for table in &mut alias_field_tables {
         table.push_str("];\n");
         body.push_str(table);

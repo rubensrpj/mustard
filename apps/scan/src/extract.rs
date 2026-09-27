@@ -141,6 +141,23 @@ pub fn relative_import(lang: &str) -> Option<RelativeImport> {
         .map(|(_, separator, package_file)| RelativeImport { separator, package_file })
 }
 
+/// Os textos que juntam as partes de um nome qualificado na língua
+/// (`qualified_separators` em languages.toml), na ordem em que o registro os
+/// escreve. `None` quando a língua não os declara: quem lê usa a regra de
+/// sempre.
+pub fn qualified_separators(lang: &str) -> Option<&'static [&'static str]> {
+    LANG_QUALIFIED_SEPARATORS
+        .iter()
+        .find(|(name, separators)| *name == lang && !separators.is_empty())
+        .map(|(_, separators)| *separators)
+}
+
+/// Os separadores que ligam um nome ao qualificador escrito antes dele: os da
+/// língua ou, quando ela não os declara, `::` e `.`.
+fn qualifier_separators(lang: &str) -> &'static [&'static str] {
+    qualified_separators(lang).unwrap_or(&["::", "."])
+}
+
 /// O valor de um campo de texto do registro para a língua; vazio sem o campo.
 fn text_field(table: &'static [(&'static str, &'static str)], lang: &str) -> &'static str {
     table.iter().find(|(name, _)| *name == lang).map_or("", |(_, value)| *value)
@@ -206,6 +223,10 @@ enum CapKind {
     /// import itself it is never a use.
     Imported,
     Namespace,
+    /// O caminho escrito antes do nome numa chamada qualificada (`crate::a`
+    /// em `crate::a::f()`): vira import do arquivo só quando começa por um
+    /// dos `root_aliases` da língua.
+    CallPath,
     Name,
     Supertype,
     /// An attribute or decorator adorning a declaration: never code of it.
@@ -228,6 +249,7 @@ fn classify(cap: &str) -> CapKind {
         "import.global" => CapKind::ImportGlobal,
         "imported" => CapKind::Imported,
         "namespace" => CapKind::Namespace,
+        "call.path" => CapKind::CallPath,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
         "decoration" => CapKind::Decoration,
@@ -305,6 +327,10 @@ impl Analyzer {
 
         // O import relativo por separador da língua, quando ela o declara.
         let relative = relative_import(&self.name);
+        // O começo que faz do caminho de uma chamada qualificada um lugar do
+        // próprio projeto, e o que separa as partes dele.
+        let aliases = root_aliases(&self.name);
+        let separators = qualifier_separators(&self.name);
 
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
@@ -340,6 +366,18 @@ impl Analyzer {
                             let t = t.trim();
                             if !t.is_empty() {
                                 brought.push(t.to_string());
+                            }
+                        }
+                    }
+                    CapKind::CallPath => {
+                        // Só o caminho que começa no próprio projeto é import;
+                        // qualquer outro (`Vec::new()`, `std::fs::read()`)
+                        // segue como uso, como antes.
+                        if let Ok(t) = node.utf8_text(bytes) {
+                            let path: String = t.split_whitespace().collect();
+                            if aliases.contains(&first_segment(&path, separators)) {
+                                import_spans.insert((node.start_byte(), node.end_byte()));
+                                here_imports.push((path, false));
                             }
                         }
                     }
@@ -494,7 +532,7 @@ impl Analyzer {
         // defined, not a use of it) and minus what is written inside a
         // decoration, an import or a namespace name.
         let quiet: Spans = decorations.union(&import_spans).copied().collect();
-        (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at, &name_kinds);
+        (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at, &name_kinds, &self.name);
 
         out.imports.sort();
         out.imports.dedup();
@@ -808,13 +846,17 @@ fn one_line(text: &str, max: usize) -> String {
 /// what it spans, and only when it is of a type in `name_kinds`, the types the
 /// declarations of the file write their names with: `x.from(1)` is a call,
 /// and a modifier or a type keyword before a parenthesis is not.
+///
+/// O qualificador se lê pelos separadores de nome qualificado de `lang`.
 fn use_sites(
     root: Node,
     bytes: &[u8],
     quiet: &Spans,
     names_at: &BTreeSet<usize>,
     name_kinds: &BTreeSet<&str>,
+    lang: &str,
 ) -> (Vec<CallSite>, Vec<CallSite>) {
+    let separators = qualifier_separators(lang);
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cursor = root.walk();
@@ -836,7 +878,7 @@ fn use_sites(
         if !is_identifier(text) {
             continue;
         }
-        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes));
+        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, separators));
         if followed_by_open_paren(node, bytes) {
             calls.insert(site);
         } else if !against_a_quote(node, bytes) {
@@ -860,18 +902,15 @@ fn is_wrapped_word(node: Node, name_kinds: &BTreeSet<&str>) -> bool {
             .is_some_and(|c| c.child_count() == 0 && c.start_byte() == node.start_byte() && c.end_byte() == node.end_byte())
 }
 
-/// The name written right before the node and joined to it by `::` or `.`:
-/// `preco` in `crate::preco::total`, `model` in `model.User`. Empty when the
-/// node stands alone, or when what comes before the separator is not a name
-/// (`f().total`).
-fn qualifier_before(node: Node, bytes: &[u8]) -> String {
+/// The name written right before the node and joined to it by one of the
+/// language's `separators`: `preco` in `crate::preco::total`, `model` in
+/// `model.User`. Empty when the node stands alone, or when what comes before
+/// the separator is not a name (`f().total`, `...total`).
+fn qualifier_before(node: Node, bytes: &[u8], separators: &[&str]) -> String {
     let before = bytes[..node.start_byte()].trim_ascii_end();
-    let Some(before) = before.strip_suffix(b"::").or_else(|| before.strip_suffix(b".")) else {
+    let Some(before) = separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes())) else {
         return String::new();
     };
-    if before.ends_with(b".") {
-        return String::new();
-    }
     let before = before.trim_ascii_end();
     let start = before
         .iter()
@@ -881,6 +920,13 @@ fn qualifier_before(node: Node, bytes: &[u8]) -> String {
         Ok(q) if is_identifier(q) => q.to_string(),
         _ => String::new(),
     }
+}
+
+/// A primeira parte de um nome qualificado: o texto até o primeiro dos
+/// `separators`, ou o texto inteiro quando não há nenhum.
+fn first_segment<'a>(path: &'a str, separators: &[&str]) -> &'a str {
+    let cut = separators.iter().filter_map(|sep| path.find(sep)).min().unwrap_or(path.len());
+    &path[..cut]
 }
 
 /// The node touches a quote on either side: it is the text of a string, not a

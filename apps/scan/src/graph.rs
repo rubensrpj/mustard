@@ -377,7 +377,7 @@ fn resolve_declaration_links(
                 "folder" => parent_dir(&m.path),
                 _ => String::new(),
             };
-            m.namespaces.iter().map(|ns| (folder.clone(), canon_segments(ns))).collect()
+            m.namespaces.iter().map(|ns| (folder.clone(), canon_segments(ns, &m.language))).collect()
         })
         .collect();
     // The namespaces each file sees: its own, and in a language whose
@@ -605,7 +605,7 @@ impl<'a> Resolver<'a> {
                 ns_index
                     .entry(m.language.as_str())
                     .or_default()
-                    .entry(canon_segments(ns))
+                    .entry(canon_segments(ns, &m.language))
                     .or_default()
                     .push(m.path.clone());
             }
@@ -643,7 +643,7 @@ impl<'a> Resolver<'a> {
         // ends in an extension of the importer's own language, which is a file
         // path: its dots are the file's, not separators.
         let file_path = ends_in_own_extension(imp, crate::extract::extensions(&importer.language));
-        let canon = if file_path { imp.replace('\\', "/").replace("::", "/") } else { canon_segments(imp) };
+        let canon = if file_path { canon_file_path(imp, lang) } else { canon_segments(imp, lang) };
         let cleaned = canon.strip_prefix("package:").unwrap_or(&canon);
         // 0) A file path is read first from the importer's own folder.
         if file_path && !cleaned.starts_with('.') {
@@ -1005,17 +1005,38 @@ fn strip_import_ext(path: &str, lang: &str) -> String {
     }
 }
 
-/// Normalize qualified-name separators to one canonical segment form: `\` and
-/// `::` always become `/`; dots become `/` only when the string is not already
-/// path-ish (no `/` present, no leading `.` — a dotted namespace never starts
-/// with a dot, while a relative import always does).
-fn canon_segments(s: &str) -> String {
+/// O nome qualificado na forma única de partes separadas por `/`. Com os
+/// separadores que a língua declara (`qualified_separators`), cada um vira
+/// `/`, menos no texto que já é caminho: tem `/`, ou começa por `.` como o
+/// relativo. Sem o campo, a regra de sempre: `\` e `::` sempre viram `/`, e o
+/// ponto só quando o texto não é caminho (um namespace com pontos nunca
+/// começa por ponto, e o import relativo sempre começa).
+fn canon_segments(s: &str, lang: &str) -> String {
+    if let Some(separators) = crate::extract::qualified_separators(lang) {
+        return if s.contains('/') || s.starts_with('.') { s.to_string() } else { to_slashes(s, separators) };
+    }
     let flat = s.replace('\\', "/").replace("::", "/");
     if !flat.contains('/') && !flat.starts_with('.') && flat.contains('.') {
         flat.replace('.', "/")
     } else {
         flat
     }
+}
+
+/// O import que termina na extensão da própria língua é caminho de arquivo: os
+/// separadores da língua viram `/`, e a extensão fica como está. Sem o campo,
+/// `\` e `::` viram `/`, e os pontos são do arquivo.
+fn canon_file_path(imp: &str, lang: &str) -> String {
+    match (crate::extract::qualified_separators(lang), imp.rsplit_once('.')) {
+        (Some(separators), Some((stem, ext))) => format!("{}.{ext}", to_slashes(stem, separators)),
+        (Some(separators), None) => to_slashes(imp, separators),
+        (None, _) => imp.replace('\\', "/").replace("::", "/"),
+    }
+}
+
+/// Cada um dos `separators` trocado por `/`, na ordem em que vêm.
+fn to_slashes(s: &str, separators: &[&str]) -> String {
+    separators.iter().fold(s.to_string(), |text, sep| text.replace(sep, "/"))
 }
 
 /// Final path segment without its extension: `app/models/User.xyz` -> `User`.

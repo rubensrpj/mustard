@@ -19,6 +19,9 @@
 //!     `from . import x`, pasta de pacote com `__init__.py` e import absoluto.
 //!     E `graph_csharp_namespace/`: três arquivos num namespace, importado por
 //!     quem usa um tipo, por quem não usa nada e pelo nome qualificado.
+//!     E `graph_rust_qualified/`: chamadas pelo caminho completo no corpo, sem
+//!     `use` — a partir de `crate`, a partir de `super` e por um caminho de
+//!     fora do projeto (`std::fs::read`).
 //!
 //! Characterization baseline (recorded on the code BEFORE the resolution fix):
 //! csharp, typescript and go already produced edges; python, rust and php
@@ -308,4 +311,49 @@ fn a_fully_qualified_import_still_links_to_the_file_of_the_type() {
 fn a_qualified_type_without_its_own_file_links_only_to_what_is_used() {
     let v = scan_fixture_labeled("ns-no-file", "graph_csharp_namespace");
     assert_eq!(deps_of(&v, "src/Services/SemArquivo.cs"), vec!["src/Models/Produto.cs".to_string()]);
+}
+
+/// Os imports que o mapa grava para um módulo, como foram escritos.
+fn imports_of(v: &serde_json::Value, path: &str) -> Vec<String> {
+    let module = v["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .find(|m| m["path"] == path)
+        .unwrap_or_else(|| panic!("{path} está no mapa"));
+    module["imports"]
+        .as_array()
+        .map(|imports| imports.iter().map(|i| i.as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// A chamada escrita pelo caminho completo no corpo, sem `use`
+/// (`crate::a::b::f()` em `src/main.rs`), liga o arquivo ao que o caminho
+/// nomeia: `src/a/b.rs`.
+#[test]
+fn a_call_by_the_full_path_from_the_crate_links_to_the_file() {
+    let v = scan_fixture_labeled("rs-crate-path", "graph_rust_qualified");
+    assert_eq!(deps_of(&v, "src/main.rs"), vec!["src/a/b.rs".to_string()]);
+}
+
+/// O caminho completo que começa em `super` é lido a partir da pasta de quem
+/// chama: `super::x::f()` em `src/a/b.rs` liga a `src/a/x.rs`.
+#[test]
+fn a_call_by_the_full_path_from_super_links_to_the_file_beside() {
+    let v = scan_fixture_labeled("rs-super-path", "graph_rust_qualified");
+    assert_eq!(deps_of(&v, "src/a/b.rs"), vec!["src/a/x.rs".to_string()]);
+    assert_eq!(deps_of(&v, "src/a/x.rs"), Vec::<String>::new());
+}
+
+/// O caminho que não começa no próprio projeto (`std::fs::read()`,
+/// `Vec::new()`) não vira import, e o nome chamado segue lido como uso, com o
+/// qualificador de antes: dos três caminhos de `src/main.rs`, só
+/// `crate::a::b` é import.
+#[test]
+fn a_call_by_a_path_outside_the_project_is_not_an_import() {
+    let v = scan_fixture_labeled("rs-outside-path", "graph_rust_qualified");
+    assert_eq!(imports_of(&v, "src/main.rs"), vec!["crate::a::b".to_string()]);
+    let module = v["modules"].as_array().unwrap().iter().find(|m| m["path"] == "src/main.rs").unwrap();
+    let calls: Vec<&str> = module["calls"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
+    assert!(calls.contains(&"fs.read:3"), "a chamada de fora segue como uso: {calls:?}");
 }

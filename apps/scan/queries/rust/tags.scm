@@ -9,6 +9,12 @@
 (use_list (scoped_identifier name: (identifier) @imported))
 (use_as_clause alias: (identifier) @imported)
 
+; O caminho de uma chamada escrita pelo nome completo, sem `use`: `crate::a::b`
+; em `crate::a::b::f()`, já sem o nome chamado. Preso à chamada, e nunca a um
+; caminho solto, que casaria dentro do `use` e em cada pedaço do caminho. O
+; motor só o guarda como import quando ele começa por um dos `root_aliases`.
+(call_expression function: (scoped_identifier path: (_) @call.path))
+
 (struct_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait

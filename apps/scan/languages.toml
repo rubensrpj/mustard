@@ -21,7 +21,9 @@
 #                 in qualified import paths. Only imports starting with one of
 #                 these earn the graph's root-alias resolution probe; languages
 #                 that declare none never take that branch, so a fully external
-#                 import can never be mistaken for an internal module.
+#                 import can never be mistaken for an internal module. O
+#                 caminho de uma chamada qualificada (`@call.path`) só vira
+#                 import do arquivo quando começa por um destes.
 #   namespace_scope OPTIONAL — how a declared namespace is seen by the other files
 #                 of the same language, with no import between them:
 #                   "folder" the namespace holds only together with its folder
@@ -75,6 +77,15 @@
 #                 `package_file` da pasta; o que não existe no projeto não
 #                 liga a nada. O import que não começa pelo separador segue
 #                 como os outros.
+#   qualified_separators OPTIONAL — os textos que juntam as partes de um nome
+#                 qualificado na língua (`crate::a::b`). Cada um vira `/` na
+#                 forma única com que o grafo compara imports e namespaces,
+#                 menos no texto que já é caminho (tem `/` ou começa por `.`)
+#                 e, no import que termina na extensão da língua, menos na
+#                 extensão. É também o que liga um nome ao qualificador
+#                 escrito antes dele (`a` em `a::f()`). Sem o campo: `\` e
+#                 `::` sempre viram `/`, o ponto só fora de caminho, e o
+#                 qualificador é o nome antes de `::` ou de `.`.
 
 [[language]]
 name = "csharp"
@@ -123,6 +134,7 @@ extensions = ["rs"]
 dir = "rust"
 grammar = "grammar_rs::LANGUAGE"
 root_aliases = ["crate", "self", "super"]
+qualified_separators = ["::"]
 
 [[language]]
 name = "go"
