@@ -86,14 +86,14 @@ pub(super) fn next_waves(
         .filter(|n| !replanned.contains(n))
         .chain(delivered.iter().copied())
         .filter(|n| !to_redo.contains(n))
-        // A onda de lote que o corte esvaziou nunca volta como candidata
-        // fresca: o backlog já é quem reempacota a tarefa que ela perdeu, numa
-        // onda nova, e despachar esta de novo seria um pedido sem nada dentro.
-        .chain(emptied_backlog_waves(log, &graph))
         .collect();
+    // Só a onda do plano é candidata: a de lote que ficou sem tarefa saiu
+    // dele, e despachá-la seria um pedido sem nada dentro — o backlog já
+    // reempacota numa onda nova a tarefa que ela perdeu.
+    let planned = log.planned_waves();
     let mut depends: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for wave in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
-        if let Some(n) = wave.wave() {
+        if let Some(n) = wave.wave().filter(|n| planned.contains(n)) {
             depends.insert(n, wave.ints("depends_on"));
         }
     }
@@ -538,20 +538,6 @@ pub(crate) fn backlog_wave(log: &SpecLog, n: u64) -> bool {
     })
 }
 
-/// As ondas de lote que ficaram sem tarefa nenhuma: o corte de um lote em
-/// andamento devolveu a última tarefa dela ao backlog, e sem tarefa não há mais
-/// o que despachar — nem como pedido fresco, nem reenviando o de antes. Só a
-/// onda de lote entra aqui: a combinada à mão que fica sem tarefa por uma
-/// mudança de plano continua candidata, porque o backlog nunca vai reempacotar
-/// o que ela perdeu.
-pub(crate) fn emptied_backlog_waves(log: &SpecLog, graph: &WaveGraph) -> BTreeSet<u64> {
-    log.planned_waves()
-        .into_iter()
-        .filter(|n| graph.tasks.get(n).is_none_or(|tasks| tasks.is_empty()))
-        .filter(|n| backlog_wave(log, *n))
-        .collect()
-}
-
 /// Minutos desde a última ação da onda `wave`: a mais nova entre a hora do
 /// envio `sent` e a do arquivo de sinal de vida que
 /// [`crate::hooks::observe::wave_alive_observer`] grava para a vaga que o
@@ -666,10 +652,8 @@ pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
 /// ([`crate::commands::flow::plan`]), não uma segunda conta à parte que
 /// pudesse discordar dela.
 ///
-/// A onda de lote que perdeu todas as tarefas para o backlog já chega aqui
-/// dentro de `already_out`, marcada por quem chama: não é este código que
-/// distingue a onda esvaziada da onda combinada à mão que só está esperando
-/// uma tarefa nova, porque as duas têm `graph.tasks` vazio do mesmo jeito.
+/// Só as ondas de `depends` são candidatas: quem chama o monta com as ondas
+/// do plano ([`SpecLog::planned_waves`]), sem a de lote que ficou sem tarefa.
 fn ready_in_order(
     depends: &BTreeMap<u64, Vec<u64>>,
     graph: &WaveGraph,
@@ -919,7 +903,9 @@ pub(crate) fn dispatch_backlog(start: &Path, spec: &str, on_entry: &SpecLog, loc
         stale_batch_revisions(log).into_iter().map(|revised| ("wave", revised)).collect();
     let batches = if order.is_empty() { Vec::new() } else { pack_batches(&population, &order, BACKLOG_CAPACITY) };
 
-    let mut next_n = log.planned_waves().into_iter().max().unwrap_or(0);
+    // O número segue o maior já gravado, com a onda de lote que ficou vazia
+    // incluída: ela saiu do plano, mas o número dela não volta a nascer.
+    let mut next_n = log.last_wave_number();
     let mut formed = Vec::new();
     for batch in &batches {
         next_n += 1;
@@ -972,8 +958,8 @@ pub(crate) fn dispatch_backlog(start: &Path, spec: &str, on_entry: &SpecLog, loc
 /// [`dispatch_backlog`], junto dos lotes novos. A onda já enviada
 /// fica intocada: o pedido dela já foi montado, e mudar o registro não muda
 /// o que o agente já recebeu. A onda que perdeu todas as tarefas fica de
-/// fora: sem tarefa nenhuma ela não é mais candidata a sair
-/// ([`emptied_backlog_waves`]), e não há o que recalcular.
+/// fora: sem tarefa nenhuma ela saiu do plano
+/// ([`SpecLog::planned_waves`]), e não há o que recalcular.
 fn stale_batch_revisions(log: &SpecLog) -> Vec<Map<String, Value>> {
     let sent: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))

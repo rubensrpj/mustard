@@ -946,6 +946,20 @@ fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
     Ok(())
 }
 
+/// A recusa de [`finished`] para a obra `log`, pelo motivo e pela onda
+/// cobrada quando há uma; `None` quando a obra está pronta para fechar. Os
+/// testes da rodada conferem o fechamento lado a lado com a resposta dela.
+#[cfg(test)]
+pub(crate) fn finished_refusal(log: &SpecLog) -> Option<(String, Option<u64>)> {
+    finished(log).err().map(|refusal| {
+        let wave = match &refusal {
+            CloseRefusal::WaveWithoutCommit { wave } | CloseRefusal::WaveRejected { wave } => Some(*wave),
+            _ => None,
+        };
+        (refusal.reason(), wave)
+    })
+}
+
 /// Os critérios vigentes da spec: id, código e a prova de cada um, na ordem
 /// em que a leitura os dá. A máquina roda a prova de cada um daqui, e o
 /// caminho de volta ([`unowned_test_hints`]) usa a mesma lista para saber
@@ -3112,6 +3126,10 @@ exit "${2:-0}"
                 "origin": said})));
         write(root, "x", "wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit],
             "done_when": "passa", "origin": said}));
+        // A onda precisa de tarefa: a que o binário formou e ficou sem
+        // nenhuma sai do plano e não é cobrada.
+        write(root, "x", "task", json!({"wave": 2, "text": "Tarefa da onda 2.", "files": [],
+            "depends_on": [], "covers": [crit], "origin": said}));
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("wave-without-commit"), "{refused}");
         assert!(refused["hint"].as_str().unwrap_or_default().contains('2'), "{refused}");

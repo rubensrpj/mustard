@@ -520,7 +520,9 @@ fn fix_door(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: FixRed, push: Pus
 fn open_fix_wave(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: &FixRed, lang: Locale) -> Value {
     let refuse = |refusal: ReopenRefusal| refusal.report(lang);
     let pr = red.pr.to_string();
-    let n = log.planned_waves().iter().copied().max().unwrap_or(0) + 1;
+    // O número segue o maior já gravado, com a onda de lote que ficou vazia
+    // incluída: ela saiu do plano, mas o número dela não volta a nascer.
+    let n = log.last_wave_number() + 1;
     let what = fill("reopen.fix_wave_text", lang, &[("{pr}", &pr), ("{reason}", red.reason)]);
 
     let mut wave = Map::new();

@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 
 use super::commit::git_lock;
 use super::queue::{
-    analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, emptied_backlog_waves, first_unfinished, max_parallel, next_waves,
+    analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, first_unfinished, max_parallel, next_waves,
     open_review, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, Analysed,
 };
 use super::report::Taken;
@@ -28,7 +28,6 @@ use super::stops::{change_question, stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::{read::checkout, write::record};
-use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::shared::spec_state::DiskSpecState;
 
 /// Por que a rodada não correu.
@@ -251,21 +250,19 @@ fn wave_loop_message(cycle: &[u64], lang: Locale) -> String {
 
 /// As ondas a reenviar nesta rodada, cada uma com o número do pedido
 /// anterior: as órfãs, de um Claude Code que fechou, e as pausadas por este
-/// relatório — a onda pausada sai de novo na mesma rodada. A onda de lote que
-/// perdeu todas as tarefas para o backlog — o que o corte de uma onda de lote,
-/// no mesmo relatório, acabou de fazer — nunca entra aqui: sem tarefa
-/// nenhuma, reenviar seria despachar uma onda vazia.
+/// relatório — a onda pausada sai de novo na mesma rodada. Só a onda do plano
+/// entra aqui: a de lote que perdeu todas as tarefas para o backlog — o que o
+/// corte de uma onda de lote, no mesmo relatório, acabou de fazer — saiu dele
+/// ([`SpecLog::planned_waves`]), e reenviá-la seria despachar uma onda vazia.
 fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
     let last_sends = log.last_by_wave("send");
+    let planned = log.planned_waves();
     let mut out = orphaned_waves(log);
-    for wave in paused {
+    for wave in paused.iter().filter(|wave| planned.contains(wave)) {
         if let Some(sent) = last_sends.get(wave) {
             out.entry(*wave).or_insert(*sent);
         }
     }
-    let graph = wave_graph(log);
-    let emptied = emptied_backlog_waves(log, &graph);
-    out.retain(|wave, _| !emptied.contains(wave));
     out
 }
 

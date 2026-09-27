@@ -492,17 +492,41 @@ impl SpecLog {
             .collect()
     }
 
-    /// As ondas do plano: as que a leitura mostra. O que foi gravado em nome
-    /// de uma onda que saiu do plano — o veredito, que o binário não deixa
-    /// tirar, e o pedido e a entrega — não conta na rodada, no fechamento nem
-    /// no pedido.
+    /// As ondas do plano: as que a leitura mostra, menos a onda que o binário
+    /// formou (autor `binary`) e ficou sem tarefa visível nenhuma — o corte
+    /// devolveu as tarefas dela ao backlog, ou a tarefa foi regravada sem
+    /// onda antes do envio. Sem tarefa não há o que despachar nem o que
+    /// entregar, e o backlog reempacota o que ela perdeu numa onda nova. A
+    /// onda combinada à mão fica no plano mesmo sem tarefa, porque o backlog
+    /// nunca reempacota o que ela perdeu. O que foi gravado em nome de uma
+    /// onda que saiu do plano — o veredito, que o binário não deixa tirar, e
+    /// o pedido e a entrega — não conta na rodada, no fechamento nem no
+    /// pedido.
     #[must_use]
     pub fn planned_waves(&self) -> BTreeSet<u64> {
+        let waves = self.block(BlockQuery::Block(Block::Waves));
+        let with_task: BTreeSet<u64> =
+            waves.iter().filter(|e| e.event_type == "task").filter_map(|e| e.wave()).collect();
+        waves
+            .into_iter()
+            .filter(|e| e.event_type == "wave")
+            .filter(|e| e.str_field("author") != Some("binary") || e.wave().is_some_and(|n| with_task.contains(&n)))
+            .filter_map(SpecEvent::wave)
+            .collect()
+    }
+
+    /// O maior número de onda que a leitura mostra, com a onda que saiu do
+    /// plano por ficar vazia ([`Self::planned_waves`]) incluída; zero sem
+    /// onda nenhuma. A onda nova nasce depois dele, para nunca repetir o
+    /// número de uma onda que já foi gravada.
+    #[must_use]
+    pub fn last_wave_number(&self) -> u64 {
         self.block(BlockQuery::Block(Block::Waves))
             .into_iter()
             .filter(|e| e.event_type == "wave")
             .filter_map(SpecEvent::wave)
-            .collect()
+            .max()
+            .unwrap_or(0)
     }
 
     /// Os vereditos de cada onda do plano, do mais velho ao mais novo.
@@ -701,6 +725,24 @@ mod tests {
         // os dois, e não a onda nem a tarefa.
         let panel: Vec<u64> = log.block(BlockQuery::Block(Block::Metrics)).iter().map(|e| e.id).collect();
         assert_eq!(panel, [5, 6, 7]);
+    }
+
+    /// A onda que o binário formou e ficou sem tarefa sai do plano; a
+    /// combinada à mão sem tarefa fica. O número mais alto conta a onda que
+    /// saiu, para a onda nova não repetir o número dela.
+    #[test]
+    fn a_onda_do_binario_sem_tarefa_sai_do_plano_mas_guarda_o_numero() {
+        let content = "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"wave\",\"n\":1,\"text\":\"Uma.\",\"author\":\"assistant\"}\n\
+                       {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"wave\",\"n\":2,\"text\":\"Duas.\",\"author\":\"binary\"}\n\
+                       {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"wave\",\"n\":3,\"text\":\"Três.\",\"author\":\"binary\"}\n\
+                       {\"v\":1,\"id\":4,\"at\":\"t\",\"type\":\"wave\",\"n\":4,\"text\":\"Quatro.\",\"author\":\"binary\"}\n\
+                       {\"v\":1,\"id\":5,\"at\":\"t\",\"type\":\"task\",\"wave\":2,\"text\":\"Mexer.\"}\n\
+                       {\"v\":1,\"id\":6,\"at\":\"t\",\"type\":\"task\",\"wave\":4,\"text\":\"Mexer mais.\"}\n\
+                       {\"v\":1,\"id\":7,\"at\":\"t\",\"type\":\"task\",\"text\":\"Mexer mais, de volta ao backlog.\",\"replaces\":6}\n";
+        let log = parse_log(content);
+        assert_eq!(log.planned_waves(), BTreeSet::from([1, 2]));
+        assert_eq!(log.last_wave_number(), 4);
+        assert_eq!(parse_log("").last_wave_number(), 0);
     }
 
     /// Os arquivos entregues são os dos eventos `commit`, sem repetir, e não

@@ -1669,6 +1669,88 @@ mod tests {
         let sends_after =
             after_again.visible().iter().filter(|e| e.event_type == "send" && e.wave() == Some(2)).count();
         assert_eq!(sends_before, sends_after, "nenhum pedido novo foi gravado para a onda esvaziada");
+
+        // A onda esvaziada saiu do plano, mas o número dela não volta: o
+        // backlog reempacota as três tarefas na onda 3, e é ela que sai.
+        assert_eq!(waves_in(&again, "dispatch"), vec![3], "a rodada seguinte despacha a onda 3, não a 2: {again}");
+        for (label, id) in [("um", id1), ("dois", id2), ("três", id3)] {
+            assert_eq!(after_again.current(id).unwrap().wave(), Some(3), "a tarefa {label} vai para a onda 3");
+        }
+        assert!(!after_again.planned_waves().contains(&2), "a onda de lote sem tarefa sai do plano");
+
+        // Entregues a 1 e a 3, a obra está pronta: a rodada manda fechar, e o
+        // fechamento, pela mesma leitura, não cobra a onda vazia.
+        for file in ["src/b.rs", "src/c.rs", "src/d.rs"] {
+            std::fs::write(root.join(file), "fn um() {}\n").unwrap();
+        }
+        let first = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(first["ok"], json!(true), "{first}");
+        let done = round(root, "x", Some(&delivered(root, 3, "Saiu.", &["src/b.rs", "src/c.rs", "src/d.rs"])));
+        let closing = store::read(&path).unwrap().unwrap();
+        assert_eq!(
+            (done["command"].as_str(), crate::commands::flow::close::finished_refusal(&closing)),
+            (Some("mustard-rt run close --spec x"), None),
+            "entregue a 3, a rodada manda fechar e o fechamento não cobra commit da onda vazia: {done}"
+        );
+    }
+
+    /// A tarefa do lote ainda não enviado regravada sem onda volta ao backlog
+    /// e deixa o lote sem tarefa: ele sai do plano. A rodada forma com ela
+    /// um lote de número novo, sem repetir o do lote vazio, e, entregue esse
+    /// lote, a rodada manda fechar e o fechamento passa — os dois conferidos
+    /// pela mesma leitura, no mesmo teste.
+    #[test]
+    fn a_tarefa_regravada_sem_onda_tira_o_lote_nao_enviado_do_plano() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+        std::fs::write(root.join("src/b.rs"), "fn dois() {}\n").unwrap();
+        let loose = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Tarefa solta.", "files": [{"path": "src/b.rs"}], "depends_on": [],
+                "covers": [crit], "origin": said}),
+        ));
+        let log = store::read(&path).unwrap().unwrap();
+        let formed = dispatch_backlog(root, "x", &log, &log).expect("formou o lote");
+        assert_eq!(formed, vec![2], "a tarefa solta vira a onda de lote 2: {formed:?}");
+
+        // Antes de o lote sair, a tarefa é regravada sem onda: volta ao
+        // backlog, e o lote 2 fica sem tarefa nenhuma.
+        let log = store::read(&path).unwrap().unwrap();
+        let current = log.current(loose).unwrap().id;
+        write(
+            root,
+            "x",
+            "task",
+            json!({"replaces": current, "text": "Tarefa solta, reescrita.", "files": [{"path": "src/b.rs"}],
+                "depends_on": [], "covers": [crit], "origin": said}),
+        );
+        let log = store::read(&path).unwrap().unwrap();
+        assert!(log.current(loose).unwrap().wave().is_none(), "a tarefa voltou ao backlog");
+        assert_eq!(log.planned_waves().into_iter().collect::<Vec<_>>(), vec![1], "o lote sem tarefa sai do plano");
+
+        let out = round(root, "x", None);
+        let mut sent = waves_in(&out, "dispatch");
+        sent.sort_unstable();
+        assert_eq!(sent, vec![1, 3], "sai a onda 1 e o lote novo, com número novo: {out}");
+        let log = store::read(&path).unwrap().unwrap();
+        assert_eq!(log.current(loose).unwrap().wave(), Some(3), "a tarefa vai para o lote 3, não repete o 2");
+
+        let first = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(first["ok"], json!(true), "{first}");
+        let done = round(root, "x", Some(&delivered(root, 3, "Saiu.", &["src/b.rs"])));
+        let closing = store::read(&path).unwrap().unwrap();
+        assert_eq!(
+            (done["command"].as_str(), crate::commands::flow::close::finished_refusal(&closing)),
+            (Some("mustard-rt run close --spec x"), None),
+            "a rodada manda fechar e o fechamento passa, sem cobrar o lote vazio: {done}"
+        );
     }
 
     /// A mesma onda de lote, mas com o Claude Code ainda aberto por trás do
