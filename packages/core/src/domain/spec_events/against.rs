@@ -3,7 +3,7 @@
 //! levantamento fecha um ponto aberto e carrega a identidade dele, e a
 //! remoção não tira da leitura o que não pode sair.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
@@ -12,7 +12,7 @@ use crate::domain::survey;
 
 use super::check::missing;
 use super::read::ints;
-use super::{is_empty, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TimeFilter};
+use super::{is_empty, Block, BlockQuery, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TimeFilter};
 
 /// Troca cada código (`MSTD-RULE-NNNN`) dos campos que apontam eventos pelos
 /// números que ele nomeia no arquivo como está, para que a linha gravada
@@ -191,6 +191,9 @@ pub fn check_against(
     if event_type == "criterion" && event.get("form").is_none_or(is_empty) && replaces_form != Some(false) {
         return Err(Refusal::CriterionFormMissing);
     }
+    if event_type == "task" {
+        check_wave_dependencies(log, event)?;
+    }
     // De onde o evento veio é um evento que já está no arquivo: o número que
     // não existe, e o número do próprio evento, não dizem origem nenhuma.
     if let Some(origin) = event.get("origin").and_then(Value::as_u64)
@@ -249,6 +252,67 @@ pub fn check_against(
         _ => {}
     }
     Ok(effects)
+}
+
+/// A tarefa gravada, nova ou versão, com a onda N que ainda não saiu (sem
+/// envio gravado) só depende de tarefa que a rodada entrega antes dela: a
+/// versão vigente de cada dependência está numa onda entregue, na própria
+/// onda N, ou numa onda que a N espera, direto ou por outra onda. Senão a
+/// rodada soltaria a onda N antes da dependência. A onda que já saiu fica de
+/// fora: o pedido dela já foi feito. A dependência que não aponta tarefa
+/// vigente nenhuma não entra aqui: quem a recusa é a conferência da tarefa
+/// nova, e a rodada a ignora.
+fn check_wave_dependencies(log: &SpecLog, event: &Map<String, Value>) -> Result<(), Refusal> {
+    let Some(wave) = event.get("wave").and_then(Value::as_u64) else {
+        return Ok(());
+    };
+    let depends_on = event.get("depends_on").and_then(Value::as_array).cloned().unwrap_or_default();
+    if depends_on.is_empty() {
+        return Ok(());
+    }
+    let waves = log.block(BlockQuery::Block(Block::Waves));
+    if waves.iter().any(|e| e.event_type == "send" && e.wave() == Some(wave)) {
+        return Ok(());
+    }
+    // A própria onda e cada onda que ela espera pelo evento de onda, direto
+    // ou por outra onda.
+    let mut reached = BTreeSet::from([wave]);
+    let mut pending = vec![wave];
+    while let Some(n) = pending.pop() {
+        let waits = waves.iter().filter(|e| e.event_type == "wave" && e.wave() == Some(n)).flat_map(|e| e.ints("depends_on"));
+        for m in waits.collect::<Vec<_>>() {
+            if reached.insert(m) {
+                pending.push(m);
+            }
+        }
+    }
+    let delivered = log.delivered_waves();
+    let codes = log.codes();
+    let mut missing = Vec::new();
+    for value in &depends_on {
+        let Some(task) = current_task(log, &codes, value) else { continue };
+        if !task.wave().is_some_and(|m| reached.contains(&m) || delivered.contains(&m)) {
+            let label = codes.get(&task.id).map_or_else(|| task.id.to_string(), |code| format!("{code} ({})", task.id));
+            if !missing.contains(&label) {
+                missing.push(label);
+            }
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(Refusal::DependsOutsideWave { wave, missing })
+    }
+}
+
+/// A versão vigente da tarefa que `value` aponta, pelo número de qualquer
+/// versão ou pelo código; `None` quando não aponta tarefa vigente nenhuma.
+fn current_task<'a>(log: &'a SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<&'a SpecEvent> {
+    let id = match EventRef::from_value(value)? {
+        EventRef::Id(id) => id,
+        EventRef::Code(code) => log.events.iter().filter(|e| codes.get(&e.id) == Some(&code)).map(|e| e.id).next_back()?,
+    };
+    log.current(id).filter(|task| task.event_type == "task")
 }
 
 /// O ponto aberto que já está no arquivo com o mesmo bloco e a mesma lacuna
@@ -479,6 +543,73 @@ mod tests {
         assert!(en.contains("write a new task, without replaces. Nothing was written."), "{en}");
 
         assert!(over("note", 4).is_ok(), "a nota removida segue a regra de antes");
+    }
+
+    /// A tarefa numa onda que ainda não saiu só depende de tarefa que sai
+    /// antes dela. Onda 1 entregue com a tarefa 1; onda 2 sem envio com a
+    /// tarefa 2; onda 3 sem envio, que espera a 4, que espera a 5, com as
+    /// tarefas 4 e 7 na 3 e a 5 na 5; a tarefa 3 no backlog; onda 6 já
+    /// enviada.
+    #[test]
+    fn a_task_in_a_wave_not_yet_sent_depends_only_on_what_goes_out_before_it() {
+        let log = parse_log(
+            &[
+                line(1, "wave", ",\"n\":1"),
+                line(2, "task", ",\"code\":\"MSTD-TASK-0001\",\"wave\":1"),
+                line(3, "send", ",\"wave\":1"),
+                line(4, "delivered", ",\"wave\":1"),
+                line(5, "wave", ",\"n\":2"),
+                line(6, "task", ",\"code\":\"MSTD-TASK-0002\",\"wave\":2"),
+                line(7, "task", ",\"code\":\"MSTD-TASK-0003\""),
+                line(8, "wave", ",\"n\":3,\"depends_on\":[4]"),
+                line(9, "wave", ",\"n\":4,\"depends_on\":[5]"),
+                line(10, "wave", ",\"n\":5"),
+                line(11, "task", ",\"code\":\"MSTD-TASK-0004\",\"wave\":3"),
+                line(12, "task", ",\"code\":\"MSTD-TASK-0005\",\"wave\":5"),
+                line(13, "wave", ",\"n\":6"),
+                line(14, "task", ",\"code\":\"MSTD-TASK-0006\",\"wave\":6"),
+                line(15, "send", ",\"wave\":6"),
+                line(16, "task", ",\"code\":\"MSTD-TASK-0007\",\"wave\":3"),
+                line(17, "task", ",\"code\":\"MSTD-TASK-0003\",\"replaces\":7"),
+            ]
+            .concat(),
+        );
+        let version = |wave: Option<u64>, depends_on: Value| {
+            let mut draft = obj(json!({"type": "task", "replaces": 11, "depends_on": depends_on}));
+            if let Some(n) = wave {
+                draft.insert("wave".into(), json!(n));
+            }
+            check_against(&log, &draft, 18)
+        };
+        let backlog = Refusal::DependsOutsideWave { wave: 3, missing: vec!["MSTD-TASK-0003 (17)".into()] };
+
+        assert_eq!(version(Some(3), json!(["MSTD-TASK-0003"])), Err(backlog.clone()), "o backlog pelo código");
+        assert_eq!(version(Some(3), json!([7])), Err(backlog.clone()), "o backlog por uma versão velha");
+        let new_task = obj(json!({"type": "task", "wave": 3, "depends_on": [17]}));
+        assert_eq!(check_against(&log, &new_task, 18), Err(backlog), "a tarefa nova segue a mesma regra");
+        assert_eq!(
+            version(Some(3), json!([2, 17, "MSTD-TASK-0002", 6])),
+            Err(Refusal::DependsOutsideWave {
+                wave: 3,
+                missing: vec!["MSTD-TASK-0003 (17)".into(), "MSTD-TASK-0002 (6)".into()],
+            }),
+            "a onda sem envio que a onda não espera também falta, e cada tarefa sai uma vez"
+        );
+
+        assert_eq!(version(Some(3), json!([2])).map(|_| ()), Ok(()), "a onda entregue");
+        assert_eq!(version(Some(3), json!([16])).map(|_| ()), Ok(()), "a mesma onda");
+        assert_eq!(version(Some(3), json!(["MSTD-TASK-0005"])).map(|_| ()), Ok(()), "a onda que ela espera, por outra");
+        assert_eq!(version(None, json!([17, 6])).map(|_| ()), Ok(()), "sem onda, o backlog empacota na ordem");
+        assert_eq!(version(Some(6), json!([17, 6])).map(|_| ()), Ok(()), "a onda que já saiu fica de fora");
+
+        let refusal = version(Some(3), json!([17])).unwrap_err();
+        assert_eq!(refusal.reason(), "depends-outside-wave");
+        let pt = refusal.message(Locale::PtBr);
+        assert!(pt.contains("A tarefa vai para a onda 3, que ainda não saiu, e depende de MSTD-TASK-0003 (17)."), "{pt}");
+        assert!(pt.contains("Grave a tarefa sem wave: o backlog a põe numa onda depois das dependências."), "{pt}");
+        let en = refusal.message(Locale::EnUs);
+        assert!(en.contains("The task goes to wave 3, which has not gone out yet, and depends on MSTD-TASK-0003 (17)."), "{en}");
+        assert!(en.contains("Write the task without wave: the backlog puts it in a wave after its dependencies."), "{en}");
     }
 
     /// Com a versão 2 no lugar da 1, a versão nova sobre a 1 é recusada, e a

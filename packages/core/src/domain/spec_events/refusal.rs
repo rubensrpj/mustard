@@ -36,6 +36,12 @@ pub enum Refusal {
     /// que a remoção `by` tirou da leitura: gravá-la traria de volta o
     /// trabalho removido. Refazer é gravar uma tarefa nova. Nada é gravado.
     ReplacesRemoved { id: u64, by: u64 },
+    /// A tarefa gravada na onda `wave`, que ainda não saiu, depende das
+    /// tarefas de `missing`: nenhuma está nessa onda, numa onda entregue ou
+    /// numa onda que ela espera, e a rodada soltaria a onda antes delas. Cada
+    /// tarefa vai pelo código e pelo número, ou só pelo número sem código.
+    /// Nada é gravado.
+    DependsOutsideWave { wave: u64, missing: Vec<String> },
     FilterMatchesNothing { event_type: String, from: String, to: String },
     UnknownBlock { found: String },
     BadSpecName { spec: String },
@@ -281,6 +287,7 @@ impl Refusal {
             Self::ReplacesOtherType { .. } => "replaces-other-type",
             Self::ReplacesSuperseded { .. } => "replaces-superseded",
             Self::ReplacesRemoved { .. } => "replaces-removed",
+            Self::DependsOutsideWave { .. } => "depends-outside-wave",
             Self::FilterMatchesNothing { .. } => "filter-matches-nothing",
             Self::UnknownBlock { .. } => "unknown-block",
             Self::BadSpecName { .. } => "bad-spec-name",
@@ -429,6 +436,10 @@ impl Refusal {
             Self::ReplacesRemoved { id, by } => fill(
                 "spec_events.replaces_removed",
                 &[("{id}", id.to_string()), ("{by}", by.to_string())],
+            ),
+            Self::DependsOutsideWave { wave, missing } => fill(
+                "spec_events.depends_outside_wave",
+                &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
             ),
             Self::FilterMatchesNothing { event_type, from, to } => fill(
                 "spec_events.filter_matches_nothing",

@@ -456,6 +456,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Event {id} belongs to a task that removal {by} took out. To redo the work, write a \
              new task, without replaces. Nothing was written."
         }
+        ("spec_events.depends_outside_wave", Locale::PtBr) => {
+            "A tarefa vai para a onda {wave}, que ainda não saiu, e depende de {missing}. Essas \
+             tarefas não estão nela, numa onda entregue nem numa onda que ela espera. A rodada \
+             soltaria a onda antes delas. Grave a tarefa sem wave: o backlog a põe numa onda \
+             depois das dependências. Nada foi gravado."
+        }
+        ("spec_events.depends_outside_wave", Locale::EnUs) => {
+            "The task goes to wave {wave}, which has not gone out yet, and depends on {missing}. \
+             Those tasks are not in it, in a delivered wave, or in a wave it waits for. The round \
+             would send the wave before them. Write the task without wave: the backlog puts it in \
+             a wave after its dependencies. Nothing was written."
+        }
         ("spec_events.filter_matches_nothing", Locale::PtBr) => {
             "Nenhum evento {type} entre {from} e {to}. Nada foi gravado."
         }
@@ -859,8 +871,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            114,
-            0x97e9_706b_6d5b_107f,
+            115,
+            0xc37a_2eea_6fbd_5c1f,
         );
     }
 
@@ -932,6 +944,7 @@ mod tests {
             ("spec_events.replaces_other_type", &["{id}", "{found}", "{type}"][..]),
             ("spec_events.replaces_superseded", &["{id}", "{current}"][..]),
             ("spec_events.replaces_removed", &["{id}", "{by}"][..]),
+            ("spec_events.depends_outside_wave", &["{wave}", "{missing}"][..]),
             ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
@@ -1020,6 +1033,18 @@ mod tests {
     fn the_removed_task_refusal_reads_clearly() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let text = translate("spec_events.replaces_removed", lang).replace("{id}", "12").replace("{by}", "15");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// A recusa da tarefa que depende de outra fora da onda dela passa na
+    /// conferência de escrita das respostas, nos dois idiomas, com cada vaga
+    /// trocada por uma palavra.
+    #[test]
+    fn the_dependency_outside_the_wave_refusal_reads_clearly() {
+        for (lang, word) in [(Locale::PtBr, "tarefas"), (Locale::EnUs, "tasks")] {
+            let text = translate("spec_events.depends_outside_wave", lang).replace("{wave}", "3").replace("{missing}", word);
             let report = crate::domain::clarity::measure(&text, &[], Some(lang));
             assert!(report.passed, "{lang:?}: {report:?}");
         }

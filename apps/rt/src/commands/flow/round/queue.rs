@@ -3440,4 +3440,64 @@ mod tests {
         );
         assert_eq!(spec_now(root).max_id(), by, "nada foi gravado");
     }
+
+    /// A tarefa de uma onda de lote que ainda não saiu ganha, por uma versão
+    /// nova pela porta do modelo, a dependência de uma tarefa do backlog. Com
+    /// a onda, a gravação é recusada com o conserto, e nada é gravado; sem a
+    /// onda, passa, e a rodada seguinte solta a dependência antes dela, no
+    /// mesmo lote.
+    #[test]
+    fn a_wave_task_that_gains_a_backlog_dependency_goes_out_after_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let with_wave = batched(root, task);
+        let dependency = backlog_task(root, said, crit, "Preparar o código de um.", "src/a.rs");
+        let version = |wave: Option<u64>| {
+            let mut body = json!({"replaces": with_wave, "text": "Mexer no código de um.", "files": [{"path": "src/a.rs"}],
+                "depends_on": [dependency], "covers": [crit], "origin": said});
+            if let Some(n) = wave {
+                body["wave"] = json!(n);
+            }
+            write(root, "x", "task", body)
+        };
+
+        let before = spec_now(root).max_id();
+        let refused = version(Some(1));
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        assert_eq!(refused["reason"], json!("depends-outside-wave"), "{refused}");
+        assert!(refused["hint"].as_str().is_some_and(|hint| hint.contains("sem wave")), "{refused}");
+        assert_eq!(spec_now(root).max_id(), before, "nada foi gravado");
+
+        let accepted = id_of(&version(None));
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
+        assert_eq!(wave_order(root, 2), vec![dependency, accepted], "a dependência sai antes da tarefa");
+    }
+
+    /// Três tarefas do backlog no mesmo arquivo, cada uma esperando a
+    /// anterior: o lote leva as três, na ordem da cadeia, e a versão com a
+    /// onda de cada uma passa na conferência da gravação.
+    #[test]
+    fn a_backlog_batch_with_a_chain_inside_it_passes_the_check() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let first = backlog_task(root, said, crit, "Preparar o código de um.", "src/a.rs");
+        let after = |on: u64, text: &str| {
+            id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": "src/a.rs"}], "depends_on": [on],
+                "covers": [crit], "origin": said})))
+        };
+        let second = after(first, "Mexer no código de um.");
+        let third = after(second, "Testar o código de um.");
+
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log), Ok(vec![1]), "a cadeia vira um lote só");
+        assert_eq!(wave_order(root, 1), vec![first, second, third], "na ordem da cadeia");
+        let log = spec_now(root);
+        for task in [first, second, third] {
+            assert_eq!(log.current(task).and_then(SpecEvent::wave), Some(1), "a tarefa {task} ganhou a onda");
+        }
+    }
 }
