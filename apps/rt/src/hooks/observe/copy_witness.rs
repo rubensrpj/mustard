@@ -20,9 +20,18 @@
 //! de cada lote ficam guardadas na pasta da cópia. Quando todo lote voltou,
 //! ela grava o registro `copy` com o `last` guardado e as versões de todos
 //! os lotes, pela mesma gravação do `run write`, e apaga o registro: o mesmo
-//! resultado lido duas vezes não grava duas cópias. Quem toma o registro
-//! para gravar o renomeia antes, e só um consegue: dois lotes que voltam ao
-//! mesmo tempo gravam uma cópia só.
+//! resultado lido duas vezes não grava duas cópias.
+//!
+//! O passo inteiro, de ler o registro à limpeza, roda com a trava exclusiva
+//! do arquivo de eventos da spec presa, a mesma que a preparação da cópia
+//! segura enquanto apaga a pasta e a grava de novo, e a cópia é gravada sem
+//! soltá-la. Dois lotes que voltam ao mesmo tempo passam um de cada vez, e só
+//! o último grava a cópia; a preparação nova nunca apaga a pasta nem troca o
+//! registro no meio do passo.
+//!
+//! Cada preparação dá o número até onde ela vai, o `last` do registro, ao
+//! nome de cada arquivo que os lotes dela mandam: a volta atrasada de um lote
+//! de outra preparação não casa com o registro de agora e passa calada.
 //!
 //! ## Nunca barra
 //!
@@ -35,7 +44,8 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _};
+use mustard_core::io::spec_events::{self as store, LockedLog};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::translate;
 use mustard_core::ClaudePaths;
@@ -49,9 +59,14 @@ use crate::shared::spec_state::DiskSpecState;
 /// páginas.
 pub struct CopyWitness;
 
-/// O registro tomado por quem vai gravar a cópia, na pasta da cópia: sai
-/// dali gravada a cópia, e volta a ser o registro quando a gravação falha.
-const TAKEN: &str = "record.taken";
+#[cfg(test)]
+thread_local! {
+    /// Para os testes: um passo que a testemunha roda uma vez, na thread
+    /// dela, depois de casar o lote com o registro da cópia e antes de
+    /// guardar a volta e gravar a cópia.
+    pub(crate) static BEFORE_RECORDING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// O arquivo com as versões que o lote `n` (a partir de 1) devolveu, na
 /// pasta da cópia `folder`.
@@ -77,50 +92,57 @@ impl Check for CopyWitness {
 }
 
 /// Lê o resultado do lote de `input` na spec atual do projeto `root` e grava
-/// a cópia quando ele é o último a voltar; `true` quando gravou.
+/// a cópia quando ele é o último a voltar; `true` quando gravou. Tudo roda
+/// com a trava exclusiva do arquivo de eventos da spec presa.
 fn witness(root: &Path, session: Option<&str>, input: &HookInput) -> bool {
-    let state = DiskSpecState::new(root);
-    let Some(spec) = state.active(session) else { return false };
-    let Some(url) = state.log(&spec).as_ref().and_then(spec_page_url) else { return false };
+    let Some(spec) = DiskSpecState::new(root).active(session) else { return false };
+    let Ok(events) = store::spec_file(&store::spec_root(root), &spec) else { return false };
+    let Some(folder) = copy_folder(root, &spec) else { return false };
+    let recorded = store::with_locked_writer(&events, |locked| take_batch(root, &spec, &folder, input, locked));
+    matches!(recorded, Ok(Some(true)))
+}
+
+/// O passo de [`witness`] com a trava presa em `locked`: guarda as versões
+/// do lote na pasta da cópia `folder` e, quando todo lote do registro voltou,
+/// grava a cópia sem soltar a trava e apaga o registro e as voltas.
+fn take_batch(root: &Path, spec: &str, folder: &Path, input: &HookInput, locked: &mut LockedLog) -> bool {
+    let Some(url) = spec_page_url(locked.log()) else { return false };
     if input.tool_input.get("url").and_then(Value::as_str).map(str::trim) != Some(url.trim()) {
         return false;
     }
-    let Some(folder) = copy_folder(root, &spec) else { return false };
     let Some(saved) = read_json(&folder.join(SPEC_RECORD)) else { return false };
     let Some(batches) = saved["batches"].as_array() else { return false };
     let writes = sent_writes(&input.tool_input);
     let Some(n) = batch_of(&writes, batches) else { return false };
+    #[cfg(test)]
+    if let Some(step) = BEFORE_RECORDING.with(|step| step.borrow_mut().take()) {
+        step();
+    }
     let Some(versions) = input.raw.get("tool_response").and_then(|response| returned(response, &writes)) else {
         return false;
     };
-    if write_json(&returned_file(&folder, n), &json!({ "versions": versions })).is_err() {
+    if write_json(&returned_file(folder, n), &json!({ "versions": versions })).is_err() {
         return false;
     }
-    if !(1..=batches.len()).all(|batch| returned_file(&folder, batch).is_file()) {
-        return false;
-    }
-    // Só quem renomeia o registro grava: o outro lote que voltou junto, ou o
-    // mesmo resultado lido de novo, acha o registro já tomado.
-    let (record, taken) = (folder.join(SPEC_RECORD), folder.join(TAKEN));
-    if std::fs::rename(&record, &taken).is_err() {
+    if !(1..=batches.len()).all(|batch| returned_file(folder, batch).is_file()) {
         return false;
     }
     let mut draft = saved["record"].as_object().cloned().unwrap_or_default();
     let mut all = Map::new();
     for batch in 1..=batches.len() {
-        if let Some(Value::Object(versions)) = read_json(&returned_file(&folder, batch)).map(|v| v["versions"].clone()) {
+        if let Some(Value::Object(versions)) = read_json(&returned_file(folder, batch)).map(|v| v["versions"].clone()) {
             all.extend(versions);
         }
     }
     draft.insert("versions".into(), Value::Object(all));
     draft.insert("author".into(), json!("hook"));
-    if crate::commands::spec_events::write::record(root, &spec, "copy", draft, PhaseWriter::Binary).is_err() {
-        let _ = std::fs::rename(&taken, &record);
+    let copy = crate::commands::spec_events::write::record_locked(locked, root, spec, "copy", draft, PhaseWriter::Binary);
+    if copy.is_err() {
         return false;
     }
-    let _ = std::fs::remove_file(&taken);
+    let _ = std::fs::remove_file(folder.join(SPEC_RECORD));
     for batch in 1..=batches.len() {
-        let _ = std::fs::remove_file(returned_file(&folder, batch));
+        let _ = std::fs::remove_file(returned_file(folder, batch));
     }
     true
 }

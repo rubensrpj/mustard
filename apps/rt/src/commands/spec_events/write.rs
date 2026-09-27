@@ -192,6 +192,7 @@
 //! dela também não tem teto de idas e voltas: a gravação não corta o custo da
 //! onda, e nem o molde do agente corta.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -641,12 +642,12 @@ fn task_declared(event_type: &str, draft: &Map<String, Value>, by_model: bool) -
 
 /// Na recusa da tarefa sem os itens que ela cobre, a dica de qual cobrir: os
 /// itens da spec `spec` que nenhuma tarefa cobre ainda ([`uncovered_items`]).
-/// A leitura do arquivo só serve à mensagem: nada é gravado.
-fn with_uncovered_items(root: &Path, spec: &str, refusal: Refusal) -> Refusal {
+/// A leitura do arquivo, por `source`, só serve à mensagem: nada é gravado.
+fn with_uncovered_items(source: Option<&Source>, refusal: Refusal) -> Refusal {
     match refusal {
         Refusal::TaskDeclarationMissing { missing, .. } if missing.contains(&TaskDeclaration::Covers) => {
-            let log = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten());
-            let uncovered = log.as_ref().map(uncovered_items).unwrap_or_default();
+            let log = source.and_then(|source| source.log().ok().flatten());
+            let uncovered = log.as_deref().map(uncovered_items).unwrap_or_default();
             Refusal::TaskDeclarationMissing { missing, uncovered }
         }
         other => other,
@@ -734,10 +735,14 @@ fn item_form_missing(draft: &Map<String, Value>, event_type: &str, by_model: boo
 /// a gravação faz; o evento gravado não muda mais, então ler antes da trava
 /// não perde nada. O item que não se acha fica para a conferência da
 /// gravação, que o recusa.
-fn revises_an_item_without_the_form(path: &Path, draft: &Map<String, Value>, event_type: &str) -> Result<bool, Refusal> {
+fn revises_an_item_without_the_form(
+    source: &Source,
+    draft: &Map<String, Value>,
+    event_type: &str,
+) -> Result<bool, Refusal> {
     let Some((user, agent)) = item_form(event_type) else { return Ok(false) };
     let Some(replaces) = draft.get("replaces").filter(|value| !value.is_array()) else { return Ok(false) };
-    let Some(log) = store::read(path)? else { return Ok(false) };
+    let Some(log) = source.log()? else { return Ok(false) };
     let mut probe = Map::new();
     probe.insert("replaces".into(), replaces.clone());
     if mustard_core::domain::spec_events::resolve_codes(&log, &mut probe).is_err() {
@@ -792,16 +797,40 @@ fn unclear_fields(root: &Path, draft: &Map<String, Value>, lang: Locale) -> Vec<
 /// A versão de tarefa gravada pelo programa sem título leva o título da
 /// versão que ela substitui, quando essa tinha um. O evento gravado não muda
 /// mais, então ler a versão antiga antes da trava não perde nada.
-fn inherit_task_title(path: &Path, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
+fn inherit_task_title(source: &Source, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
     if draft.get("title").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty()) {
         return Ok(());
     }
     let Some(old) = draft.get("replaces").and_then(Value::as_u64) else { return Ok(()) };
-    let Some(log) = store::read(path)? else { return Ok(()) };
+    let Some(log) = source.log()? else { return Ok(()) };
     if let Some(title) = log.get(old).and_then(|e| e.fields.get("title")).filter(|t| t.is_string()) {
         draft.insert("title".into(), title.clone());
     }
     Ok(())
+}
+
+/// Onde uma gravação lê o arquivo de eventos como ele está antes de gravar:
+/// pelo caminho, com a trava compartilhada, ou pelo trecho que já segura a
+/// trava exclusiva dele ([`record_locked`]) — ali dentro, ler pelo caminho
+/// esperaria para sempre pela trava do próprio trecho.
+enum Source<'a> {
+    Path(&'a Path),
+    Locked(&'a store::LockedLog),
+}
+
+impl<'a> Source<'a> {
+    /// O trecho travado `locked`, quando há um; sem ele, o caminho `path`.
+    fn of(path: &'a Path, locked: Option<&'a store::LockedLog>) -> Self {
+        locked.map_or(Source::Path(path), Source::Locked)
+    }
+
+    /// O arquivo como está; `None` quando a spec ainda não tem arquivo.
+    fn log(&self) -> Result<Option<Cow<'_, SpecLog>>, Refusal> {
+        match self {
+            Source::Path(path) => Ok(store::read(path)?.map(Cow::Owned)),
+            Source::Locked(locked) => Ok(Some(Cow::Borrowed(locked.log()))),
+        }
+    }
 }
 
 /// A única gravação no arquivo de eventos de uma spec: toda porta chega
@@ -818,18 +847,57 @@ fn record_in(
     draft: Map<String, Value>,
     by: Option<PhaseWriter>,
 ) -> Result<Recorded, Refusal> {
+    record_to(project, start, spec, event_type, draft, by, None)
+}
+
+/// Grava um evento da spec `spec`, vista de `start`, dentro do trecho que já
+/// segura a trava exclusiva do arquivo de eventos dela
+/// ([`store::with_locked_writer`]), sem soltá-la: a mesma gravação e as
+/// mesmas conferências de [`record`], e `locked` passa a trazer o evento.
+/// Quem lê o arquivo, mexe numa pasta que depende dele e grava no fim faz
+/// tudo sem que outra gravação, ou quem pega a mesma trava, entre no meio.
+///
+/// # Errors
+///
+/// As recusas de [`record`].
+pub(crate) fn record_locked(
+    locked: &mut store::LockedLog,
+    start: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: Map<String, Value>,
+    by: PhaseWriter,
+) -> Result<Recorded, Refusal> {
+    record_to(&super::project(start), start, spec, event_type, draft, Some(by), Some(locked))
+}
+
+/// O corpo de [`record_in`] e de [`record_locked`]: com `locked`, lê e grava
+/// pelo trecho travado; sem ele, pelo caminho do arquivo.
+fn record_to(
+    project: &super::Project,
+    start: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: Map<String, Value>,
+    by: Option<PhaseWriter>,
+    locked: Option<&mut store::LockedLog>,
+) -> Result<Recorded, Refusal> {
     if super::pages::old_format_spec(&project.root, spec) {
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
-    task_declared(event_type, &draft, by.is_none()).map_err(|refusal| with_uncovered_items(&project.root, spec, refusal))?;
+    let file = store::spec_file(&project.root, spec);
+    task_declared(event_type, &draft, by.is_none()).map_err(|refusal| {
+        let source = file.as_deref().ok().map(|path| Source::of(path, locked.as_deref()));
+        with_uncovered_items(source.as_ref(), refusal)
+    })?;
     let mut draft = draft;
-    let path = store::spec_file(&project.root, spec)?;
+    let path = file?;
     // O item que descreve o trabalho, gravado pelo modelo, entra com as
     // partes da forma fixa, e o título e a parte do usuário passam pela
     // conferência de escrita. A versão nova de um item de antes da forma
     // segue como ele era.
     let by_model = by.is_none() && item_form(event_type).is_some();
-    if by_model && !revises_an_item_without_the_form(&path, &draft, event_type)? {
+    if by_model && !revises_an_item_without_the_form(&Source::of(&path, locked.as_deref()), &draft, event_type)? {
         let missing = item_form_missing(&draft, event_type, by_model);
         if !missing.is_empty() {
             return Err(Refusal::ItemFormMissing { missing });
@@ -840,29 +908,26 @@ fn record_in(
         }
     }
     if event_type == "task" && by.is_some() {
-        inherit_task_title(&path, &mut draft)?;
+        inherit_task_title(&Source::of(&path, locked.as_deref()), &mut draft)?;
     }
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
     let mut survey = None;
     let lang = project.lang;
-    let written = store::write_guarded(
-        &path,
-        event_type,
-        draft,
-        &roots,
-        &super::pages::secret::secret_excerpts,
-        |before, after| {
-            record_rules(&name, before, after, carried.as_deref(), replaces, by)?;
-            // O passo do levantamento só vai ao relatório do modelo.
-            if by.is_none() {
-                survey = survey_report(&project.root, &name, before, after, lang);
-            }
-            Ok(())
-        },
-        |_| {},
-    )?;
+    let guard = |before: &SpecLog, after: &SpecLog| {
+        record_rules(&name, before, after, carried.as_deref(), replaces, by)?;
+        // O passo do levantamento só vai ao relatório do modelo.
+        if by.is_none() {
+            survey = survey_report(&project.root, &name, before, after, lang);
+        }
+        Ok(())
+    };
+    let find = &super::pages::secret::secret_excerpts;
+    let written = match locked {
+        Some(locked) => locked.write_guarded(event_type, draft, &roots, find, guard, |_| {})?,
+        None => store::write_guarded(&path, event_type, draft, &roots, find, guard, |_| {})?,
+    };
     Ok(Recorded { written, survey })
 }
 

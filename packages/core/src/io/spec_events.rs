@@ -181,49 +181,111 @@ fn write_inner(
     guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
-    let Prepared { mut event, asked, citation_warnings } = prepare(event_type, draft, cite_roots)?;
+    let prepared = prepare(event_type, draft, cite_roots)?;
+    let file = LockedFile::exclusive(path).map_err(io_refusal)?;
+    let mut locked = LockedLog::read(file, path)?;
+    locked.write_prepared(prepared, event_type, at, find, guard, then)
+}
 
-    let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
-    let content = file.read_to_string().map_err(io_refusal)?;
-    let log = model::parse_log(&content);
-    // O `last` de uma cópia da página da spec nunca aponta além do que o
-    // arquivo tem: um número maior, de uma pasta de cópia velha ou de um
-    // pedido errado, é trocado pelo último item do arquivo, sem recusa —
-    // senão a cópia seguinte pularia os itens até esse número para sempre.
-    if event_type == "copy"
-        && let Some(last) = event.get("last").and_then(Value::as_u64)
-        && last > log.max_id()
-    {
-        event.insert("last".to_string(), Value::from(log.max_id()));
+/// O arquivo de eventos com a trava exclusiva presa, para quem lê o
+/// arquivo, mexe em outra coisa que depende dele e grava um evento sem soltar
+/// a trava no meio ([`with_locked_writer`]). A trava solta quando o valor sai
+/// de cena.
+#[derive(Debug)]
+pub struct LockedLog {
+    file: LockedFile,
+    path: PathBuf,
+    content: String,
+    log: SpecLog,
+}
+
+impl LockedLog {
+    /// Lê o arquivo pelo manipulador `file`, que já segura a trava.
+    fn read(mut file: LockedFile, path: &Path) -> Result<Self, Refusal> {
+        let content = file.read_to_string().map_err(io_refusal)?;
+        let log = model::parse_log(&content);
+        Ok(Self { file, path: path.to_path_buf(), content, log })
     }
-    // O arquivo como ficaria, conferido antes de qualquer escrita.
-    let Staged { next, appended, after, id, code, effects } = stage(&content, &log, event, asked, at, find)?;
-    guard(&log, &after)?;
-    match appended {
-        Some(added) => file.append_line(&added).map_err(io_refusal)?,
-        None => file.replace(next.as_bytes()).map_err(io_refusal)?,
+
+    /// O arquivo como está, com o que este trecho já gravou.
+    #[must_use]
+    pub fn log(&self) -> &SpecLog {
+        &self.log
     }
-    let log = after;
-    // Primeiro a trava da spec, depois a do índice: sempre nessa ordem. A
-    // publicação da página do projeto leva o endereço para a linha do
-    // projeto: ela é, por ter acabado de ser gravada, a última. A marca do
-    // template vai junto, e a publicação sem ela é a da página antiga.
-    let project_url = log.events.iter().rev().find(|e| e.id == id).and_then(|e| {
-        crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE)
-            .map(|url| (url, crate::domain::spec_index::is_template(e)))
-    });
-    let index_warning = crate::io::spec_index::index_for(path).and_then(|(index, name)| {
-        crate::io::spec_index::refresh_line(&index, &name, &log)
-            .and_then(|()| {
-                project_url.map_or(Ok(()), |(url, template)| {
-                    crate::io::spec_index::set_project_url(&index, url, template)
+
+    /// Grava um evento com a hora de agora sem soltar a trava: a mesma
+    /// gravação, com as mesmas conferências, de [`write_guarded`]. Depois
+    /// dela, [`LockedLog::log`] já traz o evento.
+    ///
+    /// # Errors
+    ///
+    /// As recusas de [`write_guarded`]; nesse caso, nada muda.
+    pub fn write_guarded(
+        &mut self,
+        event_type: &str,
+        draft: Map<String, Value>,
+        cite_roots: &[PathBuf],
+        find: &dyn Fn(&str) -> Vec<String>,
+        guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
+        then: impl FnOnce(&SpecLog),
+    ) -> Result<Written, Refusal> {
+        let prepared = prepare(event_type, draft, cite_roots)?;
+        self.write_prepared(prepared, event_type, &now(), find, guard, then)
+    }
+
+    /// Grava o evento já conferido sozinho, sobre o arquivo como este trecho
+    /// o tem, e refaz a linha da spec no índice.
+    fn write_prepared(
+        &mut self,
+        prepared: Prepared,
+        event_type: &str,
+        at: &str,
+        find: &dyn Fn(&str) -> Vec<String>,
+        guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
+        then: impl FnOnce(&SpecLog),
+    ) -> Result<Written, Refusal> {
+        let Prepared { mut event, asked, citation_warnings } = prepared;
+        // O `last` de uma cópia da página da spec nunca aponta além do que o
+        // arquivo tem: um número maior, de uma pasta de cópia velha ou de um
+        // pedido errado, é trocado pelo último item do arquivo, sem recusa —
+        // senão a cópia seguinte pularia os itens até esse número para sempre.
+        if event_type == "copy"
+            && let Some(last) = event.get("last").and_then(Value::as_u64)
+            && last > self.log.max_id()
+        {
+            event.insert("last".to_string(), Value::from(self.log.max_id()));
+        }
+        // O arquivo como ficaria, conferido antes de qualquer escrita.
+        let Staged { next, appended, after, id, code, effects } =
+            stage(&self.content, &self.log, event, asked, at, find)?;
+        guard(&self.log, &after)?;
+        match appended {
+            Some(added) => self.file.append_line(&added).map_err(io_refusal)?,
+            None => self.file.replace(next.as_bytes()).map_err(io_refusal)?,
+        }
+        self.content = next;
+        self.log = after;
+        let log = &self.log;
+        // Primeiro a trava da spec, depois a do índice: sempre nessa ordem. A
+        // publicação da página do projeto leva o endereço para a linha do
+        // projeto: ela é, por ter acabado de ser gravada, a última. A marca do
+        // template vai junto, e a publicação sem ela é a da página antiga.
+        let project_url = log.events.iter().rev().find(|e| e.id == id).and_then(|e| {
+            crate::domain::spec_index::published_to(e, crate::domain::spec_index::PROJECT_PAGE)
+                .map(|url| (url, crate::domain::spec_index::is_template(e)))
+        });
+        let index_warning = crate::io::spec_index::index_for(&self.path).and_then(|(index, name)| {
+            crate::io::spec_index::refresh_line(&index, &name, log)
+                .and_then(|()| {
+                    project_url.map_or(Ok(()), |(url, template)| {
+                        crate::io::spec_index::set_project_url(&index, url, template)
+                    })
                 })
-            })
-            .err()
-    });
-    then(&log);
-    drop(file);
-    Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning, citation_warnings })
+                .err()
+        });
+        then(log);
+        Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning, citation_warnings })
+    }
 }
 
 /// O evento conferido sozinho, antes de a trava ser pega.
@@ -376,14 +438,28 @@ pub fn read(path: &Path) -> Result<Option<SpecLog>, Refusal> {
 /// nenhuma gravação entra no meio, então nenhuma das duas fica atrás do
 /// arquivo. `Ok(None)` quando a spec ainda não tem arquivo; nada é criado.
 pub fn with_locked_log<R>(path: &Path, f: impl FnOnce(&SpecLog) -> R) -> Result<Option<R>, Refusal> {
-    let mut file = match LockedFile::existing(path) {
+    with_locked_writer(path, |locked| f(locked.log()))
+}
+
+/// Como [`with_locked_log`], e `f` ainda grava pelo [`LockedLog`] sem soltar
+/// a trava: quem lê o arquivo, mexe numa pasta que depende dele e grava um
+/// evento no fim faz tudo num trecho só, e quem pega a mesma trava para mexer
+/// na mesma pasta espera o trecho acabar. `Ok(None)` quando a spec ainda não
+/// tem arquivo; nada é criado.
+///
+/// # Errors
+///
+/// [`Refusal::Io`] quando o arquivo existe e não abre, não trava ou não pode
+/// ser lido.
+pub fn with_locked_writer<R>(path: &Path, f: impl FnOnce(&mut LockedLog) -> R) -> Result<Option<R>, Refusal> {
+    let file = match LockedFile::existing(path) {
         Ok(file) => file,
         Err(Error::NotFound(_)) => return Ok(None),
         Err(e) => return Err(io_refusal(e)),
     };
-    let content = file.read_to_string().map_err(io_refusal)?;
-    let out = f(&model::parse_log(&content));
-    drop(file);
+    let mut locked = LockedLog::read(file, path)?;
+    let out = f(&mut locked);
+    drop(locked);
     Ok(Some(out))
 }
 
@@ -1164,6 +1240,34 @@ mod tests {
         assert_eq!(locked, Some(2));
         assert_eq!(with_locked_log(&dir.path().join("nada.ndjson"), |_| ()).unwrap(), None);
         assert!(!dir.path().join("nada.ndjson").exists());
+    }
+
+    /// O trecho travado lê o arquivo, grava um evento sem soltar a trava e
+    /// já o vê na leitura dele; outro manipulador só pega a trava depois do
+    /// trecho. A recusa de uma gravação ali dentro não muda nada, e a spec
+    /// sem arquivo não ganha um.
+    #[test]
+    fn a_write_inside_the_locked_section_keeps_the_lock_until_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
+        let free = || std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap().try_lock().is_ok();
+        let find = |_: &str| Vec::new();
+        let (written, refused, seen, free_inside) = with_locked_writer(&path, |locked| {
+            let written = locked.write_guarded("rule", obj(rule("regra")), &[], &find, |_, _| Ok(()), |_| {}).unwrap();
+            let refused = locked.write_guarded("remove", obj(json!({"targets": [9], "reason": "r"})), &[], &find,
+                |_, _| Ok(()), |_| {});
+            (written.id, refused.is_err(), ids_of(&locked.log().events.iter().collect::<Vec<_>>()), free())
+        })
+        .unwrap()
+        .unwrap();
+        assert!(!free_inside, "the lock is held for the whole section");
+        assert!(refused, "the refused write changes nothing");
+        assert_eq!(seen, [1, written], "the section sees its own write");
+        assert_eq!(read(&path).unwrap().map(|log| log.max_id()), Some(written), "the write is on disk");
+        assert!(free(), "the lock is released once the section ends");
+        let none = dir.path().join("nada.ndjson");
+        assert!(with_locked_writer(&none, |_| ()).unwrap().is_none() && !none.exists());
     }
 
     #[test]

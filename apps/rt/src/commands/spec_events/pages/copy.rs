@@ -33,7 +33,10 @@
 //! `2000-3`…).
 //!
 //! Cada documento vai num arquivo JSON próprio, dentro de `copy/` na pasta da
-//! spec, e cada lote (`spec-<n>.json`) é a lista `writes` de uma chamada da
+//! spec, com a marca da preparação no nome (`ranges/2000@3183.json`): o
+//! número do último item do arquivo, o mesmo `last` do registro da cópia. É
+//! por ela que a volta de um lote de outra preparação não casa com o registro
+//! de agora. Cada lote (`spec-<n>.json`) é a lista `writes` de uma chamada da
 //! ferramenta do banco, com até [`BATCH_MAX`] escritas. A resposta traz as
 //! escritas de cada lote prontas, em `copy.<página>.writes`, com o
 //! `file_path` absoluto: a conversa as manda sem ler arquivo nenhum. A cópia
@@ -50,9 +53,11 @@
 //! O banco recusa trocar um documento que já existe sem a versão dele
 //! (`if_version`). O registro da cópia guarda em `versions` a versão que o
 //! banco devolveu a cada documento escrito, pelo nome `coleção/doc_id`; a
-//! cópia seguinte procura cada documento que já existe no registro mais novo
-//! daquela página, para aquele endereço, que traz a versão dele, e a escrita
-//! dele no lote já sai com `if_version`. Assim a cópia é o lote e o registro,
+//! cópia seguinte procura cada documento que ela escreve no registro mais
+//! novo daquela página, para aquele endereço, que traz a versão dele, e a
+//! escrita dele no lote já sai com `if_version`: a faixa inteira, cada pedaço
+//! dela, o apagamento, o documento calculado e cada linha da página do
+//! projeto, a de outra spec inclusive. Assim a cópia é o lote e o registro,
 //! sem ler versão nenhuma antes. Só o documento sem versão guardada, de uma
 //! cópia gravada antes de o registro guardar as versões, ainda é nomeado na
 //! ordem, para a conversa ler a versão dele antes de mandar o lote.
@@ -113,7 +118,9 @@
 //! na pasta ([`prepare_then`]) — acontece com a trava do arquivo de eventos
 //! presa: duas rodadas ao mesmo tempo nunca misturam os arquivos de uma com os
 //! da outra, nenhuma gravação entra no meio, e a que apaga a pasta nunca acha
-//! nela um arquivo que a outra ainda está gravando.
+//! nela um arquivo que a outra ainda está gravando. A testemunha da cópia
+//! segura a mesma trava do começo ao fim do passo dela, então também nunca
+//! grava na pasta no meio de uma preparação.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -276,8 +283,8 @@ fn prepare_in<R>(
     // publicada como template há carimbo a conferir.
     let others =
         if template_project_url(&index).is_some() { other_project_logs(root, spec.trim()) } else { Vec::new() };
-    let place = Place { root, spec: spec.trim(), folder: copy_folder, index };
     store::with_locked_log(spec_ndjson, |log| {
+        let place = Place { root, spec: spec.trim(), folder: copy_folder, index, mark: log.max_id() };
         build(&place, log, &rtk, &others, lang).map(|prepared| {
             let finished = finish(&prepared);
             (prepared, finished)
@@ -292,6 +299,11 @@ struct Place<'a> {
     spec: &'a str,
     folder: PathBuf,
     index: PathBuf,
+    /// A marca desta preparação, o número do último item do arquivo, o
+    /// `last` do registro dela: vai no nome de cada documento, e a volta de
+    /// um lote de outra preparação não casa com o registro desta
+    /// ([`write_mark`]).
+    mark: u64,
 }
 
 /// Monta e grava a cópia a partir de `log`, lido com a trava presa.
@@ -419,21 +431,20 @@ fn versions_of(event: &SpecEvent) -> Map<String, Value> {
     event.fields.get("versions").and_then(Value::as_object).cloned().unwrap_or_default()
 }
 
-/// Põe em `if_version` de cada escrita de `writes` a versão guardada do
-/// documento dela, pelo nome `coleção/doc_id`, quando ele está em `existing`
-/// e `stored` acha a versão dele; devolve os de `existing` sem versão
-/// guardada, na mesma ordem, os únicos que a ordem ainda nomeia para ler.
+/// Põe em `if_version` de cada escrita de `writes` a versão que `stored`
+/// acha guardada para o documento dela, pelo nome `coleção/doc_id` — a faixa
+/// inteira, cada pedaço dela, o apagamento, o documento calculado e cada
+/// linha do projeto: todo documento que uma cópia anterior gravou no banco
+/// deste endereço. Devolve os de `existing`, os que já existem no banco, sem
+/// versão guardada, na mesma ordem: os únicos que a ordem ainda nomeia para
+/// ler.
 fn pin(writes: &mut [Value], existing: Vec<String>, stored: impl Fn(&str) -> Option<Value>) -> Vec<String> {
-    existing
-        .into_iter()
-        .filter(|doc| {
-            let Some(version) = stored(doc) else { return true };
-            for write in writes.iter_mut().filter(|w| doc_name(w) == *doc) {
-                write["if_version"] = version.clone();
-            }
-            false
-        })
-        .collect()
+    for write in writes.iter_mut() {
+        if let Some(version) = stored(&doc_name(write)) {
+            write["if_version"] = version;
+        }
+    }
+    existing.into_iter().filter(|doc| stored(doc).is_none()).collect()
 }
 
 /// O nome `coleção/doc_id` do documento de uma escrita do lote.
@@ -992,10 +1003,11 @@ fn row_body(row: &ProjectRow) -> Value {
     }))
 }
 
-/// Grava o documento `doc_id` da coleção `collection` num arquivo próprio
-/// e devolve a escrita que o manda para o banco pelo arquivo.
+/// Grava o documento `doc_id` da coleção `collection` num arquivo próprio,
+/// com a marca da preparação no nome (`<doc_id>@<marca>.json`), e devolve a
+/// escrita que o manda para o banco pelo arquivo.
 fn set(place: &Place, collection: &str, doc_id: &str, body: &Value) -> Result<Value, Refusal> {
-    let path = place.folder.join(collection).join(format!("{doc_id}.json"));
+    let path = place.folder.join(collection).join(format!("{doc_id}@{}.json", place.mark));
     write(&path, &body.to_string())?;
     Ok(json!({ "op": "set", "collection": collection, "doc_id": doc_id, "file_path": relative(place.root, &path) }))
 }
@@ -1047,8 +1059,10 @@ fn write_spec_record(place: &Place, record: &Value, sent: &[Vec<Value>]) -> Resu
 }
 
 /// O que marca uma escrita de um lote no registro da cópia: o `file_path`
-/// dela, relativo ao projeto como o lote em disco o guarda, ou, na que tira
-/// um documento e não tem arquivo, o nome `coleção/doc_id` dele.
+/// dela, relativo ao projeto como o lote em disco o guarda, com a marca da
+/// preparação no nome, ou, na que tira um documento e não tem arquivo, o nome
+/// `coleção/doc_id` dele. O apagamento não leva marca, mas o lote de outra
+/// preparação que só apaga, igual ao de agora, faz no banco o mesmo que ele.
 pub(crate) fn write_mark(write: &Value) -> String {
     write["file_path"].as_str().map_or_else(|| doc_name(write), |file| file.replace('\\', "/"))
 }
@@ -1935,6 +1949,70 @@ mod tests {
         assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
     }
 
+    /// Uma faixa já copiada ganha itens longos até se partir em dois
+    /// pedaços: o primeiro já está no banco e vai com a versão guardada; o
+    /// segundo é novo e vai sem versão. Gravada a cópia com a versão dos
+    /// dois, um item novo na mesma faixa faz a cópia seguinte levar a versão
+    /// guardada nos dois pedaços, sem nenhum documento para ler.
+    #[test]
+    fn every_piece_of_a_range_goes_with_its_stored_version() {
+        let dir = approved_project();
+        let root = dir.path();
+        let read = read_order(Locale::PtBr);
+        let first = round(root);
+        follow_versioned(root, &first, 1);
+
+        let long = "texto comum de uma nota longa ".repeat(RANGE_MAX_BYTES / 4 / 30);
+        let last = append_notes_with(root, 5, 4, |i| format!("Nota longa {i}. {long}"));
+        assert_eq!(range_start(last), 0, "the long notes stay in the first range");
+        let second = round(root);
+        let (whole, piece) = (format!("{RANGES}/0"), format!("{RANGES}/0-2"));
+        let pieces: Vec<String> =
+            sent(root, &second, "spec").iter().filter(|w| w["collection"] == json!(RANGES)).map(doc_name).collect();
+        assert_eq!(pieces, [whole.clone(), piece.clone()], "the range splits in two pieces");
+        assert_eq!(pinned(root, &second, "spec", &whole), json!(1), "the first piece was already there");
+        assert_eq!(pinned(root, &second, "spec", &piece), Value::Null, "the second piece is new");
+        follow_versioned(root, &second, 2);
+
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        let added = id_of(&write(root, "note", json!({"text": "Nota nova.", "keys": ["k"], "origin": said})));
+        assert_eq!(range_start(added), 0, "the new note falls in the same range");
+        let third = round(root);
+        for doc in [&whole, &piece] {
+            assert_eq!(pinned(root, &third, "spec", doc), json!(2), "{doc} goes with its stored version");
+        }
+        let next = full_next(root, &third);
+        assert!(!next.contains(&read), "nothing left to read: {next}");
+    }
+
+    /// Esta spec publica a página do projeto num endereço novo, e outra spec
+    /// copia a linha dela para lá, com a versão que o banco devolveu. A cópia
+    /// de todas as linhas que esta spec faz em seguida leva essa versão na
+    /// linha da outra; a linha desta, que ainda não está lá, vai sem versão,
+    /// e a ordem não nomeia nada para ler.
+    #[test]
+    fn every_project_row_already_copied_goes_with_its_stored_version() {
+        let dir = approved_project();
+        let root = dir.path();
+        let read = read_order(Locale::PtBr);
+        write(root, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "template": true,
+            "stamp": stamp_of(PROJECT_PAGE), "url": PROJECT_URL}));
+        let other = root.join(".claude/spec/y/spec.ndjson");
+        let put = |event_type: &str, fields: Value| {
+            store::write(&other, event_type, fields.as_object().cloned().unwrap(), &[]).unwrap();
+        };
+        put("state", json!({"phase": "survey"}));
+        put("copy", json!({"page": "project", "phase": "survey", "versions": {"specs/y": 3}}));
+
+        let first = round(root);
+        let rows: Vec<Value> = sent(root, &first, "project").iter().map(|w| w["doc_id"].clone()).collect();
+        assert!(rows.contains(&json!("x")) && rows.contains(&json!("y")), "every row goes: {rows:?}");
+        assert_eq!(pinned(root, &first, "project", "specs/y"), json!(3), "{first}");
+        assert_eq!(pinned(root, &first, "project", "specs/x"), Value::Null, "this spec's row is new there");
+        let next = full_next(root, &first);
+        assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
+    }
+
     /// A cópia de uma spec longa vai em lotes de até 50 escritas, na ordem
     /// das faixas, e o documento das coisas calculadas vai no último; ver
     /// [`a_long_spec_fits_the_page_database`], que já precisa de uma spec
@@ -2134,6 +2212,12 @@ mod tests {
     /// numa spec de milhares de itens. Devolve o número da nota de índice
     /// `mark_index` (a partir de 0), para o teste tocar um item no meio.
     fn append_notes(root: &Path, count: u64, mark_index: u64) -> u64 {
+        append_notes_with(root, count, mark_index, |i| format!("Nota {i}."))
+    }
+
+    /// Como [`append_notes`], com o texto de cada nota dado por `text`, pelo
+    /// índice dela (a partir de 0).
+    fn append_notes_with(root: &Path, count: u64, mark_index: u64, text: impl Fn(u64) -> String) -> u64 {
         let path = root.join(".claude/spec/x/spec.ndjson");
         let start = log(root).max_id() + 1;
         let mut content = std::fs::read_to_string(&path).unwrap_or_default();
@@ -2148,7 +2232,7 @@ mod tests {
             }
             let line = json!({"v": 1, "id": id, "at": "2026-09-19T00:00:00-03:00", "type": "note",
                 "author": "assistant", "code": format!("MSTD-NOTE-{id:04}"), "keys": ["k"],
-                "text": format!("Nota {i}.")});
+                "text": text(i)});
             content.push_str(&line.to_string());
             content.push('\n');
         }
@@ -2652,6 +2736,126 @@ mod tests {
         assert_eq!(versions.len(), sets(&batches[0]) + sets(&batches[1]), "{versions:?}");
         assert_eq!(versions.get("ranges/0"), Some(&json!(2)), "the first batch's version");
         assert_eq!(versions.get(COMPUTED), Some(&json!(3)), "the last batch's version");
+    }
+
+    /// O registro da cópia que a preparação deixa na pasta, na resposta
+    /// `report` de um passo; `Null` quando ele não está lá.
+    fn record_left(root: &Path, report: &Value) -> Value {
+        let folder = root.join(report["copy"]["folder"].as_str().unwrap_or_default());
+        std::fs::read_to_string(folder.join(SPEC_RECORD))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .map_or(Value::Null, |saved| saved["record"].clone())
+    }
+
+    /// O lote `batch` mandado ao endereço da página da spec com o resultado
+    /// `response`, pelo mesmo despachante do `mustard-rt on`, e `meanwhile`
+    /// começando noutra thread quando a testemunha já casou o lote com o
+    /// registro e ainda não gravou a cópia. A testemunha espera `meanwhile`
+    /// acabar, com teto de três segundos, e segue. Devolve o que o gancho
+    /// respondeu e o que `meanwhile` deu.
+    fn while_the_witness_works<T: Send + 'static>(
+        root: &Path,
+        batch: &Value,
+        response: Value,
+        meanwhile: impl FnOnce() -> T + Send + 'static,
+    ) -> (Outcome, T) {
+        use crate::hooks::observe::copy_witness::BEFORE_RECORDING;
+        let (go, started) = std::sync::mpsc::channel::<()>();
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let other = std::thread::spawn(move || {
+            started.recv().ok()?;
+            let out = meanwhile();
+            let _ = done.send(());
+            Some(out)
+        });
+        BEFORE_RECORDING.with(|step| {
+            *step.borrow_mut() = Some(Box::new(move || {
+                let _ = go.send(());
+                // O teto: o que não espera pela testemunha acaba bem antes dele.
+                let _ = finished.recv_timeout(std::time::Duration::from_secs(3));
+            }));
+        });
+        let outcome = batch_sent(root, SPEC_URL, batch, response);
+        // Um passo que não rodou solta a outra thread sem ela fazer nada.
+        BEFORE_RECORDING.with(|step| step.borrow_mut().take());
+        let out = other.join().expect("the other thread").expect("the witness reached its step");
+        (outcome, out)
+    }
+
+    /// A preparação da cópia que chega, com um item novo, enquanto a
+    /// testemunha grava a cópia anterior espera por ela: a testemunha grava a
+    /// cópia anterior com o número até onde ela foi, e o registro da
+    /// preparação nova segue na pasta, com o número do item novo, à espera
+    /// do lote dela.
+    #[test]
+    fn a_preparation_arriving_while_the_witness_works_waits_for_it() {
+        let dir = approved_project();
+        let root = dir.path();
+        let first = published_round(root);
+        let batch = first["copy"]["spec"]["writes"][0].clone();
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+
+        let other = root.to_path_buf();
+        let (outcome, (added, prepared)) = while_the_witness_works(root, &batch, json!(committed(&batch, 7)), move || {
+            let added = id_of(&write(&other, "note", json!({"text": "Nota nova.", "keys": ["k"], "origin": said})));
+            (added, prepare(&other, "x", Locale::PtBr).expect("the new copy"))
+        });
+
+        assert_eq!(outcome.verdict, Verdict::Inject { context: recorded_line() }, "{outcome:?}");
+        let copies = witnessed(root);
+        assert_eq!(copies.len(), 1, "one copy recorded");
+        assert_eq!(copies[0].int("last"), first["copy"]["spec"]["record"]["last"].as_u64(), "the older copy");
+        let saved = record_left(root, &json!({"copy": prepared.to_value()}));
+        assert_eq!(saved, prepared.spec.record, "the new preparation's record stays");
+        assert!(saved["last"].as_u64() >= Some(added), "it goes up to the new item: {saved}");
+    }
+
+    /// O mesmo resultado lido duas vezes ao mesmo tempo grava uma cópia só:
+    /// a segunda leitura, que chega enquanto a primeira grava, espera por ela
+    /// e já não acha o registro.
+    #[test]
+    fn the_same_result_read_twice_at_once_records_once() {
+        let dir = approved_project();
+        let root = dir.path();
+        let first = published_round(root);
+        let batch = first["copy"]["spec"]["writes"][0].clone();
+        let result = json!(committed(&batch, 4));
+
+        let (other, again, response) = (root.to_path_buf(), batch.clone(), result.clone());
+        let (outcome, second) =
+            while_the_witness_works(root, &batch, result, move || batch_sent(&other, SPEC_URL, &again, response));
+
+        let injected = [&outcome, &second].iter().filter(|o| o.verdict != Verdict::Allow).count();
+        assert_eq!(injected, 1, "only one of the two records: {outcome:?} {second:?}");
+        assert_eq!(witnessed(root).len(), 1, "one copy");
+    }
+
+    /// A volta atrasada de um lote de uma preparação anterior, que chega
+    /// depois de uma preparação nova, não grava cópia nenhuma, e o registro
+    /// novo segue na pasta; o lote da preparação nova grava a cópia com o
+    /// número até onde ela foi.
+    #[test]
+    fn a_late_return_from_an_older_preparation_records_nothing() {
+        let dir = approved_project();
+        let root = dir.path();
+        let first = published_round(root);
+        let older = first["copy"]["spec"]["writes"][0].clone();
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        write(root, "note", json!({"text": "Nota nova.", "keys": ["k"], "origin": said}));
+        let second = round(root);
+        let newer = second["copy"]["spec"]["writes"][0].clone();
+
+        let late = batch_sent(root, SPEC_URL, &older, json!(committed(&older, 7)));
+        assert_eq!(late.verdict, Verdict::Allow, "the older batch");
+        assert!(witnessed(root).is_empty(), "nothing recorded");
+        assert_eq!(record_left(root, &second), second["copy"]["spec"]["record"], "the new record stays");
+
+        let outcome = batch_sent(root, SPEC_URL, &newer, json!(committed(&newer, 8)));
+        assert_eq!(outcome.verdict, Verdict::Inject { context: recorded_line() }, "{outcome:?}");
+        let copies = witnessed(root);
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert_eq!(copies[0].int("last"), second["copy"]["spec"]["record"]["last"].as_u64(), "the newer copy");
     }
 
     /// A linha do gasto soma os tokens de toda onda enviada e toma o maior
